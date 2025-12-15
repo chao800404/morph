@@ -1,0 +1,59 @@
+{
+  "$schema": "https://deploy.workers.cloudflare.com/schema.json",
+  "name": "better-auth-cloudflare-tanstack-start",
+  "type": "javascript",
+  "build": {
+    "command": "pnpm install && pnpm build",
+    "cwd": "./",
+    "watch_paths": ["src/**/*"]
+  },
+  "deploy": {
+    "workers_dev": true,
+    "routes": []
+  },
+  "env": {
+    "BETTER_AUTH_SECRET": {
+      "type": "secret",
+      "description": "REQUIRED: Run 'openssl rand -base64 32' in your terminal and paste the result here."
+    },
+    "PUBLIC_URL": {
+      "type": "plain_text",
+      "description": "Public URL (leave blank for auto-detection or example: https://your-worker.workers.dev)"
+    }
+  },
+  "resources": {
+    "d1_databases": [
+      {
+        "binding": "DATABASE",
+        "name": "better-auth-db",
+        "description": "D1 database for Better Auth"
+      }
+    ],
+    "kv_namespaces": [
+      {
+        "binding": "KV",
+        "name": "better-auth-kv",
+        "description": "KV namespace for rate limiting"
+      }
+    ],
+    "r2_buckets": [
+      {
+        "binding": "R2_BUCKET",
+        "name": "better-auth-r2",
+        "description": "R2 bucket for file uploads (optional)"
+      }
+    ]
+  },
+  "setup": {
+    "steps": [
+      {
+        "title": "Install dependencies",
+        "command": "pnpm install"
+      },
+      {
+        "title": "Build application",
+        "command": "pnpm build"
+      }
+    ]
+  }
+}
