@@ -3,23 +3,10 @@
 
 @custom-variant dark (&:is(.dark *));
 
-body {
-  @apply m-0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
-    monospace;
-}
-
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
+  --radius-md-plus: calc(var(--radius) - 0.25rem);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
   --color-background: var(--background);
@@ -53,10 +40,45 @@ code {
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-form-button: var(--form-buttons);
+  --color-component: var(--bg-component);
+  --shadow-buttons-inverted: var(--buttons-inverted);
+  --shadow-elevation-modal: var(--elevation-modal);
+  --shadow-elevation-modal-header: var(--elevation-modal-header);
+}
+
+@theme {
+  --animate-shimmer-slide: shimmer 2.5s infinite linear;
+  --animate-scan-line: scanning 2s linear infinite;
+
+  @keyframes shimmer {
+    0% {
+      transform: translateX(-100%) skewX(-15deg);
+    }
+    100% {
+      transform: translateX(200%) skewX(-15deg);
+    }
+  }
+
+  @keyframes scanning {
+    0% {
+      top: -10%;
+      opacity: 0;
+    }
+    50% {
+      opacity: 1;
+    }
+    100% {
+      top: 110%;
+      opacity: 0;
+    }
+  }
 }
 
 :root {
   --radius: 0.625rem;
+  --bg-component: oklch(1 0 0);
+  --bg-component-secondary: oklch(0.967 0.001 286.375);
   --background: oklch(1 0 0);
   --foreground: oklch(0.141 0.005 285.823);
   --card: oklch(1 0 0);
@@ -81,6 +103,7 @@ code {
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: oklch(0.985 0 0);
+  --sidebar-width: 5rem;
   --sidebar-foreground: oklch(0.141 0.005 285.823);
   --sidebar-primary: oklch(0.21 0.006 285.885);
   --sidebar-primary-foreground: oklch(0.985 0 0);
@@ -88,14 +111,40 @@ code {
   --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
   --sidebar-border: oklch(0.92 0.004 286.32);
   --sidebar-ring: oklch(0.705 0.015 286.067);
+  --form-buttons: oklch(0.141 0.005 285.823);
+  --border-menu-top: rgba(228, 228, 231, 0.7);
+  --border-menu-bot: rgba(255, 255, 255, 1);
+  --buttons-inverted:
+    0px 0.75px 0px 0px rgba(255, 255, 255, 0.2) inset,
+    0px 1px 2px 0px rgba(0, 0, 0, 0.4), 0px 0px 0px 1px rgba(24, 24, 27, 1);
+  --elevation-modal:
+    0px 0px 0px 1px rgba(24, 24, 27, 1) inset,
+    0px 0px 0px 1.5px rgba(255, 255, 255, 0.06) inset,
+    0px -1px 0px 0px rgba(255, 255, 255, 0.04),
+    0px 0px 0px 1px rgba(255, 255, 255, 0.1),
+    0px 4px 8px 0px rgba(0, 0, 0, 0.32), 0px 8px 16px 0px rgba(0, 0, 0, 0.32);
+
+  --elevation-modal-header:
+    0px 0px 0px 1px rgba(24, 24, 27, 1) inset,
+    0px 0px 0px 1.5px rgba(255, 255, 255, 0.06) inset,
+    0px -1px 0px 0px rgba(255, 255, 255, 0.04),
+    0px 0px 0px 1px rgba(255, 255, 255, 0.1), 0px 4px 8px 0px rgba(0, 0, 0, 0),
+    0px 8px 16px 0px rgba(0, 0, 0, 0);
+  --gradient-checker-board: repeating-conic-gradient(
+      hsl(0, 0%, 94%) 0% 25%,
+      hsl(300, 8%, 97%) 0% 50%
+    )
+    50% / 10px 10px;
 }
 
 .dark {
+  --bg-component: rgba(33, 33, 36, 1);
+  --bg-component-secondary: rgba(39, 39, 42, 1);
   --background: oklch(0.141 0.005 285.823);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.21 0.006 285.885);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
+  --popover: oklch(0.274 0.006 286.033);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.92 0.004 286.32);
   --primary-foreground: oklch(0.21 0.006 285.885);
@@ -122,6 +171,14 @@ code {
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.552 0.016 285.938);
+  --border-menu-top: rgba(33, 33, 36, 1);
+  --border-menu-bot: rgba(255, 255, 255, 0.08);
+  --form-buttons: rgba(82, 82, 91, 1);
+  --gradient-checker-board: repeating-conic-gradient(
+      rgba(255, 255, 255, 0.08) 0% 25%,
+      oklch(0.21 0.006 285.885) 0% 50%
+    )
+    50% / 10px 10px;
 }
 
 @layer base {
@@ -131,4 +188,33 @@ code {
   body {
     @apply bg-background text-foreground;
   }
+}
+
+@layer components {
+  .shadow-buttons-inverted {
+    box-shadow: var(--buttons-inverted);
+  }
+
+  .border-t-ui-border-menu-top {
+    border-top-color: var(--border-menu-top);
+  }
+
+  .border-b-ui-border-menu-bot {
+    border-bottom-color: var(--border-menu-bot);
+  }
+}
+
+body {
+  background-color: var(--color-sidebar);
+}
+
+html,
+body {
+  -webkit-text-size-adjust: 100%;
+}
+
+.txt-compact-small {
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  font-weight: 400;
 }

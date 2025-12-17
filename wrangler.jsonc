@@ -29,7 +29,8 @@
   "r2_buckets": [
     {
       "binding": "R2_BUCKET",
-      "bucket_name": "morph-r2-global","preview_bucket_name": "morph-r2-global",
+      "bucket_name": "morph-r2-global",
+      "preview_bucket_name": "morph-r2-global",
     },
   ],
   // IMPORTANT: Do NOT put BETTER_AUTH_SECRET in vars!
@@ -49,7 +50,10 @@
    * Environment Variables
    * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
    */
-  // "vars": { "MY_VARIABLE": "production_value" }
+  "vars": {
+    "PUBLIC_URL": "http://localhost:3000",
+    "RESEND_API_KEY": "re_WdT1LvW5_CRF8GEbLPfdX3FeBccRgRhoB",
+  },
   /**
    * Note: Use secrets to store sensitive data.
    * https://developers.cloudflare.com/workers/configuration/secrets/

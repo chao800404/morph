@@ -1,11 +1,29 @@
 import { cloudflareClient } from "better-auth-cloudflare/client";
-import { anonymousClient } from "better-auth/client/plugins";
+import {
+  adminClient,
+  anonymousClient,
+  emailOTPClient,
+  inferAdditionalFields,
+} from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
+import type { auth } from ".";
+import { ac, staff } from "./permissions";
 
-const client = (baseURL: string) =>
+const authClient = (baseURL: string) =>
   createAuthClient({
     baseURL,
-    plugins: [cloudflareClient(), anonymousClient()],
+    plugins: [
+      cloudflareClient(),
+      anonymousClient(),
+      adminClient({
+        ac,
+        roles: {
+          staff,
+        },
+      }),
+      emailOTPClient(),
+      inferAdditionalFields<typeof auth>(),
+    ],
   });
 
-export default client;
+export default authClient;

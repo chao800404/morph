@@ -2,8 +2,8 @@ import { TanStackDevtools } from "@tanstack/react-devtools";
 import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 
+import { getClientConfig } from "@/server/get-client-config";
 import { getPublicURL } from "@/server/getPublicURL";
-import { getSession } from "@/server/getSession";
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -27,13 +27,26 @@ export const Route = createRootRoute({
       },
     ],
   }),
-  beforeLoad: async ({}) => {
-    const session = await getSession();
-    const publicURL = await getPublicURL();
-    return {
-      session,
-      publicURL,
-    };
+  beforeLoad: async () => {
+    try {
+      const [publicURL, config] = await Promise.all([
+        getPublicURL(),
+        getClientConfig(),
+      ]);
+
+      return {
+        publicURL,
+        config,
+      };
+    } catch (error) {
+      console.error("Error loading root context:", error);
+      // Return default values to prevent undefined context
+      return {
+        session: null,
+        publicURL: "",
+        config: await getClientConfig(),
+      };
+    }
   },
   shellComponent: RootDocument,
 });

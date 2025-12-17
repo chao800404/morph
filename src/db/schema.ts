@@ -16,6 +16,7 @@
  */
 
 // Re-export all auth schema tables
+export * from "./asset.schema";
 export * from "./auth.schema";
 
 // Re-export your custom schemas here:
