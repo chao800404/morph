@@ -16,7 +16,7 @@
     {
       "binding": "DATABASE",
       "database_name": "morph-d1-global",
-      "database_id": "dfae317c-92c2-4329-97a1-7e7a057bd3f5",
+      "database_id": "43d5c881-bd19-4020-92cc-3945d8b5cb39",
       "migrations_dir": "drizzle",
     },
   ],
