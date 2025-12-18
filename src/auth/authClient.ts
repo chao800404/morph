@@ -7,7 +7,7 @@ import {
 } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import type { auth } from ".";
-import { ac, staff } from "./permissions";
+import { ac, guest, user } from "./permissions";
 
 const authClient = (baseURL: string) =>
   createAuthClient({
@@ -18,7 +18,8 @@ const authClient = (baseURL: string) =>
       adminClient({
         ac,
         roles: {
-          staff,
+          user,
+          guest,
         },
       }),
       emailOTPClient(),

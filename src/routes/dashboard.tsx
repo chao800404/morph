@@ -4,6 +4,7 @@ import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 export const Route = createFileRoute("/dashboard")({
   beforeLoad: async () => {
     const session = await getSession();
+    console.log(session?.user);
     if (!session?.user) {
       throw redirect({ to: "/sign-in" });
     }

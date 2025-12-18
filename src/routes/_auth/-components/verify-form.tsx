@@ -1,5 +1,3 @@
-"use client";
-
 import authClient from "@/auth/authClient";
 import {
   AlertDialog,
@@ -9,11 +7,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-
-import { Button } from "@/components/ui/button";
-
+import { resetPasswordClientSchema } from "@/lib/validations/auth";
+import { setVerifyAccessCookieServerFn } from "@/server/auth/verify-access.serverFn";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -23,6 +22,8 @@ import { OTPForm } from "./otp-form";
 
 interface VerifyFormProps {
   email: string;
+  publicURL: string;
+  expiresAt: number;
 }
 
 const otpVariants = {
@@ -44,18 +45,25 @@ const otpVariants = {
   },
 };
 
-export function VerifyForm({ email }: VerifyFormProps) {
+export function VerifyForm({ email, publicURL, expiresAt }: VerifyFormProps) {
+  const navigate = useNavigate();
+  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [pending, setPending] = useState(false);
   const [otp, setOtp] = useState<string | null>(null);
+  const [isExpired, setIsExpired] = useState(() => {
+    return expiresAt - Date.now() <= 0;
+  });
 
   const handleResendCode = async () => {
     setPending(true);
     setError(null);
 
     try {
-      const { data, error } = await authClient.emailOtp.sendVerificationOtp({
+      const { data, error } = await authClient(
+        publicURL,
+      ).emailOtp.sendVerificationOtp({
         email,
         type: "forget-password",
       });
@@ -63,7 +71,10 @@ export function VerifyForm({ email }: VerifyFormProps) {
       if (error) {
         setError(error.message || "Failed to resend code");
       } else if (data) {
+        await setVerifyAccessCookieServerFn({ data: email });
+        router.invalidate();
         setError(null);
+        setIsExpired(false);
         toast.success("Verification code resent successfully!", {
           description: "The code is valid for 5 minutes",
           position: "top-center",
@@ -80,19 +91,20 @@ export function VerifyForm({ email }: VerifyFormProps) {
     setError(null);
     setPending(true);
 
-    const otp = formData.get("otp") as string;
+    const otpValue = formData.get("otp") as string;
 
     try {
-      const { data, error } = await authClient.emailOtp.checkVerificationOtp({
+      const { error: authError } = await authClient(
+        publicURL,
+      ).emailOtp.checkVerificationOtp({
         email,
         type: "forget-password",
-        otp,
+        otp: otpValue,
       });
 
-      if (error) {
-        // Better Auth handles rate limiting and attempt tracking
+      if (authError) {
         setError(
-          error.message || "Invalid verification code. Please try again.",
+          authError.message || "Invalid verification code. Please try again.",
         );
         setPending(false);
         return;
@@ -100,7 +112,7 @@ export function VerifyForm({ email }: VerifyFormProps) {
 
       // OTP verified successfully
       console.log("[Security] OTP verified successfully for:", email);
-      setOtp(otp);
+      setOtp(otpValue);
       setPending(false);
     } catch (err) {
       console.error("[Security] OTP verification error:", err);
@@ -119,7 +131,8 @@ export function VerifyForm({ email }: VerifyFormProps) {
     const confirmNewPassword = formData.get("confirm-password") as string;
 
     if (!otp) {
-      setError("[Security] OTP verification error");
+      setError("[Security] OTP verification missing");
+      setPending(false);
       return;
     }
 
@@ -130,7 +143,6 @@ export function VerifyForm({ email }: VerifyFormProps) {
     });
 
     if (!validation.success) {
-      // Get the first error message
       const firstError = validation.error.issues[0];
       setError(firstError.message);
       setPending(false);
@@ -138,13 +150,16 @@ export function VerifyForm({ email }: VerifyFormProps) {
     }
 
     try {
-      const { data, error } = await authClient.emailOtp.resetPassword({
+      const { error: authError } = await authClient(
+        publicURL,
+      ).emailOtp.resetPassword({
         email,
         otp,
         password: validation.data.newPassword,
       });
 
-      if (error) throw new Error(error.message || "Password reset failed");
+      if (authError)
+        throw new Error(authError.message || "Password reset failed");
 
       // Success - clear sensitive data and show dialog
       console.log("[Security] Password reset successful for:", email);
@@ -177,13 +192,26 @@ export function VerifyForm({ email }: VerifyFormProps) {
             transformStyle: "preserve-3d",
           }}
         >
-          <OTPForm action={handleActionCode} error={!otp ? error : undefined} />
+          <OTPForm
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleActionCode(new FormData(e.currentTarget));
+            }}
+            error={!otp ? error : undefined}
+            isExpired={isExpired}
+            onResend={handleResendCode}
+            disabled={pending}
+          />
           <p className="text-center text-xs text-muted-foreground mt-3">
             Code expires in{" "}
             <CountdownText
-              initialSeconds={300}
+              initialSeconds={Math.max(
+                0,
+                Math.floor((expiresAt - Date.now()) / 1000),
+              )}
               format="mm:ss"
               onComplete={() => {
+                setIsExpired(true);
                 setError(
                   "Verification code has expired. Please request a new code.",
                 );
@@ -203,13 +231,17 @@ export function VerifyForm({ email }: VerifyFormProps) {
             <Card
               className={cn(
                 "px-5 py-8 ring ring-muted-foreground/30 shadow-xl border-none",
-                `${!!otp ? "" : null}`,
+                !!otp ? "" : null,
               )}
             >
               <CheckPasswordForm
                 pending={pending}
                 error={!!otp ? error : undefined}
-                action={handleActionResetPassword}
+                isExpired={isExpired}
+                onResend={handleResendCode}
+                expiresAt={expiresAt}
+                setIsExpired={setIsExpired}
+                action={(formData) => handleActionResetPassword(formData)}
               />
             </Card>
           </motion.div>
@@ -247,13 +279,16 @@ export function VerifyForm({ email }: VerifyFormProps) {
                 prefix="Your password has been successfully reset. You can now sign in with your new password. You
                             will be redirected to the sign-in page in"
                 suffix="seconds."
-                onComplete={() => router.push("/auth/sign-in")}
+                onComplete={() => navigate({ to: "/sign-in" as any })}
                 initialSeconds={5}
               />
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <Button onClick={() => router.push("/auth/sign-in")} variant="form">
+            <Button
+              onClick={() => navigate({ to: "/sign-in" as any })}
+              variant="outline"
+            >
               Go to Sign In
             </Button>
           </AlertDialogFooter>

@@ -4,6 +4,7 @@ import { Alert, AlertTitle } from "@/components/ui/alert";
 import { FieldDescription, FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { forgotPasswordSchema } from "@/lib/validations/auth";
+import { setVerifyAccessCookieServerFn } from "@/server/auth/verify-access.serverFn";
 import { useForm } from "@tanstack/react-form";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
@@ -35,17 +36,24 @@ export function ResetPasswordForm({
       setError(null);
 
       try {
-        if (!publicURL) throw new Error("Public URL is not provided");
-        const { data, error } = await authClient(
+        if (!publicURL) {
+          throw new Error("Public URL is missing. Check your configuration.");
+        }
+        const { data, error: authError } = await authClient(
           publicURL,
         ).forgetPassword.emailOtp({
           email: value.email,
         });
-
-        console.log(data, error);
+        if (data?.success) {
+          await setVerifyAccessCookieServerFn({ data: value.email });
+          navigate({
+            to: "/reset-password/verify",
+            search: { email: value.email },
+          });
+        }
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Failed to send reset email",
+          err instanceof Error ? err.message : "An unexpected error occurred",
         );
       } finally {
         setPending(false);

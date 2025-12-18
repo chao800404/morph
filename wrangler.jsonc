@@ -51,7 +51,7 @@
    * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
    */
   "vars": {
-    "PUBLIC_URL": "http://localhost:3000",
+    "PUBLIC_URL": "https://morph.yuho0298.workers.dev",
     "RESEND_API_KEY": "re_WdT1LvW5_CRF8GEbLPfdX3FeBccRgRhoB",
   },
   /**

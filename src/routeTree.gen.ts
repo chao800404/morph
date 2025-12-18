@@ -18,8 +18,10 @@ import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthResetPasswordRouteImport } from './routes/_auth/reset-password'
 import { Route as AuthCreateFirstAdminRouteImport } from './routes/_auth/create-first-admin'
 import { Route as DashboardSettingsIndexRouteImport } from './routes/dashboard/settings/index'
+import { Route as AuthResetPasswordIndexRouteImport } from './routes/_auth/reset-password.index'
 import { Route as DashboardSettingsSlugRouteImport } from './routes/dashboard/settings/$slug'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as AuthResetPasswordVerifyRouteImport } from './routes/_auth/reset-password.verify'
 
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
@@ -65,6 +67,11 @@ const DashboardSettingsIndexRoute = DashboardSettingsIndexRouteImport.update({
   path: '/settings/',
   getParentRoute: () => DashboardRoute,
 } as any)
+const AuthResetPasswordIndexRoute = AuthResetPasswordIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AuthResetPasswordRoute,
+} as any)
 const DashboardSettingsSlugRoute = DashboardSettingsSlugRouteImport.update({
   id: '/settings/$slug',
   path: '/settings/$slug',
@@ -75,28 +82,36 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthResetPasswordVerifyRoute = AuthResetPasswordVerifyRouteImport.update({
+  id: '/verify',
+  path: '/verify',
+  getParentRoute: () => AuthResetPasswordRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRouteWithChildren
   '/create-first-admin': typeof AuthCreateFirstAdminRoute
-  '/reset-password': typeof AuthResetPasswordRoute
+  '/reset-password': typeof AuthResetPasswordRouteWithChildren
   '/sign-in': typeof AuthSignInRoute
   '/dashboard/$slug': typeof DashboardSlugRoute
   '/dashboard/': typeof DashboardIndexRoute
+  '/reset-password/verify': typeof AuthResetPasswordVerifyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/dashboard/settings/$slug': typeof DashboardSettingsSlugRoute
+  '/reset-password/': typeof AuthResetPasswordIndexRoute
   '/dashboard/settings': typeof DashboardSettingsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/create-first-admin': typeof AuthCreateFirstAdminRoute
-  '/reset-password': typeof AuthResetPasswordRoute
   '/sign-in': typeof AuthSignInRoute
   '/dashboard/$slug': typeof DashboardSlugRoute
   '/dashboard': typeof DashboardIndexRoute
+  '/reset-password/verify': typeof AuthResetPasswordVerifyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/dashboard/settings/$slug': typeof DashboardSettingsSlugRoute
+  '/reset-password': typeof AuthResetPasswordIndexRoute
   '/dashboard/settings': typeof DashboardSettingsIndexRoute
 }
 export interface FileRoutesById {
@@ -105,12 +120,14 @@ export interface FileRoutesById {
   '/_auth': typeof AuthRouteWithChildren
   '/dashboard': typeof DashboardRouteWithChildren
   '/_auth/create-first-admin': typeof AuthCreateFirstAdminRoute
-  '/_auth/reset-password': typeof AuthResetPasswordRoute
+  '/_auth/reset-password': typeof AuthResetPasswordRouteWithChildren
   '/_auth/sign-in': typeof AuthSignInRoute
   '/dashboard/$slug': typeof DashboardSlugRoute
   '/dashboard/': typeof DashboardIndexRoute
+  '/_auth/reset-password/verify': typeof AuthResetPasswordVerifyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/dashboard/settings/$slug': typeof DashboardSettingsSlugRoute
+  '/_auth/reset-password/': typeof AuthResetPasswordIndexRoute
   '/dashboard/settings/': typeof DashboardSettingsIndexRoute
 }
 export interface FileRouteTypes {
@@ -123,19 +140,22 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/dashboard/$slug'
     | '/dashboard/'
+    | '/reset-password/verify'
     | '/api/auth/$'
     | '/dashboard/settings/$slug'
+    | '/reset-password/'
     | '/dashboard/settings'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/create-first-admin'
-    | '/reset-password'
     | '/sign-in'
     | '/dashboard/$slug'
     | '/dashboard'
+    | '/reset-password/verify'
     | '/api/auth/$'
     | '/dashboard/settings/$slug'
+    | '/reset-password'
     | '/dashboard/settings'
   id:
     | '__root__'
@@ -147,8 +167,10 @@ export interface FileRouteTypes {
     | '/_auth/sign-in'
     | '/dashboard/$slug'
     | '/dashboard/'
+    | '/_auth/reset-password/verify'
     | '/api/auth/$'
     | '/dashboard/settings/$slug'
+    | '/_auth/reset-password/'
     | '/dashboard/settings/'
   fileRoutesById: FileRoutesById
 }
@@ -224,6 +246,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardSettingsIndexRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/_auth/reset-password/': {
+      id: '/_auth/reset-password/'
+      path: '/'
+      fullPath: '/reset-password/'
+      preLoaderRoute: typeof AuthResetPasswordIndexRouteImport
+      parentRoute: typeof AuthResetPasswordRoute
+    }
     '/dashboard/settings/$slug': {
       id: '/dashboard/settings/$slug'
       path: '/settings/$slug'
@@ -238,18 +267,38 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_auth/reset-password/verify': {
+      id: '/_auth/reset-password/verify'
+      path: '/verify'
+      fullPath: '/reset-password/verify'
+      preLoaderRoute: typeof AuthResetPasswordVerifyRouteImport
+      parentRoute: typeof AuthResetPasswordRoute
+    }
   }
 }
 
+interface AuthResetPasswordRouteChildren {
+  AuthResetPasswordVerifyRoute: typeof AuthResetPasswordVerifyRoute
+  AuthResetPasswordIndexRoute: typeof AuthResetPasswordIndexRoute
+}
+
+const AuthResetPasswordRouteChildren: AuthResetPasswordRouteChildren = {
+  AuthResetPasswordVerifyRoute: AuthResetPasswordVerifyRoute,
+  AuthResetPasswordIndexRoute: AuthResetPasswordIndexRoute,
+}
+
+const AuthResetPasswordRouteWithChildren =
+  AuthResetPasswordRoute._addFileChildren(AuthResetPasswordRouteChildren)
+
 interface AuthRouteChildren {
   AuthCreateFirstAdminRoute: typeof AuthCreateFirstAdminRoute
-  AuthResetPasswordRoute: typeof AuthResetPasswordRoute
+  AuthResetPasswordRoute: typeof AuthResetPasswordRouteWithChildren
   AuthSignInRoute: typeof AuthSignInRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
   AuthCreateFirstAdminRoute: AuthCreateFirstAdminRoute,
-  AuthResetPasswordRoute: AuthResetPasswordRoute,
+  AuthResetPasswordRoute: AuthResetPasswordRouteWithChildren,
   AuthSignInRoute: AuthSignInRoute,
 }
 

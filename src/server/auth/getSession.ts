@@ -11,6 +11,9 @@ export const getSession = createServerFn({ method: "GET" }).handler(
     const request = getRequest();
     const auth = getAuthWithAdmin();
     const session = await auth.api.getSession({
+      query: {
+        disableCookieCache: true,
+      },
       headers: request.headers,
     });
     return session;

@@ -6,7 +6,9 @@ export function SubmitButton({
   canSubmit = true,
   name = "Submit",
   isLoading = false,
-}: {
+  type = "submit",
+  ...props
+}: React.ComponentProps<typeof Button> & {
   canSubmit?: boolean;
   name?: string;
   isLoading?: boolean;
@@ -15,9 +17,10 @@ export function SubmitButton({
 
   return (
     <Button
+      {...props}
       variant="form"
       disabled={pending || !canSubmit || isLoading}
-      type="submit"
+      type={type}
     >
       {pending || isLoading ? <Spinner variant="throbber" /> : name}
     </Button>

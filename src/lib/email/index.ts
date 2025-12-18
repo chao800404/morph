@@ -76,7 +76,7 @@ export async function sendPasswordResetEmail({
     }),
   );
 
-  return sendEmail({
+  await sendEmail({
     to: email,
     subject: `Reset your password for ${config.server.appName}`,
     html: emailHtml,

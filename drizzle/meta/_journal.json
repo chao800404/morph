@@ -43,6 +43,13 @@
       "when": 1765814916900,
       "tag": "0005_curly_blazing_skull",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1766058338564,
+      "tag": "0006_burly_tarantula",
+      "breakpoints": true
     }
   ]
 }

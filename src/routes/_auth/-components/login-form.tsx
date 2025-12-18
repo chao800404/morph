@@ -1,6 +1,6 @@
 import authClient from "@/auth/authClient";
 import { LogoF } from "@/components/logo/logo";
-import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FieldDescription, FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { loginSchema } from "@/lib/validations/auth";
@@ -57,9 +57,9 @@ export function LoginForm({
   return (
     <div className="max-w-[280px] w-full">
       <div className="text-center flex flex-col gap-3 mb-3">
-        <div className="w-16 h-16 shadow-2xs mx-auto">
+        <Link className="mb-2 mx-auto" to={"/dashboard" as any}>
           <LogoF />
-        </div>
+        </Link>
         <div className="space-y-0.5">
           <h3 className="text-xl">
             {appName ? `Welcome to ${appName}` : "Welcome back"}
@@ -79,7 +79,9 @@ export function LoginForm({
         {error && (
           <Alert className="mb-5" variant="destructive">
             <AlertCircle />
-            <AlertTitle>{error}</AlertTitle>
+            <AlertDescription className="text-sm text-destructive">
+              {error}
+            </AlertDescription>
           </Alert>
         )}
 

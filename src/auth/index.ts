@@ -1,4 +1,4 @@
-import { ac, staff } from "@/auth/permissions";
+import { ac, guest, user } from "@/auth/permissions";
 import { getConfig } from "@/cms.config";
 import type {
   D1Database,
@@ -216,20 +216,22 @@ function createAuth(
           openAPI(),
           admin({
             ac,
+            defaultRole: "guest",
             roles: {
-              staff,
+              user,
+              guest,
             },
           }),
           emailOTP({
             overrideDefaultEmailVerification: true,
             async sendVerificationOTP({ email, otp, type }) {
-              console.log(type, "type");
               if (type === "sign-in") {
-                // Send the OTP for sign in
+                // TODO: Implement sign-in OTP email
+                console.log(`Sign-in OTP for ${email}: ${otp}`);
               } else if (type === "email-verification") {
-                // Send email verification OTP
+                // TODO: Implement email verification OTP
+                console.log(`Email verification OTP for ${email}: ${otp}`);
               } else if (type === "forget-password") {
-                // Generate reset link with OTP token
                 await sendPasswordResetEmail({
                   email,
                   otp,

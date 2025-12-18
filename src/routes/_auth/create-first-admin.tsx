@@ -1,4 +1,4 @@
-import { checkHasAdminServerFn } from "@/server/auth/check-has-admin.server-function";
+import { checkHasAdminServerFn } from "@/server/auth/check-has-admin.serverFn";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { SignupForm } from "./-components/signup-form";
 

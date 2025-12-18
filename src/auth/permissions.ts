@@ -6,6 +6,10 @@ export const statement = {
 
 export const ac = createAccessControl(statement);
 
-export const staff = ac.newRole({
+export const user = ac.newRole({
   project: ["create", "update", "delete"],
+});
+
+export const guest = ac.newRole({
+  project: [],
 });

@@ -7,7 +7,7 @@ import {
   safeNameSchema,
   safePasswordSchema,
 } from "@/lib/validations/common";
-import { createFirstAdminServerFn } from "@/server/auth/create-first-admin.server-function";
+import { createFirstAdminServerFn } from "@/server/auth/create-first-admin.serverFn";
 import { useForm } from "@tanstack/react-form";
 import { useRouter } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";

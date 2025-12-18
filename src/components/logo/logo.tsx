@@ -47,7 +47,7 @@ export const Logo = () => {
   );
 };
 
-export const LogoF: React.FC<LogoProps> = ({ size = 73, style, ...props }) => {
+export const LogoF: React.FC<LogoProps> = ({ size = 60, style, ...props }) => {
   const uniqueId = useId();
   const maskId = `${uniqueId}-mask`;
   const filterId = `${uniqueId}-filter`;
