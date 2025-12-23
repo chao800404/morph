@@ -1,12 +1,21 @@
 import { TanStackDevtools } from "@tanstack/react-devtools";
-import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
-import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
+import { QueryClient } from "@tanstack/react-query";
+import {
+  HeadContent,
+  Scripts,
+  createRootRouteWithContext,
+} from "@tanstack/react-router";
 
-import { getClientConfig } from "@/server/get-client-config";
 import { getPublicURL } from "@/server/getPublicURL";
+import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import appCss from "../styles.css?url";
 
-export const Route = createRootRoute({
+interface RouterContext {
+  queryClient: QueryClient;
+  publicURL?: string;
+}
+
+export const Route = createRootRouteWithContext<RouterContext>()({
   head: () => ({
     meta: [
       {
@@ -29,22 +38,15 @@ export const Route = createRootRoute({
   }),
   beforeLoad: async () => {
     try {
-      const [publicURL, config] = await Promise.all([
-        getPublicURL(),
-        getClientConfig(),
-      ]);
+      const publicURL = await getPublicURL();
 
       return {
         publicURL,
-        config,
       };
     } catch (error) {
       console.error("Error loading root context:", error);
-      // Return default values to prevent undefined context
       return {
-        session: null,
         publicURL: "",
-        config: await getClientConfig(),
       };
     }
   },
@@ -53,7 +55,7 @@ export const Route = createRootRoute({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>

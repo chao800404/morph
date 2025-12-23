@@ -48,6 +48,7 @@
     "@tailwindcss/vite": "^4.0.6",
     "@tanstack/react-devtools": "^0.7.0",
     "@tanstack/react-form": "^1.27.4",
+    "@tanstack/react-query": "^5.90.12",
     "@tanstack/react-router": "^1.132.0",
     "@tanstack/react-router-devtools": "^1.132.0",
     "@tanstack/react-router-ssr-query": "^1.131.7",
@@ -71,13 +72,17 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-dropzone": "^14.3.8",
+    "react-idle-timer": "^5.7.2",
+    "react-top-loading-bar": "^3.0.2",
     "resend": "^6.6.0",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^4.0.6",
+    "tanstack-theme-kit": "^0.2.1",
     "vite-tsconfig-paths": "^5.1.4",
     "zod": "^4.2.0",
-    "zod-form-data": "^3.0.1"
+    "zod-form-data": "^3.0.1",
+    "zustand": "^5.0.9"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251212.0",

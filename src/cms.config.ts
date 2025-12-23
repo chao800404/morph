@@ -15,8 +15,10 @@ const cmsConfig = createCMSConfig({
   database: {
     connectionString: process.env.DATABASE_URL,
   },
-  collections: [Marketing, Contents],
-  settings: [General, Account],
+  collections: {
+    global: [Marketing, Contents],
+    settings: [General, Account],
+  },
   upload: {
     maxFileSize: 50 * 1024 * 1024,
     minFiles: 1,

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:is(.dark, [data-theme="dark"], .dark *, [data-theme="dark"] *));
 
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
@@ -137,7 +137,7 @@
     50% / 10px 10px;
 }
 
-.dark {
+[data-theme="dark"] {
   --bg-component: rgba(33, 33, 36, 1);
   --bg-component-secondary: rgba(39, 39, 42, 1);
   --background: oklch(0.141 0.005 285.823);

@@ -1,0 +1,193 @@
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { cn } from "@/lib/utils";
+import { useRouter } from "@tanstack/react-router";
+import { AnimatePresence, motion } from "motion/react";
+import { useState } from "react";
+import { toast } from "sonner";
+import { useShallow } from "zustand/react/shallow";
+import { useInfoStore } from "../global-info/use-info-store";
+import { useEditStore } from "./use-edit-store";
+
+import { DialogFooterActions } from "@/components/dialog/dialog-footer-actions";
+import { DialogHeaderActions } from "@/components/dialog/dialog-header-actions";
+// TODO: FieldsRenderer is currently missing from the workspace.
+// You should ensure it's moved to @/components/form/fields-renderer.tsx
+import { FieldsRenderer } from "@/components/form/fields-renderer";
+
+export const EditDialog = () => {
+  const router = useRouter();
+  const {
+    open,
+    handleOpenChange,
+    title,
+    description,
+    action,
+    fields,
+    initialFields,
+    updateFieldValue,
+    onSuccess,
+  } = useEditStore(
+    useShallow((state) => ({
+      open: state.open,
+      handleOpenChange: state.handleOpenChange,
+      title: state.title,
+      description: state.description,
+      fields: state.fields,
+      initialFields: state.initialFields,
+      updateFieldValue: state.updateFieldValue,
+      onSuccess: state.onSuccess,
+      action: state.action,
+    })),
+  );
+
+  const { setInfoData, setOpen: setInfoOpen } = useInfoStore(
+    useShallow((state) => ({
+      setInfoData: state.setInfoData,
+      setOpen: state.setOpen,
+    })),
+  );
+
+  // Check if form is dirty
+  const isDirty = JSON.stringify(fields) !== JSON.stringify(initialFields);
+
+  const handleOpenChangeWrapper = (newOpen: boolean) => {
+    if (!newOpen && isDirty) {
+      setInfoData({
+        title: "Unsaved Changes",
+        description:
+          "You have unsaved changes. Are you sure you want to discard them?",
+        confirmLabel: "Discard",
+        confirmVariant: "destructive",
+        action: async () => ({ data: { message: "", success: true } }),
+        onSuccess: () => {
+          handleOpenChange(false);
+        },
+      });
+      setInfoOpen(true);
+      return;
+    }
+    handleOpenChange(newOpen);
+  };
+
+  const [isExecuting, setIsExecuting] = useState(false);
+
+  const handleSubmit = async (formData: FormData) => {
+    if (!action) return;
+
+    setIsExecuting(true);
+
+    const promise = (async () => {
+      const result = await action(formData);
+
+      if (result.serverError) {
+        throw new Error(result.serverError);
+      }
+
+      if (result.validationErrors) {
+        const firstErrorKey = Object.keys(result.validationErrors)[0];
+        const firstErrorMessage = result.validationErrors[firstErrorKey];
+        let message = "Validation error";
+        if (typeof firstErrorMessage === "string") message = firstErrorMessage;
+        else if (Array.isArray(firstErrorMessage))
+          message = firstErrorMessage[0];
+        else if (
+          typeof firstErrorMessage === "object" &&
+          (firstErrorMessage as any)?._errors
+        )
+          message = (firstErrorMessage as any)._errors[0];
+
+        const error = new Error(message);
+        (error as any).data = result;
+        throw error;
+      }
+
+      return result.data;
+    })();
+
+    toast.promise(promise, {
+      loading: "Saving...",
+      success: () => {
+        onSuccess?.();
+        handleOpenChange(false);
+        router.invalidate();
+        setIsExecuting(false);
+        return "Saved successfully";
+      },
+      error: (err) => {
+        setIsExecuting(false);
+        return err.message || "An error occurred";
+      },
+      position: "top-center",
+    });
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={handleOpenChangeWrapper}>
+      <SheetContent
+        className={cn(
+          "bg-transparent border-l-0 p-2 shadow-none",
+          "sm:max-w-4xl",
+        )}
+      >
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              className="shadow-sm/20 border flex flex-col overflow-hidden bg-component h-full dark:shadow-elevation-modal rounded-lg"
+              initial={{ opacity: 0, x: 100 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 100 }}
+              transition={{ type: "keyframes" }}
+            >
+              <DialogHeaderActions
+                onClose={() => handleOpenChangeWrapper(false)}
+                title={title || "Edit"}
+              />
+              <form
+                action={handleSubmit}
+                className={cn(
+                  "flex flex-col flex-1 min-h-0 relative z-20",
+                  "dark:shadow-elevation-modal dark:border-border/30 dark:bg-component",
+                )}
+              >
+                {fields && fields.length > 0 ? (
+                  <>
+                    <ScrollArea
+                      className={cn(
+                        "w-full border-b flex-1 min-h-0 relative z-20 bg-component border-ring/20",
+                        "dark:shadow-elevation-modal dark:border-border/30",
+                      )}
+                    >
+                      <ScrollBar />
+                      <div className="p-5 pb-10 max-w-full relative z-50">
+                        <FieldsRenderer
+                          fields={fields}
+                          onChange={(name, value) => {
+                            if (typeof value === "string") {
+                              updateFieldValue(name, value);
+                            }
+                          }}
+                        />
+                      </div>
+                    </ScrollArea>
+                    <DialogFooterActions
+                      isLoading={isExecuting}
+                      isDisabled={!isDirty}
+                      onCancel={() => handleOpenChangeWrapper(false)}
+                      submitLabel="Save"
+                      loadingLabel="Saving..."
+                    />
+                  </>
+                ) : (
+                  <div className="text-center h-full flex items-center justify-center text-muted-foreground">
+                    <p>No fields</p>
+                  </div>
+                )}
+              </form>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </SheetContent>
+    </Sheet>
+  );
+};
