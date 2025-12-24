@@ -173,7 +173,7 @@ export const EditDialog = () => {
       <SheetContent
         className={cn(
           "bg-transparent border-l-0 p-2 shadow-none",
-          "sm:max-w-4xl",
+          "sm:max-w-4xl max-sm:w-full",
         )}
         onOpenAutoFocus={(e) => {
           e.preventDefault();

@@ -34,7 +34,7 @@ export const DialogHeaderActions = ({
         className,
       )}
     >
-      <DialogTitle className="flex justify-center gap-2 text-sm text-muted-foreground">
+      <DialogTitle className="flex whitespace-nowrap justify-center gap-2 text-sm text-muted-foreground">
         {title}
       </DialogTitle>
 
