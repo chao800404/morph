@@ -1,4 +1,4 @@
-import { getConfig } from "@/cms.config";
+import { getConfig } from "@/server/get-config";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { z } from "zod";
 import { LoginForm } from "./-components/login-form";

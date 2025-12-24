@@ -9,9 +9,10 @@ import { cn } from "@/lib/utils";
 import { getSession } from "@/server/auth/getSession";
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 
-import { getConfig } from "@/cms.config";
 import { NotFound } from "@/components/not-found/not-found";
+import { getConfig } from "@/server/get-config";
 import { EditDialog } from "./dashboard/-features/global-edit/edit-dialog";
+import { InfoAlert } from "./dashboard/-features/global-info/info-alert";
 
 export const Route = createFileRoute("/_backend/dashboard")({
   beforeLoad: async ({ location }) => {
@@ -87,9 +88,9 @@ function RouteComponent() {
               )}
             >
               <EditDialog />
-              {/* <CreateDialog />
+              {/* <CreateDialog /> */}
               <InfoAlert />
-              <AssetsDialogs /> */}
+              {/* <AssetsDialogs /> */}
               <Outlet />
               <Toaster />
             </div>

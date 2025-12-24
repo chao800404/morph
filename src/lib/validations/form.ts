@@ -87,6 +87,10 @@ const baseFormFieldSchema = z.object({
   name: fieldNameSchema,
   type: z.enum(["textarea", "phone"]),
   value: fieldValueSchema,
+  label: z.string().optional(),
+  required: z.boolean().optional(),
+  placeholder: z.string().optional(),
+  description: z.string().optional(),
   defaultCountry: z.string().optional(),
 });
 
@@ -95,6 +99,10 @@ const inputFormFieldSchema = z.object({
   name: fieldNameSchema,
   type: z.literal("input"),
   value: fieldValueSchema,
+  label: z.string().optional(),
+  required: z.boolean().optional(),
+  placeholder: z.string().optional(),
+  description: z.string().optional(),
   inputType: z.string().optional(),
 });
 
@@ -104,6 +112,10 @@ const selectFormFieldSchema = z
     name: fieldNameSchema,
     type: z.literal("select"),
     value: fieldValueSchema,
+    label: z.string().optional(),
+    required: z.boolean().optional(),
+    placeholder: z.string().optional(),
+    description: z.string().optional(),
     options: z
       .array(selectOptionSchema)
       .min(1, "Select field must have at least one option")
@@ -127,8 +139,11 @@ const folderSelectFormFieldSchema = z.object({
   name: fieldNameSchema,
   type: z.literal("folder-select"),
   value: fieldValueSchema,
+  label: z.string().optional(),
+  required: z.boolean().optional(),
   placeholder: z.string().optional(),
   excludedIds: z.array(z.string()).optional(),
+  description: z.string().optional(),
 });
 
 // Hidden field schema (for passing data to server actions)
@@ -139,31 +154,47 @@ const hiddenFormFieldSchema = z.object({
 });
 
 // Union schema for FormField
+// Union schema for FormField
 export const formFieldSchema: z.ZodType<
   | {
       name: string;
       type: "input";
       value: string;
+      label?: string;
+      required?: boolean;
+      placeholder?: string;
+      description?: string;
       inputType?: string;
     }
   | {
       name: string;
       type: "textarea" | "phone";
       value: string;
+      label?: string;
+      required?: boolean;
+      placeholder?: string;
+      description?: string;
       defaultCountry?: string;
     }
   | {
       name: string;
       type: "select";
       value: string;
+      label?: string;
+      required?: boolean;
+      placeholder?: string;
+      description?: string;
       options: Array<{ label: string; value: string }>;
     }
   | {
       name: string;
       type: "folder-select";
       value: string;
+      label?: string;
+      required?: boolean;
       placeholder?: string;
       excludedIds?: string[];
+      description?: string;
     }
   | { name: string; type: "hidden"; value: string }
 > = z.discriminatedUnion("type", [

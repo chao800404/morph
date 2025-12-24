@@ -1,3 +1,4 @@
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { z } from "zod";
 import { zfd } from "zod-form-data";
 import {
@@ -92,6 +93,26 @@ export const adminInfoUpdateFormSchema = zfd.formData({
   name: zfd.text(safeNameSchema),
 });
 
+/**
+ * User profile update validation schema
+ */
+export const profileSchema = zfd.formData({
+  name: zfd.text(safeNameSchema),
+  language: zfd.text().optional(),
+  phone: zfd.text(z.string().optional()).transform((val, ctx) => {
+    if (!val || val.length === 0) return null;
+    const phoneNumber = parsePhoneNumberFromString(val);
+    if (!phoneNumber?.isValid()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid phone number",
+      });
+      return z.NEVER;
+    }
+    return phoneNumber.formatInternational();
+  }),
+});
+
 // Create first admin validation
 export const createFirstAdminSchema = zfd
   .formData({
@@ -134,3 +155,4 @@ export type ResetPasswordClientInput = z.infer<
   typeof resetPasswordClientSchema
 >;
 export type CreateFirstAdminInput = z.infer<typeof createFirstAdminSchema>;
+export type ProfileInput = z.infer<typeof profileSchema>;

@@ -1,18 +1,13 @@
 import { Account, Contents, General, Marketing } from "./collections";
-import { createCMSConfig } from "./lib/config/create-config";
-
 import { localization } from "./lib/config/localization";
-import { resendAdapter } from "./lib/email/adapters";
 
 /**
- * CMS Configuration
+ * CMS Configuration Base Data
  *
- * Uses factory pattern to create type-safe configuration.
- * Automatically splits into server and client parts.
+ * This file contains the pure configuration data for the CMS.
+ * Logic to access this data across server/client is handled in @/server/get-config.
  */
-const isServer = typeof window === "undefined";
-
-const cmsConfigBase = {
+export const cmsConfigBase = {
   appName: "Morph",
   collections: {
     global: [Marketing, Contents],
@@ -48,33 +43,13 @@ const cmsConfigBase = {
     "https://192.168.31.105:3000",
     "https://*.cmsapp.org",
   ],
-};
-
-/**
- * CMS Configuration
- *
- * Uses factory pattern to create type-safe configuration.
- */
-const cmsConfig = createCMSConfig({
-  ...cmsConfigBase,
-  // Only inject sensitive data on the server
-  database: isServer
-    ? {
-        connectionString: process.env.DATABASE_URL,
-      }
-    : undefined,
-  email: isServer
-    ? resendAdapter({
-        apiKey: process.env.RESEND_API_KEY || "",
-        defaultFromAddress: "medusa@mail.cmsapp.org",
-        defaultFromName: "medusa",
-      })
-    : undefined,
-});
-
-/**
- * Get full config
- */
-export const getConfig = () => {
-  return cmsConfig;
+  // Raw configuration data
+  database: {
+    connectionString: process.env.DATABASE_URL,
+  },
+  email: {
+    apiKey: process.env.RESEND_API_KEY || "",
+    defaultFromAddress: "medusa@mail.cmsapp.org",
+    defaultFromName: "medusa",
+  },
 };

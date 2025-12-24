@@ -83,8 +83,6 @@ export const EditCard = ({
 
     setOpen(true);
 
-    console.log(formFields);
-
     // Set up the edit dialog
     setEditData({
       title: `Edit ${title}`,

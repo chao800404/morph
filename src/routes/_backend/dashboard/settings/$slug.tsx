@@ -1,5 +1,5 @@
-import { getConfig } from "@/cms.config";
 import { NotFound } from "@/components/not-found/not-found";
+import { getConfig } from "@/server/get-config";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
 

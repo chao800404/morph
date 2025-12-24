@@ -8,7 +8,7 @@ import { ProfileSessionsCard } from "./_components/profile-sessions-card";
 const routeApi = getRouteApi("/_backend/dashboard/settings/$slug");
 
 const Profile = () => {
-  const { session } = routeApi.useRouteContext();
+  const { session, publicURL } = routeApi.useRouteContext();
   const { data: sessionData } = useSuspenseQuery(sessionQueries.list());
 
   if (!session) return null;
@@ -28,6 +28,7 @@ const Profile = () => {
         session={session}
       />
       <ProfileSessionsCard
+        publicURL={publicURL}
         slug="profile-sessions"
         label="Profile Sessions"
         description="Manage your profile sessions"

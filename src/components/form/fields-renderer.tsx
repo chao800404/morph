@@ -101,13 +101,15 @@ export const FieldsRenderer = ({
               <PhoneInput
                 id={id}
                 name={field.name}
-                defaultValue={field.value}
                 defaultCountry={
-                  field.type === "phone"
+                  field.type === "phone" && !field.value
                     ? (field.defaultCountry as any)
                     : undefined
                 }
-                onChange={(value) => onChange?.(field.name, value)}
+                value={field.value?.replaceAll(" ", "")}
+                onChange={(value) => {
+                  onChange?.(field.name, value);
+                }}
                 placeholder={`Enter ${field.name.toLowerCase()}...`}
                 ref={isFirstField ? (firstFieldRef as any) : undefined}
               />

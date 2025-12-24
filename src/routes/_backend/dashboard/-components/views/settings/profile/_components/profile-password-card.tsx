@@ -18,7 +18,7 @@ export const ProfilePasswordCard = ({
           <Button
             className="max-sm:w-full"
             variant="formDark"
-            size="sm"
+            size="xs"
             onClick={() => navigate({ to: "/reset-password" })}
           >
             Reset

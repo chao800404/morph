@@ -1,17 +1,19 @@
 import { ActionState } from "@/components/dialog/dialog-create-wrapper";
+import { profileSchema } from "@/lib/validations/auth";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
-import { zfd } from "zod-form-data";
 import { authMiddleware } from "../middleware/auth.middleware";
 
-const profileSchema = zfd.formData({
-  name: zfd.text(),
-  language: zfd.text().optional(),
-  phone: zfd.text().optional(),
-});
-
 export const updateProfile = createServerFn({ method: "POST" })
-  .inputValidator(profileSchema)
+  .inputValidator((data: unknown) => {
+    const result = profileSchema.safeParse(data);
+
+    if (!result.success) {
+      const firstIssue = result.error.issues[0];
+      throw new Error(firstIssue.message);
+    }
+    return result.data;
+  })
   .middleware([authMiddleware])
   .handler(async ({ data, context }) => {
     const request = getRequest();
@@ -24,7 +26,7 @@ export const updateProfile = createServerFn({ method: "POST" })
         body: {
           name: data.name,
           language: data.language,
-          phoneNumber: data.phone,
+          phoneNumber: data.phone || null,
         } as any,
       });
 

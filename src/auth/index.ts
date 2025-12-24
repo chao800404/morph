@@ -1,5 +1,5 @@
 import { ac, guest, user } from "@/auth/permissions";
-import { getConfig } from "@/cms.config";
+import { getConfig } from "@/server/get-config";
 import type {
   D1Database,
   IncomingRequestCfProperties,

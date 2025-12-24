@@ -1,5 +1,7 @@
 "use client";
 
+import authClient from "@/auth/authClient";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -11,7 +13,10 @@ import {
 import { getDeviceIcon } from "@/lib/config/agent-map";
 import { paginate } from "@/lib/config/pagination";
 import { cn, formatLastActive, simplifyUserAgent } from "@/lib/utils";
+import { sessionQueries } from "@/routes/_backend/dashboard/-queries/auth.queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { CardPagination } from "../../../../card-pagination/card-pagination";
 import { CardWrapper } from "../../../../card-wrapper";
 import { ProfileCardComponentProps } from "../_config/profile-card.types";
@@ -22,6 +27,7 @@ const ITEMS_PER_PAGE = 10;
 interface ProfileSessionsCardProps extends ProfileCardComponentProps {
   sessions: any[];
   currentSessionId: string | null;
+  publicURL: string;
 }
 
 export const ProfileSessionsCard = ({
@@ -30,8 +36,10 @@ export const ProfileSessionsCard = ({
   description,
   sessions,
   currentSessionId,
+  publicURL,
 }: ProfileSessionsCardProps) => {
   const [page, setPage] = useState(1);
+  const queryClient = useQueryClient();
 
   const paginationData = useMemo(
     () => paginate(sessions, page, ITEMS_PER_PAGE),
@@ -66,6 +74,17 @@ export const ProfileSessionsCard = ({
     });
   };
 
+  const handleRemoveOtherSessions = async () => {
+    toast.promise(authClient(publicURL).revokeOtherSessions(), {
+      loading: "Removing other sessions...",
+      success: () => {
+        queryClient.invalidateQueries(sessionQueries.list());
+        return "Other sessions removed successfully!";
+      },
+      error: "Failed to remove other sessions. Please try again.",
+    });
+  };
+
   return (
     <div id={slug}>
       <CardWrapper
@@ -75,6 +94,15 @@ export const ProfileSessionsCard = ({
           contentWrapper: "px-0 overflow-x-auto",
           headerWrapper: "max-sm:flex-col max-sm:gap-4",
         }}
+        headerButton={
+          <Button
+            variant="cardHeader"
+            size="xs"
+            onClick={handleRemoveOtherSessions}
+          >
+            Remove Other Sessions
+          </Button>
+        }
       >
         <Table>
           <TableHeader>

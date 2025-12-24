@@ -54,6 +54,7 @@ export const EditDialog = () => {
 
   // Check if form is dirty
   const isDirty = JSON.stringify(fields) !== JSON.stringify(initialFields);
+  console.log(fields);
 
   const handleOpenChangeWrapper = (newOpen: boolean) => {
     if (!newOpen && isDirty) {
@@ -76,37 +77,78 @@ export const EditDialog = () => {
 
   const [isExecuting, setIsExecuting] = useState(false);
 
-  const handleSubmit = async (formData: FormData) => {
+  const handleSubmit = async (_: FormData) => {
     if (!action) return;
 
     setIsExecuting(true);
 
+    // Create a new FormData object from the current fields state
+    // This ensures we use the values from controlled components (like phone input)
+    // rather than the raw form data which might be incorrect or unformatted
+    const submitFormData = new FormData();
+    fields?.forEach((field) => {
+      if (field.value !== undefined && field.value !== null) {
+        submitFormData.append(field.name, String(field.value));
+      }
+    });
+
     const promise = (async () => {
-      const result = await action(formData);
+      try {
+        const result = await action(submitFormData);
 
-      if (result.serverError) {
-        throw new Error(result.serverError);
+        if (result.serverError) {
+          throw new Error(result.serverError);
+        }
+
+        if (result.validationErrors) {
+          const firstErrorKey = Object.keys(result.validationErrors)[0];
+          const firstErrorMessage = result.validationErrors[firstErrorKey];
+          let message = "Validation error";
+
+          if (typeof firstErrorMessage === "string") {
+            message = firstErrorMessage;
+          } else if (Array.isArray(firstErrorMessage)) {
+            const firstItem = firstErrorMessage[0];
+            if (typeof firstItem === "string") {
+              message = firstItem;
+            } else if (
+              typeof firstItem === "object" &&
+              firstItem !== null &&
+              (firstItem as any).message
+            ) {
+              message = (firstItem as any).message;
+            }
+          } else if (
+            typeof firstErrorMessage === "object" &&
+            (firstErrorMessage as any)?._errors
+          ) {
+            message = (firstErrorMessage as any)._errors[0];
+          } else if (
+            typeof firstErrorMessage === "object" &&
+            firstErrorMessage !== null &&
+            (firstErrorMessage as any).message
+          ) {
+            message = (firstErrorMessage as any).message;
+          }
+
+          const error = new Error(message);
+          (error as any).data = result;
+          throw error;
+        }
+
+        return result.data;
+      } catch (err: any) {
+        // Handle TanStack Start validation error format
+        try {
+          const parsed = JSON.parse(err.message);
+          if (Array.isArray(parsed) && parsed[0]?.message) {
+            throw new Error(parsed[0].message);
+          }
+        } catch (e) {
+          // If parsing fails, just re-throw original error
+        }
+        throw err;
       }
-
-      if (result.validationErrors) {
-        const firstErrorKey = Object.keys(result.validationErrors)[0];
-        const firstErrorMessage = result.validationErrors[firstErrorKey];
-        let message = "Validation error";
-        if (typeof firstErrorMessage === "string") message = firstErrorMessage;
-        else if (Array.isArray(firstErrorMessage))
-          message = firstErrorMessage[0];
-        else if (
-          typeof firstErrorMessage === "object" &&
-          (firstErrorMessage as any)?._errors
-        )
-          message = (firstErrorMessage as any)._errors[0];
-
-        const error = new Error(message);
-        (error as any).data = result;
-        throw error;
-      }
-
-      return result.data;
     })();
 
     toast.promise(promise, {

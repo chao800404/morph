@@ -9,7 +9,7 @@ export const Route = createFileRoute("/_backend/_auth/reset-password/")({
   component: RouteComponent,
 });
 
-import { getConfig } from "@/cms.config";
+import { getConfig } from "@/server/get-config";
 
 function RouteComponent() {
   const { publicURL } = Route.useRouteContext();

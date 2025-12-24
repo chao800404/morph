@@ -1,4 +1,4 @@
-import { getConfig } from "@/cms.config";
+import { getConfig } from "@/server/get-config";
 import type { EmailAdapter, SendEmailParams, SendEmailResult } from "./types";
 
 /**
