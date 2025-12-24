@@ -21,13 +21,20 @@ export const ProfileInformationCard = ({
     if (field.key === "language") {
       value = (session.user as any).language || "";
       displayValue = value ? getLanguageName(value) : "";
+    } else if (field.key === "phone") {
+      value = (session.user as any).phoneNumber || "";
     } else if (field.key in session.user) {
       const key = field.key as keyof typeof session.user;
       const fieldValue = session.user[key];
       value = typeof fieldValue === "string" ? fieldValue : "";
     }
 
+    const country = session.session.country.toUpperCase();
+
     const { ...fieldConfig } = field;
+    if (field.key === "phone" && country) {
+      (fieldConfig as any).defaultCountry = country;
+    }
 
     return {
       ...fieldConfig,
@@ -44,7 +51,6 @@ export const ProfileInformationCard = ({
       fields={fields}
       onSave={async (formData) => {
         const result = await updateProfile({ data: formData });
-        console.log(result);
         return result as any;
       }}
     />

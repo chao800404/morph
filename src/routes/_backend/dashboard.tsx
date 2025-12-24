@@ -10,6 +10,7 @@ import { getSession } from "@/server/auth/getSession";
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 
 import { getConfig } from "@/cms.config";
+import { NotFound } from "@/components/not-found/not-found";
 import { EditDialog } from "./dashboard/-features/global-edit/edit-dialog";
 
 export const Route = createFileRoute("/_backend/dashboard")({
@@ -22,6 +23,7 @@ export const Route = createFileRoute("/_backend/dashboard")({
     return { session, location };
   },
   component: RouteComponent,
+  notFoundComponent: () => <NotFound />,
 });
 
 function RouteComponent() {

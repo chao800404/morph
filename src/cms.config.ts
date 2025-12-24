@@ -10,11 +10,10 @@ import { resendAdapter } from "./lib/email/adapters";
  * Uses factory pattern to create type-safe configuration.
  * Automatically splits into server and client parts.
  */
-const cmsConfig = createCMSConfig({
+const isServer = typeof window === "undefined";
+
+const cmsConfigBase = {
   appName: "Morph",
-  database: {
-    connectionString: process.env.DATABASE_URL,
-  },
   collections: {
     global: [Marketing, Contents],
     settings: [General, Account],
@@ -44,20 +43,37 @@ const cmsConfig = createCMSConfig({
       promptBeforeIdle: 5,
     },
   },
-  email: resendAdapter({
-    apiKey: process.env.RESEND_API_KEY || "",
-    defaultFromAddress: "medusa@mail.cmsapp.org",
-    defaultFromName: "medusa",
-  }),
   trustedOrigins: [
     "http://192.168.31.105:3000",
     "https://192.168.31.105:3000",
     "https://*.cmsapp.org",
   ],
+};
+
+/**
+ * CMS Configuration
+ *
+ * Uses factory pattern to create type-safe configuration.
+ */
+const cmsConfig = createCMSConfig({
+  ...cmsConfigBase,
+  // Only inject sensitive data on the server
+  database: isServer
+    ? {
+        connectionString: process.env.DATABASE_URL,
+      }
+    : undefined,
+  email: isServer
+    ? resendAdapter({
+        apiKey: process.env.RESEND_API_KEY || "",
+        defaultFromAddress: "medusa@mail.cmsapp.org",
+        defaultFromName: "medusa",
+      })
+    : undefined,
 });
 
 /**
- * Get full config (server-only)
+ * Get full config
  */
 export const getConfig = () => {
   return cmsConfig;

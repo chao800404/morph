@@ -38,7 +38,7 @@ export interface CollectionGroup {
 
 export interface CMSConfigInput {
   appName: string;
-  database: {
+  database?: {
     connectionString: string | undefined;
   };
   collections: {
@@ -60,7 +60,7 @@ export interface CMSConfigInput {
       promptBeforeIdle: number;
     };
   };
-  email: any;
+  email?: any;
   trustedOrigins: string[];
 }
 
@@ -131,25 +131,14 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
   return {
     /**
      * Full configuration (server-only)
-     * Use this in server components and server actions
+     * CAUTION: This includes sensitive information.
      */
     server: config as Readonly<T>,
 
     /**
      * Client-safe configuration
-     * Use this in client components
      */
     client: clientSafeConfig as Readonly<ClientSafeConfig>,
-
-    /**
-     * Get full config (server-only)
-     */
-    getServerConfig: () => config as Readonly<T>,
-
-    /**
-     * Get client-safe config
-     */
-    getClientConfig: () => clientSafeConfig as Readonly<ClientSafeConfig>,
   } as const;
 }
 

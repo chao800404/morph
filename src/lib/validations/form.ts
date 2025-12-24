@@ -82,11 +82,20 @@ export const validateReactNode = (node: unknown): boolean => {
   return false;
 };
 
-// Base FormField schema for input and textarea
+// Base FormField schema for textarea and phone
 const baseFormFieldSchema = z.object({
   name: fieldNameSchema,
-  type: z.enum(["input", "textarea"]),
+  type: z.enum(["textarea", "phone"]),
   value: fieldValueSchema,
+  defaultCountry: z.string().optional(),
+});
+
+// Input FormField schema
+const inputFormFieldSchema = z.object({
+  name: fieldNameSchema,
+  type: z.literal("input"),
+  value: fieldValueSchema,
+  inputType: z.string().optional(),
 });
 
 // Select FormField schema
@@ -131,7 +140,18 @@ const hiddenFormFieldSchema = z.object({
 
 // Union schema for FormField
 export const formFieldSchema: z.ZodType<
-  | { name: string; type: "input" | "textarea"; value: string }
+  | {
+      name: string;
+      type: "input";
+      value: string;
+      inputType?: string;
+    }
+  | {
+      name: string;
+      type: "textarea" | "phone";
+      value: string;
+      defaultCountry?: string;
+    }
   | {
       name: string;
       type: "select";
@@ -147,6 +167,7 @@ export const formFieldSchema: z.ZodType<
     }
   | { name: string; type: "hidden"; value: string }
 > = z.discriminatedUnion("type", [
+  inputFormFieldSchema,
   baseFormFieldSchema,
   selectFormFieldSchema,
   folderSelectFormFieldSchema,

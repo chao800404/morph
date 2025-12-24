@@ -4,6 +4,7 @@ import { ThemeProvider } from "tanstack-theme-kit";
 
 export const Route = createFileRoute("/_backend")({
   component: RouteComponent,
+  notFoundComponent: () => <div>Not found</div>,
 });
 
 function RouteComponent() {

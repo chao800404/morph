@@ -14,6 +14,7 @@ import { AlertCircle } from "lucide-react";
 import { useState } from "react";
 import { z } from "zod";
 import { FieldInfo } from "./fieldInfo";
+import { PasswordInput } from "./password-input";
 import { SubmitButton } from "./submit-button";
 
 interface SignupFormProps {}
@@ -169,15 +170,15 @@ export function SignupForm({}: SignupFormProps = {}) {
             const hasError = field.state.meta.errors.length > 0;
             return (
               <div className="space-y-1">
-                <Input
+                <PasswordInput
                   disabled={pending}
                   name={field.name}
                   id={field.name}
-                  type="password"
                   value={field.state.value}
                   onChange={(e) => field.handleChange(e.target.value)}
                   onBlur={field.handleBlur}
                   placeholder="Password"
+                  autoFocus={!field.state.value}
                   autoComplete="new-password"
                   aria-invalid={hasError}
                 />
@@ -207,11 +208,10 @@ export function SignupForm({}: SignupFormProps = {}) {
             const hasError = field.state.meta.errors.length > 0;
             return (
               <div className="space-y-1">
-                <Input
+                <PasswordInput
                   disabled={pending}
                   name={field.name}
                   id={field.name}
-                  type="password"
                   value={field.state.value}
                   onChange={(e) => field.handleChange(e.target.value)}
                   onBlur={field.handleBlur}

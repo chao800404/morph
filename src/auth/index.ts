@@ -119,6 +119,14 @@ function createAuth(
               type: "string",
               required: false,
             },
+            phoneNumber: {
+              type: "string",
+              required: false,
+            },
+            metadata: {
+              type: "json",
+              required: false,
+            },
           },
         },
         rateLimit: {
@@ -146,10 +154,6 @@ function createAuth(
           }),
         },
         session: {
-          // cookieCache: {
-          //     enabled: true,
-          //     maxAge: 5 * 60, // Cache duration in seconds
-          // },
           additionalFields: {
             city: {
               type: "string",

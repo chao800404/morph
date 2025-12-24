@@ -7,6 +7,7 @@ import { authMiddleware } from "../middleware/auth.middleware";
 const profileSchema = zfd.formData({
   name: zfd.text(),
   language: zfd.text().optional(),
+  phone: zfd.text().optional(),
 });
 
 export const updateProfile = createServerFn({ method: "POST" })
@@ -23,6 +24,7 @@ export const updateProfile = createServerFn({ method: "POST" })
         body: {
           name: data.name,
           language: data.language,
+          phoneNumber: data.phone,
         } as any,
       });
 

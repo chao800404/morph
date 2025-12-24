@@ -10,22 +10,31 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { FormField } from "@/lib/validations/form";
+import { RefObject } from "react";
+import { PhoneInput } from "../ui/phone-input";
 
 interface FieldsRendererProps {
   fields: FormField[];
   onChange?: (name: string, value: string) => void;
   className?: string;
+  firstFieldRef?: RefObject<
+    HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement | null
+  >;
 }
 
 export const FieldsRenderer = ({
   fields,
   onChange,
   className,
+  firstFieldRef,
 }: FieldsRendererProps) => {
+  const firstVisibleFieldIndex = fields.findIndex((f) => f.type !== "hidden");
+
   return (
     <div className={cn("grid gap-4", className)}>
-      {fields.map((field) => {
+      {fields.map((field, index) => {
         const id = `field-${field.name}`;
+        const isFirstField = index === firstVisibleFieldIndex;
 
         return (
           <div key={field.name} className="space-y-2">
@@ -34,17 +43,21 @@ export const FieldsRenderer = ({
                 {field.name}
               </Label>
             )}
-
             {field.type === "input" && (
               <Input
                 id={id}
                 name={field.name}
+                type={field.inputType as any}
                 defaultValue={field.value}
                 onChange={(e) => onChange?.(field.name, e.target.value)}
                 placeholder={`Enter ${field.name.toLowerCase()}...`}
+                ref={
+                  isFirstField
+                    ? (firstFieldRef as RefObject<HTMLInputElement>)
+                    : undefined
+                }
               />
             )}
-
             {field.type === "textarea" && (
               <Textarea
                 id={id}
@@ -53,9 +66,13 @@ export const FieldsRenderer = ({
                 onChange={(e) => onChange?.(field.name, e.target.value)}
                 placeholder={`Enter ${field.name.toLowerCase()}...`}
                 className="min-h-[100px]"
+                ref={
+                  isFirstField
+                    ? (firstFieldRef as RefObject<HTMLTextAreaElement>)
+                    : undefined
+                }
               />
             )}
-
             {field.type === "select" && (
               <Select
                 name={field.name}
@@ -76,11 +93,25 @@ export const FieldsRenderer = ({
                 </SelectContent>
               </Select>
             )}
-
             {field.type === "hidden" && (
               <input type="hidden" name={field.name} value={field.value} />
             )}
 
+            {field.type === "phone" && (
+              <PhoneInput
+                id={id}
+                name={field.name}
+                defaultValue={field.value}
+                defaultCountry={
+                  field.type === "phone"
+                    ? (field.defaultCountry as any)
+                    : undefined
+                }
+                onChange={(value) => onChange?.(field.name, value)}
+                placeholder={`Enter ${field.name.toLowerCase()}...`}
+                ref={isFirstField ? (firstFieldRef as any) : undefined}
+              />
+            )}
             {/* folder-select fields can be expanded based on your specific implementation */}
             {field.type === "folder-select" && (
               <div className="flex items-center gap-2 p-3 text-xs border rounded-md bg-muted/50 italic text-muted-foreground">

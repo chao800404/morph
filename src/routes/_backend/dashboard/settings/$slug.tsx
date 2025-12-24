@@ -1,4 +1,5 @@
 import { getConfig } from "@/cms.config";
+import { NotFound } from "@/components/not-found/not-found";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
 
@@ -36,24 +37,6 @@ function RouteComponent() {
     return collection?.component;
   }, [slug, config]);
 
-  if (!ViewComponent) {
-    return (
-      <div className="flex h-full items-center justify-center p-6 text-center">
-        <div className="space-y-2">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            View Not Found
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            The settings page{" "}
-            <code className="relative rounded bg-muted px-[0.3rem] py-[0.2rem] font-mono text-sm font-semibold">
-              "{slug}"
-            </code>{" "}
-            could not be found.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
+  if (!ViewComponent) return <NotFound />;
   return <ViewComponent />;
 }

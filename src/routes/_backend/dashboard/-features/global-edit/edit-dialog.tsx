@@ -1,9 +1,14 @@
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useRouter } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { useInfoStore } from "../global-info/use-info-store";
@@ -11,17 +16,17 @@ import { useEditStore } from "./use-edit-store";
 
 import { DialogFooterActions } from "@/components/dialog/dialog-footer-actions";
 import { DialogHeaderActions } from "@/components/dialog/dialog-header-actions";
-// TODO: FieldsRenderer is currently missing from the workspace.
-// You should ensure it's moved to @/components/form/fields-renderer.tsx
 import { FieldsRenderer } from "@/components/form/fields-renderer";
 
 export const EditDialog = () => {
+  const firstFieldRef = useRef<
+    HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement
+  >(null);
   const router = useRouter();
   const {
     open,
     handleOpenChange,
     title,
-    description,
     action,
     fields,
     initialFields,
@@ -32,7 +37,6 @@ export const EditDialog = () => {
       open: state.open,
       handleOpenChange: state.handleOpenChange,
       title: state.title,
-      description: state.description,
       fields: state.fields,
       initialFields: state.initialFields,
       updateFieldValue: state.updateFieldValue,
@@ -129,7 +133,17 @@ export const EditDialog = () => {
           "bg-transparent border-l-0 p-2 shadow-none",
           "sm:max-w-4xl",
         )}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          setTimeout(() => {
+            firstFieldRef.current?.focus();
+          }, 0);
+        }}
       >
+        <SheetTitle className="sr-only">{title || "Edit"}</SheetTitle>
+        <SheetDescription className="sr-only">
+          Edit information for {title}
+        </SheetDescription>
         <AnimatePresence>
           {open && (
             <motion.div
@@ -162,6 +176,7 @@ export const EditDialog = () => {
                       <div className="p-5 pb-10 max-w-full relative z-50">
                         <FieldsRenderer
                           fields={fields}
+                          firstFieldRef={firstFieldRef}
                           onChange={(name, value) => {
                             if (typeof value === "string") {
                               updateFieldValue(name, value);

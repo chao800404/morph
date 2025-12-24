@@ -13,6 +13,11 @@ export const PROFILE_INFORMATION_FIELDS = [
     disabled: true,
   },
   {
+    key: "phone",
+    label: "Phone",
+    type: "phone",
+  },
+  {
     key: "language",
     label: "Language",
     type: "select",

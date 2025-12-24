@@ -18,10 +18,19 @@ export interface EditCardField {
   label: string;
   value?: string;
   displayValue?: string;
-  type?: "text" | "email" | "number" | "tel" | "select";
+  type?:
+    | "text"
+    | "email"
+    | "number"
+    | "tel"
+    | "select"
+    | "phone"
+    | "textarea"
+    | "hidden";
   disabled?: boolean;
   options?: SelectOption[];
   validate?: () => import("zod").ZodTypeAny;
+  defaultCountry?: string;
 }
 
 export interface EditCardState {
@@ -53,17 +62,28 @@ export const EditCard = ({
     // Convert EditCardField to FormField format
     const formFields: FormField[] = fields
       .filter((field) => !field.disabled) // Only include editable fields
-      .map((field) => ({
-        name: field.key,
-        label: field.label,
-        value: field.value || "",
-        type: field.type === "select" ? "select" : "input",
-        inputType: field.type === "select" ? undefined : field.type,
-        options: field.options || [],
-        required: true,
-      }));
+      .map((field) => {
+        let fieldType: FormField["type"] = "input";
+        if (field.type === "select") fieldType = "select";
+        else if (field.type === "phone") fieldType = "phone";
+        else if (field.type === "textarea") fieldType = "textarea";
+        else if (field.type === "hidden") fieldType = "hidden";
+
+        return {
+          name: field.key,
+          label: field.label,
+          value: field.value || "",
+          type: fieldType,
+          inputType: fieldType === "input" ? (field.type as any) : undefined,
+          options: field.options || [],
+          defaultCountry: field.defaultCountry,
+          required: true,
+        } as FormField;
+      });
 
     setOpen(true);
+
+    console.log(formFields);
 
     // Set up the edit dialog
     setEditData({
@@ -97,7 +117,7 @@ export const EditCard = ({
           <Label htmlFor={field.key} className="text-sm text-muted-foreground">
             {field.label}
           </Label>
-          <p className="text-sm">{field.displayValue || field.value}</p>
+          <p className="text-sm">{field.displayValue || field.value || "-"}</p>
         </div>
       ))}
     </CardWrapper>

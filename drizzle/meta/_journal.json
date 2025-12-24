@@ -50,6 +50,13 @@
       "when": 1766058338564,
       "tag": "0006_burly_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1766502905243,
+      "tag": "0007_concerned_vapor",
+      "breakpoints": true
     }
   ]
 }

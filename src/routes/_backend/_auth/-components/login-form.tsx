@@ -9,6 +9,7 @@ import { Link } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { useState } from "react";
 import { FieldInfo } from "./fieldInfo";
+import { PasswordInput } from "./password-input";
 import { SubmitButton } from "./submit-button";
 
 interface LoginFormProps {
@@ -133,16 +134,15 @@ export function LoginForm({
             const hasError = field.state.meta.errors.length > 0;
             return (
               <div className="space-y-1">
-                <Input
+                <PasswordInput
                   disabled={pending}
                   name={field.name}
                   id={field.name}
-                  type="password"
                   value={field.state.value}
-                  autoFocus={!!defaultEmail}
                   onChange={(e) => field.handleChange(e.target.value)}
                   onBlur={field.handleBlur}
                   placeholder="Password"
+                  autoFocus={!field.state.value}
                   autoComplete="current-password"
                   aria-invalid={hasError}
                 />
