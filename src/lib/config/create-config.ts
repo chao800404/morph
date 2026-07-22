@@ -27,6 +27,7 @@ export interface CollectionItem {
   loadData?: (context: {
     queryClient: any;
     params: any;
+    search: any;
   }) => Promise<void> | void;
 }
 
@@ -76,6 +77,7 @@ export interface ClientSafeConfig {
   };
   upload: {
     maxFileSize: number;
+    minFiles: number;
     maxFiles: number;
     allowedTypes: string[];
     allowedExtensions: string[];
@@ -117,6 +119,7 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
     collections: config.collections,
     upload: {
       maxFileSize: config.upload.maxFileSize,
+      minFiles: config.upload.minFiles,
       maxFiles: config.upload.maxFiles,
       allowedTypes: config.upload.allowedTypes,
       allowedExtensions: config.upload.allowedExtensions,

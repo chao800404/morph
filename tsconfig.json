@@ -1,5 +1,9 @@
 {
-  "include": ["**/*.ts", "**/*.tsx"],
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "src/routes/_backend/dashboard/-views/global/contents/assets/_component/folders-contenttsx"
+  ],
   "compilerOptions": {
     "target": "ES2022",
     "jsx": "react-jsx",
@@ -23,7 +27,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@/db": ["./src/db"]
+      "@queries/*": ["./src/routes/_backend/dashboard/-queries/*"],
+      "@views/*": ["./src/routes/_backend/dashboard/-views/*"]
     }
   }
 }

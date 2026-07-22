@@ -11,8 +11,23 @@ import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 
 import { NotFound } from "@/components/not-found/not-found";
 import { getConfig } from "@/server/get-config";
-import { EditDialog } from "./dashboard/-features/global-edit/edit-dialog";
-import { InfoAlert } from "./dashboard/-features/global-info/info-alert";
+import { lazy, Suspense } from "react";
+
+const CreateDialog = lazy(() =>
+  import("./dashboard/-views/features/index").then((m) => ({
+    default: m.CreateDialog,
+  })),
+);
+const EditDialog = lazy(() =>
+  import("./dashboard/-views/features/index").then((m) => ({
+    default: m.EditDialog,
+  })),
+);
+const InfoAlert = lazy(() =>
+  import("./dashboard/-views/features/index").then((m) => ({
+    default: m.InfoAlert,
+  })),
+);
 
 export const Route = createFileRoute("/_backend/dashboard")({
   beforeLoad: async ({ location }) => {
@@ -87,9 +102,12 @@ function RouteComponent() {
                 "max-lg:h-full max-lg:max-h-full max-lg:overflow-y-visible max-lg:pb-6",
               )}
             >
-              <EditDialog />
-              {/* <CreateDialog /> */}
-              <InfoAlert />
+              <Suspense fallback={null}>
+                <EditDialog />
+                <CreateDialog />
+                <InfoAlert />
+              </Suspense>
+
               {/* <AssetsDialogs /> */}
               <Outlet />
               <Toaster />

@@ -21,6 +21,7 @@ export const authMiddleware = createMiddleware({ type: "function" }).server(
     return next({
       context: {
         session,
+        user: session.user,
         auth,
       },
     });

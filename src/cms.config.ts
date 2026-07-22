@@ -1,5 +1,10 @@
-import { Account, Contents, General, Marketing } from "./collections";
 import { localization } from "./lib/config/localization";
+import {
+  Account,
+  Contents,
+  General,
+  Marketing,
+} from "./routes/_backend/dashboard/-collections";
 
 /**
  * CMS Configuration Base Data

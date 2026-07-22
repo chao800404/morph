@@ -4,7 +4,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
 import type { FormField } from "@/lib/validations/form";
-import { useEditStore } from "../../-features/global-edit/use-edit-store";
+import { useEditStore } from "@views/features/global-edit/use-edit-store";
 import { CardWrapper } from "../card-wrapper";
 import { EditCardHeader } from "./edit-card-header";
 

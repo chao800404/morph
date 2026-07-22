@@ -8,14 +8,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import type { FieldConfig } from "@/components/upload/types";
 import { cn } from "@/lib/utils";
 import type { FormField } from "@/lib/validations/form";
 import { RefObject } from "react";
+import { FolderSelectField } from "../folder-select/folder-select";
 import { PhoneInput } from "../ui/phone-input";
+import { UploadField } from "../upload/upload";
 
 interface FieldsRendererProps {
-  fields: FormField[];
-  onChange?: (name: string, value: string) => void;
+  fields: (FormField | FieldConfig)[];
+  onChange?: (name: string, value: any) => void;
   className?: string;
   firstFieldRef?: RefObject<
     HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement | null
@@ -31,26 +34,43 @@ export const FieldsRenderer = ({
   const firstVisibleFieldIndex = fields.findIndex((f) => f.type !== "hidden");
 
   return (
-    <div className={cn("grid gap-4", className)}>
+    <div className={cn("grid grid-cols-2 gap-4", className)}>
       {fields.map((field, index) => {
         const id = `field-${field.name}`;
         const isFirstField = index === firstVisibleFieldIndex;
 
+        // Determine if it's FieldConfig or FormField
+        const isFieldConfig = !("value" in field) || "defaultValue" in field;
+        const fieldValue = isFieldConfig
+          ? (field as FieldConfig).defaultValue
+          : (field as FormField).value;
+
+        // Support colSpan from FieldConfig
+        const colSpan = (field as any).colSpan ?? 2;
+
         return (
-          <div key={field.name} className="space-y-2">
+          <div
+            key={field.name}
+            className={cn(
+              "space-y-2",
+              colSpan === 1 ? "col-span-1" : "col-span-2",
+            )}
+          >
             {field.type !== "hidden" && (
               <Label htmlFor={id} className="text-sm font-medium">
-                {field.name}
+                {field.label}
               </Label>
             )}
             {field.type === "input" && (
               <Input
                 id={id}
+                variant="card"
                 name={field.name}
-                type={field.inputType as any}
-                defaultValue={field.value}
+                type={(field as any).inputType || "text"}
+                defaultValue={fieldValue}
                 onChange={(e) => onChange?.(field.name, e.target.value)}
-                placeholder={`Enter ${field.name.toLowerCase()}...`}
+                placeholder={field.placeholder || `Enter ${field.label}...`}
+                autoFocus={(field as any).autoFocus}
                 ref={
                   isFirstField
                     ? (firstFieldRef as RefObject<HTMLInputElement>)
@@ -61,11 +81,13 @@ export const FieldsRenderer = ({
             {field.type === "textarea" && (
               <Textarea
                 id={id}
+                variant="card"
                 name={field.name}
-                defaultValue={field.value}
+                defaultValue={fieldValue}
                 onChange={(e) => onChange?.(field.name, e.target.value)}
-                placeholder={`Enter ${field.name.toLowerCase()}...`}
+                placeholder={field.placeholder || `Enter ${field.label}...`}
                 className="min-h-[100px]"
+                rows={(field as any).rows || 3}
                 ref={
                   isFirstField
                     ? (firstFieldRef as RefObject<HTMLTextAreaElement>)
@@ -76,16 +98,16 @@ export const FieldsRenderer = ({
             {field.type === "select" && (
               <Select
                 name={field.name}
-                defaultValue={field.value}
+                defaultValue={fieldValue}
                 onValueChange={(value) => onChange?.(field.name, value)}
               >
                 <SelectTrigger id={id}>
                   <SelectValue
-                    placeholder={`Select ${field.name.toLowerCase()}`}
+                    placeholder={field.placeholder || `Select ${field.label}`}
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  {field.options.map((option) => (
+                  {(field as any).options?.map((option: any) => (
                     <SelectItem key={option.value} value={option.value}>
                       {option.label}
                     </SelectItem>
@@ -94,7 +116,7 @@ export const FieldsRenderer = ({
               </Select>
             )}
             {field.type === "hidden" && (
-              <input type="hidden" name={field.name} value={field.value} />
+              <input type="hidden" name={field.name} value={fieldValue} />
             )}
 
             {field.type === "phone" && (
@@ -102,23 +124,34 @@ export const FieldsRenderer = ({
                 id={id}
                 name={field.name}
                 defaultCountry={
-                  field.type === "phone" && !field.value
-                    ? (field.defaultCountry as any)
+                  field.type === "phone" && !fieldValue
+                    ? ((field as any).defaultCountry as any)
                     : undefined
                 }
-                value={field.value?.replaceAll(" ", "")}
+                value={fieldValue?.replaceAll(" ", "")}
                 onChange={(value) => {
                   onChange?.(field.name, value);
                 }}
-                placeholder={`Enter ${field.name.toLowerCase()}...`}
+                placeholder={field.placeholder || `Enter ${field.label}...`}
                 ref={isFirstField ? (firstFieldRef as any) : undefined}
               />
             )}
-            {/* folder-select fields can be expanded based on your specific implementation */}
+
             {field.type === "folder-select" && (
-              <div className="flex items-center gap-2 p-3 text-xs border rounded-md bg-muted/50 italic text-muted-foreground">
-                {field.type} component not yet fully implemented
-              </div>
+              <FolderSelectField
+                field={field as any}
+                fieldId={id}
+                initialValue={fieldValue || ""}
+                onChange={(value) => onChange?.(field.name, value)}
+              />
+            )}
+
+            {field.type === "upload" && (
+              <UploadField
+                field={field as any}
+                fieldId={id}
+                onChange={(files) => onChange?.(field.name, files)}
+              />
             )}
           </div>
         );
