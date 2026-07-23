@@ -135,6 +135,9 @@ export const AssetPreviewDialog = () => {
   useEffect(() => {
     if (!open) return;
 
+    let isThrottled = false;
+    let timer: NodeJS.Timeout | null = null;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "ArrowRight") {
         e.preventDefault();
@@ -145,8 +148,31 @@ export const AssetPreviewDialog = () => {
       }
     };
 
+    const handleWheel = (e: WheelEvent) => {
+      if (isThrottled) return;
+
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (Math.abs(delta) < 15) return;
+
+      isThrottled = true;
+      if (delta > 0) {
+        goToNext();
+      } else {
+        goToPrevious();
+      }
+
+      timer = setTimeout(() => {
+        isThrottled = false;
+      }, 250);
+    };
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("wheel", handleWheel, { passive: true });
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("wheel", handleWheel);
+      if (timer) clearTimeout(timer);
+    };
   }, [open, displayIndex, assets.length]);
 
   const handleEdit = () => {
@@ -419,6 +445,7 @@ export const AssetPreviewDialog = () => {
                       Navigation
                       <Kbd className="bg-white border dark:bg-sidebar">←</Kbd>
                       <Kbd className="bg-white border dark:bg-sidebar">→</Kbd>
+                      <span className="text-[10px] text-muted-foreground ml-0.5">/ Wheel</span>
                       <span className="px-1 opacity-30">|</span>
                     </div>
                   )}

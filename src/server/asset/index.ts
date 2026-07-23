@@ -6,5 +6,6 @@ export { moveItems } from "./move-items.serverFn";
 export { updateItems } from "./update-items.serverFn";
 
 // Specific Operations
+export { processImage } from "./process-image.serverFn";
 export { removeBackground } from "./remove-background.serverFn";
 export { searchAssets } from "./search-assets.serverFn";

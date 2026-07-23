@@ -43,6 +43,11 @@ const AssetPreviewDialog = lazy(() =>
     default: m.AssetPreviewDialog,
   })),
 );
+const AssetPostProcessDialog = lazy(() =>
+  import("./dashboard/-views/features/index").then((m) => ({
+    default: m.AssetPostProcessDialog,
+  })),
+);
 const AssetSelectFloat = lazy(() =>
   import("./dashboard/-views/features/index").then((m) => ({
     default: m.AssetSelectFloat,
@@ -129,6 +134,7 @@ function RouteComponent() {
                 <AssetEditDialog />
                 <AssetMoveDialog />
                 <AssetPreviewDialog />
+                <AssetPostProcessDialog />
                 <AssetSelectFloat />
               </Suspense>
 
