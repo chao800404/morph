@@ -1,24 +1,21 @@
 "use client";
 
-import { AssetsSelectContent } from "@/app/(backend)/dashboard/_components/card/assets-card/client/assets-select-content.client";
+import { AssetsSelectContent } from "@/routes/_backend/dashboard/-components/assets-card/assets-select-content";
 import {
   generateEditFields,
   generateEditTitle,
-} from "@/app/(backend)/dashboard/_features/asset/edit/edit-fields-utils";
-import { useAssetEditStore } from "@/app/(backend)/dashboard/_features/asset/edit/use-asset-edit-store";
+} from "../edit/edit-fields-utils";
+import { useAssetEditStore } from "../edit/use-asset-edit-store";
 import {
   generateMoveDescription,
   generateMoveFields,
   generateMoveTitle,
-} from "@/app/(backend)/dashboard/_features/asset/move/move-fields-utils";
-import {
-  useAssetMoveStore,
-  type MoveItem,
-} from "@/app/(backend)/dashboard/_features/asset/move/use-asset-move-store";
+} from "../move/move-fields-utils";
+import { useAssetMoveStore, type MoveItem } from "../move/use-asset-move-store";
 import {
   useInfoStore,
   type ServerAction,
-} from "@/app/(backend)/dashboard/_features/global-info/use-info-store";
+} from "../../global-info/use-info-store";
 import { Button } from "@/components/ui/button";
 import { MoveFolderIcon } from "@/components/ui/icons/move-folder-icon";
 import { useMediaQuery } from "@/hooks/use-media-query";
@@ -31,7 +28,7 @@ import { Download, Edit, Trash2, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
-import { useAssetsStore } from "../../../_views/global/contents/assets/_stores/assets.store";
+import { useAssetsStore } from "../../../global/contents/assets/stores/assets.store";
 
 const AssetSelectFloat = () => {
   const isLargeScreen = useMediaQuery("(min-width: 1024px)");

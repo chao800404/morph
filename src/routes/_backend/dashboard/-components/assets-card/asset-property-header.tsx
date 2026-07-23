@@ -17,6 +17,7 @@ import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { moveItems } from "@/server/asset/move-items.serverFn";
 import { updateItems } from "@/server/asset/update-items.serverFn";
 // import { copyPath } from "@/lib/shared/copy-path";
+import { useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
@@ -48,7 +49,7 @@ export const AssetPropertyHeader = ({
   caption,
   tags,
 }: Props) => {
-  // ... existing hooks
+  const queryClient = useQueryClient();
 
   const { handleEditOpenChange, setAssetEditData } = useAssetEditStore(
     useShallow((state) => ({
@@ -84,6 +85,7 @@ export const AssetPropertyHeader = ({
     const result = await deleteItems({ data: formData });
     if (result.success) {
       clearAllSelectedItems();
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
       toast.success(result.message || `${type} deleted successfully`, {
         position: "top-center",
       });

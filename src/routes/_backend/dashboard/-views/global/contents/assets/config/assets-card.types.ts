@@ -12,6 +12,9 @@ export interface AssetFolder {
     description?: string | null;
     createdBy?: string;
     updatedBy?: string;
+    assetCount?: number;
+    folderCount?: number;
+    itemCount?: number;
 }
 
 export interface Asset {

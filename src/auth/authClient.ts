@@ -1,4 +1,3 @@
-import { cloudflareClient } from "better-auth-cloudflare/client";
 import {
   adminClient,
   anonymousClient,
@@ -7,17 +6,17 @@ import {
 } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import type { auth } from ".";
-import { ac, guest, user } from "./permissions";
+import { ac, administrator, guest, user } from "./permissions";
 
 const authClient = (baseURL: string) =>
   createAuthClient({
     baseURL,
     plugins: [
-      cloudflareClient(),
       anonymousClient(),
       adminClient({
         ac,
         roles: {
+          admin: administrator,
           user,
           guest,
         },

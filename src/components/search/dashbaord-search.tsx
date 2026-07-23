@@ -12,7 +12,7 @@ import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { SidebarMenuButton } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import { SearchIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const defaultItems = [
   {
@@ -64,18 +64,7 @@ const defaultItems = [
 ];
 
 export const DashboardSearch = () => {
-  const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const items = Array.from({ length: 100 }, (_, index) => ({
-    id: index,
-    name: `Item ${index + 1}`,
-  }));
-
-  const handleClear = () => {
-    inputRef.current?.focus();
-    setSearch("");
-  };
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {

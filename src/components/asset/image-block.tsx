@@ -1,7 +1,6 @@
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 import { XIcon } from "lucide-react";
-import Image from "next/image";
 import { MaximizeButton } from "../button/maximize-button";
 
 type Props = {
@@ -30,6 +29,13 @@ export const ImageUploadBlock = ({
     >
       {src && src.length > 0 && (
         <img src={src} alt={alt} className="size-full object-cover" />
+      )}
+
+      {(name || category) && (
+        <div className="absolute bottom-1 left-1 right-1 flex gap-2 rounded-md bg-card/70 p-2 text-xs">
+          <p className="truncate">{name}</p>
+          {category && <Kbd className="ml-auto">{category}</Kbd>}
+        </div>
       )}
 
       {onRemove && (
@@ -105,7 +111,7 @@ export const ImagePropertyBlock = ({
       style={{ background: "var(--gradient-checker-board)" }}
       className={cn("relative z-10 w-full h-full", className)}
     >
-      <Image className="object-contain" alt={alt} fill sizes="auto" src={src} />
+      <img className="size-full object-contain" alt={alt} src={src} />
       <div className="absolute h-[44px] bottom-0 right-0 pr-2 flex items-center">
         <MaximizeButton onMaximize={onMaximize} />
       </div>
@@ -129,7 +135,7 @@ export const ImageSmBlock = ({
         className,
       )}
     >
-      <Image fill className="object-cover" alt={alt} src={src} />
+      <img className="size-full object-cover" alt={alt} src={src} />
     </div>
   );
 };
@@ -153,14 +159,7 @@ export const ImagePreviewBlock = ({
       )}
     >
       <div className="relative w-full h-full">
-        <Image
-          src={src}
-          alt={alt}
-          fill
-          className="object-contain"
-          sizes="(max-width: 768px) 100vw, (max-width: 1200px) 80vw, 70vw"
-          priority
-        />
+        <img src={src} alt={alt} className="size-full object-contain" />
         <div className="absolute bottom-2 right-2 z-20">
           <MaximizeButton onMaximize={onMaximize} />
         </div>

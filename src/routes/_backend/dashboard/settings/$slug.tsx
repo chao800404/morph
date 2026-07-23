@@ -1,7 +1,7 @@
 import { NotFound } from "@/components/not-found/not-found";
 import { getConfig } from "@/server/get-config";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 
 export const Route = createFileRoute("/_backend/dashboard/settings/$slug")({
   beforeLoad: ({ params }) => {
@@ -18,7 +18,7 @@ export const Route = createFileRoute("/_backend/dashboard/settings/$slug")({
     const collection = settingsCollections.find((c) => c.slug === params.slug);
 
     if (collection?.loadData) {
-      await collection.loadData({ queryClient, params });
+      await collection.loadData({ queryClient, params, search: {} });
     }
   },
   component: RouteComponent,
@@ -38,5 +38,9 @@ function RouteComponent() {
   }, [slug, config]);
 
   if (!ViewComponent) return <NotFound />;
-  return <ViewComponent />;
+  return (
+    <Suspense fallback={null}>
+      <ViewComponent />
+    </Suspense>
+  );
 }

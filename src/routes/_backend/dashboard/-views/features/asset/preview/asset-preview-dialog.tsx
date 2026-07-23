@@ -1,17 +1,17 @@
 "use client";
 
-import { AssetBlockMap } from "@/app/(backend)/dashboard/_components/asset-preview/asset/asset-block-map";
-import { DialogHeaderActions } from "@/app/(backend)/dashboard/_components/dialog/dialog-header-actions";
+import { AssetBlockMap } from "@/components/asset/asset-block-map";
+import { DialogHeaderActions } from "@/components/dialog/dialog-header-actions";
 import {
   generateEditFields,
   generateEditTitle,
-} from "@/app/(backend)/dashboard/_features/asset/edit/edit-fields-utils";
-import { useAssetEditStore } from "@/app/(backend)/dashboard/_features/asset/edit/use-asset-edit-store";
-import { useAssetPreviewStore } from "@/app/(backend)/dashboard/_features/asset/preview/use-asset-preview-store";
+} from "../edit/edit-fields-utils";
+import { useAssetEditStore } from "../edit/use-asset-edit-store";
+import { useAssetPreviewStore } from "./use-asset-preview-store";
 import {
   useInfoStore,
   type ServerAction,
-} from "@/app/(backend)/dashboard/_features/global-info/use-info-store";
+} from "../../global-info/use-info-store";
 import { Button } from "@/components/ui/button";
 import {
   Carousel,
@@ -30,14 +30,12 @@ import { downloadAsset } from "@/lib/asset/download-utils";
 import { cn } from "@/lib/utils";
 import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { updateItems } from "@/server/asset/update-items.serverFn";
-import { Download, Settings2, Trash2 } from "lucide-react";
+import { Download, Trash2 } from "lucide-react";
 import { AnimatePresence, motion, useAnimate } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
-import { Tooltip } from "react-tooltip";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
-import { useAssetsStore } from "../../../_views/global/contents/assets/_stores/assets.store";
-import { useAssetPostProcessStore } from "../post-process/use-asset-post-process-store";
+import { useAssetsStore } from "../../../global/contents/assets/stores/assets.store";
 
 export const AssetPreviewDialog = () => {
   const [score, animate] = useAnimate();
@@ -243,25 +241,6 @@ export const AssetPreviewDialog = () => {
     setInfoOpen(true);
   };
 
-  const { setActiveItem } = useAssetPostProcessStore(
-    useShallow((state) => ({
-      setActiveItem: state.setActiveItem,
-    })),
-  );
-
-  const handleProcess = () => {
-    if (!currentAsset || currentAsset.type !== "asset") return;
-
-    setActiveItem({
-      id: currentAsset.id,
-      name: currentAsset.name,
-      src: currentAsset.src || "",
-      fileType: currentAsset.fileType || "unknown",
-      extension: currentAsset.extension,
-      size: currentAsset.size,
-    });
-  };
-
   const handleChange = async (open: boolean) => {
     await animate(
       score.current,
@@ -282,6 +261,7 @@ export const AssetPreviewDialog = () => {
   return (
     <Sheet open={open} onOpenChange={handleChange}>
       <SheetContent
+        side="bottom"
         showCloseButton={false}
         className={cn(
           "bg-transparent border-0 p-2 shadow-none w-full",
@@ -316,32 +296,6 @@ export const AssetPreviewDialog = () => {
                   <Button size="xs" variant="formDark" onClick={handleDownload}>
                     <Download className="size-3" />
                   </Button>
-                  {currentAsset.type === "asset" &&
-                    currentAsset.fileType === "image" && (
-                      <>
-                        <Button
-                          data-tooltip-id="asset-process-tooltip"
-                          data-tooltip-content="Process asset"
-                          size="xs"
-                          variant="formDark"
-                          onClick={handleProcess}
-                        >
-                          <Settings2 className="size-3" />
-                        </Button>
-                        <Tooltip
-                          place="bottom-end"
-                          style={{
-                            backgroundColor: "var(--primary)",
-                            color: "var(--background)",
-                            fontSize: "12px",
-                            boxShadow: "1px 1px 4px 0px rgba(0, 0, 0, 0.1)",
-                            borderRadius: "5px",
-                            padding: "4px 8px",
-                          }}
-                          id="asset-process-tooltip"
-                        />
-                      </>
-                    )}
                   <Button
                     size="xs"
                     className="text-primary"

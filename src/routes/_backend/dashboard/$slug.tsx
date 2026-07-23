@@ -1,8 +1,7 @@
 import { NotFound } from "@/components/not-found/not-found";
 import { getConfig } from "@/server/get-config";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo } from "react";
-
+import { Suspense, useMemo } from "react";
 import { z } from "zod";
 
 const searchSchema = z.object({
@@ -14,6 +13,21 @@ const searchSchema = z.object({
   limit: z.number().optional(),
 });
 
+function getAllCollections(globalGroups: any[]) {
+  const result: any[] = [];
+  for (const group of globalGroups || []) {
+    for (const col of group.collections || []) {
+      result.push(col);
+      if (Array.isArray(col.items)) {
+        for (const item of col.items) {
+          result.push(item);
+        }
+      }
+    }
+  }
+  return result;
+}
+
 export const Route = createFileRoute("/_backend/dashboard/$slug")({
   validateSearch: (search) => searchSchema.parse(search),
   beforeLoad: async (ctx) => {
@@ -24,10 +38,8 @@ export const Route = createFileRoute("/_backend/dashboard/$slug")({
     const { queryClient, search } = context;
     const config = getConfig().client;
 
-    // Discover the collection item by slug from all global groups
-    const globalCollections = config.collections.global.flatMap(
-      (group) => group.collections,
-    );
+    // Discover the collection item by slug from all global groups (including nested items)
+    const globalCollections = getAllCollections(config.collections.global);
     const collection = globalCollections.find((c) => c.slug === params.slug);
 
     if (collection?.loadData) {
@@ -43,13 +55,15 @@ function RouteComponent() {
 
   // Pick the component based on the slug from the config
   const ViewComponent = useMemo(() => {
-    const settingsCollections = config.collections.global.flatMap(
-      (group) => group.collections,
-    );
+    const settingsCollections = getAllCollections(config.collections.global);
     const collection = settingsCollections.find((c) => c.slug === slug);
     return collection?.component;
   }, [slug, config]);
 
   if (!ViewComponent) return <NotFound />;
-  return <ViewComponent />;
+  return (
+    <Suspense fallback={null}>
+      <ViewComponent />
+    </Suspense>
+  );
 }

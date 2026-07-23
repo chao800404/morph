@@ -9,14 +9,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { useRouter } from "@tanstack/react-router";
+import { getActionErrorMessage } from "@/lib/asset/action-result";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { useInfoStore } from "./use-info-store";
 
 const InfoAlertForm = () => {
-  const router = useRouter();
+  const queryClient = useQueryClient();
   const {
     handleOpenChange,
     title,
@@ -53,17 +54,15 @@ const InfoAlertForm = () => {
     setIsExecuting(true);
 
     try {
-      const result = await action(formData);
-
-      if (result.serverError) {
-        throw new Error(result.serverError);
-      }
+      const result = await action({ data: formData });
 
       if (result.success === false) {
         throw new Error(result.message || "Operation failed");
       }
 
-      // Action successful
+      // The asset query is the single client-side source of truth.
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
+
       onSuccess?.();
       handleOpenChange(false);
 
@@ -71,18 +70,8 @@ const InfoAlertForm = () => {
       if (result.message) {
         toast.success(result.message);
       }
-    } catch (err: any) {
-      // Handle TanStack Start validation error format if it's JSON
-      let errorMessage = err.message || "An error occurred";
-      try {
-        const parsed = JSON.parse(err.message);
-        if (Array.isArray(parsed) && parsed[0]?.message) {
-          errorMessage = parsed[0].message;
-        }
-      } catch (e) {
-        // Fallback to original
-      }
-      toast.error(errorMessage);
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "An error occurred"));
     } finally {
       setIsExecuting(false);
     }

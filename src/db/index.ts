@@ -7,7 +7,7 @@ export async function getDb() {
   return drizzle(env.DATABASE, {
     // Ensure "DATABASE" matches your D1 binding name in wrangler.toml
     schema,
-    logger: true, // Optional
+    logger: process.env.DEBUG_SQL === "true",
   });
 }
 

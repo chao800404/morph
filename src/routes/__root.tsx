@@ -50,8 +50,20 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       };
     }
   },
+  notFoundComponent: DefaultNotFound,
   shellComponent: RootDocument,
 });
+
+function DefaultNotFound() {
+  return (
+    <div className="flex h-[calc(100vh-4rem)] w-full items-center justify-center p-4">
+      <div className="text-center">
+        <h1 className="text-4xl font-bold">404</h1>
+        <p className="mt-2 text-muted-foreground">Page not found</p>
+      </div>
+    </div>
+  );
+}
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (

@@ -20,6 +20,7 @@ import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/glob
 import type { AssetsCardData } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
 import { getAssetsDialogConfig } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-dialog.config";
 import { createItems } from "@/server/asset/create-items.serverFn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Dot, FolderPlus, Search, X } from "lucide-react";
 import { useState } from "react";
@@ -44,6 +45,7 @@ export const AssetsCardHeader = ({
   };
 }) => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const search = useSearch({ strict: false }) as any;
   const query = search.q || "";
@@ -136,6 +138,7 @@ export const AssetsCardHeader = ({
       description: config.description,
       fields: fields,
       action: createItems,
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: ["assets"] }),
     });
     setCreateOpen(true);
   };
@@ -152,13 +155,12 @@ export const AssetsCardHeader = ({
       return field;
     });
 
-    console.log(fields, "create Asset");
-
     setCreateData({
       title: config.title,
       description: config.description,
       fields: fields,
       action: createItems,
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: ["assets"] }),
     });
     setCreateOpen(true);
   };

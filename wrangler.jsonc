@@ -52,8 +52,10 @@
    */
   "vars": {
     "PUBLIC_URL": "https://morph.yuho0298.workers.dev",
-    "RESEND_API_KEY": "re_WdT1LvW5_CRF8GEbLPfdX3FeBccRgRhoB",
   },
+  // Secrets are configured outside source control:
+  // pnpm wrangler secret put BETTER_AUTH_SECRET
+  // pnpm wrangler secret put RESEND_API_KEY
   /**
    * Note: Use secrets to store sensitive data.
    * https://developers.cloudflare.com/workers/configuration/secrets/

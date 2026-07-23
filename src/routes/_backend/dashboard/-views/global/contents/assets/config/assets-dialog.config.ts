@@ -20,6 +20,31 @@ interface DialogSection {
 
 type DialogConfig = Record<DialogType, DialogSection>;
 
+const mimeToExtensionsMap: Record<string, string[]> = {
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/png": [".png"],
+  "image/gif": [".gif"],
+  "image/webp": [".webp"],
+  "image/svg+xml": [".svg"],
+  "video/mp4": [".mp4"],
+  "video/webm": [".webm"],
+  "video/ogg": [".ogv", ".ogg"],
+  "video/quicktime": [".mov"],
+};
+
+const createAcceptMap = (uploadConfig: UploadConfig) => ({
+  ...uploadConfig.allowedTypes.reduce(
+    (accept, mimeType) => ({
+      ...accept,
+      [mimeType]: mimeToExtensionsMap[mimeType] || [],
+    }),
+    {} as Record<string, string[]>,
+  ),
+  ...(uploadConfig.allowedExtensions.length > 0
+    ? { "application/octet-stream": uploadConfig.allowedExtensions }
+    : {}),
+});
+
 export const createAssetsDialogConfig = (
   uploadConfig: UploadConfig,
 ): DialogConfig => ({
@@ -57,16 +82,10 @@ export const createAssetsDialogConfig = (
         placeholder: "Select files",
         required: false,
         colSpan: 2,
-        minSize: uploadConfig.minFiles,
+        minSize: 1,
         maxFiles: uploadConfig.maxFiles,
         maxSize: uploadConfig.maxFileSize,
-        accept: uploadConfig.allowedTypes.reduce(
-          (acc: Record<string, string[]>, type: string) => ({
-            ...acc,
-            [type]: [],
-          }),
-          {},
-        ),
+        accept: createAcceptMap(uploadConfig),
       },
     ],
     gridClassName: "grid-cols-2",
@@ -89,16 +108,10 @@ export const createAssetsDialogConfig = (
         placeholder: "Select files",
         required: true,
         colSpan: 2,
-        minSize: uploadConfig.minFiles,
+        minSize: 1,
         maxFiles: uploadConfig.maxFiles,
         maxSize: uploadConfig.maxFileSize,
-        accept: uploadConfig.allowedTypes.reduce(
-          (acc: Record<string, string[]>, type: string) => ({
-            ...acc,
-            [type]: [],
-          }),
-          {},
-        ),
+        accept: createAcceptMap(uploadConfig),
       },
     ],
     gridClassName: "grid-cols-2",

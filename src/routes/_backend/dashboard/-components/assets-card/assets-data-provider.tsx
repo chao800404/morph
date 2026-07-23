@@ -18,40 +18,25 @@ export const AssetsDataProvider = ({
 }: AssetsDataProviderProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const isDesktop = useMediaQuery("(min-width: 1280px)");
-  const {
-    setAssetsData,
-    setActiveItem,
-    selectedItems,
-    clearAllSelectedItems,
-    activeItem,
-  } = useAssetsStore(
+  const { setAssetsData, setActiveItem } = useAssetsStore(
     useShallow((state) => ({
       setAssetsData: state.setAssetsData,
       setActiveItem: state.setActiveItem,
-      selectedItems: state.selectedItems,
-      clearAllSelectedItems: state.clearAllSelectedItems,
-      activeItem: state.activeItem,
     })),
   );
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        const {
+          activeItem,
+          selectedItems,
+          setActiveItem,
+          clearAllSelectedItems,
+        } = useAssetsStore.getState();
+
         if (activeItem) {
-          if (data.currentFolder) {
-            setActiveItem({
-              type: "folder",
-              id: String(data.currentFolder.id),
-              name: data.currentFolder.name,
-              createdAt: data.currentFolder.createdAt,
-              updatedAt: data.currentFolder.updatedAt,
-              createdBy: data.currentFolder.createdBy,
-              updatedBy: data.currentFolder.updatedBy,
-              description: data.currentFolder.description || undefined,
-            });
-          } else {
-            setActiveItem(undefined);
-          }
+          setActiveItem(undefined);
         } else if (selectedItems.size > 1) {
           clearAllSelectedItems();
         }
@@ -60,33 +45,16 @@ export const AssetsDataProvider = ({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [
-    selectedItems,
-    clearAllSelectedItems,
-    activeItem,
-    setActiveItem,
-    data.currentFolder,
-  ]);
+  }, []);
 
   useEffect(() => {
     setAssetsData(data);
+  }, [data, setAssetsData]);
 
-    // When data changes (including folderId), reset activeItem to show currentFolder info
-    if (data.currentFolder) {
-      setActiveItem({
-        type: "folder",
-        id: String(data.currentFolder.id),
-        name: data.currentFolder.name,
-        createdAt: data.currentFolder.createdAt,
-        updatedAt: data.currentFolder.updatedAt,
-        createdBy: data.currentFolder.createdBy,
-        updatedBy: data.currentFolder.updatedBy,
-        description: data.currentFolder.description || undefined,
-      });
-    } else {
-      setActiveItem(undefined);
-    }
-  }, [data, setAssetsData, setActiveItem, folderId]);
+  useEffect(() => {
+    // Reset properties only when navigating into or out of a folder.
+    setActiveItem(undefined);
+  }, [folderId, setActiveItem]);
 
   // Create lookup maps for faster access
   const folderMap = useMemo(() => {
@@ -118,22 +86,9 @@ export const AssetsDataProvider = ({
       // Use closest to find the row element
       const assetElement = target.closest("[data-type]");
 
-      // If click is not on an asset/folder element, reset to current folder
+      // If click is not on an asset/folder element, reset properties panel
       if (!assetElement) {
-        if (data.currentFolder) {
-          setActiveItem({
-            type: "folder",
-            id: String(data.currentFolder.id),
-            name: data.currentFolder.name,
-            createdAt: data.currentFolder.createdAt,
-            updatedAt: data.currentFolder.updatedAt,
-            createdBy: data.currentFolder.createdBy,
-            updatedBy: data.currentFolder.updatedBy,
-            description: data.currentFolder.description || undefined,
-          });
-        } else {
-          setActiveItem(undefined);
-        }
+        setActiveItem(undefined);
         return;
       }
 
@@ -154,6 +109,11 @@ export const AssetsDataProvider = ({
             createdBy: folder.createdBy,
             updatedBy: folder.updatedBy,
             description: folder.description || undefined,
+            path: folder.path,
+            parentId: folder.parentId,
+            assetCount: (folder as any).assetCount,
+            folderCount: (folder as any).folderCount,
+            itemCount: (folder as any).itemCount,
           });
         } else {
           setActiveItem({

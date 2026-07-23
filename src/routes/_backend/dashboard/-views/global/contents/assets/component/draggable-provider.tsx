@@ -1,48 +1,126 @@
 import { cn } from "@/lib/utils";
 import { moveItems } from "@/server/asset/move-items.serverFn";
-import { DragDropProvider, DragOverlay, PointerSensor } from "@dnd-kit/react";
+import { useQueryClient } from "@tanstack/react-query";
+import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
+import { DragDropProvider, DragOverlay } from "@dnd-kit/react";
 import { File, Folder } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import React from "react";
 import { toast } from "sonner";
-import { useShallow } from "zustand/react/shallow";
 import { useAssetsStore } from "../stores/assets.store";
+
+const AssetDragPreview = ({
+  dragPreviewRef,
+}: {
+  dragPreviewRef: React.RefObject<HTMLDivElement | null>;
+}) => {
+  const selectedItems = useAssetsStore((state) => state.selectedItems);
+  const dragItem = useAssetsStore((state) => state.dragItem);
+
+  const draggingItems = React.useMemo(() => {
+    const items = Array.from(selectedItems.values());
+    if (items.length > 0) return items;
+    return dragItem ? [dragItem] : [];
+  }, [dragItem, selectedItems]);
+
+  const counts = React.useMemo(
+    () => ({
+      folders: draggingItems.filter((item) => item.type === "folder").length,
+      assets: draggingItems.filter((item) => item.type === "asset").length,
+    }),
+    [draggingItems],
+  );
+
+  return (
+    <AnimatePresence>
+      {dragItem ? (
+        <div className="pointer-events-none fixed left-0 top-0 z-50">
+          <div ref={dragPreviewRef} className="relative z-10">
+            <div
+              className={cn(
+                "relative z-10 w-fit cursor-grabbing rounded-lg bg-card p-2 shadow-sm/20",
+                "dark:shadow-elevation-modal",
+              )}
+            >
+              <div className="flex items-center gap-3 text-sm">
+                <span>Dragging</span>
+                {counts.folders > 0 && (
+                  <>
+                    {counts.folders}
+                    <Folder className="size-3" />
+                  </>
+                )}
+                {counts.assets > 0 && (
+                  <>
+                    {counts.assets}
+                    <File className="size-3" />
+                  </>
+                )}
+              </div>
+            </div>
+            {selectedItems.size > 1 && (
+              <>
+                {Array.from(selectedItems.values())
+                  .filter((item) => item.id !== dragItem.id)
+                  .map((item, index) => (
+                    <div
+                      key={`${item.type}-${item.id}`}
+                      className="absolute z-0 h-full w-full rounded-lg border bg-zinc-100 shadow-sm/30 dark:bg-zinc-900"
+                      style={{
+                        top: `${(index + 1) * 1.5}px`,
+                        left: `${(index + 1) * 1.5}px`,
+                      }}
+                    >
+                      <p className="sr-only">{item.name}</p>
+                    </div>
+                  ))}
+                <div className="absolute -right-2.5 -top-2.5 z-20 flex h-5 w-5 items-center justify-center rounded-full bg-blue-400 text-xs text-white dark:bg-zinc-500">
+                  {selectedItems.size}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </AnimatePresence>
+  );
+};
 
 export const AssetDraggableProvider = ({
   children,
 }: {
   children: React.ReactNode;
 }) => {
+  const queryClient = useQueryClient();
   const dragPreviewRef = React.useRef<HTMLDivElement>(null);
-  const { selectedItems, setDragItem, dragItem, clearAllSelectedItems } =
-    useAssetsStore(
-      useShallow((state) => ({
-        selectedItems: state.selectedItems,
-        setDragItem: state.setDragItem,
-        dragItem: state.dragItem,
-        clearAllSelectedItems: state.clearAllSelectedItems,
-      })),
-    );
 
-  const draggingItems = React.useMemo(() => {
-    const items = Array.from(selectedItems.values());
-    if (items.length > 0) return items;
-    return dragItem ? [dragItem] : [];
-  }, [selectedItems, dragItem]);
-
-  const counts = React.useMemo(() => {
-    return {
-      folders: draggingItems.filter((i) => i.type === "folder").length,
-      assets: draggingItems.filter((i) => i.type === "asset").length,
-    };
-  }, [draggingItems]);
+  const sensors = React.useMemo(
+    () => [
+      PointerSensor.configure({
+        activationConstraints: [
+          new PointerActivationConstraints.Distance({ value: 8 }),
+        ],
+      }),
+    ],
+    [],
+  );
 
   const handleDragEnd = React.useCallback(
     async (event: any) => {
+      const {
+        selectedItems,
+        dragItem,
+        setDragItem,
+        clearAllSelectedItems,
+      } = useAssetsStore.getState();
+      const selected = Array.from(selectedItems.values());
+      const draggingItems =
+        selected.length > 0 ? selected : dragItem ? [dragItem] : [];
+
       setDragItem(undefined);
       if (event.canceled) return;
 
-      const { target, source } = event.operation;
+      const { target } = event.operation;
 
       if (!target) return;
 
@@ -80,6 +158,7 @@ export const AssetDraggableProvider = ({
             position: "top-center",
           });
           clearAllSelectedItems();
+          await queryClient.invalidateQueries({ queryKey: ["assets"] });
         } else {
           toast.error(result?.message || "Failed to move items", {
             position: "top-center",
@@ -95,109 +174,60 @@ export const AssetDraggableProvider = ({
         );
       }
     },
-    [draggingItems, setDragItem, clearAllSelectedItems],
+    [queryClient],
   );
+
+  const handleBeforeDragStart = React.useCallback((event: any) => {
+    const { source } = event.operation;
+    if (!source) return;
+
+    const sourceType = source.type as "folder" | "asset" | undefined;
+    if (!sourceType) return;
+
+    const name = source.data?.name;
+    const id = `${source.id}`;
+    const { setDragItem } = useAssetsStore.getState();
+
+    if (sourceType === "folder") {
+      setDragItem({ type: "folder", id, name });
+      return;
+    }
+
+    const fileType = source.data?.fileType || "file";
+    setDragItem({
+      type: "asset",
+      id,
+      name,
+      fileType,
+      src: source.data?.src,
+      extension: source.data?.extension,
+    });
+  }, []);
+
+  const handleDragStart = React.useCallback((event: any) => {
+    const { position } = event.operation;
+    if (!position || !dragPreviewRef.current) return;
+
+    const { x, y } = position.current;
+    dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;
+  }, []);
+
+  const handleDragMove = React.useCallback((event: any) => {
+    const { x, y } = event.to || { x: 50, y: 50 };
+    if (dragPreviewRef.current) {
+      dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;
+    }
+  }, []);
 
   return (
     <DragDropProvider
-      sensors={[PointerSensor]}
-      onBeforeDragStart={(event) => {
-        const { source } = event.operation;
-
-        if (!source) return;
-
-        const sourceType = source.type as "folder" | "asset" | undefined;
-
-        if (!sourceType) return;
-
-        const name = source.data?.name;
-        const id = `${source.id}`;
-
-        if (sourceType === "folder") {
-          setDragItem({ type: "folder", id, name });
-        } else if (sourceType === "asset") {
-          const fileType = source.data?.fileType || "file";
-          setDragItem({
-            type: "asset",
-            id,
-            name,
-            fileType,
-            src: source.data?.src,
-            extension: source.data?.extension,
-          });
-        }
-      }}
-      onDragStart={(event) => {
-        const { position } = event.operation;
-        if (position) {
-          const x = position.current.x;
-          const y = position.current.y;
-
-          if (dragPreviewRef.current) {
-            dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;
-          }
-        }
-      }}
+      sensors={sensors}
+      onBeforeDragStart={handleBeforeDragStart}
+      onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      onDragMove={(event) => {
-        const { x, y } = event.to || { x: 50, y: 50 };
-
-        if (dragPreviewRef.current) {
-          dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;
-        }
-      }}
+      onDragMove={handleDragMove}
     >
-      <AnimatePresence>
-        {dragItem ? (
-          <div className="fixed top-0 left-0 z-50 pointer-events-none">
-            <div ref={dragPreviewRef} className="relative z-10">
-              <div
-                className={cn(
-                  "z-10 p-2 bg-card relative rounded-lg shadow-sm/20 w-fit cursor-grabbing",
-                  "dark:shadow-elevation-modal",
-                )}
-              >
-                <div className="flex items-center text-sm gap-3">
-                  <span>Dragging</span>
-                  {counts.folders > 0 && (
-                    <>
-                      {counts.folders}
-                      <Folder className="size-3" />
-                    </>
-                  )}
-                  {counts.assets > 0 && (
-                    <>
-                      {counts.assets}
-                      <File className="size-3" />
-                    </>
-                  )}
-                </div>
-              </div>
-              {selectedItems.size > 1 && (
-                <>
-                  {Array.from(selectedItems.values())
-                    .filter((item) => item.id !== dragItem.id)
-                    .map((item, index) => (
-                      <div
-                        key={item.id}
-                        className="absolute rounded-lg shadow-sm/30 border w-full h-full z-0 bg-zinc-100 dark:bg-zinc-900"
-                        style={{
-                          top: `${(index + 1) * 1.5}px`,
-                          left: `${(index + 1) * 1.5}px`,
-                        }}
-                      >
-                        <p className="sr-only">{item.name}</p>
-                      </div>
-                    ))}
-                  <div className="absolute rounded-full w-5 h-5 -top-2.5 -right-2.5 flex items-center justify-center text-white bg-blue-400 dark:bg-zinc-500 z-20 text-xs">
-                    {selectedItems.size}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        ) : null}
-      </AnimatePresence>
+      <AssetDragPreview dragPreviewRef={dragPreviewRef} />
 
       <DragOverlay>
         <></>

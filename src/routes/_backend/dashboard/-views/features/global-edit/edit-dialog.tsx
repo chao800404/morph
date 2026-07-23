@@ -6,6 +6,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { getActionErrorMessage } from "@/lib/asset/action-result";
 import { useRouter } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { useRef, useState } from "react";
@@ -54,7 +55,6 @@ export const EditDialog = () => {
 
   // Check if form is dirty
   const isDirty = JSON.stringify(fields) !== JSON.stringify(initialFields);
-  console.log(fields);
 
   const handleOpenChangeWrapper = (newOpen: boolean) => {
     if (!newOpen && isDirty) {
@@ -64,7 +64,7 @@ export const EditDialog = () => {
           "You have unsaved changes. Are you sure you want to discard them?",
         confirmLabel: "Discard",
         confirmVariant: "destructive",
-        action: async () => ({ data: { message: "", success: true } }),
+        action: async () => ({ message: "", success: true }),
         onSuccess: () => {
           handleOpenChange(false);
         },
@@ -95,70 +95,21 @@ export const EditDialog = () => {
     const promise = (async () => {
       try {
         const result = await action(submitFormData);
-
-        if (result.serverError) {
-          throw new Error(result.serverError);
-        }
-
-        if (result.validationErrors) {
-          const firstErrorKey = Object.keys(result.validationErrors)[0];
-          const firstErrorMessage = result.validationErrors[firstErrorKey];
-          let message = "Validation error";
-
-          if (typeof firstErrorMessage === "string") {
-            message = firstErrorMessage;
-          } else if (Array.isArray(firstErrorMessage)) {
-            const firstItem = firstErrorMessage[0];
-            if (typeof firstItem === "string") {
-              message = firstItem;
-            } else if (
-              typeof firstItem === "object" &&
-              firstItem !== null &&
-              (firstItem as any).message
-            ) {
-              message = (firstItem as any).message;
-            }
-          } else if (
-            typeof firstErrorMessage === "object" &&
-            (firstErrorMessage as any)?._errors
-          ) {
-            message = (firstErrorMessage as any)._errors[0];
-          } else if (
-            typeof firstErrorMessage === "object" &&
-            firstErrorMessage !== null &&
-            (firstErrorMessage as any).message
-          ) {
-            message = (firstErrorMessage as any).message;
-          }
-
-          const error = new Error(message);
-          (error as any).data = result;
-          throw error;
-        }
-
-        return result.data;
-      } catch (err: any) {
-        // Handle TanStack Start validation error format
-        try {
-          const parsed = JSON.parse(err.message);
-          if (Array.isArray(parsed) && parsed[0]?.message) {
-            throw new Error(parsed[0].message);
-          }
-        } catch (e) {
-          // If parsing fails, just re-throw original error
-        }
-        throw err;
+        if (!result.success) throw new Error(result.message);
+        return result;
+      } catch (error) {
+        throw new Error(getActionErrorMessage(error, "Failed to save changes"));
       }
     })();
 
     toast.promise(promise, {
       loading: "Saving...",
-      success: () => {
+      success: (result) => {
         onSuccess?.();
         handleOpenChange(false);
         router.invalidate();
         setIsExecuting(false);
-        return "Saved successfully";
+        return result.message || "Saved successfully";
       },
       error: (err) => {
         setIsExecuting(false);
@@ -190,9 +141,9 @@ export const EditDialog = () => {
           {open && (
             <motion.div
               className="shadow-sm/20 border flex flex-col overflow-hidden bg-component h-full dark:shadow-elevation-modal rounded-lg"
-              initial={{ opacity: 0, x: 100 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 100 }}
+              initial={{ opacity: 0, y: 100 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 100 }}
               transition={{ type: "keyframes" }}
             >
               <DialogHeaderActions

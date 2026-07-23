@@ -15,6 +15,11 @@ export type SelectedItem =
       createdBy?: string;
       updatedBy?: string;
       description?: string;
+      path?: string;
+      parentId?: string | null;
+      assetCount?: number;
+      folderCount?: number;
+      itemCount?: number;
     }
   | {
       type: "asset";
@@ -65,10 +70,16 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
   dailogType: "folder",
   isActionMenuOpen: false,
   assetsData: {},
-  setActiveItem: (item) => set({ activeItem: item }),
-  setDailogOpen: (open) => set({ dailogOpen: open }),
-  setDailogType: (type) => set({ dailogType: type }),
-  setActionMenuOpen: (open) => set({ isActionMenuOpen: open }),
+  setActiveItem: (item) =>
+    set((state) => (state.activeItem === item ? state : { activeItem: item })),
+  setDailogOpen: (open) =>
+    set((state) => (state.dailogOpen === open ? state : { dailogOpen: open })),
+  setDailogType: (type) =>
+    set((state) => (state.dailogType === type ? state : { dailogType: type })),
+  setActionMenuOpen: (open) =>
+    set((state) =>
+      state.isActionMenuOpen === open ? state : { isActionMenuOpen: open },
+    ),
   toggleSelectItem: (item) => {
     const currentItems = get().selectedItems;
     const newItems = new Map(currentItems);
@@ -82,7 +93,12 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
 
     set({ selectedItems: newItems });
   },
-  clearAllSelectedItems: () => set({ selectedItems: new Map() }),
+  clearAllSelectedItems: () =>
+    set((state) =>
+      state.selectedItems.size === 0
+        ? state
+        : { selectedItems: new Map<string, SelectedItem>() },
+    ),
   selectAllItems: (items) => {
     const newItems = new Map<string, SelectedItem>();
     items.forEach((item) => {
@@ -93,23 +109,31 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
   },
   isSelected: (id) => {
     const items = get().selectedItems;
-    return Array.from(items.keys()).some((key) => key.endsWith(`-${id}`));
+    return items.has(`folder-${id}`) || items.has(`asset-${id}`);
   },
   getSelectedByType: (type) => {
     const items = get().selectedItems;
     return Array.from(items.values()).filter((item) => item.type === type);
   },
   setDragItem: (data) => {
-    if (data) {
-      const { selectedItems } = get();
-      const key = `${data.type}-${data.id}`;
-      if (!selectedItems.has(key)) {
-        set({ selectedItems: new Map() });
+    set((state) => {
+      let selectedItems = state.selectedItems;
+      if (data) {
+        const key = `${data.type}-${data.id}`;
+        if (!selectedItems.has(key) && selectedItems.size > 0) {
+          selectedItems = new Map();
+        }
       }
-    }
-    set({ dragItem: data });
+
+      if (state.dragItem === data && selectedItems === state.selectedItems) {
+        return state;
+      }
+
+      return { dragItem: data, selectedItems };
+    });
   },
-  setAssetsData: (data) => set({ assetsData: data }),
+  setAssetsData: (data) =>
+    set((state) => (state.assetsData === data ? state : { assetsData: data })),
   getActiveItemData: () => {
     const { activeItem, assetsData } = get();
 
@@ -194,7 +218,3 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
     }
   },
 }));
-
-useAssetsStore.subscribe((state) => {
-  console.log(state.selectedItems);
-});

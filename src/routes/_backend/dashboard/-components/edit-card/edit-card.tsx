@@ -34,9 +34,9 @@ export interface EditCardField {
 }
 
 export interface EditCardState {
-  data?: any;
-  serverError?: string;
-  validationErrors?: Record<string, any> | null;
+  success: boolean;
+  message: string;
+  errors?: Record<string, string[]>;
 }
 
 interface EditCardProps {
@@ -45,7 +45,7 @@ interface EditCardProps {
   description?: string;
   icon?: LucideIcon;
   fields: EditCardField[];
-  onSave?: (formData: FormData) => Promise<EditCardState | undefined>;
+  onSave?: (formData: FormData) => Promise<EditCardState>;
 }
 
 export const EditCard = ({
@@ -87,7 +87,7 @@ export const EditCard = ({
     setEditData({
       title: `Edit ${title}`,
       fields: formFields,
-      action: onSave as any, // Convert to ServerAction type
+      action: onSave,
       onSuccess: () => {
         // Optionally refresh or show success message
         console.log("Edit successful");
@@ -99,6 +99,7 @@ export const EditCard = ({
 
   return (
     <CardWrapper
+      id={id}
       label={title}
       description={description}
       icon={icon}

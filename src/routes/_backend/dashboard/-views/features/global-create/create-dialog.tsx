@@ -9,6 +9,10 @@ import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 
 import { useUploadStore } from "@/components/upload/_store/upload.store";
+import {
+  getActionErrorMessage,
+  type AssetActionResult,
+} from "@/lib/asset/action-result";
 import { useCreateStore } from "./use-create-store";
 
 export const CreateDialog = () => {
@@ -43,11 +47,12 @@ export const CreateDialog = () => {
   // Wrap action to add validation and file handling
   const wrappedAction: FormAction = useCallback(
     async (
-      prevState: ActionState,
+      _prevState: ActionState,
       formData: FormData,
     ): Promise<ActionState> => {
       // Add upload files from Zustand store with duration
       let fileIndex = 0;
+      const durations: Array<number | null> = [];
       for (const [name, fileWithPreviews] of Object.entries(fileData)) {
         if (Array.isArray(fileWithPreviews)) {
           for (const { file, duration } of fileWithPreviews as any[]) {
@@ -55,65 +60,81 @@ export const CreateDialog = () => {
 
             // Add duration if available (already extracted in upload-field)
             if (duration !== undefined && duration > 0) {
-              formData.append(`duration_${fileIndex}`, duration.toString());
+              durations[fileIndex] = duration;
+            } else {
+              durations[fileIndex] = null;
             }
             fileIndex++;
           }
         }
       }
 
-      // Call the actual action
+      if (durations.length > 0) {
+        formData.set("durations", JSON.stringify(durations));
+      }
+
       if (action) {
-        const promise = (async () => {
-          const actionResult = await (action as any)(formData);
+        const toastId = toast.loading("Processing...", {
+          position: "top-center",
+        });
 
-          if (actionResult.serverError) {
-            throw new Error(actionResult.serverError);
-          }
+        try {
+          const actionResult = await action({ data: formData });
 
-          if (!actionResult.data?.success) {
-            const error = new Error(
-              actionResult.data?.message || "Operation failed",
-            );
-            (error as any).data = actionResult.data;
-            throw error;
-          }
+          if (!actionResult.success) {
+            console.error("❌ [CreateDialog Action Failed]", {
+              message: actionResult.message,
+              errors: actionResult.errors,
+            });
 
-          return actionResult.data;
-        })();
-
-        toast.promise(promise, {
-          loading: "Processing...",
-          success: (data: any) => {
-            clearAll();
-            onSuccess?.();
-            handleOpenChange(false);
-            return data?.message || "Success!";
-          },
-          error: (error: any) => {
-            if (error.data?.errors) {
-              Object.entries(error.data.errors).forEach(([key, messages]) => {
+            if (actionResult.errors) {
+              Object.entries(actionResult.errors).forEach(([key, messages]) => {
                 if (
                   fileData[key] &&
                   Array.isArray(messages) &&
                   messages.length > 0
                 ) {
-                  setError(key, (messages as string[])[0]);
+                  setError(key, messages[0]);
                 }
               });
             }
-            return error.message;
-          },
-          position: "top-center",
-        });
 
-        try {
-          return (await promise) as ActionState;
-        } catch (error: any) {
+            toast.error(actionResult.message || "Operation failed", {
+              id: toastId,
+              position: "top-center",
+            });
+            return actionResult;
+          }
+
+          clearAll();
+          handleOpenChange(false);
+          toast.success(actionResult.message || "Success!", {
+            id: toastId,
+            position: "top-center",
+          });
+
+          try {
+            await onSuccess?.();
+          } catch (refreshError) {
+            // The item was already created successfully. A refresh failure must
+            // not be presented to the user as an upload failure.
+            console.warn("Failed to refresh after create:", refreshError);
+          }
+
+          return actionResult as ActionState;
+        } catch (error) {
+          const actionError = error as Error & { data?: AssetActionResult };
+          const message = getActionErrorMessage(actionError);
+          console.error("❌ [CreateDialog Exception]", { error, message });
+          toast.error(message, {
+            id: toastId,
+            position: "top-center",
+          });
+
           return {
             success: false,
-            message: error.message,
-            errors: error.data?.errors,
+            message,
+            errors: actionError.data?.errors,
           };
         }
       }

@@ -1,3 +1,4 @@
+import { cn } from "@/lib/utils";
 import { FolderBlock, FolderPropertyBlock } from "./folder-block";
 import { ImageBlock, ImagePreviewBlock, ImagePropertyBlock, ImageSmBlock, ImageUploadBlock } from "./image-block";
 import { VideoBlock, VideoPreviewBlock, VideoPropertyBlock, VideoSmBlock, VideoUploadBlock } from "./video-block";
@@ -133,8 +134,14 @@ export const AssetBlockMap = (props: AssetBlockProps) => {
             }
         }
 
-        // 其他不支援的檔案類型
-        return null;
+        // 其他檔案類型 (文件、壓縮檔、或其他)
+        return (
+          <div className={cn("size-full border bg-muted flex flex-col items-center justify-center p-2 rounded-md", props.className)}>
+            <span className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">
+              {props.extension || props.fileType || "FILE"}
+            </span>
+          </div>
+        );
     }
 
     return null;

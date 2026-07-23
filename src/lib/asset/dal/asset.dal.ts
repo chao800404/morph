@@ -1,13 +1,25 @@
 import { getDb } from "@/db";
 import { assets } from "@/db/asset.schema";
-import { and, eq, inArray, isNull, like, or } from "drizzle-orm";
+import { users } from "@/db/auth.schema";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  or,
+  SQL,
+  sql,
+} from "drizzle-orm";
 import type { AssetDTO, AssetInsertDTO } from "../dto/asset.dto";
 import { toAssetDTO, type AssetRow } from "../mappers/asset.mapper";
 
-const mapFirst = (rows: AssetRow[]): AssetDTO | null => {
-  if (!rows.length) return null;
-  return toAssetDTO(rows[0]);
-};
+const mapFirst = (rows: AssetRow[]): AssetDTO | null =>
+  rows.length > 0 ? toAssetDTO(rows[0]) : null;
 
 export const assetDal = {
   async findById(id: string): Promise<AssetDTO | null> {
@@ -15,153 +27,176 @@ export const assetDal = {
     const rows = await db
       .select()
       .from(assets)
-      .where(eq(assets.id, id))
+      .where(and(eq(assets.id, id), isNull(assets.deletedAt)))
       .limit(1);
     return mapFirst(rows);
   },
 
-  async findByIdAndOwner(id: string, userId: string): Promise<AssetDTO | null> {
+  async findByStorageKey(key: string): Promise<AssetDTO | null> {
     const db = await getDb();
     const rows = await db
       .select()
       .from(assets)
-      .where(and(eq(assets.id, id), eq(assets.uploadedBy, userId)))
+      .where(and(eq(assets.url, `/${key}`), isNull(assets.deletedAt)))
       .limit(1);
     return mapFirst(rows);
   },
 
-  async findByIds(ids: string[], userId?: string): Promise<AssetDTO[]> {
+  async findByIds(ids: string[]): Promise<AssetDTO[]> {
+    if (ids.length === 0) return [];
     const db = await getDb();
-    const condition = userId
-      ? and(inArray(assets.id, ids), eq(assets.uploadedBy, userId))
-      : inArray(assets.id, ids);
-    const rows = await db.select().from(assets).where(condition);
+    const rows = await db
+      .select()
+      .from(assets)
+      .where(and(inArray(assets.id, ids), isNull(assets.deletedAt)));
     return rows.map(toAssetDTO);
   },
 
-  async findByFolderId(folderId: string | null): Promise<AssetDTO[]> {
+  async findByFolderIds(folderIds: string[]): Promise<AssetDTO[]> {
+    if (folderIds.length === 0) return [];
     const db = await getDb();
-    const condition =
-      folderId === null
-        ? isNull(assets.folderId)
-        : eq(assets.folderId, folderId);
-    const rows = await db.select().from(assets).where(condition);
-    return rows.map(toAssetDTO);
-  },
+    const rows: AssetRow[] = [];
+    const batchSize = 50;
 
-  async listAll(): Promise<AssetDTO[]> {
-    const db = await getDb();
-    const rows = await db.select().from(assets);
-    return rows.map(toAssetDTO);
-  },
-
-  async findByFolderIdLightweight(
-    folderId: string | null,
-    searchQuery?: string,
-  ): Promise<
-    Array<{
-      id: string;
-      name: string;
-      mimeType: string | null;
-      url: string;
-      alt: string | null;
-    }>
-  > {
-    const db = await getDb();
-    const folderCondition = folderId
-      ? eq(assets.folderId, folderId)
-      : isNull(assets.folderId);
-
-    if (searchQuery && searchQuery.trim()) {
-      const searchPattern = `%${searchQuery.trim()}%`;
-      const searchCondition = or(
-        like(assets.name, searchPattern),
-        like(assets.originalName, searchPattern),
-        like(assets.caption, searchPattern),
-        like(assets.alt, searchPattern),
-        like(assets.tags, searchPattern),
-        like(assets.mimeType, searchPattern),
+    for (let index = 0; index < folderIds.length; index += batchSize) {
+      const ids = folderIds.slice(index, index + batchSize);
+      rows.push(
+        ...(await db
+          .select()
+          .from(assets)
+          .where(
+            and(inArray(assets.folderId, ids), isNull(assets.deletedAt)),
+          )),
       );
-
-      const rows = await db
-        .select({
-          id: assets.id,
-          name: assets.name,
-          mimeType: assets.mimeType,
-          url: assets.url,
-          alt: assets.alt,
-        })
-        .from(assets)
-        .where(and(folderCondition, searchCondition));
-      return rows;
-    } else {
-      const rows = await db
-        .select({
-          id: assets.id,
-          name: assets.name,
-          mimeType: assets.mimeType,
-          url: assets.url,
-          alt: assets.alt,
-        })
-        .from(assets)
-        .where(folderCondition);
-      return rows;
     }
+    return rows.map(toAssetDTO);
   },
 
-  async create(data: AssetInsertDTO): Promise<AssetDTO> {
+  async listPage(options: {
+    folderId?: string | null;
+    query?: string | null;
+    sortBy: "name" | "createdAt" | "updatedAt";
+    sortOrder: "asc" | "desc";
+    page: number;
+    limit: number;
+  }): Promise<{ assets: AssetDTO[]; total: number }> {
     const db = await getDb();
-    const createdAt = data.createdAt ?? new Date();
-    const updatedAt = data.updatedAt ?? createdAt;
+    const folderCondition =
+      options.folderId && options.folderId !== "root"
+        ? eq(assets.folderId, options.folderId)
+        : isNull(assets.folderId);
+    const conditions: SQL[] = [folderCondition, isNull(assets.deletedAt)];
 
-    await db.insert(assets).values({
-      id: data.id,
-      folderId: data.folderId,
-      type: data.type,
-      name: data.name,
-      originalName: data.originalName,
-      alt: data.alt,
-      caption: data.caption,
-      tags: data.tags,
-      mimeType: data.mimeType,
-      size: data.size,
-      sizeFormatted: data.sizeFormatted,
-      url: data.url,
-      width: data.width,
-      height: data.height,
-      duration: data.duration,
-      thumbnailUrl: data.thumbnailUrl,
-      metadata: data.metadata,
-      customMetadata: data.customMetadata,
-      uploadedBy: data.uploadedBy,
-      updatedBy: data.updatedBy,
-      createdAt: createdAt.toISOString(),
-      updatedAt: updatedAt.toISOString(),
-    });
-
-    const created = await this.findById(data.id);
-    if (!created) {
-      throw new Error("Failed to fetch created asset");
+    if (options.query?.trim()) {
+      const pattern = `%${options.query.trim()}%`;
+      conditions.push(
+        or(
+          like(assets.name, pattern),
+          like(assets.originalName, pattern),
+          like(assets.caption, pattern),
+          like(assets.alt, pattern),
+          sql`${assets.tags} LIKE ${pattern}`,
+          like(assets.mimeType, pattern),
+        ) as SQL,
+      );
     }
-    return created;
+
+    const sortColumn =
+      options.sortBy === "name"
+        ? assets.name
+        : options.sortBy === "updatedAt"
+          ? assets.updatedAt
+          : assets.createdAt;
+    const orderBy =
+      options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
+    const condition = and(...conditions);
+
+    const [countRows, rows] = await Promise.all([
+      db.select({ value: count() }).from(assets).where(condition),
+      db
+        .select({ asset: assets, uploaderName: users.name })
+        .from(assets)
+        .leftJoin(users, eq(assets.uploadedBy, users.id))
+        .where(condition)
+        .orderBy(orderBy)
+        .limit(options.limit)
+        .offset((options.page - 1) * options.limit),
+    ]);
+
+    return {
+      assets: rows.map(({ asset, uploaderName }) => ({
+        ...toAssetDTO(asset),
+        uploadedBy: uploaderName || asset.uploadedBy,
+      })),
+      total: Number(countRows[0]?.value ?? 0),
+    };
+  },
+
+  async searchPage(options: {
+    query: string;
+    type?: "all" | "image" | "video" | "rive" | "model";
+    folderId?: string;
+    sortBy: "createdAt" | "updatedAt" | "originalName" | "size" | "type";
+    sortOrder: "asc" | "desc";
+    page: number;
+    limit: number;
+  }): Promise<{ assets: AssetDTO[]; total: number }> {
+    const db = await getDb();
+    const conditions: SQL[] = [isNull(assets.deletedAt)];
+    if (options.query) {
+      const pattern = `%${options.query}%`;
+      conditions.push(
+        or(
+          like(assets.originalName, pattern),
+          and(isNotNull(assets.alt), like(assets.alt, pattern)),
+          and(isNotNull(assets.caption), like(assets.caption, pattern)),
+          sql`${assets.tags} LIKE ${pattern}`,
+        ) as SQL,
+      );
+    }
+    if (options.type && options.type !== "all") {
+      conditions.push(eq(assets.type, options.type));
+    }
+    if (options.folderId) {
+      conditions.push(eq(assets.folderId, options.folderId));
+    }
+
+    const sortColumn = {
+      createdAt: assets.createdAt,
+      updatedAt: assets.updatedAt,
+      originalName: assets.originalName,
+      size: assets.size,
+      type: assets.type,
+    }[options.sortBy];
+    const orderBy =
+      options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
+    const condition = and(...conditions);
+
+    const [countRows, rows] = await Promise.all([
+      db.select({ value: count() }).from(assets).where(condition),
+      db
+        .select()
+        .from(assets)
+        .where(condition)
+        .orderBy(orderBy)
+        .limit(options.limit)
+        .offset((options.page - 1) * options.limit),
+    ]);
+
+    return {
+      assets: rows.map(toAssetDTO),
+      total: Number(countRows[0]?.value ?? 0),
+    };
   },
 
   async createMany(dataList: AssetInsertDTO[]): Promise<void> {
     if (dataList.length === 0) return;
-
     const db = await getDb();
     const now = new Date().toISOString();
+    const batchSize = 5;
 
-    // SQLite has a limit on the number of variables in a single query.
-    // With ~23 columns per row, a batch size of 10 would be ~230 variables.
-    // However, to be safe and avoid "too many SQL variables" or packet size limits,
-    // we'll process in smaller chunks.
-    const BATCH_SIZE = 5;
-
-    // Process in chunks
-    for (let i = 0; i < dataList.length; i += BATCH_SIZE) {
-      const chunk = dataList.slice(i, i + BATCH_SIZE);
-
+    for (let index = 0; index < dataList.length; index += batchSize) {
+      const chunk = dataList.slice(index, index + batchSize);
       await db.insert(assets).values(
         chunk.map((data) => ({
           id: data.id,
@@ -171,135 +206,26 @@ export const assetDal = {
           originalName: data.originalName,
           alt: data.alt,
           caption: data.caption,
-          tags: data.tags,
+          tags: data.tags ?? [],
           mimeType: data.mimeType,
           size: data.size,
-          sizeFormatted: data.sizeFormatted,
           url: data.url,
           width: data.width,
           height: data.height,
           duration: data.duration,
           thumbnailUrl: data.thumbnailUrl,
           metadata: data.metadata,
-          customMetadata: data.customMetadata,
           uploadedBy: data.uploadedBy,
           updatedBy: data.updatedBy,
-          createdAt: data.createdAt ? data.createdAt.toISOString() : now,
-          updatedAt: data.updatedAt ? data.updatedAt.toISOString() : now,
+          createdAt: data.createdAt?.toISOString() ?? now,
+          updatedAt: data.updatedAt?.toISOString() ?? now,
         })),
       );
     }
   },
 
-  async updateFields(
-    id: string,
-    data: {
-      name?: string;
-      originalName?: string;
-      alt?: string;
-      caption?: string;
-      tags?: string;
-      customMetadata?: string;
-      metadata?: string;
-      updatedBy?: string;
-    },
-  ): Promise<void> {
-    const db = await getDb();
-    await db
-      .update(assets)
-      .set({
-        ...data,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(assets.id, id));
-  },
-
-  async updateFolderId(
-    assetIds: string[],
-    folderId: string | null,
-    updatedBy?: string,
-  ): Promise<void> {
-    const db = await getDb();
-    await db
-      .update(assets)
-      .set({
-        folderId,
-        updatedBy,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(inArray(assets.id, assetIds));
-  },
-
-  async updateProcessedImage(
-    id: string,
-    data: {
-      size: number;
-      sizeFormatted: string;
-      updatedBy: string;
-      name?: string;
-      mimeType?: string;
-      url?: string;
-      width?: number;
-      height?: number;
-      metadata?: string;
-    },
-  ): Promise<void> {
-    const db = await getDb();
-    await db
-      .update(assets)
-      .set({
-        ...data,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(assets.id, id));
-  },
-
   async delete(id: string): Promise<void> {
     const db = await getDb();
     await db.delete(assets).where(eq(assets.id, id));
-  },
-
-  async deleteByFolderId(folderId: string): Promise<void> {
-    const db = await getDb();
-    await db.delete(assets).where(eq(assets.folderId, folderId));
-  },
-
-  async findByFolderIds(folderIds: string[]): Promise<AssetDTO[]> {
-    if (folderIds.length === 0) return [];
-    const db = await getDb();
-
-    // Batch query to avoid SQLite limits
-    const BATCH_SIZE = 50;
-    let allRows: any[] = [];
-
-    for (let i = 0; i < folderIds.length; i += BATCH_SIZE) {
-      const chunk = folderIds.slice(i, i + BATCH_SIZE);
-      const rows = await db
-        .select()
-        .from(assets)
-        .where(inArray(assets.folderId, chunk));
-      allRows = allRows.concat(rows);
-    }
-
-    return allRows.map(toAssetDTO);
-  },
-
-  async softDeleteBatch(assetIds: string[], userId: string): Promise<void> {
-    if (assetIds.length === 0) return;
-    const db = await getDb();
-
-    const BATCH_SIZE = 50;
-
-    for (let i = 0; i < assetIds.length; i += BATCH_SIZE) {
-      const chunk = assetIds.slice(i, i + BATCH_SIZE);
-      await db
-        .update(assets)
-        .set({
-          deletedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          updatedBy: userId,
-        })
-        .where(inArray(assets.id, chunk));
-    }
   },
 };

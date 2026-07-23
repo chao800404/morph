@@ -1,7 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { EmptyFileIcon } from "@/components/ui/icons/empty-file-icon";
 import { cn } from "@/lib/utils";
-import { createItems } from "@/server/asset";
+import { createItems } from "@/server/asset/create-items.serverFn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useShallow } from "zustand/react/shallow";
 import { useCreateStore } from "../../../../features/global-create/use-create-store";
 import { getAssetsDialogConfig } from "../config/assets-dialog.config";
@@ -24,6 +25,7 @@ type Props = { className?: string } & (
 
 export const AssetEmptyCard = (props: Props) => {
   const uploadConfig = props.showButton ? props.uploadConfig : undefined;
+  const queryClient = useQueryClient();
 
   const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
     useShallow((state) => ({
@@ -41,6 +43,7 @@ export const AssetEmptyCard = (props: Props) => {
       description: config.description,
       fields: config.fields,
       action: createItems,
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: ["assets"] }),
     });
     setCreateOpen(true);
   };

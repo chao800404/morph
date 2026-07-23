@@ -1,4 +1,5 @@
 import type { FieldConfig } from "@/components/upload/types";
+import type { AssetFormAction } from "@/lib/asset/action-result";
 import type { FormField } from "@/lib/validations/form";
 import { create } from "zustand";
 
@@ -11,15 +12,15 @@ export type FieldType =
   | "folder-select"
   | "hidden"
   | "upload";
-export type ServerAction = (formData: FormData) => Promise<any>;
+export type ServerAction = AssetFormAction;
 
 interface CreateState {
   open: boolean;
   title?: string;
   description?: string;
   fields?: (FormField | FieldConfig)[];
-  action?: any;
-  onSuccess?: () => void;
+  action?: ServerAction;
+  onSuccess?: () => void | Promise<void>;
   toggleOpen: () => void;
   handleOpenChange: (open: boolean) => void;
   setFields: (fields: (FormField | FieldConfig)[]) => void;
@@ -28,11 +29,11 @@ interface CreateState {
     title?: string;
     description?: string;
     fields?: (FormField | FieldConfig)[];
-    action?: any;
-    onSuccess?: () => void;
+    action?: ServerAction;
+    onSuccess?: () => void | Promise<void>;
   }) => void;
   updateFieldValue: (name: string, value: any) => void;
-  setAction: (action: any) => void;
+  setAction: (action: ServerAction) => void;
 }
 
 const initialData = {
@@ -92,7 +93,7 @@ export const useCreateStore = create<CreateState>((set, get) => ({
       }),
     }));
   },
-  setAction: (action: any) => {
+  setAction: (action: ServerAction) => {
     set({ action });
   },
 }));

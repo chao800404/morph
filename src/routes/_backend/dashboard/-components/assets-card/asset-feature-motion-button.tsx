@@ -2,10 +2,13 @@ import { Button } from "@/components/ui/button";
 import { MoveFolderIcon } from "@/components/ui/icons/move-folder-icon";
 import { downloadAsset } from "@/lib/asset/download-utils";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
-import { deleteItems, moveItems, updateItems } from "@/server/asset";
+import { deleteItems } from "@/server/asset/delete-items.serverFn";
+import { moveItems } from "@/server/asset/move-items.serverFn";
+import { updateItems } from "@/server/asset/update-items.serverFn";
 import { Download, Edit, Plus, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -70,6 +73,8 @@ export const AssetFeatureMotionButton = ({
     })),
   );
 
+  const queryClient = useQueryClient();
+
   // ... existing handlers (handleDelete, etc.)
   const handleDelete = async () => {
     const formData = new FormData();
@@ -84,6 +89,7 @@ export const AssetFeatureMotionButton = ({
     const result = await deleteItems({ data: formData });
     if (result.success) {
       clearAllSelectedItems();
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
       toast.success(result.message || `${type} deleted successfully`, {
         position: "top-center",
       });

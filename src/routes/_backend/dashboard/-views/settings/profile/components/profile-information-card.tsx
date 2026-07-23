@@ -31,7 +31,7 @@ export const ProfileInformationCard = ({
       value = typeof fieldValue === "string" ? fieldValue : "";
     }
 
-    const country = session.session.country.toUpperCase();
+    const country = session.session.country?.toUpperCase() || "Unknown";
 
     const { ...fieldConfig } = field;
     if (field.key === "phone" && country) {

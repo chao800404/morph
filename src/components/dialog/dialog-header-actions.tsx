@@ -18,7 +18,7 @@ interface DialogHeaderActionsProps {
 }
 
 export const DialogHeaderActions = ({
-  onClose,
+  onClose: _onClose,
   title,
   actions,
   className,

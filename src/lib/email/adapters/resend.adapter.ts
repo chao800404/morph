@@ -7,6 +7,8 @@ export interface ResendAdapterConfig {
   defaultFromName?: string;
 }
 
+let hasWarnedMissingKey = false;
+
 export class ResendAdapter implements EmailAdapter {
   private client: Resend | null = null;
   private defaultFrom: string;
@@ -15,10 +17,13 @@ export class ResendAdapter implements EmailAdapter {
   constructor(config: ResendAdapterConfig) {
     // 驗證 API key
     if (!config.apiKey || config.apiKey.trim() === "") {
-      console.warn(
-        "⚠️  Resend API key is not configured. Email functionality will not work. " +
-          "Please set RESEND_API_KEY in your environment variables.",
-      );
+      if (!hasWarnedMissingKey) {
+        console.warn(
+          "⚠️  Resend API key is not configured. Email functionality will not work. " +
+            "Please set RESEND_API_KEY in your environment variables.",
+        );
+        hasWarnedMissingKey = true;
+      }
       this.isConfigured = false;
     } else {
       // 延遲初始化 Resend client，確保在 Cloudflare Workers 環境中正常運作

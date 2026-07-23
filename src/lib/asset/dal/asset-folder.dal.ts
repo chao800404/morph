@@ -1,283 +1,175 @@
 import { getDb } from "@/db";
 import { assetFolders } from "@/db/asset.schema";
-import { and, eq, inArray, isNull, like } from "drizzle-orm";
-import type { AssetFolderDTO, AssetFolderInsertDTO } from "../dto/asset-folder.dto";
-import { toAssetFolderDTO, type AssetFolderRow } from "../mappers/asset-folder.mapper";
+import { users } from "@/db/auth.schema";
+import { and, asc, desc, eq, inArray, isNull, like, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
+import type {
+  AssetFolderDTO,
+  AssetFolderInsertDTO,
+} from "../dto/asset-folder.dto";
+import {
+  toAssetFolderDTO,
+  type AssetFolderRow,
+} from "../mappers/asset-folder.mapper";
 
-const mapFirst = (rows: AssetFolderRow[]): AssetFolderDTO | null => {
-    if (!rows.length) return null;
-    return toAssetFolderDTO(rows[0]);
-};
+const mapFirst = (rows: AssetFolderRow[]): AssetFolderDTO | null =>
+  rows.length > 0 ? toAssetFolderDTO(rows[0]) : null;
 
 export const assetFolderDal = {
-    async findById(id: string): Promise<AssetFolderDTO | null> {
-        const db = await getDb();
-        const rows = await db.select().from(assetFolders).where(eq(assetFolders.id, id)).limit(1);
-        return mapFirst(rows);
-    },
+  async findById(id: string): Promise<AssetFolderDTO | null> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(assetFolders)
+      .where(and(eq(assetFolders.id, id), isNull(assetFolders.deletedAt)))
+      .limit(1);
+    return mapFirst(rows);
+  },
 
-    async findByIdAndOwner(id: string, userId: string): Promise<AssetFolderDTO | null> {
-        const db = await getDb();
-        const rows = await db
-            .select()
-            .from(assetFolders)
-            .where(and(eq(assetFolders.id, id), eq(assetFolders.createdBy, userId)))
-            .limit(1);
-        return mapFirst(rows);
-    },
+  async findByIds(ids: string[]): Promise<AssetFolderDTO[]> {
+    if (ids.length === 0) return [];
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(assetFolders)
+      .where(
+        and(inArray(assetFolders.id, ids), isNull(assetFolders.deletedAt)),
+      );
+    return rows.map(toAssetFolderDTO);
+  },
 
-    async findByIds(ids: string[], userId?: string): Promise<AssetFolderDTO[]> {
-        const db = await getDb();
-        const condition = userId
-            ? and(inArray(assetFolders.id, ids), eq(assetFolders.createdBy, userId))
-            : inArray(assetFolders.id, ids);
-        const rows = await db.select().from(assetFolders).where(condition);
-        return rows.map(toAssetFolderDTO);
-    },
+  async findByPath(path: string): Promise<AssetFolderDTO | null> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(assetFolders)
+      .where(
+        and(eq(assetFolders.path, path), isNull(assetFolders.deletedAt)),
+      )
+      .limit(1);
+    return mapFirst(rows);
+  },
 
-    async findByPath(path: string): Promise<AssetFolderDTO | null> {
-        const db = await getDb();
-        const rows = await db.select().from(assetFolders).where(eq(assetFolders.path, path)).limit(1);
-        return mapFirst(rows);
-    },
+  async findChildrenByIdPath(idPath: string): Promise<AssetFolderDTO[]> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(assetFolders)
+      .where(
+        and(
+          like(assetFolders.idPath, `${idPath}/%`),
+          isNull(assetFolders.deletedAt),
+        ),
+      );
+    return rows.map(toAssetFolderDTO);
+  },
 
-    async findByPathAndOwner(path: string, userId: string): Promise<AssetFolderDTO | null> {
-        const db = await getDb();
-        const rows = await db
-            .select()
-            .from(assetFolders)
-            .where(and(eq(assetFolders.path, path), eq(assetFolders.createdBy, userId)))
-            .limit(1);
-        return mapFirst(rows);
-    },
+  async findChildrenByPath(path: string): Promise<AssetFolderDTO[]> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(assetFolders)
+      .where(
+        and(
+          like(assetFolders.path, `${path}/%`),
+          isNull(assetFolders.deletedAt),
+        ),
+      );
+    return rows.map(toAssetFolderDTO);
+  },
 
-    async findChildrenByIdPath(idPath: string): Promise<AssetFolderDTO[]> {
-        const db = await getDb();
-        const rows = await db
-            .select()
-            .from(assetFolders)
-            .where(like(assetFolders.idPath, `${idPath}/%`));
-        return rows.map(toAssetFolderDTO);
-    },
+  async listAll(): Promise<AssetFolderDTO[]> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(assetFolders)
+      .where(isNull(assetFolders.deletedAt))
+      .orderBy(asc(assetFolders.path));
+    return rows.map(toAssetFolderDTO);
+  },
 
-    async findChildrenByPath(path: string): Promise<AssetFolderDTO[]> {
-        const db = await getDb();
-        const rows = await db
-            .select()
-            .from(assetFolders)
-            .where(like(assetFolders.path, `${path}/%`));
-        return rows.map(toAssetFolderDTO);
-    },
+  async listChildrenWithActors(options: {
+    parentId: string | null;
+    query?: string | null;
+    sortBy: "name" | "createdAt" | "updatedAt";
+    sortOrder: "asc" | "desc";
+  }): Promise<AssetFolderDTO[]> {
+    const db = await getDb();
+    const creator = alias(users, "asset_folder_creator");
+    const updater = alias(users, "asset_folder_updater");
+    const conditions = [
+      options.parentId
+        ? eq(assetFolders.parentId, options.parentId)
+        : isNull(assetFolders.parentId),
+      isNull(assetFolders.deletedAt),
+    ];
+    if (options.query?.trim()) {
+      conditions.push(like(assetFolders.name, `%${options.query.trim()}%`));
+    }
+    const sortColumn =
+      options.sortBy === "name"
+        ? assetFolders.name
+        : options.sortBy === "updatedAt"
+          ? assetFolders.updatedAt
+          : assetFolders.createdAt;
+    const orderBy =
+      options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
 
-    async findChildren(parentId: string): Promise<AssetFolderDTO[]> {
-        const db = await getDb();
-        const rows = await db.select().from(assetFolders).where(eq(assetFolders.parentId, parentId));
-        return rows.map(toAssetFolderDTO);
-    },
+    const rows = await db
+      .select({
+        folder: assetFolders,
+        creatorName: creator.name,
+        updaterName: updater.name,
+        assetCount: sql<number>`(SELECT COUNT(*) FROM assets WHERE assets.folder_id = ${assetFolders.id} AND assets.deleted_at IS NULL)`,
+        folderCount: sql<number>`(SELECT COUNT(*) FROM asset_folders AS child WHERE child.parent_id = ${assetFolders.id} AND child.deleted_at IS NULL)`,
+      })
+      .from(assetFolders)
+      .leftJoin(creator, eq(assetFolders.createdBy, creator.id))
+      .leftJoin(updater, eq(assetFolders.updatedBy, updater.id))
+      .where(and(...conditions))
+      .orderBy(orderBy);
 
-    async listAll(): Promise<AssetFolderDTO[]> {
-        const db = await getDb();
-        const rows = await db.select().from(assetFolders);
-        return rows.map(toAssetFolderDTO);
-    },
+    return rows.map(({ folder, creatorName, updaterName, assetCount, folderCount }) => {
+      const aCount = Number(assetCount) || 0;
+      const fCount = Number(folderCount) || 0;
+      return {
+        ...toAssetFolderDTO(folder),
+        createdBy: creatorName || folder.createdBy,
+        updatedBy: updaterName || folder.updatedBy,
+        assetCount: aCount,
+        folderCount: fCount,
+        itemCount: aCount + fCount,
+      };
+    });
+  },
 
-    async findChildrenLightweight(
-        parentId: string | null,
-        searchQuery?: string
-    ): Promise<Array<{ id: string; name: string }>> {
-        const db = await getDb();
-        const parentCondition = parentId ? eq(assetFolders.parentId, parentId) : isNull(assetFolders.parentId);
+  async create(data: AssetFolderInsertDTO): Promise<AssetFolderDTO> {
+    const db = await getDb();
+    const createdAt = data.createdAt ?? new Date();
+    const updatedAt = data.updatedAt ?? createdAt;
 
-        if (searchQuery && searchQuery.trim()) {
-            const searchPattern = `%${searchQuery.trim()}%`;
-            const rows = await db
-                .select({
-                    id: assetFolders.id,
-                    name: assetFolders.name,
-                })
-                .from(assetFolders)
-                .where(and(parentCondition, like(assetFolders.name, searchPattern)));
-            return rows;
-        } else {
-            const rows = await db
-                .select({
-                    id: assetFolders.id,
-                    name: assetFolders.name,
-                })
-                .from(assetFolders)
-                .where(parentCondition);
-            return rows;
-        }
-    },
+    await db.insert(assetFolders).values({
+      id: data.id,
+      name: data.name,
+      parentId: data.parentId,
+      path: data.path,
+      idPath: data.idPath,
+      description: data.description,
+      createdAt: createdAt.toISOString(),
+      updatedAt: updatedAt.toISOString(),
+      createdBy: data.createdBy,
+      updatedBy: data.createdBy,
+    });
 
-    async create(data: AssetFolderInsertDTO): Promise<AssetFolderDTO> {
-        const db = await getDb();
-        const createdAt = data.createdAt ?? new Date();
-        const updatedAt = data.updatedAt ?? createdAt;
+    const created = await this.findById(data.id);
+    if (!created) throw new Error("Failed to fetch created asset folder");
+    return created;
+  },
 
-        await db.insert(assetFolders).values({
-            id: data.id,
-            name: data.name,
-            parentId: data.parentId,
-            path: data.path,
-            idPath: data.idPath,
-            description: data.description,
-            createdAt: createdAt.toISOString(),
-            updatedAt: updatedAt.toISOString(),
-            createdBy: data.createdBy,
-            updatedBy: data.createdBy,
-        });
-
-        const created = await this.findById(data.id);
-        if (!created) {
-            throw new Error("Failed to fetch created asset folder");
-        }
-        return created;
-    },
-
-    async update(
-        id: string,
-        data: {
-            parentId?: string | null;
-            path?: string;
-            idPath?: string;
-            updatedBy?: string;
-        }
-    ): Promise<void> {
-        const db = await getDb();
-        await db
-            .update(assetFolders)
-            .set({
-                ...data,
-                updatedAt: new Date().toISOString(),
-            })
-            .where(eq(assetFolders.id, id));
-    },
-
-    async updateFields(
-        id: string,
-        data: {
-            name?: string;
-            description?: string;
-            updatedBy?: string;
-        }
-    ): Promise<void> {
-        const db = await getDb();
-        await db
-            .update(assetFolders)
-            .set({
-                ...data,
-                updatedAt: new Date().toISOString(),
-            })
-            .where(eq(assetFolders.id, id));
-    },
-
-    async updateName(id: string, name: string, newPath: string): Promise<void> {
-        const db = await getDb();
-        await db
-            .update(assetFolders)
-            .set({
-                name,
-                path: newPath,
-                updatedAt: new Date().toISOString(),
-            })
-            .where(eq(assetFolders.id, id));
-    },
-
-    async updatePathRecursively(oldPath: string, newPath: string): Promise<void> {
-        const db = await getDb();
-        const childFolders = await this.findChildrenByPath(oldPath);
-
-        for (const child of childFolders) {
-            const updatedPath = child.path.replace(oldPath, newPath);
-            await db
-                .update(assetFolders)
-                .set({
-                    path: updatedPath,
-                    updatedAt: new Date().toISOString(),
-                })
-                .where(eq(assetFolders.id, child.id));
-        }
-    },
-
-    async updateBatch(
-        updates: Array<{
-            id: string;
-            path?: string;
-            idPath?: string;
-        }>
-    ): Promise<void> {
-        const db = await getDb();
-        // Use Promise.all for parallel execution
-        await Promise.all(
-            updates.map(update =>
-                db
-                    .update(assetFolders)
-                    .set({
-                        path: update.path,
-                        idPath: update.idPath,
-                        updatedAt: new Date().toISOString(),
-                    })
-                    .where(eq(assetFolders.id, update.id))
-            )
-        );
-    },
-
-    async delete(id: string): Promise<void> {
-        const db = await getDb();
-        await db.delete(assetFolders).where(eq(assetFolders.id, id));
-    },
-
-    async deleteRecursively(id: string): Promise<void> {
-        const db = await getDb();
-        // Get all child folders
-        const childFolders = await db
-            .select({ id: assetFolders.id })
-            .from(assetFolders)
-            .where(eq(assetFolders.parentId, id));
-
-        // Recursively delete children
-        for (const child of childFolders) {
-            await this.deleteRecursively(child.id);
-        }
-
-        // Delete the folder itself
-        await this.delete(id);
-    },
-
-    async findAllDescendantIds(rootFolderId: string): Promise<string[]> {
-        const db = await getDb();
-        const root = await this.findById(rootFolderId);
-        if (!root) return [];
-
-        // Use idPath to find all descendants efficiently
-        // idPath format: /id1/id2/id3
-        // We want to find idPath like '/id1/id2/id3/%'
-        const descendants = await db
-            .select({ id: assetFolders.id })
-            .from(assetFolders)
-            .where(like(assetFolders.idPath, `${root.idPath}/%`));
-
-        return [rootFolderId, ...descendants.map(d => d.id)];
-    },
-
-    async softDeleteBatch(ids: string[], userId: string): Promise<void> {
-        if (ids.length === 0) return;
-        const db = await getDb();
-
-        // Chunking to avoid SQLite variable limits
-        const BATCH_SIZE = 50;
-
-        for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-            const chunk = ids.slice(i, i + BATCH_SIZE);
-            await db
-                .update(assetFolders)
-                .set({
-                    deletedAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
-                    updatedBy: userId,
-                })
-                .where(inArray(assetFolders.id, chunk));
-        }
-    },
+  async findAllDescendantIds(rootFolderId: string): Promise<string[]> {
+    const root = await this.findById(rootFolderId);
+    if (!root) return [];
+    const descendants = await this.findChildrenByIdPath(root.idPath);
+    return [rootFolderId, ...descendants.map((folder) => folder.id)];
+  },
 };

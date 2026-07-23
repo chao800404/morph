@@ -28,6 +28,26 @@ const InfoAlert = lazy(() =>
     default: m.InfoAlert,
   })),
 );
+const AssetEditDialog = lazy(() =>
+  import("./dashboard/-views/features/index").then((m) => ({
+    default: m.AssetEditDialog,
+  })),
+);
+const AssetMoveDialog = lazy(() =>
+  import("./dashboard/-views/features/index").then((m) => ({
+    default: m.AssetMoveDialog,
+  })),
+);
+const AssetPreviewDialog = lazy(() =>
+  import("./dashboard/-views/features/index").then((m) => ({
+    default: m.AssetPreviewDialog,
+  })),
+);
+const AssetSelectFloat = lazy(() =>
+  import("./dashboard/-views/features/index").then((m) => ({
+    default: m.AssetSelectFloat,
+  })),
+);
 
 export const Route = createFileRoute("/_backend/dashboard")({
   beforeLoad: async ({ location }) => {
@@ -98,7 +118,7 @@ function RouteComponent() {
             <div
               id="dashboard-content"
               className={cn(
-                "h-[calc(100svh-56px)] mt-14 overflow-y-auto",
+                "h-[calc(100svh-56px)] mt-14 overflow-hidden",
                 "max-lg:h-full max-lg:max-h-full max-lg:overflow-y-visible max-lg:pb-6",
               )}
             >
@@ -106,6 +126,10 @@ function RouteComponent() {
                 <EditDialog />
                 <CreateDialog />
                 <InfoAlert />
+                <AssetEditDialog />
+                <AssetMoveDialog />
+                <AssetPreviewDialog />
+                <AssetSelectFloat />
               </Suspense>
 
               {/* <AssetsDialogs /> */}

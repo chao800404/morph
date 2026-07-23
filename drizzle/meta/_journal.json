@@ -57,6 +57,20 @@
       "when": 1766502905243,
       "tag": "0007_concerned_vapor",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1784735128395,
+      "tag": "0008_neat_scarlet_spider",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1784775117591,
+      "tag": "0009_asset_schema_cleanup",
+      "breakpoints": true
     }
   ]
 }

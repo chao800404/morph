@@ -2,67 +2,41 @@ import { assetFolderDal } from "@/lib/asset/dal/asset-folder.dal";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { createServerFn } from "@tanstack/react-start";
 // import { revalidatePath } from "next/cache";
-import { z } from "zod";
-import { zfd } from "zod-form-data";
-import { authMiddleware } from "../middleware/auth.middleware";
+import { assetAdminMiddleware } from "../middleware/auth.middleware";
+import {
+  batchMoveItemsInD1,
+  type FolderLocationUpdate,
+} from "@/lib/asset/dal/asset-batch.dal";
+import { parseMoveItemsInput } from "./input-validation";
 
-const inputSchema = zfd.formData({
-  itemIds: zfd.text(
-    z
-      .string()
-      .transform((str, ctx) => {
-        try {
-          return JSON.parse(str);
-        } catch (e) {
-          ctx.addIssue({ code: "custom", message: "Invalid JSON" });
-          return z.NEVER;
-        }
-      })
-      .pipe(z.array(z.string())),
-  ),
-  "Destination Folder": zfd.text(z.string().optional()),
-});
-
-// Only update descendant folders, not the folder itself (which is updated in the main flow)
-async function updateDescendantsPaths(
+async function collectDescendantPathUpdates(
   oldPath: string,
   newPath: string,
   oldIdPath: string,
   newIdPath: string,
-) {
-  // Use optimized LIKE query to find all descendants
+): Promise<FolderLocationUpdate[]> {
   const childFolders = await assetFolderDal.findChildrenByIdPath(oldIdPath);
-
-  if (childFolders.length === 0) return;
-
-  const updates = childFolders.map((child) => ({
+  return childFolders.map((child) => ({
     id: child.id,
     path: child.path.replace(oldPath, newPath),
     idPath: child.idPath.replace(oldIdPath, newIdPath),
+    updateParent: false,
   }));
-
-  // Batch update all descendants
-  await assetFolderDal.updateBatch(updates);
 }
 
 export const moveItems = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => {
-    if (!(data instanceof FormData)) {
-      throw new Error("Invalid form data");
-    }
-    return inputSchema.parse(data);
-  })
-  .middleware([authMiddleware])
+  .inputValidator(parseMoveItemsInput)
+  .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput, context }) => {
+    if (parsedInput.formError) {
+      return {
+        success: false,
+        message: parsedInput.formError,
+        errors: parsedInput.errors,
+      };
+    }
     const itemIds = parsedInput.itemIds;
-    const destinationFolder = parsedInput["Destination Folder"];
-
-    const targetFolderId =
-      destinationFolder &&
-      destinationFolder.trim() !== "" &&
-      destinationFolder !== "root"
-        ? destinationFolder
-        : null;
+    const targetFolderId = parsedInput.destinationFolder;
 
     // Optimization 1: Pre-fetch Target Folder (Single DB query)
     let targetFolder = null;
@@ -79,6 +53,10 @@ export const moveItems = createServerFn({ method: "POST" })
       assetFolderDal.findByIds(itemIds),
     ]);
 
+    if (userAssets.length + userFolders.length !== new Set(itemIds).size) {
+      throw new Error("One or more selected items no longer exist");
+    }
+
     // Optimization 2: Check circular reference in memory using pre-fetched targetFolder
     if (targetFolder) {
       for (const folder of userFolders) {
@@ -89,19 +67,39 @@ export const moveItems = createServerFn({ method: "POST" })
       }
     }
 
-    // Move Assets - Batch processing
-    if (userAssets.length > 0) {
-      await assetDal.updateFolderId(
-        userAssets.map((a) => a.id),
-        targetFolderId,
-        context.user.id,
+    for (const folder of userFolders) {
+      const selectedAncestor = userFolders.find(
+        (candidate) =>
+          candidate.id !== folder.id &&
+          folder.idPath.startsWith(`${candidate.idPath}/`),
       );
+      if (selectedAncestor) {
+        throw new Error("Move a parent folder without selecting its descendants");
+      }
     }
 
-    // Optimization 3: Move Folders - Parallel processing & Combined updates
-    if (userFolders.length > 0) {
+    const destinationPaths = new Set<string>();
+    for (const folder of userFolders) {
+      const destinationPath = targetFolder
+        ? `${targetFolder.path}/${folder.name}`
+        : `/${folder.name}`;
+      if (destinationPaths.has(destinationPath)) {
+        throw new Error(`Duplicate folder name "${folder.name}" in selection`);
+      }
+      destinationPaths.add(destinationPath);
+
+      const existingAtDestination =
+        await assetFolderDal.findByPath(destinationPath);
+      if (existingAtDestination && existingAtDestination.id !== folder.id) {
+        throw new Error(
+          `Folder "${folder.name}" already exists at destination`,
+        );
+      }
+    }
+
+    const folderLocationUpdates = (
       await Promise.all(
-        userFolders.map(async (folder) => {
+        userFolders.map(async (folder): Promise<FolderLocationUpdate[]> => {
           let newPath: string;
           let newIdPath: string;
 
@@ -114,26 +112,35 @@ export const moveItems = createServerFn({ method: "POST" })
             newIdPath = `/${folder.id}`;
           }
 
-          // 3.1 Combined Update: Update ParentID + Path + IdPath in one go
-          await assetFolderDal.update(folder.id, {
+          const updates: FolderLocationUpdate[] = [{
+            id: folder.id,
             parentId: targetFolderId,
             path: newPath,
             idPath: newIdPath,
-          });
+            updateParent: true,
+          }];
 
-          // 3.2 Update all descendant paths
-          // Only if path actually changed (though move usually implies path change)
           if (folder.path !== newPath) {
-            await updateDescendantsPaths(
-              folder.path,
-              newPath,
-              folder.idPath,
-              newIdPath,
+            updates.push(
+              ...(await collectDescendantPathUpdates(
+                folder.path,
+                newPath,
+                folder.idPath,
+                newIdPath,
+              )),
             );
           }
+          return updates;
         }),
-      );
-    }
+      )
+    ).flat();
+
+    await batchMoveItemsInD1({
+      assetIds: userAssets.map((asset) => asset.id),
+      targetFolderId,
+      folderUpdates: folderLocationUpdates,
+      userId: context.user.id,
+    });
 
     // revalidatePath("/(backend)/dashboard/[...slug]", "layout");
 

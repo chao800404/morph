@@ -8,7 +8,7 @@ function getLocalD1DB() {
     const basePath = path.resolve(".wrangler/state/v3/d1");
 
     if (!fs.existsSync(basePath)) {
-      return null; // Return null instead of throwing, will use production config
+      return null;
     }
 
     const dbFile = fs
@@ -16,7 +16,7 @@ function getLocalD1DB() {
       .find((f) => f.endsWith(".sqlite"));
 
     if (!dbFile) {
-      return null; // Return null instead of throwing
+      return null;
     }
 
     const url = path.resolve(basePath, dbFile);
@@ -29,12 +29,13 @@ function getLocalD1DB() {
 }
 
 const localD1DBUrl = getLocalD1DB();
+const useRemoteD1 = process.env.DRIZZLE_TARGET === "remote";
 
 export default defineConfig({
   dialect: "sqlite",
   schema: "./src/db/schema.ts",
   out: "./drizzle",
-  ...(process.env.NODE_ENV === "production" || localD1DBUrl === null
+  ...(useRemoteD1
     ? {
         driver: "d1-http",
         dbCredentials: {
@@ -43,9 +44,11 @@ export default defineConfig({
           token: process.env.CLOUDFLARE_D1_TOKEN!,
         },
       }
-    : {
-        dbCredentials: {
-          url: localD1DBUrl!,
-        },
-      }),
+    : localD1DBUrl
+      ? {
+          dbCredentials: {
+            url: localD1DBUrl,
+          },
+        }
+      : {}),
 });

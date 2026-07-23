@@ -1,13 +1,7 @@
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { useRouter } from "@tanstack/react-router";
-import {
-  type ComponentProps,
-  type ReactNode,
-  useActionState,
-  useEffect,
-} from "react";
+import { type ComponentProps, type ReactNode, useActionState } from "react";
 import { DialogFooterActions } from "./dialog-footer-actions";
 import { DialogHeaderActions } from "./dialog-header-actions";
 
@@ -50,19 +44,10 @@ export const DialogCreateWrapper = ({
   onOpenAutoFocus,
   title,
 }: Props) => {
-  const router = useRouter();
-  const [state, formAction, pending] = useActionState(
+  const [, formAction, pending] = useActionState(
     action || (async () => initialState),
     initialState,
   );
-
-  // Handle state changes - close dialog and invalidate on success
-  useEffect(() => {
-    if (state.success && state !== initialState) {
-      onOpenChange?.(false);
-      router.invalidate();
-    }
-  }, [state, onOpenChange, router]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

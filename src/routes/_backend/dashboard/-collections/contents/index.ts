@@ -10,21 +10,31 @@ export const Contents = {
       slug: "products",
       icon: "Package",
       label: "Products",
+      component: lazy(() => import("@views/global/contents/products")),
       items: [
         {
           title: "Collections",
           slug: "collections",
           label: "Collections",
+          component: lazy(
+            () => import("@views/global/contents/products/collections"),
+          ),
         },
         {
           title: "Inventory",
           slug: "inventory",
           label: "Inventory",
+          component: lazy(
+            () => import("@views/global/contents/products/inventory"),
+          ),
         },
         {
           title: "Tags",
           slug: "tags",
           label: "Tags",
+          component: lazy(
+            () => import("@views/global/contents/products/tags"),
+          ),
         },
       ],
     },

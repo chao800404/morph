@@ -1,20 +1,21 @@
-// import { AssetBlockMap } from "@/app/(backend)/dashboard/_components/asset-preview/asset/asset-block-map";
+import { AssetBlockMap } from "@/components/asset/asset-block-map";
 import { Checkbox } from "@/components/ui/checkbox";
 import { TableCell, TableRow } from "@/components/ui/table";
-import { useMediaQuery } from "@/hooks/use-media-query";
-import { cn, formatBytes } from "@/lib/utils";
+import { cn, formatBytes, getFileType } from "@/lib/utils";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { useDraggable } from "@dnd-kit/react";
 import { useShallow } from "zustand/react/shallow";
 
 import { Button } from "@/components/ui/button";
 import { Ellipsis } from "lucide-react";
+import { memo, useMemo } from "react";
 import { ItemActionsMenu } from "./item-actions-menu";
 
 type Props = {
   name: string;
   id: string;
   checked: boolean;
+  isDraggableEnabled: boolean;
   type: string | null;
   url: string;
   createdAt: string;
@@ -26,16 +27,20 @@ type Props = {
   onDownload?: (id: string) => void;
   onDoubleClick?: (id: string) => void;
   onCopyURL?: (id: string) => void;
-  onKeyDown?: (e: React.KeyboardEvent<HTMLTableRowElement>) => void;
+  onKeyDown?: (
+    id: string,
+    event: React.KeyboardEvent<HTMLTableRowElement>,
+  ) => void;
   extension?: string;
   size: number;
   updatedAt?: string;
 };
 
-export const AssetTableRow = ({
+export const AssetTableRow = memo(function AssetTableRow({
   name,
   id,
   checked,
+  isDraggableEnabled,
   url,
   createdAt,
   type,
@@ -51,21 +56,20 @@ export const AssetTableRow = ({
   extension,
   size,
   updatedAt,
-}: Props) => {
-  const { isItemDragging, clearAllSelectedItems, setActionMenuOpen } =
+}: Props) {
+  const { isItemDragging, setActionMenuOpen } =
     useAssetsStore(
       useShallow((state) => ({
         isItemDragging: state.isItemDragging(id, "asset"),
-        clearAllSelectedItems: state.clearAllSelectedItems,
         setActionMenuOpen: state.setActionMenuOpen,
       })),
     );
-  const isLargeScreen = useMediaQuery("(min-width: 1024px)");
+  const dragData = useMemo(() => ({ name }), [name]);
   const { ref, isDragging: isDraggableDragging } = useDraggable({
     id,
     type: "asset",
-    data: { name },
-    disabled: !isLargeScreen,
+    data: dragData,
+    disabled: !isDraggableEnabled,
   });
   const isDragging = isDraggableDragging || isItemDragging;
 
@@ -78,16 +82,18 @@ export const AssetTableRow = ({
       data-dragging={isDragging}
       data-selected={checked}
       onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onClick?.(id);
+        if (onClick) {
+          e.preventDefault();
+          e.stopPropagation();
+          onClick(id);
+        }
       }}
       className={cn(
         "h-12 cursor-pointer group relative z-20 select-none",
         "data-[dragging=true]:opacity-20",
         "data-[selected=true]:bg-blue-100/50 dark:data-[selected=true]:bg-zinc-700",
       )}
-      onKeyDown={onKeyDown}
+      onKeyDown={(event) => onKeyDown?.(id, event)}
     >
       <TableCell
         className={cn(
@@ -109,15 +115,15 @@ export const AssetTableRow = ({
             checked={checked}
           />
           <div className="w-6 flex justify-start">
-            {/* <AssetBlockMap
-                            variant="sm"
-                            type="asset"
-                            name={name}
-                            src={url}
-                            alt={name}
-                            fileType={getFileType(type)}
-                            extension={extension}
-                        /> */}
+            <AssetBlockMap
+              variant="sm"
+              type="asset"
+              name={name}
+              src={url}
+              alt={name}
+              fileType={getFileType(type)}
+              extension={extension}
+            />
           </div>
         </div>
       </TableCell>
@@ -153,14 +159,6 @@ export const AssetTableRow = ({
         type="asset"
         onOpenChange={(open) => {
           setActionMenuOpen(open);
-          if (open) {
-            // Clear all selections and select only this item
-            clearAllSelectedItems();
-            onCheckedChange(id);
-          } else {
-            // Clear all selections when menu closes
-            clearAllSelectedItems();
-          }
         }}
       >
         <TableCell
@@ -180,4 +178,4 @@ export const AssetTableRow = ({
       </ItemActionsMenu>
     </TableRow>
   );
-};
+});

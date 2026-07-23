@@ -138,9 +138,28 @@ export const getFileType = (
   mimeType?: string | null,
 ): "image" | "video" | "audio" | "file" | "unknown" => {
   if (!mimeType) return "unknown";
-  if (mimeType.startsWith("image/")) return "image";
-  if (mimeType.startsWith("video/")) return "video";
-  if (mimeType.startsWith("audio/")) return "audio";
+  const type = mimeType.toLowerCase();
+  if (
+    type === "image" ||
+    type.startsWith("image/") ||
+    ["jpg", "jpeg", "png", "gif", "webp", "svg", "ico", "avif"].includes(type)
+  ) {
+    return "image";
+  }
+  if (
+    type === "video" ||
+    type.startsWith("video/") ||
+    ["mp4", "webm", "ogg", "mov", "avi", "mkv"].includes(type)
+  ) {
+    return "video";
+  }
+  if (
+    type === "audio" ||
+    type.startsWith("audio/") ||
+    ["mp3", "wav", "flac", "aac", "m4a"].includes(type)
+  ) {
+    return "audio";
+  }
   return "file";
 };
 

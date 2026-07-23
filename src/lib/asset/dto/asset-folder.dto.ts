@@ -16,6 +16,9 @@ export interface AssetFolderDTO {
     createdAt: Date;
     updatedAt: Date;
     description?: string | null;
+    assetCount?: number;
+    folderCount?: number;
+    itemCount?: number;
 }
 
 export interface AssetFolderInsertDTO extends CreateAssetFolderDTO {

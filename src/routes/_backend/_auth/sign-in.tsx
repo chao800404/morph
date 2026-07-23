@@ -1,4 +1,5 @@
 import { getConfig } from "@/server/get-config";
+import { checkHasAdminServerFn } from "@/server/auth/check-has-admin.serverFn";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { z } from "zod";
 import { LoginForm } from "./-components/login-form";
@@ -15,6 +16,11 @@ export const Route = createFileRoute("/_backend/_auth/sign-in")({
     const session = context.session;
     if (session) {
       throw redirect({ to: "/dashboard" });
+    }
+
+    const hasAdmin = await checkHasAdminServerFn();
+    if (!hasAdmin) {
+      throw redirect({ to: "/create-first-admin" });
     }
   },
   component: Page,

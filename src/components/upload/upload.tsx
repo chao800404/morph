@@ -39,6 +39,10 @@ function UploadPreviewItem({
   extension,
   duration,
 }: UploadPreviewItemProps) {
+  const isVideo =
+    fileType === "video" ||
+    ["mp4", "webm", "mov", "ogg", "ogv"].includes(extension.toLowerCase());
+
   return (
     <div
       className={cn(
@@ -48,6 +52,24 @@ function UploadPreviewItem({
     >
       {fileType === "image" ? (
         <img src={src} alt={alt} className="size-full object-cover" />
+      ) : isVideo ? (
+        <video
+          src={src}
+          aria-label={alt}
+          muted
+          playsInline
+          preload="metadata"
+          className="size-full object-cover"
+          onMouseOver={(e) => {
+            const v = e.currentTarget;
+            v.play().catch(() => {});
+          }}
+          onMouseOut={(e) => {
+            const v = e.currentTarget;
+            v.pause();
+            v.currentTime = 0;
+          }}
+        />
       ) : (
         <div className="flex flex-col items-center justify-center size-full bg-muted text-muted-foreground p-2 text-center">
           <span className="uppercase font-semibold text-xs mb-1">
@@ -68,7 +90,7 @@ function UploadPreviewItem({
         <X className="size-3" />
       </button>
       {duration ? (
-        <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1 rounded backdrop-blur-sm">
+        <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded font-mono z-10 backdrop-blur-xs">
           {formatDuration(duration)}
         </span>
       ) : null}
@@ -111,6 +133,7 @@ export const UploadField = ({
 
       if (fileData.length >= maxFiles) {
         const errorMsg = `You can only upload up to ${maxFiles} files`;
+        console.error("❌ [Upload Limit Exceeded]", errorMsg);
         setError(field.name, errorMsg);
         toast.error(errorMsg, { position: "top-center" });
         return;
@@ -129,7 +152,9 @@ export const UploadField = ({
 
         // Extract duration for video files
         let duration: number | undefined;
-        if (file.type.startsWith("video/")) {
+        const videoExtensions = new Set([".mp4", ".webm", ".ogg", ".ogv", ".mov"]);
+        const ext = `.${file.name.split(".").pop()?.toLowerCase()}`;
+        if (file.type.startsWith("video/") || videoExtensions.has(ext)) {
           try {
             duration = await extractVideoDuration(file);
           } catch (error) {
@@ -163,7 +188,7 @@ export const UploadField = ({
   );
 
   return (
-    <div className={cn("flex flex-col gap-2", className)}>
+    <div id={fieldId} className={cn("flex flex-col gap-2", className)}>
       {error && <p className="text-destructive text-sm font-normal">{error}</p>}
       <Dropzone
         accept={field.accept ?? { "image/*": [] }}
@@ -173,6 +198,7 @@ export const UploadField = ({
         onDrop={handleDrop}
         onError={(error) => {
           const errorMsg = error.message ?? "Failed to upload file";
+          console.error("❌ [Dropzone Error]", error);
           toast.error(errorMsg, { position: "top-center" });
           setError(field.name, errorMsg);
         }}

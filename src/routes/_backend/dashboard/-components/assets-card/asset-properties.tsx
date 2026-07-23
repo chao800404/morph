@@ -1,12 +1,18 @@
-// import { AssetBlockMap } from "@/app/(backend)/dashboard/_components/asset-preview/asset/asset-block-map";
+import { AssetBlockMap } from "@/components/asset/asset-block-map";
+import { FluentFolderIcon } from "@/components/ui/icons/fluent-folder-icon";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-import { formatBytes, formatDuration } from "@/lib/utils";
+import { cn, formatBytes, formatDuration, getFileType } from "@/lib/utils";
 import { useAssetPreviewStore } from "@/routes/_backend/dashboard/-views/features/asset/preview/use-asset-preview-store";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { useShallow } from "zustand/react/shallow";
 
 export const AssetProperties = () => {
-  const activeItem = useAssetsStore(useShallow((state) => state.activeItem));
+  const { activeItem, assetsData } = useAssetsStore(
+    useShallow((state) => ({
+      activeItem: state.activeItem,
+      assetsData: state.assetsData,
+    })),
+  );
   const { setToggleOpen, setPreviewData } = useAssetPreviewStore(
     useShallow((state) => ({
       setPreviewData: state.setAssetPreviewData,
@@ -17,6 +23,23 @@ export const AssetProperties = () => {
   if (!activeItem) return null;
 
   const isAsset = activeItem.type === "asset";
+
+  const isCurrentFolder =
+    !isAsset &&
+    assetsData.currentFolder &&
+    String(assetsData.currentFolder.id) === String(activeItem.id);
+
+  let itemsCount = "—";
+  if (!isAsset) {
+    if (activeItem.itemCount !== undefined) {
+      itemsCount = `${activeItem.assetCount ?? 0} assets · ${activeItem.folderCount ?? 0} folders`;
+    } else if (isCurrentFolder) {
+      itemsCount = `${assetsData.assets?.length ?? 0} assets · ${assetsData.folders?.length ?? 0} folders`;
+    }
+  }
+
+  // Always show Items row for folders
+  const showItems = !isAsset;
 
   const properties = [
     {
@@ -74,10 +97,23 @@ export const AssetProperties = () => {
             : []),
         ]
       : [
+          // Folder-specific fields
           {
             label: "Description",
             value: activeItem.description || "-",
           },
+          ...(showItems
+            ? [{ label: "Items", value: itemsCount }]
+            : []),
+          ...(activeItem.type === "folder" && activeItem.path
+            ? [{ label: "Path", value: activeItem.path }]
+            : []),
+          ...(activeItem.type === "folder" && activeItem.createdBy
+            ? [{ label: "Created By", value: activeItem.createdBy }]
+            : []),
+          ...(activeItem.type === "folder" && activeItem.updatedBy
+            ? [{ label: "Updated By", value: activeItem.updatedBy }]
+            : []),
         ]),
     ...(activeItem.createdAt
       ? [
@@ -101,14 +137,34 @@ export const AssetProperties = () => {
     <div className="flex flex-col h-full min-h-0">
       <div className="w-full h-44 flex items-center justify-center shrink-0">
         {isAsset && activeItem.type === "asset" ? (
-          <div className="size-full bg-muted border rounded-md flex items-center justify-center p-4">
-            <span className="text-xs text-muted-foreground break-all text-center">
+          <button
+            type="button"
+            className="size-full overflow-hidden rounded-md border bg-muted"
+            onClick={() => {
+              setPreviewData({ item: activeItem, items: [activeItem] });
+              setToggleOpen();
+            }}
+          >
+            <AssetBlockMap
+              type="asset"
+              variant="property"
+              name={activeItem.name}
+              src={activeItem.src || ""}
+              alt={activeItem.alt || activeItem.name}
+              fileType={getFileType(activeItem.fileType)}
+              extension={activeItem.extension}
+              duration={activeItem.duration}
+            />
+          </button>
+        ) : (
+          <div className={cn(
+            "size-full border rounded-md flex flex-col items-center justify-center gap-2.5",
+            "bg-gradient-to-b from-zinc-50 to-zinc-100 dark:from-zinc-800/60 dark:to-zinc-900/80",
+          )}>
+            <FluentFolderIcon className="w-14 h-14 drop-shadow-md" />
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-300 truncate max-w-[80%]">
               {activeItem.name}
             </span>
-          </div>
-        ) : (
-          <div className="size-full bg-muted border rounded-md flex items-center justify-center p-4">
-            <span className="text-xs text-muted-foreground">Folder</span>
           </div>
         )}
       </div>
@@ -121,12 +177,16 @@ export const AssetProperties = () => {
           {properties.map((item, index) => (
             <div
               key={index}
-              className="grid items-center grid-cols-2 px-6 py-3 not-last:border-b"
+              className="grid items-start grid-cols-2 px-6 py-3 not-last:border-b"
             >
               <div className="text-sm text-muted-foreground tracking-wide">
                 {item.label}
               </div>
-              <div className="text-sm font-medium break-words">
+              <div className={cn(
+                "text-sm font-medium break-words",
+                item.label === "Path" && "text-xs font-mono text-zinc-500 dark:text-zinc-400 break-all",
+                item.label === "Items" && "text-xs text-zinc-600 dark:text-zinc-300",
+              )}>
                 {item.value}
               </div>
             </div>

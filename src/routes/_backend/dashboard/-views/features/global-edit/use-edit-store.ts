@@ -17,17 +17,17 @@ export type FieldType =
  * Result structure for actions.
  * Consistent with what EditDialog expects and compatible with TanStack Start server functions.
  */
-export interface ActionResult<T = any> {
-  data?: T;
-  serverError?: string;
-  validationErrors?: Record<string, string | string[]>;
+export interface ActionResult {
+  success: boolean;
+  message: string;
+  errors?: Record<string, string[]>;
 }
 
 /**
  * Server Action type for TanStack Start.
  * In TanStack Start, server functions are async functions that can return a standardized result.
  */
-export type ServerAction = (input: any) => Promise<ActionResult>;
+export type ServerAction = (formData: FormData) => Promise<ActionResult>;
 
 interface EditState {
   open: boolean;

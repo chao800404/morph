@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 import { AssetsCardHeader } from "@/routes/_backend/dashboard/-components/assets-card/assets-card-header";
@@ -16,8 +17,76 @@ export const AssetsExplorerCard = ({
   query,
   uploadConfig,
 }: AssetsCardComponentProps) => {
+  const [foldersCollapsed, setFoldersCollapsed] = useState(false);
+  const [assetsCollapsed, setAssetsCollapsed] = useState(false);
+  const [evenSplitResetKey, setEvenSplitResetKey] = useState(0);
   const { folders = [], assets = [], currentFolder } = data;
+  const hasFolders = folders.length > 0;
+  const hasAssets = assets.length > 0;
   const breadCrumb = currentFolder?.idPath?.split("/").filter(Boolean);
+
+  const resetToEvenSplit = useCallback(() => {
+    setEvenSplitResetKey((key) => key + 1);
+  }, []);
+
+  const handleToggleFolders = useCallback(() => {
+    if (!hasAssets) return;
+
+    if (foldersCollapsed) {
+      setFoldersCollapsed(false);
+      setAssetsCollapsed(false);
+      resetToEvenSplit();
+      return;
+    }
+
+    setFoldersCollapsed(true);
+    setAssetsCollapsed(false);
+  }, [foldersCollapsed, hasAssets, resetToEvenSplit]);
+
+  const handleToggleAssets = useCallback(() => {
+    if (!hasFolders) return;
+
+    if (assetsCollapsed) {
+      setFoldersCollapsed(false);
+      setAssetsCollapsed(false);
+      resetToEvenSplit();
+      return;
+    }
+
+    setFoldersCollapsed(false);
+    setAssetsCollapsed(true);
+  }, [assetsCollapsed, hasFolders, resetToEvenSplit]);
+
+  const handleSetFoldersCollapsed = useCallback(
+    (collapsed: boolean) => {
+      if (collapsed) {
+        if (!hasAssets) return;
+        setFoldersCollapsed(true);
+        setAssetsCollapsed(false);
+        return;
+      }
+      setFoldersCollapsed(false);
+    },
+    [hasAssets],
+  );
+
+  const handleSetAssetsCollapsed = useCallback(
+    (collapsed: boolean) => {
+      if (collapsed) {
+        if (!hasFolders) return;
+        setFoldersCollapsed(false);
+        setAssetsCollapsed(true);
+        return;
+      }
+      setAssetsCollapsed(false);
+    },
+    [hasFolders],
+  );
+
+  useEffect(() => {
+    if (!hasAssets) setFoldersCollapsed(false);
+    if (!hasFolders) setAssetsCollapsed(false);
+  }, [hasAssets, hasFolders]);
 
   const rootBreadcrumb = [{ label, href: "/dashboard/assets" }];
   let breadcrumbs = rootBreadcrumb;
@@ -54,7 +123,10 @@ export const AssetsExplorerCard = ({
   return (
     <CardWrapper
       classNames={{
-        contentWrapper: cn("h-full w-full relative"),
+        cardWrapper: "h-[calc(100vh-4.75rem)] flex flex-col overflow-hidden",
+        contentWrapper: cn(
+          "w-full relative flex-1 flex flex-col min-h-0 overflow-hidden",
+        ),
         headerWrapper: cn("max-md:flex-col"),
       }}
       label={<BreadcrumbCollapse breadcrumbs={breadcrumbs} />}
@@ -68,15 +140,32 @@ export const AssetsExplorerCard = ({
         />
       }
     >
-      <div className="h-full w-full">
+      <div className="w-full flex-1 flex flex-col min-h-0 overflow-hidden">
         {folders?.length <= 0 && assets?.length <= 0 && (
-          <div className="h-92 w-full flex items-center gap-4 justify-center flex-col">
+          <div className="h-full w-full flex items-center gap-4 justify-center flex-col">
             <AssetEmptyCard className="h-fit" showButton={false} />
             <p className="text-center">No assets found</p>
           </div>
         )}
-        {folders && folders?.length > 0 && <FoldersContent folders={folders} />}
-        <AssetsContent assets={assets} pagination={data.pagination} />
+        {folders && folders?.length > 0 && (
+          <FoldersContent
+            folders={folders}
+            isCollapsed={foldersCollapsed}
+            isAssetsCollapsed={assetsCollapsed}
+            canCollapse={hasAssets}
+            evenSplitResetKey={evenSplitResetKey}
+            onToggleCollapse={handleToggleFolders}
+            onSetFoldersCollapsed={handleSetFoldersCollapsed}
+            onSetAssetsCollapsed={handleSetAssetsCollapsed}
+          />
+        )}
+        <AssetsContent
+          assets={assets}
+          pagination={data.pagination}
+          isCollapsed={assetsCollapsed}
+          canCollapse={hasFolders}
+          onToggleCollapse={handleToggleAssets}
+        />
       </div>
     </CardWrapper>
   );
