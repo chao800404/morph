@@ -82,6 +82,12 @@ export const AssetTableRow = memo(function AssetTableRow({
       data-dragging={isDragging}
       data-selected={checked}
       onClick={(e) => {
+        if (e.ctrlKey || e.metaKey || e.shiftKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          onCheckedChange(id);
+          return;
+        }
         if (onClick) {
           e.preventDefault();
           e.stopPropagation();

@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import type { AssetsCardData } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
 import { getAssetsDialogConfig } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-dialog.config";
-import { createItems } from "@/server/asset/create-items.serverFn";
+import { createItems } from "@/server/asset";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Dot, FolderPlus, Search, X } from "lucide-react";

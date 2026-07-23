@@ -46,15 +46,15 @@ import { useAssetMoveStore } from "@/routes/_backend/dashboard/-views/features/a
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import type { AssetFolder } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
-import { deleteItems } from "@/server/asset/delete-items.serverFn";
-import { moveItems } from "@/server/asset/move-items.serverFn";
-import { updateItems } from "@/server/asset/update-items.serverFn";
+import { deleteItems, moveItems, updateItems } from "@/server/asset";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { FluentFolderIcon } from "@/components/ui/icons/fluent-folder-icon";
 import { MoreHorizontal } from "lucide-react";
 import { ItemActionsMenu } from "./item-actions-menu";
+import { useDraggable, useDroppable } from "@dnd-kit/react";
+import { useMemo } from "react";
 import TypeHeadClient from "./type-head";
 interface FoldersContentProps {
   folders?: AssetFolder[];
@@ -127,10 +127,37 @@ const FolderCard = memo(function FolderCard({
     })),
   );
 
+  const dragData = useMemo(() => ({ name: item.name }), [item.name]);
+
+  const { ref: dragRef, isDragging: isDraggableDragging } = useDraggable({
+    id,
+    type: "folder",
+    data: dragData,
+  });
+
+  const { ref: dropRef, isDropTarget: isOver } = useDroppable({
+    id,
+    type: "folder",
+  });
+
+  const isItemDragging = useAssetsStore((state) =>
+    state.isItemDragging(id, "folder"),
+  );
+  const isDragging = isDraggableDragging || isItemDragging;
+
+  const setNodeRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      dragRef(node);
+      dropRef(node);
+    },
+    [dragRef, dropRef],
+  );
+
   return (
     <div
+      ref={setNodeRef}
       className={cn(
-        "asset-folder-card group relative flex cursor-pointer select-none flex-row items-center gap-3 rounded-lg border px-3 py-2.5 transition-[border-color,background-color,box-shadow] duration-150",
+        "asset-folder-card group relative flex cursor-pointer select-none flex-row items-center gap-3 rounded-lg border px-3 py-2.5 transition-[border-color,background-color,box-shadow,ring] duration-150",
         "bg-gradient-to-b from-white to-zinc-50 dark:from-zinc-800/70 dark:to-zinc-900/80",
         "border-zinc-200 dark:border-white/8",
         "shadow-[0_2px_6px_-1px_rgba(0,0,0,0.05),inset_0_1px_0px_rgba(255,255,255,0.8)]",
@@ -138,11 +165,37 @@ const FolderCard = memo(function FolderCard({
         "hover:border-zinc-300 dark:hover:border-white/18",
         selected &&
           "border-primary/40 bg-primary/5 dark:bg-primary/10 dark:border-primary/30 dark:from-primary/5 dark:to-primary/8",
+        isDragging && "opacity-30 pointer-events-none",
+        isOver &&
+          "border-blue-500 bg-blue-500/10 ring-2 ring-blue-500/40 dark:border-blue-400 dark:bg-blue-500/20",
       )}
       data-selected={selected}
+      data-dragging={isDragging}
+      data-over={isOver}
       id={id}
       data-type="asset-folder"
       onDoubleClick={() => onRedirect(id)}
+      onClick={(e) => {
+        if (e.ctrlKey || e.metaKey || e.shiftKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleSelectItem({
+            type: "folder",
+            id,
+            name: item.name,
+            description: item.description || undefined,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
+            createdBy: item.createdBy,
+            updatedBy: item.updatedBy,
+            path: item.path || undefined,
+            parentId: item.parentId,
+            assetCount: item.assetCount,
+            folderCount: item.folderCount,
+            itemCount: item.itemCount,
+          });
+        }
+      }}
     >
       <div
         className="relative h-8 w-8 shrink-0"
@@ -164,6 +217,7 @@ const FolderCard = memo(function FolderCard({
           )}
         >
           <Checkbox
+            className="h-5.5 w-5.5 rounded-md border-2 scale-110 cursor-pointer shadow-sm transition-transform active:scale-95"
             checked={selected}
             onCheckedChange={() =>
               toggleSelectItem({
@@ -366,7 +420,9 @@ export const FoldersContent = memo(function FoldersContent({
   const lastExpandedHeightRef = useRef(DEFAULT_FOLDERS_HEIGHT);
   const wasAssetsCollapsedRef = useRef(isAssetsCollapsed);
   const lastEvenSplitResetKeyRef = useRef(evenSplitResetKey);
-  const [foldersHeight, setFoldersHeight] = useState(DEFAULT_FOLDERS_HEIGHT);
+  const [foldersHeight, setFoldersHeight] = useState(() =>
+    getSavedFoldersHeight(),
+  );
   const isCollapsed = controlledIsCollapsed ?? false;
 
   const getAvailableFoldersHeight = useCallback(() => {

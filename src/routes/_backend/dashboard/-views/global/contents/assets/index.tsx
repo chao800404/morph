@@ -1,16 +1,14 @@
 import { cn, formatDate, getFileExtension } from "@/lib/utils";
 import { getConfig } from "@/server/get-config";
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useMemo } from "react";
 
 import { AssetPropertyCard } from "@/routes/_backend/dashboard/-components/assets-card/asset-property-card";
 import { AssetsDataProvider } from "@/routes/_backend/dashboard/-components/assets-card/assets-data-provider";
-import { assetQueries } from "@queries/asset.queries";
+import { assetQueries, normalizeAssetListParams } from "@queries/asset.queries";
 import { AssetsExplorerCard } from "./component/assets-explorer-card";
 import { AssetDraggableProvider } from "./component/draggable-provider";
-// import { AssetsExplorerCard } from "./_component/assets-explorer-card";
-// import { AssetDraggableProvider } from "./_component/draggable-provider";
 
 const routeApi = getRouteApi("/_backend/dashboard/$slug");
 const DEFAULT_PAGINATION = {
@@ -24,26 +22,25 @@ export const Assets = () => {
   const config = getConfig().client;
   const search = routeApi.useSearch();
 
-  const folderId = search.folderId || null;
-  const query = search.q;
-  const sortBy = (search.sortBy || "createdAt") as
-    | "name"
-    | "createdAt"
-    | "updatedAt";
-  const sortOrder = (search.sortOrder || "desc") as "asc" | "desc";
-  const page = Number(search.page) || 1;
-  const limit = Number(search.limit) || 15;
+  // Must match the loader's params exactly (same query key) so the loader's
+  // prefetch primes the cache this query reads — avoids a redundant fetch and
+  // the loading flash on navigation.
+  const listParams = normalizeAssetListParams(search);
+  const folderId = listParams.folderId;
+  const query = listParams.query;
 
-  const { data: queryAssets } = useSuspenseQuery(
-    assetQueries.list({
-      folderId,
-      query,
-      sortBy,
-      sortOrder,
-      page,
-      limit,
-    }),
-  );
+  const { data: queryAssets, status } = useQuery({
+    ...assetQueries.list(listParams),
+    placeholderData: keepPreviousData,
+  });
+
+  const isInitialLoading = status === "pending" && !queryAssets;
+  const errorMessage =
+    queryAssets?.success === false
+      ? queryAssets.message || "Failed to load assets."
+      : status === "error"
+        ? "Failed to load assets."
+        : undefined;
   const responseData = queryAssets?.data;
 
   const foldersData = useMemo(
@@ -119,19 +116,14 @@ export const Assets = () => {
     [assetsData, currentFolder, foldersData, pagination],
   );
 
-  if (!queryAssets?.success || !responseData) {
-    return (
-      <div className="flex h-[calc(100svh-56px)] items-center justify-center">
-        <p className="text-muted-foreground">
-          Failed to load assets or no assets found.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <>
-      <section className={cn("w-[calc(100%-24rem)] h-full overflow-hidden flex flex-col", "max-xl:w-full")}>
+      <section
+        className={cn(
+          "w-[calc(100%-24rem)] h-full overflow-hidden flex flex-col",
+          "max-xl:w-full",
+        )}
+      >
         <div className="px-2 py-3 flex-1 min-h-0 overflow-hidden flex flex-col">
           <AssetsDataProvider data={assetsCardData} folderId={folderId}>
             <AssetDraggableProvider>
@@ -142,6 +134,8 @@ export const Assets = () => {
                 query={query}
                 data={assetsCardData}
                 uploadConfig={config.upload}
+                isLoading={isInitialLoading}
+                errorMessage={errorMessage}
               />
             </AssetDraggableProvider>
           </AssetsDataProvider>

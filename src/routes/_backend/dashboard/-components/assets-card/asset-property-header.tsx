@@ -13,9 +13,7 @@ import {
 } from "@/routes/_backend/dashboard/-views/features/asset/move/move-fields-utils";
 import { useAssetMoveStore } from "@/routes/_backend/dashboard/-views/features/asset/move/use-asset-move-store";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
-import { deleteItems } from "@/server/asset/delete-items.serverFn";
-import { moveItems } from "@/server/asset/move-items.serverFn";
-import { updateItems } from "@/server/asset/update-items.serverFn";
+import { deleteItems, moveItems, updateItems } from "@/server/asset";
 // import { copyPath } from "@/lib/shared/copy-path";
 import { useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";

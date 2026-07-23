@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { moveItems } from "@/server/asset/move-items.serverFn";
+import { moveItems } from "@/server/asset";
 import { useQueryClient } from "@tanstack/react-query";
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider, DragOverlay } from "@dnd-kit/react";

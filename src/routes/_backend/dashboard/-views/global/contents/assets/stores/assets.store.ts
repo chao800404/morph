@@ -52,7 +52,7 @@ interface AssetsStore {
   setActionMenuOpen: (open: boolean) => void;
   toggleSelectItem: (item: SelectedItem) => void;
   clearAllSelectedItems: () => void;
-  selectAllItems: (items: SelectedItem[]) => void;
+  selectAllItems: (items: SelectedItem[], append?: boolean) => void;
   isSelected: (id: string) => boolean;
   getSelectedByType: (type: "folder" | "asset") => SelectedItem[];
   setAssetsData: (data: AssetsCardData) => void;
@@ -99,8 +99,10 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
         ? state
         : { selectedItems: new Map<string, SelectedItem>() },
     ),
-  selectAllItems: (items) => {
-    const newItems = new Map<string, SelectedItem>();
+  selectAllItems: (items, append = false) => {
+    const newItems = append
+      ? new Map(get().selectedItems)
+      : new Map<string, SelectedItem>();
     items.forEach((item) => {
       const key = `${item.type}-${item.id}`;
       newItems.set(key, item);
