@@ -32,7 +32,7 @@ import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { updateItems } from "@/server/asset/update-items.serverFn";
 import { Download, Trash2 } from "lucide-react";
 import { AnimatePresence, motion, useAnimate } from "motion/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { useAssetsStore } from "../../../global/contents/assets/stores/assets.store";
@@ -132,11 +132,28 @@ export const AssetPreviewDialog = () => {
     setDisplayIndex(prevIndex);
   };
 
+  const wheelLockRef = useRef(false);
+
+  const handlePreviewWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (wheelLockRef.current || assets.length <= 1) return;
+
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (Math.abs(delta) < 15) return;
+
+    wheelLockRef.current = true;
+    if (delta > 0) {
+      goToNext();
+    } else {
+      goToPrevious();
+    }
+
+    setTimeout(() => {
+      wheelLockRef.current = false;
+    }, 250);
+  };
+
   useEffect(() => {
     if (!open) return;
-
-    let isThrottled = false;
-    let timer: NodeJS.Timeout | null = null;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "ArrowRight") {
@@ -148,30 +165,9 @@ export const AssetPreviewDialog = () => {
       }
     };
 
-    const handleWheel = (e: WheelEvent) => {
-      if (isThrottled) return;
-
-      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-      if (Math.abs(delta) < 15) return;
-
-      isThrottled = true;
-      if (delta > 0) {
-        goToNext();
-      } else {
-        goToPrevious();
-      }
-
-      timer = setTimeout(() => {
-        isThrottled = false;
-      }, 250);
-    };
-
     window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("wheel", handleWheel, { passive: true });
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("wheel", handleWheel);
-      if (timer) clearTimeout(timer);
     };
   }, [open, displayIndex, assets.length]);
 
@@ -331,7 +327,10 @@ export const AssetPreviewDialog = () => {
                 </>
               }
             />
-            <div className="flex-1 flex items-center justify-center overflow-hidden min-h-0 bg-linear-to-br from-zinc-900 to-black p-4 relative">
+            <div
+              onWheel={handlePreviewWheel}
+              className="flex-1 flex items-center justify-center overflow-hidden min-h-0 bg-linear-to-br from-zinc-900 to-black p-4 relative"
+            >
               {/* 上一個按鈕 */}
               {hasMultipleItems && hasPrevious && (
                 <Button

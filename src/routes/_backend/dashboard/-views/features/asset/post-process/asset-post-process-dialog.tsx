@@ -388,7 +388,12 @@ export const AssetPostProcessDialog = () => {
 
     try {
       // Call the server action (runs on server, no CORS issues)
-      const result = await removeBackground({ data: { imageUrl: imageSrc } });
+      const result = await removeBackground({
+        data: {
+          assetId: activeItem.id,
+          imageUrl: imageSrc,
+        },
+      });
 
       if (!result.success || !result.data) {
         throw new Error(result.message || "Failed to remove background");

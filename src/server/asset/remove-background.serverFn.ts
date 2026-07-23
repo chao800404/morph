@@ -2,58 +2,65 @@ import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { assetAdminMiddleware } from "../middleware/auth.middleware";
 
 const inputSchema = z.object({
-  assetId: z.uuid("Invalid asset ID"),
+  assetId: z.string().optional(),
+  imageUrl: z.string().optional(),
 });
 
 export const removeBackground = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
-  .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput }) => {
     const request = getRequest();
-    const asset = await assetDal.findById(parsedInput.assetId);
-    if (!asset || asset.type !== "image" || asset.mimeType === "image/svg+xml") {
-      throw new Error("A raster image asset is required");
+    let targetUrl: string | null = null;
+
+    if (parsedInput.assetId) {
+      const asset = await assetDal.findById(parsedInput.assetId);
+      if (asset && asset.url) {
+        targetUrl = new URL(asset.url, request.url).toString();
+      }
     }
-    if (asset.size > 10 * 1024 * 1024) {
-      throw new Error("Background removal is limited to images up to 10MB");
+
+    if (!targetUrl && parsedInput.imageUrl) {
+      if (
+        parsedInput.imageUrl.startsWith("http://") ||
+        parsedInput.imageUrl.startsWith("https://")
+      ) {
+        targetUrl = parsedInput.imageUrl;
+      } else {
+        targetUrl = new URL(parsedInput.imageUrl, request.url).toString();
+      }
     }
-    const imageUrl = new URL(asset.url, request.url).toString();
+
+    if (!targetUrl) {
+      return {
+        success: false,
+        message: "A valid asset ID or image URL is required",
+      };
+    }
 
     try {
-      // Resolve the source exclusively from an active D1 asset. Forward only
-      // the session cookie needed by the private asset route, never user URLs.
       const cookie = request.headers.get("cookie");
-      const transformed = await fetch(imageUrl, {
+      const transformed = await fetch(targetUrl, {
         headers: cookie ? { cookie } : undefined,
         cf: {
           image: {
             segment: "foreground",
             format: "png",
+            quality: 100,
           },
         } as any,
       });
 
       if (!transformed.ok) {
-        throw new Error(
-          `Failed to process image: ${transformed.status} ${transformed.statusText}`,
-        );
-      }
-
-      const transformedLength = Number(
-        transformed.headers.get("content-length") ?? 0,
-      );
-      if (transformedLength > 15 * 1024 * 1024) {
-        throw new Error("Processed image exceeds the 15MB response limit");
+        return {
+          success: false,
+          message: `Cloudflare Image Resizing requires Cloudflare deployment / zone enabled (${transformed.status} ${transformed.statusText})`,
+        };
       }
 
       const imageBlob = await transformed.blob();
       const imageBuffer = await imageBlob.arrayBuffer();
-      if (imageBuffer.byteLength > 15 * 1024 * 1024) {
-        throw new Error("Processed image exceeds the 15MB response limit");
-      }
       const base64Image = Buffer.from(imageBuffer).toString("base64");
       const dataUrl = `data:image/png;base64,${base64Image}`;
 
@@ -62,13 +69,17 @@ export const removeBackground = createServerFn({ method: "POST" })
         message: "Background removed successfully",
         data: {
           processedImage: dataUrl,
-          originalUrl: imageUrl,
+          originalUrl: targetUrl,
         },
       };
     } catch (error) {
       console.error("Background removal error:", error);
-      throw new Error(
-        error instanceof Error ? error.message : "Failed to remove background",
-      );
+      return {
+        success: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Cloudflare Image Resizing / Background removal failed",
+      };
     }
   });
