@@ -9,7 +9,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import Link from "next/link";
+import { RouterLink } from "@/components/router-link";
 
 export function NavProjects({
   projects,
@@ -29,10 +29,10 @@ export function NavProjects({
         {projects.map((item) => (
           <SidebarMenuItem key={item.name}>
             <SidebarMenuButton asChild>
-              <Link href={item.url}>
+              <RouterLink href={item.url}>
                 <item.icon />
                 <span>{item.name}</span>
-              </Link>
+              </RouterLink>
             </SidebarMenuButton>
           </SidebarMenuItem>
         ))}

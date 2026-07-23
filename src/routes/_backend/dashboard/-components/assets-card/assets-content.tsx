@@ -25,6 +25,7 @@ type Props = {
   };
   isCollapsed?: boolean;
   canCollapse?: boolean;
+  suppressTransition?: boolean;
   onToggleCollapse?: () => void;
 };
 
@@ -66,6 +67,7 @@ export const AssetsContent = memo(function AssetsContent({
   pagination,
   isCollapsed: controlledIsCollapsed,
   canCollapse = true,
+  suppressTransition = false,
   onToggleCollapse,
 }: Props) {
   const [internalIsCollapsed, setInternalIsCollapsed] = useState(false);
@@ -105,7 +107,9 @@ export const AssetsContent = memo(function AssetsContent({
     <div
       data-asset-split-motion
       className={cn(
-        "grid min-h-10 shrink-0 overflow-hidden transition-[flex-grow,grid-template-rows] duration-150 ease-[cubic-bezier(0.25,1,0.5,1)] motion-reduce:transition-none",
+        "grid min-h-10 shrink-0 overflow-hidden motion-reduce:transition-none",
+        !suppressTransition &&
+          "transition-[flex-grow,grid-template-rows] duration-150 ease-[cubic-bezier(0.25,1,0.5,1)]",
         isCollapsed && "pointer-events-auto",
       )}
       style={{
@@ -125,7 +129,8 @@ export const AssetsContent = memo(function AssetsContent({
         aria-hidden={isCollapsed}
         data-asset-split-motion
         className={cn(
-          "flex min-h-0 flex-col overflow-hidden transition-opacity duration-150 ease-out motion-reduce:transition-none",
+          "flex min-h-0 flex-col overflow-hidden motion-reduce:transition-none",
+          !suppressTransition && "transition-opacity duration-150 ease-out",
           isCollapsed ? "pointer-events-none opacity-0" : "opacity-100",
         )}
       >
@@ -138,7 +143,8 @@ export const AssetsContent = memo(function AssetsContent({
         <div
           data-asset-split-motion
           className={cn(
-            "shrink-0 transition-opacity motion-reduce:transition-none",
+            "shrink-0 motion-reduce:transition-none",
+            !suppressTransition && "transition-opacity",
             isCollapsed
               ? "pointer-events-none opacity-0 delay-0 duration-75"
               : "opacity-100 delay-150 duration-100 ease-out",

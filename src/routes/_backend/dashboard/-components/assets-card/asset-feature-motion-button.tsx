@@ -51,10 +51,9 @@ export const AssetFeatureMotionButton = ({
   tags,
 }: Props) => {
   const [open, setOpen] = useState(false);
-  const { handleEditOpenChange, setAssetEditData } = useAssetEditStore(
+  const { openAssetEdit } = useAssetEditStore(
     useShallow((state) => ({
-      handleEditOpenChange: state.handleOpenChange,
-      setAssetEditData: state.setAssetEditData,
+      openAssetEdit: state.openAssetEdit,
     })),
   );
 
@@ -170,7 +169,7 @@ export const AssetFeatureMotionButton = ({
             size,
           };
 
-    setAssetEditData({
+    openAssetEdit({
       title: generateEditTitle(type, 1),
       description: "Modify item details",
       fields: generateEditFields(item),
@@ -181,7 +180,6 @@ export const AssetFeatureMotionButton = ({
         clearAllSelectedItems();
       },
     });
-    handleEditOpenChange(true);
   };
 
   return (

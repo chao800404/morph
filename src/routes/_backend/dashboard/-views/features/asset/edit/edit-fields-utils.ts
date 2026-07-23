@@ -11,11 +11,13 @@ export const generateEditFields = (item: EditItem): FormField[] => {
     return [
       {
         name: "Name",
+        label: "Name",
         type: "input",
         value: item.name || "",
       },
       {
         name: "Description",
+        label: "Description",
         type: "textarea",
         value: item.description || "",
       },
@@ -26,21 +28,25 @@ export const generateEditFields = (item: EditItem): FormField[] => {
   return [
     {
       name: "Name",
+      label: "Name",
       type: "input",
       value: item.name || "",
     },
     {
       name: "Alt",
+      label: "Alt",
       type: "input",
       value: item.alt || "",
     },
     {
       name: "Caption",
+      label: "Caption",
       type: "input",
       value: item.caption || "",
     },
     {
       name: "Tags",
+      label: "Tags",
       type: "input",
       value: item.tags || "",
     },

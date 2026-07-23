@@ -19,7 +19,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 
-import Link from "next/link";
+import { RouterLink } from "@/components/router-link";
 import { ThemeSwitch } from "../switch/theme-switch";
 import { UserIcon } from "../ui/icons/user-icon";
 
@@ -83,13 +83,13 @@ export function NavUser({ user, signout }: NavUserProps) {
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuItem className="p-0">
-                <Link
+                <RouterLink
                   className="flex rounded-md py-1.5 px-2 w-full items-center bg-transparent gap-2"
                   href="/dashboard/settings/profile"
                 >
                   <UserIcon />
                   Profile settings
-                </Link>
+                </RouterLink>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={(e) => e.preventDefault()}>
@@ -98,7 +98,7 @@ export function NavUser({ user, signout }: NavUserProps) {
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem className="cursor-pointer p-0">
-              <Link
+              <a
                 className="flex rounded-md py-1.5 px-2 w-full items-center gap-2"
                 href="/auth/sign-out"
                 onClick={(e) => {
@@ -109,7 +109,7 @@ export function NavUser({ user, signout }: NavUserProps) {
               >
                 <LogOut className="scale-x-[-1]" />
                 Log out
-              </Link>
+              </a>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

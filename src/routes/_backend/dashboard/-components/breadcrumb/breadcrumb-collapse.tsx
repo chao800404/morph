@@ -15,30 +15,8 @@ import {
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Link } from "@tanstack/react-router";
+import { RouterLink } from "@/components/router-link";
 import React from "react";
-
-// This app uses TanStack Router, so breadcrumb links must use the router's
-// <Link> (client-side navigation). A plain anchor / next-style link triggers a
-// full page reload, which unmounts the whole view (CardWrapper included) and
-// discards the query cache, causing the content to blank out and re-fetch.
-// Split the stored href ("/path?foo=bar") into { to, search } for the router.
-const RouterLink = Link as unknown as React.ComponentType<{
-  to: string;
-  search?: Record<string, string>;
-  className?: string;
-  children?: React.ReactNode;
-}>;
-
-const toLinkProps = (href: string): { to: string; search: Record<string, string> } => {
-  const [to, queryString] = href.split("?");
-  return {
-    to,
-    // Always pass an explicit search object so navigating to the root
-    // breadcrumb clears folderId instead of preserving the current search.
-    search: Object.fromEntries(new URLSearchParams(queryString ?? "")),
-  };
-};
 
 export const BreadcrumbCollapse = ({
     breadcrumbs,
@@ -72,7 +50,7 @@ export const BreadcrumbCollapse = ({
                     <React.Fragment key={firstThreeBreadcrumbs.href}>
                         <BreadcrumbItem>
                             <BreadcrumbLink asChild>
-                                <RouterLink {...toLinkProps(firstThreeBreadcrumbs.href)}>{firstThreeBreadcrumbs.label}</RouterLink>
+                                <RouterLink href={firstThreeBreadcrumbs.href}>{firstThreeBreadcrumbs.label}</RouterLink>
                             </BreadcrumbLink>
                         </BreadcrumbItem>
                         <BreadcrumbSeparator />
@@ -89,7 +67,7 @@ export const BreadcrumbCollapse = ({
                                 <DropdownMenuContent align="start">
                                     {middleBreadcrumbs.map(breadcrumb => (
                                         <DropdownMenuItem key={breadcrumb.href}>
-                                            <RouterLink {...toLinkProps(breadcrumb.href)}>{breadcrumb.label}</RouterLink>
+                                            <RouterLink href={breadcrumb.href}>{breadcrumb.label}</RouterLink>
                                         </DropdownMenuItem>
                                     ))}
                                 </DropdownMenuContent>
@@ -106,7 +84,7 @@ export const BreadcrumbCollapse = ({
                                     <BreadcrumbPage>{breadcrumb.label}</BreadcrumbPage>
                                 ) : (
                                     <BreadcrumbLink asChild>
-                                        <RouterLink {...toLinkProps(breadcrumb.href)}>{breadcrumb.label}</RouterLink>
+                                        <RouterLink href={breadcrumb.href}>{breadcrumb.label}</RouterLink>
                                     </BreadcrumbLink>
                                 )}
                             </BreadcrumbItem>

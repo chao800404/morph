@@ -136,6 +136,7 @@ export const Assets = () => {
                 uploadConfig={config.upload}
                 isLoading={isInitialLoading}
                 errorMessage={errorMessage}
+                folderId={folderId}
               />
             </AssetDraggableProvider>
           </AssetsDataProvider>

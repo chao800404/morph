@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 import { AssetsCardHeader } from "@/routes/_backend/dashboard/-components/assets-card/assets-card-header";
@@ -9,12 +9,15 @@ import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrappe
 import { Skeleton } from "@/components/ui/skeleton";
 import type { AssetsCardComponentProps } from "../config/assets-card.types";
 import { AssetEmptyCard } from "./asset-empty-card";
-import { useAssetsStore, type SelectedItem } from "../stores/assets.store";
+import { useAssetsStore } from "../stores/assets.store";
 import { useShallow } from "zustand/react/shallow";
+import { useCollapseState } from "../hooks/use-collapse-state";
+import { useSuppressTransition } from "../hooks/use-suppress-transition";
 
 type AssetsExplorerCardProps = AssetsCardComponentProps & {
   isLoading?: boolean;
   errorMessage?: string;
+  folderId?: string | null;
 };
 
 export const AssetsExplorerCard = ({
@@ -25,22 +28,25 @@ export const AssetsExplorerCard = ({
   uploadConfig,
   isLoading = false,
   errorMessage,
+  folderId,
 }: AssetsExplorerCardProps) => {
-  const [foldersCollapsed, setFoldersCollapsed] = useState(false);
-  const [assetsCollapsed, setAssetsCollapsed] = useState(false);
+  const {
+    foldersCollapsed,
+    assetsCollapsed,
+    setFoldersCollapsed,
+    setAssetsCollapsed,
+  } = useCollapseState(folderId ?? null);
+  // Snap the saved collapse/split state into place when switching folders,
+  // without any expand/collapse animation. Manual toggles still animate.
+  const suppressTransition = useSuppressTransition(folderId ?? null);
   const [evenSplitResetKey, setEvenSplitResetKey] = useState(0);
-  const marqueeBoxRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const rafIdRef = useRef<number | null>(null);
 
-  const { selectAllItems, clearAllSelectedItems, selectedCount } =
-    useAssetsStore(
-      useShallow((state) => ({
-        selectAllItems: state.selectAllItems,
-        clearAllSelectedItems: state.clearAllSelectedItems,
-        selectedCount: state.selectedItems.size,
-      })),
-    );
+  const { clearAllSelectedItems, selectedCount } = useAssetsStore(
+    useShallow((state) => ({
+      clearAllSelectedItems: state.clearAllSelectedItems,
+      selectedCount: state.selectedItems.size,
+    })),
+  );
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -67,173 +73,6 @@ export const AssetsExplorerCard = ({
   const hasAssets = assets.length > 0;
   const breadCrumb = currentFolder?.idPath?.split("/").filter(Boolean);
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    const target = e.target as HTMLElement;
-
-    if (
-      target.closest(
-        "button, input, select, a, [role='checkbox'], [data-slot='checkbox'], [data-no-marquee='true'], .cursor-row-resize, [data-radix-collection-item], [role='menuitem']",
-      )
-    ) {
-      return;
-    }
-
-    // If pointer down started directly on an item (folder/asset) without Shift/Ctrl/Alt modifier, yield to DND item movement!
-    const isItem = target.closest(
-      '[data-type="asset-folder"], [data-type="asset-asset"], [draggable="true"]',
-    );
-    const hasModifier = e.shiftKey || e.ctrlKey || e.metaKey || e.altKey;
-
-    if (isItem && !hasModifier) {
-      return;
-    }
-
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let isDragging = false;
-    const isAppendMode = e.shiftKey || e.ctrlKey || e.metaKey;
-
-    const container = containerRef.current;
-    if (!container) return;
-
-    const selectableElements = Array.from(
-      container.querySelectorAll(
-        '[data-type="asset-folder"], [data-type="asset-asset"]',
-      ),
-    ) as HTMLElement[];
-
-    const itemCache = selectableElements.map((el) => {
-      const typeAttr = el.getAttribute("data-type");
-      const isFolder = typeAttr === "asset-folder";
-      const id = el.getAttribute("id") || "";
-
-      return {
-        id,
-        type: isFolder ? ("folder" as const) : ("asset" as const),
-        rect: el.getBoundingClientRect(),
-      };
-    });
-
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      const currentX = moveEvent.clientX;
-      const currentY = moveEvent.clientY;
-      const dx = Math.abs(currentX - startX);
-      const dy = Math.abs(currentY - startY);
-
-      if (!isDragging && (dx > 4 || dy > 4)) {
-        isDragging = true;
-        if (marqueeBoxRef.current) {
-          marqueeBoxRef.current.style.display = "block";
-        }
-      }
-
-      if (!isDragging || !marqueeBoxRef.current) return;
-
-      const left = Math.min(startX, currentX);
-      const top = Math.min(startY, currentY);
-      const width = dx;
-      const height = dy;
-
-      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
-      rafIdRef.current = requestAnimationFrame(() => {
-        if (marqueeBoxRef.current) {
-          marqueeBoxRef.current.style.left = `${left}px`;
-          marqueeBoxRef.current.style.top = `${top}px`;
-          marqueeBoxRef.current.style.width = `${width}px`;
-          marqueeBoxRef.current.style.height = `${height}px`;
-        }
-      });
-    };
-
-    const onPointerUp = (upEvent: PointerEvent) => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-
-      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
-
-      if (marqueeBoxRef.current) {
-        marqueeBoxRef.current.style.display = "none";
-      }
-
-      if (!isDragging) return;
-
-      const endX = upEvent.clientX;
-      const endY = upEvent.clientY;
-      const boxRect = {
-        left: Math.min(startX, endX),
-        top: Math.min(startY, endY),
-        right: Math.max(startX, endX),
-        bottom: Math.max(startY, endY),
-      };
-
-      const intersected = itemCache.filter((item) => {
-        const r = item.rect;
-        return !(
-          r.right < boxRect.left ||
-          r.left > boxRect.right ||
-          r.bottom < boxRect.top ||
-          r.top > boxRect.bottom
-        );
-      });
-
-      if (intersected.length > 0) {
-        const selectedItems: SelectedItem[] = intersected
-          .map((item) => {
-            if (item.type === "folder") {
-              const folderObj = folders.find(
-                (f) => String(f.id) === String(item.id),
-              );
-              if (!folderObj) return null;
-              return {
-                type: "folder" as const,
-                id: String(item.id),
-                name: folderObj.name,
-                createdAt: folderObj.createdAt,
-                updatedAt: folderObj.updatedAt,
-                createdBy: folderObj.createdBy,
-                updatedBy: folderObj.updatedBy,
-                path: folderObj.path,
-                parentId: folderObj.parentId,
-                assetCount: folderObj.assetCount,
-                folderCount: folderObj.folderCount,
-                itemCount: folderObj.itemCount,
-              };
-            } else {
-              const assetObj = assets.find(
-                (a) => String(a.id) === String(item.id),
-              );
-              if (!assetObj) return null;
-              return {
-                type: "asset" as const,
-                id: String(item.id),
-                name: assetObj.name,
-                fileType: assetObj.type?.startsWith("image")
-                  ? "image"
-                  : assetObj.type?.startsWith("video")
-                    ? "video"
-                    : "file",
-                extension: assetObj.extension,
-                src: assetObj.url,
-                alt: assetObj.alt || undefined,
-                caption: assetObj.caption || undefined,
-                tags: assetObj.tags,
-                createdAt: assetObj.createdAt,
-                updatedAt: assetObj.updatedAt,
-                size: assetObj.size,
-              };
-            }
-          })
-          .filter(Boolean) as SelectedItem[];
-
-        selectAllItems(selectedItems, isAppendMode);
-      }
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  };
-
   const resetToEvenSplit = useCallback(() => {
     setEvenSplitResetKey((key) => key + 1);
   }, []);
@@ -250,7 +89,7 @@ export const AssetsExplorerCard = ({
 
     setFoldersCollapsed(true);
     setAssetsCollapsed(false);
-  }, [foldersCollapsed, hasAssets, resetToEvenSplit]);
+  }, [foldersCollapsed, hasAssets, resetToEvenSplit, setFoldersCollapsed, setAssetsCollapsed]);
 
   const handleToggleAssets = useCallback(() => {
     if (!hasFolders) return;
@@ -264,7 +103,7 @@ export const AssetsExplorerCard = ({
 
     setFoldersCollapsed(false);
     setAssetsCollapsed(true);
-  }, [assetsCollapsed, hasFolders, resetToEvenSplit]);
+  }, [assetsCollapsed, hasFolders, resetToEvenSplit, setFoldersCollapsed, setAssetsCollapsed]);
 
   const handleSetFoldersCollapsed = useCallback(
     (collapsed: boolean) => {
@@ -276,7 +115,7 @@ export const AssetsExplorerCard = ({
       }
       setFoldersCollapsed(false);
     },
-    [hasAssets],
+    [hasAssets, setFoldersCollapsed, setAssetsCollapsed],
   );
 
   const handleSetAssetsCollapsed = useCallback(
@@ -289,13 +128,13 @@ export const AssetsExplorerCard = ({
       }
       setAssetsCollapsed(false);
     },
-    [hasFolders],
+    [hasFolders, setFoldersCollapsed, setAssetsCollapsed],
   );
 
   useEffect(() => {
     if (!hasAssets) setFoldersCollapsed(false);
     if (!hasFolders) setAssetsCollapsed(false);
-  }, [hasAssets, hasFolders]);
+  }, [hasAssets, hasFolders, setFoldersCollapsed, setAssetsCollapsed]);
 
   const rootBreadcrumb = [{ label, href: "/dashboard/assets" }];
   let breadcrumbs = rootBreadcrumb;
@@ -356,16 +195,7 @@ export const AssetsExplorerCard = ({
       ) : folders.length <= 0 && assets.length <= 0 && !currentFolder && !query ? (
         <AssetEmptyCard showButton uploadConfig={uploadConfig} />
       ) : (
-        <div
-          ref={containerRef}
-          onPointerDown={handlePointerDown}
-          className="w-full flex-1 flex flex-col min-h-0 overflow-hidden relative select-none"
-        >
-          <div
-            ref={marqueeBoxRef}
-            style={{ display: "none" }}
-            className="pointer-events-none fixed border border-blue-500/70 bg-blue-500/15 z-50 rounded shadow-xs"
-          />
+        <div className="w-full flex-1 flex flex-col min-h-0 overflow-hidden relative select-none">
           {folders.length <= 0 && assets.length <= 0 && (
             <div className="h-full w-full flex items-center gap-4 justify-center flex-col">
               <AssetEmptyCard className="h-fit" showButton={false} />
@@ -379,6 +209,8 @@ export const AssetsExplorerCard = ({
               isAssetsCollapsed={assetsCollapsed}
               canCollapse={hasAssets}
               evenSplitResetKey={evenSplitResetKey}
+              folderId={data.currentFolder?.id ? String(data.currentFolder.id) : null}
+              suppressTransition={suppressTransition}
               onToggleCollapse={handleToggleFolders}
               onSetFoldersCollapsed={handleSetFoldersCollapsed}
               onSetAssetsCollapsed={handleSetAssetsCollapsed}
@@ -389,6 +221,7 @@ export const AssetsExplorerCard = ({
             pagination={data.pagination}
             isCollapsed={assetsCollapsed}
             canCollapse={hasFolders}
+            suppressTransition={suppressTransition}
             onToggleCollapse={handleToggleAssets}
           />
         </div>

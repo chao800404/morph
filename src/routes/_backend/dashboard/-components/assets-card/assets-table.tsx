@@ -52,10 +52,9 @@ export const AssetsTable = memo(function AssetsTable({
   tableContent = [],
 }: AssetsTableProps) {
   const isLargeScreen = useMediaQuery("(min-width: 1024px)");
-  const { handleEditOpenChange, setAssetEditData } = useAssetEditStore(
+  const { openAssetEdit } = useAssetEditStore(
     useShallow((state) => ({
-      handleEditOpenChange: state.handleOpenChange,
-      setAssetEditData: state.setAssetEditData,
+      openAssetEdit: state.openAssetEdit,
     })),
   );
 
@@ -197,7 +196,7 @@ export const AssetsTable = memo(function AssetsTable({
           size: asset.size,
         };
 
-        setAssetEditData({
+        openAssetEdit({
           title: generateEditTitle("asset", 1),
           description: "Modify asset information",
           fields: generateEditFields(editItem),
@@ -206,12 +205,10 @@ export const AssetsTable = memo(function AssetsTable({
           onSuccess: clearAllSelectedItems,
         });
       }
-      handleEditOpenChange(true);
     },
     [
       clearAllSelectedItems,
-      handleEditOpenChange,
-      setAssetEditData,
+      openAssetEdit,
       tableContent,
     ],
   );

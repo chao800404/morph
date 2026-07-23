@@ -10,7 +10,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/hooks/use-media-query";
 
-const FOLDERS_HEIGHT_KEY = "morph_folders_height";
+const FOLDERS_HEIGHT_KEY_PREFIX = "morph_folders_height_";
 const DEFAULT_FOLDERS_HEIGHT = 208;
 const MIN_FOLDERS_HEIGHT = 80;
 
@@ -19,10 +19,15 @@ function getMaxFoldersHeight(): number {
   return Math.max(200, window.innerHeight - 150);
 }
 
-function getSavedFoldersHeight(): number {
+function getFoldersHeightKey(folderId: string | null): string {
+  return `${FOLDERS_HEIGHT_KEY_PREFIX}${folderId ?? "root"}`;
+}
+
+function getSavedFoldersHeight(folderId: string | null): number {
   if (typeof window === "undefined") return DEFAULT_FOLDERS_HEIGHT;
   try {
-    const saved = localStorage.getItem(FOLDERS_HEIGHT_KEY);
+    const key = getFoldersHeightKey(folderId);
+    const saved = localStorage.getItem(key);
     if (saved !== null) {
       const val = parseInt(saved, 10);
       const maxH = getMaxFoldersHeight();
@@ -62,6 +67,8 @@ interface FoldersContentProps {
   isAssetsCollapsed?: boolean;
   canCollapse?: boolean;
   evenSplitResetKey?: number;
+  folderId?: string | null;
+  suppressTransition?: boolean;
   onToggleCollapse?: () => void;
   onSetFoldersCollapsed?: (collapsed: boolean) => void;
   onSetAssetsCollapsed?: (collapsed: boolean) => void;
@@ -282,16 +289,17 @@ export const FoldersContent = memo(function FoldersContent({
   isAssetsCollapsed = false,
   canCollapse = true,
   evenSplitResetKey = 0,
+  folderId,
+  suppressTransition = false,
   onToggleCollapse,
   onSetFoldersCollapsed,
   onSetAssetsCollapsed,
 }: FoldersContentProps) {
   const navigate = useNavigate();
   const isDesktop = useMediaQuery("(min-width: 1280px)");
-  const { handleEditOpenChange, setAssetEditData } = useAssetEditStore(
+  const { openAssetEdit } = useAssetEditStore(
     useShallow((state) => ({
-      handleEditOpenChange: state.handleOpenChange,
-      setAssetEditData: state.setAssetEditData,
+      openAssetEdit: state.openAssetEdit,
     })),
   );
 
@@ -342,7 +350,7 @@ export const FoldersContent = memo(function FoldersContent({
 
   const handleEdit = useCallback(
     (id: string, name: string, description: string) => {
-      setAssetEditData({
+      openAssetEdit({
         title: "Edit Folder",
         description: "Modify folder information",
         fields: [
@@ -361,12 +369,10 @@ export const FoldersContent = memo(function FoldersContent({
         action: updateItems,
         onSuccess: clearAllSelectedItems,
       });
-      handleEditOpenChange(true);
     },
     [
       clearAllSelectedItems,
-      handleEditOpenChange,
-      setAssetEditData,
+      openAssetEdit,
     ],
   );
 
@@ -421,7 +427,7 @@ export const FoldersContent = memo(function FoldersContent({
   const wasAssetsCollapsedRef = useRef(isAssetsCollapsed);
   const lastEvenSplitResetKeyRef = useRef(evenSplitResetKey);
   const [foldersHeight, setFoldersHeight] = useState(() =>
-    getSavedFoldersHeight(),
+    getSavedFoldersHeight(folderId ?? null),
   );
   const isCollapsed = controlledIsCollapsed ?? false;
 
@@ -436,10 +442,10 @@ export const FoldersContent = memo(function FoldersContent({
   // Restore the saved split before paint so opening the section does not flash at 208px.
   useLayoutEffect(() => {
     const maxHeight = getAvailableFoldersHeight();
-    const savedHeight = Math.min(getSavedFoldersHeight(), maxHeight);
+    const savedHeight = Math.min(getSavedFoldersHeight(folderId ?? null), maxHeight);
     lastExpandedHeightRef.current = savedHeight;
     setFoldersHeight(savedHeight);
-  }, [getAvailableFoldersHeight]);
+  }, [getAvailableFoldersHeight, folderId]);
 
   // When Assets closes, Folders consumes all available content height.
   useLayoutEffect(() => {
@@ -468,9 +474,9 @@ export const FoldersContent = memo(function FoldersContent({
     lastExpandedHeightRef.current = halfHeight;
     setFoldersHeight(halfHeight);
     try {
-      localStorage.setItem(FOLDERS_HEIGHT_KEY, String(halfHeight));
+      localStorage.setItem(getFoldersHeightKey(folderId ?? null), String(halfHeight));
     } catch {}
-  }, [evenSplitResetKey, getAvailableFoldersHeight]);
+  }, [evenSplitResetKey, getAvailableFoldersHeight, folderId]);
 
   useEffect(
     () => () => {
@@ -570,7 +576,7 @@ export const FoldersContent = memo(function FoldersContent({
           lastExpandedHeightRef.current = finalHeight;
           setFoldersHeight(finalHeight);
           try {
-            localStorage.setItem(FOLDERS_HEIGHT_KEY, String(finalHeight));
+            localStorage.setItem(getFoldersHeightKey(folderId ?? null), String(finalHeight));
           } catch {}
         }
 
@@ -647,7 +653,9 @@ export const FoldersContent = memo(function FoldersContent({
           <div
             data-asset-split-motion
             className={cn(
-              "grid transition-[grid-template-rows,opacity] duration-150 ease-[cubic-bezier(0.25,1,0.5,1)] motion-reduce:transition-none",
+              "grid motion-reduce:transition-none",
+              !suppressTransition &&
+                "transition-[grid-template-rows,opacity] duration-150 ease-[cubic-bezier(0.25,1,0.5,1)]",
               isCollapsed
                 ? "pointer-events-none grid-rows-[0fr] opacity-0"
                 : "grid-rows-[1fr] opacity-100",
@@ -662,7 +670,11 @@ export const FoldersContent = memo(function FoldersContent({
                 ref={containerRef}
                 data-folders-scroll
                 data-asset-split-motion
-                className="overflow-y-auto transition-[height] duration-150 ease-[cubic-bezier(0.25,1,0.5,1)] [contain:layout_paint] motion-reduce:transition-none"
+                className={cn(
+                  "overflow-y-auto [contain:layout_paint] motion-reduce:transition-none",
+                  !suppressTransition &&
+                    "transition-[height] duration-150 ease-[cubic-bezier(0.25,1,0.5,1)]",
+                )}
                 style={{ height: `${foldersHeight}px` }}
               >
                 <div

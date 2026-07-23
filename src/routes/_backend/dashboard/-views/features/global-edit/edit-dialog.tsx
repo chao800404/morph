@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { getActionErrorMessage } from "@/lib/asset/action-result";
 import { useRouter } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { useRef, useState } from "react";
+import { useRef, useState, useMemo } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { useInfoStore } from "../global-info/use-info-store";
@@ -53,8 +53,12 @@ export const EditDialog = () => {
     })),
   );
 
-  // Check if form is dirty
-  const isDirty = JSON.stringify(fields) !== JSON.stringify(initialFields);
+  // Check if form is dirty with useMemo
+  const isDirty = useMemo(() => {
+    if (!fields || !initialFields) return false;
+    if (fields.length !== initialFields.length) return true;
+    return fields.some((f, i) => f.value !== initialFields[i]?.value);
+  }, [fields, initialFields]);
 
   const handleOpenChangeWrapper = (newOpen: boolean) => {
     if (!newOpen && isDirty) {

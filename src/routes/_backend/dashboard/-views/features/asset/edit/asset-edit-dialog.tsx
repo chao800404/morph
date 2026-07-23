@@ -7,7 +7,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { getActionErrorMessage } from "@/lib/asset/action-result";
 import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { useInfoStore } from "../../global-info/use-info-store";
@@ -31,7 +31,6 @@ export const AssetEditDialog = () => {
     removeItem,
     activeItemId,
     setActiveItemId,
-    setAssetEditData,
   } = useAssetEditStore(
     useShallow((state) => ({
       open: state.open,
@@ -47,7 +46,6 @@ export const AssetEditDialog = () => {
       removeItem: state.removeItem,
       activeItemId: state.activeItemId,
       setActiveItemId: state.setActiveItemId,
-      setAssetEditData: state.setAssetEditData,
     })),
   );
   const { setInfoData, setOpen: setInfoOpen } = useInfoStore(
@@ -57,18 +55,32 @@ export const AssetEditDialog = () => {
     })),
   );
 
-  const isDirty = useMemo(
-    () => JSON.stringify(items ?? []) !== JSON.stringify(initialItems ?? []),
-    [items, initialItems],
+  const isDirty = useMemo(() => {
+    if (!items || !initialItems) return false;
+    if (items.length !== initialItems.length) return true;
+    return items.some((item, i) => {
+      const init = initialItems[i];
+      if (!init) return true;
+      if (item.name !== init.name) return true;
+      if ("description" in item && "description" in init && item.description !== init.description) return true;
+      if ("alt" in item && "alt" in init && item.alt !== init.alt) return true;
+      if ("caption" in item && "caption" in init && item.caption !== init.caption) return true;
+      if ("tags" in item && "tags" in init && item.tags !== init.tags) return true;
+      return false;
+    });
+  }, [items, initialItems]);
+
+  const activeItem = useMemo(
+    () => items?.find((item) => item.id === activeItemId) ?? items?.[0],
+    [items, activeItemId],
   );
 
-  useEffect(() => {
-    if (!open || !items?.length) return;
-    const activeItem =
-      items.find((item) => item.id === activeItemId) ?? items[0];
-    if (activeItem.id !== activeItemId) setActiveItemId(activeItem.id);
-    setAssetEditData({ fields: generateEditFields(activeItem) });
-  }, [open, activeItemId, items, setActiveItemId, setAssetEditData]);
+  const currentFields = useMemo(() => {
+    if (!activeItem) return fields;
+    return generateEditFields(activeItem);
+  }, [activeItem, fields]);
+
+
 
   const close = () => {
     if (isDirty) {
@@ -109,13 +121,15 @@ export const AssetEditDialog = () => {
     }
   };
 
-  const activeItem = items?.find((item) => item.id === activeItemId);
-
   return (
     <Sheet open={open} onOpenChange={(nextOpen) => !nextOpen && close()}>
       <SheetContent
         side="bottom"
         showCloseButton={false}
+        // This sheet is full-screen, so the backdrop is barely visible while
+        // its full-viewport backdrop-blur is expensive to re-rasterize during
+        // the close fade — which stalls the slide-out. Drop the overlay.
+        showOverlay={false}
         className="w-full border-l-0 bg-transparent p-2 shadow-none sm:max-w-full"
       >
         <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-component shadow-sm/20 dark:shadow-elevation-modal">
@@ -124,35 +138,50 @@ export const AssetEditDialog = () => {
             <ScrollArea className="min-w-0 flex-1 border-r bg-accent/40 max-lg:border-b max-lg:border-r-0">
               <ScrollBar />
               <div className="grid grid-cols-4 gap-3 p-4 max-md:grid-cols-2">
-                {items?.map((item) => (
-                  <button
-                    type="button"
-                    key={item.id}
-                    className={cn(
-                      "rounded-lg border p-1 text-left",
-                      item.id === activeItemId && "ring-2 ring-primary",
-                    )}
-                    onClick={() => setActiveItemId(item.id)}
-                  >
-                    {item.type === "folder" ? (
-                      <AssetBlockMap
-                        type="folder"
-                        name={item.name}
-                        onRemove={() => removeItem(item.id)}
-                      />
-                    ) : (
-                      <AssetBlockMap
-                        type="asset"
-                        name={item.name}
-                        fileType={item.fileType}
-                        extension={item.extension}
-                        src={item.src}
-                        alt={item.alt}
-                        onRemove={() => removeItem(item.id)}
-                      />
-                    )}
-                  </button>
-                ))}
+                {items?.map((item) => {
+                  // The remove (X) button prunes an item from the batch. Keep at
+                  // least one item so the dialog never lands in an empty state —
+                  // use Cancel / Esc to dismiss instead.
+                  const canRemove = (items?.length ?? 0) > 1;
+                  return (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={cn(
+                        "rounded-lg border p-1 text-left",
+                        item.id === activeItemId && "ring-2 ring-primary",
+                      )}
+                      onClick={() => setActiveItemId(item.id)}
+                    >
+                      {item.type === "folder" ? (
+                        <AssetBlockMap
+                          type="folder"
+                          name={item.name}
+                          onRemove={
+                            canRemove ? () => removeItem(item.id) : undefined
+                          }
+                        />
+                      ) : (
+                        <AssetBlockMap
+                          type="asset"
+                          name={item.name}
+                          fileType={item.fileType}
+                          extension={item.extension}
+                          // The selection tile is only an edit target, not a
+                          // media preview. Avoid decoding a video frame while
+                          // the full-screen sheet is sliding into view.
+                          src={
+                            item.fileType === "video" ? undefined : item.src
+                          }
+                          alt={item.alt}
+                          onRemove={
+                            canRemove ? () => removeItem(item.id) : undefined
+                          }
+                        />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </ScrollArea>
             <div className="w-full max-w-xl p-5">
@@ -162,17 +191,15 @@ export const AssetEditDialog = () => {
                   {description}
                 </p>
               )}
-              {fields && (
-                <div key={activeItemId}>
-                  <FieldsRenderer
-                    fields={fields}
-                    onChange={(name, value) => {
-                      if (typeof value === "string")
-                        updateFieldValue(name, value);
-                    }}
-                    className="grid-cols-1"
-                  />
-                </div>
+              {currentFields && (
+                <FieldsRenderer
+                  fields={currentFields}
+                  onChange={(name, value) => {
+                    if (typeof value === "string")
+                      updateFieldValue(name, value);
+                  }}
+                  className="grid-cols-1"
+                />
               )}
             </div>
           </div>

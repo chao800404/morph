@@ -47,10 +47,9 @@ const AssetSelectFloat = () => {
     })),
   );
 
-  const { handleEditOpenChange, setAssetEditData } = useAssetEditStore(
+  const { openAssetEdit } = useAssetEditStore(
     useShallow((state) => ({
-      handleEditOpenChange: state.handleOpenChange,
-      setAssetEditData: state.setAssetEditData,
+      openAssetEdit: state.openAssetEdit,
     })),
   );
 
@@ -102,7 +101,7 @@ const AssetSelectFloat = () => {
     // Default to the first item
     const firstItem = items[0];
 
-    setAssetEditData({
+    openAssetEdit({
       title: generateEditTitle(firstItem.type, items.length),
       description: "Modify item details",
       fields: generateEditFields(firstItem),
@@ -112,7 +111,6 @@ const AssetSelectFloat = () => {
         clearAllSelectedItems();
       },
     });
-    handleEditOpenChange(true);
   };
 
   const handleDownload = async () => {

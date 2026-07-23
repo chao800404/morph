@@ -63,16 +63,37 @@ export const VideoUploadBlock = ({
   </div>
 );
 
-export const VideoBlock = ({ className, name, category, onRemove }: Props) => (
+export const VideoBlock = ({
+  src,
+  alt,
+  className,
+  name,
+  category,
+  onRemove,
+}: Props) => (
   <div
     className={cn(
       "group relative aspect-square overflow-hidden rounded-md border border-dashed bg-card",
       className,
     )}
   >
-    <div className="flex size-full items-center justify-center pb-10">
-      <FileTIcon className="size-28" />
-    </div>
+    {src ? (
+      // Show the first frame so videos are identifiable at a glance.
+      // The "#t=0.1" fragment nudges the browser to render a real frame
+      // instead of a blank poster.
+      <video
+        src={`${src}#t=0.1`}
+        aria-label={alt}
+        muted
+        playsInline
+        preload="metadata"
+        className="size-full object-cover"
+      />
+    ) : (
+      <div className="flex size-full items-center justify-center pb-10">
+        <FileTIcon className="size-28" />
+      </div>
+    )}
     {(name || category) && (
       <div className="absolute bottom-1 left-1 right-1 flex gap-2 rounded-md bg-card/70 p-2 text-xs">
         <p className="truncate">{name}</p>

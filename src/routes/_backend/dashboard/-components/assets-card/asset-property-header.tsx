@@ -49,10 +49,9 @@ export const AssetPropertyHeader = ({
 }: Props) => {
   const queryClient = useQueryClient();
 
-  const { handleEditOpenChange, setAssetEditData } = useAssetEditStore(
+  const { openAssetEdit } = useAssetEditStore(
     useShallow((state) => ({
-      handleEditOpenChange: state.handleOpenChange,
-      setAssetEditData: state.setAssetEditData,
+      openAssetEdit: state.openAssetEdit,
     })),
   );
 
@@ -200,7 +199,7 @@ export const AssetPropertyHeader = ({
             size,
           };
 
-    setAssetEditData({
+    openAssetEdit({
       title: generateEditTitle(type, 1),
       description: "Modify item details",
       fields: generateEditFields(item),
@@ -211,7 +210,6 @@ export const AssetPropertyHeader = ({
         clearAllSelectedItems();
       },
     });
-    handleEditOpenChange(true);
   };
 
   return (

@@ -14,6 +14,17 @@ export type FieldType =
 
 export type ServerAction = AssetFormAction;
 
+type AssetEditData = {
+  title?: string;
+  description?: string;
+  fields?: FormField[];
+  action?: ServerAction;
+  onSuccess?: () => void;
+  excludedIds?: string[];
+  items?: EditItem[];
+  activeItemId?: string | null;
+};
+
 export type EditItem =
   | {
       id: string;
@@ -49,16 +60,8 @@ interface AssetEditState {
   handleOpenChange: (open: boolean) => void;
   setFields: (fields: FormField[]) => void;
   setOpen: (open: boolean) => void;
-  setAssetEditData: (data: {
-    title?: string;
-    description?: string;
-    fields?: FormField[];
-    action?: ServerAction;
-    onSuccess?: () => void;
-    excludedIds?: string[];
-    items?: EditItem[];
-    activeItemId?: string | null;
-  }) => void;
+  setAssetEditData: (data: AssetEditData) => void;
+  openAssetEdit: (data: AssetEditData) => void;
   updateFieldValue: (name: string, value: string) => void;
   setAction: (action: ServerAction) => void;
   removeItem: (id: string) => void;
@@ -72,6 +75,7 @@ const initialState: Omit<
   | "setFields"
   | "setOpen"
   | "setAssetEditData"
+  | "openAssetEdit"
   | "updateFieldValue"
   | "setAction"
   | "removeItem"
@@ -102,17 +106,83 @@ const normalizeItem = (item: EditItem): EditItem => {
   };
 };
 
-export const useAssetEditStore = create<AssetEditState>((set, get) => ({
-  ...initialState,
-  toggleOpen: () => {
-    set(get().open ? initialState : { open: true });
-  },
-  handleOpenChange: (open: boolean) => {
-    set(open ? { open: true } : initialState);
-  },
-  setOpen: (open: boolean) => {
-    set(open ? { open: true } : initialState);
-  },
+const getAssetEditDataState = (
+  data: AssetEditData,
+  state: AssetEditState,
+) => {
+  const { action, onSuccess, ...dataToValidate } = data;
+  const validatedData = validateFormSchema(dataToValidate);
+
+  if (!validatedData) return null;
+
+  const normalizedItems = data.items?.map(normalizeItem);
+
+  return {
+    title: validatedData.title ?? state.title,
+    description: validatedData.description ?? state.description,
+    fields: validatedData.fields ?? state.fields,
+    action: action ?? state.action,
+    onSuccess: onSuccess ?? state.onSuccess,
+    excludedIds: data.excludedIds ?? state.excludedIds,
+    items: normalizedItems ?? state.items,
+    initialItems: normalizedItems
+      ? structuredClone(normalizedItems)
+      : state.initialItems,
+    activeItemId:
+      data.activeItemId ?? normalizedItems?.[0]?.id ?? state.activeItemId,
+  };
+};
+
+// Matches the sheet's slide-out animation duration (see sheet.tsx, 300ms).
+const CLOSE_ANIMATION_MS = 320;
+let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+export const useAssetEditStore = create<AssetEditState>((set, get) => {
+  const clearResetTimer = () => {
+    if (resetTimer) {
+      clearTimeout(resetTimer);
+      resetTimer = null;
+    }
+  };
+
+  // Keep the dialog content mounted/stable while the sheet animates out, then
+  // reset. Wiping the (video-heavy) items synchronously on close tears down all
+  // <video> elements in the same frame the animation starts, which janks.
+  const closeAndDeferReset = () => {
+    set({ open: false });
+    clearResetTimer();
+    resetTimer = setTimeout(() => {
+      resetTimer = null;
+      if (!get().open) set(initialState);
+    }, CLOSE_ANIMATION_MS);
+  };
+
+  return {
+    ...initialState,
+    toggleOpen: () => {
+      if (get().open) {
+        closeAndDeferReset();
+      } else {
+        clearResetTimer();
+        set({ open: true });
+      }
+    },
+    handleOpenChange: (open: boolean) => {
+      if (open) {
+        clearResetTimer();
+        set({ open: true });
+      } else {
+        closeAndDeferReset();
+      }
+    },
+    setOpen: (open: boolean) => {
+      if (open) {
+        clearResetTimer();
+        set({ open: true });
+      } else {
+        closeAndDeferReset();
+      }
+    },
   setFields: (fields: FormField[]) => {
     const validatedFields = fields
       .map(validateFormField)
@@ -120,27 +190,14 @@ export const useAssetEditStore = create<AssetEditState>((set, get) => ({
     set({ fields: validatedFields });
   },
   setAssetEditData: (data) => {
-    // Extract functions from validation
-    const { action, onSuccess, ...dataToValidate } = data;
-    const validatedData = validateFormSchema(dataToValidate);
-
-    if (validatedData) {
-      const normalizedItems = data.items?.map(normalizeItem);
-
-      set((state) => ({
-        title: validatedData.title ?? state.title,
-        description: validatedData.description ?? state.description,
-        fields: validatedData.fields ?? state.fields,
-        action: action ?? state.action,
-        onSuccess: onSuccess ?? state.onSuccess,
-        excludedIds: data.excludedIds ?? state.excludedIds,
-        items: normalizedItems ?? state.items,
-        initialItems: normalizedItems
-          ? structuredClone(normalizedItems)
-          : state.initialItems,
-        activeItemId: data.activeItemId ?? state.activeItemId,
-      }));
-    }
+    set((state) => getAssetEditDataState(data, state) ?? {});
+  },
+  openAssetEdit: (data) => {
+    clearResetTimer();
+    set((state) => {
+      const editData = getAssetEditDataState(data, state);
+      return editData ? { ...editData, open: true } : {};
+    });
   },
   updateFieldValue: (name: string, value: string) => {
     set((state) => {
@@ -180,4 +237,5 @@ export const useAssetEditStore = create<AssetEditState>((set, get) => ({
   setActiveItemId: (id: string | null) => {
     set({ activeItemId: id });
   },
-}));
+  };
+});

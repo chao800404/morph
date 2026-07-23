@@ -59,11 +59,10 @@ export const AssetPreviewDialog = () => {
     })),
   );
 
-  const { handleEditOpenChange, setAssetEditData, activeItemId, editOpen } =
+  const { openAssetEdit, activeItemId, editOpen } =
     useAssetEditStore(
       useShallow((state) => ({
-        handleEditOpenChange: state.handleOpenChange,
-        setAssetEditData: state.setAssetEditData,
+        openAssetEdit: state.openAssetEdit,
         activeItemId: state.activeItemId,
         editOpen: state.open,
       })),
@@ -153,7 +152,7 @@ export const AssetPreviewDialog = () => {
   const handleEdit = () => {
     if (!currentAsset || currentAsset.type !== "asset") return;
 
-    setAssetEditData({
+    openAssetEdit({
       title: generateEditTitle("asset", 1),
       description: "Modify asset information",
       fields: generateEditFields({
@@ -194,7 +193,6 @@ export const AssetPreviewDialog = () => {
         clearAllSelectedItems();
       },
     });
-    handleEditOpenChange(true);
   };
 
   const handleDownload = async () => {

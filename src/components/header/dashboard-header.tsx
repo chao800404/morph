@@ -8,7 +8,7 @@ import {
 import { TriangleRightIcon } from "@/components/ui/icons/triangle-right-icon";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { BreadcrumbItem } from "@/lib/config/navigation";
-import Link from "next/link";
+import { RouterLink } from "@/components/router-link";
 import React from "react";
 
 interface DashboardHeaderProps {
@@ -25,7 +25,7 @@ export const DashboardHeader = ({ items }: DashboardHeaderProps) => {
             <React.Fragment key={idx}>
               <BreadcrumbItemUI>
                 <BreadcrumbLink asChild>
-                  <Link href={item.href}>{item.name}</Link>
+                  <RouterLink href={item.href}>{item.name}</RouterLink>
                 </BreadcrumbLink>
               </BreadcrumbItemUI>
               {idx + 1 !== items.length && <TriangleRightIcon />}
