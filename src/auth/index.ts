@@ -1,5 +1,6 @@
 import { ac, administrator, guest, user } from "@/auth/permissions";
-import { getConfig } from "@/server/get-config";
+import { localization } from "@/lib/config/localization";
+import { cmsTrustedOrigins } from "@/lib/config/trusted-origins";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import type { D1Database } from "@cloudflare/workers-types";
 import { betterAuth } from "better-auth/minimal";
@@ -7,7 +8,6 @@ import { admin, anonymous, emailOTP } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { sendPasswordResetEmail } from "../lib/email";
 
 /**
  * The bindings `createAuth` reads.
@@ -31,7 +31,6 @@ function createAuth(env?: CloudflareBindings) {
   const db = env
     ? drizzle(env.DATABASE, { schema })
     : ({} as ReturnType<typeof drizzle>);
-  const config = getConfig();
   const baseURL =
     env?.PUBLIC_URL ||
     process.env.BETTER_AUTH_URL ||
@@ -48,7 +47,7 @@ function createAuth(env?: CloudflareBindings) {
     baseURL,
     trustedOrigins: Array.from(
       new Set([
-        ...config.server.trustedOrigins,
+        ...cmsTrustedOrigins,
         baseURL,
         "http://localhost:3000",
       ]),
@@ -124,7 +123,7 @@ function createAuth(env?: CloudflareBindings) {
               return {
                 data: {
                   ...userData,
-                  language: config.server.localization.defaultLanguage,
+                  language: localization.defaultLanguage,
                 },
               };
             }
@@ -152,6 +151,10 @@ function createAuth(env?: CloudflareBindings) {
           } else if (type === "email-verification") {
             console.log(`Email verification OTP requested for ${email}`);
           } else if (type === "forget-password") {
+            // Email configuration reads the full CMS config. Load it only when
+            // an email is sent so auth middleware initialization cannot cycle
+            // through collections -> queries -> server functions -> auth.
+            const { sendPasswordResetEmail } = await import("../lib/email");
             await sendPasswordResetEmail({ email, otp });
           }
         },

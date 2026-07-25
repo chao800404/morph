@@ -1,6 +1,7 @@
 import { createServerOnlyFn } from "@tanstack/react-start";
 import { defineConfig } from "./lib/config/create-config";
 import { localization } from "./lib/config/localization";
+import { cmsTrustedOrigins } from "./lib/config/trusted-origins";
 import {
   Account,
   Contents,
@@ -59,11 +60,7 @@ export const cmsConfig = defineConfig({
       enabled: true,
     },
   },
-  trustedOrigins: [
-    "http://192.168.31.105:3000",
-    "https://192.168.31.105:3000",
-    "https://*.cmsapp.org",
-  ],
+  trustedOrigins: cmsTrustedOrigins,
   email: {
     defaultFromAddress: "medusa@mail.cmsapp.org",
     defaultFromName: "medusa",

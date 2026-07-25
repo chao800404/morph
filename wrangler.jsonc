@@ -7,7 +7,9 @@
   "name": "morph",
   "compatibility_date": "2025-09-02",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry",
+  // User-owned entry instead of "@tanstack/react-start/server-entry".
+  // See src/server.ts for why (TanStack/router#7285 breaks SSR HMR).
+  "main": "src/server.ts",
   "observability": {
     "enabled": true,
   },

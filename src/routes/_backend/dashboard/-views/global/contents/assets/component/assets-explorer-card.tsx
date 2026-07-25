@@ -1,18 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useCallback, useEffect, useState } from "react";
 
+import { Skeleton } from "@/components/ui/skeleton";
 import { AssetsCardHeader } from "@/routes/_backend/dashboard/-components/assets-card/assets-card-header";
 import { AssetsContent } from "@/routes/_backend/dashboard/-components/assets-card/assets-content";
 import { FoldersContent } from "@/routes/_backend/dashboard/-components/assets-card/folders-content";
 import { BreadcrumbCollapse } from "@/routes/_backend/dashboard/-components/breadcrumb/breadcrumb-collapse";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
-import { Skeleton } from "@/components/ui/skeleton";
-import type { AssetsCardComponentProps } from "../config/assets-card.types";
-import { AssetEmptyCard } from "./asset-empty-card";
-import { useAssetsStore } from "../stores/assets.store";
 import { useShallow } from "zustand/react/shallow";
+import type { AssetsCardComponentProps } from "../config/assets-card.types";
 import { useCollapseState } from "../hooks/use-collapse-state";
 import { useSuppressTransition } from "../hooks/use-suppress-transition";
+import { useAssetsStore } from "../stores/assets.store";
+import { AssetEmptyCard } from "./asset-empty-card";
 
 type AssetsExplorerCardProps = AssetsCardComponentProps & {
   isLoading?: boolean;
@@ -89,7 +89,13 @@ export const AssetsExplorerCard = ({
 
     setFoldersCollapsed(true);
     setAssetsCollapsed(false);
-  }, [foldersCollapsed, hasAssets, resetToEvenSplit, setFoldersCollapsed, setAssetsCollapsed]);
+  }, [
+    foldersCollapsed,
+    hasAssets,
+    resetToEvenSplit,
+    setFoldersCollapsed,
+    setAssetsCollapsed,
+  ]);
 
   const handleToggleAssets = useCallback(() => {
     if (!hasFolders) return;
@@ -103,7 +109,13 @@ export const AssetsExplorerCard = ({
 
     setFoldersCollapsed(false);
     setAssetsCollapsed(true);
-  }, [assetsCollapsed, hasFolders, resetToEvenSplit, setFoldersCollapsed, setAssetsCollapsed]);
+  }, [
+    assetsCollapsed,
+    hasFolders,
+    resetToEvenSplit,
+    setFoldersCollapsed,
+    setAssetsCollapsed,
+  ]);
 
   const handleSetFoldersCollapsed = useCallback(
     (collapsed: boolean) => {
@@ -155,7 +167,7 @@ export const AssetsExplorerCard = ({
   return (
     <CardWrapper
       classNames={{
-        cardWrapper: "h-content flex flex-col overflow-hidden",
+        cardWrapper: "h-content flex flex-col",
         contentWrapper: cn(
           "w-full relative flex-1 flex flex-col min-h-0 overflow-hidden",
         ),
@@ -192,7 +204,10 @@ export const AssetsExplorerCard = ({
         <div className="flex h-full items-center justify-center">
           <p className="text-muted-foreground">{errorMessage}</p>
         </div>
-      ) : folders.length <= 0 && assets.length <= 0 && !currentFolder && !query ? (
+      ) : folders.length <= 0 &&
+        assets.length <= 0 &&
+        !currentFolder &&
+        !query ? (
         <AssetEmptyCard showButton uploadConfig={uploadConfig} />
       ) : (
         <div className="w-full flex-1 flex flex-col min-h-0 overflow-hidden relative select-none">
@@ -209,7 +224,9 @@ export const AssetsExplorerCard = ({
               isAssetsCollapsed={assetsCollapsed}
               canCollapse={hasAssets}
               evenSplitResetKey={evenSplitResetKey}
-              folderId={data.currentFolder?.id ? String(data.currentFolder.id) : null}
+              folderId={
+                data.currentFolder?.id ? String(data.currentFolder.id) : null
+              }
               suppressTransition={suppressTransition}
               onToggleCollapse={handleToggleFolders}
               onSetFoldersCollapsed={handleSetFoldersCollapsed}

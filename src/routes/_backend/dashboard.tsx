@@ -14,44 +14,42 @@ import { getConfig } from "@/server/get-config";
 import { lazy, Suspense } from "react";
 
 const CreateDialog = lazy(() =>
-  import("./dashboard/-views/features/index").then((m) => ({
+  import("./dashboard/-views/features/global-create/create-dialog").then((m) => ({
     default: m.CreateDialog,
   })),
 );
 const EditDialog = lazy(() =>
-  import("./dashboard/-views/features/index").then((m) => ({
+  import("./dashboard/-views/features/global-edit/edit-dialog").then((m) => ({
     default: m.EditDialog,
   })),
 );
 const InfoAlert = lazy(() =>
-  import("./dashboard/-views/features/index").then((m) => ({
+  import("./dashboard/-views/features/global-info/info-alert").then((m) => ({
     default: m.InfoAlert,
   })),
 );
 const AssetEditDialog = lazy(() =>
-  import("./dashboard/-views/features/index").then((m) => ({
-    default: m.AssetEditDialog,
-  })),
+  import(
+    "./dashboard/-views/features/asset/edit/asset-edit-dialog"
+  ).then((m) => ({ default: m.AssetEditDialog })),
 );
 const AssetMoveDialog = lazy(() =>
-  import("./dashboard/-views/features/index").then((m) => ({
-    default: m.AssetMoveDialog,
-  })),
+  import(
+    "./dashboard/-views/features/asset/move/asset-move-dialog"
+  ).then((m) => ({ default: m.AssetMoveDialog })),
 );
 const AssetPreviewDialog = lazy(() =>
-  import("./dashboard/-views/features/index").then((m) => ({
-    default: m.AssetPreviewDialog,
-  })),
+  import(
+    "./dashboard/-views/features/asset/preview/asset-preview-dialog"
+  ).then((m) => ({ default: m.AssetPreviewDialog })),
 );
 const AssetPostProcessDialog = lazy(() =>
-  import("./dashboard/-views/features/index").then((m) => ({
-    default: m.AssetPostProcessDialog,
-  })),
+  import(
+    "./dashboard/-views/features/asset/post-process/asset-post-process-dialog"
+  ).then((m) => ({ default: m.AssetPostProcessDialog })),
 );
 const AssetSelectFloat = lazy(() =>
-  import("./dashboard/-views/features/index").then((m) => ({
-    default: m.AssetSelectFloat,
-  })),
+  import("./dashboard/-views/features/asset/select/float"),
 );
 
 export const Route = createFileRoute("/_backend/dashboard")({
