@@ -60,6 +60,13 @@ export const cmsConfig = defineConfig({
       enabled: true,
     },
   },
+  // Cloudflare exposes no runtime API for the account plan, and the
+  // per-invocation subrequest budget differs by an order of magnitude
+  // (free: 1,000 to Cloudflare services; paid: 10,000). The bulk delete and
+  // download caps are derived from this.
+  cloudflare: {
+    plan: "paid",
+  },
   trustedOrigins: cmsTrustedOrigins,
   email: {
     defaultFromAddress: "medusa@mail.cmsapp.org",

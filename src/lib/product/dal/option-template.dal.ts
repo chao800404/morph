@@ -12,6 +12,7 @@ import {
   type OptionTemplateValueRow,
 } from "../mappers/option-template.mapper";
 import { chunk, chunkForInsert } from "./d1-batch";
+import { containsPattern } from "@/lib/db/like-pattern";
 
 // Column counts drive the insert batch size; see d1-batch.ts.
 const TEMPLATE_VALUE_COLUMNS = 6;
@@ -123,7 +124,7 @@ export const optionTemplateDal = {
 
     if (options.query?.trim()) {
       conditions.push(
-        like(optionTemplates.title, `%${options.query.trim()}%`) as SQL,
+        like(optionTemplates.title, containsPattern(options.query.trim())) as SQL,
       );
     }
 

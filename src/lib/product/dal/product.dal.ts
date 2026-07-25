@@ -34,6 +34,7 @@ import {
 } from "../mappers/product.mapper";
 import { chunk, chunkForInsert } from "./d1-batch";
 import { productVariantDal } from "./product-variant.dal";
+import { containsPattern } from "@/lib/db/like-pattern";
 
 // Column counts drive the insert batch size; see d1-batch.ts.
 const OPTION_COLUMNS = 6;
@@ -141,7 +142,7 @@ export const productDal = {
     const conditions: SQL[] = [isNull(products.deletedAt)];
 
     if (options.query?.trim()) {
-      const pattern = `%${options.query.trim()}%`;
+      const pattern = containsPattern(options.query.trim());
       conditions.push(
         or(
           like(products.title, pattern),

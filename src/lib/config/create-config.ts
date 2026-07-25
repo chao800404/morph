@@ -15,6 +15,20 @@ import type { DashboardSearch } from "../validations/dashboard-search";
 import { localization } from "../config/localization";
 
 /**
+ * Which Cloudflare plan this deployment runs on.
+ *
+ * Bulk operations are capped by Workers' per-request subrequest budget, which
+ * differs by an order of magnitude between plans (50 vs 1,000). Stating the
+ * plan is something an operator knows; the derived limits are not.
+ */
+export type CloudflarePlan = "free" | "paid";
+
+export interface CloudflareDeployment {
+  /** Defaults to "paid". */
+  plan?: CloudflarePlan;
+}
+
+/**
  * Context handed to a collection's `loadData` by the dynamic dashboard routes.
  * `search` has already passed `dashboardSearchSchema` in the route.
  */
@@ -91,6 +105,7 @@ export interface CMSConfigInput {
     };
   };
   email?: EmailAdapter;
+  cloudflare?: CloudflareDeployment;
   trustedOrigins: string[];
 }
 
@@ -111,6 +126,7 @@ export interface CMSUserConfig {
   localization: typeof localization;
   auth: CMSConfigInput["auth"];
   features?: CMSConfigInput["features"];
+  cloudflare?: CloudflareDeployment;
   trustedOrigins: string[];
   email: {
     defaultFromAddress: string;

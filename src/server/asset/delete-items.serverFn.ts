@@ -4,6 +4,10 @@ import { assetDal, assetFolderDal, type AssetDTO } from "../../lib/asset";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
 import { batchSoftDeleteItemsInD1 } from "@/lib/asset/dal/asset-batch.dal";
 import { parseDeleteItemsInput } from "./input-validation";
+import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
+import { bulkOperationLimits } from "@/lib/db/operation-limits";
+import { getConfig } from "@/server/get-config";
+import pLimit from "p-limit";
 
 export const deleteItems = createServerFn({ method: "POST" })
   .validator(parseDeleteItemsInput)
@@ -43,18 +47,29 @@ export const deleteItems = createServerFn({ method: "POST" })
     // 1. Collect all target folder IDs (including descendants)
     const allTargetFolderIds = new Set<string>(folderIds);
 
-    // Use Promise.all to fetch descendants for all selected folders in parallel
+    // The selected folders were already loaded above, so their `idPath` is in
+    // hand — looking each one up again by id would double the query count.
+    // Concurrency is capped rather than fanning out one lookup per selected
+    // folder: deleting a large selection would otherwise open an unbounded
+    // number of simultaneous D1 queries.
+    const descendantLookups = pLimit(DB_FANOUT_CONCURRENCY);
     await Promise.all(
-      folderIds.map(async (rootId) => {
-        const descendants = await assetFolderDal.findAllDescendantIds(rootId);
-        descendants.forEach((id) => allTargetFolderIds.add(id));
-      }),
+      selectedFolders.map((folder) =>
+        descendantLookups(async () => {
+          const descendants = await assetFolderDal.findChildrenByIdPath(
+            folder.idPath,
+          );
+          descendants.forEach((descendant) =>
+            allTargetFolderIds.add(descendant.id),
+          );
+        }),
+      ),
     );
 
     const finalFolderIds = Array.from(allTargetFolderIds);
 
     // 2. Collect all target assets (selected assets + assets in folders)
-    let allAssetsToDelete: AssetDTO[] = [...selectedAssets];
+    const allAssetsToDelete: AssetDTO[] = [...selectedAssets];
 
     // A. Direct assets
     // B. Assets in folders
@@ -69,14 +84,42 @@ export const deleteItems = createServerFn({ method: "POST" })
     const uniqueAssets = Array.from(uniqueAssetsMap.values());
     const uniqueAssetIds = uniqueAssets.map((a) => a.id);
 
-    // 3. One D1 batch keeps asset/folder visibility changes transactional.
+    // 3. Refuse oversized work before touching anything.
+    //
+    // The input validator caps how many items were *selected*, but a single
+    // folder can expand into thousands of descendants. Running past
+    // Cloudflare's subrequest budget would abort midway, after the D1 soft
+    // delete but partway through the R2 archive, leaving files hidden in the
+    // UI while their objects remain in storage. Failing up front keeps the
+    // operation all-or-nothing from the user's point of view.
+    const limits = bulkOperationLimits(
+      getConfig().server.cloudflare?.plan,
+    );
+    if (uniqueAssets.length > limits.maxAssets) {
+      return {
+        success: false,
+        message: `This selection contains ${uniqueAssets.length} files, above the limit of ${limits.maxAssets} per delete`,
+        description:
+          "Nothing was deleted. Remove the folder's contents in smaller batches, then delete the folder itself.",
+      };
+    }
+    if (finalFolderIds.length > limits.maxFolders) {
+      return {
+        success: false,
+        message: `This selection contains ${finalFolderIds.length} folders, above the limit of ${limits.maxFolders} per delete`,
+        description:
+          "Nothing was deleted. Delete the nested folders in smaller batches first.",
+      };
+    }
+
+    // 4. One D1 batch keeps asset/folder visibility changes transactional.
     await batchSoftDeleteItemsInD1({
       assetIds: uniqueAssetIds,
       folderIds: finalFolderIds,
       userId,
     });
 
-    // 4. Handle R2 Operations (Archive to /delete/ folder)
+    // 5. Handle R2 Operations (Archive to /delete/ folder)
     const failedArchives: string[] = [];
     if (env?.R2_BUCKET && uniqueAssets.length > 0) {
       const R2_BATCH_SIZE = 10;

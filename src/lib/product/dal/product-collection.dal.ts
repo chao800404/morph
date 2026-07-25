@@ -6,6 +6,7 @@ import type {
   ProductCollectionInsertDTO,
   UpdateProductCollectionDTO,
 } from "../dto/product-collection.dto";
+import { containsPattern } from "@/lib/db/like-pattern";
 import {
   toProductCollectionDTO,
   type ProductCollectionRow,
@@ -71,7 +72,7 @@ export const productCollectionDal = {
     const conditions: SQL[] = [isNull(productCollections.deletedAt)];
 
     if (options.query?.trim()) {
-      const pattern = `%${options.query.trim()}%`;
+      const pattern = containsPattern(options.query.trim());
       conditions.push(
         or(
           like(productCollections.title, pattern),

@@ -7,6 +7,8 @@ import {
   type FolderLocationUpdate,
 } from "@/lib/asset/dal/asset-batch.dal";
 import { parseMoveItemsInput } from "./input-validation";
+import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
+import pLimit from "p-limit";
 
 async function collectDescendantPathUpdates(
   oldPath: string,
@@ -73,7 +75,9 @@ export const moveItems = createServerFn({ method: "POST" })
           folder.idPath.startsWith(`${candidate.idPath}/`),
       );
       if (selectedAncestor) {
-        throw new Error("Move a parent folder without selecting its descendants");
+        throw new Error(
+          "Move a parent folder without selecting its descendants",
+        );
       }
     }
 
@@ -96,41 +100,47 @@ export const moveItems = createServerFn({ method: "POST" })
       }
     }
 
+    // Each folder triggers a descendant lookup, so the fan-out is capped.
+    const folderLookups = pLimit(DB_FANOUT_CONCURRENCY);
     const folderLocationUpdates = (
       await Promise.all(
-        userFolders.map(async (folder): Promise<FolderLocationUpdate[]> => {
-          let newPath: string;
-          let newIdPath: string;
+        userFolders.map((folder) =>
+          folderLookups(async (): Promise<FolderLocationUpdate[]> => {
+            let newPath: string;
+            let newIdPath: string;
 
-          if (targetFolder) {
-            newPath = `${targetFolder.path}/${folder.name}`;
-            newIdPath = `${targetFolder.idPath}/${folder.id}`;
-          } else {
-            // Move to root
-            newPath = `/${folder.name}`;
-            newIdPath = `/${folder.id}`;
-          }
+            if (targetFolder) {
+              newPath = `${targetFolder.path}/${folder.name}`;
+              newIdPath = `${targetFolder.idPath}/${folder.id}`;
+            } else {
+              // Move to root
+              newPath = `/${folder.name}`;
+              newIdPath = `/${folder.id}`;
+            }
 
-          const updates: FolderLocationUpdate[] = [{
-            id: folder.id,
-            parentId: targetFolderId,
-            path: newPath,
-            idPath: newIdPath,
-            updateParent: true,
-          }];
+            const updates: FolderLocationUpdate[] = [
+              {
+                id: folder.id,
+                parentId: targetFolderId,
+                path: newPath,
+                idPath: newIdPath,
+                updateParent: true,
+              },
+            ];
 
-          if (folder.path !== newPath) {
-            updates.push(
-              ...(await collectDescendantPathUpdates(
-                folder.path,
-                newPath,
-                folder.idPath,
-                newIdPath,
-              )),
-            );
-          }
-          return updates;
-        }),
+            if (folder.path !== newPath) {
+              updates.push(
+                ...(await collectDescendantPathUpdates(
+                  folder.path,
+                  newPath,
+                  folder.idPath,
+                  newIdPath,
+                )),
+              );
+            }
+            return updates;
+          }),
+        ),
       )
     ).flat();
 

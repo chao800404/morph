@@ -4,6 +4,10 @@ import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { hasAnyRole } from "@/server/middleware/auth.middleware";
 import { createFileRoute } from "@tanstack/react-router";
 import { env } from "cloudflare:workers";
+import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
+import { bulkOperationLimits } from "@/lib/db/operation-limits";
+import { getConfig } from "@/server/get-config";
+import pLimit from "p-limit";
 import { z } from "zod";
 import type { AssetDTO } from "@/lib/asset/dto/asset.dto";
 
@@ -57,7 +61,9 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
           }
 
           const rawKey = asset.url.replace(/^\/+/, "");
-          const key = rawKey.startsWith("assets/") ? rawKey : `assets/${rawKey}`;
+          const key = rawKey.startsWith("assets/")
+            ? rawKey
+            : `assets/${rawKey}`;
           const object = await env.R2_BUCKET.get(key);
           if (!object) {
             return new Response("File not found in storage", { status: 404 });
@@ -80,10 +86,20 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
 
         // Bulk / Manifest list mode for zip download
         const parsedAssetIds = requestedIdsSchema.safeParse(
-          assetIdsParam ? assetIdsParam.split(",").map((value) => value.trim()).filter(Boolean) : [],
+          assetIdsParam
+            ? assetIdsParam
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            : [],
         );
         const parsedFolderIds = requestedIdsSchema.safeParse(
-          folderIdsParam ? folderIdsParam.split(",").map((value) => value.trim()).filter(Boolean) : [],
+          folderIdsParam
+            ? folderIdsParam
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            : [],
         );
         if (!parsedAssetIds.success || !parsedFolderIds.success) {
           return new Response(
@@ -96,7 +112,9 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
 
         if (assetIds.length + folderIds.length > 100) {
           return new Response(
-            JSON.stringify({ error: "A maximum of 100 items may be downloaded at once" }),
+            JSON.stringify({
+              error: "A maximum of 100 items may be downloaded at once",
+            }),
             { status: 400, headers: { "content-type": "application/json" } },
           );
         }
@@ -108,17 +126,24 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
           );
         }
 
-        // Collect folder IDs (including descendants)
+        // Collect folder IDs (including descendants). Concurrency is capped so
+        // a large selection cannot open one simultaneous D1 query per folder.
         const allFolderIds = new Set<string>(folderIds);
+        const descendantLookups = pLimit(DB_FANOUT_CONCURRENCY);
         await Promise.all(
-          folderIds.map(async (fId) => {
-            const descendants = await assetFolderDal.findAllDescendantIds(fId);
-            descendants.forEach((id) => allFolderIds.add(id));
-          }),
+          folderIds.map((fId) =>
+            descendantLookups(async () => {
+              const descendants =
+                await assetFolderDal.findAllDescendantIds(fId);
+              descendants.forEach((id) => allFolderIds.add(id));
+            }),
+          ),
         );
 
         // Fetch folders to build path lookup
-        const folderList = await assetFolderDal.findByIds(Array.from(allFolderIds));
+        const folderList = await assetFolderDal.findByIds(
+          Array.from(allFolderIds),
+        );
         const folderMap = new Map(folderList.map((f) => [f.id, f]));
 
         // Collect target assets with ZIP-relative paths
@@ -138,7 +163,9 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
 
         // Assets inside folders
         if (allFolderIds.size > 0) {
-          const folderAssets = await assetDal.findByFolderIds(Array.from(allFolderIds));
+          const folderAssets = await assetDal.findByFolderIds(
+            Array.from(allFolderIds),
+          );
           for (const asset of folderAssets) {
             if (!targetAssetsMap.has(asset.id)) {
               let folderPathPrefix = "";
@@ -151,7 +178,9 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
                     .map(safeDownloadName)
                     .join("/") + "/";
               }
-              const filename = safeDownloadName(asset.originalName || asset.name);
+              const filename = safeDownloadName(
+                asset.originalName || asset.name,
+              );
               targetAssetsMap.set(asset.id, {
                 asset,
                 relativePath: `${folderPathPrefix}${filename}`,
@@ -160,20 +189,43 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
           }
         }
 
-        const fileItems = Array.from(targetAssetsMap.values()).map(({ asset, relativePath }) => {
-          const rawUrl = asset.url.replace(/^\/+/, "");
-          const key = rawUrl.startsWith("assets/") ? rawUrl : `assets/${rawUrl}`;
-          return {
-            id: asset.id,
-            name: safeDownloadName(asset.originalName || asset.name),
-            path: relativePath,
-            downloadUrl: `/${key}`,
-            size: asset.size,
-          };
-        });
+        // The browser fetches every file in the manifest to build the ZIP, so
+        // an unbounded folder would leave it downloading for minutes with no
+        // way to tell whether it stalled. Refuse up front instead.
+        const limits = bulkOperationLimits(
+          getConfig().server.cloudflare?.plan,
+        );
+        if (targetAssetsMap.size > limits.maxAssets) {
+          return new Response(
+            JSON.stringify({
+              error: `This selection contains ${targetAssetsMap.size} files, above the limit of ${limits.maxAssets} per download. Download the folders separately.`,
+            }),
+            { status: 400, headers: { "content-type": "application/json" } },
+          );
+        }
+
+        const fileItems = Array.from(targetAssetsMap.values()).map(
+          ({ asset, relativePath }) => {
+            const rawUrl = asset.url.replace(/^\/+/, "");
+            const key = rawUrl.startsWith("assets/")
+              ? rawUrl
+              : `assets/${rawUrl}`;
+            return {
+              id: asset.id,
+              name: safeDownloadName(asset.originalName || asset.name),
+              path: relativePath,
+              downloadUrl: `/${key}`,
+              size: asset.size,
+            };
+          },
+        );
 
         let zipName = "download.zip";
-        if (folderIds.length === 1 && assetIds.length === 0 && folderList.length > 0) {
+        if (
+          folderIds.length === 1 &&
+          assetIds.length === 0 &&
+          folderList.length > 0
+        ) {
           const mainFolder = folderList.find((f) => f.id === folderIds[0]);
           if (mainFolder) {
             zipName = `${safeDownloadName(mainFolder.name)}.zip`;

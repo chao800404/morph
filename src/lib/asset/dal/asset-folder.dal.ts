@@ -7,6 +7,7 @@ import type {
   AssetFolderDTO,
   AssetFolderInsertDTO,
 } from "../dto/asset-folder.dto";
+import { containsPattern } from "@/lib/db/like-pattern";
 import {
   toAssetFolderDTO,
   type AssetFolderRow,
@@ -125,7 +126,9 @@ export const assetFolderDal = {
       isNull(assetFolders.deletedAt),
     ];
     if (options.query?.trim()) {
-      conditions.push(like(assetFolders.name, `%${options.query.trim()}%`));
+      conditions.push(
+        like(assetFolders.name, containsPattern(options.query.trim())),
+      );
     }
     const sortColumn =
       options.sortBy === "name"

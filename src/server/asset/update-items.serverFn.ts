@@ -3,6 +3,8 @@ import { assetDal, assetFolderDal } from "../../lib/asset";
 import { parseAssetTagsInput } from "@/lib/validations/asset";
 import { parseUpdateItemsInput } from "./input-validation";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
+import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
+import pLimit from "p-limit";
 import {
   batchUpdateItemsInD1,
   type AssetMetadataUpdate,
@@ -64,50 +66,72 @@ export const updateItems = createServerFn({ method: "POST" })
       return update;
     });
 
-    const selectedFolderPaths = new Set(existingFolders.map((folder) => folder.idPath));
+    const selectedFolderPaths = new Set(
+      existingFolders.map((folder) => folder.idPath),
+    );
     for (const folder of existingFolders) {
       const pathParts = folder.idPath.split("/").filter(Boolean);
       pathParts.pop();
-      if (pathParts.some((_, index) => selectedFolderPaths.has(`/${pathParts.slice(0, index + 1).join("/")}`))) {
+      if (
+        pathParts.some((_, index) =>
+          selectedFolderPaths.has(
+            `/${pathParts.slice(0, index + 1).join("/")}`,
+          ),
+        )
+      ) {
         throw new Error("Edit a parent folder and its descendants separately");
       }
     }
 
     const destinationPaths = new Set<string>();
+    // Each item runs a path lookup plus a descendant lookup, so the fan-out is
+    // capped. The shared `destinationPaths` set still sees every earlier claim,
+    // because limiting concurrency only reorders the checks.
+    const folderLookups = pLimit(DB_FANOUT_CONCURRENCY);
     const folderUpdates = (
       await Promise.all(
-        folderItems.map(async (item): Promise<FolderMetadataUpdate[]> => {
-          const folder = folderMap.get(item.id)!;
-          const update: FolderMetadataUpdate = { id: item.id };
-          if (item.description !== undefined) {
-            update.description = item.description || null;
-          }
-          if (!item.name || item.name === folder.name) return [update];
+        folderItems.map((item) =>
+          folderLookups(async (): Promise<FolderMetadataUpdate[]> => {
+            const folder = folderMap.get(item.id)!;
+            const update: FolderMetadataUpdate = { id: item.id };
+            if (item.description !== undefined) {
+              update.description = item.description || null;
+            }
+            if (!item.name || item.name === folder.name) return [update];
 
-          const pathParts = folder.path.split("/");
-          pathParts[pathParts.length - 1] = item.name;
-          const newPath = pathParts.join("/");
-          if (destinationPaths.has(newPath)) {
-            throw new Error(`Folder "${item.name}" is duplicated in this update`);
-          }
-          destinationPaths.add(newPath);
+            const pathParts = folder.path.split("/");
+            pathParts[pathParts.length - 1] = item.name;
+            const newPath = pathParts.join("/");
+            if (destinationPaths.has(newPath)) {
+              throw new Error(
+                `Folder "${item.name}" is duplicated in this update`,
+              );
+            }
+            destinationPaths.add(newPath);
 
-          const existingAtDestination = await assetFolderDal.findByPath(newPath);
-          if (existingAtDestination && existingAtDestination.id !== folder.id) {
-            throw new Error(`Folder "${item.name}" already exists`);
-          }
+            const existingAtDestination =
+              await assetFolderDal.findByPath(newPath);
+            if (
+              existingAtDestination &&
+              existingAtDestination.id !== folder.id
+            ) {
+              throw new Error(`Folder "${item.name}" already exists`);
+            }
 
-          update.name = item.name;
-          update.path = newPath;
-          const descendants = await assetFolderDal.findChildrenByPath(folder.path);
-          return [
-            update,
-            ...descendants.map((descendant) => ({
-              id: descendant.id,
-              path: descendant.path.replace(folder.path, newPath),
-            })),
-          ];
-        }),
+            update.name = item.name;
+            update.path = newPath;
+            const descendants = await assetFolderDal.findChildrenByPath(
+              folder.path,
+            );
+            return [
+              update,
+              ...descendants.map((descendant) => ({
+                id: descendant.id,
+                path: descendant.path.replace(folder.path, newPath),
+              })),
+            ];
+          }),
+        ),
       )
     ).flat();
 

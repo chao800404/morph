@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm";
 import type { AssetDTO, AssetInsertDTO } from "../dto/asset.dto";
 import { toAssetDTO, type AssetRow } from "../mappers/asset.mapper";
+import { containsPattern } from "@/lib/db/like-pattern";
 
 const mapFirst = (rows: AssetRow[]): AssetDTO | null =>
   rows.length > 0 ? toAssetDTO(rows[0]) : null;
@@ -88,7 +89,7 @@ export const assetDal = {
     const conditions: SQL[] = [folderCondition, isNull(assets.deletedAt)];
 
     if (options.query?.trim()) {
-      const pattern = `%${options.query.trim()}%`;
+      const pattern = containsPattern(options.query.trim());
       conditions.push(
         or(
           like(assets.name, pattern),
@@ -144,7 +145,7 @@ export const assetDal = {
     const db = await getDb();
     const conditions: SQL[] = [isNull(assets.deletedAt)];
     if (options.query) {
-      const pattern = `%${options.query}%`;
+      const pattern = containsPattern(options.query);
       conditions.push(
         or(
           like(assets.originalName, pattern),
