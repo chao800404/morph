@@ -16,7 +16,7 @@ const searchAssetsInputSchema = z.object({
 });
 
 export const searchAssets = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => searchAssetsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => searchAssetsInputSchema.parse(data ?? {}))
   .middleware([assetReadMiddleware])
   .handler(async ({ data }) => {
     try {

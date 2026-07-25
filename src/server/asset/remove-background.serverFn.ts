@@ -12,7 +12,7 @@ const inputSchema = z.object({
 });
 
 export const removeBackground = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => inputSchema.parse(data))
+  .validator((data: unknown) => inputSchema.parse(data))
   .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput }) => {
     if (!isRemoveBackgroundEnabled(cmsConfig)) {

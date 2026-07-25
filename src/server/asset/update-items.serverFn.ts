@@ -10,7 +10,7 @@ import {
 } from "@/lib/asset/dal/asset-batch.dal";
 
 export const updateItems = createServerFn({ method: "POST" })
-  .inputValidator(parseUpdateItemsInput)
+  .validator(parseUpdateItemsInput)
   .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput, context }) => {
     if (parsedInput.formError) {

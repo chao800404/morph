@@ -30,17 +30,19 @@ function RouteComponent() {
   const config = useMemo(() => getConfig().client, []);
 
   // Pick the component based on the slug from the config
-  const ViewComponent = useMemo(() => {
+  const collection = useMemo(() => {
     const settingsCollections = config.collections.settings.flatMap(
       (group) => group.collections,
     );
-    const collection = settingsCollections.find((c) => c.slug === slug);
-    return collection?.component;
+    return settingsCollections.find((c) => c.slug === slug);
   }, [slug, config]);
 
+  const ViewComponent = collection?.component;
   if (!ViewComponent) return <NotFound />;
+
+  const Loader = collection.loader ?? PageSpinner;
   return (
-    <Suspense fallback={<PageSpinner />}>
+    <Suspense fallback={<Loader />}>
       <ViewComponent />
     </Suspense>
   );

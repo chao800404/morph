@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { moveItems } from "@/server/asset";
+import { moveItems } from "@/server/asset/move-items.serverFn";
 import { useQueryClient } from "@tanstack/react-query";
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider, DragOverlay } from "@dnd-kit/react";
@@ -166,8 +166,11 @@ export const AssetDraggableProvider = ({
         const result = await moveItems({ data: formData });
 
         if (result?.success) {
-          toast.success("Items moved successfully", {
-            description: result.message,
+          // `message` is the headline and `description` the detail
+          // ("Moved 2 asset(s)"). Passing `message` as the description made the
+          // toast repeat the same sentence twice.
+          toast.success(result.message || "Items moved successfully", {
+            description: result.description,
             position: "top-center",
           });
           clearAllSelectedItems();

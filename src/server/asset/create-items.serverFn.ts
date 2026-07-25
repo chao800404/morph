@@ -435,7 +435,7 @@ async function internalCreateAsset(
 }
 
 export const createItems = createServerFn({ method: "POST" })
-  .inputValidator(parseCreateItemsInput)
+  .validator(parseCreateItemsInput)
   .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput, context }) => {
     const user = context.user;

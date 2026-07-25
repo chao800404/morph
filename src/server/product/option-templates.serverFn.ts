@@ -12,7 +12,7 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listOptionTemplates = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     listOptionTemplatesInputSchema.parse(data ?? {}),
   )
   .middleware([productReadMiddleware])
@@ -52,7 +52,7 @@ export const listOptionTemplates = createServerFn({ method: "POST" })
   });
 
 export const createOptionTemplate = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     createOptionTemplateInputSchema.parse(data),
   )
   .middleware([productAdminMiddleware])
@@ -96,7 +96,7 @@ export const createOptionTemplate = createServerFn({ method: "POST" })
   });
 
 export const updateOptionTemplate = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     updateOptionTemplateInputSchema.parse(data),
   )
   .middleware([productAdminMiddleware])
@@ -152,7 +152,7 @@ export const updateOptionTemplate = createServerFn({ method: "POST" })
   });
 
 export const deleteOptionTemplates = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     deleteOptionTemplatesInputSchema.parse(data),
   )
   .middleware([productAdminMiddleware])

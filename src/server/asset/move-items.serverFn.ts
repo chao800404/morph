@@ -24,7 +24,7 @@ async function collectDescendantPathUpdates(
 }
 
 export const moveItems = createServerFn({ method: "POST" })
-  .inputValidator(parseMoveItemsInput)
+  .validator(parseMoveItemsInput)
   .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput, context }) => {
     if (parsedInput.formError) {

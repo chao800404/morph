@@ -1,14 +1,7 @@
 import type { AssetActionResult } from "@/lib/asset/action-result";
-import {
-  createCollection,
-  createOptionTemplate,
-  deleteOptionTemplates,
-  updateOptionTemplate,
-  deleteCollections,
-  deleteProducts,
-  updateCollection,
-  updateProduct,
-} from "@/server/product";
+import { createCollection, deleteCollections, updateCollection } from "@/server/product/collections.serverFn";
+import { createOptionTemplate, deleteOptionTemplates, updateOptionTemplate } from "@/server/product/option-templates.serverFn";
+import { deleteProducts, updateProduct } from "@/server/product/update-product.serverFn";
 
 /**
  * FormData adapters for the shared dashboard dialogs.

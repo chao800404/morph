@@ -6,7 +6,7 @@ import { batchSoftDeleteItemsInD1 } from "@/lib/asset/dal/asset-batch.dal";
 import { parseDeleteItemsInput } from "./input-validation";
 
 export const deleteItems = createServerFn({ method: "POST" })
-  .inputValidator(parseDeleteItemsInput)
+  .validator(parseDeleteItemsInput)
   .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput, context }) => {
     if (parsedInput.formError) {

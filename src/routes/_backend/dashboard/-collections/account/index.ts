@@ -1,4 +1,3 @@
-import { sessionQueries } from "@queries/auth.queries";
 import type { CollectionLoadContext } from "@/lib/config/create-config";
 import { lazy } from "react";
 
@@ -13,6 +12,14 @@ export const Account = {
       label: "Profile",
       component: lazy(() => import("@views/settings/profile")),
       loadData: async ({ queryClient }: CollectionLoadContext) => {
+        // Imported here rather than at module scope. A static import would pull
+        // `auth.queries` — and through it `list-sessions.serverFn` and the auth
+        // middleware — into `cms.config`'s eager graph. Server functions import
+        // `get-config`, so the middleware module would then have several entry
+        // points that Vite re-evaluates in parallel during HMR, and one of them
+        // reads the namespace before it is bound, leaving `middleware` as
+        // `undefined`. The sibling collections already import this way.
+        const { sessionQueries } = await import("@queries/auth.queries");
         await queryClient.ensureQueryData(sessionQueries.list());
       },
     },

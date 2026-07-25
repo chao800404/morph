@@ -1,4 +1,5 @@
 import type { CollectionLoadContext } from "@/lib/config/create-config";
+import { AssetsPageSkeleton } from "@views/global/contents/assets/component/assets-card-skeleton";
 import { lazy } from "react";
 
 export const Contents = {
@@ -72,6 +73,9 @@ export const Contents = {
       icon: "Inbox",
       label: "Assets",
       component: lazy(() => import("@views/global/contents/assets")),
+      // The explorer shows a skeleton while its query runs, so the chunk wait
+      // uses the same shape instead of a spinner that then swaps to a skeleton.
+      loader: AssetsPageSkeleton,
       loadData: async ({ queryClient, search }: CollectionLoadContext) => {
         const { assetQueries, normalizeAssetListParams } = await import(
           "@queries/asset.queries"

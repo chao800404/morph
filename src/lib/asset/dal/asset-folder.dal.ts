@@ -1,7 +1,7 @@
 import { getDb } from "@/db";
 import { assetFolders } from "@/db/asset.schema";
 import { users } from "@/db/auth.schema";
-import { and, asc, desc, eq, inArray, isNull, like, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type {
   AssetFolderDTO,
@@ -14,6 +14,27 @@ import {
 
 const mapFirst = (rows: AssetFolderRow[]): AssetFolderDTO | null =>
   rows.length > 0 ? toAssetFolderDTO(rows[0]) : null;
+
+/**
+ * Prefix match over a subtree, without LIKE.
+ *
+ * SQLite caps patterns at SQLITE_MAX_LIKE_PATTERN_LENGTH (50 bytes on D1), so
+ * `like(idPath, "/uuid/uuid/%")` throws `LIKE or GLOB pattern too complex` as
+ * soon as a folder is nested — two UUIDs plus separators is already 76
+ * characters. A half-open range matches the same rows with no length limit and
+ * can use the column's index.
+ *
+ * Relies on the column's default BINARY collation, which the schema does not
+ * override.
+ */
+const startsWithPrefix = (
+  column: typeof assetFolders.idPath | typeof assetFolders.path,
+  prefix: string,
+) => {
+  const lastChar = prefix.charCodeAt(prefix.length - 1);
+  const upperBound = prefix.slice(0, -1) + String.fromCharCode(lastChar + 1);
+  return and(gte(column, prefix), lt(column, upperBound));
+};
 
 export const assetFolderDal = {
   async findById(id: string): Promise<AssetFolderDTO | null> {
@@ -57,7 +78,7 @@ export const assetFolderDal = {
       .from(assetFolders)
       .where(
         and(
-          like(assetFolders.idPath, `${idPath}/%`),
+          startsWithPrefix(assetFolders.idPath, `${idPath}/`),
           isNull(assetFolders.deletedAt),
         ),
       );
@@ -71,7 +92,7 @@ export const assetFolderDal = {
       .from(assetFolders)
       .where(
         and(
-          like(assetFolders.path, `${path}/%`),
+          startsWithPrefix(assetFolders.path, `${path}/`),
           isNull(assetFolders.deletedAt),
         ),
       );

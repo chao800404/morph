@@ -10,7 +10,8 @@ import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { getConfig } from "@/server/get-config";
-import { processImage, removeBackground } from "@/server/asset";
+import { processImage } from "@/server/asset/process-image.serverFn";
+import { removeBackground } from "@/server/asset/remove-background.serverFn";
 import {
   Loader2,
   Maximize2,

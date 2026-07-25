@@ -6,7 +6,7 @@ import { authMiddleware } from "../middleware/auth.middleware";
 import { getActionErrorMessage } from "@/lib/asset/action-result";
 
 export const updateProfile = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => {
+  .validator((data: unknown) => {
     const result = profileSchema.safeParse(data);
 
     if (!result.success) {

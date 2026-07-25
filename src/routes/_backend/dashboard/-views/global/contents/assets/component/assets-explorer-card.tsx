@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useState } from "react";
 
-import { Skeleton } from "@/components/ui/skeleton";
+import { AssetsCardSkeleton } from "./assets-card-skeleton";
 import { AssetsCardHeader } from "@/routes/_backend/dashboard/-components/assets-card/assets-card-header";
 import { AssetsContent } from "@/routes/_backend/dashboard/-components/assets-card/assets-content";
 import { FoldersContent } from "@/routes/_backend/dashboard/-components/assets-card/folders-content";
@@ -183,21 +183,7 @@ export const AssetsExplorerCard = ({
       }
     >
       {isLoading ? (
-        <div className="flex h-full flex-col gap-4 p-6">
-          <div className="grid grid-cols-4 gap-3">
-            <Skeleton className="h-16 rounded-lg" />
-            <Skeleton className="h-16 rounded-lg" />
-            <Skeleton className="h-16 rounded-lg" />
-            <Skeleton className="h-16 rounded-lg" />
-          </div>
-          <Skeleton className="h-6 w-24" />
-          <div className="flex flex-1 flex-col gap-2">
-            <Skeleton className="h-10 rounded" />
-            <Skeleton className="h-10 rounded" />
-            <Skeleton className="h-10 rounded" />
-            <Skeleton className="h-10 rounded" />
-          </div>
-        </div>
+        <AssetsCardSkeleton />
       ) : errorMessage ? (
         <div className="flex h-full items-center justify-center">
           <p className="text-muted-foreground">{errorMessage}</p>

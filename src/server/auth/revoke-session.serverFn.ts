@@ -9,7 +9,7 @@ import { authMiddleware } from "../middleware/auth.middleware";
 import { getActionErrorMessage } from "@/lib/asset/action-result";
 
 export const revokeSession = createServerFn({ method: "POST" })
-  .inputValidator(
+  .validator(
     z.object({
       id: z.string(),
     }),

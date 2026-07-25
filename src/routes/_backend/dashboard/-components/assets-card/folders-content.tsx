@@ -51,7 +51,9 @@ import { useAssetMoveStore } from "@/routes/_backend/dashboard/-views/features/a
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import type { AssetFolder } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
-import { deleteItems, moveItems, updateItems } from "@/server/asset";
+import { deleteItems } from "@/server/asset/delete-items.serverFn";
+import { moveItems } from "@/server/asset/move-items.serverFn";
+import { updateItems } from "@/server/asset/update-items.serverFn";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";

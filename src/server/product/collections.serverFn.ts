@@ -14,7 +14,7 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listCollections = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     listCollectionsInputSchema.parse(data ?? {}),
   )
   .middleware([productReadMiddleware])
@@ -56,7 +56,7 @@ export const listCollections = createServerFn({ method: "POST" })
   });
 
 export const createCollection = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => createCollectionInputSchema.parse(data))
+  .validator((data: unknown) => createCollectionInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -114,7 +114,7 @@ export const createCollection = createServerFn({ method: "POST" })
   });
 
 export const updateCollection = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => updateCollectionInputSchema.parse(data))
+  .validator((data: unknown) => updateCollectionInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -169,7 +169,7 @@ export const updateCollection = createServerFn({ method: "POST" })
   });
 
 export const deleteCollections = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => deleteCollectionsInputSchema.parse(data))
+  .validator((data: unknown) => deleteCollectionsInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;

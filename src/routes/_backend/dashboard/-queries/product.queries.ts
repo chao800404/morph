@@ -1,10 +1,7 @@
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
-import {
-  getProduct,
-  listCollections,
-  listOptionTemplates,
-  listProducts,
-} from "@/server/product";
+import { listCollections } from "@/server/product/collections.serverFn";
+import { getProduct, listProducts } from "@/server/product/list-products.serverFn";
+import { listOptionTemplates } from "@/server/product/option-templates.serverFn";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 
 /** Params the product list query and its server function agree on. */

@@ -1,5 +1,5 @@
-import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { assetFolderDal } from "@/lib/asset/dal/asset-folder.dal";
+import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { assetReadMiddleware } from "../middleware/auth.middleware";
@@ -14,7 +14,7 @@ const listItemsInputSchema = z.object({
 });
 
 export const listItemsServerFn = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => listItemsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => listItemsInputSchema.parse(data ?? {}))
   .middleware([assetReadMiddleware])
   .handler(async ({ data }) => {
     try {

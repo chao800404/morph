@@ -28,15 +28,19 @@ function RouteComponent() {
   const { slug } = Route.useParams();
   const config = useMemo(() => getConfig().client, []);
 
-  const ViewComponent = useMemo(() => {
+  const collection = useMemo(() => {
     const globalCollections = getAllCollections(config.collections.global);
-    const collection = globalCollections.find((c) => c.slug === slug);
-    return collection?.component;
+    return globalCollections.find((c) => c.slug === slug);
   }, [slug, config]);
 
+  const ViewComponent = collection?.component;
   if (!ViewComponent) return <NotFound />;
+
+  // A view whose in-card loading state is a skeleton supplies a matching
+  // fallback, so the chunk wait and the data wait look like one state.
+  const Loader = collection.loader ?? PageSpinner;
   return (
-    <Suspense fallback={<PageSpinner />}>
+    <Suspense fallback={<Loader />}>
       <ViewComponent />
     </Suspense>
   );

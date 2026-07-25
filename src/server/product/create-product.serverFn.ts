@@ -32,7 +32,7 @@ const buildCombinations = (
   );
 
 export const createProduct = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => createProductInputSchema.parse(data))
+  .validator((data: unknown) => createProductInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;

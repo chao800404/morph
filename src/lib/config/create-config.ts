@@ -37,9 +37,21 @@ export interface CollectionItem {
     slug: string;
     label?: string;
     component?: ComponentType;
+    /** Suspense fallback while `component` loads. Defaults to a page spinner. */
+    loader?: ComponentType;
     loadData?: (context: CollectionLoadContext) => Promise<void> | void;
   }[];
   component?: ComponentType;
+  /**
+   * Suspense fallback rendered while `component`'s chunk loads.
+   *
+   * Defaults to a centred spinner. Give a view its own skeleton when its
+   * in-card loading state is also a skeleton, so the code wait and the data
+   * wait look like one state instead of two different ones. Unlike
+   * `component`, this must be imported eagerly — a lazy loader would need a
+   * loader of its own.
+   */
+  loader?: ComponentType;
   loadData?: (context: CollectionLoadContext) => Promise<void> | void;
 }
 

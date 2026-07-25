@@ -7,7 +7,7 @@ import { z } from "zod";
  * Valid for 5 minutes (300 seconds)
  */
 export const setVerifyAccessCookieServerFn = createServerFn({ method: "POST" })
-  .inputValidator(z.string())
+  .validator(z.string())
   .handler(async ({ data: email }) => {
     const expiresAt = Date.now() + 300 * 1000;
     const value = `${encodeURIComponent(email)}|${expiresAt}`;

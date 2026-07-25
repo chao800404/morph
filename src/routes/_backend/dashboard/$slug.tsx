@@ -30,15 +30,19 @@ function RouteComponent() {
   const config = useMemo(() => getConfig().client, []);
 
   // Pick the component based on the slug from the config
-  const ViewComponent = useMemo(() => {
+  const collection = useMemo(() => {
     const collections = getAllCollections(config.collections.global);
-    const collection = collections.find((c) => c.slug === slug);
-    return collection?.component;
+    return collections.find((c) => c.slug === slug);
   }, [slug, config]);
 
+  const ViewComponent = collection?.component;
   if (!ViewComponent) return <NotFound />;
+
+  // A view whose in-card loading state is a skeleton supplies a matching
+  // fallback, so the chunk wait and the data wait look like one state.
+  const Loader = collection.loader ?? PageSpinner;
   return (
-    <Suspense fallback={<PageSpinner />}>
+    <Suspense fallback={<Loader />}>
       <ViewComponent />
     </Suspense>
   );

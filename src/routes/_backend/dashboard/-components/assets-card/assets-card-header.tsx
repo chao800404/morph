@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import type { AssetsCardData } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
 import { getAssetsDialogConfig } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-dialog.config";
-import { createItems } from "@/server/asset";
+import { createItems } from "@/server/asset/create-items.serverFn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Dot, FolderPlus, Search, X } from "lucide-react";
@@ -248,12 +248,7 @@ export const AssetsCardHeader = ({
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button
-            className="text-primary"
-            type="button"
-            variant="cardHeader"
-            size="xs"
-          >
+          <Button type="button" variant="form" size="xs">
             Create
           </Button>
         </DropdownMenuTrigger>

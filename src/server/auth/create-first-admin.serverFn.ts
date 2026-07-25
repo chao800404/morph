@@ -7,7 +7,7 @@ export const createFirstAdminServerFn = createServerFn({
   method: "POST",
 })
   .middleware([ensureNoAdmin])
-  .inputValidator(createFirstAdminSchema)
+  .validator(createFirstAdminSchema)
   .handler(async ({ data }) => {
     const auth = getAuthWithAdmin();
 

@@ -1,18 +1,13 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { EmptyFileIcon } from "@/components/ui/icons/empty-file-icon";
-import { Spinner } from "@/components/ui/spinner";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import type { OptionTemplateDTO } from "@/lib/product/dto/option-template.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
-import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
+import {
+  DataTableCard,
+  deleteActionIcon,
+  editActionIcon,
+  type DataTableColumn,
+} from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import { useEditStore } from "@/routes/_backend/dashboard/-views/features/global-edit/use-edit-store";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
@@ -22,8 +17,8 @@ import {
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
-import { Pencil, Plus, Trash2 } from "lucide-react";
-import { useCallback } from "react";
+import { Plus } from "lucide-react";
+import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   createOptionTemplateAction,
@@ -145,98 +140,75 @@ const Options = () => {
     [invalidate, setInfoData, setInfoOpen],
   );
 
-  const templates = result?.success ? (result.data?.templates ?? []) : [];
-  // Loading, error and empty states are centred in the card; the table is not.
-  const showsPlaceholder =
-    isPending || (result && !result.success) || templates.length === 0;
-  const createButton = (
-    <Button onClick={handleCreate} variant="form" size="sm" className="gap-2">
-      <Plus className="size-4" />
-      Create
-    </Button>
+  const columns = useMemo<DataTableColumn<OptionTemplateDTO>[]>(
+    () => [
+      {
+        key: "title",
+        header: "Title",
+        className: "w-64 font-medium",
+        cell: (template) => template.title,
+      },
+      {
+        key: "values",
+        header: "Values",
+        cell: (template) =>
+          `${template.values.length} value${template.values.length === 1 ? "" : "s"}`,
+      },
+      {
+        key: "status",
+        header: "Status",
+        className: "w-32",
+        // Every option defined here is reusable across products. A per-product
+        // option would be authored on the product itself, not in this list.
+        cell: () => <Badge variant="default">Global</Badge>,
+      },
+    ],
+    [],
   );
 
+  const templates = result?.success ? (result.data?.templates ?? []) : [];
+
   return (
-    <CardWrapper
+    <DataTableCard
       label="Options"
-      description="Reusable option definitions you can pick from when creating a product"
-      headerButton={createButton}
-      classNames={{
-        cardWrapper: "min-h-content",
-        contentWrapper: showsPlaceholder
-          ? "flex flex-col items-center justify-center"
-          : undefined,
-      }}
-    >
-      {isPending ? (
-        <Spinner />
-      ) : result && !result.success ? (
-        <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
-          <p className="text-sm text-destructive">{result.message}</p>
-          <Button variant="outline" size="sm" onClick={invalidate}>
-            Retry
-          </Button>
-        </div>
-      ) : templates.length === 0 ? (
-        <div className="flex flex-col items-center justify-center p-8 text-center">
-          <div className="flex flex-col items-center gap-3 opacity-70">
-            <EmptyFileIcon />
-            <h3 className="mt-2 text-lg font-medium text-foreground">
-              No product options yet
-            </h3>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              Create options such as Size, Colour or Material, then pick them
-              when you build a product.
-            </p>
-            <div className="mt-4">{createButton}</div>
-          </div>
-        </div>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-48">Title</TableHead>
-              <TableHead>Values</TableHead>
-              <TableHead className="w-24 text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {templates.map((template) => (
-              <TableRow key={template.id}>
-                <TableCell className="font-medium">{template.title}</TableCell>
-                <TableCell>
-                  <div className="flex flex-wrap gap-1.5">
-                    {template.values.map((value) => (
-                      <Badge key={value.id} variant="secondary">
-                        {value.value}
-                      </Badge>
-                    ))}
-                  </div>
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Edit ${template.title}`}
-                    onClick={() => handleEdit(template)}
-                  >
-                    <Pencil className="size-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Delete ${template.title}`}
-                    onClick={() => handleDelete(template)}
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-    </CardWrapper>
+      description="Manage product options and their associated values."
+      searchPlaceholder="Search"
+      sortOptions={[
+        { value: "name", label: "Title" },
+        { value: "createdAt", label: "Created" },
+        { value: "updatedAt", label: "Updated" },
+      ]}
+      headerActions={
+        <Button onClick={handleCreate} variant="form" size="xs" className="gap-2">
+          <Plus className="size-4" />
+          Create
+        </Button>
+      }
+      columns={columns}
+      rows={templates}
+      getRowId={(template) => template.id}
+      isPending={isPending}
+      errorMessage={result && !result.success ? result.message : null}
+      onRetry={invalidate}
+      emptyTitle="No product options yet"
+      emptyDescription="Create options such as Size, Colour or Material, then pick them when you build a product."
+      rowActions={(template) => [
+        {
+          label: "Edit",
+          icon: editActionIcon,
+          onSelect: () => handleEdit(template),
+        },
+        {
+          label: "Delete",
+          icon: deleteActionIcon,
+          destructive: true,
+          onSelect: () => handleDelete(template),
+        },
+      ]}
+      pagination={
+        result?.success && result.data ? result.data.pagination : undefined
+      }
+    />
   );
 };
 

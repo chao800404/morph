@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import type { ProductStatus } from "@/db/product.schema";
-import { createProduct } from "@/server/product";
+import { createProduct } from "@/server/product/create-product.serverFn";
 import { productQueries } from "@queries/product.queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";

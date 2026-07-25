@@ -9,7 +9,7 @@ import { eq } from "drizzle-orm";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
 
 export const processImage = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => {
+  .validator((data: unknown) => {
     if (!isFormDataLike(data)) {
       throw new Error("Invalid form data");
     }

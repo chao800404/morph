@@ -7,14 +7,13 @@ import { Toaster } from "@/components/ui/sonner";
 import { findBreadcrumbsFromCollections } from "@/lib/config/navigation";
 import { cn } from "@/lib/utils";
 import { getSession } from "@/server/auth/getSession";
-import { PageSpinner } from "@/components/loading/page-spinner";
 import { NotFound } from "@/components/not-found/not-found";
 import { getConfig } from "@/server/get-config";
 import {
   createFileRoute,
   Outlet,
   redirect,
-  useRouterState,
+  useLocation,
 } from "@tanstack/react-router";
 import { lazy, Suspense } from "react";
 
@@ -60,25 +59,24 @@ const AssetSelectFloat = lazy(
 );
 
 export const Route = createFileRoute("/_backend/dashboard")({
-  beforeLoad: async (ctx) => {
+  beforeLoad: async () => {
     const session = await getSession();
 
     if (!session?.user) {
       throw redirect({ to: "/sign-in" });
     }
-    return { session, location: ctx.location };
+    return { session };
   },
   component: RouteComponent,
   notFoundComponent: () => <NotFound />,
 });
 
 function RouteComponent() {
-  const { publicURL, session, location } = Route.useRouteContext();
+  const { publicURL, session } = Route.useRouteContext();
+  // Read from the router rather than threading a snapshot through beforeLoad:
+  // this stays reactive and does not rely on route context inference.
+  const location = useLocation();
   const config = getConfig().client;
-  const isNavigating = useRouterState({
-    select: (s) => s.status === "pending",
-  });
-
   const isSettings = location.pathname.startsWith("/dashboard/settings");
   const rawSideData = isSettings
     ? config.collections.settings
@@ -147,8 +145,16 @@ function RouteComponent() {
               </Suspense>
 
               {/* <AssetsDialogs /> */}
+              {/*
+                Keep the outlet mounted across navigations. Swapping it for a
+                spinner while the router is pending remounts the whole view on
+                every search-param change, so sorting or paging made the list
+                card disappear and come back. Navigation feedback already comes
+                from <TopLoader /> in _backend.tsx, and each dynamic route
+                Suspends on its own lazy component for a genuine first load.
+              */}
               <div className="p-4">
-                {isNavigating ? <PageSpinner /> : <Outlet />}
+                <Outlet />
               </div>
               <Toaster />
             </div>

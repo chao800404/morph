@@ -36,6 +36,23 @@
 - 使用既有 `{ success, message, data?, error?, errors? }` 結果模式；預期中的驗證或操作錯誤應回傳可處理結果，真正未預期的錯誤才拋出或記錄。
 - 不把 raw database row、內部 metadata、secret 或不必要的個資直接回傳給 client。
 
+### Barrel（index.ts）的使用界線
+
+Barrel 本身沒問題，但 server function 模組不適用。原因有兩個，都不是假設：
+
+1. **Server function 是「按 id 反查的註冊表」**。請求進來時 `server-functions-handler` 依 id 找到模組並同步讀取 export。Barrel 多一層模組跳轉，這層在 Vite SSR HMR 重新求值時也要重跑，會讓 export binding 還沒綁好就被存取，出現 `Cannot access 'xxx' before initialization`。實際踩過：編輯任一 server 檔案後 Assets 頁就壞，重啟 dev server 才恢復。
+2. **Barrel 會把不相干的重依賴一起拉進模組圖**。`import { moveItems } from "@/server/asset"` 會連帶求值 `create-items`（R2 上傳）、`process-image`、`remove-background`（影像處理）。一個拖曳元件不該扛這些。
+
+界線：
+
+| | 對象 |
+|---|---|
+| ✅ 可用 barrel | 型別、DTO、mapper、純函式、UI 元件（`@/lib/product`、`@/components/ui`） |
+| ⚠️ 不要用 barrel | **`src/server/**` 的 server function**，一律從各自的 `*.serverFn.ts` 直接 import |
+| ❌ 絕對不要 | server 模組圖裡的 `export *` wildcard re-export |
+
+判準是**有沒有「被外部按名稱或 id 反查」或「import 當下就產生副作用」的語意**。純型別與純函式沒有，server function 有。
+
 ### 驗證與權限
 
 - 登入狀態由 Better Auth 與既有 auth helpers 提供，不可自行解析 cookie 或複製 session 邏輯。
@@ -102,6 +119,22 @@
 - 刪除操作不得由頁面或 action menu 直接呼叫 delete server function。必須先透過 `InfoAlert` 顯示目標、影響範圍與不可復原提示，再由確認按鈕提交 hidden fields 與 delete action。
 - Create、Edit、Delete／Info 等 store 在視窗關閉或 action 成功後必須重設 open、fields、action、callbacks 與暫存資料，避免下一個頁面開啟時沿用前一次視窗內容。
 - 若新頁面需要新增、編輯或刪除，只能提供該頁面的 fields 與 action；不可複製 `CreateDialog`、`EditDialog`、`InfoAlert` 或其 footer、loading、toast、error handling 邏輯。
+
+### 列表頁統一使用 DataTableCard
+
+- 任何「資源清單」頁面（Products、Collections、Options、未來的 Orders、Customers 等）都必須使用 `dashboard/-components/data-table-card` 的 `DataTableCard`，不可自行拼一份 `CardWrapper` + `Table`。
+- 版面固定為三段，順序不可調換：
+  - **Header**：`label`、`description`、搜尋框、主要操作按鈕（通常是 Create）。
+  - **Table**：欄位由 `columns` 宣告，每欄提供 `key`、`header`、`cell` 與可選 `className`；`className` 會同時套到 `TableHead` 與 `TableCell`，欄寬才會對齊。
+  - **Footer**：結果筆數與分頁，由 `DataTablePagination` 提供，只有一頁時自動隱藏。
+- 每列的操作一律收進尾端的 `RowActionsMenu`（`…` 按鈕），透過 `rowActions` 回傳 `RowAction[]`。不可在列上並排多顆圖示按鈕，否則資源長出第三、第四個操作時版面會崩。刪除類操作標記 `destructive: true`，會自動排到分隔線之後並套用警示色。
+- Loading、error、empty 三種狀態由 `DataTableCard` 統一處理並在卡片內置中；表格本身維持靠上。頁面只負責傳 `isPending`、`errorMessage`、`onRetry`、`emptyTitle`、`emptyDescription`，不可自己再寫一套分支。
+- 搜尋詞、排序與頁碼寫入 route 的 `q`、`sortBy`／`sortOrder`、`page` search param，不放 component state；換搜尋詞或改排序時 `page` 會被清掉，避免停在超出範圍的頁數。
+- 排序透過 `sortOptions` 提供，由 `DataTableSort` 渲染成 header 的下拉（與 Assets card 相同的 `BarsArrowDownIcon`），再選一次同一欄位即翻轉方向。`sortBy` 的可用值由 `dashboardSearchSchema` 定義，各資源在自己的 `normalize*ListParams` 裡對應到實際欄位名。
+- 表格的首尾欄位左右各補到 `pl-6`／`pr-6`，與 `CardHeader` 的 `px-6` 對齊。`Table` 的 cell 預設是 `px-4`，直接使用會比標題少 8px。這個補償寫在 `DataTableCard` 內，頁面不需要也不應該自己處理。
+- 欄位內容盡量用摘要而非展開全部資料（例如顯示「4 values」而不是列出四個 badge），細節留給編輯視窗或詳情頁。
+- Card header 的主要操作按鈕統一使用 `variant="form"` 與 `size="xs"`，與 Assets card 的 Create 按鈕同高同色。header 內的次要工具（排序、篩選等 icon-only 按鈕）維持 `variant="cardHeader"`，靠顏色區分主要與次要操作。
+- 需要新的共用能力（欄位排序、批次選取、篩選 chip）時，加在 `DataTableCard` 上讓所有列表頁一起受益，不可只在單一頁面實作。
 
 ### Fields 視覺基準
 

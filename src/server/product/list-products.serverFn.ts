@@ -7,7 +7,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { productReadMiddleware } from "../middleware/auth.middleware";
 
 export const listProducts = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => listProductsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => listProductsInputSchema.parse(data ?? {}))
   .middleware([productReadMiddleware])
   .handler(async ({ data }) => {
     try {
@@ -48,7 +48,7 @@ export const listProducts = createServerFn({ method: "POST" })
 
 /** Product with its options, variants and gallery, for the detail view. */
 export const getProduct = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => getProductInputSchema.parse(data))
+  .validator((data: unknown) => getProductInputSchema.parse(data))
   .middleware([productReadMiddleware])
   .handler(async ({ data }) => {
     try {

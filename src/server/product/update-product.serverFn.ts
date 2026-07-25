@@ -7,7 +7,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { productAdminMiddleware } from "../middleware/auth.middleware";
 
 export const updateProduct = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => updateProductInputSchema.parse(data))
+  .validator((data: unknown) => updateProductInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -69,7 +69,7 @@ export const updateProduct = createServerFn({ method: "POST" })
   });
 
 export const deleteProducts = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => deleteProductsInputSchema.parse(data))
+  .validator((data: unknown) => deleteProductsInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
