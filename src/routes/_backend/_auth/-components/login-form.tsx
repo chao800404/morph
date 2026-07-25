@@ -58,7 +58,7 @@ export function LoginForm({
   return (
     <div className="max-w-[280px] w-full">
       <div className="text-center flex flex-col gap-3 mb-3">
-        <Link className="mb-2 mx-auto" to={"/dashboard" as any}>
+        <Link className="mb-2 mx-auto" to="/dashboard">
           <LogoF />
         </Link>
         <div className="space-y-0.5">

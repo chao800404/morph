@@ -279,14 +279,14 @@ export function VerifyForm({ email, publicURL, expiresAt }: VerifyFormProps) {
                 prefix="Your password has been successfully reset. You can now sign in with your new password. You
                             will be redirected to the sign-in page in"
                 suffix="seconds."
-                onComplete={() => navigate({ to: "/sign-in" as any })}
+                onComplete={() => navigate({ to: "/sign-in" })}
                 initialSeconds={5}
               />
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <Button
-              onClick={() => navigate({ to: "/sign-in" as any })}
+              onClick={() => navigate({ to: "/sign-in" })}
               variant="outline"
             >
               Go to Sign In

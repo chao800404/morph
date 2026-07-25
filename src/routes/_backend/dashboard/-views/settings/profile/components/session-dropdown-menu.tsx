@@ -14,6 +14,7 @@ import { useRouter } from "@tanstack/react-router";
 import { MoreHorizontal, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { getActionErrorMessage } from "@/lib/asset/action-result";
 
 interface SessionDropdownMenuProps {
   id: string;
@@ -54,8 +55,8 @@ export const SessionDropdownMenu = ({
 
       // Also invalidate the router just in case
       router.invalidate();
-    } catch (error: any) {
-      toast.error(error.message || "An unexpected error occurred");
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "An unexpected error occurred"));
     } finally {
       setPending(false);
     }

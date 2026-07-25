@@ -2,6 +2,7 @@
 
 import { useNavigate } from "@tanstack/react-router";
 import { CardPagination } from "../card-pagination/card-pagination";
+import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 
 type Props = {
   pagination?: {
@@ -36,9 +37,10 @@ export const AssetFooter = ({ pagination }: Props) => {
     }
 
     navigate({
-      search: (prev: any) => ({ ...prev, page: newPage }),
+      to: ".",
+      search: (prev: DashboardSearch) => ({ ...prev, page: newPage }),
       replace: true,
-    } as any);
+    });
   };
 
   if (!pagination) return null;

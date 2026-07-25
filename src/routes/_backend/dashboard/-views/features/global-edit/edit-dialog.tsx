@@ -17,12 +17,13 @@ import { useEditStore } from "./use-edit-store";
 
 import { DialogFooterActions } from "@/components/dialog/dialog-footer-actions";
 import { DialogHeaderActions } from "@/components/dialog/dialog-header-actions";
-import { FieldsRenderer } from "@/components/form/fields-renderer";
+import {
+  FieldsRenderer,
+  type FirstFieldRefTarget,
+} from "@/components/form/fields-renderer";
 
 export const EditDialog = () => {
-  const firstFieldRef = useRef<
-    HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement
-  >(null);
+  const firstFieldRef = useRef<FirstFieldRefTarget>(null);
   const router = useRouter();
   const {
     open,
@@ -133,7 +134,13 @@ export const EditDialog = () => {
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           setTimeout(() => {
-            firstFieldRef.current?.focus();
+            // The ref target depends on which field type renders first. The
+            // phone control's instance type does not declare `focus`, so probe
+            // for it instead of asserting a DOM element.
+            const target = firstFieldRef.current;
+            if (target && "focus" in target && typeof target.focus === "function") {
+              target.focus();
+            }
           }, 0);
         }}
       >

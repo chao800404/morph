@@ -4,6 +4,7 @@ import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/glob
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
 import { Plus } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Orders = () => {
   const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
@@ -33,10 +34,7 @@ const Orders = () => {
           placeholder: "0.00",
         },
       ],
-      action: async ({ data }: { data: FormData }) => {
-        const name = data.get("customerName");
-        return { success: true, message: `Order for "${name || ""}" created successfully!` };
-      },
+      action: notImplementedAction("Order creation"),
     });
     setCreateOpen(true);
   };

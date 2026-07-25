@@ -4,7 +4,13 @@ import { env } from "cloudflare:workers";
 // This function guarantees execution ONLY on the server
 export const getPublicURL = createServerFn({ method: "GET" }).handler(
   async () => {
-    const _env = env as any;
+    // `CF_PAGES` and `ENVIRONMENT` are injected by the platform and are not in
+    // the generated `Env`, so they are declared here rather than erased.
+    const _env = env as Env & {
+      CF_PAGES?: string;
+      ENVIRONMENT?: string;
+      PUBLIC_URL?: string;
+    };
 
     // Check if we're in production environment
     // Cloudflare Workers sets CF_PAGES for Pages deployments

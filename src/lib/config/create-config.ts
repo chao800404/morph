@@ -8,7 +8,21 @@
  * - Separation of server-only and client-safe parts
  */
 
+import type { QueryClient } from "@tanstack/react-query";
+import type { ComponentType } from "react";
+import type { EmailAdapter } from "../email/types";
+import type { DashboardSearch } from "../validations/dashboard-search";
 import { localization } from "../config/localization";
+
+/**
+ * Context handed to a collection's `loadData` by the dynamic dashboard routes.
+ * `search` has already passed `dashboardSearchSchema` in the route.
+ */
+export interface CollectionLoadContext {
+  queryClient: QueryClient;
+  params: Record<string, string>;
+  search: DashboardSearch;
+}
 
 /**
  * Configuration types
@@ -22,13 +36,11 @@ export interface CollectionItem {
     title: string;
     slug: string;
     label?: string;
+    component?: ComponentType;
+    loadData?: (context: CollectionLoadContext) => Promise<void> | void;
   }[];
-  component?: any; // React.ComponentType, using any to avoid direct React dependency here if preferred, but it will be used as a component
-  loadData?: (context: {
-    queryClient: any;
-    params: any;
-    search: any;
-  }) => Promise<void> | void;
+  component?: ComponentType;
+  loadData?: (context: CollectionLoadContext) => Promise<void> | void;
 }
 
 export interface CollectionGroup {
@@ -66,9 +78,48 @@ export interface CMSConfigInput {
       enabled?: boolean;
     };
   };
-  email?: any;
+  email?: EmailAdapter;
   trustedOrigins: string[];
 }
+
+/**
+ * The shape a user authors in `src/cms.config.ts`.
+ *
+ * Everything here is declarative and safe in both builds. Secrets go in
+ * `server`, which is wrapped in `createServerOnlyFn` so the compiler removes
+ * its body from the client bundle.
+ */
+export interface CMSUserConfig {
+  appName: string;
+  collections: {
+    global: CollectionGroup[];
+    settings: CollectionGroup[];
+  };
+  upload: CMSConfigInput["upload"];
+  localization: typeof localization;
+  auth: CMSConfigInput["auth"];
+  features?: CMSConfigInput["features"];
+  trustedOrigins: string[];
+  email: {
+    defaultFromAddress: string;
+    defaultFromName?: string;
+  };
+  /** Server-only values. Wrap with `createServerOnlyFn`. */
+  server: () => {
+    database?: {
+      connectionString: string | undefined;
+    };
+    email?: {
+      apiKey: string;
+    };
+  };
+}
+
+/**
+ * Identity helper that gives `src/cms.config.ts` full autocomplete and
+ * type-checking while preserving the literal types of what was authored.
+ */
+export const defineConfig = <T extends CMSUserConfig>(config: T): T => config;
 
 /**
  * Client-safe configuration (subset of full config)

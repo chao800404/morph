@@ -6,11 +6,11 @@ export const Route = createFileRoute("/_backend/api/auth/$")({
   server: {
     handlers: {
       GET: ({ request }) => {
-        const auth = createAuth(env as any);
+        const auth = createAuth(env);
         return auth.handler(request);
       },
       POST: ({ request }) => {
-        const auth = createAuth(env as any);
+        const auth = createAuth(env);
         return auth.handler(request);
       },
     },

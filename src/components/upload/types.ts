@@ -1,62 +1,29 @@
-import type { Input } from "@/components/ui/input";
-import type { ComponentProps } from "react";
+import type {
+  FolderSelectFormField,
+  FormField,
+  InputFormField,
+  SelectFormField,
+  TextareaFormField,
+  UploadFormField,
+} from "@/lib/validations/form";
 
-type FieldBase = {
-  name: string;
-  label: string;
-  description?: string;
-  placeholder?: string;
-  required?: boolean;
-  disabled?: boolean;
-  defaultValue?: string;
-  className?: string;
-  inputClassName?: string;
-  autoFocus?: boolean;
-  colSpan?: number;
-  componentClassName?: string;
-};
+/**
+ * Field configuration used by the shared dialogs.
+ *
+ * These are aliases of the single `FormField` union declared in
+ * `@/lib/validations/form`. Field shapes must not be redeclared here: the Zod
+ * schema in that module is the source of truth so `FieldsRenderer` and the
+ * dialog stores validate exactly what they render.
+ */
+export type FieldConfig = FormField;
 
-export type InputFieldConfig = FieldBase & {
-  type: "input";
-  inputType?: ComponentProps<typeof Input>["type"];
-  autoFocus?: boolean;
-};
+export type InputFieldConfig = InputFormField;
+export type TextareaFieldConfig = TextareaFormField;
+export type SelectFieldConfig = SelectFormField;
+export type UploadFieldConfig = UploadFormField;
+export type FolderSelectFieldConfig = FolderSelectFormField;
 
-export type TextareaFieldConfig = FieldBase & {
-  type: "textarea";
-  rows?: number;
-};
-
-export type SelectOption = {
-  label: string;
-  value: string;
-};
-
-export type SelectFieldConfig = FieldBase & {
-  type: "select";
-  options: SelectOption[];
-  placeholder?: string;
-};
-
-export type UploadFieldConfig = FieldBase & {
-  type: "upload";
-  placeholder?: string;
-  accept?: Record<string, string[]>;
-  maxFiles?: number;
-  maxSize?: number;
-  minSize?: number;
-};
-
-export type FolderSelectFieldConfig = FieldBase & {
-  type: "folder-select";
-  placeholder?: string;
-  excludedIds?: string[];
-};
-
-export type LanguageFieldConfig = FieldBase & {
-  type: "language";
-  placeholder?: string;
-};
+export type { SelectOption } from "@/lib/validations/form";
 
 export type SelectFieldRenderProps = {
   field: SelectFieldConfig;
@@ -80,19 +47,3 @@ export type FolderSelectFieldRenderProps = {
   onChange?: (value: string) => void;
   className?: string;
 };
-
-export type LanguageFieldRenderProps = {
-  field: LanguageFieldConfig;
-  fieldId: string;
-  initialValue: string;
-  onChange?: (value: string) => void;
-  className?: string;
-};
-
-export type FieldConfig =
-  | InputFieldConfig
-  | TextareaFieldConfig
-  | SelectFieldConfig
-  | UploadFieldConfig
-  | FolderSelectFieldConfig
-  | LanguageFieldConfig;

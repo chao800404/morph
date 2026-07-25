@@ -21,11 +21,12 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ProfileCardComponentProps } from "../config/profile-card.types";
 import { SessionDropdownMenu } from "./session-dropdown-menu";
+import type { listSessions } from "@/server/auth/list-sessions.serverFn";
 
 const ITEMS_PER_PAGE = 10;
 
 interface ProfileSessionsCardProps extends ProfileCardComponentProps {
-  sessions: any[];
+  sessions: Awaited<ReturnType<typeof listSessions>>["sessions"];
   currentSessionId: string | null;
   publicURL: string;
 }

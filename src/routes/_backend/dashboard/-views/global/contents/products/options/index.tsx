@@ -4,6 +4,7 @@ import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrappe
 import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import { Plus } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Options = () => {
   const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
@@ -33,15 +34,7 @@ const Options = () => {
           placeholder: "Type value and press Enter...",
         },
       ],
-      action: async ({ data }: { data: FormData }) => {
-        const title = data.get("title");
-        const valuesRaw = data.get("values");
-        const values = valuesRaw ? JSON.parse(valuesRaw as string) : [];
-        return {
-          success: true,
-          message: `Option "${title || ""}" created with values: ${values.join(", ")}`,
-        };
-      },
+      action: notImplementedAction("Product options"),
     });
     setCreateOpen(true);
   };

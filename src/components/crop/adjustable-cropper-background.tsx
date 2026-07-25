@@ -5,7 +5,19 @@ import {
   CropperBackgroundImageProps,
 } from "react-advanced-cropper";
 
-export type AdjustableCropperBackgroundProps = CropperBackgroundImageProps & {
+// The wrapper and the image each declare their own `DesiredCropperRef` and
+// neither is a superset of the other, so require both sets of methods.
+type WrapperCropper = React.ComponentProps<
+  typeof CropperBackgroundWrapper
+>["cropper"];
+type BackgroundCropper = NonNullable<WrapperCropper> &
+  NonNullable<CropperBackgroundImageProps["cropper"]>;
+
+export type AdjustableCropperBackgroundProps = Omit<
+  CropperBackgroundImageProps,
+  "cropper"
+> & {
+  cropper: BackgroundCropper;
   brightness?: number;
   contrast?: number;
   saturation?: number;
@@ -42,10 +54,10 @@ export const AdjustableCropperBackground = React.forwardRef<
       .join(" ");
 
     return (
-      <CropperBackgroundWrapper cropper={cropper as any} style={style}>
+      <CropperBackgroundWrapper cropper={cropper} style={style}>
         <CropperBackgroundImage
           ref={ref}
-          cropper={cropper as any}
+          cropper={cropper}
           crossOrigin={crossOrigin}
           style={{ filter }}
           {...props}

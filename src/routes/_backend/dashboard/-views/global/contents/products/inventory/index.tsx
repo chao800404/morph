@@ -4,6 +4,7 @@ import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/glob
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
 import { Plus } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Inventory = () => {
   const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
@@ -33,10 +34,7 @@ const Inventory = () => {
           placeholder: "100",
         },
       ],
-      action: async ({ data }: { data: FormData }) => {
-        const name = data.get("name");
-        return { success: true, message: `Inventory item "${name || ""}" added successfully!` };
-      },
+      action: notImplementedAction("Inventory management"),
     });
     setCreateOpen(true);
   };

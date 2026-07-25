@@ -3,6 +3,24 @@ import JSZip from "jszip";
 import pLimit from "p-limit";
 
 /**
+ * Shape returned by `/api/asset/download`. Declared here so the route and this
+ * consumer cannot drift.
+ */
+export interface DownloadManifestFile {
+  id: string;
+  name: string;
+  path: string;
+  downloadUrl: string;
+  size: number | null;
+}
+
+export interface DownloadManifest {
+  files: DownloadManifestFile[];
+  zipName: string;
+}
+
+
+/**
  * Utility functions for downloading folders and assets
  */
 
@@ -90,10 +108,8 @@ async function handleBulkDownload(
       throw new Error(errorData.error || "Failed to fetch download manifest");
     }
 
-    const { files, zipName } = (await manifestRes.json()) as {
-      files: any[];
-      zipName: string;
-    };
+    const { files, zipName } =
+      (await manifestRes.json()) as DownloadManifest;
 
     // 2. Download files and add to ZIP
     const zip = new JSZip();
@@ -101,7 +117,7 @@ async function handleBulkDownload(
 
     // Download in parallel with limit
     await Promise.all(
-      files.map((file: any) =>
+      files.map((file) =>
         limit(async () => {
           try {
             const res = await fetch(file.downloadUrl);

@@ -5,6 +5,7 @@ import { hasAnyRole } from "@/server/middleware/auth.middleware";
 import { createFileRoute } from "@tanstack/react-router";
 import { env } from "cloudflare:workers";
 import { z } from "zod";
+import type { AssetDTO } from "@/lib/asset/dto/asset.dto";
 
 const safeDownloadName = (value: string) =>
   value.replace(/[\u0000-\u001f\u007f"\\/]/g, "_").slice(0, 255) || "download";
@@ -16,7 +17,7 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
       GET: async ({ request }) => {
         let session = null;
         try {
-          const auth = createAuth(env as any);
+          const auth = createAuth(env);
           session = await auth.api.getSession({ headers: request.headers });
         } catch {
           return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -121,7 +122,10 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
         const folderMap = new Map(folderList.map((f) => [f.id, f]));
 
         // Collect target assets with ZIP-relative paths
-        const targetAssetsMap = new Map<string, { asset: any; relativePath: string }>();
+        const targetAssetsMap = new Map<
+          string,
+          { asset: AssetDTO; relativePath: string }
+        >();
 
         // Direct assets
         if (assetIds.length > 0) {

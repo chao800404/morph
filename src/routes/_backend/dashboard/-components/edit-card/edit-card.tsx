@@ -62,23 +62,31 @@ export const EditCard = ({
     // Convert EditCardField to FormField format
     const formFields: FormField[] = fields
       .filter((field) => !field.disabled) // Only include editable fields
-      .map((field) => {
-        let fieldType: FormField["type"] = "input";
-        if (field.type === "select") fieldType = "select";
-        else if (field.type === "phone") fieldType = "phone";
-        else if (field.type === "textarea") fieldType = "textarea";
-        else if (field.type === "hidden") fieldType = "hidden";
-
-        return {
+      .map((field): FormField => {
+        const base = {
           name: field.key,
           label: field.label,
           value: field.value || "",
-          type: fieldType,
-          inputType: fieldType === "input" ? (field.type as any) : undefined,
-          options: field.options || [],
-          defaultCountry: field.defaultCountry,
           required: true,
-        } as FormField;
+        };
+
+        switch (field.type) {
+          case "select":
+            return { ...base, type: "select", options: field.options ?? [] };
+          case "phone":
+            return {
+              ...base,
+              type: "phone",
+              defaultCountry: field.defaultCountry,
+            };
+          case "textarea":
+            return { ...base, type: "textarea" };
+          case "hidden":
+            return { ...base, type: "hidden" };
+          default:
+            // "text" | "email" | "number" | "tel" map onto the input control.
+            return { ...base, type: "input", inputType: field.type };
+        }
       });
 
     setOpen(true);

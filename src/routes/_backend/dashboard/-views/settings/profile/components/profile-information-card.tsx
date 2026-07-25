@@ -21,10 +21,10 @@ export const ProfileInformationCard = ({
     let displayValue: string | undefined;
 
     if (field.key === "language") {
-      value = (session.user as any).language || "";
+      value = session.user.language || "";
       displayValue = value ? getLanguageName(value) : "";
     } else if (field.key === "phone") {
-      value = (session.user as any).phoneNumber || "";
+      value = session.user.phoneNumber || "";
     } else if (field.key in session.user) {
       const key = field.key as keyof typeof session.user;
       const fieldValue = session.user[key];
@@ -33,16 +33,14 @@ export const ProfileInformationCard = ({
 
     const country = session.session.country?.toUpperCase() || "Unknown";
 
-    const { ...fieldConfig } = field;
-    if (field.key === "phone" && country) {
-      (fieldConfig as any).defaultCountry = country;
-    }
-
     return {
-      ...fieldConfig,
+      ...field,
       value,
       displayValue,
-    } as EditCardField;
+      ...(field.key === "phone" && country
+        ? { defaultCountry: country }
+        : {}),
+    };
   });
 
   return (
@@ -53,7 +51,8 @@ export const ProfileInformationCard = ({
       fields={fields}
       onSave={async (formData) => {
         const result = await updateProfile({ data: formData });
-        return result as any;
+        // `ActionState.success` is optional; `EditCardState` requires it.
+        return { ...result, success: result.success ?? false };
       }}
     />
   );

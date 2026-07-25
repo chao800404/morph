@@ -9,9 +9,17 @@ import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
 import { sendPasswordResetEmail } from "../lib/email";
 
+/**
+ * The bindings `createAuth` reads.
+ *
+ * `BETTER_AUTH_SECRET` is a Wrangler secret and `PUBLIC_URL` a var, so neither
+ * appears in the generated `Env` type. Both are optional here because the code
+ * below already falls back to `process.env`, and declaring them as required
+ * only forced casts at every call site.
+ */
 export interface CloudflareBindings {
   DATABASE: D1Database;
-  BETTER_AUTH_SECRET: string;
+  BETTER_AUTH_SECRET?: string;
   PUBLIC_URL?: string;
 }
 

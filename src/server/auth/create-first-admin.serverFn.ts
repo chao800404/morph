@@ -9,26 +9,32 @@ export const createFirstAdminServerFn = createServerFn({
   .middleware([ensureNoAdmin])
   .inputValidator(createFirstAdminSchema)
   .handler(async ({ data }) => {
-    // Get auth instance with admin plugin support
     const auth = getAuthWithAdmin();
 
-    // Create user with admin role using type-safe admin API
-    const newUser = await auth.admin.createUser({
-      email: data.email,
-      password: data.password,
-      name: data.name,
-      role: "admin",
+    // The admin plugin endpoint resolves to a `Response`-shaped object. Only
+    // the created user is safe to hand back across the server boundary.
+    const created = await auth.api.createUser({
+      body: {
+        email: data.email,
+        password: data.password,
+        name: data.name,
+        role: "admin",
+      },
     });
 
-    if (!newUser) {
+    if (!created?.user) {
       return {
-        success: false,
+        success: false as const,
         message: "Failed to create admin user",
       };
     }
 
     return {
-      success: true,
-      user: newUser,
+      success: true as const,
+      user: {
+        id: created.user.id,
+        email: created.user.email,
+        name: created.user.name,
+      },
     };
   });

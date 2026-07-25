@@ -10,12 +10,14 @@ const config = defineConfig({
   plugins: [
     devtools(),
     cloudflare({ viteEnvironment: { name: "ssr" } }),
-    // this is the plugin that enables path aliases
+    tailwindcss(),
+    tanstackStart(),
+    // Must come after tanstackStart: with vite-tsconfig-paths registered first,
+    // Start's import protection cannot resolve aliased imports and silently
+    // stops reporting violations (TanStack/router#6770).
     viteTsConfigPaths({
       projects: ["./tsconfig.json"],
     }),
-    tailwindcss(),
-    tanstackStart(),
     viteReact(),
   ],
   optimizeDeps: {

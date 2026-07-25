@@ -1,3 +1,5 @@
+import { createServerOnlyFn } from "@tanstack/react-start";
+import { defineConfig } from "./lib/config/create-config";
 import { localization } from "./lib/config/localization";
 import {
   Account,
@@ -7,12 +9,19 @@ import {
 } from "./routes/_backend/dashboard/-collections";
 
 /**
- * CMS Configuration Base Data
+ * CMS Configuration
  *
- * This file contains the pure configuration data for the CMS.
- * Logic to access this data across server/client is handled in @/server/get-config.
+ * The single place to configure this CMS. `defineConfig` gives the whole object
+ * autocomplete and type-checking; `@/server/get-config` turns it into the
+ * server and client views of the config.
+ *
+ * Everything outside `server` is declarative and ships to the browser.
+ * Secrets belong in `server`: `createServerOnlyFn` is one of the TanStack Start
+ * compiler's `transformFuncs`, so that function's body is removed from the
+ * client bundle. Read `process.env` inside it, never as a module-level
+ * constant, or the value is captured before the transform can strip it.
  */
-export const cmsConfigBase = {
+export const cmsConfig = defineConfig({
   appName: "Morph",
   collections: {
     global: [Marketing, Contents],
@@ -55,13 +64,18 @@ export const cmsConfigBase = {
     "https://192.168.31.105:3000",
     "https://*.cmsapp.org",
   ],
-  // Raw configuration data
-  database: {
-    connectionString: process.env.DATABASE_URL,
-  },
   email: {
-    apiKey: process.env.RESEND_API_KEY || "",
     defaultFromAddress: "medusa@mail.cmsapp.org",
     defaultFromName: "medusa",
   },
-};
+
+  // Server-only. Never reaches the browser.
+  server: createServerOnlyFn(() => ({
+    database: {
+      connectionString: process.env.DATABASE_URL,
+    },
+    email: {
+      apiKey: process.env.RESEND_API_KEY || "",
+    },
+  })),
+});

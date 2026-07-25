@@ -61,6 +61,7 @@ import { ItemActionsMenu } from "./item-actions-menu";
 import { useDraggable, useDroppable } from "@dnd-kit/react";
 import { useMemo } from "react";
 import TypeHeadClient from "./type-head";
+import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 interface FoldersContentProps {
   folders?: AssetFolder[];
   isCollapsed?: boolean;
@@ -633,7 +634,7 @@ export const FoldersContent = memo(function FoldersContent({
     navigate({
       to: "/dashboard/$slug",
       params: { slug: "assets" },
-      search: (prev: any) => ({ ...prev, folderId: id }),
+      search: (prev: DashboardSearch) => ({ ...prev, folderId: id }),
     });
   }, [navigate]);
 

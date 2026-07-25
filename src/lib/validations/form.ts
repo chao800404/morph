@@ -38,10 +38,16 @@ const fieldNameSchema = z
     message: "Field name cannot be empty after sanitization",
   });
 
-// Field value schema
-const fieldValueSchema = z
+// Field value schema. Most controls hold a single string; tag-style controls
+// such as `option-values` hold a list of strings.
+const fieldTextValueSchema = z
   .string()
   .transform((val) => sanitizeStringInternal(val));
+
+const fieldValueSchema = z.union([
+  fieldTextValueSchema,
+  z.array(fieldTextValueSchema),
+]);
 
 // Export sanitize function for use in store
 export const sanitizeString = sanitizeStringInternal;
@@ -82,40 +88,130 @@ export const validateReactNode = (node: unknown): boolean => {
   return false;
 };
 
-// Base FormField schema for textarea and phone
-const baseFormFieldSchema = z.object({
-  name: fieldNameSchema,
-  type: z.enum(["textarea", "phone"]),
-  value: fieldValueSchema,
-  label: z.string().optional(),
-  required: z.boolean().optional(),
-  placeholder: z.string().optional(),
-  description: z.string().optional(),
-  defaultCountry: z.string().optional(),
-});
+/**
+ * Field values are authored two ways across the dashboard:
+ * - `value` for controls whose current value is owned by the calling store
+ *   (Edit / Move / Info dialogs read it back after `updateFieldValue`).
+ * - `defaultValue` for controls that manage their own state after mount
+ *   (Create dialog config objects).
+ *
+ * Both live on the same union so `FieldsRenderer` no longer has to guess which
+ * shape it received. `defaultValue` wins when both are present.
+ */
+export type FormFieldValue = string | string[];
 
-// Input FormField schema
-const inputFormFieldSchema = z.object({
+export interface FormFieldBase {
+  name: string;
+  label?: string;
+  description?: string;
+  placeholder?: string;
+  required?: boolean;
+  disabled?: boolean;
+  autoFocus?: boolean;
+  /** Grid columns the field spans inside `FieldsRenderer`. Defaults to 2. */
+  colSpan?: number;
+  className?: string;
+  inputClassName?: string;
+  componentClassName?: string;
+  value?: FormFieldValue;
+  defaultValue?: FormFieldValue;
+}
+
+export type SelectOption = z.infer<typeof selectOptionSchema>;
+
+export type InputFormField = FormFieldBase & {
+  type: "input";
+  inputType?: string;
+};
+
+export type TextareaFormField = FormFieldBase & {
+  type: "textarea";
+  rows?: number;
+};
+
+export type PhoneFormField = FormFieldBase & {
+  type: "phone";
+  defaultCountry?: string;
+};
+
+export type SelectFormField = FormFieldBase & {
+  type: "select";
+  options: SelectOption[];
+};
+
+export type FolderSelectFormField = FormFieldBase & {
+  type: "folder-select";
+  excludedIds?: string[];
+};
+
+export type UploadFormField = FormFieldBase & {
+  type: "upload";
+  accept?: Record<string, string[]>;
+  maxFiles?: number;
+  maxSize?: number;
+  minSize?: number;
+};
+
+export type OptionValuesFormField = FormFieldBase & {
+  type: "option-values";
+};
+
+export type HiddenFormField = FormFieldBase & {
+  type: "hidden";
+};
+
+export type FormField =
+  | InputFormField
+  | TextareaFormField
+  | PhoneFormField
+  | SelectFormField
+  | FolderSelectFormField
+  | UploadFormField
+  | OptionValuesFormField
+  | HiddenFormField;
+
+export type FormFieldType = FormField["type"];
+
+// Shared shape for every field variant. Layout and presentation keys live here
+// so a new field type cannot silently drop `colSpan`, `className` or `disabled`.
+const formFieldBaseShape = {
   name: fieldNameSchema,
-  type: z.literal("input"),
-  value: fieldValueSchema,
   label: z.string().optional(),
-  required: z.boolean().optional(),
-  placeholder: z.string().optional(),
   description: z.string().optional(),
+  placeholder: z.string().optional(),
+  required: z.boolean().optional(),
+  disabled: z.boolean().optional(),
+  autoFocus: z.boolean().optional(),
+  colSpan: z.number().int().min(1).max(2).optional(),
+  className: z.string().optional(),
+  inputClassName: z.string().optional(),
+  componentClassName: z.string().optional(),
+  value: fieldValueSchema.optional(),
+  defaultValue: fieldValueSchema.optional(),
+};
+
+const inputFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("input"),
   inputType: z.string().optional(),
 });
 
-// Select FormField schema
+const textareaFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("textarea"),
+  rows: z.number().int().positive().max(50).optional(),
+});
+
+const phoneFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("phone"),
+  defaultCountry: z.string().optional(),
+});
+
 const selectFormFieldSchema = z
   .object({
-    name: fieldNameSchema,
+    ...formFieldBaseShape,
     type: z.literal("select"),
-    value: fieldValueSchema,
-    label: z.string().optional(),
-    required: z.boolean().optional(),
-    placeholder: z.string().optional(),
-    description: z.string().optional(),
     options: z
       .array(selectOptionSchema)
       .min(1, "Select field must have at least one option")
@@ -124,7 +220,7 @@ const selectFormFieldSchema = z
   .refine(
     (data) => {
       // If value is provided, it must be in options
-      if (data.value && data.value.length > 0) {
+      if (typeof data.value === "string" && data.value.length > 0) {
         return data.options.some((opt) => opt.value === data.value);
       }
       return true;
@@ -134,96 +230,45 @@ const selectFormFieldSchema = z
     },
   );
 
-// Folder select FormField schema
 const folderSelectFormFieldSchema = z.object({
-  name: fieldNameSchema,
+  ...formFieldBaseShape,
   type: z.literal("folder-select"),
-  value: fieldValueSchema,
-  label: z.string().optional(),
-  required: z.boolean().optional(),
-  placeholder: z.string().optional(),
   excludedIds: z.array(z.string()).optional(),
-  description: z.string().optional(),
 });
 
-// Option values field schema (for sortable option tags)
+const uploadFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("upload"),
+  accept: z.record(z.string(), z.array(z.string())).optional(),
+  maxFiles: z.number().int().positive().optional(),
+  maxSize: z.number().int().positive().optional(),
+  minSize: z.number().int().nonnegative().optional(),
+});
+
 const optionValuesFormFieldSchema = z.object({
-  name: fieldNameSchema,
+  ...formFieldBaseShape,
   type: z.literal("option-values"),
-  value: z.union([z.string(), z.array(z.string())]).optional(),
-  label: z.string().optional(),
-  placeholder: z.string().optional(),
-  defaultValue: z.array(z.string()).optional(),
-  description: z.string().optional(),
 });
 
-// Hidden field schema (for passing data to server actions)
 const hiddenFormFieldSchema = z.object({
-  name: fieldNameSchema,
+  ...formFieldBaseShape,
   type: z.literal("hidden"),
-  value: fieldValueSchema,
 });
 
 // Union schema for FormField
-export const formFieldSchema: z.ZodType<
-  | {
-      name: string;
-      type: "input";
-      value: string;
-      label?: string;
-      required?: boolean;
-      placeholder?: string;
-      description?: string;
-      inputType?: string;
-    }
-  | {
-      name: string;
-      type: "textarea" | "phone";
-      value: string;
-      label?: string;
-      required?: boolean;
-      placeholder?: string;
-      description?: string;
-      defaultCountry?: string;
-    }
-  | {
-      name: string;
-      type: "select";
-      value: string;
-      label?: string;
-      required?: boolean;
-      placeholder?: string;
-      description?: string;
-      options: Array<{ label: string; value: string }>;
-    }
-  | {
-      name: string;
-      type: "folder-select";
-      value: string;
-      label?: string;
-      required?: boolean;
-      placeholder?: string;
-      excludedIds?: string[];
-      description?: string;
-    }
-  | {
-      name: string;
-      type: "option-values";
-      value?: string | string[];
-      label?: string;
-      placeholder?: string;
-      defaultValue?: string[];
-      description?: string;
-    }
-  | { name: string; type: "hidden"; value: string }
-> = z.discriminatedUnion("type", [
-  inputFormFieldSchema,
-  baseFormFieldSchema,
-  selectFormFieldSchema,
-  folderSelectFormFieldSchema,
-  optionValuesFormFieldSchema,
-  hiddenFormFieldSchema,
-]);
+export const formFieldSchema: z.ZodType<FormField> = z.discriminatedUnion(
+  "type",
+  [
+    inputFormFieldSchema,
+    textareaFormFieldSchema,
+    phoneFormFieldSchema,
+    selectFormFieldSchema,
+    folderSelectFormFieldSchema,
+    uploadFormFieldSchema,
+    optionValuesFormFieldSchema,
+    hiddenFormFieldSchema,
+  ],
+);
 
 // FormSchema schema
 export const formSchema = z.object({
@@ -232,13 +277,15 @@ export const formSchema = z.object({
   fields: z.array(formFieldSchema).optional(),
 });
 
+export type FormSchema = z.infer<typeof formSchema>;
+
 // Validation functions
 export const validateSelectOption = (option: unknown) => {
   const result = selectOptionSchema.safeParse(option);
   return result.success ? result.data : null;
 };
 
-export const validateFormField = (field: unknown) => {
+export const validateFormField = (field: unknown): FormField | null => {
   const result = formFieldSchema.safeParse(field);
   if (!result.success) {
     return null;
@@ -248,7 +295,11 @@ export const validateFormField = (field: unknown) => {
 
   // For select fields, ensure value is valid
   if (data.type === "select") {
-    if (data.value && !data.options.some((opt) => opt.value === data.value)) {
+    if (
+      typeof data.value === "string" &&
+      data.value &&
+      !data.options.some((opt) => opt.value === data.value)
+    ) {
       // If value doesn't match any option, set to first option or empty
       return {
         ...data,
@@ -264,8 +315,3 @@ export const validateFormSchema = (data: unknown) => {
   const result = formSchema.safeParse(data);
   return result.success ? result.data : null;
 };
-
-// Type exports
-export type SelectOption = z.infer<typeof selectOptionSchema>;
-export type FormField = z.infer<typeof formFieldSchema>;
-export type FormSchema = z.infer<typeof formSchema>;

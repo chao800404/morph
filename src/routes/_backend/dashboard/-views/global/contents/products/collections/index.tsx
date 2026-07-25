@@ -4,6 +4,7 @@ import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/glob
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
 import { Plus } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Collections = () => {
   const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
@@ -35,10 +36,7 @@ const Collections = () => {
           className: "col-span-2",
         },
       ],
-      action: async ({ data }: { data: FormData }) => {
-        const name = data.get("name");
-        return { success: true, message: `Collection "${name || ""}" created successfully!` };
-      },
+      action: notImplementedAction("Collection creation"),
     });
     setCreateOpen(true);
   };

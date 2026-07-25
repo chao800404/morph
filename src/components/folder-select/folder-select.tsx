@@ -8,6 +8,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { FolderSelectFieldRenderProps } from "@/components/upload/types";
+import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { cn } from "@/lib/utils";
 import { assetQueries } from "@/routes/_backend/dashboard/-queries/asset.queries";
 import { useAssetEditStore } from "@/routes/_backend/dashboard/-views/features/asset/edit/use-asset-edit-store";
@@ -52,7 +53,7 @@ export const FolderSelectField = ({
   );
 
   const search = useSearch({ strict: false });
-  const folderId = (search as any)?.folderId;
+  const folderId = (search as DashboardSearch)?.folderId;
 
   const { data: result, isLoading: loading } = useQuery(assetQueries.folders());
 
@@ -71,7 +72,7 @@ export const FolderSelectField = ({
     const newFolderMap = new Map<string, FolderNode>();
     const rootFolders: FolderNode[] = [];
 
-    result.data.forEach((folder: any) => {
+    result.data.forEach((folder) => {
       newFolderMap.set(folder.id, {
         id: folder.id,
         name: folder.name,
@@ -131,7 +132,7 @@ export const FolderSelectField = ({
 
     const nameToIdMap = new Map<string, string>();
     const allIds = new Set<string>();
-    result.data.forEach((f: any) => {
+    result.data.forEach((f) => {
       nameToIdMap.set(f.name, f.id);
       allIds.add(f.id);
     });
@@ -142,7 +143,7 @@ export const FolderSelectField = ({
       const foundId = nameToIdMap.get(initialValue);
       if (foundId) return foundId;
       const partialMatch = result.data.find(
-        (f: any) => f.name.toLowerCase() === initialValue.toLowerCase(),
+        (f) => f.name.toLowerCase() === initialValue.toLowerCase(),
       );
       if (partialMatch) return partialMatch.id;
     }

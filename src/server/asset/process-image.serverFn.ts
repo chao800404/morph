@@ -2,18 +2,21 @@ import { getDb } from "@/db";
 import { assets } from "@/db/asset.schema";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { createServerFn } from "@tanstack/react-start";
+import { isFormDataLike } from "./input-validation";
 import { env } from "cloudflare:workers";
 import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
 
 export const processImage = createServerFn({ method: "POST" })
-  .middleware([assetAdminMiddleware])
-  .handler(async ({ data, context }) => {
-    const formData = data as unknown as FormData;
-    if (!formData || typeof formData.get !== "function") {
-      return { success: false, message: "Invalid form data" };
+  .inputValidator((data: unknown) => {
+    if (!isFormDataLike(data)) {
+      throw new Error("Invalid form data");
     }
+    return data;
+  })
+  .middleware([assetAdminMiddleware])
+  .handler(async ({ data: formData, context }) => {
 
     const assetId = formData.get("assetId") as string;
     const croppedFile = formData.get("croppedImage") as File | null;

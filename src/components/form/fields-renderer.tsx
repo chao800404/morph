@@ -8,23 +8,40 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { FieldConfig } from "@/components/upload/types";
 import { cn } from "@/lib/utils";
-import type { FormField } from "@/lib/validations/form";
-import { RefObject } from "react";
+import type { FormField, FormFieldValue } from "@/lib/validations/form";
+import { ComponentRef, RefObject } from "react";
+import type { Country } from "react-phone-number-input";
 import { FolderSelectField } from "../folder-select/folder-select";
 import { PhoneInput } from "../ui/phone-input";
 import { UploadField } from "../upload/upload";
 import { OptionValuesField } from "./option-values-field";
 
+/**
+ * Every control that can be the first focusable field. The ref is shared across
+ * field types, so it is narrowed per branch below; all members expose `focus()`,
+ * which is the only thing callers use it for.
+ */
+export type FirstFieldRefTarget =
+  | HTMLInputElement
+  | HTMLTextAreaElement
+  | HTMLButtonElement
+  | ComponentRef<typeof PhoneInput>;
+
 interface FieldsRendererProps {
-  fields: (FormField | FieldConfig)[];
-  onChange?: (name: string, value: any) => void;
+  fields: FormField[];
+  onChange?: (name: string, value: FormFieldValue | File[]) => void;
   className?: string;
-  firstFieldRef?: RefObject<
-    HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement | null
-  >;
+  firstFieldRef?: RefObject<FirstFieldRefTarget | null>;
 }
+
+/**
+ * `defaultValue` belongs to fields that own their state after mount, `value` to
+ * fields driven by a dialog store. `defaultValue` wins so a config object keeps
+ * rendering the value it declared.
+ */
+const resolveFieldValue = (field: FormField): FormFieldValue | undefined =>
+  field.defaultValue !== undefined ? field.defaultValue : field.value;
 
 export const FieldsRenderer = ({
   fields,
@@ -40,20 +57,10 @@ export const FieldsRenderer = ({
         const id = `field-${field.name}`;
         const isFirstField = index === firstVisibleFieldIndex;
 
-        // Determine if it's FieldConfig or FormField
-        const isFieldConfig = !("value" in field) || "defaultValue" in field;
-        const fieldValue = isFieldConfig
-          ? (field as FieldConfig).defaultValue
-          : (field as FormField).value;
-
-        // Support colSpan from FieldConfig
-        const colSpan = (field as any).colSpan ?? 2;
+        const fieldValue = resolveFieldValue(field);
+        const colSpan = field.colSpan ?? 2;
         const stringValue = typeof fieldValue === "string" ? fieldValue : "";
-        const arrayValue = Array.isArray(fieldValue)
-          ? fieldValue
-          : Array.isArray((field as any).defaultValue)
-            ? (field as any).defaultValue
-            : [];
+        const arrayValue = Array.isArray(fieldValue) ? fieldValue : [];
 
         return (
           <div
@@ -73,11 +80,11 @@ export const FieldsRenderer = ({
                 id={id}
                 variant="card"
                 name={field.name}
-                type={(field as any).inputType || "text"}
+                type={field.inputType || "text"}
                 defaultValue={stringValue}
                 onChange={(e) => onChange?.(field.name, e.target.value)}
                 placeholder={field.placeholder || `Enter ${field.label}...`}
-                autoFocus={(field as any).autoFocus}
+                autoFocus={field.autoFocus}
                 ref={
                   isFirstField
                     ? (firstFieldRef as RefObject<HTMLInputElement>)
@@ -94,7 +101,7 @@ export const FieldsRenderer = ({
                 onChange={(e) => onChange?.(field.name, e.target.value)}
                 placeholder={field.placeholder || `Enter ${field.label}...`}
                 className="min-h-[100px]"
-                rows={(field as any).rows || 3}
+                rows={field.rows || 3}
                 ref={
                   isFirstField
                     ? (firstFieldRef as RefObject<HTMLTextAreaElement>)
@@ -114,7 +121,7 @@ export const FieldsRenderer = ({
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  {(field as any).options?.map((option: any) => (
+                  {field.options.map((option) => (
                     <SelectItem key={option.value} value={option.value}>
                       {option.label}
                     </SelectItem>
@@ -131,8 +138,8 @@ export const FieldsRenderer = ({
                 id={id}
                 name={field.name}
                 defaultCountry={
-                  field.type === "phone" && !stringValue
-                    ? ((field as any).defaultCountry as any)
+                  !stringValue
+                    ? (field.defaultCountry as Country | undefined)
                     : undefined
                 }
                 value={stringValue.replaceAll(" ", "")}
@@ -140,13 +147,19 @@ export const FieldsRenderer = ({
                   onChange?.(field.name, value);
                 }}
                 placeholder={field.placeholder || `Enter ${field.label}...`}
-                ref={isFirstField ? (firstFieldRef as any) : undefined}
+                ref={
+                  isFirstField
+                    ? (firstFieldRef as RefObject<
+                        ComponentRef<typeof PhoneInput>
+                      >)
+                    : undefined
+                }
               />
             )}
 
             {field.type === "folder-select" && (
               <FolderSelectField
-                field={field as any}
+                field={field}
                 fieldId={id}
                 initialValue={stringValue}
                 onChange={(value) => onChange?.(field.name, value)}
@@ -155,7 +168,7 @@ export const FieldsRenderer = ({
 
             {field.type === "upload" && (
               <UploadField
-                field={field as any}
+                field={field}
                 fieldId={id}
                 onChange={(files) => onChange?.(field.name, files)}
               />

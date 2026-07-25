@@ -151,7 +151,7 @@ const parseCreateItemsInput = (data: unknown): CreateItemsValidationResult => {
 };
 
 async function internalCreateAsset(
-  user: any,
+  user: { id: string },
   assets: File[],
   folderId?: string,
   durations: Array<number | null> = [],

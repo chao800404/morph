@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { z } from "zod";
 import * as schema from "../../db/schema";
 import { authMiddleware } from "../middleware/auth.middleware";
+import { getActionErrorMessage } from "@/lib/asset/action-result";
 
 export const revokeSession = createServerFn({ method: "POST" })
   .inputValidator(
@@ -49,11 +50,11 @@ export const revokeSession = createServerFn({ method: "POST" })
         success: true,
         message: "Session revoked successfully",
       };
-    } catch (error: any) {
+    } catch (error) {
       console.error("Revoke Session Error:", error);
       return {
         success: false,
-        message: error.message || "Failed to revoke session",
+        message: getActionErrorMessage(error, "Failed to revoke session"),
       };
     }
   });

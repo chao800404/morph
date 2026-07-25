@@ -111,9 +111,9 @@ export const AssetsDataProvider = ({
             description: folder.description || undefined,
             path: folder.path,
             parentId: folder.parentId,
-            assetCount: (folder as any).assetCount,
-            folderCount: (folder as any).folderCount,
-            itemCount: (folder as any).itemCount,
+            assetCount: folder.assetCount,
+            folderCount: folder.folderCount,
+            itemCount: folder.itemCount,
           });
         } else {
           setActiveItem({

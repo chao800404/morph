@@ -3,6 +3,7 @@ import { profileSchema } from "@/lib/validations/auth";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { authMiddleware } from "../middleware/auth.middleware";
+import { getActionErrorMessage } from "@/lib/asset/action-result";
 
 export const updateProfile = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => {
@@ -27,18 +28,18 @@ export const updateProfile = createServerFn({ method: "POST" })
           name: data.name,
           language: data.language,
           phoneNumber: data.phone || null,
-        } as any,
+        },
       });
 
       return {
         success: true,
         message: "Profile updated successfully",
       } as ActionState;
-    } catch (error: any) {
+    } catch (error) {
       console.error("Update Profile Error:", error);
       return {
         success: false,
-        message: error.message || "Failed to update profile",
+        message: getActionErrorMessage(error, "Failed to update profile"),
       } as ActionState;
     }
   });

@@ -1,4 +1,4 @@
-import { cmsConfigBase } from "@/cms.config";
+import { cmsConfig } from "@/cms.config";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { isRemoveBackgroundEnabled } from "@/lib/config/create-config";
 import { createServerFn } from "@tanstack/react-start";
@@ -15,7 +15,7 @@ export const removeBackground = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput }) => {
-    if (!isRemoveBackgroundEnabled(cmsConfigBase)) {
+    if (!isRemoveBackgroundEnabled(cmsConfig)) {
       return {
         success: false,
         message: "Background removal is not enabled for this deployment",
@@ -52,15 +52,19 @@ export const removeBackground = createServerFn({ method: "POST" })
 
     try {
       const cookie = request.headers.get("cookie");
+      // `segment` is a Cloudflare Image Resizing option that the generated
+      // RequestInitCfProperties type does not model yet.
+      const cfImageOptions: RequestInitCfProperties = {
+        image: {
+          segment: "foreground",
+          format: "png",
+          quality: 100,
+        } as RequestInitCfPropertiesImage & { segment: string },
+      };
+
       const transformed = await fetch(targetUrl, {
         headers: cookie ? { cookie } : undefined,
-        cf: {
-          image: {
-            segment: "foreground",
-            format: "png",
-            quality: 100,
-          },
-        } as any,
+        cf: cfImageOptions,
       });
 
       if (!transformed.ok) {

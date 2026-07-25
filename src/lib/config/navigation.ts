@@ -1,4 +1,23 @@
-import { CollectionGroup } from "./create-config";
+import { CollectionGroup, CollectionItem } from "./create-config";
+
+/**
+ * Flatten collection groups into every addressable item, including nested
+ * `items`, so a route can resolve a slug in one pass.
+ */
+export const getAllCollections = (
+  groups: CollectionGroup[],
+): CollectionItem[] => {
+  const result: CollectionItem[] = [];
+  for (const group of groups ?? []) {
+    for (const collection of group.collections ?? []) {
+      result.push(collection);
+      for (const item of collection.items ?? []) {
+        result.push(item);
+      }
+    }
+  }
+  return result;
+};
 
 export interface BreadcrumbItem {
   name: string;

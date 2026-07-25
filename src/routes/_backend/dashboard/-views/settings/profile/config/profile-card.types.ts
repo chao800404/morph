@@ -9,7 +9,7 @@ export type ProfileCardComponentProps = {
 };
 
 export interface EditCardState extends ActionState {
-  data?: any;
+  data?: unknown;
   serverError?: string;
-  validationErrors?: Record<string, any> | null;
+  validationErrors?: Record<string, string[]> | null;
 }

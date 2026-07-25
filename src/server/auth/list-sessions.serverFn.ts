@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { authMiddleware } from "../middleware/auth.middleware";
+import { getActionErrorMessage } from "@/lib/asset/action-result";
 
 export const listSessions = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -20,7 +21,7 @@ export const listSessions = createServerFn({ method: "GET" })
         sessions,
         currentSessionId: session.session.id,
       };
-    } catch (error: any) {
-      throw new Error(error.message || "Failed to list sessions");
+    } catch (error) {
+      throw new Error(getActionErrorMessage(error, "Failed to list sessions"));
     }
   });

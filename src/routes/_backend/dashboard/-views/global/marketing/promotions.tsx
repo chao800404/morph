@@ -4,6 +4,7 @@ import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/glob
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
 import { Plus } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Promotions = () => {
   const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
@@ -33,10 +34,7 @@ const Promotions = () => {
           placeholder: "SUMMER20",
         },
       ],
-      action: async ({ data }: { data: FormData }) => {
-        const title = data.get("title");
-        return { success: true, message: `Promotion "${title || ""}" created successfully!` };
-      },
+      action: notImplementedAction("Promotion creation"),
     });
     setCreateOpen(true);
   };

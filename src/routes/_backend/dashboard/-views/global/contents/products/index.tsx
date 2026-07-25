@@ -4,6 +4,7 @@ import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrappe
 import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import { Plus } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Products = () => {
   const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
@@ -52,13 +53,7 @@ const Products = () => {
           maxSize: 50 * 1024 * 1024,
         },
       ],
-      action: async ({ data }: { data: FormData }) => {
-        const name = data.get("name");
-        return {
-          success: true,
-          message: `Product "${name || ""}" created successfully!`,
-        };
-      },
+      action: notImplementedAction("Product creation"),
     });
     setCreateOpen(true);
   };

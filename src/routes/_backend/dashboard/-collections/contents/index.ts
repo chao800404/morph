@@ -1,3 +1,4 @@
+import type { CollectionLoadContext } from "@/lib/config/create-config";
 import { lazy } from "react";
 
 export const Contents = {
@@ -43,13 +44,7 @@ export const Contents = {
       icon: "Inbox",
       label: "Assets",
       component: lazy(() => import("@views/global/contents/assets")),
-      loadData: async ({
-        queryClient,
-        search,
-      }: {
-        queryClient: any;
-        search: any;
-      }) => {
+      loadData: async ({ queryClient, search }: CollectionLoadContext) => {
         const { assetQueries, normalizeAssetListParams } = await import(
           "@queries/asset.queries"
         );

@@ -9,40 +9,62 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as BackendRouteImport } from './routes/_backend'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as BackendDashboardRouteImport } from './routes/_backend/dashboard'
+import { Route as BackendRouteImport } from './routes/_backend'
 import { Route as BackendAuthRouteImport } from './routes/_backend/_auth'
+import { Route as BackendDashboardRouteImport } from './routes/_backend/dashboard'
+import { Route as BackendAuthCreateFirstAdminRouteImport } from './routes/_backend/_auth/create-first-admin'
+import { Route as BackendAuthResetPasswordRouteImport } from './routes/_backend/_auth/reset-password'
+import { Route as BackendAuthSignInRouteImport } from './routes/_backend/_auth/sign-in'
+import { Route as BackendAssetsSplatRouteImport } from './routes/_backend/assets/$'
 import { Route as BackendDashboardIndexRouteImport } from './routes/_backend/dashboard/index'
 import { Route as BackendDashboardSlugRouteImport } from './routes/_backend/dashboard/$slug'
-import { Route as BackendAssetsSplatRouteImport } from './routes/_backend/assets/$'
-import { Route as BackendAuthSignInRouteImport } from './routes/_backend/_auth/sign-in'
-import { Route as BackendAuthResetPasswordRouteImport } from './routes/_backend/_auth/reset-password'
-import { Route as BackendAuthCreateFirstAdminRouteImport } from './routes/_backend/_auth/create-first-admin'
-import { Route as BackendDashboardSettingsIndexRouteImport } from './routes/_backend/dashboard/settings/index'
 import { Route as BackendAuthResetPasswordIndexRouteImport } from './routes/_backend/_auth/reset-password.index'
-import { Route as BackendDashboardSettingsSlugRouteImport } from './routes/_backend/dashboard/settings/$slug'
-import { Route as BackendDashboardParentSlugRouteImport } from './routes/_backend/dashboard/$parent/$slug'
-import { Route as BackendApiAuthSplatRouteImport } from './routes/_backend/api/auth/$'
-import { Route as BackendApiAssetDownloadRouteImport } from './routes/_backend/api/asset/download'
 import { Route as BackendAuthResetPasswordVerifyRouteImport } from './routes/_backend/_auth/reset-password.verify'
+import { Route as BackendApiAssetDownloadRouteImport } from './routes/_backend/api/asset/download'
+import { Route as BackendApiAuthSplatRouteImport } from './routes/_backend/api/auth/$'
+import { Route as BackendDashboardParentSlugRouteImport } from './routes/_backend/dashboard/$parent/$slug'
+import { Route as BackendDashboardSettingsIndexRouteImport } from './routes/_backend/dashboard/settings/index'
+import { Route as BackendDashboardSettingsSlugRouteImport } from './routes/_backend/dashboard/settings/$slug'
 
-const BackendRoute = BackendRouteImport.update({
-  id: '/_backend',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const BackendRoute = BackendRouteImport.update({
+  id: '/_backend',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BackendAuthRoute = BackendAuthRouteImport.update({
+  id: '/_auth',
+  getParentRoute: () => BackendRoute,
 } as any)
 const BackendDashboardRoute = BackendDashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
   getParentRoute: () => BackendRoute,
 } as any)
-const BackendAuthRoute = BackendAuthRouteImport.update({
-  id: '/_auth',
+const BackendAuthCreateFirstAdminRoute =
+  BackendAuthCreateFirstAdminRouteImport.update({
+    id: '/create-first-admin',
+    path: '/create-first-admin',
+    getParentRoute: () => BackendAuthRoute,
+  } as any)
+const BackendAuthResetPasswordRoute =
+  BackendAuthResetPasswordRouteImport.update({
+    id: '/reset-password',
+    path: '/reset-password',
+    getParentRoute: () => BackendAuthRoute,
+  } as any)
+const BackendAuthSignInRoute = BackendAuthSignInRouteImport.update({
+  id: '/sign-in',
+  path: '/sign-in',
+  getParentRoute: () => BackendAuthRoute,
+} as any)
+const BackendAssetsSplatRoute = BackendAssetsSplatRouteImport.update({
+  id: '/assets/$',
+  path: '/assets/$',
   getParentRoute: () => BackendRoute,
 } as any)
 const BackendDashboardIndexRoute = BackendDashboardIndexRouteImport.update({
@@ -55,27 +77,33 @@ const BackendDashboardSlugRoute = BackendDashboardSlugRouteImport.update({
   path: '/$slug',
   getParentRoute: () => BackendDashboardRoute,
 } as any)
-const BackendAssetsSplatRoute = BackendAssetsSplatRouteImport.update({
-  id: '/assets/$',
-  path: '/assets/$',
+const BackendAuthResetPasswordIndexRoute =
+  BackendAuthResetPasswordIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => BackendAuthResetPasswordRoute,
+  } as any)
+const BackendAuthResetPasswordVerifyRoute =
+  BackendAuthResetPasswordVerifyRouteImport.update({
+    id: '/verify',
+    path: '/verify',
+    getParentRoute: () => BackendAuthResetPasswordRoute,
+  } as any)
+const BackendApiAssetDownloadRoute = BackendApiAssetDownloadRouteImport.update({
+  id: '/api/asset/download',
+  path: '/api/asset/download',
   getParentRoute: () => BackendRoute,
 } as any)
-const BackendAuthSignInRoute = BackendAuthSignInRouteImport.update({
-  id: '/sign-in',
-  path: '/sign-in',
-  getParentRoute: () => BackendAuthRoute,
+const BackendApiAuthSplatRoute = BackendApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
+  getParentRoute: () => BackendRoute,
 } as any)
-const BackendAuthResetPasswordRoute =
-  BackendAuthResetPasswordRouteImport.update({
-    id: '/reset-password',
-    path: '/reset-password',
-    getParentRoute: () => BackendAuthRoute,
-  } as any)
-const BackendAuthCreateFirstAdminRoute =
-  BackendAuthCreateFirstAdminRouteImport.update({
-    id: '/create-first-admin',
-    path: '/create-first-admin',
-    getParentRoute: () => BackendAuthRoute,
+const BackendDashboardParentSlugRoute =
+  BackendDashboardParentSlugRouteImport.update({
+    id: '/$parent/$slug',
+    path: '/$parent/$slug',
+    getParentRoute: () => BackendDashboardRoute,
   } as any)
 const BackendDashboardSettingsIndexRoute =
   BackendDashboardSettingsIndexRouteImport.update({
@@ -83,39 +111,11 @@ const BackendDashboardSettingsIndexRoute =
     path: '/settings/',
     getParentRoute: () => BackendDashboardRoute,
   } as any)
-const BackendAuthResetPasswordIndexRoute =
-  BackendAuthResetPasswordIndexRouteImport.update({
-    id: '/',
-    path: '/',
-    getParentRoute: () => BackendAuthResetPasswordRoute,
-  } as any)
 const BackendDashboardSettingsSlugRoute =
   BackendDashboardSettingsSlugRouteImport.update({
     id: '/settings/$slug',
     path: '/settings/$slug',
     getParentRoute: () => BackendDashboardRoute,
-  } as any)
-const BackendDashboardParentSlugRoute =
-  BackendDashboardParentSlugRouteImport.update({
-    id: '/$parent/$slug',
-    path: '/$parent/$slug',
-    getParentRoute: () => BackendDashboardRoute,
-  } as any)
-const BackendApiAuthSplatRoute = BackendApiAuthSplatRouteImport.update({
-  id: '/api/auth/$',
-  path: '/api/auth/$',
-  getParentRoute: () => BackendRoute,
-} as any)
-const BackendApiAssetDownloadRoute = BackendApiAssetDownloadRouteImport.update({
-  id: '/api/asset/download',
-  path: '/api/asset/download',
-  getParentRoute: () => BackendRoute,
-} as any)
-const BackendAuthResetPasswordVerifyRoute =
-  BackendAuthResetPasswordVerifyRouteImport.update({
-    id: '/verify',
-    path: '/verify',
-    getParentRoute: () => BackendAuthResetPasswordRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -133,7 +133,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/$parent/$slug': typeof BackendDashboardParentSlugRoute
   '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRoute
   '/reset-password/': typeof BackendAuthResetPasswordIndexRoute
-  '/dashboard/settings': typeof BackendDashboardSettingsIndexRoute
+  '/dashboard/settings/': typeof BackendDashboardSettingsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -187,7 +187,7 @@ export interface FileRouteTypes {
     | '/dashboard/$parent/$slug'
     | '/dashboard/settings/$slug'
     | '/reset-password/'
-    | '/dashboard/settings'
+    | '/dashboard/settings/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -231,19 +231,26 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/_backend': {
-      id: '/_backend'
-      path: ''
-      fullPath: ''
-      preLoaderRoute: typeof BackendRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_backend': {
+      id: '/_backend'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof BackendRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_backend/_auth': {
+      id: '/_backend/_auth'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof BackendAuthRouteImport
+      parentRoute: typeof BackendRoute
     }
     '/_backend/dashboard': {
       id: '/_backend/dashboard'
@@ -252,11 +259,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendDashboardRouteImport
       parentRoute: typeof BackendRoute
     }
-    '/_backend/_auth': {
-      id: '/_backend/_auth'
-      path: ''
-      fullPath: ''
-      preLoaderRoute: typeof BackendAuthRouteImport
+    '/_backend/_auth/create-first-admin': {
+      id: '/_backend/_auth/create-first-admin'
+      path: '/create-first-admin'
+      fullPath: '/create-first-admin'
+      preLoaderRoute: typeof BackendAuthCreateFirstAdminRouteImport
+      parentRoute: typeof BackendAuthRoute
+    }
+    '/_backend/_auth/reset-password': {
+      id: '/_backend/_auth/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof BackendAuthResetPasswordRouteImport
+      parentRoute: typeof BackendAuthRoute
+    }
+    '/_backend/_auth/sign-in': {
+      id: '/_backend/_auth/sign-in'
+      path: '/sign-in'
+      fullPath: '/sign-in'
+      preLoaderRoute: typeof BackendAuthSignInRouteImport
+      parentRoute: typeof BackendAuthRoute
+    }
+    '/_backend/assets/$': {
+      id: '/_backend/assets/$'
+      path: '/assets/$'
+      fullPath: '/assets/$'
+      preLoaderRoute: typeof BackendAssetsSplatRouteImport
       parentRoute: typeof BackendRoute
     }
     '/_backend/dashboard/': {
@@ -273,41 +301,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendDashboardSlugRouteImport
       parentRoute: typeof BackendDashboardRoute
     }
-    '/_backend/assets/$': {
-      id: '/_backend/assets/$'
-      path: '/assets/$'
-      fullPath: '/assets/$'
-      preLoaderRoute: typeof BackendAssetsSplatRouteImport
-      parentRoute: typeof BackendRoute
-    }
-    '/_backend/_auth/sign-in': {
-      id: '/_backend/_auth/sign-in'
-      path: '/sign-in'
-      fullPath: '/sign-in'
-      preLoaderRoute: typeof BackendAuthSignInRouteImport
-      parentRoute: typeof BackendAuthRoute
-    }
-    '/_backend/_auth/reset-password': {
-      id: '/_backend/_auth/reset-password'
-      path: '/reset-password'
-      fullPath: '/reset-password'
-      preLoaderRoute: typeof BackendAuthResetPasswordRouteImport
-      parentRoute: typeof BackendAuthRoute
-    }
-    '/_backend/_auth/create-first-admin': {
-      id: '/_backend/_auth/create-first-admin'
-      path: '/create-first-admin'
-      fullPath: '/create-first-admin'
-      preLoaderRoute: typeof BackendAuthCreateFirstAdminRouteImport
-      parentRoute: typeof BackendAuthRoute
-    }
-    '/_backend/dashboard/settings/': {
-      id: '/_backend/dashboard/settings/'
-      path: '/settings'
-      fullPath: '/dashboard/settings'
-      preLoaderRoute: typeof BackendDashboardSettingsIndexRouteImport
-      parentRoute: typeof BackendDashboardRoute
-    }
     '/_backend/_auth/reset-password/': {
       id: '/_backend/_auth/reset-password/'
       path: '/'
@@ -315,26 +308,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendAuthResetPasswordIndexRouteImport
       parentRoute: typeof BackendAuthResetPasswordRoute
     }
-    '/_backend/dashboard/settings/$slug': {
-      id: '/_backend/dashboard/settings/$slug'
-      path: '/settings/$slug'
-      fullPath: '/dashboard/settings/$slug'
-      preLoaderRoute: typeof BackendDashboardSettingsSlugRouteImport
-      parentRoute: typeof BackendDashboardRoute
-    }
-    '/_backend/dashboard/$parent/$slug': {
-      id: '/_backend/dashboard/$parent/$slug'
-      path: '/$parent/$slug'
-      fullPath: '/dashboard/$parent/$slug'
-      preLoaderRoute: typeof BackendDashboardParentSlugRouteImport
-      parentRoute: typeof BackendDashboardRoute
-    }
-    '/_backend/api/auth/$': {
-      id: '/_backend/api/auth/$'
-      path: '/api/auth/$'
-      fullPath: '/api/auth/$'
-      preLoaderRoute: typeof BackendApiAuthSplatRouteImport
-      parentRoute: typeof BackendRoute
+    '/_backend/_auth/reset-password/verify': {
+      id: '/_backend/_auth/reset-password/verify'
+      path: '/verify'
+      fullPath: '/reset-password/verify'
+      preLoaderRoute: typeof BackendAuthResetPasswordVerifyRouteImport
+      parentRoute: typeof BackendAuthResetPasswordRoute
     }
     '/_backend/api/asset/download': {
       id: '/_backend/api/asset/download'
@@ -343,12 +322,33 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendApiAssetDownloadRouteImport
       parentRoute: typeof BackendRoute
     }
-    '/_backend/_auth/reset-password/verify': {
-      id: '/_backend/_auth/reset-password/verify'
-      path: '/verify'
-      fullPath: '/reset-password/verify'
-      preLoaderRoute: typeof BackendAuthResetPasswordVerifyRouteImport
-      parentRoute: typeof BackendAuthResetPasswordRoute
+    '/_backend/api/auth/$': {
+      id: '/_backend/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof BackendApiAuthSplatRouteImport
+      parentRoute: typeof BackendRoute
+    }
+    '/_backend/dashboard/$parent/$slug': {
+      id: '/_backend/dashboard/$parent/$slug'
+      path: '/$parent/$slug'
+      fullPath: '/dashboard/$parent/$slug'
+      preLoaderRoute: typeof BackendDashboardParentSlugRouteImport
+      parentRoute: typeof BackendDashboardRoute
+    }
+    '/_backend/dashboard/settings/': {
+      id: '/_backend/dashboard/settings/'
+      path: '/settings'
+      fullPath: '/dashboard/settings/'
+      preLoaderRoute: typeof BackendDashboardSettingsIndexRouteImport
+      parentRoute: typeof BackendDashboardRoute
+    }
+    '/_backend/dashboard/settings/$slug': {
+      id: '/_backend/dashboard/settings/$slug'
+      path: '/settings/$slug'
+      fullPath: '/dashboard/settings/$slug'
+      preLoaderRoute: typeof BackendDashboardSettingsSlugRouteImport
+      parentRoute: typeof BackendDashboardRoute
     }
   }
 }

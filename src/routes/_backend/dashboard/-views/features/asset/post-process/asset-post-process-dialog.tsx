@@ -26,6 +26,7 @@ import { motion } from "motion/react";
 import { useRouter } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Cropper, CropperRef } from "react-advanced-cropper";
+import type { Coordinates } from "advanced-cropper/types";
 import "react-advanced-cropper/dist/style.css";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
@@ -60,12 +61,12 @@ const ASPECT_RATIOS = [
   {
     label: "Free",
     icon: Maximize2,
-    transform: (coords: any) => coords,
+    transform: (coords: Coordinates) => coords,
   },
   {
     label: "1:1",
     icon: Square,
-    transform: (coords: any) => {
+    transform: (coords: Coordinates) => {
       const size = Math.min(coords.width, coords.height) * 0.8; // Scale down to 80%
       return {
         ...coords,
@@ -79,7 +80,7 @@ const ASPECT_RATIOS = [
   {
     label: "2:1",
     icon: RectangleHorizontal,
-    transform: (coords: any) => {
+    transform: (coords: Coordinates) => {
       const height = coords.height * 0.8; // Scale down to 80%
       const width = height * 2;
       return {
@@ -94,7 +95,7 @@ const ASPECT_RATIOS = [
   {
     label: "4:3",
     icon: Monitor,
-    transform: (coords: any) => {
+    transform: (coords: Coordinates) => {
       const height = coords.height * 0.8; // Scale down to 80%
       const width = (height * 4) / 3;
       return {
@@ -109,7 +110,7 @@ const ASPECT_RATIOS = [
   {
     label: "16:9",
     icon: RectangleHorizontal,
-    transform: (coords: any) => {
+    transform: (coords: Coordinates) => {
       const height = coords.height * 0.8; // Scale down to 80%
       const width = (height * 16) / 9;
       return {
@@ -124,7 +125,7 @@ const ASPECT_RATIOS = [
   {
     label: "2:3",
     icon: RectangleVertical,
-    transform: (coords: any) => {
+    transform: (coords: Coordinates) => {
       const width = coords.width * 0.8; // Scale down to 80%
       const height = (width * 3) / 2;
       return {
@@ -294,7 +295,7 @@ export const AssetPostProcessDialog = () => {
       formData.append("height", height.toString());
       formData.append("saveas", saveMode);
 
-      const result = await processImage({ data: formData as any });
+      const result = await processImage({ data: formData });
 
       if (result.success) {
         toast.success(result.message, { position: "top-center" });
@@ -657,7 +658,7 @@ export const AssetPostProcessDialog = () => {
                                       className="flex justify-start gap-2"
                                       onClick={() =>
                                         cropperRef.current?.setCoordinates(
-                                          (state: any) => {
+                                          (state) => {
                                             const { coordinates } = state;
                                             if (!coordinates)
                                               return coordinates;

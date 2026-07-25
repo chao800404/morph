@@ -9,6 +9,19 @@ import React from "react";
 import { toast } from "sonner";
 import { useAssetsStore } from "../stores/assets.store";
 
+
+/**
+ * dnd-kit does not publish standalone event types for these callbacks, so they
+ * are derived from the provider's own props and stay in sync with the library.
+ */
+type DragDropProviderProps = React.ComponentProps<typeof DragDropProvider>;
+type DragEventOf<TProp extends keyof DragDropProviderProps> =
+  NonNullable<DragDropProviderProps[TProp]> extends (
+    ...args: infer TArgs
+  ) => unknown
+    ? TArgs[0]
+    : never;
+
 const AssetDragPreview = ({
   dragPreviewRef,
 }: {
@@ -106,7 +119,7 @@ export const AssetDraggableProvider = ({
   );
 
   const handleDragEnd = React.useCallback(
-    async (event: any) => {
+    async (event: DragEventOf<"onDragEnd">) => {
       const {
         selectedItems,
         dragItem,
@@ -177,7 +190,7 @@ export const AssetDraggableProvider = ({
     [queryClient],
   );
 
-  const handleBeforeDragStart = React.useCallback((event: any) => {
+  const handleBeforeDragStart = React.useCallback((event: DragEventOf<"onBeforeDragStart">) => {
     const { source } = event.operation;
     if (!source) return;
 
@@ -204,7 +217,7 @@ export const AssetDraggableProvider = ({
     });
   }, []);
 
-  const handleDragStart = React.useCallback((event: any) => {
+  const handleDragStart = React.useCallback((event: DragEventOf<"onDragStart">) => {
     const { position } = event.operation;
     if (!position || !dragPreviewRef.current) return;
 
@@ -212,7 +225,7 @@ export const AssetDraggableProvider = ({
     dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;
   }, []);
 
-  const handleDragMove = React.useCallback((event: any) => {
+  const handleDragMove = React.useCallback((event: DragEventOf<"onDragMove">) => {
     const { x, y } = event.to || { x: 50, y: 50 };
     if (dragPreviewRef.current) {
       dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;

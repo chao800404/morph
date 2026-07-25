@@ -45,7 +45,7 @@ export const Assets = () => {
 
   const foldersData = useMemo(
     () =>
-      responseData?.folders?.map((folder: any) => ({
+      responseData?.folders?.map((folder) => ({
         id: folder.id,
         name: folder.name,
         description: folder.description,
@@ -66,7 +66,7 @@ export const Assets = () => {
 
   const assetsData = useMemo(
     () =>
-      responseData?.assets?.map((asset: any) => ({
+      responseData?.assets?.map((asset) => ({
         id: asset.id,
         name: asset.name,
         url: asset.url.startsWith("http") ? asset.url : `${asset.url}`,

@@ -15,6 +15,7 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
+import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { cn } from "@/lib/utils";
 import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import type { AssetsCardData } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
@@ -23,7 +24,7 @@ import { createItems } from "@/server/asset";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Dot, FolderPlus, Search, X } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useDebouncedCallback } from "use-debounce";
 import { useShallow } from "zustand/react/shallow";
 
@@ -46,8 +47,7 @@ export const AssetsCardHeader = ({
 }) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const search = useSearch({ strict: false }) as any;
+  const search = useSearch({ strict: false }) as DashboardSearch;
   const query = search.q || "";
   const sortBy = search.sortBy || "createdAt";
   const sortOrder = search.sortOrder || "desc";
@@ -56,12 +56,22 @@ export const AssetsCardHeader = ({
   // State to track IME composition
   const [isComposing, setIsComposing] = useState(false);
 
+  // Patch the shared dashboard search params without knowing which dynamic
+  // route is mounted, so `to: "."` keeps the current path.
+  const patchSearch = useCallback(
+    (patch: Partial<DashboardSearch>) => {
+      navigate({
+        to: ".",
+        search: (prev: DashboardSearch) => ({ ...prev, ...patch }),
+        replace: true,
+      });
+    },
+    [navigate],
+  );
+
   // Debounced search handler
   const debouncedSearch = useDebouncedCallback((value: string) => {
-    navigate({
-      search: (prev: any) => ({ ...prev, q: value || undefined }),
-      replace: true,
-    } as any);
+    patchSearch({ q: value || undefined });
   }, 800);
 
   // Handle search input change
@@ -86,22 +96,15 @@ export const AssetsCardHeader = ({
 
   // Clear search input
   const handleClearInput = () => {
-    navigate({
-      search: (prev: any) => ({ ...prev, q: undefined }),
-      replace: true,
-    } as any);
+    patchSearch({ q: undefined });
   };
 
   // Handle sort change
-  const handleSortChange = (newSortBy: string, newSortOrder: string) => {
-    navigate({
-      search: (prev: any) => ({
-        ...prev,
-        sortBy: newSortBy,
-        sortOrder: newSortOrder,
-      }),
-      replace: true,
-    } as any);
+  const handleSortChange = (
+    newSortBy: NonNullable<DashboardSearch["sortBy"]>,
+    newSortOrder: NonNullable<DashboardSearch["sortOrder"]>,
+  ) => {
+    patchSearch({ sortBy: newSortBy, sortOrder: newSortOrder });
   };
 
   // Sort options configuration

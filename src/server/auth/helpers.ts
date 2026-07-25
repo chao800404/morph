@@ -2,68 +2,15 @@ import { createAuth } from "@/auth";
 import { env } from "cloudflare:workers";
 
 /**
- * Get authenticated auth instance with admin plugin support
- * This helper provides runtime access to admin plugin APIs
+ * Auth instance bound to the Cloudflare runtime bindings.
+ *
+ * The admin plugin is configured in `@/auth`, so its endpoints are already
+ * typed on `auth.api` (`createUser`, `setRole`, `listUsers`, `banUser`, …).
+ * Call them directly rather than re-wrapping them here: the previous wrapper
+ * widened `role` to `string` and hid that the endpoints return a `Response`.
  */
 export function getAuthWithAdmin() {
-  const auth = createAuth(env as any);
-
-  // Type-safe wrapper for admin plugin APIs
-  return {
-    ...auth,
-    admin: {
-      createUser: async (options: {
-        email: string;
-        password: string;
-        name: string;
-        role?: string | string[];
-        data?: Record<string, any>;
-      }) => {
-        return await (auth.api as any).createUser({
-          body: options,
-        });
-      },
-
-      setRole: async (options: { userId: string; role: string | string[] }) => {
-        return await (auth.api as any).setRole({
-          body: options,
-        });
-      },
-
-      listUsers: async (options?: {
-        limit?: number;
-        offset?: number;
-        sortBy?: string;
-        sortDirection?: "asc" | "desc";
-      }) => {
-        return await (auth.api as any).listUsers({
-          query: options,
-        });
-      },
-
-      banUser: async (options: {
-        userId: string;
-        reason?: string;
-        expiresIn?: number;
-      }) => {
-        return await (auth.api as any).banUser({
-          body: options,
-        });
-      },
-
-      unbanUser: async (options: { userId: string }) => {
-        return await (auth.api as any).unbanUser({
-          body: options,
-        });
-      },
-
-      removeUser: async (options: { userId: string }) => {
-        return await (auth.api as any).removeUser({
-          body: options,
-        });
-      },
-    },
-  };
+  return createAuth(env);
 }
 
 export type AuthWithAdmin = ReturnType<typeof getAuthWithAdmin>;

@@ -25,7 +25,7 @@ export const CreateDialog = () => {
     action,
     onSuccess,
   } = useCreateStore(
-    useShallow((state: any) => ({
+    useShallow((state) => ({
       open: state.open,
       handleOpenChange: state.handleOpenChange,
       title: state.title,
@@ -37,7 +37,7 @@ export const CreateDialog = () => {
   );
 
   const { fileData, clearAll, setError } = useUploadStore(
-    useShallow((state: any) => ({
+    useShallow((state) => ({
       fileData: state.fileData,
       clearAll: state.clearAll,
       setError: state.setError,
@@ -55,7 +55,7 @@ export const CreateDialog = () => {
       const durations: Array<number | null> = [];
       for (const [name, fileWithPreviews] of Object.entries(fileData)) {
         if (Array.isArray(fileWithPreviews)) {
-          for (const { file, duration } of fileWithPreviews as any[]) {
+          for (const { file, duration } of fileWithPreviews) {
             formData.append(name, file);
 
             // Add duration if available (already extracted in upload-field)

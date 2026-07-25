@@ -1,38 +1,37 @@
-import type { FieldConfig } from "@/components/upload/types";
 import type { AssetFormAction } from "@/lib/asset/action-result";
-import type { FormField } from "@/lib/validations/form";
+import type { FormField, FormFieldValue } from "@/lib/validations/form";
 import { create } from "zustand";
 
 // Re-export types for convenience
-export type { FormField, SelectOption } from "@/lib/validations/form";
-export type FieldType =
-  | "input"
-  | "textarea"
-  | "select"
-  | "folder-select"
-  | "hidden"
-  | "upload";
+export type {
+  FormField,
+  FormFieldType as FieldType,
+  SelectOption,
+} from "@/lib/validations/form";
 export type ServerAction = AssetFormAction;
+
+/** Values `FieldsRenderer` can emit, including the File list from `upload`. */
+export type CreateFieldValue = FormFieldValue | File[];
 
 interface CreateState {
   open: boolean;
   title?: string;
   description?: string;
-  fields?: (FormField | FieldConfig)[];
+  fields?: FormField[];
   action?: ServerAction;
   onSuccess?: () => void | Promise<void>;
   toggleOpen: () => void;
   handleOpenChange: (open: boolean) => void;
-  setFields: (fields: (FormField | FieldConfig)[]) => void;
+  setFields: (fields: FormField[]) => void;
   setOpen: (open: boolean) => void;
   setCreateData: (data: {
     title?: string;
     description?: string;
-    fields?: (FormField | FieldConfig)[];
+    fields?: FormField[];
     action?: ServerAction;
     onSuccess?: () => void | Promise<void>;
   }) => void;
-  updateFieldValue: (name: string, value: any) => void;
+  updateFieldValue: (name: string, value: CreateFieldValue) => void;
   setAction: (action: ServerAction) => void;
 }
 
@@ -68,28 +67,32 @@ export const useCreateStore = create<CreateState>((set, get) => ({
       onSuccess: data.onSuccess ?? state.onSuccess,
     }));
   },
-  updateFieldValue: (name: string, value: any) => {
+  updateFieldValue: (name: string, value: CreateFieldValue) => {
     set((state) => ({
       fields: state.fields?.map((field) => {
         if (field.name !== name) return field;
 
-        // Handle FormField (has 'value' property)
-        if ("value" in field) {
-          const f = field as FormField;
-          if (f.type === "select") {
-            const isValidValue = (f as any).options?.some(
-              (opt: any) => opt.value === value,
-            );
-            return {
-              ...f,
-              value: isValidValue ? value : f.value,
-            } as FormField;
-          }
-          return { ...f, value } as FormField;
+        // `upload` reports File[]. Those files live in the upload store and are
+        // appended to FormData at submit time, so there is nothing to mirror
+        // onto the field itself.
+        if (Array.isArray(value) && value.some((v) => v instanceof File)) {
+          return field;
+        }
+        const nextValue = value as FormFieldValue;
+
+        if (field.type === "select") {
+          const isValidValue = field.options.some(
+            (opt) => opt.value === nextValue,
+          );
+          return isValidValue ? { ...field, value: nextValue } : field;
         }
 
-        // Handle FieldConfig (has 'defaultValue' property)
-        return { ...field, defaultValue: value } as FieldConfig;
+        // Fields authored with `defaultValue` keep owning that key so
+        // FieldsRenderer resolves the same value it rendered with.
+        if (field.defaultValue !== undefined) {
+          return { ...field, defaultValue: nextValue };
+        }
+        return { ...field, value: nextValue };
       }),
     }));
   },

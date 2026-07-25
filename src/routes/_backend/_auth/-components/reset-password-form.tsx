@@ -131,7 +131,7 @@ export function ResetPasswordForm({ publicURL }: ResetPasswordFormProps) {
 
           <FieldDescription className="px-6 text-center text-xs text-muted-foreground">
             <Link
-              to={"/sign-in" as any}
+              to="/sign-in"
               className="font-medium w-fit underline-offset-0 justify-center"
             >
               Back to Login
