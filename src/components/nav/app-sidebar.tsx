@@ -14,7 +14,7 @@ import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { Suspense } from "react";
 import { LogoF } from "../logo/logo";
 import { getRedirectedPath } from "../pathname-history/pathname-history";
-import { DashboardSearch } from "../search/dashbaord-search";
+import { DashboardSearch } from "../search/dashboard-search";
 import { NavHeader } from "./nav-header";
 import { NavMain } from "./nav-main";
 import { NavUser, NavUserProps } from "./nav-user";

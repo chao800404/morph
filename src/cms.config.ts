@@ -43,6 +43,13 @@ export const cmsConfigBase = {
       promptBeforeIdle: 5,
     },
   },
+  features: {
+    // Requires Cloudflare Image Resizing with background removal support.
+    // Keep disabled unless the customer's Cloudflare environment is provisioned.
+    removeBackground: {
+      enabled: true,
+    },
+  },
   trustedOrigins: [
     "http://192.168.31.105:3000",
     "https://192.168.31.105:3000",

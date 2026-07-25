@@ -1,7 +1,6 @@
 import { assetFolderDal } from "@/lib/asset/dal/asset-folder.dal";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { createServerFn } from "@tanstack/react-start";
-// import { revalidatePath } from "next/cache";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
 import {
   batchMoveItemsInD1,
@@ -141,8 +140,6 @@ export const moveItems = createServerFn({ method: "POST" })
       folderUpdates: folderLocationUpdates,
       userId: context.user.id,
     });
-
-    // revalidatePath("/(backend)/dashboard/[...slug]", "layout");
 
     // Build success message with details
     const parts: string[] = [];

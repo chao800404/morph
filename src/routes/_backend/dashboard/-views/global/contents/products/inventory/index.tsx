@@ -52,7 +52,7 @@ const Inventory = () => {
         </Button>
       }
       classNames={{
-        cardWrapper: "min-h-[calc(100vh-6rem)]",
+        cardWrapper: "min-h-content",
         contentWrapper: "flex flex-col items-center justify-center min-h-[400px]",
       }}
     >

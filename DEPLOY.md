@@ -1,237 +1,86 @@
-# 🚀 Auto-Deploy Setup Guide
+# Deploying Morph
 
-This guide will help you set up automatic deployment to Cloudflare Workers with GitHub Actions.
+Morph deploys to Cloudflare Workers with Wrangler. The repository does not currently contain an active GitHub Actions deployment workflow, so deployment is a deliberate manual operation.
 
-## 📋 Prerequisites
+## Prerequisites
 
-- GitHub account
-- Cloudflare account
-- Cloudflare API Token with these permissions:
-  - `Workers Scripts:Edit`
-  - `D1:Edit`
-  - `Account Settings:Read`
+- Access to the Cloudflare account that owns the configured Worker resources
+- Wrangler authentication through `pnpm wrangler login` or `CLOUDFLARE_API_TOKEN`
+- Permission to edit Workers, D1, R2, and secrets
+- A reviewed database migration when the schema has changed
 
-## 🎯 Quick Start (5 minutes)
+The existing `wrangler.jsonc` is environment-specific and already identifies the production D1, KV, and R2 resources. Do not replace those identifiers during a normal deployment.
 
-### Step 1: Get Cloudflare Credentials
+## 1. Validate the application
 
-1. **Get Account ID**:
-
-   - Go to https://dash.cloudflare.com/
-   - Copy your Account ID from the right sidebar
-
-2. **Create API Token**:
-   - Go to https://dash.cloudflare.com/profile/api-tokens
-   - Click "Create Token"
-   - Use "Edit Cloudflare Workers" template
-   - Add D1 permissions
-   - Copy the token (you won't see it again!)
-
-### Step 2: Setup Cloudflare Resources
-
-```bash
-# Set environment variables
-export CLOUDFLARE_API_TOKEN="your_token_here"
-export CLOUDFLARE_ACCOUNT_ID="your_account_id_here"
-
-# Optional: Customize resource names
-export D1_DATABASE_NAME="my-app-db"
-export KV_NAMESPACE_NAME="my-app-kv"
-export R2_BUCKET_NAME="my-app-r2"
-
-# Run setup script
-pnpm setup:cloudflare
-```
-
-### Step 3: Configure GitHub Secrets
-
-1. Go to your GitHub repository
-2. Navigate to `Settings` → `Secrets and variables` → `Actions`
-3. Click `New repository secret` and add:
-
-| Name                    | Value           | How to get                     |
-| ----------------------- | --------------- | ------------------------------ |
-| `CLOUDFLARE_API_TOKEN`  | Your API token  | From Step 1                    |
-| `CLOUDFLARE_ACCOUNT_ID` | Your account ID | From Step 1                    |
-| `BETTER_AUTH_SECRET`    | Random secret   | Run: `openssl rand -base64 32` |
-
-### Step 4: Enable Auto-Deploy
-
-Choose your preferred workflow:
-
-**Option A: Simple Deploy** (Recommended)
-
-```bash
-mv .github/workflows/deploy.yml.example .github/workflows/deploy.yml
-```
-
-**Option B: Full Auto-Deploy** (with resource checks)
-
-```bash
-mv .github/workflows/deploy-full.yml.example .github/workflows/deploy.yml
-```
-
-### Step 5: Deploy!
-
-```bash
-git add .
-git commit -m "Enable auto-deploy"
-git push origin main
-```
-
-Your app will automatically deploy! 🎉
-
-## 🔄 Workflow Options Explained
-
-### Simple Deploy (`deploy.yml.example`)
-
-**Best for**: Production environments
-
-**Pros**:
-
-- ✅ Faster execution
-- ✅ More reliable
-- ✅ Cleaner logs
-
-**Cons**:
-
-- ❌ Requires manual resource setup first
-
-**When to use**: After running `pnpm setup:cloudflare`
-
----
-
-### Full Auto-Deploy (`deploy-full.yml.example`)
-
-**Best for**: Experimentation, multiple environments
-
-**Pros**:
-
-- ✅ Automatically creates resources
-- ✅ Good for testing
-- ✅ Self-contained
-
-**Cons**:
-
-- ❌ Slower (checks resources every time)
-- ❌ May fail on edge cases
-
-**When to use**: Quick prototypes, throwaway projects
-
-## 📊 What Happens on Each Push?
-
-```mermaid
-graph TD
-    A[Push to main] --> B[GitHub Actions triggered]
-    B --> C[Install dependencies]
-    C --> D[Generate migrations]
-    D --> E[Apply migrations to D1]
-    E --> F[Build application]
-    F --> G[Deploy to Cloudflare Workers]
-    G --> H[Set secrets]
-    H --> I[✅ Live!]
-```
-
-## 🛠️ Troubleshooting
-
-### Issue: "Unauthorized" error
-
-**Solution**:
-
-```bash
-# Check your API token has correct permissions
-# Create a new token with these permissions:
-# - Workers Scripts:Edit
-# - D1:Edit
-# - Account Settings:Read
-```
-
-### Issue: "Resource not found"
-
-**Solution**:
-
-```bash
-# Run the setup script again
-pnpm setup:cloudflare
-```
-
-### Issue: Migration fails
-
-**Solution**:
-
-```bash
-# Apply migrations manually
-pnpm db:migrate:prod
-
-# Or check your D1 database exists
-pnpm wrangler d1 list
-```
-
-### Issue: Build fails
-
-**Solution**:
-
-```bash
-# Test build locally first
+```powershell
+pnpm install --frozen-lockfile
+pnpm exec tsc --noEmit
+pnpm test
 pnpm build
-
-# Check for TypeScript errors
-pnpm tsc --noEmit
 ```
 
-## 🔐 Security Best Practices
+Resolve target-related failures before deploying. A successful build does not apply database migrations.
 
-1. **Never commit secrets** to your repository
-2. **Use GitHub Secrets** for all sensitive data
-3. **Rotate API tokens** regularly
-4. **Use minimal permissions** for API tokens
-5. **Enable branch protection** on `main` branch
+## 2. Configure production secrets
 
-## 🎓 Advanced: Multiple Environments
+Store secrets through Wrangler rather than in `wrangler.jsonc`:
 
-Want staging and production environments?
-
-### Create separate workflows:
-
-**`.github/workflows/deploy-staging.yml`**:
-
-```yaml
-on:
-  push:
-    branches:
-      - develop
+```powershell
+pnpm wrangler secret put BETTER_AUTH_SECRET
+pnpm wrangler secret put RESEND_API_KEY
 ```
 
-**`.github/workflows/deploy-production.yml`**:
+`PUBLIC_URL` is a non-secret canonical URL and is currently configured in `wrangler.jsonc`.
 
-```yaml
-on:
-  push:
-    branches:
-      - main
+## 3. Apply database migrations
+
+When `src/db/*.schema.ts` changed, first review the generated SQL under `drizzle/`, then apply the committed migrations:
+
+```powershell
+pnpm db:migrate:prod
 ```
 
-Use different GitHub Secrets for each environment:
+This command changes the remote D1 database. Do not run it for a deployment that contains no schema change.
 
-- `STAGING_CLOUDFLARE_API_TOKEN`
-- `PRODUCTION_CLOUDFLARE_API_TOKEN`
+## 4. Deploy
 
-## 📚 Learn More
+```powershell
+pnpm deploy
+```
 
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [Cloudflare Workers Documentation](https://developers.cloudflare.com/workers/)
-- [Wrangler CLI Documentation](https://developers.cloudflare.com/workers/wrangler/)
-- [Better Auth Documentation](https://better-auth.com/)
+The command builds the application and runs `wrangler deploy`.
 
-## 💡 Tips
+## 5. Verify
 
-- **Test locally first**: Always run `pnpm build` and `pnpm deploy` locally before pushing
-- **Monitor deployments**: Check the Actions tab in GitHub for deployment status
-- **Use manual triggers**: Add `workflow_dispatch` to trigger deployments manually
-- **Set up notifications**: Configure GitHub to notify you of failed deployments
+After deployment, verify at minimum:
 
-## 🆘 Need Help?
+- The public URL loads without a server error
+- Sign-in and session restoration work
+- An authorized user can open the dashboard
+- Asset listing and asset delivery through `/assets/*` work
+- Any feature changed by the release behaves correctly
 
-- Check the [GitHub Actions logs](https://github.com/your-repo/actions)
-- Review [Cloudflare Workers logs](https://dash.cloudflare.com/)
-- Open an issue in the repository
+If the release included a schema change, also verify the affected read and write paths against production D1.
+
+## Provisioning a separate environment
+
+Provisioning is different from deploying the existing environment. For a new environment:
+
+1. Create separate D1, R2, and KV resources.
+2. Copy `wrangler.jsonc` into an environment-specific configuration.
+3. Replace only the resource names and IDs for that environment.
+4. Set independent Better Auth and email secrets.
+5. Apply all migrations before serving real traffic.
+
+The legacy `pnpm setup:cloudflare` script rewrites `wrangler.jsonc` and is not part of the normal Morph deployment flow. Review and update that script before using it to provision a new environment.
+
+## CI status
+
+No workflow is active under `.github/workflows/`. If automated deployment is added later, it should perform the same sequence documented here:
+
+1. Install with the committed pnpm lockfile.
+2. Run TypeScript, tests, and the production build.
+3. Apply reviewed migrations only when intended.
+4. Deploy with Wrangler.
+5. Keep all credentials in GitHub Actions secrets.

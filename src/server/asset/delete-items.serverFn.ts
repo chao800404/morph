@@ -1,7 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { env } from "cloudflare:workers";
 import { assetDal, assetFolderDal, type AssetDTO } from "../../lib/asset";
-// import { revalidatePath } from "next/cache";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
 import { batchSoftDeleteItemsInD1 } from "@/lib/asset/dal/asset-batch.dal";
 import { parseDeleteItemsInput } from "./input-validation";
@@ -146,8 +145,6 @@ export const deleteItems = createServerFn({ method: "POST" })
         );
       }
     }
-
-    // revalidatePath("/(backend)/dashboard/[...slug]", "layout");
 
     const total = finalFolderIds.length + uniqueAssetIds.length;
     return {

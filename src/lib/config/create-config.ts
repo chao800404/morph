@@ -61,6 +61,11 @@ export interface CMSConfigInput {
       promptBeforeIdle: number;
     };
   };
+  features?: {
+    removeBackground?: {
+      enabled?: boolean;
+    };
+  };
   email?: any;
   trustedOrigins: string[];
 }
@@ -89,7 +94,16 @@ export interface ClientSafeConfig {
       promptBeforeIdle: number;
     };
   };
+  features: {
+    removeBackground: {
+      enabled: boolean;
+    };
+  };
 }
+
+export const isRemoveBackgroundEnabled = (
+  config: Pick<CMSConfigInput, "features">,
+) => config.features?.removeBackground?.enabled === true;
 
 /**
  * Create CMS Configuration
@@ -116,7 +130,7 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
   const clientSafeConfig: ClientSafeConfig = {
     appName: config.appName,
     localization: config.localization,
-    collections: config.collections,
+    collections: config.collections || { global: [], settings: [] },
     upload: {
       maxFileSize: config.upload.maxFileSize,
       minFiles: config.upload.minFiles,
@@ -129,6 +143,11 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
           autoLogout: config.auth.autoLogout,
         }
       : undefined,
+    features: {
+      removeBackground: {
+        enabled: isRemoveBackgroundEnabled(config),
+      },
+    },
   };
 
   return {

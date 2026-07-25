@@ -117,8 +117,6 @@ export const updateItems = createServerFn({ method: "POST" })
       userId: context.user.id,
     });
 
-    // revalidatePath("/(backend)/dashboard/[...slug]", "layout");
-
     return {
       success: true,
       message: "Items updated successfully",

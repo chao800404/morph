@@ -51,6 +51,9 @@
   --animate-shimmer-slide: shimmer 2.5s infinite linear;
   --animate-scan-line: scanning 2s linear infinite;
 
+  --height-content: calc(100lvh - 5.5rem);
+  --min-height-content: calc(100lvh - 5.5rem);
+
   @keyframes shimmer {
     0% {
       transform: translateX(-100%) skewX(-15deg);
@@ -73,6 +76,14 @@
       opacity: 0;
     }
   }
+}
+
+@utility min-h-content {
+  min-height: calc(100lvh - 5.5rem);
+}
+
+@utility h-content {
+  height: calc(100lvh - 5.5rem);
 }
 
 :root {

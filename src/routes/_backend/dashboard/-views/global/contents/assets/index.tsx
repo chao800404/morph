@@ -117,14 +117,9 @@ export const Assets = () => {
   );
 
   return (
-    <>
-      <section
-        className={cn(
-          "w-[calc(100%-24rem)] h-full overflow-hidden flex flex-col",
-          "max-xl:w-full",
-        )}
-      >
-        <div className="px-2 py-3 flex-1 min-h-0 overflow-hidden flex flex-col">
+    <div className="flex w-full gap-4">
+      <section className={cn("flex-1")}>
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
           <AssetsDataProvider data={assetsCardData} folderId={folderId}>
             <AssetDraggableProvider>
               <AssetsExplorerCard
@@ -142,12 +137,10 @@ export const Assets = () => {
           </AssetsDataProvider>
         </div>
       </section>
-      <div className="bottom-0 w-sm fixed top-14 pt-3 pr-2 pl-0.5 right-0  max-xl:hidden">
-        <div className="h-full">
-          <AssetPropertyCard />
-        </div>
+      <div className="h-full w-md">
+        <AssetPropertyCard />
       </div>
-    </>
+    </div>
   );
 };
 

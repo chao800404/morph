@@ -84,7 +84,7 @@ export const AssetPropertyCard = () => {
       }
       label="Properties"
       classNames={{
-        cardWrapper: "h-[calc(100vh-4.75rem)] flex flex-col overflow-hidden",
+        cardWrapper: "h-content flex flex-col overflow-hidden",
         contentWrapper: "flex flex-col min-h-0 flex-1 overflow-hidden",
       }}
     >

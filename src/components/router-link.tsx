@@ -3,11 +3,10 @@ import type React from "react";
 
 /**
  * TanStack Router <Link> wrapper that accepts a plain `href` string
- * (e.g. "/dashboard/assets?folderId=abc"), the way `next/link` did.
+ * (e.g. "/dashboard/assets?folderId=abc").
  *
- * This project runs on TanStack Router, so navigation must go through the
- * router's <Link> to stay client-side. A `next/link` / plain anchor triggers a
- * full page reload, which unmounts the whole view and discards the query cache.
+ * Internal navigation goes through the router's <Link> to remain client-side
+ * and preserve the mounted view and query cache.
  *
  * The href is split into the router's `{ to, search }` shape. An explicit
  * `search` object is always passed so navigating to a plain path clears any

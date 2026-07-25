@@ -1,7 +1,3 @@
-import {
-  assetQueries,
-  normalizeAssetListParams,
-} from "@queries/asset.queries";
 import { lazy } from "react";
 
 export const Contents = {
@@ -32,11 +28,11 @@ export const Contents = {
           ),
         },
         {
-          title: "Tags",
-          slug: "tags",
-          label: "Tags",
+          title: "Options",
+          slug: "options",
+          label: "Options",
           component: lazy(
-            () => import("@views/global/contents/products/tags"),
+            () => import("@views/global/contents/products/options"),
           ),
         },
       ],
@@ -47,13 +43,16 @@ export const Contents = {
       icon: "Inbox",
       label: "Assets",
       component: lazy(() => import("@views/global/contents/assets")),
-      loadData: ({
+      loadData: async ({
         queryClient,
         search,
       }: {
         queryClient: any;
         search: any;
       }) => {
+        const { assetQueries, normalizeAssetListParams } = await import(
+          "@queries/asset.queries"
+        );
         // Keep the active Assets view mounted while the next folder loads.
         // The page's useQuery observes these in-flight cache entries and keeps
         // its previous result visible instead of letting the route suspend.

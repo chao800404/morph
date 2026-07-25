@@ -139,7 +139,9 @@ function RouteComponent() {
               </Suspense>
 
               {/* <AssetsDialogs /> */}
-              <Outlet />
+              <div className="p-4">
+                <Outlet />
+              </div>
               <Toaster />
             </div>
           </SidebarInset>

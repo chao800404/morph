@@ -15,6 +15,7 @@ import { RefObject } from "react";
 import { FolderSelectField } from "../folder-select/folder-select";
 import { PhoneInput } from "../ui/phone-input";
 import { UploadField } from "../upload/upload";
+import { OptionValuesField } from "./option-values-field";
 
 interface FieldsRendererProps {
   fields: (FormField | FieldConfig)[];
@@ -47,6 +48,12 @@ export const FieldsRenderer = ({
 
         // Support colSpan from FieldConfig
         const colSpan = (field as any).colSpan ?? 2;
+        const stringValue = typeof fieldValue === "string" ? fieldValue : "";
+        const arrayValue = Array.isArray(fieldValue)
+          ? fieldValue
+          : Array.isArray((field as any).defaultValue)
+            ? (field as any).defaultValue
+            : [];
 
         return (
           <div
@@ -67,7 +74,7 @@ export const FieldsRenderer = ({
                 variant="card"
                 name={field.name}
                 type={(field as any).inputType || "text"}
-                defaultValue={fieldValue}
+                defaultValue={stringValue}
                 onChange={(e) => onChange?.(field.name, e.target.value)}
                 placeholder={field.placeholder || `Enter ${field.label}...`}
                 autoFocus={(field as any).autoFocus}
@@ -83,7 +90,7 @@ export const FieldsRenderer = ({
                 id={id}
                 variant="card"
                 name={field.name}
-                defaultValue={fieldValue}
+                defaultValue={stringValue}
                 onChange={(e) => onChange?.(field.name, e.target.value)}
                 placeholder={field.placeholder || `Enter ${field.label}...`}
                 className="min-h-[100px]"
@@ -98,7 +105,7 @@ export const FieldsRenderer = ({
             {field.type === "select" && (
               <Select
                 name={field.name}
-                defaultValue={fieldValue}
+                defaultValue={stringValue}
                 onValueChange={(value) => onChange?.(field.name, value)}
               >
                 <SelectTrigger id={id}>
@@ -116,7 +123,7 @@ export const FieldsRenderer = ({
               </Select>
             )}
             {field.type === "hidden" && (
-              <input type="hidden" name={field.name} value={fieldValue} />
+              <input type="hidden" name={field.name} value={stringValue} />
             )}
 
             {field.type === "phone" && (
@@ -124,11 +131,11 @@ export const FieldsRenderer = ({
                 id={id}
                 name={field.name}
                 defaultCountry={
-                  field.type === "phone" && !fieldValue
+                  field.type === "phone" && !stringValue
                     ? ((field as any).defaultCountry as any)
                     : undefined
                 }
-                value={fieldValue?.replaceAll(" ", "")}
+                value={stringValue.replaceAll(" ", "")}
                 onChange={(value) => {
                   onChange?.(field.name, value);
                 }}
@@ -141,7 +148,7 @@ export const FieldsRenderer = ({
               <FolderSelectField
                 field={field as any}
                 fieldId={id}
-                initialValue={fieldValue || ""}
+                initialValue={stringValue}
                 onChange={(value) => onChange?.(field.name, value)}
               />
             )}
@@ -151,6 +158,16 @@ export const FieldsRenderer = ({
                 field={field as any}
                 fieldId={id}
                 onChange={(files) => onChange?.(field.name, files)}
+              />
+            )}
+
+            {field.type === "option-values" && (
+              <OptionValuesField
+                name={field.name}
+                placeholder={field.placeholder}
+                defaultValue={arrayValue}
+                value={arrayValue}
+                onChange={(fieldName, val) => onChange?.(fieldName, val)}
               />
             )}
           </div>

@@ -155,7 +155,7 @@ export const AssetsExplorerCard = ({
   return (
     <CardWrapper
       classNames={{
-        cardWrapper: "h-[calc(100vh-4.75rem)] flex flex-col overflow-hidden",
+        cardWrapper: "h-content flex flex-col overflow-hidden",
         contentWrapper: cn(
           "w-full relative flex-1 flex flex-col min-h-0 overflow-hidden",
         ),

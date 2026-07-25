@@ -1,7 +1,10 @@
+import { cmsConfigBase } from "@/cms.config";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
+import { isRemoveBackgroundEnabled } from "@/lib/config/create-config";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
+import { assetAdminMiddleware } from "../middleware/auth.middleware";
 
 const inputSchema = z.object({
   assetId: z.string().optional(),
@@ -10,7 +13,15 @@ const inputSchema = z.object({
 
 export const removeBackground = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
+  .middleware([assetAdminMiddleware])
   .handler(async ({ data: parsedInput }) => {
+    if (!isRemoveBackgroundEnabled(cmsConfigBase)) {
+      return {
+        success: false,
+        message: "Background removal is not enabled for this deployment",
+      };
+    }
+
     const request = getRequest();
     let targetUrl: string | null = null;
 

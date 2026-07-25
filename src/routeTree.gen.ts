@@ -22,6 +22,7 @@ import { Route as BackendAuthCreateFirstAdminRouteImport } from './routes/_backe
 import { Route as BackendDashboardSettingsIndexRouteImport } from './routes/_backend/dashboard/settings/index'
 import { Route as BackendAuthResetPasswordIndexRouteImport } from './routes/_backend/_auth/reset-password.index'
 import { Route as BackendDashboardSettingsSlugRouteImport } from './routes/_backend/dashboard/settings/$slug'
+import { Route as BackendDashboardParentSlugRouteImport } from './routes/_backend/dashboard/$parent/$slug'
 import { Route as BackendApiAuthSplatRouteImport } from './routes/_backend/api/auth/$'
 import { Route as BackendApiAssetDownloadRouteImport } from './routes/_backend/api/asset/download'
 import { Route as BackendAuthResetPasswordVerifyRouteImport } from './routes/_backend/_auth/reset-password.verify'
@@ -94,6 +95,12 @@ const BackendDashboardSettingsSlugRoute =
     path: '/settings/$slug',
     getParentRoute: () => BackendDashboardRoute,
   } as any)
+const BackendDashboardParentSlugRoute =
+  BackendDashboardParentSlugRouteImport.update({
+    id: '/$parent/$slug',
+    path: '/$parent/$slug',
+    getParentRoute: () => BackendDashboardRoute,
+  } as any)
 const BackendApiAuthSplatRoute = BackendApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -123,6 +130,7 @@ export interface FileRoutesByFullPath {
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
+  '/dashboard/$parent/$slug': typeof BackendDashboardParentSlugRoute
   '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRoute
   '/reset-password/': typeof BackendAuthResetPasswordIndexRoute
   '/dashboard/settings': typeof BackendDashboardSettingsIndexRoute
@@ -137,6 +145,7 @@ export interface FileRoutesByTo {
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
+  '/dashboard/$parent/$slug': typeof BackendDashboardParentSlugRoute
   '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRoute
   '/reset-password': typeof BackendAuthResetPasswordIndexRoute
   '/dashboard/settings': typeof BackendDashboardSettingsIndexRoute
@@ -156,6 +165,7 @@ export interface FileRoutesById {
   '/_backend/_auth/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/_backend/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/_backend/api/auth/$': typeof BackendApiAuthSplatRoute
+  '/_backend/dashboard/$parent/$slug': typeof BackendDashboardParentSlugRoute
   '/_backend/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRoute
   '/_backend/_auth/reset-password/': typeof BackendAuthResetPasswordIndexRoute
   '/_backend/dashboard/settings/': typeof BackendDashboardSettingsIndexRoute
@@ -174,6 +184,7 @@ export interface FileRouteTypes {
     | '/reset-password/verify'
     | '/api/asset/download'
     | '/api/auth/$'
+    | '/dashboard/$parent/$slug'
     | '/dashboard/settings/$slug'
     | '/reset-password/'
     | '/dashboard/settings'
@@ -188,6 +199,7 @@ export interface FileRouteTypes {
     | '/reset-password/verify'
     | '/api/asset/download'
     | '/api/auth/$'
+    | '/dashboard/$parent/$slug'
     | '/dashboard/settings/$slug'
     | '/reset-password'
     | '/dashboard/settings'
@@ -206,6 +218,7 @@ export interface FileRouteTypes {
     | '/_backend/_auth/reset-password/verify'
     | '/_backend/api/asset/download'
     | '/_backend/api/auth/$'
+    | '/_backend/dashboard/$parent/$slug'
     | '/_backend/dashboard/settings/$slug'
     | '/_backend/_auth/reset-password/'
     | '/_backend/dashboard/settings/'
@@ -309,6 +322,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendDashboardSettingsSlugRouteImport
       parentRoute: typeof BackendDashboardRoute
     }
+    '/_backend/dashboard/$parent/$slug': {
+      id: '/_backend/dashboard/$parent/$slug'
+      path: '/$parent/$slug'
+      fullPath: '/dashboard/$parent/$slug'
+      preLoaderRoute: typeof BackendDashboardParentSlugRouteImport
+      parentRoute: typeof BackendDashboardRoute
+    }
     '/_backend/api/auth/$': {
       id: '/_backend/api/auth/$'
       path: '/api/auth/$'
@@ -368,6 +388,7 @@ const BackendAuthRouteWithChildren = BackendAuthRoute._addFileChildren(
 interface BackendDashboardRouteChildren {
   BackendDashboardSlugRoute: typeof BackendDashboardSlugRoute
   BackendDashboardIndexRoute: typeof BackendDashboardIndexRoute
+  BackendDashboardParentSlugRoute: typeof BackendDashboardParentSlugRoute
   BackendDashboardSettingsSlugRoute: typeof BackendDashboardSettingsSlugRoute
   BackendDashboardSettingsIndexRoute: typeof BackendDashboardSettingsIndexRoute
 }
@@ -375,6 +396,7 @@ interface BackendDashboardRouteChildren {
 const BackendDashboardRouteChildren: BackendDashboardRouteChildren = {
   BackendDashboardSlugRoute: BackendDashboardSlugRoute,
   BackendDashboardIndexRoute: BackendDashboardIndexRoute,
+  BackendDashboardParentSlugRoute: BackendDashboardParentSlugRoute,
   BackendDashboardSettingsSlugRoute: BackendDashboardSettingsSlugRoute,
   BackendDashboardSettingsIndexRoute: BackendDashboardSettingsIndexRoute,
 }

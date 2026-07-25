@@ -146,6 +146,17 @@ const folderSelectFormFieldSchema = z.object({
   description: z.string().optional(),
 });
 
+// Option values field schema (for sortable option tags)
+const optionValuesFormFieldSchema = z.object({
+  name: fieldNameSchema,
+  type: z.literal("option-values"),
+  value: z.union([z.string(), z.array(z.string())]).optional(),
+  label: z.string().optional(),
+  placeholder: z.string().optional(),
+  defaultValue: z.array(z.string()).optional(),
+  description: z.string().optional(),
+});
+
 // Hidden field schema (for passing data to server actions)
 const hiddenFormFieldSchema = z.object({
   name: fieldNameSchema,
@@ -153,7 +164,6 @@ const hiddenFormFieldSchema = z.object({
   value: fieldValueSchema,
 });
 
-// Union schema for FormField
 // Union schema for FormField
 export const formFieldSchema: z.ZodType<
   | {
@@ -196,12 +206,22 @@ export const formFieldSchema: z.ZodType<
       excludedIds?: string[];
       description?: string;
     }
+  | {
+      name: string;
+      type: "option-values";
+      value?: string | string[];
+      label?: string;
+      placeholder?: string;
+      defaultValue?: string[];
+      description?: string;
+    }
   | { name: string; type: "hidden"; value: string }
 > = z.discriminatedUnion("type", [
   inputFormFieldSchema,
   baseFormFieldSchema,
   selectFormFieldSchema,
   folderSelectFormFieldSchema,
+  optionValuesFormFieldSchema,
   hiddenFormFieldSchema,
 ]);
 

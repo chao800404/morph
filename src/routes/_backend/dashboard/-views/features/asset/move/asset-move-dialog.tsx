@@ -46,10 +46,10 @@ export const AssetMoveDialog = () => {
     try {
       const data = new FormData();
       data.set("itemIds", JSON.stringify(items.map((item) => item.id)));
+      const destVal = fields?.find((field) => field.name === "Destination Folder")?.value ?? "";
       data.set(
         "Destination Folder",
-        fields?.find((field) => field.name === "Destination Folder")?.value ??
-          "",
+        Array.isArray(destVal) ? destVal.join(",") : destVal,
       );
       const result = await action({ data });
       if (!result.success) throw new Error(result.message);

@@ -42,13 +42,13 @@ interface AssetsStore {
   activeItem?: SelectedItem;
   dragItem?: SelectedItem;
   selectedItems: Map<string, SelectedItem>;
-  dailogOpen: boolean;
-  dailogType: "folder" | "assets";
+  dialogOpen: boolean;
+  dialogType: "folder" | "assets";
   isActionMenuOpen: boolean;
   assetsData: AssetsCardData;
   setActiveItem: (item?: SelectedItem) => void;
-  setDailogOpen: (open: boolean) => void;
-  setDailogType: (type: "folder" | "assets") => void;
+  setDialogOpen: (open: boolean) => void;
+  setDialogType: (type: "folder" | "assets") => void;
   setActionMenuOpen: (open: boolean) => void;
   toggleSelectItem: (item: SelectedItem) => void;
   clearAllSelectedItems: () => void;
@@ -66,16 +66,16 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
   activeItem: undefined,
   dragItem: undefined,
   selectedItems: new Map(),
-  dailogOpen: false,
-  dailogType: "folder",
+  dialogOpen: false,
+  dialogType: "folder",
   isActionMenuOpen: false,
   assetsData: {},
   setActiveItem: (item) =>
     set((state) => (state.activeItem === item ? state : { activeItem: item })),
-  setDailogOpen: (open) =>
-    set((state) => (state.dailogOpen === open ? state : { dailogOpen: open })),
-  setDailogType: (type) =>
-    set((state) => (state.dailogType === type ? state : { dailogType: type })),
+  setDialogOpen: (open) =>
+    set((state) => (state.dialogOpen === open ? state : { dialogOpen: open })),
+  setDialogType: (type) =>
+    set((state) => (state.dialogType === type ? state : { dialogType: type })),
   setActionMenuOpen: (open) =>
     set((state) =>
       state.isActionMenuOpen === open ? state : { isActionMenuOpen: open },

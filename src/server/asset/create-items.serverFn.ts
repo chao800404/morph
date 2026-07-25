@@ -12,7 +12,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { env } from "cloudflare:workers";
 import { randomUUID } from "crypto";
 import { assetDal } from "../../lib/asset";
-// import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getConfig } from "../get-config";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
@@ -396,8 +395,6 @@ async function internalCreateAsset(
     createdAssetIds.push(...assetDataList.map((asset) => asset.id));
     await assetDal.createMany(assetDataList);
 
-    // revalidatePath("/(backend)/dashboard/[...slug]", "page");
-
     if (normalizedFolderId) {
       redirectPath = `/dashboard/assets?folderId=${normalizedFolderId}`;
     }
@@ -545,7 +542,6 @@ export const createItems = createServerFn({ method: "POST" })
         }
       }
 
-      // revalidatePath("/dashboard/assets", "page");
       redirectPath = `/dashboard/assets?folderId=${folderId}`;
 
       return {

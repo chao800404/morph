@@ -9,6 +9,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { getConfig } from "@/server/get-config";
 import { processImage, removeBackground } from "@/server/asset";
 import {
   Loader2,
@@ -138,6 +139,8 @@ const ASPECT_RATIOS = [
 ];
 
 export const AssetPostProcessDialog = () => {
+  const removeBackgroundEnabled =
+    getConfig().client.features.removeBackground.enabled;
   const {
     open,
     setOpen,
@@ -384,6 +387,8 @@ export const AssetPostProcessDialog = () => {
   };
 
   const handleRemoveBackground = async () => {
+    if (!removeBackgroundEnabled) return;
+
     setIsProcessing(true);
 
     try {
@@ -459,13 +464,17 @@ export const AssetPostProcessDialog = () => {
       title: "Transform Image",
       description: "Crop to different aspect ratios and rotate your image",
     },
-    {
-      value: "ai",
-      label: "AI Tools",
-      title: "AI-Powered Tools",
-      description:
-        "Use artificial intelligence to enhance and modify your image",
-    },
+    ...(removeBackgroundEnabled
+      ? [
+          {
+            value: "ai",
+            label: "AI Tools",
+            title: "AI-Powered Tools",
+            description:
+              "Use artificial intelligence to enhance and modify your image",
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -587,7 +596,14 @@ export const AssetPostProcessDialog = () => {
                         }
                       </p>
                     </div>
-                    <TabsList className="w-full grid grid-cols-3">
+                    <TabsList
+                      className={cn(
+                        "w-full grid",
+                        removeBackgroundEnabled
+                          ? "grid-cols-3"
+                          : "grid-cols-2",
+                      )}
+                    >
                       {tabsConfig.map((tab) => (
                         <TabsTrigger key={tab.value} value={tab.value}>
                           {tab.label}
@@ -687,36 +703,38 @@ export const AssetPostProcessDialog = () => {
                           </div>
                         </TabsContent>
 
-                        <TabsContent value="ai" className="space-y-4 m-0">
-                          <div className="space-y-4">
-                            <div className="rounded-lg border p-4 space-y-3">
-                              <div className="flex items-center gap-2 font-medium">
-                                <Wand2 className="h-4 w-4 text-purple-500" />
-                                Background Removal
+                        {removeBackgroundEnabled && (
+                          <TabsContent value="ai" className="space-y-4 m-0">
+                            <div className="space-y-4">
+                              <div className="rounded-lg border p-4 space-y-3">
+                                <div className="flex items-center gap-2 font-medium">
+                                  <Wand2 className="h-4 w-4 text-purple-500" />
+                                  Background Removal
+                                </div>
+                                <p className="text-xs text-muted-foreground">
+                                  Automatically remove the background from your
+                                  image using AI.
+                                </p>
+                                <Button
+                                  type="button"
+                                  onClick={handleRemoveBackground}
+                                  disabled={isProcessing}
+                                  className="w-full"
+                                  variant="formDark"
+                                >
+                                  {isProcessing ? (
+                                    <>
+                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                      Processing...
+                                    </>
+                                  ) : (
+                                    "Remove Background"
+                                  )}
+                                </Button>
                               </div>
-                              <p className="text-xs text-muted-foreground">
-                                Automatically remove the background from your
-                                image using AI.
-                              </p>
-                              <Button
-                                type="button"
-                                onClick={handleRemoveBackground}
-                                disabled={isProcessing}
-                                className="w-full"
-                                variant="formDark"
-                              >
-                                {isProcessing ? (
-                                  <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Processing...
-                                  </>
-                                ) : (
-                                  "Remove Background"
-                                )}
-                              </Button>
                             </div>
-                          </div>
-                        </TabsContent>
+                          </TabsContent>
+                        )}
                       </div>
                     </ScrollArea>
                     <Button

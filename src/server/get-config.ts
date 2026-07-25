@@ -3,9 +3,6 @@ import { createCMSConfig } from "@/lib/config/create-config";
 import { resendAdapter } from "@/lib/email/adapters";
 import { createIsomorphicFn } from "@tanstack/react-start";
 
-// Ensure asset server functions are statically registered for TanStack Start serverFn handler
-import "@/server/asset";
-
 /**
  * Get CMS Configuration (Isomorphic)
  *

@@ -5,7 +5,7 @@ import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/glob
 import { Plus } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 
-const Products = () => {
+const Options = () => {
   const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
     useShallow((state) => ({
       setCreateData: state.setCreateData,
@@ -13,50 +13,33 @@ const Products = () => {
     })),
   );
 
-  const handleCreateProduct = () => {
+  const handleCreateOption = () => {
     setCreateData({
-      title: "Create Product",
-      description: "Add a new product to your catalog",
+      title: "Create Product Option",
+      description: "Create a new product option and manage its values.",
       fields: [
         {
           type: "input",
-          name: "name",
-          label: "Product Name",
-          placeholder: "e.g. Summer T-Shirt",
+          name: "title",
+          label: "Title",
+          placeholder: "e.g. Size, Color, Material",
           required: true,
           autoFocus: true,
         },
         {
-          type: "input",
-          name: "price",
-          label: "Price ($)",
-          placeholder: "0.00",
-        },
-        {
-          type: "textarea",
-          name: "description",
-          label: "Description",
-          placeholder: "Short product description...",
-          rows: 3,
-          className: "col-span-2",
-        },
-        {
-          type: "upload",
-          name: "assets",
-          label: "Product Images",
-          placeholder: "Select images",
-          required: false,
-          colSpan: 2,
-          minSize: 1,
-          maxFiles: 5,
-          maxSize: 50 * 1024 * 1024,
+          type: "option-values",
+          name: "values",
+          label: "Values",
+          placeholder: "Type value and press Enter...",
         },
       ],
       action: async ({ data }: { data: FormData }) => {
-        const name = data.get("name");
+        const title = data.get("title");
+        const valuesRaw = data.get("values");
+        const values = valuesRaw ? JSON.parse(valuesRaw as string) : [];
         return {
           success: true,
-          message: `Product "${name || ""}" created successfully!`,
+          message: `Option "${title || ""}" created with values: ${values.join(", ")}`,
         };
       },
     });
@@ -65,11 +48,11 @@ const Products = () => {
 
   return (
     <CardWrapper
-      label="Products"
-      description="Manage your products and catalog"
+      label="Options"
+      description="Manage product options and variant attributes (e.g. Size, Color)"
       headerButton={
         <Button
-          onClick={handleCreateProduct}
+          onClick={handleCreateOption}
           variant="form"
           size="sm"
           className="gap-2"
@@ -88,19 +71,20 @@ const Products = () => {
         <div className="opacity-70 flex flex-col items-center gap-3">
           <EmptyFileIcon />
           <h3 className="text-lg font-medium text-foreground mt-2">
-            No products yet
+            No product options yet
           </h3>
           <p className="text-sm text-muted-foreground max-w-sm">
-            Get started by creating your first product to display in your store.
+            Create options to define customizable variants for your products
+            such as Size, Color, and Material.
           </p>
           <div className="mt-4">
             <Button
-              onClick={handleCreateProduct}
+              onClick={handleCreateOption}
               variant="form"
               className="gap-2"
             >
               <Plus className="size-4" />
-              Create First Product
+              Create First Option
             </Button>
           </div>
         </div>
@@ -109,4 +93,4 @@ const Products = () => {
   );
 };
 
-export default Products;
+export default Options;
