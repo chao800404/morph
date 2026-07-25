@@ -38,10 +38,11 @@
 
 ### Barrel（index.ts）的使用界線
 
-Barrel 本身沒問題，但 server function 模組不適用。原因有兩個，都不是假設：
+Barrel 本身沒問題，但 server function 模組不適用。理由是模組圖重量，這點可量測：
 
-1. **Server function 是「按 id 反查的註冊表」**。請求進來時 `server-functions-handler` 依 id 找到模組並同步讀取 export。Barrel 多一層模組跳轉，這層在 Vite SSR HMR 重新求值時也要重跑，會讓 export binding 還沒綁好就被存取，出現 `Cannot access 'xxx' before initialization`。實際踩過：編輯任一 server 檔案後 Assets 頁就壞，重啟 dev server 才恢復。
-2. **Barrel 會把不相干的重依賴一起拉進模組圖**。`import { moveItems } from "@/server/asset"` 會連帶求值 `create-items`（R2 上傳）、`process-image`、`remove-background`（影像處理）。一個拖曳元件不該扛這些。
+`import { moveItems } from "@/server/asset"` 會連帶求值 `create-items`（R2 上傳）、`process-image`、`remove-background`（影像處理）、`search-assets`。一個拖曳元件只要一個 `moveItems`，不該扛這些。拆掉兩個 server barrel 後 client 檔案數從 122 降到 119。
+
+> 註：曾經以為 barrel 是 `Cannot access 'xxx' before initialization` 的成因，拆掉之後問題**依然存在**，真正的原因見下一節。這條規則的依據是模組圖重量，不是那個 bug。
 
 界線：
 
@@ -52,6 +53,23 @@ Barrel 本身沒問題，但 server function 模組不適用。原因有兩個�
 | ❌ 絕對不要 | server 模組圖裡的 `export *` wildcard re-export |
 
 判準是**有沒有「被外部按名稱或 id 反查」或「import 當下就產生副作用」的語意**。純型別與純函式沒有，server function 有。
+
+### cms.config 的模組圖不得觸及 server function
+
+`src/cms.config.ts` 被 `get-config.ts` 引用，而多個 server function 又引用 `get-config`。若 config 的**靜態** import 圖反過來觸及任何 server function，同一個 middleware 模組就會有多個入口；Vite 在 HMR 時並行重新求值這些入口，其中一個會讀到還沒綁定完的 namespace，於是 `.middleware([xxx])` 拿到 `undefined`，錯誤訊息是：
+
+```
+Cannot use 'in' operator to search for 'Symbol(TSS_SERVER_FUNCTION_FACTORY)' in undefined
+Cannot access 'xxxServerFn' before initialization
+```
+
+實際踩過：`-collections/account/index.ts` 一行 `import { sessionQueries } from "@queries/auth.queries"`，就把 `list-sessions.serverFn` 與 auth middleware 拖進了 config 的圖，導致編輯任何 server 檔案後 Assets 頁就壞。
+
+規則：
+
+- collection 設定裡需要 query 時，一律在 `loadData` 內用 `await import(...)`，不可在模組頂層靜態 import。`-collections/contents/index.ts` 是正確範例。
+- 冷啟動正常、只有編輯原始碼後才壞，就是這個症狀。不要用重啟迴避，也不要在 UI 加 loading 遮罩掩蓋。
+- 驗證方式是靜態可達性檢查：從 `src/cms.config.ts` 沿著非 type-only 的 import 走訪，結果**不得包含任何 `*.serverFn.ts` 或 middleware**。修好後那張圖只有 12 個模組。
 
 ### 驗證與權限
 
@@ -91,7 +109,33 @@ Barrel 本身沒問題，但 server function 模組不適用。原因有兩個�
 - 本機 migration 使用 `pnpm db:migrate:dev`；production migration 必須取得使用者明確同意。
 - 所有一般資產與資料夾查詢必須尊重 `deletedAt` soft-delete 條件。若更動刪除流程，需同時考慮 D1 visibility、R2 archive/cleanup、失敗補償與重試後的一致性。
 - 資產上傳必須保留檔案數量、大小、extension/MIME、magic number、SVG 內容與 folder existence 驗證。不可僅靠副檔名或 browser 提供的 MIME。
-- D1/R2 批次操作必須有上限並分批執行；避免無界 `Promise.all`、過長 transaction 或一次載入完整大型資料集。
+- D1/R2 批次操作必須有上限並分批執行；避免無界 `Promise.all`、過長 transaction 或一次載入完整大型資料集。跨項目的 fan-out 用 `pLimit(DB_FANOUT_CONCURRENCY)`（`src/lib/db/concurrency.ts`）包起來，不要裸寫 `Promise.all(items.map(...))`。
+
+### D1／SQLite 的硬限制
+
+這三條都實測過，而且都不是讀程式碼看得出來的。踩到時錯誤訊息會被 Drizzle 的 `Failed query:` 包住，要把 SQL 直接丟給 `wrangler d1 execute --local` 才看得到真正的原因。
+
+**1. LIKE／GLOB pattern 上限 50 位元組**
+
+超過就是 `LIKE or GLOB pattern too complex`。單位是**位元組不是字元**：中文一字三位元組，所以搜尋 17 個中文字就會爆，不是 49 個英文字母。
+
+- **前綴比對**（子樹查詢）不可用 `like(col, prefix + "%")`。改用半開區間 `gte(col, prefix)` + `lt(col, upperBound)`，沒有長度限制且能吃索引。範例見 `asset-folder.dal.ts` 的 `startsWithPrefix`。`/uuid/uuid/%` 是 76 位元組，資料夾一巢狀就必爆。
+- **包含比對**（使用者搜尋）一律經過 `containsPattern()`（`src/lib/db/like-pattern.ts`），它會依位元組截斷且不切斷多位元組字元。不可自行拼 `` `%${term}%` ``。
+
+**2. 每個 statement 最多 100 個綁定參數**
+
+超過就是 `too many SQL variables`。多列 insert 綁的是「列數 × 欄位數」，所以分批要**依欄位數推算**，不是固定列數 —— 用 `chunkForInsert(rows, columnCount)`（`src/lib/product/dal/d1-batch.ts`）。18 欄的表一次只能 5 列，2 欄的關聯表可以 50 列。照抄別處的固定值是這裡最容易犯的錯。
+
+**3. `env.DATABASE.batch()` 整批只算一次 subrequest**
+
+所以多筆寫入務必收進一次 `batch()`，而不是迴圈逐筆 `await`。反過來說，寫入的 statement 數量不會吃掉 subrequest 預算，真正會隨資料量膨脹的是 R2 呼叫（封存一個檔案要 `get` + `put` + `delete` 三次）。
+
+### 批次操作的規模上限
+
+- 使用者**選了幾個**用 Zod 擋（現行上限 100）。但**展開後影響幾個**（資料夾的子孫）Zod 擋不到 —— 它在任何 DB 存取之前就跑完了，不可能知道某個資料夾底下有五千個檔案。
+- 展開後的上限必須在 handler 裡檢查，位置是**解析完子孫之後、第一次寫入之前**。太晚檢查的後果是 D1 軟刪除已完成、R2 封存做到一半被中斷，檔案在 UI 消失但實體還在。
+- 上限值取自 `bulkOperationLimits()`（`src/lib/db/operation-limits.ts`），依 `cms.config.ts` 的 `cloudflare.plan` 決定。Cloudflare 沒有 runtime API 可以查方案，只能宣告。
+- 調高上限前要有真實部署的量測。subrequest 通常不是最先耗盡的資源，串流檔案內容吃掉的 CPU 時間才是。
 
 ## 5. UI、樣式與可存取性
 
@@ -179,6 +223,21 @@ Barrel 本身沒問題，但 server function 模組不適用。原因有兩個�
 4. Production build：`pnpm build`（修改 route、SSR、Cloudflare binding、lazy import 或 build config 時）
 5. Schema：`pnpm db:generate` 並檢查新 migration（修改 schema 時）
 6. UI：實際檢查目標 route 的 loading、error、empty、responsive 與 keyboard flow
+
+### 防護與修復必須做負向測試
+
+「跑起來沒報錯」不等於「有效」。加了守門機制或修了 bug，就要證明它在**該擋的時候真的會擋**，否則等於沒加：
+
+- 加防護後，故意製造違規輸入，確認它被拒絕。做過的例子：bundle secret 檢查（把 env 讀進共用 config，確認 build 失敗並中斷）、Import Protection（建 `.server.ts` 從 client 匯入，確認 build 報出完整 import chain）。
+- 修查詢後，除了確認新寫法不報錯，還要**與舊寫法比對結果**。把 LIKE 換成範圍比較時，用一個舊寫法還能執行的短前綴跑兩次，確認回傳的列數一致——只證明「不報錯」可能是條件寫錯導致查不到任何東西。
+- 負向測試若沒失敗，先懷疑測試本身。實際發生過：把 `process.env` 提到模組層想模擬洩漏，檢查卻通過——因為那個常數只被 server-only 函式引用，被 tree-shake 掉了，根本沒洩漏。換成真的會進 client 的路徑才重現。
+- 測完務必還原，並確認 `git diff` 乾淨、`routeTree.gen.ts` 沒有殘留、測試資料已從 D1 清除。
+
+### 追查 runtime 問題時
+
+- 錯誤訊息被框架包住時（Drizzle 的 `Failed query:`、TanStack 的 `Server Fn Error!`），要取得底層原因：把 SQL 直接丟給 `wrangler d1 execute --local`，或在 catch 裡印出 `error.cause`。照著外層訊息猜會走錯方向。
+- 只在編輯原始碼後才發生、冷啟動正常的問題，屬於模組圖／HMR 類，不是邏輯錯誤。見「cms.config 的模組圖」一節。
+- 提出假設後要能證偽。這輪曾誤判 barrel 是 TDZ 的成因，拆掉後問題依舊；真正的線索來自完整的 dev server log（裡面有並行重新求值的模組清單）。沒有 runtime 證據就不要宣稱找到根因。
 
 交付時說明：
 
