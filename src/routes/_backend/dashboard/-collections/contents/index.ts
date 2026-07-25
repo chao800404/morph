@@ -11,6 +11,16 @@ export const Contents = {
       icon: "Package",
       label: "Products",
       component: lazy(() => import("@views/global/contents/products")),
+      loadData: async ({ queryClient, search }: CollectionLoadContext) => {
+        const { productQueries, normalizeProductListParams } = await import(
+          "@queries/product.queries"
+        );
+        // Prefetch with the same params the view normalizes to, so the loader
+        // primes the exact cache entry the component reads.
+        void queryClient.prefetchQuery(
+          productQueries.list(normalizeProductListParams(search)),
+        );
+      },
       items: [
         {
           title: "Collections",
@@ -19,6 +29,13 @@ export const Contents = {
           component: lazy(
             () => import("@views/global/contents/products/collections"),
           ),
+          loadData: async ({ queryClient, search }: CollectionLoadContext) => {
+            const { collectionQueries, normalizeCollectionListParams } =
+              await import("@queries/product.queries");
+            void queryClient.prefetchQuery(
+              collectionQueries.list(normalizeCollectionListParams(search)),
+            );
+          },
         },
         {
           title: "Inventory",
@@ -35,6 +52,17 @@ export const Contents = {
           component: lazy(
             () => import("@views/global/contents/products/options"),
           ),
+          loadData: async ({ queryClient, search }: CollectionLoadContext) => {
+            const {
+              optionTemplateQueries,
+              normalizeOptionTemplateListParams,
+            } = await import("@queries/product.queries");
+            void queryClient.prefetchQuery(
+              optionTemplateQueries.list(
+                normalizeOptionTemplateListParams(search),
+              ),
+            );
+          },
         },
       ],
     },

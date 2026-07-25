@@ -113,7 +113,24 @@
 
 ## 6. TypeScript 與程式碼品質
 
-- 專案採 strict TypeScript。新增程式碼不得使用未說明的 `any`；對外邊界用 `unknown` 驗證後再縮窄型別。
+### 禁止 any
+
+- 專案採 strict TypeScript，`src/` 內**不得出現 `any`**，包含 `: any`、`as any`、`<any>`、`any[]`、`Record<string, any>`。唯一例外是 generated files（`routeTree.gen.ts`、`worker-configuration.d.ts`），那些不手改。
+- `any` 不是型別，是關閉型別檢查。它讓錯誤延後到 runtime 才爆，而且通常爆在離原因很遠的地方。
+- 遇到型別對不上時，**先追根因，不要用 `any` 讓它閉嘴**。實際案例：`server/auth/helpers.ts` 的 `as any` 曾同時掩蓋四個真問題——`CloudflareBindings` 與產生的 `Env` 不相容、`role` 型別被放寬成 `string`、serverFn 回傳不可序列化的 `Response`、以及連鎖造成的 `unknown`。移除 `as any` 後才全部浮現。
+
+替代做法，依序考慮：
+
+1. **不寫註記**：多數情況 TypeScript 推導得出來。先刪掉再看 `tsc` 有沒有意見。
+2. **從函式庫推導**：用 `Parameters<>`、`ComponentProps<>`、`Awaited<ReturnType<>>` 取得型別，函式庫升級會自動跟上。例：`FirstFieldRefTarget`、dnd-kit 的 `DragEventOf<>`。
+3. **對外邊界用 `unknown` 再驗證**：request body、`JSON.parse` 結果、第三方回應一律 `unknown`，經 Zod 或既有 validation helper 縮窄後才使用。
+4. **具名的窄轉型**：真的需要轉型時，轉到**具體型別**而不是 `any`，例如 `as RefObject<HTMLInputElement>`、`as Env & { CF_PAGES?: string }`。並在旁邊寫一行註解說明為什麼型別系統看不出來。
+5. **修正型別來源**：若是自家型別定義錯了（過度 required、union 少一型），改定義，不要在使用端補救。
+
+- 若真的無法避免（例如函式庫型別有缺陷），必須在該行留下註解說明原因與追蹤依據（issue 連結或版本），並限縮到最小範圍。
+
+### 其他
+
 - 使用既有 alias：`@/*`、`@queries/*`、`@views/*`。同一模組內維持一致 import 方式。
 - 遵守 `.editorconfig`：UTF-8、LF、2 spaces、檔尾 newline。
 - 修正需求時只清理觸及範圍內的型別與重複邏輯，不順手重構整個舊模組。
@@ -124,10 +141,11 @@
 依修改風險執行最小充分驗證：
 
 1. TypeScript：`pnpm exec tsc --noEmit`
-2. 測試：`pnpm test`（有相關測試或修改核心邏輯時）
-3. Production build：`pnpm build`（修改 route、SSR、Cloudflare binding、lazy import 或 build config 時）
-4. Schema：`pnpm db:generate` 並檢查新 migration（修改 schema 時）
-5. UI：實際檢查目標 route 的 loading、error、empty、responsive 與 keyboard flow
+2. `any` 檢查：`grep -rn ": any\|as any\|<any>" src --include=*.ts --include=*.tsx | grep -v routeTree.gen.ts` 必須無輸出
+3. 測試：`pnpm test`（有相關測試或修改核心邏輯時）
+4. Production build：`pnpm build`（修改 route、SSR、Cloudflare binding、lazy import 或 build config 時）
+5. Schema：`pnpm db:generate` 並檢查新 migration（修改 schema 時）
+6. UI：實際檢查目標 route 的 loading、error、empty、responsive 與 keyboard flow
 
 交付時說明：
 

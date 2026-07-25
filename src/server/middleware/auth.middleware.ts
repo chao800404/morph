@@ -61,6 +61,59 @@ export const assetAdminMiddleware = createMiddleware({
   });
 });
 
+/**
+ * Catalogue mutations change what the storefront sells, so they are restricted
+ * to administrators. Reads stay open to signed-in CMS users, mirroring assets.
+ */
+export const productAdminMiddleware = createMiddleware({
+  type: "function",
+}).server(async ({ next }) => {
+  const request = getRequest();
+  const auth = getAuthWithAdmin();
+  const session = await auth.api.getSession({ headers: request.headers });
+
+  if (!session?.user) {
+    throw new Error("Unauthorized: Please sign in to continue");
+  }
+
+  if (!hasAnyRole(session.user.role, ["admin"])) {
+    throw new Error("Forbidden: Administrator access is required");
+  }
+
+  return next({
+    context: {
+      session,
+      user: session.user,
+      auth,
+    },
+  });
+});
+
+export const productReadMiddleware = createMiddleware({
+  type: "function",
+}).server(async ({ next }) => {
+  const request = getRequest();
+  const auth = getAuthWithAdmin();
+  const session = await auth.api.getSession({ headers: request.headers });
+
+  if (!session?.user) {
+    throw new Error("Unauthorized: Please sign in to continue");
+  }
+  if (!hasAnyRole(session.user.role, ["admin", "user"])) {
+    throw new Error(
+      "Forbidden: Catalogue access is not assigned to this account",
+    );
+  }
+
+  return next({
+    context: {
+      session,
+      user: session.user,
+      auth,
+    },
+  });
+});
+
 export const assetReadMiddleware = createMiddleware({
   type: "function",
 }).server(async ({ next }) => {

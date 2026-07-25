@@ -60,13 +60,13 @@ const AssetSelectFloat = lazy(
 );
 
 export const Route = createFileRoute("/_backend/dashboard")({
-  beforeLoad: async ({ location }) => {
+  beforeLoad: async (ctx) => {
     const session = await getSession();
 
     if (!session?.user) {
       throw redirect({ to: "/sign-in" });
     }
-    return { session, location };
+    return { session, location: ctx.location };
   },
   component: RouteComponent,
   notFoundComponent: () => <NotFound />,

@@ -1,0 +1,223 @@
+import type { AssetActionResult } from "@/lib/asset/action-result";
+import {
+  createCollection,
+  createOptionTemplate,
+  deleteOptionTemplates,
+  updateOptionTemplate,
+  deleteCollections,
+  deleteProducts,
+  updateCollection,
+  updateProduct,
+} from "@/server/product";
+
+/**
+ * FormData adapters for the shared dashboard dialogs.
+ *
+ * The Create/Edit/Info windows submit a native `FormData`, while the catalogue
+ * server functions take typed JSON. Converting here keeps the server functions
+ * a clean API surface instead of bending them to the dialog's transport, and
+ * keeps the parsing in one place rather than in each page.
+ */
+
+const text = (data: FormData, key: string): string | undefined => {
+  const value = data.get(key);
+  return typeof value === "string" && value.trim() !== ""
+    ? value.trim()
+    : undefined;
+};
+
+const idList = (data: FormData, key: string): string[] => {
+  const raw = data.get(key);
+  if (typeof raw !== "string") return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * The server functions return a union whose `errors` shape differs per branch,
+ * so optional keys are dropped rather than widened.
+ */
+const toActionResult = (result: {
+  success: boolean;
+  message: string;
+  errors?: Partial<Record<string, string[]>>;
+}): AssetActionResult => ({
+  success: result.success,
+  message: result.message,
+  errors: result.errors
+    ? Object.fromEntries(
+        Object.entries(result.errors).filter(
+          (entry): entry is [string, string[]] => entry[1] !== undefined,
+        ),
+      )
+    : undefined,
+});
+
+export const updateProductAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing product ID" };
+  }
+
+  return toActionResult(
+    await updateProduct({
+      data: {
+        id,
+        title: text(data, "title"),
+        handle: text(data, "handle"),
+        subtitle: text(data, "subtitle") ?? null,
+        description: text(data, "description") ?? null,
+      },
+    }),
+  );
+};
+
+export const deleteProductsAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const ids = idList(data, "productIds");
+  if (ids.length === 0) {
+    return { success: false, message: "No products selected" };
+  }
+  return toActionResult(await deleteProducts({ data: { ids } }));
+};
+
+export const createCollectionAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const title = text(data, "title");
+  if (!title) {
+    return {
+      success: false,
+      message: "Title is required",
+      errors: { title: ["Title is required"] },
+    };
+  }
+
+  return toActionResult(
+    await createCollection({
+      data: {
+        title,
+        handle: text(data, "handle"),
+        description: text(data, "description") ?? null,
+      },
+    }),
+  );
+};
+
+export const updateCollectionAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing collection ID" };
+  }
+
+  return toActionResult(
+    await updateCollection({
+      data: {
+        id,
+        title: text(data, "title"),
+        handle: text(data, "handle"),
+        description: text(data, "description") ?? null,
+      },
+    }),
+  );
+};
+
+export const deleteCollectionsAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const ids = idList(data, "collectionIds");
+  if (ids.length === 0) {
+    return { success: false, message: "No collections selected" };
+  }
+  return toActionResult(await deleteCollections({ data: { ids } }));
+};
+
+/** `option-values` fields submit their tags as a JSON array string. */
+const valueList = (data: FormData, key: string): string[] => idList(data, key);
+
+export const createOptionTemplateAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const title = text(data, "title");
+  const values = valueList(data, "values");
+
+  if (!title) {
+    return {
+      success: false,
+      message: "Title is required",
+      errors: { title: ["Title is required"] },
+    };
+  }
+  if (values.length === 0) {
+    return {
+      success: false,
+      message: "Add at least one value",
+      errors: { values: ["Add at least one value"] },
+    };
+  }
+
+  return toActionResult(
+    await createOptionTemplate({ data: { title, values } }),
+  );
+};
+
+export const updateOptionTemplateAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing option ID" };
+  }
+
+  const values = valueList(data, "values");
+  if (values.length === 0) {
+    return {
+      success: false,
+      message: "Add at least one value",
+      errors: { values: ["Add at least one value"] },
+    };
+  }
+
+  return toActionResult(
+    await updateOptionTemplate({
+      data: { id, title: text(data, "title"), values },
+    }),
+  );
+};
+
+export const deleteOptionTemplatesAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const ids = idList(data, "optionIds");
+  if (ids.length === 0) {
+    return { success: false, message: "No options selected" };
+  }
+  return toActionResult(await deleteOptionTemplates({ data: { ids } }));
+};
