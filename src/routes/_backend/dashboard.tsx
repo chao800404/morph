@@ -7,16 +7,23 @@ import { Toaster } from "@/components/ui/sonner";
 import { findBreadcrumbsFromCollections } from "@/lib/config/navigation";
 import { cn } from "@/lib/utils";
 import { getSession } from "@/server/auth/getSession";
-import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
-
+import { PageSpinner } from "@/components/loading/page-spinner";
 import { NotFound } from "@/components/not-found/not-found";
 import { getConfig } from "@/server/get-config";
+import {
+  createFileRoute,
+  Outlet,
+  redirect,
+  useRouterState,
+} from "@tanstack/react-router";
 import { lazy, Suspense } from "react";
 
 const CreateDialog = lazy(() =>
-  import("./dashboard/-views/features/global-create/create-dialog").then((m) => ({
-    default: m.CreateDialog,
-  })),
+  import("./dashboard/-views/features/global-create/create-dialog").then(
+    (m) => ({
+      default: m.CreateDialog,
+    }),
+  ),
 );
 const EditDialog = lazy(() =>
   import("./dashboard/-views/features/global-edit/edit-dialog").then((m) => ({
@@ -29,27 +36,27 @@ const InfoAlert = lazy(() =>
   })),
 );
 const AssetEditDialog = lazy(() =>
-  import(
-    "./dashboard/-views/features/asset/edit/asset-edit-dialog"
-  ).then((m) => ({ default: m.AssetEditDialog })),
+  import("./dashboard/-views/features/asset/edit/asset-edit-dialog").then(
+    (m) => ({ default: m.AssetEditDialog }),
+  ),
 );
 const AssetMoveDialog = lazy(() =>
-  import(
-    "./dashboard/-views/features/asset/move/asset-move-dialog"
-  ).then((m) => ({ default: m.AssetMoveDialog })),
+  import("./dashboard/-views/features/asset/move/asset-move-dialog").then(
+    (m) => ({ default: m.AssetMoveDialog }),
+  ),
 );
 const AssetPreviewDialog = lazy(() =>
-  import(
-    "./dashboard/-views/features/asset/preview/asset-preview-dialog"
-  ).then((m) => ({ default: m.AssetPreviewDialog })),
+  import("./dashboard/-views/features/asset/preview/asset-preview-dialog").then(
+    (m) => ({ default: m.AssetPreviewDialog }),
+  ),
 );
 const AssetPostProcessDialog = lazy(() =>
-  import(
-    "./dashboard/-views/features/asset/post-process/asset-post-process-dialog"
-  ).then((m) => ({ default: m.AssetPostProcessDialog })),
+  import("./dashboard/-views/features/asset/post-process/asset-post-process-dialog").then(
+    (m) => ({ default: m.AssetPostProcessDialog }),
+  ),
 );
-const AssetSelectFloat = lazy(() =>
-  import("./dashboard/-views/features/asset/select/float"),
+const AssetSelectFloat = lazy(
+  () => import("./dashboard/-views/features/asset/select/float"),
 );
 
 export const Route = createFileRoute("/_backend/dashboard")({
@@ -68,6 +75,9 @@ export const Route = createFileRoute("/_backend/dashboard")({
 function RouteComponent() {
   const { publicURL, session, location } = Route.useRouteContext();
   const config = getConfig().client;
+  const isNavigating = useRouterState({
+    select: (s) => s.status === "pending",
+  });
 
   const isSettings = location.pathname.startsWith("/dashboard/settings");
   const rawSideData = isSettings
@@ -138,7 +148,7 @@ function RouteComponent() {
 
               {/* <AssetsDialogs /> */}
               <div className="p-4">
-                <Outlet />
+                {isNavigating ? <PageSpinner /> : <Outlet />}
               </div>
               <Toaster />
             </div>

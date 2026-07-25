@@ -1,9 +1,10 @@
+import { PageSpinner } from "@/components/loading/page-spinner";
 import { NotFound } from "@/components/not-found/not-found";
+import { getAllCollections } from "@/lib/config/navigation";
+import { dashboardSearchSchema } from "@/lib/validations/dashboard-search";
 import { getConfig } from "@/server/get-config";
 import { createFileRoute } from "@tanstack/react-router";
 import { Suspense, useMemo } from "react";
-import { getAllCollections } from "@/lib/config/navigation";
-import { dashboardSearchSchema } from "@/lib/validations/dashboard-search";
 
 export const Route = createFileRoute("/_backend/dashboard/$slug")({
   validateSearch: (search) => dashboardSearchSchema.parse(search),
@@ -37,7 +38,7 @@ function RouteComponent() {
 
   if (!ViewComponent) return <NotFound />;
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<PageSpinner />}>
       <ViewComponent />
     </Suspense>
   );

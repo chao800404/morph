@@ -47,7 +47,7 @@ export const CardWrapper = (props: CardWrapperProps) => {
     <Card
       id={id}
       className={cn(
-        "bg-component flex flex-col rounded-lg border-none ring py-0 gap-0 ring-muted-foreground/10 dark:ring-muted-foreground/20",
+        "bg-component flex flex-col rounded-xl border-none ring py-0 gap-0 ring-muted-foreground/10 dark:ring-muted-foreground/20",
         classNames?.cardWrapper,
       )}
     >

@@ -1,3 +1,4 @@
+import { PageSpinner } from "@/components/loading/page-spinner";
 import { NotFound } from "@/components/not-found/not-found";
 import { getConfig } from "@/server/get-config";
 import { createFileRoute } from "@tanstack/react-router";
@@ -39,7 +40,7 @@ function RouteComponent() {
 
   if (!ViewComponent) return <NotFound />;
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<PageSpinner />}>
       <ViewComponent />
     </Suspense>
   );
