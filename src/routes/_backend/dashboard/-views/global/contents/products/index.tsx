@@ -1,8 +1,8 @@
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import type { ProductDTO } from "@/lib/product/dto/product.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
+  CollectionCreateButton,
   DataTableCard,
   deleteActionIcon,
   type DataTableColumn,
@@ -13,8 +13,7 @@ import {
   productQueries,
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
+import { useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { deleteProductsAction } from "./product-actions";
@@ -27,7 +26,6 @@ const STATUS_VARIANT = {
 
 const Products = () => {
   const search = useSearch({ strict: false }) as DashboardSearch;
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const params = normalizeProductListParams(search);
   const { data: result, isPending } = useQuery(productQueries.list(params));
@@ -45,9 +43,6 @@ const Products = () => {
 
   // Product creation is a multi-step flow with a variant matrix, which the
   // shared `fields` dialog cannot express, so it lives on its own route.
-  const handleCreateProduct = useCallback(() => {
-    void navigate({ to: "/dashboard/products/new" });
-  }, [navigate]);
 
   const handleDelete = useCallback(
     (product: ProductDTO) => {
@@ -118,15 +113,7 @@ const Products = () => {
         { value: "updatedAt", label: "Updated" },
       ]}
       headerActions={
-        <Button
-          onClick={handleCreateProduct}
-          variant="form"
-          size="xs"
-          className="gap-2"
-        >
-          <Plus className="size-4" />
-          Create
-        </Button>
+        <CollectionCreateButton slug="products" />
       }
       columns={columns}
       rows={products}

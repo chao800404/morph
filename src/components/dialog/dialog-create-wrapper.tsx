@@ -2,6 +2,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { type ComponentProps, type ReactNode, useActionState } from "react";
+import { createSurface } from "./create-surface";
 import { DialogFooterActions } from "./dialog-footer-actions";
 import { DialogHeaderActions } from "./dialog-header-actions";
 
@@ -54,30 +55,21 @@ export const DialogCreateWrapper = ({
       <DialogContent
         showCloseButton={false}
         onOpenAutoFocus={onOpenAutoFocus}
-        className="flex flex-col border border-border/30 max-w-[calc(100%-1rem)] sm:max-w-[calc(100%-1rem)] p-0 h-[calc(100%-1rem)] bg-component"
+        className={cn(
+          createSurface.shell,
+          "max-w-[calc(100%-1rem)] sm:max-w-[calc(100%-1rem)] p-0 h-[calc(100%-1rem)]",
+        )}
       >
         <form className="flex flex-col flex-1 min-h-0" action={formAction}>
           <DialogHeaderActions
             title={title}
             onClose={() => onOpenChange?.(false)}
           />
-          <ScrollArea
-            className={cn(
-              "w-full border-b flex-1 min-h-0 relative z-20 bg-component",
-              "dark:shadow-elevation-modal dark:border-border/30",
-            )}
-          >
+          <ScrollArea className={createSurface.body}>
             <ScrollBar />
-            <div className="pt-24 px-5 pb-10 max-w-3xl mx-auto relative z-50">
-              {children}
-            </div>
+            <div className={createSurface.content}>{children}</div>
           </ScrollArea>
-          <div
-            className={cn(
-              "bg-component h-fit border-ring/80 border-t-[0.5px] px-4 py-4 rounded-b-lg relative z-30",
-              "dark:shadow-elevation-modal dark:border-border/30",
-            )}
-          >
+          <div className={createSurface.footer}>
             <DialogFooterActions
               isLoading={pending}
               onCancel={() => onOpenChange?.(false)}

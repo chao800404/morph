@@ -1,27 +1,7 @@
 import type { ProductMetadata, ProductStatus } from "@/db/product.schema";
+import type { ProductOptionDTO } from "./product-option.dto";
 import type { ProductVariantDTO } from "./product-variant.dto";
 
-export interface ProductOptionValueDTO {
-  id: string;
-  optionId: string;
-  value: string;
-  rank: number;
-}
-
-export interface ProductOptionDTO {
-  id: string;
-  productId: string;
-  title: string;
-  rank: number;
-  values: ProductOptionValueDTO[];
-}
-
-export interface CreateProductOptionDTO {
-  title: string;
-  rank?: number;
-  /** Values in display order. */
-  values: string[];
-}
 
 export interface ProductDTO {
   id: string;

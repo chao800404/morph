@@ -8,11 +8,25 @@ import { useReducer } from "react";
  * discarded when the route unmounts.
  */
 
+export interface DraftOptionValue {
+  id: string;
+  value: string;
+}
+
+/**
+ * An option the product will use, picked from the shared library.
+ *
+ * `available` is everything the library option offers; `selectedValueIds` is
+ * the subset this product sells. The variant matrix is built from the
+ * selection, not from the full list.
+ */
 export interface DraftOption {
-  /** Stable key so React rows survive renaming. */
+  /** Stable key so React rows survive reordering. */
   key: string;
+  optionId: string;
   title: string;
-  values: string[];
+  available: DraftOptionValue[];
+  selectedValueIds: string[];
 }
 
 export interface DraftVariant {
@@ -47,13 +61,13 @@ export interface ProductDraft {
 export type DraftAction =
   | { type: "setField"; field: "title" | "subtitle" | "handle" | "description" | "collectionId"; value: string }
   | { type: "setHasVariants"; value: boolean }
-  | { type: "addOption" }
+  | { type: "addOption"; option: Omit<DraftOption, "key"> }
   | { type: "removeOption"; key: string }
-  | { type: "setOptionTitle"; key: string; title: string }
-  | { type: "setOptionValues"; key: string; values: string[] }
+  | { type: "setOptionValues"; key: string; valueIds: string[] }
   | { type: "setCurrencies"; currencies: string[] }
   | { type: "toggleVariant"; key: string; included: boolean }
   | { type: "toggleAllVariants"; included: boolean }
+  | { type: "moveVariant"; key: string; beforeKey: string }
   | {
       type: "setVariantField";
       key: string;
@@ -73,13 +87,19 @@ export const buildVariantKey = (optionValues: string[]): string =>
   optionValues.join(" / ");
 
 /** Cartesian product of the option values, in option order. */
+export const selectedValuesOf = (option: DraftOption): string[] =>
+  option.available
+    .filter((value) => option.selectedValueIds.includes(value.id))
+    .map((value) => value.value);
+
 const buildCombinations = (options: DraftOption[]): string[][] =>
   options
-    .filter((option) => option.title.trim() !== "" && option.values.length > 0)
+    .map(selectedValuesOf)
+    .filter((values) => values.length > 0)
     .reduce<string[][]>(
-      (combinations, option) =>
+      (combinations, values) =>
         combinations.flatMap((combination) =>
-          option.values.map((value) => [...combination, value]),
+          values.map((value) => [...combination, value]),
         ),
       [[]],
     );
@@ -98,6 +118,8 @@ const syncVariants = (draft: ProductDraft): ProductDraft => {
 
   const previous = new Map(draft.variants.map((variant) => [variant.key, variant]));
 
+  // Rebuilding resets a manual reorder: the combinations changed, so there is
+  // no meaningful order to carry over.
   return {
     ...draft,
     variants: combinations.map((optionValues) => {
@@ -136,21 +158,18 @@ const reducer = (draft: ProductDraft, action: DraftAction): ProductDraft => {
       return { ...draft, [action.field]: action.value };
 
     case "setHasVariants":
-      return syncVariants({
-        ...draft,
-        hasVariants: action.value,
-        options:
-          action.value && draft.options.length === 0
-            ? [{ key: crypto.randomUUID(), title: "", values: [] }]
-            : draft.options,
-      });
+      return syncVariants({ ...draft, hasVariants: action.value });
 
     case "addOption":
+      // Adding the same library option twice would duplicate an axis.
+      if (draft.options.some((o) => o.optionId === action.option.optionId)) {
+        return draft;
+      }
       return syncVariants({
         ...draft,
         options: [
           ...draft.options,
-          { key: crypto.randomUUID(), title: "", values: [] },
+          { key: crypto.randomUUID(), ...action.option },
         ],
       });
 
@@ -160,22 +179,12 @@ const reducer = (draft: ProductDraft, action: DraftAction): ProductDraft => {
         options: draft.options.filter((option) => option.key !== action.key),
       });
 
-    case "setOptionTitle":
-      return syncVariants({
-        ...draft,
-        options: draft.options.map((option) =>
-          option.key === action.key
-            ? { ...option, title: action.title }
-            : option,
-        ),
-      });
-
     case "setOptionValues":
       return syncVariants({
         ...draft,
         options: draft.options.map((option) =>
           option.key === action.key
-            ? { ...option, values: action.values }
+            ? { ...option, selectedValueIds: action.valueIds }
             : option,
         ),
       });
@@ -197,6 +206,18 @@ const reducer = (draft: ProductDraft, action: DraftAction): ProductDraft => {
           included: action.included,
         })),
       };
+
+    // Rank is the storefront's display order, so the list itself is the input.
+    case "moveVariant": {
+      const from = draft.variants.findIndex((v) => v.key === action.key);
+      const to = draft.variants.findIndex((v) => v.key === action.beforeKey);
+      if (from === -1 || to === -1 || from === to) return draft;
+
+      const variants = [...draft.variants];
+      const [moved] = variants.splice(from, 1);
+      variants.splice(to, 0, moved);
+      return { ...draft, variants };
+    }
 
     case "setVariantField":
       return mapVariant(draft, action.key, (variant) => ({

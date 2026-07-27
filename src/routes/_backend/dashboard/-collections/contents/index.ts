@@ -11,6 +11,9 @@ export const Contents = {
       slug: "products",
       icon: "Package",
       label: "Products",
+      // Multi-step, and it generates variants: losing it half-filled costs
+      // real work, so it gets its own page.
+      create: { mode: "route", to: "/dashboard/products/new" },
       component: lazy(() => import("@views/global/contents/products")),
       loadData: async ({ queryClient, search }: CollectionLoadContext) => {
         const { productQueries, normalizeProductListParams } = await import(
@@ -27,6 +30,7 @@ export const Contents = {
           title: "Collections",
           slug: "collections",
           label: "Collections",
+          create: { mode: "dialog" },
           component: lazy(
             () => import("@views/global/contents/products/collections"),
           ),
@@ -50,17 +54,18 @@ export const Contents = {
           title: "Options",
           slug: "options",
           label: "Options",
+          create: { mode: "dialog" },
           component: lazy(
             () => import("@views/global/contents/products/options"),
           ),
           loadData: async ({ queryClient, search }: CollectionLoadContext) => {
             const {
-              optionTemplateQueries,
-              normalizeOptionTemplateListParams,
+              productOptionQueries,
+              normalizeProductOptionListParams,
             } = await import("@queries/product.queries");
             void queryClient.prefetchQuery(
-              optionTemplateQueries.list(
-                normalizeOptionTemplateListParams(search),
+              productOptionQueries.list(
+                normalizeProductOptionListParams(search),
               ),
             );
           },
@@ -72,6 +77,9 @@ export const Contents = {
       slug: "assets",
       icon: "Inbox",
       label: "Assets",
+      // No `create`: uploading targets the folder currently being viewed, and
+      // drag-and-drop onto the explorer is the main entry point. That control
+      // belongs in the view, where the folder context lives.
       component: lazy(() => import("@views/global/contents/assets")),
       // The explorer shows a skeleton while its query runs, so the chunk wait
       // uses the same shape instead of a spinner that then swaps to a skeleton.

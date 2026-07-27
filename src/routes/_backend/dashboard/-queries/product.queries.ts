@@ -1,7 +1,7 @@
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { listCollections } from "@/server/product/collections.serverFn";
 import { getProduct, listProducts } from "@/server/product/list-products.serverFn";
-import { listOptionTemplates } from "@/server/product/option-templates.serverFn";
+import { listProductOptions } from "@/server/product/options.serverFn";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 
 /** Params the product list query and its server function agree on. */
@@ -55,14 +55,14 @@ export const collectionQueries = {
     }),
 };
 
-export const optionTemplateQueries = {
-  all: () => ["option-templates"] as const,
+export const productOptionQueries = {
+  all: () => ["product-options"] as const,
   list: (params: CollectionListParams) =>
     queryOptions({
-      queryKey: [...optionTemplateQueries.all(), "list", params],
-      queryFn: () => listOptionTemplates({ data: params }),
+      queryKey: [...productOptionQueries.all(), "list", params],
+      queryFn: () => listProductOptions({ data: params }),
       placeholderData: keepPreviousData,
     }),
 };
 
-export const normalizeOptionTemplateListParams = normalizeProductListParams;
+export const normalizeProductOptionListParams = normalizeProductListParams;

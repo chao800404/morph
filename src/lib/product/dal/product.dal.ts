@@ -3,6 +3,8 @@ import {
   productAssets,
   productOptionValues,
   productOptions,
+  productProductOptionValues,
+  productProductOptions,
   products,
 } from "@/db/product.schema";
 import {
@@ -18,27 +20,24 @@ import {
   SQL,
 } from "drizzle-orm";
 import type {
-  CreateProductOptionDTO,
+  ProductOptionDTO,
+  ProductOptionSelectionDTO,
+} from "../dto/product-option.dto";
+import type {
   ProductDetailDTO,
   ProductDTO,
   ProductInsertDTO,
-  ProductOptionDTO,
   UpdateProductDTO,
 } from "../dto/product.dto";
-import {
-  toProductDTO,
-  toProductOptionDTO,
-  type ProductOptionRow,
-  type ProductOptionValueRow,
-  type ProductRow,
-} from "../mappers/product.mapper";
+import { toProductOptionDTO } from "../mappers/product-option.mapper";
+import { toProductDTO, type ProductRow } from "../mappers/product.mapper";
 import { chunk, chunkForInsert } from "./d1-batch";
+import { productOptionDal } from "./product-option.dal";
 import { productVariantDal } from "./product-variant.dal";
 import { containsPattern } from "@/lib/db/like-pattern";
 
 // Column counts drive the insert batch size; see d1-batch.ts.
-const OPTION_COLUMNS = 6;
-const OPTION_VALUE_COLUMNS = 6;
+const PRODUCT_OPTION_VALUE_LINK_COLUMNS = 3;
 const PRODUCT_ASSET_COLUMNS = 3;
 
 const mapFirst = (rows: ProductRow[]): ProductDTO | null =>
@@ -82,27 +81,66 @@ export const productDal = {
     return rows.map(toProductDTO);
   },
 
+  /**
+   * The options this product uses, each carrying only the values the product
+   * actually offers. An option may be global and shared, so its full value list
+   * is filtered down to the product's selection.
+   */
   async findOptions(productId: string): Promise<ProductOptionDTO[]> {
     const db = await getDb();
-    const optionRows = await db
+    const links = await db
       .select()
-      .from(productOptions)
-      .where(eq(productOptions.productId, productId))
-      .orderBy(asc(productOptions.rank));
+      .from(productProductOptions)
+      .where(eq(productProductOptions.productId, productId))
+      .orderBy(asc(productProductOptions.rank));
 
-    if (optionRows.length === 0) return [];
+    if (links.length === 0) return [];
 
-    const valueRows = await db
-      .select()
-      .from(productOptionValues)
-      .where(
-        inArray(
-          productOptionValues.optionId,
-          optionRows.map((row) => row.id),
+    const [optionRows, valueLinks] = await Promise.all([
+      db
+        .select()
+        .from(productOptions)
+        .where(
+          and(
+            inArray(
+              productOptions.id,
+              links.map((link) => link.optionId),
+            ),
+            isNull(productOptions.deletedAt),
+          ),
         ),
-      );
+      db
+        .select()
+        .from(productProductOptionValues)
+        .where(
+          inArray(
+            productProductOptionValues.productProductOptionId,
+            links.map((link) => link.id),
+          ),
+        ),
+    ]);
 
-    return optionRows.map((row) => toProductOptionDTO(row, valueRows));
+    const selectedValueIds = new Set(
+      valueLinks.map((link) => link.optionValueId),
+    );
+    const valueRows =
+      selectedValueIds.size === 0
+        ? []
+        : await db
+            .select()
+            .from(productOptionValues)
+            .where(
+              and(
+                inArray(productOptionValues.id, [...selectedValueIds]),
+                isNull(productOptionValues.deletedAt),
+              ),
+            );
+
+    const optionById = new Map(optionRows.map((row) => [row.id, row]));
+    return links
+      .map((link) => optionById.get(link.optionId))
+      .filter((row): row is NonNullable<typeof row> => row !== undefined)
+      .map((row) => toProductOptionDTO(row, valueRows));
   },
 
   /** Product plus everything the detail view renders. */
@@ -230,56 +268,108 @@ export const productDal = {
   },
 
   /**
-   * Replace a product's option axes and their values.
+   * Replace which options a product uses and which of their values it offers.
    *
-   * Existing rows are deleted, which cascades to `product_variant_option_values`
-   * and therefore detaches variants from the values they used. Callers that
-   * keep variants must re-link them afterwards.
+   * A selection either references an option from the shared library, or defines
+   * one exclusive to this product. Only the link rows are rebuilt — the options
+   * themselves are left alone, because a global option belongs to every product
+   * that uses it.
    */
   async replaceOptions(
     productId: string,
-    options: CreateProductOptionDTO[],
+    selections: ProductOptionSelectionDTO[],
+    actorId: string,
   ): Promise<ProductOptionDTO[]> {
     const db = await getDb();
     const now = new Date().toISOString();
 
+    // Exclusive options exist only to serve this product, so they go with the
+    // links. Shared ones stay.
+    const previous = await db
+      .select()
+      .from(productProductOptions)
+      .where(eq(productProductOptions.productId, productId));
+    const previousOptionIds = previous.map((link) => link.optionId);
+    const exclusiveIds =
+      previousOptionIds.length === 0
+        ? []
+        : (
+            await db
+              .select({ id: productOptions.id })
+              .from(productOptions)
+              .where(
+                and(
+                  inArray(productOptions.id, previousOptionIds),
+                  eq(productOptions.isExclusive, true),
+                ),
+              )
+          ).map((row) => row.id);
+
     await db
-      .delete(productOptions)
-      .where(eq(productOptions.productId, productId));
+      .delete(productProductOptions)
+      .where(eq(productProductOptions.productId, productId));
+    for (const group of chunk(exclusiveIds, 50)) {
+      await db
+        .update(productOptions)
+        .set({ deletedAt: now, updatedAt: now, updatedBy: actorId })
+        .where(inArray(productOptions.id, group));
+    }
 
-    const optionRows: ProductOptionRow[] = [];
-    const valueRows: ProductOptionValueRow[] = [];
+    for (const [index, selection] of selections.entries()) {
+      let optionId: string;
+      let valueIds: string[];
 
-    options.forEach((option, optionIndex) => {
-      const optionId = crypto.randomUUID();
-      optionRows.push({
-        id: optionId,
+      if ("optionId" in selection) {
+        // The client sends ids, so ownership is re-checked here: a value id
+        // belonging to another option would otherwise link silently.
+        const library = await productOptionDal.findById(selection.optionId);
+        if (!library) {
+          throw new Error("The selected option no longer exists");
+        }
+        const owned = new Set(library.values.map((value) => value.id));
+        optionId = selection.optionId;
+        valueIds = selection.valueIds.filter((id) => owned.has(id));
+        if (valueIds.length === 0) {
+          throw new Error(
+            `None of the selected values belong to the option "${library.title}"`,
+          );
+        }
+      } else {
+        optionId = crypto.randomUUID();
+        await productOptionDal.create({
+          id: optionId,
+          title: selection.title,
+          isExclusive: true,
+          rank: index,
+          values: selection.values,
+          createdBy: actorId,
+          updatedBy: actorId,
+        });
+        const created = await productOptionDal.findById(optionId);
+        valueIds = created?.values.map((value) => value.id) ?? [];
+      }
+
+      const linkId = crypto.randomUUID();
+      await db.insert(productProductOptions).values({
+        id: linkId,
         productId,
-        title: option.title,
-        rank: option.rank ?? optionIndex,
+        optionId,
+        rank: index,
         createdAt: now,
         updatedAt: now,
       });
-      option.values.forEach((value, valueIndex) => {
-        valueRows.push({
-          id: crypto.randomUUID(),
-          optionId,
-          value,
-          rank: valueIndex,
-          createdAt: now,
-          updatedAt: now,
-        });
-      });
-    });
 
-    for (const group of chunkForInsert(optionRows, OPTION_COLUMNS)) {
-      await db.insert(productOptions).values(group);
-    }
-    for (const group of chunkForInsert(valueRows, OPTION_VALUE_COLUMNS)) {
-      await db.insert(productOptionValues).values(group);
+      const valueLinks = valueIds.map((optionValueId, rank) => ({
+        productProductOptionId: linkId,
+        optionValueId,
+        rank,
+      }));
+      for (const group of chunkForInsert(valueLinks, PRODUCT_OPTION_VALUE_LINK_COLUMNS)) {
+        await db.insert(productProductOptionValues).values(group);
+      }
     }
 
-    return optionRows.map((row) => toProductOptionDTO(row, valueRows));
+    return this.findOptions(productId);
   },
 
   /** Replace the gallery. `assetIds` order becomes the display order. */

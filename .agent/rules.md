@@ -180,6 +180,18 @@ Cannot access 'xxxServerFn' before initialization
 - Card header 的主要操作按鈕統一使用 `variant="form"` 與 `size="xs"`，與 Assets card 的 Create 按鈕同高同色。header 內的次要工具（排序、篩選等 icon-only 按鈕）維持 `variant="cardHeader"`，靠顏色區分主要與次要操作。
 - 需要新的共用能力（欄位排序、批次選取、篩選 chip）時，加在 `DataTableCard` 上讓所有列表頁一起受益，不可只在單一頁面實作。
 
+### 新增資源的入口：route 還是 dialog
+
+- Create 的形式由 collection config 的 `create` 欄位宣告，不在各自的 view 裡各寫一份按鈕。列表頁一律渲染 `CollectionCreateButton`，`mode: "route"` 由它負責導頁，`mode: "dialog"` 才需要頁面傳 `onCreate`。沒宣告 `create` 就不會有按鈕。
+- 選哪一種看**表單的形狀**，不是看喜好：
+  - 有多個步驟，或表單會生出衍生資料（變體、價格、明細列）→ `route`。
+  - 填到一半關掉會損失超過一分鐘的輸入 → `route`。
+  - 需要當前頁面的上下文（正在瀏覽的資料夾、已選取的列）→ **兩種都不要**，控制項留在擁有那個上下文的 view 裡。Assets 的上傳屬於這類，所以它沒有 `create`。
+  - 幾個欄位就填完 → `dialog`。
+- 目前的歸屬：Products = `route`；Collections、Options = `dialog`；Assets = 留在 view。未來的 Orders draft、Promotions 幾乎確定是 `route`，Customers、Inventory 是 `dialog`。
+- `mode: "route"` 的 `to` 型別是 `LinkProps["to"]`，會對著 route tree 檢查，寫錯路徑在 build 就會被擋下來，也讓使用者在 `cms.config.ts` 裡有自動完成。
+- Create 按鈕的樣式由 `CollectionCreateButton` 統一決定（`variant="form"`、`size="xs"`），頁面不得自己組一顆。要改外觀改那一個檔案。
+
 ### Fields 視覺基準
 
 - `src/components/ui/input.tsx` 的目前 field variant 是所有表單控制項的唯一視覺基準。`Textarea`、`SelectTrigger`、`PhoneInput`、`FolderSelectField`、`UploadField`、`OptionValuesField` 與未來新增的 field type，都必須與 `Input` 使用相同的背景色、文字色、placeholder、外框、圓角、陰影與高度節奏。

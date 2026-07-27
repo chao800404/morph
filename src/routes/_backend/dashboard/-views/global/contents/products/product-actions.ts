@@ -1,6 +1,6 @@
 import type { AssetActionResult } from "@/lib/asset/action-result";
 import { createCollection, deleteCollections, updateCollection } from "@/server/product/collections.serverFn";
-import { createOptionTemplate, deleteOptionTemplates, updateOptionTemplate } from "@/server/product/option-templates.serverFn";
+import { createProductOption, deleteProductOptions, updateProductOption } from "@/server/product/options.serverFn";
 import { deleteProducts, updateProduct } from "@/server/product/update-product.serverFn";
 
 /**
@@ -149,7 +149,7 @@ export const deleteCollectionsAction = async ({
 /** `option-values` fields submit their tags as a JSON array string. */
 const valueList = (data: FormData, key: string): string[] => idList(data, key);
 
-export const createOptionTemplateAction = async ({
+export const createProductOptionAction = async ({
   data,
 }: {
   data: FormData;
@@ -173,11 +173,11 @@ export const createOptionTemplateAction = async ({
   }
 
   return toActionResult(
-    await createOptionTemplate({ data: { title, values } }),
+    await createProductOption({ data: { title, values } }),
   );
 };
 
-export const updateOptionTemplateAction = async ({
+export const updateProductOptionAction = async ({
   data,
 }: {
   data: FormData;
@@ -197,13 +197,13 @@ export const updateOptionTemplateAction = async ({
   }
 
   return toActionResult(
-    await updateOptionTemplate({
+    await updateProductOption({
       data: { id, title: text(data, "title"), values },
     }),
   );
 };
 
-export const deleteOptionTemplatesAction = async ({
+export const deleteProductOptionsAction = async ({
   data,
 }: {
   data: FormData;
@@ -212,5 +212,5 @@ export const deleteOptionTemplatesAction = async ({
   if (ids.length === 0) {
     return { success: false, message: "No options selected" };
   }
-  return toActionResult(await deleteOptionTemplates({ data: { ids } }));
+  return toActionResult(await deleteProductOptions({ data: { ids } }));
 };

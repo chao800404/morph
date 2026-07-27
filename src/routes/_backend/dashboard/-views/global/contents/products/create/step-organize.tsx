@@ -1,3 +1,4 @@
+import { createSurface } from "@/components/dialog/create-surface";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -7,6 +8,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import {
   collectionQueries,
   normalizeCollectionListParams,
@@ -33,7 +35,7 @@ export const StepOrganize = ({
   const collections = result?.success ? (result.data?.collections ?? []) : [];
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 py-10">
+    <div className={cn(createSurface.content, "flex w-full flex-col gap-6")}>
       <h2 className="text-lg font-medium text-foreground">Organize</h2>
 
       <div className="space-y-2">

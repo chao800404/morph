@@ -1,7 +1,7 @@
-import { Button } from "@/components/ui/button";
 import type { ProductCollectionDTO } from "@/lib/product/dto/product-collection.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
+  CollectionCreateButton,
   DataTableCard,
   deleteActionIcon,
   editActionIcon,
@@ -16,7 +16,6 @@ import {
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -187,10 +186,8 @@ const Collections = () => {
         { value: "updatedAt", label: "Updated" },
       ]}
       headerActions={
-        <Button onClick={handleCreate} variant="form" size="xs" className="gap-2">
-          <Plus className="size-4" />
-          Create
-        </Button>
+        <CollectionCreateButton slug="collections"
+          onCreate={handleCreate} />
       }
       columns={columns}
       rows={collections}

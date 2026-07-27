@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  AnySQLiteColumn,
   check,
   index,
   integer,
@@ -30,17 +31,20 @@ export type ProductMetadata = Record<string, JsonValue>;
 /**
  * Commerce catalogue schema.
  *
- * Conventions follow `asset.schema.ts`: text ids, ISO timestamp strings written
- * by the DAL, `deletedAt` soft deletes, and active-only unique indexes so a
- * deleted row never blocks reuse of its handle or SKU.
+ * The shape follows Medusa's product module so the domain model is familiar and
+ * a future import path stays open, but it is a translation rather than a copy:
+ * Medusa runs MikroORM on Postgres, this runs Drizzle on D1/SQLite.
  *
- * Money is stored as an integer in the currency's minor unit (cents), never a
- * float. Prices live in their own table so a variant can be sold in several
- * currencies; retrofitting that onto a single column is painful.
+ * Deliberate departures from Medusa:
+ * - Primary keys are plain UUIDs, not prefixed ids (`prod_...`).
+ * - Money is an integer in the currency's minor unit, not Medusa's
+ *   numeric + raw-JSON BigNumber pair, which SQLite has no equivalent for.
+ * - Images reference the existing `assets` table instead of storing bare URLs,
+ *   so uploads keep going through the asset library.
  *
- * Inventory is tracked on the variant, which assumes one stock location. Adding
- * locations later means a new table keyed by variant id, so variant identity
- * does not have to change.
+ * Local conventions follow `asset.schema.ts`: text ids, ISO timestamp strings
+ * written by the DAL, `deletedAt` soft deletes, and active-only unique indexes
+ * so a deleted row never blocks reuse of its handle or SKU.
  */
 
 export const productCollections = sqliteTable(
@@ -50,6 +54,7 @@ export const productCollections = sqliteTable(
     title: text("title").notNull(),
     handle: text("handle").notNull(),
     description: text("description"),
+    metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
     createdBy: text("created_by").notNull(),
     updatedBy: text("updated_by").notNull(),
     createdAt: text("created_at").notNull(),
@@ -64,6 +69,89 @@ export const productCollections = sqliteTable(
   ],
 );
 
+/** Free-form classification, e.g. "Clothing". One per product. */
+export const productTypes = sqliteTable(
+  "product_types",
+  {
+    id: text("id").primaryKey(),
+    value: text("value").notNull(),
+    externalId: text("external_id"),
+    metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    deletedAt: text("deleted_at"),
+  },
+  (table) => [
+    uniqueIndex("product_types_active_value_unique")
+      .on(table.value)
+      .where(sql`${table.deletedAt} IS NULL`),
+  ],
+);
+
+/** Free-form label. Many per product. */
+export const productTags = sqliteTable(
+  "product_tags",
+  {
+    id: text("id").primaryKey(),
+    value: text("value").notNull(),
+    externalId: text("external_id"),
+    metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    deletedAt: text("deleted_at"),
+  },
+  (table) => [
+    uniqueIndex("product_tags_active_value_unique")
+      .on(table.value)
+      .where(sql`${table.deletedAt} IS NULL`),
+  ],
+);
+
+/**
+ * Category tree.
+ *
+ * `mpath` is the materialised path of ancestor ids, mirroring how
+ * `asset_folders.idPath` works here: it lets one indexed range scan fetch a
+ * whole subtree. Match with `gte`/`lt`, never `LIKE` — see rules.md on the
+ * 50-byte pattern limit.
+ */
+export const productCategories = sqliteTable(
+  "product_categories",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    handle: text("handle").notNull(),
+    mpath: text("mpath").notNull(),
+    isActive: integer("is_active", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    isInternal: integer("is_internal", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    rank: integer("rank").notNull().default(0),
+    parentCategoryId: text("parent_category_id").references(
+      (): AnySQLiteColumn => productCategories.id,
+      { onDelete: "cascade" },
+    ),
+    externalId: text("external_id"),
+    metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    deletedAt: text("deleted_at"),
+  },
+  (table) => [
+    uniqueIndex("product_categories_active_handle_unique")
+      .on(table.handle)
+      .where(sql`${table.deletedAt} IS NULL`),
+    index("product_categories_mpath_idx").on(table.mpath),
+    index("product_categories_parent_rank_idx").on(
+      table.parentCategoryId,
+      table.rank,
+    ),
+  ],
+);
+
 export const products = sqliteTable(
   "products",
   {
@@ -73,13 +161,32 @@ export const products = sqliteTable(
     subtitle: text("subtitle"),
     description: text("description"),
     status: text("status").$type<ProductStatus>().notNull().default("draft"),
+    isGiftcard: integer("is_giftcard", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    discountable: integer("discountable", { mode: "boolean" })
+      .notNull()
+      .default(true),
     collectionId: text("collection_id").references(
       () => productCollections.id,
       { onDelete: "set null" },
     ),
+    typeId: text("type_id").references(() => productTypes.id, {
+      onDelete: "set null",
+    }),
     thumbnailAssetId: text("thumbnail_asset_id").references(() => assets.id, {
       onDelete: "set null",
     }),
+    // Shipping and customs attributes. Variants may override each of these.
+    weight: integer("weight"),
+    length: integer("length"),
+    width: integer("width"),
+    height: integer("height"),
+    originCountry: text("origin_country"),
+    hsCode: text("hs_code"),
+    midCode: text("mid_code"),
+    material: text("material"),
+    externalId: text("external_id"),
     metadata: text("metadata", { mode: "json" })
       .$type<ProductMetadata>()
       .notNull()
@@ -99,6 +206,7 @@ export const products = sqliteTable(
       table.collectionId,
       table.deletedAt,
     ),
+    index("products_type_active_idx").on(table.typeId, table.deletedAt),
     check(
       "products_status_check",
       sql`${table.status} IN ('draft', 'published', 'archived')`,
@@ -106,21 +214,56 @@ export const products = sqliteTable(
   ],
 );
 
+export const productTagLinks = sqliteTable(
+  "product_tag_links",
+  {
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => productTags.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.productId, table.tagId] }),
+    index("product_tag_links_tag_idx").on(table.tagId),
+  ],
+);
+
+export const productCategoryLinks = sqliteTable(
+  "product_category_links",
+  {
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    categoryId: text("category_id")
+      .notNull()
+      .references(() => productCategories.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.productId, table.categoryId] }),
+    index("product_category_links_category_idx").on(table.categoryId),
+  ],
+);
+
 /**
- * Reusable option definitions managed at /dashboard/products/options.
+ * An axis of variation, e.g. "Size".
  *
- * These are templates, not the options a product actually has. When a product
- * uses one, its values are copied into `product_options` /
- * `product_option_values` below. That copy is deliberate: renaming or deleting
- * a template later must never rewrite what an existing product sells, and
- * variants stay bound to their own product's value rows.
+ * Options are global by default and reusable across products, which is what the
+ * Options page manages. `isExclusive` marks one that belongs to a single product
+ * and should not appear in that shared list. The unique title only applies to
+ * global options, so two products may each have their own exclusive "Size".
  */
-export const optionTemplates = sqliteTable(
-  "option_templates",
+export const productOptions = sqliteTable(
+  "product_options",
   {
     id: text("id").primaryKey(),
     title: text("title").notNull(),
+    isExclusive: integer("is_exclusive", { mode: "boolean" })
+      .notNull()
+      .default(false),
     rank: integer("rank").notNull().default(0),
+    metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
     createdBy: text("created_by").notNull(),
     updatedBy: text("updated_by").notNull(),
     createdAt: text("created_at").notNull(),
@@ -128,56 +271,10 @@ export const optionTemplates = sqliteTable(
     deletedAt: text("deleted_at"),
   },
   (table) => [
-    uniqueIndex("option_templates_active_title_unique")
+    uniqueIndex("product_options_global_title_unique")
       .on(table.title)
-      .where(sql`${table.deletedAt} IS NULL`),
-    index("option_templates_active_rank_idx").on(table.deletedAt, table.rank),
-  ],
-);
-
-export const optionTemplateValues = sqliteTable(
-  "option_template_values",
-  {
-    id: text("id").primaryKey(),
-    templateId: text("template_id")
-      .notNull()
-      .references(() => optionTemplates.id, { onDelete: "cascade" }),
-    value: text("value").notNull(),
-    rank: integer("rank").notNull().default(0),
-    createdAt: text("created_at").notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (table) => [
-    uniqueIndex("option_template_values_template_value_unique").on(
-      table.templateId,
-      table.value,
-    ),
-    index("option_template_values_template_rank_idx").on(
-      table.templateId,
-      table.rank,
-    ),
-  ],
-);
-
-/** An axis of variation, e.g. "Size". Ordered by `rank` in the admin UI. */
-export const productOptions = sqliteTable(
-  "product_options",
-  {
-    id: text("id").primaryKey(),
-    productId: text("product_id")
-      .notNull()
-      .references(() => products.id, { onDelete: "cascade" }),
-    title: text("title").notNull(),
-    rank: integer("rank").notNull().default(0),
-    createdAt: text("created_at").notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (table) => [
-    uniqueIndex("product_options_product_title_unique").on(
-      table.productId,
-      table.title,
-    ),
-    index("product_options_product_rank_idx").on(table.productId, table.rank),
+      .where(sql`${table.deletedAt} IS NULL AND ${table.isExclusive} = 0`),
+    index("product_options_active_rank_idx").on(table.deletedAt, table.rank),
   ],
 );
 
@@ -191,18 +288,73 @@ export const productOptionValues = sqliteTable(
       .references(() => productOptions.id, { onDelete: "cascade" }),
     value: text("value").notNull(),
     rank: integer("rank").notNull().default(0),
+    metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
+    deletedAt: text("deleted_at"),
   },
   (table) => [
-    uniqueIndex("product_option_values_option_value_unique").on(
-      table.optionId,
-      table.value,
-    ),
+    uniqueIndex("product_option_values_option_value_unique")
+      .on(table.optionId, table.value)
+      .where(sql`${table.deletedAt} IS NULL`),
     index("product_option_values_option_rank_idx").on(
       table.optionId,
       table.rank,
     ),
+  ],
+);
+
+/**
+ * Which options a product uses.
+ *
+ * A product does not adopt an option wholesale — it picks the option, then picks
+ * which of that option's values apply (see `productProductOptionValues`). That
+ * is why this is an entity rather than a plain join table.
+ */
+export const productProductOptions = sqliteTable(
+  "product_product_options",
+  {
+    id: text("id").primaryKey(),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    optionId: text("option_id")
+      .notNull()
+      .references(() => productOptions.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull().default(0),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("product_product_options_unique").on(
+      table.productId,
+      table.optionId,
+    ),
+    index("product_product_options_product_rank_idx").on(
+      table.productId,
+      table.rank,
+    ),
+    index("product_product_options_option_idx").on(table.optionId),
+  ],
+);
+
+/** The subset of an option's values that a product actually offers. */
+export const productProductOptionValues = sqliteTable(
+  "product_product_option_values",
+  {
+    productProductOptionId: text("product_product_option_id")
+      .notNull()
+      .references(() => productProductOptions.id, { onDelete: "cascade" }),
+    optionValueId: text("option_value_id")
+      .notNull()
+      .references(() => productOptionValues.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.productProductOptionId, table.optionValueId],
+    }),
+    index("product_product_option_values_value_idx").on(table.optionValueId),
   ],
 );
 
@@ -216,6 +368,8 @@ export const productVariants = sqliteTable(
     title: text("title").notNull(),
     sku: text("sku"),
     barcode: text("barcode"),
+    ean: text("ean"),
+    upc: text("upc"),
     rank: integer("rank").notNull().default(0),
     /** When false, the variant is always purchasable and quantity is ignored. */
     manageInventory: integer("manage_inventory", { mode: "boolean" })
@@ -225,10 +379,19 @@ export const productVariants = sqliteTable(
       .notNull()
       .default(false),
     inventoryQuantity: integer("inventory_quantity").notNull().default(0),
+    // Override the product-level shipping and customs attributes.
     weight: integer("weight"),
     length: integer("length"),
     width: integer("width"),
     height: integer("height"),
+    originCountry: text("origin_country"),
+    hsCode: text("hs_code"),
+    midCode: text("mid_code"),
+    material: text("material"),
+    thumbnailAssetId: text("thumbnail_asset_id").references(() => assets.id, {
+      onDelete: "set null",
+    }),
+    metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
     createdBy: text("created_by").notNull(),
     updatedBy: text("updated_by").notNull(),
     createdAt: text("created_at").notNull(),
@@ -244,6 +407,15 @@ export const productVariants = sqliteTable(
     uniqueIndex("product_variants_active_sku_unique")
       .on(table.sku)
       .where(sql`${table.deletedAt} IS NULL AND ${table.sku} IS NOT NULL`),
+    uniqueIndex("product_variants_active_barcode_unique")
+      .on(table.barcode)
+      .where(sql`${table.deletedAt} IS NULL AND ${table.barcode} IS NOT NULL`),
+    uniqueIndex("product_variants_active_ean_unique")
+      .on(table.ean)
+      .where(sql`${table.deletedAt} IS NULL AND ${table.ean} IS NOT NULL`),
+    uniqueIndex("product_variants_active_upc_unique")
+      .on(table.upc)
+      .where(sql`${table.deletedAt} IS NULL AND ${table.upc} IS NOT NULL`),
     check(
       "product_variants_inventory_quantity_check",
       sql`${table.inventoryQuantity} >= 0`,
@@ -297,7 +469,12 @@ export const productVariantPrices = sqliteTable(
   ],
 );
 
-/** Product gallery. Ordering is explicit so the admin can reorder images. */
+/**
+ * Product gallery.
+ *
+ * Medusa stores a bare `url` here; this references the asset library instead so
+ * images keep their upload validation, R2 archival and soft-delete behaviour.
+ */
 export const productAssets = sqliteTable(
   "product_assets",
   {
@@ -315,3 +492,26 @@ export const productAssets = sqliteTable(
     index("product_assets_asset_idx").on(table.assetId),
   ],
 );
+
+/** Images shown for a specific variant, drawn from the product's gallery. */
+export const productVariantAssets = sqliteTable(
+  "product_variant_assets",
+  {
+    variantId: text("variant_id")
+      .notNull()
+      .references(() => productVariants.id, { onDelete: "cascade" }),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ columns: [table.variantId, table.assetId] }),
+    index("product_variant_assets_variant_rank_idx").on(
+      table.variantId,
+      table.rank,
+    ),
+    index("product_variant_assets_asset_idx").on(table.assetId),
+  ],
+);
+

@@ -85,6 +85,27 @@
       "when": 1784975066464,
       "tag": "0011_amusing_medusa",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1784991536894,
+      "tag": "0012_odd_monster_badoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1784991620822,
+      "tag": "0013_migrate_option_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1784991672698,
+      "tag": "0014_parched_inhumans",
+      "breakpoints": true
     }
   ]
 }

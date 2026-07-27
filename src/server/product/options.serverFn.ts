@@ -1,9 +1,9 @@
-import { optionTemplateDal } from "@/lib/product/dal/option-template.dal";
+import { productOptionDal } from "@/lib/product/dal/product-option.dal";
 import {
-  createOptionTemplateInputSchema,
-  deleteOptionTemplatesInputSchema,
-  listOptionTemplatesInputSchema,
-  updateOptionTemplateInputSchema,
+  createProductOptionInputSchema,
+  deleteProductOptionsInputSchema,
+  listProductOptionsInputSchema,
+  updateProductOptionInputSchema,
 } from "@/lib/validations/product";
 import { createServerFn } from "@tanstack/react-start";
 import {
@@ -11,14 +11,14 @@ import {
   productReadMiddleware,
 } from "../middleware/auth.middleware";
 
-export const listOptionTemplates = createServerFn({ method: "POST" })
+export const listProductOptions = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
-    listOptionTemplatesInputSchema.parse(data ?? {}),
+    listProductOptionsInputSchema.parse(data ?? {}),
   )
   .middleware([productReadMiddleware])
   .handler(async ({ data }) => {
     try {
-      const page = await optionTemplateDal.listPage({
+      const page = await productOptionDal.listPage({
         query: data.query,
         sortBy: data.sortBy,
         sortOrder: data.sortOrder,
@@ -30,7 +30,7 @@ export const listOptionTemplates = createServerFn({ method: "POST" })
         success: true,
         message: "Options fetched successfully",
         data: {
-          templates: page.templates,
+          options: page.options,
           pagination: {
             page: data.page,
             limit: data.limit,
@@ -40,7 +40,7 @@ export const listOptionTemplates = createServerFn({ method: "POST" })
         },
       };
     } catch (error) {
-      console.error("List option templates error:", error);
+      console.error("List product options error:", error);
       return {
         success: false,
         message:
@@ -51,16 +51,16 @@ export const listOptionTemplates = createServerFn({ method: "POST" })
     }
   });
 
-export const createOptionTemplate = createServerFn({ method: "POST" })
+export const createProductOption = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
-    createOptionTemplateInputSchema.parse(data),
+    createProductOptionInputSchema.parse(data),
   )
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
 
     try {
-      if (await optionTemplateDal.findByTitle(data.title)) {
+      if (await productOptionDal.findGlobalByTitle(data.title)) {
         return {
           success: false,
           message: `An option called "${data.title}" already exists`,
@@ -70,7 +70,7 @@ export const createOptionTemplate = createServerFn({ method: "POST" })
       }
 
       const id = crypto.randomUUID();
-      await optionTemplateDal.create({
+      await productOptionDal.create({
         id,
         title: data.title,
         values: data.values,
@@ -84,7 +84,7 @@ export const createOptionTemplate = createServerFn({ method: "POST" })
         data: { id },
       };
     } catch (error) {
-      console.error("Create option template error:", error);
+      console.error("Create product option error:", error);
       return {
         success: false,
         message:
@@ -95,16 +95,16 @@ export const createOptionTemplate = createServerFn({ method: "POST" })
     }
   });
 
-export const updateOptionTemplate = createServerFn({ method: "POST" })
+export const updateProductOption = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
-    updateOptionTemplateInputSchema.parse(data),
+    updateProductOptionInputSchema.parse(data),
   )
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
 
     try {
-      const existing = await optionTemplateDal.findById(data.id);
+      const existing = await productOptionDal.findById(data.id);
       if (!existing) {
         return {
           success: false,
@@ -115,7 +115,7 @@ export const updateOptionTemplate = createServerFn({ method: "POST" })
       }
 
       if (data.title && data.title !== existing.title) {
-        const clash = await optionTemplateDal.findByTitle(data.title);
+        const clash = await productOptionDal.findGlobalByTitle(data.title);
         if (clash && clash.id !== data.id) {
           return {
             success: false,
@@ -128,7 +128,7 @@ export const updateOptionTemplate = createServerFn({ method: "POST" })
 
       // Products keep their own copy of the values they were built with, so
       // editing a template never rewrites an existing product or its variants.
-      await optionTemplateDal.update(data.id, {
+      await productOptionDal.update(data.id, {
         title: data.title,
         values: data.values,
         updatedBy: actorId,
@@ -140,7 +140,7 @@ export const updateOptionTemplate = createServerFn({ method: "POST" })
         data: { id: data.id },
       };
     } catch (error) {
-      console.error("Update option template error:", error);
+      console.error("Update product option error:", error);
       return {
         success: false,
         message:
@@ -151,16 +151,16 @@ export const updateOptionTemplate = createServerFn({ method: "POST" })
     }
   });
 
-export const deleteOptionTemplates = createServerFn({ method: "POST" })
+export const deleteProductOptions = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
-    deleteOptionTemplatesInputSchema.parse(data),
+    deleteProductOptionsInputSchema.parse(data),
   )
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
 
     try {
-      const existing = await optionTemplateDal.findByIds(data.ids);
+      const existing = await productOptionDal.findByIds(data.ids);
       if (existing.length === 0) {
         return {
           success: false,
@@ -170,8 +170,8 @@ export const deleteOptionTemplates = createServerFn({ method: "POST" })
         };
       }
 
-      await optionTemplateDal.softDelete(
-        existing.map((template) => template.id),
+      await productOptionDal.softDelete(
+        existing.map((option) => option.id),
         actorId,
       );
 
@@ -181,7 +181,7 @@ export const deleteOptionTemplates = createServerFn({ method: "POST" })
         data: { deleted: existing.length },
       };
     } catch (error) {
-      console.error("Delete option templates error:", error);
+      console.error("Delete product options error:", error);
       return {
         success: false,
         message:

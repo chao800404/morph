@@ -1,8 +1,28 @@
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { inputVariants } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { GripVertical, X } from "lucide-react";
+import { ChevronsUpDown, GripVertical, X } from "lucide-react";
 import React, { useState } from "react";
+
+/** A value that already exists on a shared option. */
+export interface OptionValueChoice {
+  id: string;
+  value: string;
+}
 
 interface OptionValuesFieldProps {
   name: string;
@@ -12,9 +32,176 @@ interface OptionValuesFieldProps {
   value?: string[];
   onChange?: (name: string, value: string[]) => void;
   className?: string;
+  /**
+   * Switches the field from typing to picking.
+   *
+   * The Options page creates values, so there it types freely. A product only
+   * chooses among the values its option already has, so passing `choices`
+   * turns the same field into a dropdown of those values and drops the text
+   * input — one component, two modes, rather than two lookalike fields.
+   */
+  choices?: OptionValueChoice[];
+  selectedIds?: string[];
+  onSelectionChange?: (ids: string[]) => void;
+  /** Refuses further picks once this many are selected. */
+  maxSelected?: number;
+  searchPlaceholder?: string;
+  emptyMessage?: string;
 }
 
-export const OptionValuesField = ({
+export const OptionValuesField = (props: OptionValuesFieldProps) =>
+  props.choices ? (
+    <ChoiceValues
+      name={props.name}
+      choices={props.choices}
+      selectedIds={props.selectedIds ?? []}
+      onSelectionChange={props.onSelectionChange}
+      maxSelected={props.maxSelected}
+      placeholder={props.placeholder}
+      searchPlaceholder={props.searchPlaceholder}
+      emptyMessage={props.emptyMessage}
+      className={props.className}
+    />
+  ) : (
+    <FreeformValues {...props} />
+  );
+
+/**
+ * Pick from an existing set. The chips live in the trigger and the choices in a
+ * dropdown, so the field stays one row tall however many values exist — an
+ * always-open list would repeat whatever table the values feed.
+ */
+const ChoiceValues = ({
+  name,
+  choices,
+  selectedIds,
+  onSelectionChange,
+  maxSelected,
+  placeholder = "Select...",
+  searchPlaceholder = "Search...",
+  emptyMessage = "Nothing found.",
+  className,
+}: {
+  name: string;
+  choices: OptionValueChoice[];
+  selectedIds: string[];
+  onSelectionChange?: (ids: string[]) => void;
+  maxSelected?: number;
+  placeholder?: string;
+  searchPlaceholder?: string;
+  emptyMessage?: string;
+  className?: string;
+}) => {
+  const [open, setOpen] = useState(false);
+  const atLimit =
+    maxSelected !== undefined && selectedIds.length >= maxSelected;
+
+  // Selection order follows `choices`, so the chips and anything derived from
+  // them stay in the order the source defines rather than click order.
+  const toggle = (id: string, selected: boolean) =>
+    onSelectionChange?.(
+      selected
+        ? choices
+            .filter((c) => c.id === id || selectedIds.includes(c.id))
+            .map((c) => c.id)
+        : selectedIds.filter((current) => current !== id),
+    );
+
+  const selected = choices.filter((choice) => selectedIds.includes(choice.id));
+
+  return (
+    <div className={cn("w-full", className)}>
+      <input type="hidden" name={name} value={JSON.stringify(selectedIds)} />
+
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <div
+            role="combobox"
+            aria-expanded={open}
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setOpen((current) => !current);
+              }
+            }}
+            className={cn(
+              inputVariants({ variant: "card", size: "md" }),
+              "h-auto min-h-9 cursor-pointer flex-wrap items-center gap-2 py-2",
+              "focus:border-ring focus:ring-ring/50 focus:ring-[3px] focus:outline-none",
+            )}
+          >
+            <div className="flex flex-1 flex-wrap items-center gap-2">
+              {selected.length === 0 ? (
+                <span className="text-sm text-muted-foreground/70">
+                  {placeholder}
+                </span>
+              ) : (
+                selected.map((choice) => (
+                  <Badge
+                    key={choice.id}
+                    variant="secondary"
+                    className="gap-1.5 px-2.5 py-1 text-xs font-medium bg-muted/80 hover:bg-muted text-foreground border border-border/40 select-none"
+                  >
+                    <span>{choice.value}</span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${choice.value}`}
+                      // Removing a chip must not also open the dropdown.
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggle(choice.id, false);
+                      }}
+                      className="text-muted-foreground hover:text-foreground transition-colors rounded-xs p-0.5"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </Badge>
+                ))
+              )}
+            </div>
+            <ChevronsUpDown className="size-4 shrink-0 opacity-50" />
+          </div>
+        </PopoverTrigger>
+
+        <PopoverContent
+          className="w-[var(--radix-popover-trigger-width)] p-0"
+          align="start"
+        >
+          <Command>
+            <CommandInput placeholder={searchPlaceholder} />
+            <CommandList>
+              <CommandEmpty>{emptyMessage}</CommandEmpty>
+              <CommandGroup>
+                {choices.map((choice) => {
+                  const checked = selectedIds.includes(choice.id);
+                  return (
+                    <CommandItem
+                      key={choice.id}
+                      value={choice.value}
+                      // Staying open lets several be picked in one pass.
+                      onSelect={() => toggle(choice.id, !checked)}
+                      disabled={!checked && atLimit}
+                    >
+                      <Checkbox
+                        checked={checked}
+                        className="pointer-events-none"
+                      />
+                      <span className="flex-1">{choice.value}</span>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+};
+
+const FreeformValues = ({
   name,
   placeholder = "Type value and press Enter...",
   defaultValue = [],

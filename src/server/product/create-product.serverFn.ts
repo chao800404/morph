@@ -3,11 +3,12 @@ import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
 import type {
   ProductOptionDTO,
   ProductOptionValueDTO,
-} from "@/lib/product/dto/product.dto";
+} from "@/lib/product/dto/product-option.dto";
 import type { ProductVariantInsertDTO } from "@/lib/product/dto/product-variant.dto";
 import {
   createProductInputSchema,
   handleSchema,
+  optionSelectionValueCount,
   slugify,
 } from "@/lib/validations/product";
 import { createServerFn } from "@tanstack/react-start";
@@ -63,7 +64,7 @@ export const createProduct = createServerFn({ method: "POST" })
       // Only the generated matrix needs capping; an explicit list is already
       // bounded by the input schema.
       const combinationCount = data.options.reduce(
-        (total, option) => total * option.values.length,
+        (total, option) => total * optionSelectionValueCount(option),
         1,
       );
       if (
@@ -99,7 +100,7 @@ export const createProduct = createServerFn({ method: "POST" })
 
       let variantCount = 0;
       if (data.options.length > 0) {
-        const options = await productDal.replaceOptions(productId, data.options);
+        const options = await productDal.replaceOptions(productId, data.options, actorId);
 
         // Option value IDs only exist after the server creates them, so the
         // client's string values are resolved against the freshly stored rows.

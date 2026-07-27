@@ -9,6 +9,7 @@
  */
 
 import type { QueryClient } from "@tanstack/react-query";
+import type { LinkProps } from "@tanstack/react-router";
 import type { ComponentType } from "react";
 import type { EmailAdapter } from "../email/types";
 import type { DashboardSearch } from "../validations/dashboard-search";
@@ -39,6 +40,29 @@ export interface CollectionLoadContext {
 }
 
 /**
+ * How a collection's Create button behaves.
+ *
+ * `route` opens a full page, `dialog` opens the shared create window. Which one
+ * a collection wants follows the shape of the form, not taste:
+ *
+ * - multiple steps, or the form generates dependent rows → `route`
+ * - losing it half-finished would cost real typing → `route`
+ * - it needs the surrounding page's context, e.g. the folder being viewed →
+ *   neither; keep the control in the view where that context lives
+ * - a handful of fields → `dialog`
+ *
+ * Omit `create` entirely and no button is rendered.
+ */
+export type CollectionCreate =
+  | {
+      mode: "route";
+      /** Typed against the route tree, so it autocompletes in cms.config.ts. */
+      to: LinkProps["to"];
+      label?: string;
+    }
+  | { mode: "dialog"; label?: string };
+
+/**
  * Configuration types
  */
 export interface CollectionItem {
@@ -46,10 +70,12 @@ export interface CollectionItem {
   slug: string;
   icon?: string;
   label?: string;
+  create?: CollectionCreate;
   items?: {
     title: string;
     slug: string;
     label?: string;
+    create?: CollectionCreate;
     component?: ComponentType;
     /** Suspense fallback while `component` loads. Defaults to a page spinner. */
     loader?: ComponentType;

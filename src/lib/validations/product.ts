@@ -50,17 +50,42 @@ export const priceInputSchema = z.object({
   amount: priceAmountSchema,
 });
 
-export const productOptionInputSchema = z.object({
-  title: z.string().trim().min(1, "Option title is required").max(100),
-  values: z
-    .array(z.string().trim().min(1).max(100))
-    .min(1, "An option needs at least one value")
-    .max(50, "An option may have at most 50 values")
-    .refine(
-      (values) => new Set(values).size === values.length,
-      "Option values must be unique",
-    ),
-});
+/**
+ * How a product adopts an option.
+ *
+ * Either it reuses one from the shared library and names which of that option's
+ * values apply, or it defines an option that belongs to this product alone.
+ */
+export const productOptionSelectionInputSchema = z.union([
+  z.object({
+    optionId: z.uuid("Invalid option ID"),
+    valueIds: z
+      .array(z.uuid("Invalid option value ID"))
+      .min(1, "Select at least one value")
+      .max(50)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        "Option values must be unique",
+      ),
+  }),
+  z.object({
+    title: z.string().trim().min(1, "Option title is required").max(100),
+    values: z
+      .array(z.string().trim().min(1).max(100))
+      .min(1, "An option needs at least one value")
+      .max(50, "An option may have at most 50 values")
+      .refine(
+        (values) => new Set(values).size === values.length,
+        "Option values must be unique",
+      ),
+  }),
+]);
+
+/** How many values a selection carries, whichever shape it uses. */
+export const optionSelectionValueCount = (
+  selection: z.infer<typeof productOptionSelectionInputSchema>,
+): number =>
+  "optionId" in selection ? selection.valueIds.length : selection.values.length;
 
 export const listProductsInputSchema = z.object({
   query: z.string().trim().max(200).nullish(),
@@ -101,7 +126,7 @@ export const createProductInputSchema = z.object({
   collectionId: z.uuid().nullish(),
   thumbnailAssetId: z.uuid().nullish(),
   assetIds: z.array(z.uuid()).max(50).default([]),
-  options: z.array(productOptionInputSchema).max(3).default([]),
+  options: z.array(productOptionSelectionInputSchema).max(3).default([]),
   /** Prices applied to every generated variant when `variants` is omitted. */
   prices: z.array(priceInputSchema).max(20).default([]),
   /**
@@ -182,7 +207,7 @@ export const deleteCollectionsInputSchema = z.object({
     .max(100),
 });
 
-export const listOptionTemplatesInputSchema = z.object({
+export const listProductOptionsInputSchema = z.object({
   query: z.string().trim().max(200).nullish(),
   sortBy: z.enum(["title", "createdAt", "updatedAt"]).default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
@@ -190,7 +215,7 @@ export const listOptionTemplatesInputSchema = z.object({
   limit: z.number().int().min(1).max(100).default(50),
 });
 
-export const createOptionTemplateInputSchema = z.object({
+export const createProductOptionInputSchema = z.object({
   title: z.string().trim().min(1, "Title is required").max(100),
   values: z
     .array(z.string().trim().min(1).max(100))
@@ -202,7 +227,7 @@ export const createOptionTemplateInputSchema = z.object({
     ),
 });
 
-export const updateOptionTemplateInputSchema = z.object({
+export const updateProductOptionInputSchema = z.object({
   id: z.uuid("Invalid option ID"),
   title: z.string().trim().min(1).max(100).optional(),
   values: z
@@ -216,7 +241,7 @@ export const updateOptionTemplateInputSchema = z.object({
     .optional(),
 });
 
-export const deleteOptionTemplatesInputSchema = z.object({
+export const deleteProductOptionsInputSchema = z.object({
   ids: z
     .array(z.uuid("Invalid option ID"))
     .min(1, "Select at least one option")

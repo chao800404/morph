@@ -1,3 +1,4 @@
+export { CollectionCreateButton } from "./collection-create-button";
 export { DataTableCard } from "./data-table-card";
 export type {
   DataTableCardProps,

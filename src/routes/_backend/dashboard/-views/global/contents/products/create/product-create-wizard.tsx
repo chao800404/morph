@@ -1,5 +1,6 @@
+import { createSurface } from "@/components/dialog/create-surface";
+import { DialogFooterActions } from "@/components/dialog/dialog-footer-actions";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import type { ProductStatus } from "@/db/product.schema";
 import { createProduct } from "@/server/product/create-product.serverFn";
@@ -40,15 +41,13 @@ export const ProductCreateWizard = () => {
   const detailsValid =
     draft.title.trim() !== "" &&
     (!draft.hasVariants ||
-      draft.options.some(
-        (option) => option.title.trim() !== "" && option.values.length > 0,
-      ));
+      draft.options.some((option) => option.selectedValueIds.length > 0));
 
   const submit = useCallback(
     async (status: ProductStatus) => {
       if (!detailsValid) {
         setStep(0);
-        toast.error("Add a title, and at least one option with values.", {
+        toast.error("Add a title, and pick an option with at least one value.", {
           position: "top-center",
         });
         return;
@@ -60,15 +59,18 @@ export const ProductCreateWizard = () => {
       });
 
       try {
+        // The library owns the option and its values, so only ids travel; the
+        // server resolves them and rejects anything the option does not own.
         const options = draft.hasVariants
           ? draft.options
-              .filter(
-                (option) =>
-                  option.title.trim() !== "" && option.values.length > 0,
-              )
+              .filter((option) => option.selectedValueIds.length > 0)
               .map((option) => ({
-                title: option.title.trim(),
-                values: option.values,
+                optionId: option.optionId,
+                valueIds: option.available
+                  .filter((value) =>
+                    option.selectedValueIds.includes(value.id),
+                  )
+                  .map((value) => value.id),
               }))
           : [];
 
@@ -131,90 +133,90 @@ export const ProductCreateWizard = () => {
 
   const isLastStep = step === STEPS.length - 1;
 
+  // The shell mirrors the shared create window (`DialogCreateWrapper`): an
+  // inset card over the dashboard rather than a bare full-bleed page, so both
+  // create surfaces read as the same kind of thing.
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-background">
-      <header className="flex items-center border-b border-border/60">
-        <div className="flex items-center gap-2 px-4">
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Close"
-            onClick={close}
-          >
-            <X className="size-4" />
-          </Button>
-          <kbd className="rounded border border-border/60 px-1.5 py-0.5 text-xs text-muted-foreground">
-            esc
-          </kbd>
-        </div>
-
-        <nav className="flex" aria-label="Product creation steps">
-          {STEPS.map((label, index) => {
-            const isActive = index === step;
-            const isDone = index < step;
-            return (
-              <button
-                key={label}
-                type="button"
-                onClick={() => setStep(index as StepIndex)}
-                aria-current={isActive ? "step" : undefined}
-                className={cn(
-                  "flex items-center gap-2 border-x border-border/60 px-6 py-4 text-sm transition-colors",
-                  isActive
-                    ? "bg-muted/40 text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {isDone ? (
-                  <CheckCircle2 className="size-4" />
-                ) : (
-                  <CircleDashed
-                    className={cn("size-4", isActive && "text-primary")}
-                  />
-                )}
-                {label}
-              </button>
-            );
-          })}
-        </nav>
-      </header>
-
-      <main className="flex-1 overflow-y-auto">
-        {step === 0 && <StepDetails draft={draft} dispatch={dispatch} />}
-        {step === 1 && <StepOrganize draft={draft} dispatch={dispatch} />}
-        {step === 2 && <StepVariants draft={draft} dispatch={dispatch} />}
-      </main>
-
-      <footer className="flex items-center justify-end gap-2 border-t border-border/60 px-6 py-3">
-        {pending && <Spinner />}
-        <Button variant="ghost" onClick={close} disabled={pending}>
-          Cancel
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => void submit("draft")}
-          disabled={pending}
-        >
-          Save as draft
-        </Button>
-        {isLastStep ? (
-          <Button
-            variant="form"
-            onClick={() => void submit("published")}
-            disabled={pending}
-          >
-            Publish
-          </Button>
-        ) : (
-          <Button
-            variant="form"
-            onClick={() => setStep((step + 1) as StepIndex)}
-            disabled={pending}
-          >
-            Continue
-          </Button>
+    <div className="fixed inset-0 z-50 flex p-2">
+      <div
+        className={cn(
+          createSurface.shell,
+          "min-h-0 flex-1 overflow-hidden rounded-lg dark:shadow-elevation-modal",
         )}
-      </footer>
+      >
+        <header className={cn(createSurface.header, "flex items-center")}>
+          <div className="flex items-center gap-2 px-4">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Close"
+              onClick={close}
+            >
+              <X className="size-4" />
+            </Button>
+            <kbd className="rounded border border-border/60 px-1.5 py-0.5 text-xs text-muted-foreground">
+              esc
+            </kbd>
+          </div>
+
+          <nav className="flex" aria-label="Product creation steps">
+            {STEPS.map((label, index) => {
+              const isActive = index === step;
+              const isDone = index < step;
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setStep(index as StepIndex)}
+                  aria-current={isActive ? "step" : undefined}
+                  className={cn(
+                    "flex items-center gap-2 border-x border-border/60 px-6 py-4 text-sm transition-colors",
+                    isActive
+                      ? "bg-muted/40 text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {isDone ? (
+                    <CheckCircle2 className="size-4" />
+                  ) : (
+                    <CircleDashed
+                      className={cn("size-4", isActive && "text-primary")}
+                    />
+                  )}
+                  {label}
+                </button>
+              );
+            })}
+          </nav>
+        </header>
+
+        <main className={cn(createSurface.body, "overflow-y-auto")}>
+          {step === 0 && <StepDetails draft={draft} dispatch={dispatch} />}
+          {step === 1 && <StepOrganize draft={draft} dispatch={dispatch} />}
+          {step === 2 && <StepVariants draft={draft} dispatch={dispatch} />}
+        </main>
+
+        <footer className={createSurface.footer}>
+          <DialogFooterActions
+            isSheet={false}
+            isLoading={pending}
+            onCancel={close}
+            className="w-full justify-end"
+            submitLabel={isLastStep ? "Publish" : "Continue"}
+            loadingLabel="Creating..."
+            onSubmit={
+              isLastStep
+                ? () => void submit("published")
+                : () => setStep((step + 1) as StepIndex)
+            }
+            // Saving a draft is available at every step, so it sits in the
+            // submit button's dropdown rather than as a third button.
+            additionalActions={[
+              { label: "Save as draft", onClick: () => void submit("draft") },
+            ]}
+          />
+        </footer>
+      </div>
     </div>
   );
 };

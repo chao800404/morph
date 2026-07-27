@@ -1,3 +1,4 @@
+import { createSurface } from "@/components/dialog/create-surface";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import type { Dispatch } from "react";
 import type { DraftAction, ProductDraft } from "./use-product-draft";
 
@@ -29,7 +31,7 @@ export const StepVariants = ({
 
   if (!draft.hasVariants) {
     return (
-      <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 py-10">
+      <div className={cn(createSurface.content, "flex w-full flex-col gap-6")}>
         <div className="space-y-1">
           <h2 className="text-lg font-medium text-foreground">Variants</h2>
           <p className="text-sm text-muted-foreground">
@@ -70,15 +72,15 @@ export const StepVariants = ({
     return (
       <div className="flex h-full items-center justify-center p-10 text-center">
         <p className="max-w-md text-sm text-muted-foreground">
-          No variants selected. Go back to Details, add at least one option with
-          values, and tick the combinations you want to sell.
+          No variants selected. Go back to Details, pick an option with values,
+          and tick the combinations you want to sell.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="flex w-full flex-col gap-4 p-6">
+    <div className="relative z-50 flex w-full flex-col gap-4 px-5 pt-24 pb-10">
       <div className="space-y-1">
         <h2 className="text-lg font-medium text-foreground">Variants</h2>
         <p className="text-sm text-muted-foreground">

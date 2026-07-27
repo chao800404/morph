@@ -3,6 +3,7 @@
 import { DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { ReactNode } from "react";
+import { createSurface } from "./create-surface";
 
 interface DialogHeaderActionsProps {
   onClose?: () => void;
@@ -26,8 +27,8 @@ export const DialogHeaderActions = ({
   return (
     <DialogHeader
       className={cn(
-        "dark:shadow-elevation-modal-header overflow-hidden h-fit border-b-[0.5px] border-ring/20 px-4 py-2 rounded-t-lg relative z-30",
-        "dark:border-none",
+        createSurface.header,
+        createSurface.headerPadding,
         title || actions
           ? "grid grid-cols-3 flex-row items-center"
           : "flex flex-col",
