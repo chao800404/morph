@@ -23,10 +23,14 @@ import { Route as BackendAuthResetPasswordIndexRouteImport } from './routes/_bac
 import { Route as BackendAuthResetPasswordVerifyRouteImport } from './routes/_backend/_auth/reset-password.verify'
 import { Route as BackendApiAssetDownloadRouteImport } from './routes/_backend/api/asset/download'
 import { Route as BackendApiAuthSplatRouteImport } from './routes/_backend/api/auth/$'
-import { Route as BackendDashboardParentSlugRouteImport } from './routes/_backend/dashboard/$parent/$slug'
-import { Route as BackendDashboardProductsNewRouteImport } from './routes/_backend/dashboard/products.new'
+import { Route as BackendDashboardSlugIdRouteImport } from './routes/_backend/dashboard/$slug/$id'
+import { Route as BackendDashboardSlugCreateRouteImport } from './routes/_backend/dashboard/$slug/create'
+import { Route as BackendDashboardSlugViewRouteImport } from './routes/_backend/dashboard/$slug/view'
 import { Route as BackendDashboardSettingsIndexRouteImport } from './routes/_backend/dashboard/settings/index'
 import { Route as BackendDashboardSettingsSlugRouteImport } from './routes/_backend/dashboard/settings/$slug'
+import { Route as BackendDashboardSlugIdEditRouteImport } from './routes/_backend/dashboard/$slug/$id/edit'
+import { Route as BackendDashboardSettingsSlugCreateRouteImport } from './routes/_backend/dashboard/settings/$slug/create'
+import { Route as BackendDashboardSettingsSlugEditRouteImport } from './routes/_backend/dashboard/settings/$slug/edit'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -100,17 +104,22 @@ const BackendApiAuthSplatRoute = BackendApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => BackendRoute,
 } as any)
-const BackendDashboardParentSlugRoute =
-  BackendDashboardParentSlugRouteImport.update({
-    id: '/$parent/$slug',
-    path: '/$parent/$slug',
-    getParentRoute: () => BackendDashboardRoute,
+const BackendDashboardSlugIdRoute = BackendDashboardSlugIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => BackendDashboardSlugRoute,
+} as any)
+const BackendDashboardSlugCreateRoute =
+  BackendDashboardSlugCreateRouteImport.update({
+    id: '/create',
+    path: '/create',
+    getParentRoute: () => BackendDashboardSlugRoute,
   } as any)
-const BackendDashboardProductsNewRoute =
-  BackendDashboardProductsNewRouteImport.update({
-    id: '/products/new',
-    path: '/products/new',
-    getParentRoute: () => BackendDashboardRoute,
+const BackendDashboardSlugViewRoute =
+  BackendDashboardSlugViewRouteImport.update({
+    id: '/view',
+    path: '/view',
+    getParentRoute: () => BackendDashboardSlugRoute,
   } as any)
 const BackendDashboardSettingsIndexRoute =
   BackendDashboardSettingsIndexRouteImport.update({
@@ -124,6 +133,24 @@ const BackendDashboardSettingsSlugRoute =
     path: '/settings/$slug',
     getParentRoute: () => BackendDashboardRoute,
   } as any)
+const BackendDashboardSlugIdEditRoute =
+  BackendDashboardSlugIdEditRouteImport.update({
+    id: '/edit',
+    path: '/edit',
+    getParentRoute: () => BackendDashboardSlugIdRoute,
+  } as any)
+const BackendDashboardSettingsSlugCreateRoute =
+  BackendDashboardSettingsSlugCreateRouteImport.update({
+    id: '/create',
+    path: '/create',
+    getParentRoute: () => BackendDashboardSettingsSlugRoute,
+  } as any)
+const BackendDashboardSettingsSlugEditRoute =
+  BackendDashboardSettingsSlugEditRouteImport.update({
+    id: '/edit',
+    path: '/edit',
+    getParentRoute: () => BackendDashboardSettingsSlugRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -132,32 +159,40 @@ export interface FileRoutesByFullPath {
   '/reset-password': typeof BackendAuthResetPasswordRouteWithChildren
   '/sign-in': typeof BackendAuthSignInRoute
   '/assets/$': typeof BackendAssetsSplatRoute
-  '/dashboard/$slug': typeof BackendDashboardSlugRoute
+  '/dashboard/$slug': typeof BackendDashboardSlugRouteWithChildren
   '/dashboard/': typeof BackendDashboardIndexRoute
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
-  '/dashboard/$parent/$slug': typeof BackendDashboardParentSlugRoute
-  '/dashboard/products/new': typeof BackendDashboardProductsNewRoute
-  '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRoute
+  '/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
+  '/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
+  '/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
+  '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRouteWithChildren
   '/reset-password/': typeof BackendAuthResetPasswordIndexRoute
   '/dashboard/settings/': typeof BackendDashboardSettingsIndexRoute
+  '/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
+  '/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
+  '/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/create-first-admin': typeof BackendAuthCreateFirstAdminRoute
   '/sign-in': typeof BackendAuthSignInRoute
   '/assets/$': typeof BackendAssetsSplatRoute
-  '/dashboard/$slug': typeof BackendDashboardSlugRoute
+  '/dashboard/$slug': typeof BackendDashboardSlugRouteWithChildren
   '/dashboard': typeof BackendDashboardIndexRoute
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
-  '/dashboard/$parent/$slug': typeof BackendDashboardParentSlugRoute
-  '/dashboard/products/new': typeof BackendDashboardProductsNewRoute
-  '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRoute
+  '/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
+  '/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
+  '/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
+  '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRouteWithChildren
   '/reset-password': typeof BackendAuthResetPasswordIndexRoute
   '/dashboard/settings': typeof BackendDashboardSettingsIndexRoute
+  '/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
+  '/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
+  '/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -169,16 +204,20 @@ export interface FileRoutesById {
   '/_backend/_auth/reset-password': typeof BackendAuthResetPasswordRouteWithChildren
   '/_backend/_auth/sign-in': typeof BackendAuthSignInRoute
   '/_backend/assets/$': typeof BackendAssetsSplatRoute
-  '/_backend/dashboard/$slug': typeof BackendDashboardSlugRoute
+  '/_backend/dashboard/$slug': typeof BackendDashboardSlugRouteWithChildren
   '/_backend/dashboard/': typeof BackendDashboardIndexRoute
   '/_backend/_auth/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/_backend/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/_backend/api/auth/$': typeof BackendApiAuthSplatRoute
-  '/_backend/dashboard/$parent/$slug': typeof BackendDashboardParentSlugRoute
-  '/_backend/dashboard/products/new': typeof BackendDashboardProductsNewRoute
-  '/_backend/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRoute
+  '/_backend/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
+  '/_backend/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
+  '/_backend/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
+  '/_backend/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRouteWithChildren
   '/_backend/_auth/reset-password/': typeof BackendAuthResetPasswordIndexRoute
   '/_backend/dashboard/settings/': typeof BackendDashboardSettingsIndexRoute
+  '/_backend/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
+  '/_backend/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
+  '/_backend/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -194,11 +233,15 @@ export interface FileRouteTypes {
     | '/reset-password/verify'
     | '/api/asset/download'
     | '/api/auth/$'
-    | '/dashboard/$parent/$slug'
-    | '/dashboard/products/new'
+    | '/dashboard/$slug/$id'
+    | '/dashboard/$slug/create'
+    | '/dashboard/$slug/view'
     | '/dashboard/settings/$slug'
     | '/reset-password/'
     | '/dashboard/settings/'
+    | '/dashboard/$slug/$id/edit'
+    | '/dashboard/settings/$slug/create'
+    | '/dashboard/settings/$slug/edit'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -210,11 +253,15 @@ export interface FileRouteTypes {
     | '/reset-password/verify'
     | '/api/asset/download'
     | '/api/auth/$'
-    | '/dashboard/$parent/$slug'
-    | '/dashboard/products/new'
+    | '/dashboard/$slug/$id'
+    | '/dashboard/$slug/create'
+    | '/dashboard/$slug/view'
     | '/dashboard/settings/$slug'
     | '/reset-password'
     | '/dashboard/settings'
+    | '/dashboard/$slug/$id/edit'
+    | '/dashboard/settings/$slug/create'
+    | '/dashboard/settings/$slug/edit'
   id:
     | '__root__'
     | '/'
@@ -230,11 +277,15 @@ export interface FileRouteTypes {
     | '/_backend/_auth/reset-password/verify'
     | '/_backend/api/asset/download'
     | '/_backend/api/auth/$'
-    | '/_backend/dashboard/$parent/$slug'
-    | '/_backend/dashboard/products/new'
+    | '/_backend/dashboard/$slug/$id'
+    | '/_backend/dashboard/$slug/create'
+    | '/_backend/dashboard/$slug/view'
     | '/_backend/dashboard/settings/$slug'
     | '/_backend/_auth/reset-password/'
     | '/_backend/dashboard/settings/'
+    | '/_backend/dashboard/$slug/$id/edit'
+    | '/_backend/dashboard/settings/$slug/create'
+    | '/_backend/dashboard/settings/$slug/edit'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -342,19 +393,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendApiAuthSplatRouteImport
       parentRoute: typeof BackendRoute
     }
-    '/_backend/dashboard/$parent/$slug': {
-      id: '/_backend/dashboard/$parent/$slug'
-      path: '/$parent/$slug'
-      fullPath: '/dashboard/$parent/$slug'
-      preLoaderRoute: typeof BackendDashboardParentSlugRouteImport
-      parentRoute: typeof BackendDashboardRoute
+    '/_backend/dashboard/$slug/$id': {
+      id: '/_backend/dashboard/$slug/$id'
+      path: '/$id'
+      fullPath: '/dashboard/$slug/$id'
+      preLoaderRoute: typeof BackendDashboardSlugIdRouteImport
+      parentRoute: typeof BackendDashboardSlugRoute
     }
-    '/_backend/dashboard/products/new': {
-      id: '/_backend/dashboard/products/new'
-      path: '/products/new'
-      fullPath: '/dashboard/products/new'
-      preLoaderRoute: typeof BackendDashboardProductsNewRouteImport
-      parentRoute: typeof BackendDashboardRoute
+    '/_backend/dashboard/$slug/create': {
+      id: '/_backend/dashboard/$slug/create'
+      path: '/create'
+      fullPath: '/dashboard/$slug/create'
+      preLoaderRoute: typeof BackendDashboardSlugCreateRouteImport
+      parentRoute: typeof BackendDashboardSlugRoute
+    }
+    '/_backend/dashboard/$slug/view': {
+      id: '/_backend/dashboard/$slug/view'
+      path: '/view'
+      fullPath: '/dashboard/$slug/view'
+      preLoaderRoute: typeof BackendDashboardSlugViewRouteImport
+      parentRoute: typeof BackendDashboardSlugRoute
     }
     '/_backend/dashboard/settings/': {
       id: '/_backend/dashboard/settings/'
@@ -369,6 +427,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/dashboard/settings/$slug'
       preLoaderRoute: typeof BackendDashboardSettingsSlugRouteImport
       parentRoute: typeof BackendDashboardRoute
+    }
+    '/_backend/dashboard/$slug/$id/edit': {
+      id: '/_backend/dashboard/$slug/$id/edit'
+      path: '/edit'
+      fullPath: '/dashboard/$slug/$id/edit'
+      preLoaderRoute: typeof BackendDashboardSlugIdEditRouteImport
+      parentRoute: typeof BackendDashboardSlugIdRoute
+    }
+    '/_backend/dashboard/settings/$slug/create': {
+      id: '/_backend/dashboard/settings/$slug/create'
+      path: '/create'
+      fullPath: '/dashboard/settings/$slug/create'
+      preLoaderRoute: typeof BackendDashboardSettingsSlugCreateRouteImport
+      parentRoute: typeof BackendDashboardSettingsSlugRoute
+    }
+    '/_backend/dashboard/settings/$slug/edit': {
+      id: '/_backend/dashboard/settings/$slug/edit'
+      path: '/edit'
+      fullPath: '/dashboard/settings/$slug/edit'
+      preLoaderRoute: typeof BackendDashboardSettingsSlugEditRouteImport
+      parentRoute: typeof BackendDashboardSettingsSlugRoute
     }
   }
 }
@@ -405,21 +484,65 @@ const BackendAuthRouteWithChildren = BackendAuthRoute._addFileChildren(
   BackendAuthRouteChildren,
 )
 
+interface BackendDashboardSlugIdRouteChildren {
+  BackendDashboardSlugIdEditRoute: typeof BackendDashboardSlugIdEditRoute
+}
+
+const BackendDashboardSlugIdRouteChildren: BackendDashboardSlugIdRouteChildren =
+  {
+    BackendDashboardSlugIdEditRoute: BackendDashboardSlugIdEditRoute,
+  }
+
+const BackendDashboardSlugIdRouteWithChildren =
+  BackendDashboardSlugIdRoute._addFileChildren(
+    BackendDashboardSlugIdRouteChildren,
+  )
+
+interface BackendDashboardSlugRouteChildren {
+  BackendDashboardSlugIdRoute: typeof BackendDashboardSlugIdRouteWithChildren
+  BackendDashboardSlugCreateRoute: typeof BackendDashboardSlugCreateRoute
+  BackendDashboardSlugViewRoute: typeof BackendDashboardSlugViewRoute
+}
+
+const BackendDashboardSlugRouteChildren: BackendDashboardSlugRouteChildren = {
+  BackendDashboardSlugIdRoute: BackendDashboardSlugIdRouteWithChildren,
+  BackendDashboardSlugCreateRoute: BackendDashboardSlugCreateRoute,
+  BackendDashboardSlugViewRoute: BackendDashboardSlugViewRoute,
+}
+
+const BackendDashboardSlugRouteWithChildren =
+  BackendDashboardSlugRoute._addFileChildren(BackendDashboardSlugRouteChildren)
+
+interface BackendDashboardSettingsSlugRouteChildren {
+  BackendDashboardSettingsSlugCreateRoute: typeof BackendDashboardSettingsSlugCreateRoute
+  BackendDashboardSettingsSlugEditRoute: typeof BackendDashboardSettingsSlugEditRoute
+}
+
+const BackendDashboardSettingsSlugRouteChildren: BackendDashboardSettingsSlugRouteChildren =
+  {
+    BackendDashboardSettingsSlugCreateRoute:
+      BackendDashboardSettingsSlugCreateRoute,
+    BackendDashboardSettingsSlugEditRoute:
+      BackendDashboardSettingsSlugEditRoute,
+  }
+
+const BackendDashboardSettingsSlugRouteWithChildren =
+  BackendDashboardSettingsSlugRoute._addFileChildren(
+    BackendDashboardSettingsSlugRouteChildren,
+  )
+
 interface BackendDashboardRouteChildren {
-  BackendDashboardSlugRoute: typeof BackendDashboardSlugRoute
+  BackendDashboardSlugRoute: typeof BackendDashboardSlugRouteWithChildren
   BackendDashboardIndexRoute: typeof BackendDashboardIndexRoute
-  BackendDashboardParentSlugRoute: typeof BackendDashboardParentSlugRoute
-  BackendDashboardProductsNewRoute: typeof BackendDashboardProductsNewRoute
-  BackendDashboardSettingsSlugRoute: typeof BackendDashboardSettingsSlugRoute
+  BackendDashboardSettingsSlugRoute: typeof BackendDashboardSettingsSlugRouteWithChildren
   BackendDashboardSettingsIndexRoute: typeof BackendDashboardSettingsIndexRoute
 }
 
 const BackendDashboardRouteChildren: BackendDashboardRouteChildren = {
-  BackendDashboardSlugRoute: BackendDashboardSlugRoute,
+  BackendDashboardSlugRoute: BackendDashboardSlugRouteWithChildren,
   BackendDashboardIndexRoute: BackendDashboardIndexRoute,
-  BackendDashboardParentSlugRoute: BackendDashboardParentSlugRoute,
-  BackendDashboardProductsNewRoute: BackendDashboardProductsNewRoute,
-  BackendDashboardSettingsSlugRoute: BackendDashboardSettingsSlugRoute,
+  BackendDashboardSettingsSlugRoute:
+    BackendDashboardSettingsSlugRouteWithChildren,
   BackendDashboardSettingsIndexRoute: BackendDashboardSettingsIndexRoute,
 }
 

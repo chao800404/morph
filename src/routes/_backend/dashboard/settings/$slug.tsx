@@ -1,15 +1,15 @@
 import { PageSpinner } from "@/components/loading/page-spinner";
 import { NotFound } from "@/components/not-found/not-found";
+import { dashboardSearchSchema } from "@/lib/validations/dashboard-search";
 import { getConfig } from "@/server/get-config";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { Suspense, useMemo } from "react";
 
 export const Route = createFileRoute("/_backend/dashboard/settings/$slug")({
-  beforeLoad: ({ params }) => {
-    return { slug: params.slug };
-  },
+  validateSearch: (search) => dashboardSearchSchema.parse(search),
+  beforeLoad: ({ params, search }) => ({ slug: params.slug, search }),
   loader: async ({ context, params }) => {
-    const { queryClient } = context;
+    const { queryClient, search } = context;
     const config = getConfig().client;
 
     // Discover the collection item by slug from all settings groups
@@ -18,8 +18,8 @@ export const Route = createFileRoute("/_backend/dashboard/settings/$slug")({
     );
     const collection = settingsCollections.find((c) => c.slug === params.slug);
 
-    if (collection?.loadData) {
-      await collection.loadData({ queryClient, params, search: {} });
+    if (collection?.index?.prefetch) {
+      await collection.index.prefetch({ queryClient, params, search });
     }
   },
   component: RouteComponent,
@@ -29,7 +29,7 @@ function RouteComponent() {
   const { slug } = Route.useParams();
   const config = useMemo(() => getConfig().client, []);
 
-  // Pick the component based on the slug from the config
+  // Pick the route view based on the slug from the config.
   const collection = useMemo(() => {
     const settingsCollections = config.collections.settings.flatMap(
       (group) => group.collections,
@@ -37,13 +37,16 @@ function RouteComponent() {
     return settingsCollections.find((c) => c.slug === slug);
   }, [slug, config]);
 
-  const ViewComponent = collection?.component;
+  const ViewComponent = collection?.index?.view;
   if (!ViewComponent) return <NotFound />;
 
-  const Loader = collection.loader ?? PageSpinner;
+  const PendingView = collection.index?.pendingView ?? PageSpinner;
   return (
-    <Suspense fallback={<Loader />}>
-      <ViewComponent />
-    </Suspense>
+    <>
+      <Suspense fallback={<PendingView />}>
+        <ViewComponent />
+      </Suspense>
+      <Outlet />
+    </>
   );
 }

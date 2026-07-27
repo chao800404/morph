@@ -9,11 +9,11 @@
  */
 
 import type { QueryClient } from "@tanstack/react-query";
-import type { LinkProps } from "@tanstack/react-router";
 import type { ComponentType } from "react";
 import type { EmailAdapter } from "../email/types";
 import type { DashboardSearch } from "../validations/dashboard-search";
 import { localization } from "../config/localization";
+import { assertCollectionsAreAddressable } from "./navigation";
 
 /**
  * Which Cloudflare plan this deployment runs on.
@@ -30,7 +30,7 @@ export interface CloudflareDeployment {
 }
 
 /**
- * Context handed to a collection's `loadData` by the dynamic dashboard routes.
+ * Context handed to a collection's `prefetch` by the dynamic dashboard routes.
  * `search` has already passed `dashboardSearchSchema` in the route.
  */
 export interface CollectionLoadContext {
@@ -40,27 +40,104 @@ export interface CollectionLoadContext {
 }
 
 /**
- * How a collection's Create button behaves.
+ * A collection's index route, rendered at `/dashboard/<slug>`.
  *
- * `route` opens a full page, `dialog` opens the shared create window. Which one
- * a collection wants follows the shape of the form, not taste:
+ * `index` describes the collection's default destination. The UI can be a
+ * table, grid, explorer, or any other view; its name deliberately describes
+ * the route's role rather than its visual implementation.
+ */
+export interface CollectionIndex {
+  view: ComponentType;
+  /**
+   * Suspense fallback rendered while `view`'s chunk loads.
+   *
+   * Defaults to a centred spinner. Give an index route its own skeleton when
+   * its in-view loading state uses the same skeleton, so code and data loading
+   * appear as one continuous state.
+   */
+  pendingView?: ComponentType;
+  /** Start priming the index route's query cache before rendering it. */
+  prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
+}
+
+/**
+ * A collection's create page.
  *
- * - multiple steps, or the form generates dependent rows → `route`
- * - losing it half-finished would cost real typing → `route`
- * - it needs the surrounding page's context, e.g. the folder being viewed →
- *   neither; keep the control in the view where that context lives
- * - a handful of fields → `dialog`
+ * Creating is always a route, rendered at `/dashboard/<slug>/create` as a child
+ * of the list. The list stays mounted underneath, so closing is a navigation
+ * back to it rather than a remount and refetch, and every create surface is
+ * linkable and survives a refresh.
+ *
+ * Whether the form looks like a full-screen page or a side panel is the
+ * component's own choice of `RouteFormModal` size — not a second mechanism.
+ * There is deliberately no "open a dialog from page state" mode: that would
+ * mean the config had to carry fields, actions and cache keys just to feed a
+ * generic renderer, while a page component simply does those things itself.
+ *
+ * The framework owns the URL — a collection supplies a view, not a path —
+ * so a create page cannot be pointed at the wrong route or shadow another
+ * collection's slug.
  *
  * Omit `create` entirely and no button is rendered.
  */
-export type CollectionCreate =
-  | {
-      mode: "route";
-      /** Typed against the route tree, so it autocompletes in cms.config.ts. */
-      to: LinkProps["to"];
-      label?: string;
-    }
-  | { mode: "dialog"; label?: string };
+export interface CollectionCreate {
+  view: ComponentType;
+  /** Suspense fallback while `view` loads. */
+  pendingView?: ComponentType;
+  label?: string;
+}
+
+/**
+ * A collection's detail page, rendered at `/dashboard/<slug>/<id>`.
+ *
+ * Like `create`, the framework owns the URL. This is why collection URLs are
+ * flat: a nested collection at `/dashboard/products/options` would make
+ * `/dashboard/products/<id>` ambiguous.
+ */
+export interface CollectionDetail {
+  view: ComponentType;
+  /** Suspense fallback while `view` loads. */
+  pendingView?: ComponentType;
+  /** Start priming the detail route's query cache before rendering it. */
+  prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
+}
+
+/**
+ * A collection-level preview page, rendered at `/dashboard/<slug>/view`.
+ *
+ * This route is for browsing a collection-specific media or document view. It
+ * replaces the index while mounted; the currently viewed record belongs in
+ * validated search state because `view` is a collection action, not a record
+ * id.
+ */
+export interface CollectionPreview {
+  view: ComponentType;
+  /** Suspense fallback while `view` loads. */
+  pendingView?: ComponentType;
+  /** Start priming the preview route's query cache before rendering it. */
+  prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
+}
+
+/**
+ * A collection's edit page, rendered at `/dashboard/<slug>/<id>/edit`.
+ *
+ * Same contract as `create`: a route, not a dialog opened from row state. That
+ * is what makes an edit surface linkable and survive a refresh — it loads its
+ * record from the id in the URL rather than from whatever the list happened to
+ * have in memory.
+ *
+ * `detail` is optional. Without one, closing returns to the list instead of to
+ * a detail page that does not exist.
+ */
+export interface CollectionEdit {
+  view: ComponentType;
+  /** Suspense fallback while `view` loads. */
+  pendingView?: ComponentType;
+  /** Start priming the edit route's query cache before rendering it. */
+  prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
+  /** Row action label. Defaults to "Edit". */
+  label?: string;
+}
 
 /**
  * Configuration types
@@ -70,29 +147,21 @@ export interface CollectionItem {
   slug: string;
   icon?: string;
   label?: string;
+  index?: CollectionIndex;
   create?: CollectionCreate;
+  preview?: CollectionPreview;
+  detail?: CollectionDetail;
+  edit?: CollectionEdit;
   items?: {
     title: string;
     slug: string;
     label?: string;
+    index?: CollectionIndex;
     create?: CollectionCreate;
-    component?: ComponentType;
-    /** Suspense fallback while `component` loads. Defaults to a page spinner. */
-    loader?: ComponentType;
-    loadData?: (context: CollectionLoadContext) => Promise<void> | void;
+    preview?: CollectionPreview;
+    detail?: CollectionDetail;
+    edit?: CollectionEdit;
   }[];
-  component?: ComponentType;
-  /**
-   * Suspense fallback rendered while `component`'s chunk loads.
-   *
-   * Defaults to a centred spinner. Give a view its own skeleton when its
-   * in-card loading state is also a skeleton, so the code wait and the data
-   * wait look like one state instead of two different ones. Unlike
-   * `component`, this must be imported eagerly — a lazy loader would need a
-   * loader of its own.
-   */
-  loader?: ComponentType;
-  loadData?: (context: CollectionLoadContext) => Promise<void> | void;
 }
 
 export interface CollectionGroup {
@@ -230,6 +299,8 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
   if (!config.localization) {
     throw new Error("CMS Config: localization is required");
   }
+
+  assertCollectionsAreAddressable(config.collections?.global ?? []);
 
   // Extract client-safe configuration
   const clientSafeConfig: ClientSafeConfig = {

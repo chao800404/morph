@@ -1,4 +1,5 @@
 export { CollectionCreateButton } from "./collection-create-button";
+export { useCollectionEditAction } from "./use-collection-row-actions";
 export { DataTableCard } from "./data-table-card";
 export type {
   DataTableCardProps,
@@ -8,9 +9,15 @@ export type {
 export { DataTablePagination } from "./data-table-pagination";
 export { DataTableSearch } from "./data-table-search";
 export {
+  DataTableFilter,
+  type DataTableFilterOption,
+} from "./data-table-filter";
+export { DataTableToolbar } from "./data-table-toolbar";
+export {
   DataTableSort,
   type DataTableSortKey,
   type DataTableSortOption,
+  useDataTableSort,
 } from "./data-table-sort";
 export {
   RowActionsMenu,
@@ -18,3 +25,9 @@ export {
   editActionIcon,
   type RowAction,
 } from "./row-actions-menu";
+export {
+  calculatePageForPreservedOffset,
+  calculateResponsiveTablePageSize,
+  useResponsiveTablePageSize,
+  type ResponsiveTablePageSizeOptions,
+} from "./use-responsive-table-page-size";

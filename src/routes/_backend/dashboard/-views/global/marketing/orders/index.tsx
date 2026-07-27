@@ -1,56 +1,19 @@
-import { Button } from "@/components/ui/button";
+import { CollectionCreateButton } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { EmptyFileIcon } from "@/components/ui/icons/empty-file-icon";
-import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
-import { Plus } from "lucide-react";
-import { useShallow } from "zustand/react/shallow";
-import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Orders = () => {
-  const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
-    useShallow((state) => ({
-      setCreateData: state.setCreateData,
-      setOpen: state.setOpen,
-    })),
-  );
 
-  const handleCreateOrder = () => {
-    setCreateData({
-      title: "Create Order",
-      description: "Manually create a new customer order",
-      fields: [
-        {
-          type: "input",
-          name: "customerName",
-          label: "Customer Name",
-          placeholder: "e.g. John Doe",
-          required: true,
-          autoFocus: true,
-        },
-        {
-          type: "input",
-          name: "total",
-          label: "Total Amount ($)",
-          placeholder: "0.00",
-        },
-      ],
-      action: notImplementedAction("Order creation"),
-    });
-    setCreateOpen(true);
-  };
 
   return (
     <CardWrapper
       label="Orders"
       description="Manage customer orders and fulfillment"
       headerButton={
-        <Button onClick={handleCreateOrder} variant="form" size="sm" className="gap-2">
-          <Plus className="size-4" />
-          Create
-        </Button>
+        <CollectionCreateButton slug="orders" />
       }
       classNames={{
-        cardWrapper: "min-h-content",
+        cardWrapper: "h-auto",
         contentWrapper: "flex flex-col items-center justify-center min-h-[400px]",
       }}
     >
@@ -62,10 +25,7 @@ const Orders = () => {
             When customer orders are placed, they will appear here.
           </p>
           <div className="mt-4">
-            <Button onClick={handleCreateOrder} variant="form" className="gap-2">
-              <Plus className="size-4" />
-              Create Order
-            </Button>
+            <CollectionCreateButton slug="orders" />
           </div>
         </div>
       </div>

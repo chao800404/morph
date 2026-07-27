@@ -6,8 +6,9 @@ import { assetAdminMiddleware } from "../middleware/auth.middleware";
 import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
 import pLimit from "p-limit";
 import {
-  batchUpdateItemsInD1,
+  batchSaveItemsInD1,
   type AssetMetadataUpdate,
+  type FolderLocationUpdate,
   type FolderMetadataUpdate,
 } from "@/lib/asset/dal/asset-batch.dal";
 
@@ -23,7 +24,6 @@ export const updateItems = createServerFn({ method: "POST" })
       };
     }
     const itemsData = parsedInput.itemsData;
-
     const folderItems = itemsData.filter((item) => item.type === "folder");
     const assetItems = itemsData.filter((item) => item.type === "asset");
 
@@ -47,6 +47,21 @@ export const updateItems = createServerFn({ method: "POST" })
     const assetMap = new Map(existingAssets.map((asset) => [asset.id, asset]));
     const folderMap = new Map(
       existingFolders.map((folder) => [folder.id, folder]),
+    );
+    const assetLocationChanges = assetItems.filter((item) => {
+      const asset = assetMap.get(item.id)!;
+      return (
+        item.locationId !== undefined && item.locationId !== asset.folderId
+      );
+    });
+    const folderLocationChanges = folderItems.filter((item) => {
+      const folder = folderMap.get(item.id)!;
+      return (
+        item.locationId !== undefined && item.locationId !== folder.parentId
+      );
+    });
+    const folderLocationChangeIds = new Set(
+      folderLocationChanges.map((item) => item.id),
     );
 
     const assetUpdates: AssetMetadataUpdate[] = assetItems.map((item) => {
@@ -99,6 +114,9 @@ export const updateItems = createServerFn({ method: "POST" })
             }
             if (!item.name || item.name === folder.name) return [update];
 
+            update.name = item.name;
+            if (folderLocationChangeIds.has(item.id)) return [update];
+
             const pathParts = folder.path.split("/");
             pathParts[pathParts.length - 1] = item.name;
             const newPath = pathParts.join("/");
@@ -118,7 +136,6 @@ export const updateItems = createServerFn({ method: "POST" })
               throw new Error(`Folder "${item.name}" already exists`);
             }
 
-            update.name = item.name;
             update.path = newPath;
             const descendants = await assetFolderDal.findChildrenByPath(
               folder.path,
@@ -135,14 +152,134 @@ export const updateItems = createServerFn({ method: "POST" })
       )
     ).flat();
 
-    await batchUpdateItemsInD1({
-      assetUpdates,
-      folderUpdates,
-      userId: context.user.id,
+    const requestedTargetIds = new Set(
+      [...assetLocationChanges, ...folderLocationChanges]
+        .map((item) => item.locationId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    const targetFolders = await assetFolderDal.findByIds([
+      ...requestedTargetIds,
+    ]);
+    if (targetFolders.length !== requestedTargetIds.size) {
+      throw new Error("One or more target folders no longer exist");
+    }
+    const targetFolderMap = new Map(
+      targetFolders.map((folder) => [folder.id, folder]),
+    );
+    for (const targetFolder of targetFolders) {
+      if (folderMap.has(targetFolder.id)) {
+        throw new Error(
+          "Move items into another selected folder in a separate update",
+        );
+      }
+    }
+
+    const assetLocationGroups = new Map<string | null, string[]>();
+    for (const item of assetLocationChanges) {
+      const folderId = item.locationId ?? null;
+      assetLocationGroups.set(folderId, [
+        ...(assetLocationGroups.get(folderId) ?? []),
+        item.id,
+      ]);
+    }
+
+    const editedFolderNames = new Map(
+      folderItems.map((item) => [item.id, item.name]),
+    );
+    const moveDestinationPaths = new Set<string>();
+    for (const item of folderLocationChanges) {
+      const folder = folderMap.get(item.id)!;
+      const targetFolder = item.locationId
+        ? targetFolderMap.get(item.locationId)!
+        : null;
+      if (targetFolder?.idPath.includes(`/${folder.id}`)) {
+        throw new Error("Cannot move folder into itself or its subfolder");
+      }
+
+      const effectiveName = editedFolderNames.get(folder.id) || folder.name;
+      const newPath = targetFolder
+        ? `${targetFolder.path}/${effectiveName}`
+        : `/${effectiveName}`;
+      if (moveDestinationPaths.has(newPath)) {
+        throw new Error(
+          `Folder "${effectiveName}" is duplicated in this update`,
+        );
+      }
+      moveDestinationPaths.add(newPath);
+
+      const existingAtDestination = await assetFolderDal.findByPath(newPath);
+      if (existingAtDestination && existingAtDestination.id !== folder.id) {
+        throw new Error(`Folder "${effectiveName}" already exists`);
+      }
+    }
+
+    const locationLookups = pLimit(DB_FANOUT_CONCURRENCY);
+    const folderLocationUpdates = (
+      await Promise.all(
+        folderLocationChanges.map((item) =>
+          locationLookups(async (): Promise<FolderLocationUpdate[]> => {
+            const folder = folderMap.get(item.id)!;
+            const targetFolder = item.locationId
+              ? targetFolderMap.get(item.locationId)!
+              : null;
+            const effectiveName =
+              editedFolderNames.get(folder.id) || folder.name;
+            const newPath = targetFolder
+              ? `${targetFolder.path}/${effectiveName}`
+              : `/${effectiveName}`;
+            const newIdPath = targetFolder
+              ? `${targetFolder.idPath}/${folder.id}`
+              : `/${folder.id}`;
+            const descendants = await assetFolderDal.findChildrenByIdPath(
+              folder.idPath,
+            );
+
+            return [
+              {
+                id: folder.id,
+                parentId: item.locationId ?? null,
+                path: newPath,
+                idPath: newIdPath,
+                updateParent: true,
+              },
+              ...descendants.map((descendant) => ({
+                id: descendant.id,
+                path: descendant.path.replace(folder.path, newPath),
+                idPath: descendant.idPath.replace(folder.idPath, newIdPath),
+                updateParent: false,
+              })),
+            ];
+          }),
+        ),
+      )
+    ).flat();
+
+    const hasLocationChanges =
+      assetLocationChanges.length > 0 || folderLocationChanges.length > 0;
+    const move = hasLocationChanges
+      ? {
+          assetUpdates: [...assetLocationGroups].map(([folderId, ids]) => ({
+            ids,
+            folderId,
+          })),
+          folderUpdates: folderLocationUpdates,
+          userId: context.user.id,
+        }
+      : undefined;
+
+    await batchSaveItemsInD1({
+      metadata: {
+        assetUpdates,
+        folderUpdates,
+        userId: context.user.id,
+      },
+      move,
     });
 
     return {
       success: true,
-      message: "Items updated successfully",
+      message: hasLocationChanges
+        ? "Items updated and moved successfully"
+        : "Items updated successfully",
     };
   });

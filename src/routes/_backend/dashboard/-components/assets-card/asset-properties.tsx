@@ -2,8 +2,10 @@ import { AssetBlockMap } from "@/components/asset/asset-block-map";
 import { FluentFolderIcon } from "@/components/ui/icons/fluent-folder-icon";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { cn, formatBytes, formatDuration, getFileType } from "@/lib/utils";
-import { useAssetPreviewStore } from "@/routes/_backend/dashboard/-views/features/asset/preview/use-asset-preview-store";
-import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
+import { useAssetRouteActions } from "@/routes/_backend/dashboard/-views/global/contents/assets/hooks/use-asset-route-actions";
+import {
+  useAssetsStore,
+} from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { useShallow } from "zustand/react/shallow";
 
 export const AssetProperties = () => {
@@ -13,12 +15,7 @@ export const AssetProperties = () => {
       assetsData: state.assetsData,
     })),
   );
-  const { setToggleOpen, setPreviewData } = useAssetPreviewStore(
-    useShallow((state) => ({
-      setPreviewData: state.setAssetPreviewData,
-      setToggleOpen: state.toggleOpen,
-    })),
-  );
+  const { openPreview } = useAssetRouteActions();
 
   if (!activeItem) return null;
 
@@ -140,10 +137,7 @@ export const AssetProperties = () => {
           <button
             type="button"
             className="size-full overflow-hidden rounded-md border bg-muted"
-            onClick={() => {
-              setPreviewData({ item: activeItem, items: [activeItem] });
-              setToggleOpen();
-            }}
+            onClick={() => openPreview(activeItem.id)}
           >
             <AssetBlockMap
               type="asset"

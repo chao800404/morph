@@ -18,6 +18,10 @@ const badgeVariants = cva(
                     "dark:bg-zinc-700/30 dark:text-zinc-300/80 dark:shadow-sm dark:inset-shadow-none dark:border-l-0 dark:border-zinc-500/30 dark:border-r-0 dark:border-b-0 dark:shadow-zinc-900 dark:inset-ring dark:inset-ring-zinc-600/20",
                     "hover:bg-zinc-300 hover:text-zinc-600 hover:dark:bg-zinc-700/40"
                 ),
+                success:
+                    "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                neutral:
+                    "border-border bg-muted/60 text-muted-foreground",
             },
             // size:{
             //   default:"text-xs",

@@ -17,7 +17,7 @@ export const DataTablePagination = ({
 }) => {
   const navigate = useNavigate();
 
-  if (!pagination || pagination.totalPages <= 1) return null;
+  if (!pagination) return null;
 
   const handlePageChange = (action: "first" | "prev" | "next" | "last") => {
     const { page, totalPages } = pagination;

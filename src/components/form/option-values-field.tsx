@@ -15,14 +15,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { ChevronsUpDown, GripVertical, X } from "lucide-react";
+import type { OptionValueChoice } from "@/lib/validations/form";
+import { ChevronsUpDown, GripVertical, Plus, X } from "lucide-react";
 import React, { useState } from "react";
 
-/** A value that already exists on a shared option. */
-export interface OptionValueChoice {
-  id: string;
-  value: string;
-}
+export type { OptionValueChoice } from "@/lib/validations/form";
 
 interface OptionValuesFieldProps {
   name: string;
@@ -47,6 +44,15 @@ interface OptionValuesFieldProps {
   maxSelected?: number;
   searchPlaceholder?: string;
   emptyMessage?: string;
+  /**
+   * Offers "Create «typed text»" when the search matches nothing.
+   *
+   * Only meaningful when the caller identifies choices by their own value
+   * (`{ id: value, value }`), because a value that does not exist yet has no
+   * id to report. Product types and tags do this: the server upserts them by
+   * value, so the client never needs to create the row first.
+   */
+  allowCreate?: boolean;
 }
 
 export const OptionValuesField = (props: OptionValuesFieldProps) =>
@@ -57,6 +63,7 @@ export const OptionValuesField = (props: OptionValuesFieldProps) =>
       selectedIds={props.selectedIds ?? []}
       onSelectionChange={props.onSelectionChange}
       maxSelected={props.maxSelected}
+      allowCreate={props.allowCreate}
       placeholder={props.placeholder}
       searchPlaceholder={props.searchPlaceholder}
       emptyMessage={props.emptyMessage}
@@ -77,6 +84,7 @@ const ChoiceValues = ({
   selectedIds,
   onSelectionChange,
   maxSelected,
+  allowCreate = false,
   placeholder = "Select...",
   searchPlaceholder = "Search...",
   emptyMessage = "Nothing found.",
@@ -87,27 +95,55 @@ const ChoiceValues = ({
   selectedIds: string[];
   onSelectionChange?: (ids: string[]) => void;
   maxSelected?: number;
+  allowCreate?: boolean;
   placeholder?: string;
   searchPlaceholder?: string;
   emptyMessage?: string;
   className?: string;
 }) => {
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const atLimit =
     maxSelected !== undefined && selectedIds.length >= maxSelected;
 
   // Selection order follows `choices`, so the chips and anything derived from
   // them stay in the order the source defines rather than click order.
-  const toggle = (id: string, selected: boolean) =>
-    onSelectionChange?.(
-      selected
-        ? choices
-            .filter((c) => c.id === id || selectedIds.includes(c.id))
-            .map((c) => c.id)
-        : selectedIds.filter((current) => current !== id),
-    );
+  const toggle = (id: string, selected: boolean) => {
+    if (!selected) {
+      onSelectionChange?.(selectedIds.filter((current) => current !== id));
+      return;
+    }
 
-  const selected = choices.filter((choice) => selectedIds.includes(choice.id));
+    // Ordered by `choices` so the chips read in the source's order, then any
+    // just-created values appended — those have no choice to sort against yet,
+    // and rebuilding the list from `choices` alone would drop them.
+    const fromChoices = choices
+      .filter((c) => c.id === id || selectedIds.includes(c.id))
+      .map((c) => c.id);
+    const created = [...selectedIds, id].filter(
+      (current) => !choices.some((choice) => choice.id === current),
+    );
+    onSelectionChange?.([...new Set([...fromChoices, ...created])]);
+  };
+
+  // Derived from the selection rather than from `choices`, because a value the
+  // user just created is selected before it exists as a choice. Falling back to
+  // the id is safe in that mode: there the id is the value.
+  const byId = new Map(choices.map((choice) => [choice.id, choice]));
+  const selected = selectedIds.map(
+    (id) => byId.get(id) ?? { id, value: id },
+  );
+
+  // Offered only when nothing already matches, so picking an existing value is
+  // never ambiguous with creating a duplicate of it.
+  const typed = search.trim();
+  const creatable =
+    allowCreate &&
+    !atLimit &&
+    typed !== "" &&
+    !choices.some(
+      (choice) => choice.value.toLowerCase() === typed.toLowerCase(),
+    );
 
   return (
     <div className={cn("w-full", className)}>
@@ -170,10 +206,26 @@ const ChoiceValues = ({
           align="start"
         >
           <Command>
-            <CommandInput placeholder={searchPlaceholder} />
+            <CommandInput
+              placeholder={searchPlaceholder}
+              value={search}
+              onValueChange={setSearch}
+            />
             <CommandList>
-              <CommandEmpty>{emptyMessage}</CommandEmpty>
+              {!creatable && <CommandEmpty>{emptyMessage}</CommandEmpty>}
               <CommandGroup>
+                {creatable && (
+                  <CommandItem
+                    value={typed}
+                    onSelect={() => {
+                      onSelectionChange?.([...selectedIds, typed]);
+                      setSearch("");
+                    }}
+                  >
+                    <Plus className="size-4" />
+                    <span className="flex-1">Create &ldquo;{typed}&rdquo;</span>
+                  </CommandItem>
+                )}
                 {choices.map((choice) => {
                   const checked = selectedIds.includes(choice.id);
                   return (

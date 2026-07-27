@@ -11,6 +11,9 @@ const alertVariants = cva(
                 default: "bg-background text-foreground",
                 destructive:
                     "border-destructive/50 bg-red-500/10 text-destructive dark:border-destructive [&>svg]:text-destructive",
+                // Nothing is wrong and there is nothing to act on, so it stays
+                // quiet: no status colour, no icon slot.
+                muted: "border-border/60 bg-muted/20 text-muted-foreground",
             },
         },
         defaultVariants: {

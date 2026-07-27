@@ -11,7 +11,6 @@ import type { FolderSelectFieldRenderProps } from "@/components/upload/types";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { cn } from "@/lib/utils";
 import { assetQueries } from "@/routes/_backend/dashboard/-queries/asset.queries";
-import { useAssetEditStore } from "@/routes/_backend/dashboard/-views/features/asset/edit/use-asset-edit-store";
 import { useAssetMoveStore } from "@/routes/_backend/dashboard/-views/features/asset/move/use-asset-move-store";
 import { useQuery } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
@@ -40,12 +39,6 @@ export const FolderSelectField = ({
   onChange,
   className,
 }: FolderSelectFieldRenderProps) => {
-  const { excludedIds: editExcludedIds } = useAssetEditStore(
-    useShallow((state) => ({
-      excludedIds: state.excludedIds,
-    })),
-  );
-
   const { excludedIds: moveExcludedIds } = useAssetMoveStore(
     useShallow((state) => ({
       excludedIds: state.excludedIds,
@@ -63,8 +56,6 @@ export const FolderSelectField = ({
     const allExcludedIds = new Set<string>();
     if (field.excludedIds)
       field.excludedIds.forEach((id) => allExcludedIds.add(id));
-    if (editExcludedIds)
-      editExcludedIds.forEach((id) => allExcludedIds.add(id));
     if (moveExcludedIds)
       moveExcludedIds.forEach((id) => allExcludedIds.add(id));
 
@@ -125,7 +116,7 @@ export const FolderSelectField = ({
     };
 
     return [rootOption, ...convertToOptions(filteredAndSorted, 1)];
-  }, [result, field.excludedIds, editExcludedIds, moveExcludedIds]);
+  }, [result, field.excludedIds, moveExcludedIds]);
 
   const defaultFolderId = useMemo(() => {
     if (!result?.data) return "root";
@@ -137,8 +128,8 @@ export const FolderSelectField = ({
       allIds.add(f.id);
     });
 
-    if (folderId && allIds.has(folderId)) return folderId;
     if (initialValue) {
+      if (initialValue === "root") return "root";
       if (allIds.has(initialValue)) return initialValue;
       const foundId = nameToIdMap.get(initialValue);
       if (foundId) return foundId;
@@ -147,6 +138,7 @@ export const FolderSelectField = ({
       );
       if (partialMatch) return partialMatch.id;
     }
+    if (folderId && allIds.has(folderId)) return folderId;
     return folderId || "root";
   }, [folderId, initialValue, result]);
 
@@ -178,6 +170,10 @@ export const FolderSelectField = ({
     >
       <SelectTrigger
         id={fieldId}
+        variant="card"
+        aria-describedby={
+          field.description ? `${fieldId}-description` : undefined
+        }
         className={cn("w-full", field.inputClassName, className)}
       >
         <SelectValue

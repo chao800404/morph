@@ -6,47 +6,35 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { SortableTableHead } from "@/components/ui/sortable-table-head";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { downloadAsset } from "@/lib/asset/download-utils";
 // import { copyPath } from "@/lib/shared/copy-path";
-import { cn, getFileType } from "@/lib/utils";
-import {
-  generateEditFields,
-  generateEditTitle,
-} from "@/routes/_backend/dashboard/-views/features/asset/edit/edit-fields-utils";
-import { useAssetEditStore } from "@/routes/_backend/dashboard/-views/features/asset/edit/use-asset-edit-store";
-import {
-  generateMoveDescription,
-  generateMoveFields,
-  generateMoveTitle,
-} from "@/routes/_backend/dashboard/-views/features/asset/move/move-fields-utils";
-import { useAssetMoveStore } from "@/routes/_backend/dashboard/-views/features/asset/move/use-asset-move-store";
-import { useAssetPreviewStore } from "@/routes/_backend/dashboard/-views/features/asset/preview/use-asset-preview-store";
+import { cn } from "@/lib/utils";
+import type { DashboardSortKey } from "@/lib/validations/dashboard-search";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
+import { useAssetRouteActions } from "@/routes/_backend/dashboard/-views/global/contents/assets/hooks/use-asset-route-actions";
+import {
+  toSelectedAssetFromTable,
+  type AssetTableItem,
+} from "@/routes/_backend/dashboard/-views/global/contents/assets/asset-view-model";
 import { deleteItems } from "@/server/asset/delete-items.serverFn";
-import { moveItems } from "@/server/asset/move-items.serverFn";
-import { updateItems } from "@/server/asset/update-items.serverFn";
 import { toast } from "sonner";
 import { memo, useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { AssetTableRow } from "./asset-table-row";
+import { useDataTableSort } from "../data-table-card/data-table-sort";
+
+export interface AssetTableHead {
+  label: string;
+  sortKey?: DashboardSortKey;
+  className?: string;
+}
 
 interface AssetsTableProps {
-  tableHeads: string[];
-  tableContent?: {
-    id: string;
-    name: string;
-    url: string;
-    createdAt: string;
-    type: string | null;
-    size: number;
-    alt?: string;
-    caption?: string;
-    tags?: string;
-    extension?: string;
-    updatedAt?: string;
-  }[];
+  tableHeads: AssetTableHead[];
+  tableContent?: AssetTableItem[];
 }
 
 export const AssetsTable = memo(function AssetsTable({
@@ -54,30 +42,13 @@ export const AssetsTable = memo(function AssetsTable({
   tableContent = [],
 }: AssetsTableProps) {
   const isLargeScreen = useMediaQuery("(min-width: 1024px)");
-  const { openAssetEdit } = useAssetEditStore(
-    useShallow((state) => ({
-      openAssetEdit: state.openAssetEdit,
-    })),
-  );
+  const { openPreview, openEdit } = useAssetRouteActions();
+  const { sortBy, sortOrder, applySort } = useDataTableSort();
 
   const { setInfoData, setOpen: setInfoOpen } = useInfoStore(
     useShallow((state) => ({
       setInfoData: state.setInfoData,
       setOpen: state.setOpen,
-    })),
-  );
-
-  const { handleMoveOpenChange, setAssetMoveData } = useAssetMoveStore(
-    useShallow((state) => ({
-      handleMoveOpenChange: state.handleOpenChange,
-      setAssetMoveData: state.setAssetMoveData,
-    })),
-  );
-
-  const { setPreviewData, handleOpenChange } = useAssetPreviewStore(
-    useShallow((state) => ({
-      setPreviewData: state.setAssetPreviewData,
-      handleOpenChange: state.handleOpenChange,
     })),
   );
 
@@ -108,18 +79,7 @@ export const AssetsTable = memo(function AssetsTable({
       const asset = tableContent.find((item) => item.id === id);
       if (!asset) return;
 
-      toggleSelectItem({
-        type: "asset",
-        id,
-        name: asset.name,
-        fileType: getFileType(asset.type),
-        extension: asset.extension || "",
-        src: asset.url,
-        alt: asset.alt,
-        caption: asset.caption,
-        tags: asset.tags ? [asset.tags] : undefined,
-        size: asset.size,
-      });
+      toggleSelectItem(toSelectedAssetFromTable(asset));
     },
     [tableContent, toggleSelectItem],
   );
@@ -154,24 +114,7 @@ export const AssetsTable = memo(function AssetsTable({
     } else {
       // Select all on current page
       const existingItems = Array.from(selectedItems.values());
-      const itemsToSelect = currentPageAssets.map((asset) => {
-        const fileType = getFileType(asset.type);
-
-        const extension = asset.extension || "";
-
-        return {
-          type: "asset" as const,
-          id: asset.id,
-          name: asset.name,
-          fileType,
-          extension,
-          src: asset.url,
-          alt: asset.alt,
-          caption: asset.caption,
-          tags: asset.tags ? [asset.tags] : undefined,
-          size: asset.size,
-        };
-      });
+      const itemsToSelect = currentPageAssets.map(toSelectedAssetFromTable);
       selectAllItems([...existingItems, ...itemsToSelect]);
     }
   }, [
@@ -182,39 +125,9 @@ export const AssetsTable = memo(function AssetsTable({
   ]);
 
   const handleEdit = useCallback(
-    (id: string) => {
-      const asset = tableContent.find((item) => item.id === id);
-      if (asset) {
-        const editItem = {
-          id,
-          type: "asset" as const,
-          name: asset.name,
-          fileType: getFileType(asset.type),
-          extension: asset.extension || "",
-          src: asset.url,
-          alt: asset.alt,
-          caption: asset.caption,
-          tags: asset.tags,
-          size: asset.size,
-        };
-
-        openAssetEdit({
-          title: generateEditTitle("asset", 1),
-          description: "Modify asset information",
-          fields: generateEditFields(editItem),
-          items: [editItem],
-          action: updateItems,
-          onSuccess: clearAllSelectedItems,
-        });
-      }
-    },
-    [
-      clearAllSelectedItems,
-      openAssetEdit,
-      tableContent,
-    ],
+    (id: string) => openEdit(id, "asset"),
+    [openEdit],
   );
-
   const handleDownload = useCallback(async (id: string) => {
     toast.promise(
       downloadAsset({ ids: [id] }).then((result) => {
@@ -257,66 +170,9 @@ export const AssetsTable = memo(function AssetsTable({
     [clearAllSelectedItems, setInfoData, setInfoOpen, tableContent],
   );
 
-  const handleMove = useCallback(
-    (id: string) => {
-      const asset = tableContent.find((item) => item.id === id);
-      if (!asset) return;
-
-      const moveItem = {
-        id,
-        type: "asset" as const,
-        name: asset.name,
-        fileType: getFileType(asset.type),
-        extension: asset.extension || "",
-        src: asset.url,
-        alt: asset.alt || undefined,
-        size: asset.size,
-      };
-
-      setAssetMoveData({
-        title: generateMoveTitle("asset", 1),
-        description: generateMoveDescription("asset", 1),
-        fields: generateMoveFields(),
-        action: moveItems,
-        items: [moveItem],
-        onSuccess: clearAllSelectedItems,
-      });
-      handleMoveOpenChange(true);
-    },
-    [
-      clearAllSelectedItems,
-      handleMoveOpenChange,
-      setAssetMoveData,
-      tableContent,
-    ],
-  );
-
-  const previewItems = useMemo(
-    () =>
-      tableContent.map((asset) => ({
-        id: asset.id,
-        type: "asset" as const,
-        name: asset.name,
-        fileType: getFileType(asset.type),
-        extension: asset.extension || "",
-        src: asset.url,
-        alt: asset.alt,
-        caption: asset.caption,
-        tags: asset.tags ? [asset.tags] : undefined,
-        size: asset.size,
-      })),
-    [tableContent],
-  );
-
   const handlePreview = useCallback(
-    (id: string) => {
-      const item = previewItems.find((asset) => asset.id === id);
-      if (!item) return;
-
-      setPreviewData({ item, items: previewItems });
-      handleOpenChange(true);
-    },
-    [handleOpenChange, previewItems, setPreviewData],
+    (id: string) => openPreview(id),
+    [openPreview],
   );
 
   const handleCopyURL = useCallback(
@@ -387,11 +243,36 @@ export const AssetsTable = memo(function AssetsTable({
               />
             </div>
           </TableHead>
-          {tableHeads.map((head, idx) => (
-            <TableHead key={idx} className="whitespace-nowrap">
-              {head}
-            </TableHead>
-          ))}
+          {tableHeads.map((head) => {
+            const sortKey = head.sortKey;
+            if (!sortKey) {
+              return (
+                <TableHead
+                  key={head.label || "actions"}
+                  className={cn("whitespace-nowrap", head.className)}
+                >
+                  {head.label}
+                </TableHead>
+              );
+            }
+
+            const isActiveSort = sortBy === sortKey;
+            const activeDirection = isActiveSort ? sortOrder : undefined;
+            const nextDirection = sortOrder === "asc" ? "desc" : "asc";
+
+            return (
+              <SortableTableHead
+                key={head.label}
+                sortLabel={head.label}
+                direction={activeDirection}
+                nextDirection={nextDirection}
+                onSort={() => applySort(sortKey, nextDirection)}
+                className={cn("whitespace-nowrap", head.className)}
+              >
+                {head.label}
+              </SortableTableHead>
+            );
+          })}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -404,8 +285,8 @@ export const AssetsTable = memo(function AssetsTable({
             onCheckedChange={handleCheckedChange}
             onDelete={handleDelete}
             onEdit={handleEdit}
+            onView={handlePreview}
             onDownload={handleDownload}
-            onMove={handleMove}
             onDoubleClick={handlePreview}
             onCopyURL={handleCopyURL}
             onKeyDown={handleKeyDown}

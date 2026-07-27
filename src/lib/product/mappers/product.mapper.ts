@@ -11,6 +11,8 @@ export const toProductDTO = (row: ProductRow): ProductDTO => ({
   description: row.description ?? null,
   status: row.status,
   collectionId: row.collectionId ?? null,
+  typeId: row.typeId ?? null,
+  discountable: row.discountable,
   thumbnailAssetId: row.thumbnailAssetId ?? null,
   metadata: row.metadata,
   createdBy: row.createdBy,

@@ -18,6 +18,7 @@ import {
 import type { AssetDTO, AssetInsertDTO } from "../dto/asset.dto";
 import { toAssetDTO, type AssetRow } from "../mappers/asset.mapper";
 import { containsPattern } from "@/lib/db/like-pattern";
+import type { AssetType } from "@/db/asset.schema";
 
 const mapFirst = (rows: AssetRow[]): AssetDTO | null =>
   rows.length > 0 ? toAssetDTO(rows[0]) : null;
@@ -65,9 +66,7 @@ export const assetDal = {
         ...(await db
           .select()
           .from(assets)
-          .where(
-            and(inArray(assets.folderId, ids), isNull(assets.deletedAt)),
-          )),
+          .where(and(inArray(assets.folderId, ids), isNull(assets.deletedAt)))),
       );
     }
     return rows.map(toAssetDTO);
@@ -76,8 +75,11 @@ export const assetDal = {
   async listPage(options: {
     folderId?: string | null;
     query?: string | null;
-    sortBy: "name" | "createdAt" | "updatedAt";
-    sortOrder: "asc" | "desc";
+    type?: AssetType;
+    sorts: Array<{
+      sortBy: "name" | "extension" | "size" | "createdAt" | "updatedAt";
+      sortOrder: "asc" | "desc";
+    }>;
     page: number;
     limit: number;
   }): Promise<{ assets: AssetDTO[]; total: number }> {
@@ -87,6 +89,10 @@ export const assetDal = {
         ? eq(assets.folderId, options.folderId)
         : isNull(assets.folderId);
     const conditions: SQL[] = [folderCondition, isNull(assets.deletedAt)];
+
+    if (options.type) {
+      conditions.push(eq(assets.type, options.type));
+    }
 
     if (options.query?.trim()) {
       const pattern = containsPattern(options.query.trim());
@@ -102,14 +108,34 @@ export const assetDal = {
       );
     }
 
-    const sortColumn =
-      options.sortBy === "name"
-        ? assets.name
-        : options.sortBy === "updatedAt"
-          ? assets.updatedAt
-          : assets.createdAt;
-    const orderBy =
-      options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
+    const extensionColumn = sql<string>`
+      lower(
+        substr(
+          ${assets.originalName},
+          length(
+            rtrim(
+              ${assets.originalName},
+              replace(${assets.originalName}, '.', '')
+            )
+          ) + 1
+        )
+      )
+    `;
+
+    const orderBy = options.sorts.map(({ sortBy, sortOrder }) => {
+      const sortColumn =
+        sortBy === "name"
+          ? assets.name
+          : sortBy === "extension"
+            ? extensionColumn
+            : sortBy === "size"
+              ? assets.size
+              : sortBy === "updatedAt"
+                ? assets.updatedAt
+                : assets.createdAt;
+
+      return sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
+    });
     const condition = and(...conditions);
 
     const [countRows, rows] = await Promise.all([
@@ -119,7 +145,7 @@ export const assetDal = {
         .from(assets)
         .leftJoin(users, eq(assets.uploadedBy, users.id))
         .where(condition)
-        .orderBy(orderBy)
+        .orderBy(...orderBy, asc(assets.id))
         .limit(options.limit)
         .offset((options.page - 1) * options.limit),
     ]);

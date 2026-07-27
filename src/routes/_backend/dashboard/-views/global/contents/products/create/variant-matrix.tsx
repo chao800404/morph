@@ -1,8 +1,33 @@
+import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { Checkbox } from "@/components/ui/checkbox";
+import { inputVariants } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import type { FormField } from "@/lib/validations/form";
 import { GripVertical } from "lucide-react";
 import { useState, type Dispatch } from "react";
-import type { DraftAction, DraftOption, DraftVariant } from "./use-product-draft";
+import type {
+  DraftAction,
+  DraftOption,
+  DraftVariant,
+} from "./use-product-draft";
+
+const variantTipFields: FormField[] = [
+  {
+    type: "tip",
+    name: "variant-creation-tip",
+    description:
+      "Variants left unchecked won’t be created. You can always create and edit variants afterwards, but this list is the fastest way to set them up.",
+    colSpan: 1,
+  },
+];
 
 /**
  * Every combination the chosen option values produce, one row each.
@@ -38,75 +63,74 @@ export const VariantMatrix = ({
         </p>
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-border/60">
-        <div className="flex items-center gap-4 border-b border-border/60 bg-muted/30 px-4 py-3">
-          <Checkbox
-            checked={variants.every((variant) => variant.included)}
-            aria-label="Toggle all variants"
-            onCheckedChange={(checked) =>
-              dispatch({
-                type: "toggleAllVariants",
-                included: checked === true,
-              })
-            }
-          />
-          <span className="w-4" aria-hidden />
-          {axes.map((option) => (
-            <span
-              key={option.key}
-              className="flex-1 text-sm font-medium text-foreground"
-            >
-              {option.title}
-            </span>
-          ))}
-        </div>
-
-        <div className="divide-y divide-border/40">
-          {variants.map((variant) => (
-            <div
-              key={variant.key}
-              draggable
-              onDragStart={() => setDraggedKey(variant.key)}
-              onDragOver={(event) => onDragOver(event, variant.key)}
-              onDragEnd={() => setDraggedKey(null)}
-              className={cn(
-                "flex items-center gap-4 px-4 py-3 transition-colors",
-                draggedKey === variant.key
-                  ? "bg-accent/60 opacity-40"
-                  : "hover:bg-accent/20",
-                !variant.included && "text-muted-foreground",
-              )}
-            >
-              <Checkbox
-                checked={variant.included}
-                aria-label={`Include ${variant.key}`}
-                onCheckedChange={(checked) =>
-                  dispatch({
-                    type: "toggleVariant",
-                    key: variant.key,
-                    included: checked === true,
-                  })
-                }
-              />
-              <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground/60 active:cursor-grabbing" />
-              {variant.optionValues.map((value, index) => (
-                <span
-                  key={`${variant.key}-${index}`}
-                  className="flex-1 text-sm"
-                >
-                  {value}
-                </span>
+      <div
+        className={cn(
+          inputVariants({ variant: "card", size: "md" }),
+          "block h-auto min-h-0 overflow-hidden p-0",
+        )}
+      >
+        <Table>
+          <TableHeader variant="card">
+            <TableRow>
+              <TableHead className="w-12">
+                <Checkbox
+                  checked={variants.every((variant) => variant.included)}
+                  aria-label="Toggle all variants"
+                  onCheckedChange={(checked) =>
+                    dispatch({
+                      type: "toggleAllVariants",
+                      included: checked === true,
+                    })
+                  }
+                />
+              </TableHead>
+              <TableHead className="w-8" />
+              {axes.map((option) => (
+                <TableHead key={option.key}>{option.title}</TableHead>
               ))}
-            </div>
-          ))}
-        </div>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {variants.map((variant) => (
+              <TableRow
+                key={variant.key}
+                variant="card"
+                draggable
+                onDragStart={() => setDraggedKey(variant.key)}
+                onDragOver={(event) => onDragOver(event, variant.key)}
+                onDragEnd={() => setDraggedKey(null)}
+                className={cn(
+                  "h-11",
+                  draggedKey === variant.key && "bg-accent/60 opacity-40",
+                  !variant.included && "text-muted-foreground",
+                )}
+              >
+                <TableCell>
+                  <Checkbox
+                    checked={variant.included}
+                    aria-label={`Include ${variant.key}`}
+                    onCheckedChange={(checked) =>
+                      dispatch({
+                        type: "toggleVariant",
+                        key: variant.key,
+                        included: checked === true,
+                      })
+                    }
+                  />
+                </TableCell>
+                <TableCell>
+                  <GripVertical className="size-4 cursor-grab text-muted-foreground/60 active:cursor-grabbing" />
+                </TableCell>
+                {variant.optionValues.map((value, index) => (
+                  <TableCell key={`${variant.key}-${index}`}>{value}</TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </div>
 
-      <p className="rounded-lg border-l-2 border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-        <span className="font-medium text-foreground">Tip:</span> Variants left
-        unchecked won't be created. You can always create and edit variants
-        afterwards, but this list is the fastest way to set them up.
-      </p>
+      <FieldsRenderer fields={variantTipFields} className="grid-cols-1 gap-0" />
     </div>
   );
 };

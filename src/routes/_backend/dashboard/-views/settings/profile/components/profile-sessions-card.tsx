@@ -48,7 +48,10 @@ export const ProfileSessionsCard = ({
   );
 
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(sessions.length / ITEMS_PER_PAGE));
+    const totalPages = Math.max(
+      1,
+      Math.ceil(sessions.length / ITEMS_PER_PAGE),
+    );
     if (page > totalPages) {
       setPage(totalPages);
     }
@@ -92,7 +95,8 @@ export const ProfileSessionsCard = ({
         label={label}
         description={description}
         classNames={{
-          contentWrapper: "px-0 overflow-x-auto",
+          cardWrapper: "h-auto",
+          contentWrapper: "px-0",
           headerWrapper: "max-sm:flex-col max-sm:gap-4",
         }}
         headerButton={
@@ -105,92 +109,94 @@ export const ProfileSessionsCard = ({
           </Button>
         }
       >
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead
-                className={cn(
-                  "pl-6 w-14 whitespace-nowrap sticky left-0 z-20 bg-accent",
-                )}
-              >
-                Device
-              </TableHead>
-              <TableHead className="whitespace-nowrap">City</TableHead>
-              <TableHead className="whitespace-nowrap">IP Address</TableHead>
-              <TableHead className="whitespace-nowrap">User Agent</TableHead>
-              <TableHead className="whitespace-nowrap">Last Active</TableHead>
-              <TableHead className="whitespace-nowrap">Created</TableHead>
-              <TableHead className="pr-6 w-14 whitespace-nowrap"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sessions.length === 0 ? (
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-10">
-                  No active sessions found.
-                </TableCell>
+                <TableHead
+                  className={cn(
+                    "pl-6 w-14 whitespace-nowrap sticky left-0 z-20 bg-accent",
+                  )}
+                >
+                  Device
+                </TableHead>
+                <TableHead className="whitespace-nowrap">City</TableHead>
+                <TableHead className="whitespace-nowrap">IP Address</TableHead>
+                <TableHead className="whitespace-nowrap">User Agent</TableHead>
+                <TableHead className="whitespace-nowrap">Last Active</TableHead>
+                <TableHead className="whitespace-nowrap">Created</TableHead>
+                <TableHead className="pr-6 w-14 whitespace-nowrap"></TableHead>
               </TableRow>
-            ) : (
-              paginationData.paginatedItems.map((session) => {
-                const userAgentDisplay = simplifyUserAgent(session.userAgent);
-                const isCurrent = currentSessionId === session.id;
-                const Device = getDeviceIcon(session.userAgent, isCurrent);
+            </TableHeader>
+            <TableBody>
+              {sessions.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-10">
+                    No active sessions found.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                paginationData.paginatedItems.map((session) => {
+                  const userAgentDisplay = simplifyUserAgent(session.userAgent);
+                  const isCurrent = currentSessionId === session.id;
+                  const Device = getDeviceIcon(session.userAgent, isCurrent);
 
-                return (
-                  <TableRow
-                    data-active={isCurrent}
-                    className={cn("data-[active=true]:bg-muted group")}
-                    key={session.id}
-                  >
-                    <TableCell
-                      className={cn(
-                        "text-start pl-6 sticky bg-muted/50 left-0 z-20 group-data-[active=true]:bg-muted",
-                      )}
+                  return (
+                    <TableRow
+                      data-active={isCurrent}
+                      className={cn("data-[active=true]:bg-muted group")}
+                      key={session.id}
                     >
-                      <div className="flex justify-center text-center gap-0.5">
-                        {Device}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {session.city?.replace("City", "") || "Unknown"}
-                    </TableCell>
-                    <TableCell className="font-medium whitespace-nowrap">
-                      {session.ipAddress || "Unknown"}
-                    </TableCell>
-                    <TableCell
-                      className="whitespace-nowrap max-w-[200px] truncate"
-                      title={userAgentDisplay}
-                    >
-                      {userAgentDisplay}
-                    </TableCell>
-                    <TableCell
-                      suppressHydrationWarning
-                      className="whitespace-nowrap"
-                    >
-                      {formatLastActive(session.updatedAt)}
-                    </TableCell>
-                    <TableCell
-                      suppressHydrationWarning
-                      className="whitespace-nowrap"
-                    >
-                      {new Date(session.createdAt).toLocaleDateString()}
-                    </TableCell>
-                    <TableCell
-                      className={cn(
-                        "text-center bg-muted/50 pr-6 sticky right-0 z-20 group-data-[active=true]:bg-muted",
-                      )}
-                    >
-                      <SessionDropdownMenu
-                        id={session.id}
-                        isCurrent={isCurrent}
-                      />
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
+                      <TableCell
+                        className={cn(
+                          "text-start pl-6 sticky bg-muted/50 left-0 z-20 group-data-[active=true]:bg-muted",
+                        )}
+                      >
+                        <div className="flex justify-center text-center gap-0.5">
+                          {Device}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {session.city?.replace("City", "") || "Unknown"}
+                      </TableCell>
+                      <TableCell className="font-medium whitespace-nowrap">
+                        {session.ipAddress || "Unknown"}
+                      </TableCell>
+                      <TableCell
+                        className="whitespace-nowrap max-w-[200px] truncate"
+                        title={userAgentDisplay}
+                      >
+                        {userAgentDisplay}
+                      </TableCell>
+                      <TableCell
+                        suppressHydrationWarning
+                        className="whitespace-nowrap"
+                      >
+                        {formatLastActive(session.updatedAt)}
+                      </TableCell>
+                      <TableCell
+                        suppressHydrationWarning
+                        className="whitespace-nowrap"
+                      >
+                        {new Date(session.createdAt).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell
+                        className={cn(
+                          "text-center bg-muted/50 pr-6 sticky right-0 z-20 group-data-[active=true]:bg-muted",
+                        )}
+                      >
+                        <SessionDropdownMenu
+                          id={session.id}
+                          isCurrent={isCurrent}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
         <div className="px-6 py-4 text-sm border-t">
           <CardPagination
             page={page}

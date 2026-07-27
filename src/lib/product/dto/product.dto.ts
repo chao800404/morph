@@ -11,6 +11,8 @@ export interface ProductDTO {
   description: string | null;
   status: ProductStatus;
   collectionId: string | null;
+  typeId: string | null;
+  discountable: boolean;
   thumbnailAssetId: string | null;
   metadata: ProductMetadata;
   createdBy: string;
@@ -25,6 +27,8 @@ export interface ProductDetailDTO extends ProductDTO {
   variants: ProductVariantDTO[];
   /** Gallery asset ids in display order. */
   assetIds: string[];
+  tagIds: string[];
+  categoryIds: string[];
 }
 
 export interface CreateProductDTO {
@@ -34,6 +38,8 @@ export interface CreateProductDTO {
   description?: string | null;
   status?: ProductStatus;
   collectionId?: string | null;
+  typeId?: string | null;
+  discountable?: boolean;
   thumbnailAssetId?: string | null;
   metadata?: ProductMetadata;
   createdBy: string;
@@ -53,6 +59,8 @@ export interface UpdateProductDTO {
   description?: string | null;
   status?: ProductStatus;
   collectionId?: string | null;
+  typeId?: string | null;
+  discountable?: boolean;
   thumbnailAssetId?: string | null;
   metadata?: ProductMetadata;
   updatedBy: string;

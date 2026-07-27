@@ -1,26 +1,42 @@
-import { cn, formatDate, getFileExtension } from "@/lib/utils";
-import { getConfig } from "@/server/get-config";
+import { cn } from "@/lib/utils";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
-import { useMemo } from "react";
+import { getRouteApi, useLocation } from "@tanstack/react-router";
+import { useEffect, useMemo } from "react";
 
 import { AssetPropertyCard } from "@/routes/_backend/dashboard/-components/assets-card/asset-property-card";
 import { AssetsDataProvider } from "@/routes/_backend/dashboard/-components/assets-card/assets-data-provider";
+import AssetSelectFloat from "@/routes/_backend/dashboard/-views/features/asset/select/float";
 import { assetQueries, normalizeAssetListParams } from "@queries/asset.queries";
 import { AssetsExplorerCard } from "./component/assets-explorer-card";
 import { AssetDraggableProvider } from "./component/draggable-provider";
+import { toAssetCardAsset, toAssetCardFolder } from "./asset-view-model";
+import { useAssetsStore } from "./stores/assets.store";
 
 const routeApi = getRouteApi("/_backend/dashboard/$slug");
 const DEFAULT_PAGINATION = {
   page: 1,
-  limit: 20,
+  limit: 15,
   totalAssets: 0,
   totalPages: 1,
 };
 
 export const Assets = () => {
-  const config = getConfig().client;
   const search = routeApi.useSearch();
+  const isAssetsIndex = useLocation({
+    select: (location) =>
+      location.pathname === "/dashboard/assets" ||
+      location.pathname === "/dashboard/assets/",
+  });
+
+  useEffect(
+    () => () => {
+      // Search-param navigation (page, sort, filters and folders) keeps this
+      // view mounted, so the selection survives. A real route change unmounts
+      // the Assets view and must not leak its selection into another feature.
+      useAssetsStore.getState().clearAllSelectedItems();
+    },
+    [],
+  );
 
   // Must match the loader's params exactly (same query key) so the loader's
   // prefetch primes the cache this query reads — avoids a redundant fetch and
@@ -44,43 +60,12 @@ export const Assets = () => {
   const responseData = queryAssets?.data;
 
   const foldersData = useMemo(
-    () =>
-      responseData?.folders?.map((folder) => ({
-        id: folder.id,
-        name: folder.name,
-        description: folder.description,
-        createdAt: formatDate(folder.createdAt),
-        updatedAt: formatDate(folder.updatedAt),
-        createdBy: folder.createdBy || undefined,
-        updatedBy: folder.updatedBy || undefined,
-        path: folder.path || undefined,
-        parentId: folder.parentId || undefined,
-        idPath: folder.idPath || undefined,
-        assetCount: folder.assetCount ?? 0,
-        folderCount: folder.folderCount ?? 0,
-        itemCount: folder.itemCount ?? 0,
-        empty: false,
-      })) || [],
+    () => responseData?.folders?.map(toAssetCardFolder) || [],
     [responseData?.folders],
   );
 
   const assetsData = useMemo(
-    () =>
-      responseData?.assets?.map((asset) => ({
-        id: asset.id,
-        name: asset.name,
-        url: asset.url.startsWith("http") ? asset.url : `${asset.url}`,
-        createdAt: formatDate(new Date(asset.createdAt || new Date())),
-        updatedAt: formatDate(new Date(asset.updatedAt || new Date())),
-        size: asset.size,
-        type: asset.mimeType,
-        extension: getFileExtension(asset.name) || getFileExtension(asset.url),
-        alt: asset.alt || undefined,
-        caption: asset.caption || undefined,
-        tags: asset.tags.length > 0 ? asset.tags : undefined,
-        uploadedBy: asset.uploadedBy || undefined,
-        duration: asset.duration || undefined,
-      })) || [],
+    () => responseData?.assets?.map(toAssetCardAsset) || [],
     [responseData?.assets],
   );
 
@@ -89,19 +74,7 @@ export const Assets = () => {
   const currentFolder = useMemo(
     () =>
       responseData?.currentFolder
-        ? {
-            id: responseData.currentFolder.id,
-            name: responseData.currentFolder.name,
-            createdAt: formatDate(responseData.currentFolder.createdAt),
-            updatedAt: formatDate(responseData.currentFolder.updatedAt),
-            createdBy: responseData.currentFolder.createdBy || undefined,
-            updatedBy: responseData.currentFolder.updatedBy || undefined,
-            empty: false,
-            idPath: responseData.currentFolder.idPath,
-            path: responseData.currentFolder.path,
-            parentId: responseData.currentFolder.parentId,
-            description: responseData.currentFolder.description,
-          }
+        ? toAssetCardFolder(responseData.currentFolder)
         : undefined,
     [responseData?.currentFolder],
   );
@@ -123,15 +96,14 @@ export const Assets = () => {
           <AssetsDataProvider data={assetsCardData} folderId={folderId}>
             <AssetDraggableProvider>
               <AssetsExplorerCard
-                slug="assets"
                 label="Assets"
                 description="Manage your media and files"
                 query={query}
                 data={assetsCardData}
-                uploadConfig={config.upload}
                 isLoading={isInitialLoading}
                 errorMessage={errorMessage}
                 folderId={folderId}
+                hasActiveFilter={Boolean(search.assetType)}
               />
             </AssetDraggableProvider>
           </AssetsDataProvider>
@@ -140,6 +112,7 @@ export const Assets = () => {
       <div className="h-full w-md">
         <AssetPropertyCard />
       </div>
+      <AssetSelectFloat active={isAssetsIndex} />
     </div>
   );
 };

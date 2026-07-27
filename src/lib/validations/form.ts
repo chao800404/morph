@@ -47,6 +47,7 @@ const fieldTextValueSchema = z
 const fieldValueSchema = z.union([
   fieldTextValueSchema,
   z.array(fieldTextValueSchema),
+  z.boolean(),
 ]);
 
 // Export sanitize function for use in store
@@ -98,7 +99,7 @@ export const validateReactNode = (node: unknown): boolean => {
  * Both live on the same union so `FieldsRenderer` no longer has to guess which
  * shape it received. `defaultValue` wins when both are present.
  */
-export type FormFieldValue = string | string[];
+export type FormFieldValue = string | string[] | boolean;
 
 export interface FormFieldBase {
   name: string;
@@ -106,6 +107,16 @@ export interface FormFieldBase {
   description?: string;
   placeholder?: string;
   required?: boolean;
+  /**
+   * Validation message for this field.
+   *
+   * Lives on the field rather than in the surrounding component so the same
+   * `fields` array stays the single source for what a form contains and what
+   * is wrong with it.
+   */
+  error?: string;
+  /** Shows the shared muted "(Optional)" marker beside the label. */
+  optional?: boolean;
   disabled?: boolean;
   autoFocus?: boolean;
   /** Grid columns the field spans inside `FieldsRenderer`. Defaults to 2. */
@@ -154,7 +165,34 @@ export type UploadFormField = FormFieldBase & {
 
 export type OptionValuesFormField = FormFieldBase & {
   type: "option-values";
+  /**
+   * Turns the field from free typing into picking from a fixed set.
+   *
+   * With `choices` the field's value is the selected ids; without it, the
+   * values the author typed. Product options declare choices; the Options page
+   * itself does not, because that is where values are created.
+   */
+  choices?: OptionValueChoice[];
+  /** Offers "Create «typed text»" when the search matches nothing. */
+  allowCreate?: boolean;
+  maxSelected?: number;
+  searchPlaceholder?: string;
+  emptyMessage?: string;
 };
+
+export type SwitchFormField = FormFieldBase & {
+  type: "switch";
+};
+
+export type TipFormField = FormFieldBase & {
+  type: "tip";
+  description: string;
+};
+
+export interface OptionValueChoice {
+  id: string;
+  value: string;
+}
 
 export type HiddenFormField = FormFieldBase & {
   type: "hidden";
@@ -168,6 +206,8 @@ export type FormField =
   | FolderSelectFormField
   | UploadFormField
   | OptionValuesFormField
+  | SwitchFormField
+  | TipFormField
   | HiddenFormField;
 
 export type FormFieldType = FormField["type"];
@@ -180,6 +220,8 @@ const formFieldBaseShape = {
   description: z.string().optional(),
   placeholder: z.string().optional(),
   required: z.boolean().optional(),
+  error: z.string().optional(),
+  optional: z.boolean().optional(),
   disabled: z.boolean().optional(),
   autoFocus: z.boolean().optional(),
   colSpan: z.number().int().min(1).max(2).optional(),
@@ -248,6 +290,24 @@ const uploadFormFieldSchema = z.object({
 const optionValuesFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("option-values"),
+  choices: z
+    .array(z.object({ id: z.string(), value: z.string() }))
+    .optional(),
+  allowCreate: z.boolean().optional(),
+  maxSelected: z.number().int().positive().optional(),
+  searchPlaceholder: z.string().optional(),
+  emptyMessage: z.string().optional(),
+});
+
+const switchFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("switch"),
+});
+
+const tipFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("tip"),
+  description: z.string().min(1).max(2000),
 });
 
 const hiddenFormFieldSchema = z.object({
@@ -266,6 +326,8 @@ export const formFieldSchema: z.ZodType<FormField> = z.discriminatedUnion(
     folderSelectFormFieldSchema,
     uploadFormFieldSchema,
     optionValuesFormFieldSchema,
+    switchFormFieldSchema,
+    tipFormFieldSchema,
     hiddenFormFieldSchema,
   ],
 );

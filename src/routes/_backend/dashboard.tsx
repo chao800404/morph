@@ -5,6 +5,7 @@ import { IdleTimerProvider } from "@/components/provider/idle-timer-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { findBreadcrumbsFromCollections } from "@/lib/config/navigation";
+import { usePageBreadcrumbStore } from "./dashboard/-components/breadcrumb/use-page-breadcrumb";
 import { cn } from "@/lib/utils";
 import { getSession } from "@/server/auth/getSession";
 import { NotFound } from "@/components/not-found/not-found";
@@ -17,13 +18,6 @@ import {
 } from "@tanstack/react-router";
 import { lazy, Suspense } from "react";
 
-const CreateDialog = lazy(() =>
-  import("./dashboard/-views/features/global-create/create-dialog").then(
-    (m) => ({
-      default: m.CreateDialog,
-    }),
-  ),
-);
 const EditDialog = lazy(() =>
   import("./dashboard/-views/features/global-edit/edit-dialog").then((m) => ({
     default: m.EditDialog,
@@ -34,19 +28,9 @@ const InfoAlert = lazy(() =>
     default: m.InfoAlert,
   })),
 );
-const AssetEditDialog = lazy(() =>
-  import("./dashboard/-views/features/asset/edit/asset-edit-dialog").then(
-    (m) => ({ default: m.AssetEditDialog }),
-  ),
-);
 const AssetMoveDialog = lazy(() =>
   import("./dashboard/-views/features/asset/move/asset-move-dialog").then(
     (m) => ({ default: m.AssetMoveDialog }),
-  ),
-);
-const AssetPreviewDialog = lazy(() =>
-  import("./dashboard/-views/features/asset/preview/asset-preview-dialog").then(
-    (m) => ({ default: m.AssetPreviewDialog }),
   ),
 );
 const AssetPostProcessDialog = lazy(() =>
@@ -54,10 +38,6 @@ const AssetPostProcessDialog = lazy(() =>
     (m) => ({ default: m.AssetPostProcessDialog }),
   ),
 );
-const AssetSelectFloat = lazy(
-  () => import("./dashboard/-views/features/asset/select/float"),
-);
-
 export const Route = createFileRoute("/_backend/dashboard")({
   beforeLoad: async () => {
     const session = await getSession();
@@ -88,9 +68,11 @@ function RouteComponent() {
       title: item.title,
       url: `/dashboard${group.slug === "/" ? "" : `/${group.slug}`}/${item.slug}`,
       icon: item.icon,
+      // Nesting is a sidebar affordance only; a nested collection has its own
+      // top-level URL, not one under its parent.
       items: item.items?.map((sub) => ({
         title: sub.title,
-        url: `/dashboard${group.slug === "/" ? "" : `/${group.slug}`}/${item.slug}/${sub.slug}`,
+        url: `/dashboard${group.slug === "/" ? "" : `/${group.slug}`}/${sub.slug}`,
       })),
     })),
   }));
@@ -102,6 +84,11 @@ function RouteComponent() {
   ];
 
   const breadcrumbs = findBreadcrumbsFromCollections(allCollections, slugs);
+  // A detail view names the record it loaded; the URL cannot.
+  const trailingCrumb = usePageBreadcrumbStore((state) => state.label);
+  const items = trailingCrumb
+    ? [...breadcrumbs, { name: trailingCrumb, href: location.pathname }]
+    : breadcrumbs;
 
   return (
     <>
@@ -125,7 +112,7 @@ function RouteComponent() {
             }}
           />
           <SidebarInset>
-            <DashboardHeader items={breadcrumbs} />
+            <DashboardHeader items={items} />
             <div
               id="dashboard-content"
               className={cn(
@@ -135,13 +122,9 @@ function RouteComponent() {
             >
               <Suspense fallback={null}>
                 <EditDialog />
-                <CreateDialog />
                 <InfoAlert />
-                <AssetEditDialog />
                 <AssetMoveDialog />
-                <AssetPreviewDialog />
                 <AssetPostProcessDialog />
-                <AssetSelectFloat />
               </Suspense>
 
               {/* <AssetsDialogs /> */}
@@ -153,7 +136,7 @@ function RouteComponent() {
                 from <TopLoader /> in _backend.tsx, and each dynamic route
                 Suspends on its own lazy component for a genuine first load.
               */}
-              <div className="p-4">
+              <div className="h-full min-h-0 p-4 max-lg:h-auto">
                 <Outlet />
               </div>
               <Toaster />

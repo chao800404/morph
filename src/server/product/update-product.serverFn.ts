@@ -1,5 +1,10 @@
 import { productDal } from "@/lib/product/dal/product.dal";
 import {
+  productCategoryDal,
+  productTagDal,
+  productTypeDal,
+} from "@/lib/product/dal/product-taxonomy.dal";
+import {
   deleteProductsInputSchema,
   updateProductInputSchema,
 } from "@/lib/validations/product";
@@ -35,6 +40,17 @@ export const updateProduct = createServerFn({ method: "POST" })
         }
       }
 
+      // `typeValue` is tri-state: absent leaves the type alone, `null` clears
+      // it, a string upserts by value. `undefined` must not reach the DAL as a
+      // column write or it would be indistinguishable from clearing.
+      const now = new Date().toISOString();
+      const typeId =
+        data.typeValue === undefined
+          ? undefined
+          : data.typeValue
+            ? await productTypeDal.ensure(data.typeValue, now)
+            : null;
+
       await productDal.update(data.id, {
         title: data.title,
         handle: data.handle,
@@ -42,13 +58,29 @@ export const updateProduct = createServerFn({ method: "POST" })
         description: data.description,
         status: data.status,
         collectionId: data.collectionId,
+        typeId,
+        discountable: data.discountable,
         thumbnailAssetId: data.thumbnailAssetId,
         updatedBy: actorId,
       });
 
-      // `assetIds` replaces the gallery wholesale; omitting it leaves it alone.
+      // These replace wholesale; omitting one leaves it alone.
       if (data.assetIds) {
         await productDal.setAssets(data.id, data.assetIds);
+      }
+
+      if (data.tagValues) {
+        await productDal.setTags(
+          data.id,
+          await productTagDal.ensureMany(data.tagValues, now),
+        );
+      }
+
+      if (data.categoryIds) {
+        await productDal.setCategories(
+          data.id,
+          await productCategoryDal.filterExisting(data.categoryIds),
+        );
       }
 
       return {

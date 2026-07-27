@@ -2,17 +2,26 @@ import {
   listAllFolders,
   listItemsServerFn,
 } from "@/server/asset/list-items.serverFn";
+import { getAssetItems } from "@/server/asset/get-items.serverFn";
+import type { AssetEditSelectionItem } from "@/lib/asset/edit-selection";
+import { normalizeAssetSorts } from "@/lib/asset/sort";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
+import type { AssetType } from "@/db/asset.schema";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 
 /** Params the assets list query and its server function agree on. */
 export interface AssetListParams {
   folderId: string | null;
   query?: string;
-  sortBy: "name" | "createdAt" | "updatedAt";
-  sortOrder: "asc" | "desc";
+  type?: AssetType;
+  sortBy: Array<"name" | "extension" | "size" | "createdAt" | "updatedAt">;
+  sortOrder: Array<"asc" | "desc">;
   page: number;
   limit: number;
+}
+
+export interface AssetItemsParams {
+  items: AssetEditSelectionItem[];
 }
 
 // Normalize raw route search into the exact params the assets list query uses.
@@ -21,14 +30,19 @@ export interface AssetListParams {
 // entry than the component reads, causing a redundant fetch and a loading flash.
 export const normalizeAssetListParams = (
   search: DashboardSearch = {},
-): AssetListParams => ({
-  folderId: search.folderId || null,
-  query: search.q,
-  sortBy: search.sortBy || "createdAt",
-  sortOrder: search.sortOrder || "desc",
-  page: Number(search.page) || 1,
-  limit: Number(search.limit) || 15,
-});
+): AssetListParams => {
+  const sorts = normalizeAssetSorts(search.sortBy, search.sortOrder);
+
+  return {
+    folderId: search.folderId || null,
+    query: search.q,
+    type: search.assetType,
+    sortBy: sorts.map((sort) => sort.key),
+    sortOrder: sorts.map((sort) => sort.direction),
+    page: Number(search.page) || 1,
+    limit: Number(search.limit) || 15,
+  };
+};
 
 export const assetQueries = {
   all: () => ["assets"] as const,
@@ -40,6 +54,11 @@ export const assetQueries = {
         return result;
       },
       placeholderData: keepPreviousData,
+    }),
+  items: (params: AssetItemsParams) =>
+    queryOptions({
+      queryKey: [...assetQueries.all(), "items", params],
+      queryFn: () => getAssetItems({ data: params }),
     }),
   folders: () =>
     queryOptions({

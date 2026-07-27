@@ -13,7 +13,7 @@ import {
   productQueries,
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearch } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { deleteProductsAction } from "./product-actions";
@@ -26,6 +26,7 @@ const STATUS_VARIANT = {
 
 const Products = () => {
   const search = useSearch({ strict: false }) as DashboardSearch;
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const params = normalizeProductListParams(search);
   const { data: result, isPending } = useQuery(productQueries.list(params));
@@ -123,6 +124,12 @@ const Products = () => {
       onRetry={invalidate}
       emptyTitle="No products yet"
       emptyDescription="Get started by creating your first product to display in your store."
+      onRowClick={(product) =>
+        void navigate({
+          to: "/dashboard/$slug/$id",
+          params: { slug: "products", id: product.id },
+        })
+      }
       rowActions={(product) => [
         {
           label: "Delete",

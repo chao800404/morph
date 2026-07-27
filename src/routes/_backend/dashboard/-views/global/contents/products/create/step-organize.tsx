@@ -1,23 +1,23 @@
 import { createSurface } from "@/components/dialog/create-surface";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import type { FormField, FormFieldValue } from "@/lib/validations/form";
 import {
   collectionQueries,
   normalizeCollectionListParams,
+  productTaxonomyQueries,
 } from "@queries/product.queries";
 import { useQuery } from "@tanstack/react-query";
 import type { Dispatch } from "react";
+import { categoryDepth } from "@/lib/product/category-tree";
 import type { DraftAction, ProductDraft } from "./use-product-draft";
 
 const NO_COLLECTION = "__none__";
+
+/** `FieldsRenderer` also emits `File[]`, which none of these fields produce. */
+const isStringArray = (value: FormFieldValue | File[]): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
 
 export const StepOrganize = ({
   draft,
@@ -26,53 +26,169 @@ export const StepOrganize = ({
   draft: ProductDraft;
   dispatch: Dispatch<DraftAction>;
 }) => {
-  const { data: result, isPending } = useQuery(
+  const { data: collectionResult, isPending: collectionsPending } = useQuery(
     collectionQueries.list({
       ...normalizeCollectionListParams({}),
       limit: 100,
     }),
   );
-  const collections = result?.success ? (result.data?.collections ?? []) : [];
+  const { data: taxonomyResult, isPending: taxonomyPending } = useQuery(
+    productTaxonomyQueries.list(),
+  );
+
+  if (collectionsPending || taxonomyPending) {
+    return (
+      <div className={cn(createSurface.content, "flex w-full justify-center")}>
+        <Spinner className="size-4 text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const collections = collectionResult?.success
+    ? (collectionResult.data?.collections ?? [])
+    : [];
+  const taxonomy = taxonomyResult?.success ? taxonomyResult.data : null;
+
+  // Types and tags are identified by their value, not their id: the server
+  // upserts them, so a name typed here needs no row to exist first.
+  const toValueChoices = (values: { value: string }[]) =>
+    values.map(({ value }) => ({ id: value, value }));
+
+  const categories = taxonomy?.categories ?? [];
+
+  const fields: FormField[] = [
+    {
+      type: "switch",
+      name: "discountable",
+      label: "Discountable",
+      description: "When off, promotions and discounts never apply.",
+      value: draft.discountable,
+      colSpan: 1,
+    },
+    {
+      type: "select",
+      name: "collectionId",
+      label: "Collection",
+      optional: true,
+      value: draft.collectionId || NO_COLLECTION,
+      options: [
+        { value: NO_COLLECTION, label: "No collection" },
+        ...collections.map((collection) => ({
+          value: collection.id,
+          label: collection.title,
+        })),
+      ],
+      colSpan: 1,
+    },
+    {
+      type: "option-values",
+      name: "typeValue",
+      label: "Type",
+      optional: true,
+      choices: toValueChoices(taxonomy?.types ?? []),
+      value: draft.typeValue ? [draft.typeValue] : [],
+      allowCreate: true,
+      maxSelected: 1,
+      placeholder: "Select or create a type...",
+      searchPlaceholder: "Search types...",
+      emptyMessage: "No type found.",
+      colSpan: 1,
+    },
+    {
+      type: "option-values",
+      name: "tagValues",
+      label: "Tags",
+      optional: true,
+      choices: toValueChoices(taxonomy?.tags ?? []),
+      value: draft.tagValues,
+      allowCreate: true,
+      placeholder: "Select or create tags...",
+      searchPlaceholder: "Search tags...",
+      emptyMessage: "No tag found.",
+      colSpan: 1,
+    },
+    categories.length > 0
+      ? {
+          type: "option-values",
+          name: "categoryIds",
+          label: "Categories",
+          optional: true,
+          choices: categories.map((category) => ({
+            id: category.id,
+            value: `${"— ".repeat(categoryDepth(category.mpath))}${category.name}`,
+          })),
+          value: draft.categoryIds,
+          placeholder: "Select categories...",
+          searchPlaceholder: "Search categories...",
+          emptyMessage: "No category found.",
+          colSpan: 1,
+        }
+      : {
+          type: "tip",
+          name: "categories-empty",
+          label: "Categories:",
+          description:
+            "None exist yet. A product can still be created without one.",
+          colSpan: 1,
+        },
+    {
+      type: "tip",
+      name: "channels-note",
+      label: "Tip:",
+      description:
+        "Sales channels and shipping profiles are not part of the catalogue yet, so a product is available everywhere once published.",
+      colSpan: 1,
+    },
+  ];
+
+  const handleChange = (name: string, value: FormFieldValue | File[]) => {
+    switch (name) {
+      case "discountable":
+        if (typeof value === "boolean") {
+          dispatch({ type: "setDiscountable", value });
+        }
+        return;
+      case "collectionId":
+        if (typeof value === "string") {
+          dispatch({
+            type: "setField",
+            field: "collectionId",
+            value: value === NO_COLLECTION ? "" : value,
+          });
+        }
+        return;
+      case "typeValue":
+        if (isStringArray(value)) {
+          // One type per product, so the newest pick replaces the last.
+          dispatch({
+            type: "setField",
+            field: "typeValue",
+            value: value.at(-1) ?? "",
+          });
+        }
+        return;
+      case "tagValues":
+        if (isStringArray(value)) {
+          dispatch({ type: "setTagValues", values: value });
+        }
+        return;
+      case "categoryIds":
+        if (isStringArray(value)) {
+          dispatch({ type: "setCategoryIds", ids: value });
+        }
+        return;
+    }
+  };
 
   return (
-    <div className={cn(createSurface.content, "flex w-full flex-col gap-6")}>
+    <div className={cn(createSurface.content, "flex w-full flex-col gap-4")}>
       <h2 className="text-lg font-medium text-foreground">Organize</h2>
 
-      <div className="space-y-2">
-        <Label htmlFor="product-collection">
-          Collection <span className="text-muted-foreground">(Optional)</span>
-        </Label>
-        {isPending ? (
-          <Spinner />
-        ) : (
-          <Select
-            value={draft.collectionId || NO_COLLECTION}
-            onValueChange={(value) =>
-              dispatch({
-                type: "setField",
-                field: "collectionId",
-                value: value === NO_COLLECTION ? "" : value,
-              })
-            }
-          >
-            <SelectTrigger id="product-collection">
-              <SelectValue placeholder="Select a collection" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NO_COLLECTION}>No collection</SelectItem>
-              {collections.map((collection) => (
-                <SelectItem key={collection.id} value={collection.id}>
-                  {collection.title}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-        <p className="text-sm text-muted-foreground">
-          Type, categories, tags, shipping profiles and sales channels are not
-          part of the catalogue yet.
-        </p>
-      </div>
+      <FieldsRenderer
+        fields={fields}
+        className="grid-cols-1 gap-y-6"
+        onChange={handleChange}
+      />
     </div>
   );
 };

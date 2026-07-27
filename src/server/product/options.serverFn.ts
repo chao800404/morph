@@ -2,6 +2,7 @@ import { productOptionDal } from "@/lib/product/dal/product-option.dal";
 import {
   createProductOptionInputSchema,
   deleteProductOptionsInputSchema,
+  getProductInputSchema,
   listProductOptionsInputSchema,
   updateProductOptionInputSchema,
 } from "@/lib/validations/product";
@@ -20,6 +21,7 @@ export const listProductOptions = createServerFn({ method: "POST" })
     try {
       const page = await productOptionDal.listPage({
         query: data.query,
+        createdWithin: data.createdWithin,
         sortBy: data.sortBy,
         sortOrder: data.sortOrder,
         page: data.page,
@@ -47,6 +49,37 @@ export const listProductOptions = createServerFn({ method: "POST" })
           error instanceof Error ? error.message : "Failed to fetch options",
         data: null,
         error: "LIST_FAILED",
+      };
+    }
+  });
+
+export const getProductOption = createServerFn({ method: "POST" })
+  .validator((data: unknown) => getProductInputSchema.parse(data))
+  .middleware([productReadMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const option = await productOptionDal.findById(data.id);
+      if (!option) {
+        return {
+          success: false,
+          message: "Option not found",
+          data: null,
+          error: "NOT_FOUND",
+        };
+      }
+      return {
+        success: true,
+        message: "Option fetched successfully",
+        data: option,
+      };
+    } catch (error) {
+      console.error("Get product option error:", error);
+      return {
+        success: false,
+        message:
+          error instanceof Error ? error.message : "Failed to fetch option",
+        data: null,
+        error: "GET_FAILED",
       };
     }
   });

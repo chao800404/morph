@@ -1,3 +1,4 @@
+import { currencyDal } from "@/lib/currency/dal/currency.dal";
 import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
 import {
   deleteVariantsInputSchema,
@@ -31,6 +32,17 @@ export const updateVariant = createServerFn({ method: "POST" })
             message: "Each currency may only appear once",
             data: null,
             errors: { prices: ["Duplicate currency code"] },
+          };
+        }
+        if (!(await currencyDal.areSupported(currencies))) {
+          return {
+            success: false,
+            message:
+              "A price uses a currency that is not enabled for this store",
+            data: null,
+            errors: {
+              prices: ["Choose a currency enabled in Store settings"],
+            },
           };
         }
       }

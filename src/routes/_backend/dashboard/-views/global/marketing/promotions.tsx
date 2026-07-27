@@ -1,56 +1,19 @@
-import { Button } from "@/components/ui/button";
+import { CollectionCreateButton } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { EmptyFileIcon } from "@/components/ui/icons/empty-file-icon";
-import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
-import { Plus } from "lucide-react";
-import { useShallow } from "zustand/react/shallow";
-import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Promotions = () => {
-  const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
-    useShallow((state) => ({
-      setCreateData: state.setCreateData,
-      setOpen: state.setOpen,
-    })),
-  );
 
-  const handleCreatePromotion = () => {
-    setCreateData({
-      title: "Create Promotion",
-      description: "Launch discounts and special promotional campaigns",
-      fields: [
-        {
-          type: "input",
-          name: "title",
-          label: "Promotion Title",
-          placeholder: "e.g. Summer Sale 20%",
-          required: true,
-          autoFocus: true,
-        },
-        {
-          type: "input",
-          name: "code",
-          label: "Promo Code",
-          placeholder: "SUMMER20",
-        },
-      ],
-      action: notImplementedAction("Promotion creation"),
-    });
-    setCreateOpen(true);
-  };
 
   return (
     <CardWrapper
       label="Promotions"
       description="Create discounts, coupons, and promotional campaigns"
       headerButton={
-        <Button onClick={handleCreatePromotion} variant="form" size="sm" className="gap-2">
-          <Plus className="size-4" />
-          Create
-        </Button>
+        <CollectionCreateButton slug="promotions" />
       }
       classNames={{
-        cardWrapper: "min-h-content",
+        cardWrapper: "h-auto",
         contentWrapper: "flex flex-col items-center justify-center min-h-[400px]",
       }}
     >
@@ -62,10 +25,7 @@ const Promotions = () => {
             Launch discount campaigns and special offers for your store.
           </p>
           <div className="mt-4">
-            <Button onClick={handleCreatePromotion} variant="form" className="gap-2">
-              <Plus className="size-4" />
-              Create First Promotion
-            </Button>
+            <CollectionCreateButton slug="promotions" />
           </div>
         </div>
       </div>

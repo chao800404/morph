@@ -1,4 +1,10 @@
+import { currencyDal } from "@/lib/currency/dal/currency.dal";
 import { productDal } from "@/lib/product/dal/product.dal";
+import {
+  productCategoryDal,
+  productTagDal,
+  productTypeDal,
+} from "@/lib/product/dal/product-taxonomy.dal";
 import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
 import type {
   ProductOptionDTO,
@@ -52,6 +58,23 @@ export const createProduct = createServerFn({ method: "POST" })
       }
       const handle = handleResult.data;
 
+      const priceCurrencyCodes = [
+        ...data.prices.map((price) => price.currencyCode),
+        ...(data.variants ?? []).flatMap((variant) =>
+          variant.prices.map((price) => price.currencyCode),
+        ),
+      ];
+      if (!(await currencyDal.areSupported(priceCurrencyCodes))) {
+        return {
+          success: false,
+          message: "A price uses a currency that is not enabled for this store",
+          data: null,
+          errors: {
+            prices: ["Choose a currency enabled in Store settings"],
+          },
+        };
+      }
+
       if (await productDal.findByHandle(handle)) {
         return {
           success: false,
@@ -80,6 +103,13 @@ export const createProduct = createServerFn({ method: "POST" })
         };
       }
 
+      // Types and tags are upserted by value, so an author can name one that
+      // does not exist yet without a separate round trip.
+      const now = new Date().toISOString();
+      const typeId = data.typeValue
+        ? await productTypeDal.ensure(data.typeValue, now)
+        : null;
+
       const productId = crypto.randomUUID();
       await productDal.create({
         id: productId,
@@ -89,6 +119,8 @@ export const createProduct = createServerFn({ method: "POST" })
         description: data.description,
         status: data.status,
         collectionId: data.collectionId,
+        typeId,
+        discountable: data.discountable,
         thumbnailAssetId: data.thumbnailAssetId,
         createdBy: actorId,
         updatedBy: actorId,
@@ -96,6 +128,22 @@ export const createProduct = createServerFn({ method: "POST" })
 
       if (data.assetIds.length > 0) {
         await productDal.setAssets(productId, data.assetIds);
+      }
+
+      if (data.tagValues.length > 0) {
+        await productDal.setTags(
+          productId,
+          await productTagDal.ensureMany(data.tagValues, now),
+        );
+      }
+
+      if (data.categoryIds.length > 0) {
+        // Unknown ids are dropped rather than rejected: a category deleted
+        // while the wizard was open should not fail the whole product.
+        await productDal.setCategories(
+          productId,
+          await productCategoryDal.filterExisting(data.categoryIds),
+        );
       }
 
       let variantCount = 0;

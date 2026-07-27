@@ -1,10 +1,12 @@
 import { getDb } from "@/db";
 import {
   productAssets,
+  productCategoryLinks,
   productOptionValues,
   productOptions,
   productProductOptionValues,
   productProductOptions,
+  productTagLinks,
   products,
 } from "@/db/product.schema";
 import {
@@ -39,6 +41,8 @@ import { containsPattern } from "@/lib/db/like-pattern";
 // Column counts drive the insert batch size; see d1-batch.ts.
 const PRODUCT_OPTION_VALUE_LINK_COLUMNS = 3;
 const PRODUCT_ASSET_COLUMNS = 3;
+/** Both link tables are a composite primary key and nothing else. */
+const PRODUCT_LINK_COLUMNS = 2;
 
 const mapFirst = (rows: ProductRow[]): ProductDTO | null =>
   rows.length > 0 ? toProductDTO(rows[0]) : null;
@@ -149,21 +153,32 @@ export const productDal = {
     if (!product) return null;
 
     const db = await getDb();
-    const [options, variants, assetRows] = await Promise.all([
-      this.findOptions(id),
-      productVariantDal.findByProductId(id),
-      db
-        .select()
-        .from(productAssets)
-        .where(eq(productAssets.productId, id))
-        .orderBy(asc(productAssets.rank)),
-    ]);
+    const [options, variants, assetRows, tagRows, categoryRows] =
+      await Promise.all([
+        this.findOptions(id),
+        productVariantDal.findByProductId(id),
+        db
+          .select()
+          .from(productAssets)
+          .where(eq(productAssets.productId, id))
+          .orderBy(asc(productAssets.rank)),
+        db
+          .select({ tagId: productTagLinks.tagId })
+          .from(productTagLinks)
+          .where(eq(productTagLinks.productId, id)),
+        db
+          .select({ categoryId: productCategoryLinks.categoryId })
+          .from(productCategoryLinks)
+          .where(eq(productCategoryLinks.productId, id)),
+      ]);
 
     return {
       ...product,
       options,
       variants,
       assetIds: assetRows.map((row) => row.assetId),
+      tagIds: tagRows.map((row) => row.tagId),
+      categoryIds: categoryRows.map((row) => row.categoryId),
     };
   },
 
@@ -171,6 +186,7 @@ export const productDal = {
     query?: string | null;
     status?: ProductDTO["status"] | null;
     collectionId?: string | null;
+    categoryId?: string | null;
     sortBy: "title" | "createdAt" | "updatedAt";
     sortOrder: "asc" | "desc";
     page: number;
@@ -194,6 +210,20 @@ export const productDal = {
     }
     if (options.collectionId) {
       conditions.push(eq(products.collectionId, options.collectionId));
+    }
+    if (options.categoryId) {
+      // A product belongs to many categories, so this filters through the link
+      // table with a subquery rather than joining — a join would multiply rows
+      // and break the count.
+      conditions.push(
+        inArray(
+          products.id,
+          db
+            .select({ id: productCategoryLinks.productId })
+            .from(productCategoryLinks)
+            .where(eq(productCategoryLinks.categoryId, options.categoryId)),
+        ),
+      );
     }
 
     const sortColumn = {
@@ -384,6 +414,35 @@ export const productDal = {
     }));
     for (const group of chunkForInsert(rows, PRODUCT_ASSET_COLUMNS)) {
       await db.insert(productAssets).values(group);
+    }
+  },
+
+  /** Replace the product's tags. Ids are assumed to exist. */
+  async setTags(productId: string, tagIds: string[]): Promise<void> {
+    const db = await getDb();
+    await db
+      .delete(productTagLinks)
+      .where(eq(productTagLinks.productId, productId));
+
+    const rows = [...new Set(tagIds)].map((tagId) => ({ productId, tagId }));
+    for (const group of chunkForInsert(rows, PRODUCT_LINK_COLUMNS)) {
+      await db.insert(productTagLinks).values(group);
+    }
+  },
+
+  /** Replace the product's categories. Ids are assumed to exist. */
+  async setCategories(productId: string, categoryIds: string[]): Promise<void> {
+    const db = await getDb();
+    await db
+      .delete(productCategoryLinks)
+      .where(eq(productCategoryLinks.productId, productId));
+
+    const rows = [...new Set(categoryIds)].map((categoryId) => ({
+      productId,
+      categoryId,
+    }));
+    for (const group of chunkForInsert(rows, PRODUCT_LINK_COLUMNS)) {
+      await db.insert(productCategoryLinks).values(group);
     }
   },
 

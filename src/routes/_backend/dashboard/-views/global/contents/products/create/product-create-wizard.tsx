@@ -1,55 +1,102 @@
-import { createSurface } from "@/components/dialog/create-surface";
 import { DialogFooterActions } from "@/components/dialog/dialog-footer-actions";
-import { Button } from "@/components/ui/button";
+import {
+  RouteFullscreenSurface,
+} from "@/components/dialog/route-fullscreen-surface";
+import {
+  useCloseOnEscape,
+  useRouteModalClose,
+} from "@/components/dialog/route-form-modal";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { toMinorUnits } from "@/lib/currency/catalog";
 import type { ProductStatus } from "@/db/product.schema";
 import { createProduct } from "@/server/product/create-product.serverFn";
+import { currencyQueries } from "@queries/currency.queries";
 import { productQueries } from "@queries/product.queries";
-import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { CheckCircle2, CircleDashed, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { CheckCircle2, CircleDashed } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { StepDetails } from "./step-details";
 import { StepOrganize } from "./step-organize";
 import { StepVariants } from "./step-variants";
-import { toMinorUnits, useProductDraft } from "./use-product-draft";
+import { useProductDraft } from "./use-product-draft";
 
 const STEPS = ["Details", "Organize", "Variants"] as const;
 type StepIndex = 0 | 1 | 2;
 
 export const ProductCreateWizard = () => {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [draft, dispatch] = useProductDraft();
+  const close = useRouteModalClose();
+  const currencyResult = useSuspenseQuery(currencyQueries.store()).data;
+  const storeCurrencies = currencyResult.success
+    ? currencyResult.data.supportedCurrencies
+    : [];
+  const [draft, dispatch] = useProductDraft(
+    storeCurrencies.map((currency) => currency.code),
+  );
   const [step, setStep] = useState<StepIndex>(0);
   const [pending, setPending] = useState(false);
 
-  const close = useCallback(() => {
-    void navigate({ to: "/dashboard/$slug", params: { slug: "products" } });
-  }, [navigate]);
+  useCloseOnEscape(close);
 
-  // Esc closes the flow, matching the hint next to the close button.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [close]);
+  /**
+   * What Details is still missing, keyed by the field that shows it.
+   *
+   * Later steps build on these — Variants has nothing to price without an
+   * option — so the wizard will not move forward until they are answered.
+   */
+  const detailsIssues = useMemo(() => {
+    const issues: { title?: string; options?: string } = {};
+    if (draft.title.trim() === "") {
+      issues.title = "Title is required";
+    }
+    if (
+      draft.hasVariants &&
+      !draft.options.some((option) => option.selectedValueIds.length > 0)
+    ) {
+      issues.options =
+        "Pick an option and at least one of its values, or turn variants off";
+    }
+    return issues;
+  }, [draft.title, draft.hasVariants, draft.options]);
 
-  const detailsValid =
-    draft.title.trim() !== "" &&
-    (!draft.hasVariants ||
-      draft.options.some((option) => option.selectedValueIds.length > 0));
+  const detailsValid = Object.keys(detailsIssues).length === 0;
+
+  // Messages stay hidden until the author tries to leave the step, so a form
+  // they have not filled in yet is not already covered in red.
+  const [showDetailsIssues, setShowDetailsIssues] = useState(false);
+
+  /**
+   * Going back is always allowed; going forward is not.
+   *
+   * The button stays enabled and reveals what is missing on click — a disabled
+   * Continue with no explanation leaves the author guessing.
+   */
+  const goToStep = useCallback(
+    (next: StepIndex) => {
+      if (next > 0 && !detailsValid) {
+        setShowDetailsIssues(true);
+        setStep(0);
+        return false;
+      }
+      setStep(next);
+      return true;
+    },
+    [detailsValid],
+  );
 
   const submit = useCallback(
     async (status: ProductStatus) => {
+      // Save as draft is reachable from any step, so submitting is gated too.
       if (!detailsValid) {
+        setShowDetailsIssues(true);
         setStep(0);
-        toast.error("Add a title, and pick an option with at least one value.", {
-          position: "top-center",
-        });
         return;
       }
 
@@ -75,10 +122,10 @@ export const ProductCreateWizard = () => {
           : [];
 
         const buildPrices = (prices: Record<string, string>) =>
-          draft.currencies
+          storeCurrencies
             .map((currency) => ({
-              currencyCode: currency,
-              amount: toMinorUnits(prices[currency] ?? ""),
+              currencyCode: currency.code,
+              amount: toMinorUnits(prices[currency.code] ?? "", currency),
             }))
             .filter((price) => price.amount > 0);
 
@@ -90,6 +137,10 @@ export const ProductCreateWizard = () => {
             description: draft.description.trim() || null,
             status,
             collectionId: draft.collectionId || null,
+            typeValue: draft.typeValue.trim() || null,
+            tagValues: draft.tagValues,
+            categoryIds: draft.categoryIds,
+            discountable: draft.discountable,
             options,
             prices: draft.hasVariants ? [] : buildPrices(draft.defaultPrices),
             variants: draft.hasVariants
@@ -128,53 +179,38 @@ export const ProductCreateWizard = () => {
         setPending(false);
       }
     },
-    [close, detailsValid, draft, queryClient],
+    [close, detailsValid, draft, queryClient, storeCurrencies],
   );
 
   const isLastStep = step === STEPS.length - 1;
 
-  // The shell mirrors the shared create window (`DialogCreateWrapper`): an
-  // inset card over the dashboard rather than a bare full-bleed page, so both
-  // create surfaces read as the same kind of thing.
-  return (
-    <div className="fixed inset-0 z-50 flex p-2">
-      <div
-        className={cn(
-          createSurface.shell,
-          "min-h-0 flex-1 overflow-hidden rounded-lg dark:shadow-elevation-modal",
-        )}
-      >
-        <header className={cn(createSurface.header, "flex items-center")}>
-          <div className="flex items-center gap-2 px-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Close"
-              onClick={close}
-            >
-              <X className="size-4" />
-            </Button>
-            <kbd className="rounded border border-border/60 px-1.5 py-0.5 text-xs text-muted-foreground">
-              esc
-            </kbd>
-          </div>
+  const selectStep = (value: string) => {
+    const next = Number(value);
+    if (next === 0 || next === 1 || next === 2) {
+      goToStep(next);
+    }
+  };
 
-          <nav className="flex" aria-label="Product creation steps">
+  return (
+    <Tabs
+      value={String(step)}
+      onValueChange={selectStep}
+      className="contents"
+    >
+      <RouteFullscreenSurface
+        onClose={close}
+        bodyClassName="overflow-y-auto"
+        header={
+          <TabsList variant="wizard" aria-label="Product creation steps">
             {STEPS.map((label, index) => {
               const isActive = index === step;
               const isDone = index < step;
               return (
-                <button
+                <TabsTrigger
                   key={label}
-                  type="button"
-                  onClick={() => setStep(index as StepIndex)}
+                  value={String(index)}
+                  variant="wizard"
                   aria-current={isActive ? "step" : undefined}
-                  className={cn(
-                    "flex items-center gap-2 border-x border-border/60 px-6 py-4 text-sm transition-colors",
-                    isActive
-                      ? "bg-muted/40 text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
                 >
                   {isDone ? (
                     <CheckCircle2 className="size-4" />
@@ -184,39 +220,47 @@ export const ProductCreateWizard = () => {
                     />
                   )}
                   {label}
-                </button>
+                </TabsTrigger>
               );
             })}
-          </nav>
-        </header>
-
-        <main className={cn(createSurface.body, "overflow-y-auto")}>
-          {step === 0 && <StepDetails draft={draft} dispatch={dispatch} />}
-          {step === 1 && <StepOrganize draft={draft} dispatch={dispatch} />}
-          {step === 2 && <StepVariants draft={draft} dispatch={dispatch} />}
-        </main>
-
-        <footer className={createSurface.footer}>
+          </TabsList>
+        }
+        footer={
           <DialogFooterActions
             isSheet={false}
             isLoading={pending}
             onCancel={close}
-            className="w-full justify-end"
             submitLabel={isLastStep ? "Publish" : "Continue"}
             loadingLabel="Creating..."
             onSubmit={
               isLastStep
                 ? () => void submit("published")
-                : () => setStep((step + 1) as StepIndex)
+                : () => goToStep((step + 1) as StepIndex)
             }
-            // Saving a draft is available at every step, so it sits in the
-            // submit button's dropdown rather than as a third button.
             additionalActions={[
               { label: "Save as draft", onClick: () => void submit("draft") },
             ]}
           />
-        </footer>
-      </div>
-    </div>
+        }
+      >
+        <TabsContent value="0" className="m-0 h-full">
+          <StepDetails
+            draft={draft}
+            dispatch={dispatch}
+            issues={showDetailsIssues ? detailsIssues : {}}
+          />
+        </TabsContent>
+        <TabsContent value="1" className="m-0 h-full">
+          <StepOrganize draft={draft} dispatch={dispatch} />
+        </TabsContent>
+        <TabsContent value="2" className="m-0 h-full">
+          <StepVariants
+            draft={draft}
+            dispatch={dispatch}
+            currencies={storeCurrencies}
+          />
+        </TabsContent>
+      </RouteFullscreenSurface>
+    </Tabs>
   );
 };

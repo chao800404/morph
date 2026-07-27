@@ -8,16 +8,66 @@ import {
 import { BarsArrowDownIcon } from "@/components/ui/icons/bars-arrow-down-icon";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
-import type { DashboardSearch } from "@/lib/validations/dashboard-search";
+import type {
+  DashboardSearch,
+  DashboardSortKey,
+} from "@/lib/validations/dashboard-search";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Dot } from "lucide-react";
 
-export type DataTableSortKey = NonNullable<DashboardSearch["sortBy"]>;
+export type DataTableSortKey = DashboardSortKey;
 
 export interface DataTableSortOption {
   value: DataTableSortKey;
   label: string;
 }
+
+export const useDataTableSort = (
+  defaultSortBy: DataTableSortKey = "createdAt",
+) => {
+  const navigate = useNavigate();
+  const search = useSearch({ strict: false }) as DashboardSearch;
+  const routeSortBy = Array.isArray(search.sortBy)
+    ? search.sortBy[0]
+    : search.sortBy;
+  const routeSortOrder = Array.isArray(search.sortOrder)
+    ? search.sortOrder[0]
+    : search.sortOrder;
+  const sortBy = routeSortBy ?? defaultSortBy;
+  const sortOrder = routeSortOrder ?? "desc";
+
+  const applySort = (
+    nextSortBy: DataTableSortKey,
+    nextSortOrder: "asc" | "desc",
+  ) => {
+    navigate({
+      to: ".",
+      search: (prev: DashboardSearch) => ({
+        ...prev,
+        sortBy: nextSortBy,
+        sortOrder: nextSortOrder,
+        page: undefined,
+      }),
+      replace: true,
+    });
+  };
+
+  const toggleSort = (
+    nextSortBy: DataTableSortKey,
+    initialOrder: "asc" | "desc" = "asc",
+  ) => {
+    applySort(
+      nextSortBy,
+      sortBy === nextSortBy
+        ? sortOrder === "asc"
+          ? "desc"
+          : "asc"
+        : initialOrder,
+    );
+  };
+
+  return { sortBy, sortOrder, applySort, toggleSort };
+};
 
 /**
  * Sort control for `DataTableCard`, matching the assets card.
@@ -33,27 +83,7 @@ export const DataTableSort = ({
   options: DataTableSortOption[];
   defaultSortBy?: DataTableSortKey;
 }) => {
-  const navigate = useNavigate();
-  const search = useSearch({ strict: false }) as DashboardSearch;
-  const sortBy = search.sortBy ?? defaultSortBy;
-  const sortOrder = search.sortOrder ?? "desc";
-
-  const applySort = (
-    nextSortBy: DataTableSortKey,
-    nextSortOrder: "asc" | "desc",
-  ) => {
-    navigate({
-      to: ".",
-      // Re-sorting invalidates the current offset, so go back to page one.
-      search: (prev: DashboardSearch) => ({
-        ...prev,
-        sortBy: nextSortBy,
-        sortOrder: nextSortOrder,
-        page: undefined,
-      }),
-      replace: true,
-    });
-  };
+  const { sortBy, sortOrder, toggleSort } = useDataTableSort(defaultSortBy);
 
   if (options.length === 0) return null;
 
@@ -73,12 +103,10 @@ export const DataTableSort = ({
       <DropdownMenuContent align="end">
         {options.map((option) => {
           const isActive = sortBy === option.value;
-          const nextOrder = isActive && sortOrder === "asc" ? "desc" : "asc";
-
           return (
             <DropdownMenuItem
               key={option.value}
-              onClick={() => applySort(option.value, nextOrder)}
+              onClick={() => toggleSort(option.value)}
             >
               <Dot
                 className={cn(

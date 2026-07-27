@@ -15,6 +15,7 @@ export interface RowAction {
   onSelect: () => void;
   /** Rendered after a separator and in the destructive colour. */
   destructive?: boolean;
+  disabled?: boolean;
 }
 
 /**
@@ -44,7 +45,11 @@ export const RowActionsMenu = ({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {regular.map((action) => (
-          <DropdownMenuItem key={action.label} onClick={action.onSelect}>
+          <DropdownMenuItem
+            key={action.label}
+            disabled={action.disabled}
+            onClick={action.onSelect}
+          >
             {action.icon}
             {action.label}
           </DropdownMenuItem>
@@ -55,6 +60,7 @@ export const RowActionsMenu = ({
         {destructive.map((action) => (
           <DropdownMenuItem
             key={action.label}
+            disabled={action.disabled}
             onClick={action.onSelect}
             variant="destructive"
           >

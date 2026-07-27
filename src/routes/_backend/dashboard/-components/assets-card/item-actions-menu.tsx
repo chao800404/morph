@@ -6,7 +6,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MoveFolderIcon } from "@/components/ui/icons/move-folder-icon";
-import { Download, Edit2, Link, Trash2 } from "lucide-react";
+import { Download, Edit2, Eye, Link, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type Props = {
@@ -14,6 +14,7 @@ type Props = {
   type: "folder" | "asset";
   isDragging?: boolean;
   onDelete?: () => void;
+  onView?: () => void;
   onEdit?: () => void;
   onCopyURL?: () => void;
   onDownload?: () => void;
@@ -31,6 +32,7 @@ export const ItemActionsMenu = ({
   type,
   isDragging,
   onDelete,
+  onView,
   onCopyURL,
   onEdit,
   onDownload,
@@ -56,6 +58,12 @@ export const ItemActionsMenu = ({
       <DropdownMenu open={isDropdownOpen} onOpenChange={handleOpenChange}>
         <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
         <DropdownMenuContent align={align} className="z-10000">
+          {onView && (
+            <DropdownMenuItem onClick={onView}>
+              <Eye />
+              View
+            </DropdownMenuItem>
+          )}
           {onEdit && (
             <DropdownMenuItem onClick={onEdit}>
               <Edit2 />

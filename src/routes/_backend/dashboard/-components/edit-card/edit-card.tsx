@@ -1,4 +1,5 @@
 import { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -17,7 +18,11 @@ export interface EditCardField {
   key: string;
   label: string;
   value?: string;
-  displayValue?: string;
+  /**
+   * What the row shows, when that differs from the editable value — a resolved
+   * name for an id, a formatted date, or links the plain value cannot express.
+   */
+  displayValue?: ReactNode;
   type?:
     | "text"
     | "email"
@@ -46,6 +51,19 @@ interface EditCardProps {
   icon?: LucideIcon;
   fields: EditCardField[];
   onSave?: (formData: FormData) => Promise<EditCardState>;
+  /**
+   * Replaces the built-in edit dialog.
+   *
+   * A collection whose editing is a route passes a navigation here, so the card
+   * keeps its familiar edit affordance without becoming a second way to edit
+   * the same record.
+   */
+  onEdit?: () => void;
+  /** Shown in the card header before the actions menu, e.g. status badges. */
+  headerActions?: ReactNode;
+  /** Feature-owned layout only; the card's own styling stays in the primitive. */
+  className?: string;
+  /** Omit both `onSave` and `onEdit` for a read-only information card. */
 }
 
 export const EditCard = ({
@@ -55,6 +73,9 @@ export const EditCard = ({
   fields,
   id,
   onSave,
+  onEdit,
+  headerActions,
+  className,
 }: EditCardProps) => {
   const { setEditData, setOpen } = useEditStore();
 
@@ -111,7 +132,15 @@ export const EditCard = ({
       label={title}
       description={description}
       icon={icon}
-      headerButton={<EditCardHeader onClickEdit={handleEdit} />}
+      classNames={{ cardWrapper: className }}
+      headerButton={
+        <div className="flex items-center gap-2">
+          {headerActions}
+          {(onEdit || onSave) && (
+            <EditCardHeader onClickEdit={onEdit ?? handleEdit} />
+          )}
+        </div>
+      }
     >
       {fields.map((field) => (
         <div

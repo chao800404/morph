@@ -1,7 +1,7 @@
 import { createSurface } from "@/components/dialog/create-surface";
+import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import type { StoreCurrencyDTO } from "@/lib/currency/dto/currency.dto";
 import type { Dispatch } from "react";
 import type { DraftAction, ProductDraft } from "./use-product-draft";
 
@@ -23,9 +24,11 @@ import type { DraftAction, ProductDraft } from "./use-product-draft";
 export const StepVariants = ({
   draft,
   dispatch,
+  currencies,
 }: {
   draft: ProductDraft;
   dispatch: Dispatch<DraftAction>;
+  currencies: StoreCurrencyDTO[];
 }) => {
   const included = draft.variants.filter((variant) => variant.included);
 
@@ -39,31 +42,27 @@ export const StepVariants = ({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {draft.currencies.map((currency) => (
-            <div key={currency} className="space-y-2">
-              <Label htmlFor={`default-price-${currency}`}>
-                Price {currency.toUpperCase()}
-              </Label>
-              <Input
-                id={`default-price-${currency}`}
-                variant="card"
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="0.00"
-                value={draft.defaultPrices[currency] ?? ""}
-                onChange={(event) =>
-                  dispatch({
-                    type: "setDefaultPrice",
-                    currency,
-                    value: event.target.value,
-                  })
-                }
-              />
-            </div>
-          ))}
-        </div>
+        <FieldsRenderer
+          fields={currencies.map((currency) => ({
+            type: "input" as const,
+            name: `default-price-${currency.code}`,
+            label: `Price ${currency.code.toUpperCase()}`,
+            inputType: "number",
+            placeholder:
+              currency.decimalDigits > 0
+                ? `0.${"0".repeat(currency.decimalDigits)}`
+                : "0",
+            value: draft.defaultPrices[currency.code] ?? "",
+            colSpan: 1 as const,
+          }))}
+          className="grid-cols-1 sm:grid-cols-2"
+          onChange={(name, value) => {
+            const currency = name.replace("default-price-", "");
+            if (typeof value === "string") {
+              dispatch({ type: "setDefaultPrice", currency, value });
+            }
+          }}
+        />
       </div>
     );
   }
@@ -103,9 +102,9 @@ export const StepVariants = ({
                 Allow backorder
               </TableHead>
               <TableHead className="w-28">Quantity</TableHead>
-              {draft.currencies.map((currency) => (
-                <TableHead key={currency} className="min-w-[120px]">
-                  Price {currency.toUpperCase()}
+              {currencies.map((currency) => (
+                <TableHead key={currency.code} className="min-w-[120px]">
+                  Price {currency.code.toUpperCase()}
                 </TableHead>
               ))}
             </TableRow>
@@ -191,21 +190,25 @@ export const StepVariants = ({
                     }
                   />
                 </TableCell>
-                {draft.currencies.map((currency) => (
-                  <TableCell key={currency}>
+                {currencies.map((currency) => (
+                  <TableCell key={currency.code}>
                     <Input
                       variant="card"
                       type="number"
                       min="0"
-                      step="0.01"
-                      placeholder="0.00"
-                      aria-label={`Price ${currency.toUpperCase()} for ${variant.key}`}
-                      value={variant.prices[currency] ?? ""}
+                      step={10 ** -currency.decimalDigits}
+                      placeholder={
+                        currency.decimalDigits > 0
+                          ? `0.${"0".repeat(currency.decimalDigits)}`
+                          : "0"
+                      }
+                      aria-label={`Price ${currency.code.toUpperCase()} for ${variant.key}`}
+                      value={variant.prices[currency.code] ?? ""}
                       onChange={(event) =>
                         dispatch({
                           type: "setVariantPrice",
                           key: variant.key,
-                          currency,
+                          currency: currency.code,
                           value: event.target.value,
                         })
                       }

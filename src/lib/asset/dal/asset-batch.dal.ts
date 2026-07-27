@@ -36,21 +36,44 @@ export type FolderMetadataUpdate = {
   path?: string;
 };
 
-export async function batchMoveItemsInD1(options: {
+type MoveBatchOptions = {
   assetIds: string[];
   targetFolderId: string | null;
   folderUpdates: FolderLocationUpdate[];
   userId: string;
-}) {
-  const now = new Date().toISOString();
+};
+
+export type AssetLocationUpdate = {
+  ids: string[];
+  folderId: string | null;
+};
+
+type LocationBatchOptions = {
+  assetUpdates: AssetLocationUpdate[];
+  folderUpdates: FolderLocationUpdate[];
+  userId: string;
+};
+
+type MetadataBatchOptions = {
+  assetUpdates: AssetMetadataUpdate[];
+  folderUpdates: FolderMetadataUpdate[];
+  userId: string;
+};
+
+const createLocationStatements = (
+  options: LocationBatchOptions,
+  now: string,
+): D1PreparedStatement[] => {
   const statements: D1PreparedStatement[] = [];
 
-  for (const ids of chunksOf(options.assetIds)) {
-    statements.push(
-      env.DATABASE.prepare(
-        `UPDATE assets SET folder_id = ?, updated_by = ?, updated_at = ? WHERE deleted_at IS NULL AND id IN (${placeholders(ids.length)})`,
-      ).bind(options.targetFolderId, options.userId, now, ...ids),
-    );
+  for (const update of options.assetUpdates) {
+    for (const ids of chunksOf(update.ids)) {
+      statements.push(
+        env.DATABASE.prepare(
+          `UPDATE assets SET folder_id = ?, updated_by = ?, updated_at = ? WHERE deleted_at IS NULL AND id IN (${placeholders(ids.length)})`,
+        ).bind(update.folderId, options.userId, now, ...ids),
+      );
+    }
   }
 
   for (const update of options.folderUpdates) {
@@ -68,18 +91,12 @@ export async function batchMoveItemsInD1(options: {
           )
         : env.DATABASE.prepare(
             "UPDATE asset_folders SET path = ?, id_path = ?, updated_by = ?, updated_at = ? WHERE deleted_at IS NULL AND id = ?",
-          ).bind(
-            update.path,
-            update.idPath,
-            options.userId,
-            now,
-            update.id,
-          ),
+          ).bind(update.path, update.idPath, options.userId, now, update.id),
     );
   }
 
-  if (statements.length > 0) await env.DATABASE.batch(statements);
-}
+  return statements;
+};
 
 export async function batchSoftDeleteItemsInD1(options: {
   assetIds: string[];
@@ -107,12 +124,10 @@ export async function batchSoftDeleteItemsInD1(options: {
   if (statements.length > 0) await env.DATABASE.batch(statements);
 }
 
-export async function batchUpdateItemsInD1(options: {
-  assetUpdates: AssetMetadataUpdate[];
-  folderUpdates: FolderMetadataUpdate[];
-  userId: string;
-}) {
-  const now = new Date().toISOString();
+const createMetadataStatements = (
+  options: MetadataBatchOptions,
+  now: string,
+): D1PreparedStatement[] => {
   const statements: D1PreparedStatement[] = [];
 
   for (const update of options.assetUpdates) {
@@ -167,5 +182,36 @@ export async function batchUpdateItemsInD1(options: {
     );
   }
 
+  return statements;
+};
+
+export async function batchMoveItemsInD1(options: MoveBatchOptions) {
+  const statements = createLocationStatements(
+    {
+      assetUpdates: [
+        { ids: options.assetIds, folderId: options.targetFolderId },
+      ],
+      folderUpdates: options.folderUpdates,
+      userId: options.userId,
+    },
+    new Date().toISOString(),
+  );
+  if (statements.length > 0) await env.DATABASE.batch(statements);
+}
+
+/**
+ * Metadata and location changes emitted by the Assets editor must commit as one
+ * unit. D1 executes a batch transactionally, so validation happens before this
+ * function and both statement groups are sent in the same batch.
+ */
+export async function batchSaveItemsInD1(options: {
+  metadata: MetadataBatchOptions;
+  move?: LocationBatchOptions;
+}) {
+  const now = new Date().toISOString();
+  const statements = [
+    ...createMetadataStatements(options.metadata, now),
+    ...(options.move ? createLocationStatements(options.move, now) : []),
+  ];
   if (statements.length > 0) await env.DATABASE.batch(statements);
 }

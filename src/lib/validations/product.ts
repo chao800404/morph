@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PRODUCT_OPTION_CREATED_WITHIN_VALUES } from "@/lib/product/config/product-option-list";
 
 /**
  * Catalogue input schemas.
@@ -91,6 +92,7 @@ export const listProductsInputSchema = z.object({
   query: z.string().trim().max(200).nullish(),
   status: productStatusSchema.nullish(),
   collectionId: z.uuid().nullish(),
+  categoryId: z.uuid().nullish(),
   sortBy: z.enum(["title", "createdAt", "updatedAt"]).default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
   page: z.number().int().min(1).max(10_000).default(1),
@@ -117,6 +119,20 @@ export const productVariantInputSchema = z.object({
   prices: z.array(priceInputSchema).max(20).default([]),
 });
 
+/**
+ * Type and tags travel as values, not ids.
+ *
+ * Both are keyed by a unique value and the Organize step lets an author type a
+ * name that may not exist yet, so the server upserts. Sending ids would force
+ * the client to create the row first, in a second round trip that could leave
+ * an orphan if the product then failed to save.
+ */
+export const productTypeValueSchema = z.string().trim().max(100);
+export const productTagValuesSchema = z
+  .array(z.string().trim().min(1).max(100))
+  .max(20, "A product may have at most 20 tags")
+  .default([]);
+
 export const createProductInputSchema = z.object({
   title: z.string().trim().min(1, "Title is required").max(200),
   handle: handleSchema.optional(),
@@ -124,6 +140,10 @@ export const createProductInputSchema = z.object({
   description: z.string().trim().max(5000).nullish(),
   status: productStatusSchema.default("draft"),
   collectionId: z.uuid().nullish(),
+  typeValue: productTypeValueSchema.nullish(),
+  tagValues: productTagValuesSchema,
+  categoryIds: z.array(z.uuid()).max(20).default([]),
+  discountable: z.boolean().default(true),
   thumbnailAssetId: z.uuid().nullish(),
   assetIds: z.array(z.uuid()).max(50).default([]),
   options: z.array(productOptionSelectionInputSchema).max(3).default([]),
@@ -145,6 +165,10 @@ export const updateProductInputSchema = z.object({
   description: z.string().trim().max(5000).nullish(),
   status: productStatusSchema.optional(),
   collectionId: z.uuid().nullish(),
+  typeValue: productTypeValueSchema.nullish(),
+  tagValues: productTagValuesSchema.optional(),
+  categoryIds: z.array(z.uuid()).max(20).optional(),
+  discountable: z.boolean().optional(),
   thumbnailAssetId: z.uuid().nullish(),
   assetIds: z.array(z.uuid()).max(50).optional(),
 });
@@ -209,6 +233,7 @@ export const deleteCollectionsInputSchema = z.object({
 
 export const listProductOptionsInputSchema = z.object({
   query: z.string().trim().max(200).nullish(),
+  createdWithin: z.enum(PRODUCT_OPTION_CREATED_WITHIN_VALUES).nullish(),
   sortBy: z.enum(["title", "createdAt", "updatedAt"]).default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
   page: z.number().int().min(1).max(10_000).default(1),
@@ -246,6 +271,46 @@ export const deleteProductOptionsInputSchema = z.object({
     .array(z.uuid("Invalid option ID"))
     .min(1, "Select at least one option")
     .max(100),
+});
+
+/**
+ * Categories.
+ *
+ * `parentCategoryId` is only accepted on create: moving a category would have
+ * to rewrite every descendant's materialised path, so the update schema
+ * deliberately omits it — the same fields Medusa's edit form exposes.
+ */
+export const listProductCategoriesInputSchema = z.object({
+  query: z.string().trim().max(200).nullish(),
+  sortBy: z.enum(["name", "createdAt", "updatedAt"]).default("name"),
+  sortOrder: z.enum(["asc", "desc"]).default("asc"),
+  page: z.number().int().min(1).max(10_000).default(1),
+  limit: z.number().int().min(1).max(100).default(20),
+});
+
+export const createProductCategoryInputSchema = z.object({
+  name: z.string().trim().min(1, "Name is required").max(200),
+  handle: handleSchema.optional(),
+  description: z.string().trim().max(2000).default(""),
+  parentCategoryId: z.uuid().nullish(),
+  isActive: z.boolean().default(false),
+  isInternal: z.boolean().default(false),
+});
+
+export const updateProductCategoryInputSchema = z.object({
+  id: z.uuid("Invalid category ID"),
+  name: z.string().trim().min(1).max(200).optional(),
+  handle: handleSchema.optional(),
+  description: z.string().trim().max(2000).optional(),
+  isActive: z.boolean().optional(),
+  isInternal: z.boolean().optional(),
+});
+
+export const deleteProductCategoriesInputSchema = z.object({
+  ids: z
+    .array(z.uuid("Invalid category ID"))
+    .min(1, "Select at least one category")
+    .max(100, "A maximum of 100 categories may be deleted at once"),
 });
 
 export type ListProductsInput = z.infer<typeof listProductsInputSchema>;

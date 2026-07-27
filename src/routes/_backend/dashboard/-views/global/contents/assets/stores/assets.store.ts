@@ -1,9 +1,5 @@
 import { create } from "zustand";
-import type {
-  Asset,
-  AssetFolder,
-  AssetsCardData,
-} from "../config/assets-card.types";
+import type { AssetsExplorerData } from "../assets.types";
 
 export type SelectedItem =
   | {
@@ -42,22 +38,15 @@ interface AssetsStore {
   activeItem?: SelectedItem;
   dragItem?: SelectedItem;
   selectedItems: Map<string, SelectedItem>;
-  dialogOpen: boolean;
-  dialogType: "folder" | "assets";
   isActionMenuOpen: boolean;
-  assetsData: AssetsCardData;
+  assetsData: AssetsExplorerData;
   setActiveItem: (item?: SelectedItem) => void;
-  setDialogOpen: (open: boolean) => void;
-  setDialogType: (type: "folder" | "assets") => void;
   setActionMenuOpen: (open: boolean) => void;
   toggleSelectItem: (item: SelectedItem) => void;
   clearAllSelectedItems: () => void;
   selectAllItems: (items: SelectedItem[], append?: boolean) => void;
-  isSelected: (id: string) => boolean;
-  getSelectedByType: (type: "folder" | "asset") => SelectedItem[];
-  setAssetsData: (data: AssetsCardData) => void;
+  setAssetsData: (data: AssetsExplorerData) => void;
   setDragItem: (data: SelectedItem | undefined) => void;
-  getActiveItemData: () => AssetFolder | Asset | undefined;
   isItemDragging: (id: string, type: "folder" | "asset") => boolean;
   deleteItemById: (id: string, type: "folder" | "asset") => void;
 }
@@ -66,16 +55,10 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
   activeItem: undefined,
   dragItem: undefined,
   selectedItems: new Map(),
-  dialogOpen: false,
-  dialogType: "folder",
   isActionMenuOpen: false,
   assetsData: {},
   setActiveItem: (item) =>
     set((state) => (state.activeItem === item ? state : { activeItem: item })),
-  setDialogOpen: (open) =>
-    set((state) => (state.dialogOpen === open ? state : { dialogOpen: open })),
-  setDialogType: (type) =>
-    set((state) => (state.dialogType === type ? state : { dialogType: type })),
   setActionMenuOpen: (open) =>
     set((state) =>
       state.isActionMenuOpen === open ? state : { isActionMenuOpen: open },
@@ -109,14 +92,6 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
     });
     set({ selectedItems: newItems });
   },
-  isSelected: (id) => {
-    const items = get().selectedItems;
-    return items.has(`folder-${id}`) || items.has(`asset-${id}`);
-  },
-  getSelectedByType: (type) => {
-    const items = get().selectedItems;
-    return Array.from(items.values()).filter((item) => item.type === type);
-  },
   setDragItem: (data) => {
     set((state) => {
       let selectedItems = state.selectedItems;
@@ -136,61 +111,6 @@ export const useAssetsStore = create<AssetsStore>((set, get) => ({
   },
   setAssetsData: (data) =>
     set((state) => (state.assetsData === data ? state : { assetsData: data })),
-  getActiveItemData: () => {
-    const { activeItem, assetsData } = get();
-
-    if (!activeItem) {
-      return assetsData.currentFolder;
-    }
-
-    if (activeItem.type === "folder") {
-      // First check if it's the currentFolder
-      if (
-        assetsData.currentFolder &&
-        String(assetsData.currentFolder.id) === String(activeItem.id)
-      ) {
-        return assetsData.currentFolder;
-      }
-      // Then check in folders array
-      const folder = assetsData.folders?.find(
-        (folder) => String(folder.id) === String(activeItem.id),
-      );
-      // If found in assetsData, return it; otherwise construct from activeItem
-      return (
-        folder || {
-          id: activeItem.id,
-          name: activeItem.name,
-          empty: true,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }
-      );
-    } else {
-      // For assets, try to find in assetsData first
-      const asset = assetsData.assets?.find(
-        (asset) => String(asset.id) === String(activeItem.id),
-      );
-      // If found in assetsData, return it; otherwise construct from activeItem
-      return (
-        asset || {
-          id: activeItem.id,
-          name: activeItem.name,
-          url: activeItem.src || "",
-          type:
-            activeItem.fileType === "image"
-              ? "image/png"
-              : activeItem.fileType === "video"
-                ? "video/mp4"
-                : activeItem.fileType === "audio"
-                  ? "audio/mp3"
-                  : "application/octet-stream",
-          size: 0,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }
-      );
-    }
-  },
   isItemDragging: (id, type) => {
     const { dragItem, selectedItems } = get();
     if (!dragItem) return false;

@@ -1,19 +1,20 @@
 import { memo, useCallback, useId, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
-import type { Asset } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
+import type { Asset } from "@/routes/_backend/dashboard/-views/global/contents/assets/assets.types";
+import { toAssetTableItem } from "@/routes/_backend/dashboard/-views/global/contents/assets/asset-view-model";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { AssetFooter } from "./asset-footer";
-import { AssetsTable } from "./assets-table";
+import { AssetsTable, type AssetTableHead } from "./assets-table";
+import { ASSET_SORT_OPTIONS } from "./asset-sort-options";
 import TypeHeadClient from "./type-head";
 
 const TABLE_HEADS = [
-  "Name",
-  "Extension",
-  "Size",
-  "Created At",
-  "Updated At",
-  "",
-];
+  ...ASSET_SORT_OPTIONS.map((option) => ({
+    label: option.label,
+    sortKey: option.value,
+  })),
+  { label: "", className: "w-16" },
+] satisfies AssetTableHead[];
 
 type Props = {
   assets?: Asset[];
@@ -81,23 +82,7 @@ export const AssetsContent = memo(function AssetsContent({
     setInternalIsCollapsed((previous) => !previous);
   }, [onToggleCollapse]);
 
-  const tableContent = useMemo(
-    () =>
-      assets?.map((asset) => ({
-        id: String(asset.id),
-        name: asset.name,
-        url: asset.url,
-        type: asset.type,
-        createdAt: asset.createdAt,
-        size: asset.size,
-        alt: asset.alt || undefined,
-        caption: asset.caption || undefined,
-        tags: asset.tags?.join(",") || undefined,
-        extension: asset.extension,
-        updatedAt: asset.updatedAt,
-      })),
-    [assets],
-  );
+  const tableContent = useMemo(() => assets?.map(toAssetTableItem), [assets]);
 
   if (!assets || assets.length === 0) {
     return null;
@@ -135,10 +120,7 @@ export const AssetsContent = memo(function AssetsContent({
         )}
       >
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <AssetsTable
-            tableHeads={TABLE_HEADS}
-            tableContent={tableContent}
-          />
+          <AssetsTable tableHeads={TABLE_HEADS} tableContent={tableContent} />
         </div>
         <div
           data-asset-split-motion

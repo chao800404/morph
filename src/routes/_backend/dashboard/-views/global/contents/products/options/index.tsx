@@ -1,50 +1,31 @@
-import { Badge } from "@/components/ui/badge";
 import type { ProductOptionDTO } from "@/lib/product/dto/product-option.dto";
-import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   CollectionCreateButton,
   DataTableCard,
+  useCollectionEditAction,
   deleteActionIcon,
-  editActionIcon,
-  type DataTableColumn,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
-import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
-import { useEditStore } from "@/routes/_backend/dashboard/-views/features/global-edit/use-edit-store";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import {
   normalizeProductOptionListParams,
   productOptionQueries,
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearch } from "@tanstack/react-router";
-import { useCallback, useMemo } from "react";
+import { useCallback } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { deleteProductOptionsAction } from "../product-actions";
 import {
-  createProductOptionAction,
-  deleteProductOptionsAction,
-  updateProductOptionAction,
-} from "../product-actions";
+  PRODUCT_OPTION_COLUMNS,
+  PRODUCT_OPTION_SORT_OPTIONS,
+} from "./config/product-option-table.config";
+import { useProductOptionTableControls } from "./hooks/use-product-option-table-controls";
 
 const Options = () => {
-  const search = useSearch({ strict: false }) as DashboardSearch;
+  const { search, toolbarLeading } = useProductOptionTableControls();
   const queryClient = useQueryClient();
   const params = normalizeProductOptionListParams(search);
   const { data: result, isPending } = useQuery(
     productOptionQueries.list(params),
-  );
-
-  const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
-    useShallow((state) => ({
-      setCreateData: state.setCreateData,
-      setOpen: state.setOpen,
-    })),
-  );
-
-  const { setEditData, setOpen: setEditOpen } = useEditStore(
-    useShallow((state) => ({
-      setEditData: state.setEditData,
-      setOpen: state.setOpen,
-    })),
   );
 
   const { setInfoData, setOpen: setInfoOpen } = useInfoStore(
@@ -59,63 +40,6 @@ const Options = () => {
       queryKey: productOptionQueries.all(),
     });
   }, [queryClient]);
-
-  const handleCreate = useCallback(() => {
-    setCreateData({
-      title: "Create Product Option",
-      description: "Define a reusable option such as Size or Colour.",
-      fields: [
-        {
-          type: "input",
-          name: "title",
-          label: "Title",
-          placeholder: "e.g. Size, Colour, Material",
-          required: true,
-          autoFocus: true,
-        },
-        {
-          type: "option-values",
-          name: "values",
-          label: "Values",
-          placeholder: "Type a value and press Enter...",
-        },
-      ],
-      action: createProductOptionAction,
-      onSuccess: invalidate,
-    });
-    setCreateOpen(true);
-  }, [invalidate, setCreateData, setCreateOpen]);
-
-  const handleEdit = useCallback(
-    (option: ProductOptionDTO) => {
-      setEditOpen(true);
-      setEditData({
-        title: "Edit Product Option",
-        description: option.title,
-        fields: [
-          { type: "hidden", name: "id", value: option.id },
-          {
-            type: "input",
-            name: "title",
-            label: "Title",
-            value: option.title,
-            required: true,
-          },
-          {
-            type: "option-values",
-            name: "values",
-            label: "Values",
-            value: option.values.map((value) => value.value),
-            placeholder: "Type a value and press Enter...",
-          },
-        ],
-        action: (formData: FormData) =>
-          updateProductOptionAction({ data: formData }),
-        onSuccess: invalidate,
-      });
-    },
-    [invalidate, setEditData, setEditOpen],
-  );
 
   const handleDelete = useCallback(
     (option: ProductOptionDTO) => {
@@ -139,31 +63,7 @@ const Options = () => {
     [invalidate, setInfoData, setInfoOpen],
   );
 
-  const columns = useMemo<DataTableColumn<ProductOptionDTO>[]>(
-    () => [
-      {
-        key: "title",
-        header: "Title",
-        className: "w-64 font-medium",
-        cell: (option) => option.title,
-      },
-      {
-        key: "values",
-        header: "Values",
-        cell: (option) =>
-          `${option.values.length} value${option.values.length === 1 ? "" : "s"}`,
-      },
-      {
-        key: "status",
-        header: "Status",
-        className: "w-32",
-        // Every option defined here is reusable across products. A per-product
-        // option would be authored on the product itself, not in this list.
-        cell: () => <Badge variant="default">Global</Badge>,
-      },
-    ],
-    [],
-  );
+  const editAction = useCollectionEditAction("product-options");
 
   const optionRows = result?.success ? (result.data?.options ?? []) : [];
 
@@ -171,17 +71,11 @@ const Options = () => {
     <DataTableCard
       label="Options"
       description="Manage product options and their associated values."
+      toolbarLeading={toolbarLeading}
       searchPlaceholder="Search"
-      sortOptions={[
-        { value: "name", label: "Title" },
-        { value: "createdAt", label: "Created" },
-        { value: "updatedAt", label: "Updated" },
-      ]}
-      headerActions={
-        <CollectionCreateButton slug="options"
-          onCreate={handleCreate} />
-      }
-      columns={columns}
+      sortOptions={PRODUCT_OPTION_SORT_OPTIONS}
+      headerActions={<CollectionCreateButton slug="product-options" />}
+      columns={PRODUCT_OPTION_COLUMNS}
       rows={optionRows}
       getRowId={(option) => option.id}
       isPending={isPending}
@@ -190,11 +84,7 @@ const Options = () => {
       emptyTitle="No product options yet"
       emptyDescription="Create options such as Size, Colour or Material, then pick them when you build a product."
       rowActions={(option) => [
-        {
-          label: "Edit",
-          icon: editActionIcon,
-          onSelect: () => handleEdit(option),
-        },
+        ...editAction(option.id),
         {
           label: "Delete",
           icon: deleteActionIcon,

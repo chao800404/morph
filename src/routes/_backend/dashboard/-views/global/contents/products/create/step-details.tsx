@@ -1,134 +1,141 @@
 import { createSurface } from "@/components/dialog/create-surface";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
+import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { cn } from "@/lib/utils";
+import type { FormField, FormFieldValue } from "@/lib/validations/form";
 import type { Dispatch } from "react";
 import { OptionPicker } from "./option-picker";
 import type { DraftAction, ProductDraft } from "./use-product-draft";
 import { VariantMatrix } from "./variant-matrix";
 
+const detailFieldNames = [
+  "title",
+  "subtitle",
+  "handle",
+  "description",
+] as const;
+
+type DetailFieldName = (typeof detailFieldNames)[number];
+
+const isDetailFieldName = (name: string): name is DetailFieldName =>
+  detailFieldNames.some((fieldName) => fieldName === name);
+
 export const StepDetails = ({
   draft,
   dispatch,
+  issues = {},
 }: {
   draft: ProductDraft;
   dispatch: Dispatch<DraftAction>;
-}) => (
-  <div className={cn(createSurface.content, "flex w-full flex-col gap-10")}>
-    <section className="flex flex-col gap-4">
-      <h2 className="text-lg font-medium text-foreground">General</h2>
+  /** Empty until the author tries to leave the step. */
+  issues?: { title?: string; options?: string };
+}) => {
+  const generalFields: FormField[] = [
+    {
+      type: "input",
+      name: "title",
+      label: "Title",
+      placeholder: "e.g. Summer T-Shirt",
+      value: draft.title,
+      autoFocus: true,
+      required: true,
+      error: issues.title,
+      colSpan: 1,
+    },
+    {
+      type: "input",
+      name: "subtitle",
+      label: "Subtitle",
+      optional: true,
+      value: draft.subtitle,
+      colSpan: 1,
+    },
+    {
+      type: "input",
+      name: "handle",
+      label: "Handle",
+      placeholder: "Derived from the title",
+      optional: true,
+      value: draft.handle,
+      colSpan: 1,
+    },
+    {
+      type: "textarea",
+      name: "description",
+      label: "Description",
+      optional: true,
+      value: draft.description,
+      rows: 4,
+      colSpan: 1,
+      className: "sm:col-span-3",
+    },
+  ];
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="space-y-2">
-          <Label htmlFor="product-title">Title</Label>
-          <Input
-            id="product-title"
-            variant="card"
-            autoFocus
-            value={draft.title}
-            onChange={(event) =>
-              dispatch({
-                type: "setField",
-                field: "title",
-                value: event.target.value,
-              })
-            }
-            placeholder="e.g. Summer T-Shirt"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="product-subtitle">
-            Subtitle{" "}
-            <span className="text-muted-foreground">(Optional)</span>
-          </Label>
-          <Input
-            id="product-subtitle"
-            variant="card"
-            value={draft.subtitle}
-            onChange={(event) =>
-              dispatch({
-                type: "setField",
-                field: "subtitle",
-                value: event.target.value,
-              })
-            }
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="product-handle">
-            Handle <span className="text-muted-foreground">(Optional)</span>
-          </Label>
-          <Input
-            id="product-handle"
-            variant="card"
-            value={draft.handle}
-            onChange={(event) =>
-              dispatch({
-                type: "setField",
-                field: "handle",
-                value: event.target.value,
-              })
-            }
-            placeholder="Derived from the title"
-          />
-        </div>
-      </div>
+  const variantFields: FormField[] = [
+    {
+      type: "switch",
+      name: "hasVariants",
+      label: "Yes, this is a product with variants",
+      description: "When off, a single default variant is created for you.",
+      value: draft.hasVariants,
+      colSpan: 1,
+    },
+  ];
 
-      <div className="space-y-2">
-        <Label htmlFor="product-description">
-          Description <span className="text-muted-foreground">(Optional)</span>
-        </Label>
-        <Textarea
-          id="product-description"
-          variant="card"
-          rows={4}
-          value={draft.description}
-          onChange={(event) =>
-            dispatch({
-              type: "setField",
-              field: "description",
-              value: event.target.value,
-            })
-          }
+  const handleGeneralChange = (
+    name: string,
+    value: FormFieldValue | File[],
+  ) => {
+    if (!isDetailFieldName(name) || typeof value !== "string") return;
+    dispatch({ type: "setField", field: name, value });
+  };
+
+  const handleVariantChange = (
+    name: string,
+    value: FormFieldValue | File[],
+  ) => {
+    if (name !== "hasVariants" || typeof value !== "boolean") return;
+    dispatch({ type: "setHasVariants", value });
+  };
+
+  return (
+    <div className={cn(createSurface.content, "flex w-full flex-col gap-10")}>
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-foreground">General</h2>
+
+        <FieldsRenderer
+          fields={generalFields}
+          className="grid-cols-1 sm:grid-cols-3"
+          onChange={handleGeneralChange}
         />
-      </div>
-    </section>
+      </section>
 
-    <section className="flex flex-col gap-4">
-      <h2 className="text-lg font-medium text-foreground">Variants</h2>
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-foreground">Variants</h2>
 
-      <div className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/20 p-4">
-        <Switch
-          id="has-variants"
-          checked={draft.hasVariants}
-          onCheckedChange={(checked) =>
-            dispatch({ type: "setHasVariants", value: checked })
-          }
+        <FieldsRenderer
+          fields={variantFields}
+          className="grid-cols-1"
+          onChange={handleVariantChange}
         />
-        <div className="space-y-1">
-          <Label htmlFor="has-variants" className="font-medium">
-            Yes, this is a product with variants
-          </Label>
-          <p className="text-sm text-muted-foreground">
-            When off, a single default variant is created for you.
-          </p>
-        </div>
-      </div>
 
-      {draft.hasVariants && (
-        <div className="flex flex-col gap-6">
-          <OptionPicker options={draft.options} dispatch={dispatch} />
-          {draft.variants.length > 0 && (
-            <VariantMatrix
-              options={draft.options}
-              variants={draft.variants}
-              dispatch={dispatch}
-            />
-          )}
-        </div>
-      )}
-    </section>
-  </div>
-);
+        {draft.hasVariants && (
+          <div className="flex flex-col gap-6">
+            <OptionPicker options={draft.options} dispatch={dispatch} />
+            {issues.options ? (
+              <p role="alert" className="text-xs text-destructive">
+                {issues.options}
+              </p>
+            ) : null}
+            {draft.variants.length > 0 && (
+              <VariantMatrix
+                options={draft.options}
+                variants={draft.variants}
+                dispatch={dispatch}
+              />
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+};

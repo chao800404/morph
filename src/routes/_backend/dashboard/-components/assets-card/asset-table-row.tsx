@@ -21,8 +21,8 @@ type Props = {
   createdAt: string;
   onCheckedChange: (id: string) => void;
   onEdit: (id: string) => void;
+  onView: (id: string) => void;
   onDelete: (id: string) => void;
-  onMove: (id: string) => void;
   onClick?: (id: string) => void;
   onDownload?: (id: string) => void;
   onDoubleClick?: (id: string) => void;
@@ -47,7 +47,7 @@ export const AssetTableRow = memo(function AssetTableRow({
   onCheckedChange,
   onDelete,
   onEdit,
-  onMove,
+  onView,
   onClick,
   onDownload,
   onDoubleClick,
@@ -95,7 +95,7 @@ export const AssetTableRow = memo(function AssetTableRow({
         }
       }}
       className={cn(
-        "h-12 cursor-pointer group relative z-20 select-none",
+        "cursor-pointer group relative z-20 select-none",
         "data-[dragging=true]:opacity-20",
         "data-[selected=true]:bg-blue-100/50 dark:data-[selected=true]:bg-zinc-700",
       )}
@@ -157,11 +157,11 @@ export const AssetTableRow = memo(function AssetTableRow({
 
       <ItemActionsMenu
         isDragging={isDragging}
+        onView={() => onView(id)}
         onCopyURL={() => onCopyURL?.(id)}
         onEdit={() => onEdit(id)}
         onDelete={() => onDelete(id)}
         onDownload={() => onDownload?.(id)}
-        onMove={() => onMove(id)}
         type="asset"
         onOpenChange={(open) => {
           setActionMenuOpen(open);

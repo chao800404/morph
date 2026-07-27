@@ -1,5 +1,9 @@
 import { getDb } from "@/db";
 import { productOptionValues, productOptions } from "@/db/product.schema";
+import {
+  getProductOptionCreatedWithinDays,
+  type ProductOptionCreatedWithin,
+} from "@/lib/product/config/product-option-list";
 import { containsPattern } from "@/lib/db/like-pattern";
 import {
   and,
@@ -7,6 +11,7 @@ import {
   count,
   desc,
   eq,
+  gte,
   inArray,
   isNull,
   like,
@@ -179,6 +184,7 @@ export const productOptionDal = {
   /** The shared library: global options only. */
   async listPage(options: {
     query?: string | null;
+    createdWithin?: ProductOptionCreatedWithin | null;
     sortBy: "title" | "createdAt" | "updatedAt";
     sortOrder: "asc" | "desc";
     page: number;
@@ -194,6 +200,14 @@ export const productOptionDal = {
       conditions.push(
         like(productOptions.title, containsPattern(options.query.trim())) as SQL,
       );
+    }
+
+    if (options.createdWithin) {
+      const days = getProductOptionCreatedWithinDays(options.createdWithin);
+      const threshold = new Date(
+        Date.now() - days * 24 * 60 * 60 * 1000,
+      ).toISOString();
+      conditions.push(gte(productOptions.createdAt, threshold));
     }
 
     const sortColumn = {

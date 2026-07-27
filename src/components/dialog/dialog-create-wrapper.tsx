@@ -76,7 +76,6 @@ export const DialogCreateWrapper = ({
               submitLabel="Create"
               loadingLabel="Creating..."
               isSheet={false}
-              className="w-full justify-end"
             />
           </div>
         </form>

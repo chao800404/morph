@@ -13,9 +13,11 @@ import type { FormField, FormFieldValue } from "@/lib/validations/form";
 import { ComponentRef, RefObject } from "react";
 import type { Country } from "react-phone-number-input";
 import { FolderSelectField } from "../folder-select/folder-select";
+import { Tip } from "../ui/tip";
 import { PhoneInput } from "../ui/phone-input";
 import { UploadField } from "../upload/upload";
 import { OptionValuesField } from "./option-values-field";
+import { SwitchField } from "./switch-field";
 
 /**
  * Every control that can be the first focusable field. The ref is shared across
@@ -61,6 +63,19 @@ export const FieldsRenderer = ({
         const colSpan = field.colSpan ?? 2;
         const stringValue = typeof fieldValue === "string" ? fieldValue : "";
         const arrayValue = Array.isArray(fieldValue) ? fieldValue : [];
+        const booleanValue =
+          typeof fieldValue === "boolean" ? fieldValue : false;
+        // The message replaces the hint when both exist: two lines of small
+        // text under one control competes for the same attention.
+        const describedBy = field.error
+          ? `${id}-error`
+          : field.description
+            ? `${id}-description`
+            : undefined;
+        const rendersOwnLabel =
+          field.type === "hidden" ||
+          field.type === "switch" ||
+          field.type === "tip";
 
         return (
           <div
@@ -68,11 +83,20 @@ export const FieldsRenderer = ({
             className={cn(
               "space-y-2",
               colSpan === 1 ? "col-span-1" : "col-span-2",
+              field.className,
             )}
           >
-            {field.type !== "hidden" && (
+            {!rendersOwnLabel && (
               <Label htmlFor={id} className="text-sm font-medium">
                 {field.label}
+                {field.optional ? (
+                  <>
+                    {" "}
+                    <span className="font-normal text-muted-foreground">
+                      (Optional)
+                    </span>
+                  </>
+                ) : null}
               </Label>
             )}
             {field.type === "input" && (
@@ -85,6 +109,11 @@ export const FieldsRenderer = ({
                 onChange={(e) => onChange?.(field.name, e.target.value)}
                 placeholder={field.placeholder || `Enter ${field.label}...`}
                 autoFocus={field.autoFocus}
+                disabled={field.disabled}
+                required={field.required}
+                aria-invalid={field.error ? true : undefined}
+                aria-describedby={describedBy}
+                className={field.inputClassName}
                 ref={
                   isFirstField
                     ? (firstFieldRef as RefObject<HTMLInputElement>)
@@ -100,8 +129,13 @@ export const FieldsRenderer = ({
                 defaultValue={stringValue}
                 onChange={(e) => onChange?.(field.name, e.target.value)}
                 placeholder={field.placeholder || `Enter ${field.label}...`}
-                className="min-h-[100px]"
+                className={cn("min-h-[100px]", field.inputClassName)}
                 rows={field.rows || 3}
+                disabled={field.disabled}
+                required={field.required}
+                aria-describedby={
+                  field.description ? `${id}-description` : undefined
+                }
                 ref={
                   isFirstField
                     ? (firstFieldRef as RefObject<HTMLTextAreaElement>)
@@ -114,8 +148,17 @@ export const FieldsRenderer = ({
                 name={field.name}
                 defaultValue={stringValue}
                 onValueChange={(value) => onChange?.(field.name, value)}
+                disabled={field.disabled}
+                required={field.required}
               >
-                <SelectTrigger id={id}>
+                <SelectTrigger
+                  id={id}
+                  variant="card"
+                  className={field.inputClassName}
+                  aria-describedby={
+                    field.description ? `${id}-description` : undefined
+                  }
+                >
                   <SelectValue
                     placeholder={field.placeholder || `Select ${field.label}`}
                   />
@@ -147,6 +190,7 @@ export const FieldsRenderer = ({
                   onChange?.(field.name, value);
                 }}
                 placeholder={field.placeholder || `Enter ${field.label}...`}
+                className={field.componentClassName}
                 ref={
                   isFirstField
                     ? (firstFieldRef as RefObject<
@@ -163,6 +207,7 @@ export const FieldsRenderer = ({
                 fieldId={id}
                 initialValue={stringValue}
                 onChange={(value) => onChange?.(field.name, value)}
+                className={field.componentClassName}
               />
             )}
 
@@ -171,18 +216,61 @@ export const FieldsRenderer = ({
                 field={field}
                 fieldId={id}
                 onChange={(files) => onChange?.(field.name, files)}
+                className={field.componentClassName}
               />
             )}
 
-            {field.type === "option-values" && (
-              <OptionValuesField
-                name={field.name}
-                placeholder={field.placeholder}
-                defaultValue={arrayValue}
-                value={arrayValue}
-                onChange={(fieldName, val) => onChange?.(fieldName, val)}
+            {field.type === "option-values" &&
+              (field.choices ? (
+                <OptionValuesField
+                  name={field.name}
+                  choices={field.choices}
+                  selectedIds={arrayValue}
+                  onSelectionChange={(ids) => onChange?.(field.name, ids)}
+                  allowCreate={field.allowCreate}
+                  maxSelected={field.maxSelected}
+                  placeholder={field.placeholder}
+                  searchPlaceholder={field.searchPlaceholder}
+                  emptyMessage={field.emptyMessage}
+                  className={field.componentClassName}
+                />
+              ) : (
+                <OptionValuesField
+                  name={field.name}
+                  placeholder={field.placeholder}
+                  defaultValue={arrayValue}
+                  value={arrayValue}
+                  onChange={(fieldName, val) => onChange?.(fieldName, val)}
+                  className={field.componentClassName}
+                />
+              ))}
+            {field.type === "switch" ? (
+              <SwitchField
+                field={field}
+                fieldId={id}
+                checked={booleanValue}
+                onChange={(checked) => onChange?.(field.name, checked)}
               />
-            )}
+            ) : null}
+            {field.type === "tip" ? (
+              <Tip label={field.label}>{field.description}</Tip>
+            ) : null}
+            {!rendersOwnLabel && field.error ? (
+              <p
+                id={`${id}-error`}
+                role="alert"
+                className="text-xs leading-relaxed text-destructive"
+              >
+                {field.error}
+              </p>
+            ) : !rendersOwnLabel && field.description ? (
+              <p
+                id={`${id}-description`}
+                className="text-xs leading-relaxed text-muted-foreground"
+              >
+                {field.description}
+              </p>
+            ) : null}
           </div>
         );
       })}

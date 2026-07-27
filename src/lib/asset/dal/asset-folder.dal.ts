@@ -1,7 +1,18 @@
 import { getDb } from "@/db";
 import { assetFolders } from "@/db/asset.schema";
 import { users } from "@/db/auth.schema";
-import { and, asc, desc, eq, gte, inArray, isNull, like, lt, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  like,
+  lt,
+  sql,
+} from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type {
   AssetFolderDTO,
@@ -65,9 +76,7 @@ export const assetFolderDal = {
     const rows = await db
       .select()
       .from(assetFolders)
-      .where(
-        and(eq(assetFolders.path, path), isNull(assetFolders.deletedAt)),
-      )
+      .where(and(eq(assetFolders.path, path), isNull(assetFolders.deletedAt)))
       .limit(1);
     return mapFirst(rows);
   },
@@ -113,8 +122,10 @@ export const assetFolderDal = {
   async listChildrenWithActors(options: {
     parentId: string | null;
     query?: string | null;
-    sortBy: "name" | "createdAt" | "updatedAt";
-    sortOrder: "asc" | "desc";
+    sorts: Array<{
+      sortBy: "name" | "createdAt" | "updatedAt";
+      sortOrder: "asc" | "desc";
+    }>;
   }): Promise<AssetFolderDTO[]> {
     const db = await getDb();
     const creator = alias(users, "asset_folder_creator");
@@ -130,14 +141,16 @@ export const assetFolderDal = {
         like(assetFolders.name, containsPattern(options.query.trim())),
       );
     }
-    const sortColumn =
-      options.sortBy === "name"
-        ? assetFolders.name
-        : options.sortBy === "updatedAt"
-          ? assetFolders.updatedAt
-          : assetFolders.createdAt;
-    const orderBy =
-      options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
+    const orderBy = options.sorts.map(({ sortBy, sortOrder }) => {
+      const sortColumn =
+        sortBy === "name"
+          ? assetFolders.name
+          : sortBy === "updatedAt"
+            ? assetFolders.updatedAt
+            : assetFolders.createdAt;
+
+      return sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
+    });
 
     const rows = await db
       .select({
@@ -151,20 +164,22 @@ export const assetFolderDal = {
       .leftJoin(creator, eq(assetFolders.createdBy, creator.id))
       .leftJoin(updater, eq(assetFolders.updatedBy, updater.id))
       .where(and(...conditions))
-      .orderBy(orderBy);
+      .orderBy(...orderBy, asc(assetFolders.id));
 
-    return rows.map(({ folder, creatorName, updaterName, assetCount, folderCount }) => {
-      const aCount = Number(assetCount) || 0;
-      const fCount = Number(folderCount) || 0;
-      return {
-        ...toAssetFolderDTO(folder),
-        createdBy: creatorName || folder.createdBy,
-        updatedBy: updaterName || folder.updatedBy,
-        assetCount: aCount,
-        folderCount: fCount,
-        itemCount: aCount + fCount,
-      };
-    });
+    return rows.map(
+      ({ folder, creatorName, updaterName, assetCount, folderCount }) => {
+        const aCount = Number(assetCount) || 0;
+        const fCount = Number(folderCount) || 0;
+        return {
+          ...toAssetFolderDTO(folder),
+          createdBy: creatorName || folder.createdBy,
+          updatedBy: updaterName || folder.updatedBy,
+          assetCount: aCount,
+          folderCount: fCount,
+          itemCount: aCount + fCount,
+        };
+      },
+    );
   },
 
   async create(data: AssetFolderInsertDTO): Promise<AssetFolderDTO> {

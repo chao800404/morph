@@ -1,56 +1,19 @@
-import { Button } from "@/components/ui/button";
+import { CollectionCreateButton } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { EmptyFileIcon } from "@/components/ui/icons/empty-file-icon";
-import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
-import { Plus } from "lucide-react";
-import { useShallow } from "zustand/react/shallow";
-import { notImplementedAction } from "@/lib/not-implemented-action";
 
 const Inventory = () => {
-  const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
-    useShallow((state) => ({
-      setCreateData: state.setCreateData,
-      setOpen: state.setOpen,
-    })),
-  );
 
-  const handleCreateInventory = () => {
-    setCreateData({
-      title: "Add Inventory Item",
-      description: "Track and manage stock levels across items",
-      fields: [
-        {
-          type: "input",
-          name: "name",
-          label: "Item Name",
-          placeholder: "e.g. Size M Blue",
-          required: true,
-          autoFocus: true,
-        },
-        {
-          type: "input",
-          name: "quantity",
-          label: "Quantity",
-          placeholder: "100",
-        },
-      ],
-      action: notImplementedAction("Inventory management"),
-    });
-    setCreateOpen(true);
-  };
 
   return (
     <CardWrapper
       label="Inventory"
       description="Track and manage stock levels across items"
       headerButton={
-        <Button onClick={handleCreateInventory} variant="form" size="sm" className="gap-2">
-          <Plus className="size-4" />
-          Create
-        </Button>
+        <CollectionCreateButton slug="inventory" />
       }
       classNames={{
-        cardWrapper: "min-h-content",
+        cardWrapper: "h-auto",
         contentWrapper: "flex flex-col items-center justify-center min-h-[400px]",
       }}
     >
@@ -62,10 +25,7 @@ const Inventory = () => {
             Add inventory items to manage stock and quantities.
           </p>
           <div className="mt-4">
-            <Button onClick={handleCreateInventory} variant="form" className="gap-2">
-              <Plus className="size-4" />
-              Add Inventory
-            </Button>
+            <CollectionCreateButton slug="inventory" />
           </div>
         </div>
       </div>

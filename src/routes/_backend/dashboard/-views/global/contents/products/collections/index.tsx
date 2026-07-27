@@ -3,12 +3,10 @@ import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   CollectionCreateButton,
   DataTableCard,
+  useCollectionEditAction,
   deleteActionIcon,
-  editActionIcon,
   type DataTableColumn,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
-import { useCreateStore } from "@/routes/_backend/dashboard/-views/features/global-create/use-create-store";
-import { useEditStore } from "@/routes/_backend/dashboard/-views/features/global-edit/use-edit-store";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import {
   collectionQueries,
@@ -19,9 +17,7 @@ import { useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
-  createCollectionAction,
   deleteCollectionsAction,
-  updateCollectionAction,
 } from "../product-actions";
 
 const Collections = () => {
@@ -30,19 +26,7 @@ const Collections = () => {
   const params = normalizeCollectionListParams(search);
   const { data: result, isPending } = useQuery(collectionQueries.list(params));
 
-  const { setCreateData, setOpen: setCreateOpen } = useCreateStore(
-    useShallow((state) => ({
-      setCreateData: state.setCreateData,
-      setOpen: state.setOpen,
-    })),
-  );
 
-  const { setEditData, setOpen: setEditOpen } = useEditStore(
-    useShallow((state) => ({
-      setEditData: state.setEditData,
-      setOpen: state.setOpen,
-    })),
-  );
 
   const { setInfoData, setOpen: setInfoOpen } = useInfoStore(
     useShallow((state) => ({
@@ -55,76 +39,7 @@ const Collections = () => {
     void queryClient.invalidateQueries({ queryKey: collectionQueries.all() });
   }, [queryClient]);
 
-  const handleCreate = useCallback(() => {
-    setCreateData({
-      title: "Create Collection",
-      description: "Group related products together",
-      fields: [
-        {
-          type: "input",
-          name: "title",
-          label: "Title",
-          placeholder: "e.g. Summer Release",
-          required: true,
-          autoFocus: true,
-          colSpan: 1,
-        },
-        {
-          type: "input",
-          name: "handle",
-          label: "Handle",
-          placeholder: "Leave blank to derive from the title",
-          colSpan: 1,
-        },
-        {
-          type: "textarea",
-          name: "description",
-          label: "Description",
-          placeholder: "Short collection description...",
-          rows: 3,
-        },
-      ],
-      action: createCollectionAction,
-      onSuccess: invalidate,
-    });
-    setCreateOpen(true);
-  }, [invalidate, setCreateData, setCreateOpen]);
 
-  const handleEdit = useCallback(
-    (collection: ProductCollectionDTO) => {
-      setEditOpen(true);
-      setEditData({
-        title: "Edit Collection",
-        description: collection.title,
-        fields: [
-          { type: "hidden", name: "id", value: collection.id },
-          {
-            type: "input",
-            name: "title",
-            label: "Title",
-            value: collection.title,
-            required: true,
-          },
-          {
-            type: "input",
-            name: "handle",
-            label: "Handle",
-            value: collection.handle,
-          },
-          {
-            type: "textarea",
-            name: "description",
-            label: "Description",
-            value: collection.description ?? "",
-          },
-        ],
-        action: (formData: FormData) =>
-          updateCollectionAction({ data: formData }),
-        onSuccess: invalidate,
-      });
-    },
-    [invalidate, setEditData, setEditOpen],
-  );
 
   const handleDelete = useCallback(
     (collection: ProductCollectionDTO) => {
@@ -147,6 +62,8 @@ const Collections = () => {
     },
     [invalidate, setInfoData, setInfoOpen],
   );
+
+  const editAction = useCollectionEditAction("collections");
 
   const columns = useMemo<DataTableColumn<ProductCollectionDTO>[]>(
     () => [
@@ -186,8 +103,7 @@ const Collections = () => {
         { value: "updatedAt", label: "Updated" },
       ]}
       headerActions={
-        <CollectionCreateButton slug="collections"
-          onCreate={handleCreate} />
+        <CollectionCreateButton slug="collections" />
       }
       columns={columns}
       rows={collections}
@@ -198,11 +114,7 @@ const Collections = () => {
       emptyTitle="No collections yet"
       emptyDescription="Create collections to group related products together."
       rowActions={(collection) => [
-        {
-          label: "Edit",
-          icon: editActionIcon,
-          onSelect: () => handleEdit(collection),
-        },
+        ...editAction(collection.id),
         {
           label: "Delete",
           icon: deleteActionIcon,

@@ -50,6 +50,11 @@ export interface ProductDraft {
   handle: string;
   description: string;
   collectionId: string;
+  /** Type and tags are values, not ids: a new one is created on submit. */
+  typeValue: string;
+  tagValues: string[];
+  categoryIds: string[];
+  discountable: boolean;
   hasVariants: boolean;
   options: DraftOption[];
   currencies: string[];
@@ -59,7 +64,20 @@ export interface ProductDraft {
 }
 
 export type DraftAction =
-  | { type: "setField"; field: "title" | "subtitle" | "handle" | "description" | "collectionId"; value: string }
+  | {
+      type: "setField";
+      field:
+        | "title"
+        | "subtitle"
+        | "handle"
+        | "description"
+        | "collectionId"
+        | "typeValue";
+      value: string;
+    }
+  | { type: "setTagValues"; values: string[] }
+  | { type: "setCategoryIds"; ids: string[] }
+  | { type: "setDiscountable"; value: boolean }
   | { type: "setHasVariants"; value: boolean }
   | { type: "addOption"; option: Omit<DraftOption, "key"> }
   | { type: "removeOption"; key: string }
@@ -189,6 +207,15 @@ const reducer = (draft: ProductDraft, action: DraftAction): ProductDraft => {
         ),
       });
 
+    case "setTagValues":
+      return { ...draft, tagValues: action.values };
+
+    case "setCategoryIds":
+      return { ...draft, categoryIds: action.ids };
+
+    case "setDiscountable":
+      return { ...draft, discountable: action.value };
+
     case "setCurrencies":
       return { ...draft, currencies: action.currencies };
 
@@ -254,17 +281,16 @@ const initialDraft: ProductDraft = {
   handle: "",
   description: "",
   collectionId: "",
+  typeValue: "",
+  tagValues: [],
+  categoryIds: [],
+  discountable: true,
   hasVariants: false,
   options: [],
-  currencies: ["twd"],
+  currencies: [],
   variants: [],
   defaultPrices: {},
 };
 
-export const useProductDraft = () => useReducer(reducer, initialDraft);
-
-/** Major units as typed, to the integer minor units the API stores. */
-export const toMinorUnits = (value: string): number => {
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) : 0;
-};
+export const useProductDraft = (currencies: string[]) =>
+  useReducer(reducer, { ...initialDraft, currencies });

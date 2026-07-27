@@ -1,12 +1,12 @@
 import type { FormField } from "@/lib/validations/form";
-import type { EditItem } from "./use-asset-edit-store";
+import type { AssetEditItem } from "./asset-edit.types";
 
 /**
  * Generate edit fields based on item type
  * @param item - The item to generate fields for (folder or asset)
  * @returns Array of form fields
  */
-export const generateEditFields = (item: EditItem): FormField[] => {
+export const generateEditFields = (item: AssetEditItem): FormField[] => {
   if (item.type === "folder") {
     return [
       {
@@ -20,6 +20,13 @@ export const generateEditFields = (item: EditItem): FormField[] => {
         label: "Description",
         type: "textarea",
         value: item.description || "",
+      },
+      {
+        name: "Folder",
+        label: "Folder",
+        type: "folder-select",
+        value: item.locationId ?? "root",
+        excludedIds: [item.id],
       },
     ];
   }
@@ -49,6 +56,12 @@ export const generateEditFields = (item: EditItem): FormField[] => {
       label: "Tags",
       type: "input",
       value: item.tags || "",
+    },
+    {
+      name: "Folder",
+      label: "Folder",
+      type: "folder-select",
+      value: item.locationId ?? "root",
     },
   ];
 };

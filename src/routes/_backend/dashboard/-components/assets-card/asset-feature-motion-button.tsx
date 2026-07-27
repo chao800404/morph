@@ -4,7 +4,6 @@ import { downloadAsset } from "@/lib/asset/download-utils";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { moveItems } from "@/server/asset/move-items.serverFn";
-import { updateItems } from "@/server/asset/update-items.serverFn";
 import { Download, Edit, Plus, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -12,19 +11,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import {
-  generateEditFields,
-  generateEditTitle,
-} from "../../-views/features/asset/edit/edit-fields-utils";
-import {
-  EditItem,
-  useAssetEditStore,
-} from "../../-views/features/asset/edit/use-asset-edit-store";
-import {
   generateMoveDescription,
   generateMoveFields,
   generateMoveTitle,
 } from "../../-views/features/asset/move/move-fields-utils";
 import { useAssetMoveStore } from "../../-views/features/asset/move/use-asset-move-store";
+import { useAssetRouteActions } from "../../-views/global/contents/assets/hooks/use-asset-route-actions";
 
 type Props = {
   // ... existed
@@ -47,17 +39,10 @@ export const AssetFeatureMotionButton = ({
   name,
   fileType,
   size,
-  description,
   alt,
-  caption,
-  tags,
 }: Props) => {
   const [open, setOpen] = useState(false);
-  const { openAssetEdit } = useAssetEditStore(
-    useShallow((state) => ({
-      openAssetEdit: state.openAssetEdit,
-    })),
-  );
+  const { openEdit } = useAssetRouteActions();
 
   const { handleMoveOpenChange, setAssetMoveData } = useAssetMoveStore(
     useShallow((state) => ({
@@ -148,40 +133,7 @@ export const AssetFeatureMotionButton = ({
   };
 
   const handleEdit = () => {
-    const extension = name.split(".").pop()?.toLowerCase() || "";
-
-    const item: EditItem =
-      type === "folder"
-        ? {
-            id,
-            type: "folder" as const,
-            name,
-            description,
-          }
-        : {
-            id,
-            type: "asset" as const,
-            name,
-            fileType: fileType || "unknown",
-            extension,
-            src: assetUrl || undefined,
-            alt,
-            caption,
-            tags,
-            size,
-          };
-
-    openAssetEdit({
-      title: generateEditTitle(type, 1),
-      description: "Modify item details",
-      fields: generateEditFields(item),
-      items: [item],
-      action: updateItems,
-      activeItemId: id,
-      onSuccess: () => {
-        clearAllSelectedItems();
-      },
-    });
+    openEdit(id, type);
   };
 
   return (

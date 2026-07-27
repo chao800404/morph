@@ -1,5 +1,4 @@
-import { OptionValuesField } from "@/components/form/option-values-field";
-import { Label } from "@/components/ui/label";
+import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   normalizeProductOptionListParams,
@@ -7,16 +6,21 @@ import {
 } from "@queries/product.queries";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import type { FormField, FormFieldValue } from "@/lib/validations/form";
 import type { Dispatch } from "react";
 import type { DraftAction, DraftOption } from "./use-product-draft";
 
 /**
- * Options come from the shared library at /dashboard/products/options, so a
+ * Options come from the shared library at /dashboard/product-options, so a
  * product picks existing options and narrows each to the values it sells.
  * Nothing here creates an option or a value: typing one would fork the library.
  */
 
 const MAX_OPTIONS = 3;
+
+/** `FieldsRenderer` also emits `File[]`, which these fields never produce. */
+const isStringArray = (value: FormFieldValue | File[]): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
 
 export const OptionPicker = ({
   options,
@@ -70,8 +74,8 @@ export const OptionPicker = ({
       <p className="text-sm text-muted-foreground">
         No options exist yet.{" "}
         <Link
-          to="/dashboard/$parent/$slug"
-          params={{ parent: "products", slug: "options" }}
+          to="/dashboard/$slug"
+          params={{ slug: "product-options" }}
           className="font-medium text-foreground underline underline-offset-4"
         >
           Create one first
@@ -81,31 +85,67 @@ export const OptionPicker = ({
     );
   }
 
+  // One field list rather than hand-placed labels: the per-option value pickers
+  // are dynamic, and building them as `fields` keeps their labels, spacing and
+  // error text identical to every other form in the wizard.
+  const optionField: FormField = {
+    type: "option-values",
+    name: "product-options",
+    label: "Product options",
+    description: "Define the options for the product, e.g. color, size, etc.",
+    choices: library.map((option) => ({
+      id: option.id,
+      value: option.title,
+    })),
+    value: options.map((option) => option.optionId),
+    maxSelected: MAX_OPTIONS,
+    placeholder: "Select options...",
+    searchPlaceholder: "Search options...",
+    emptyMessage: "No option found.",
+    colSpan: 1,
+  };
+
+  const valueFields: FormField[] = options.map((option) => ({
+    type: "option-values",
+    name: `option-values-${option.key}`,
+    label: option.title,
+    choices: option.available,
+    value: option.selectedValueIds,
+    error:
+      option.selectedValueIds.length === 0
+        ? "Select at least one value to generate variants"
+        : undefined,
+    placeholder: `Select ${option.title.toLowerCase()} values...`,
+    searchPlaceholder: "Search values...",
+    emptyMessage: "No value found.",
+    colSpan: 1,
+  }));
+
+  const handleChange = (name: string, value: FormFieldValue | File[]) => {
+    if (!isStringArray(value)) return;
+
+    if (name === "product-options") {
+      applyOptionIds(value);
+      return;
+    }
+
+    const option = options.find(
+      (candidate) => `option-values-${candidate.key}` === name,
+    );
+    if (option) {
+      dispatch({ type: "setOptionValues", key: option.key, valueIds: value });
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
-      <div className="space-y-2">
-        <div className="space-y-1">
-          <h3 className="font-medium text-foreground">Product options</h3>
-          <p className="text-sm text-muted-foreground">
-            Define the options for the product, e.g. color, size, etc.
-          </p>
-        </div>
-        <OptionValuesField
-          name="product-options"
-          choices={library.map((option) => ({
-            id: option.id,
-            value: option.title,
-          }))}
-          selectedIds={options.map((option) => option.optionId)}
-          onSelectionChange={applyOptionIds}
-          maxSelected={MAX_OPTIONS}
-          placeholder="Select options..."
-          searchPlaceholder="Search options..."
-          emptyMessage="No option found."
-        />
-      </div>
+      <FieldsRenderer
+        fields={[optionField]}
+        className="grid-cols-1"
+        onChange={handleChange}
+      />
 
-      {options.length > 0 && (
+      {valueFields.length > 0 && (
         <div className="space-y-4">
           <div className="space-y-1">
             <h3 className="font-medium text-foreground">Values</h3>
@@ -114,33 +154,11 @@ export const OptionPicker = ({
             </p>
           </div>
 
-          {options.map((option) => (
-            <div key={option.key} className="space-y-2">
-              <Label htmlFor={`option-values-${option.key}`}>
-                {option.title}
-              </Label>
-              <OptionValuesField
-                name={`option-values-${option.key}`}
-                choices={option.available}
-                selectedIds={option.selectedValueIds}
-                onSelectionChange={(valueIds) =>
-                  dispatch({
-                    type: "setOptionValues",
-                    key: option.key,
-                    valueIds,
-                  })
-                }
-                placeholder={`Select ${option.title.toLowerCase()} values...`}
-                searchPlaceholder="Search values..."
-                emptyMessage="No value found."
-              />
-              {option.selectedValueIds.length === 0 && (
-                <p className="text-sm text-destructive">
-                  Select at least one value to generate variants.
-                </p>
-              )}
-            </div>
-          ))}
+          <FieldsRenderer
+            fields={valueFields}
+            className="grid-cols-1 gap-y-6"
+            onChange={handleChange}
+          />
         </div>
       )}
     </div>

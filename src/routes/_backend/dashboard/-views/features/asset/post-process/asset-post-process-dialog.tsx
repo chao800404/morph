@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 import { useRouter } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Cropper, CropperRef } from "react-advanced-cropper";
 import type { Coordinates } from "advanced-cropper/types";
@@ -33,8 +34,6 @@ import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { AdjustableCropperBackground } from "@/components/crop/adjustable-cropper-background";
 import { DialogFooterActions } from "@/components/dialog/dialog-footer-actions";
-import { useAssetEditStore } from "../edit/use-asset-edit-store";
-import { useAssetPreviewStore } from "../preview/use-asset-preview-store";
 import { useAssetPostProcessStore } from "./use-asset-post-process-store";
 
 // Configuration constants
@@ -172,6 +171,7 @@ export const AssetPostProcessDialog = () => {
   const [_hasBackgroundRemoved, setHasBackgroundRemoved] = useState(false);
   const [showEffect, setShowEffect] = useState(false);
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   // Cleanup helper function
   const cleanup = () => {
@@ -303,42 +303,14 @@ export const AssetPostProcessDialog = () => {
         setOpen(false);
         resetAdjustments();
 
-        // Update other stores if it's an update
         if (saveMode === "update" && result.assetUrl) {
-          const newUrl = result.assetUrl;
-          const assetId = activeItem.id;
-
-          // Update Edit Store
-          const editStore = useAssetEditStore.getState();
-          if (editStore.items) {
-            const newItems = editStore.items.map((item) =>
-              item.id === assetId && item.type === "asset"
-                ? { ...item, src: newUrl, size: blob.size }
-                : item,
-            );
-            useAssetEditStore.setState({ items: newItems });
-          }
-
-          // Update Preview Store
-          const previewStore = useAssetPreviewStore.getState();
-          if (previewStore.items) {
-            const newItems = previewStore.items.map((item) =>
-              item.id === assetId && item.type === "asset"
-                ? { ...item, src: newUrl, size: blob.size }
-                : item,
-            );
-
-            // Also update current item if it matches
-            const newItem =
-              previewStore.item?.id === assetId &&
-              previewStore.item?.type === "asset"
-                ? { ...previewStore.item, src: newUrl, size: blob.size }
-                : previewStore.item;
-
-            useAssetPreviewStore.setState({ items: newItems, item: newItem });
-          }
+          activeItem.onUpdated?.({
+            src: result.assetUrl,
+            size: blob.size,
+          });
         }
 
+        await queryClient.invalidateQueries({ queryKey: ["assets"] });
         router.invalidate();
       } else {
         toast.error(
@@ -524,7 +496,11 @@ export const AssetPostProcessDialog = () => {
                       ),
                     }}
                     crossOrigin="anonymous"
-                    defaultSize={({ imageSize }: { imageSize: { width: number; height: number } }) => ({
+                    defaultSize={({
+                      imageSize,
+                    }: {
+                      imageSize: { width: number; height: number };
+                    }) => ({
                       width: imageSize.width,
                       height: imageSize.height,
                     })}
@@ -601,9 +577,7 @@ export const AssetPostProcessDialog = () => {
                     <TabsList
                       className={cn(
                         "w-full grid",
-                        removeBackgroundEnabled
-                          ? "grid-cols-3"
-                          : "grid-cols-2",
+                        removeBackgroundEnabled ? "grid-cols-3" : "grid-cols-2",
                       )}
                     >
                       {tabsConfig.map((tab) => (

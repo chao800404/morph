@@ -1,0 +1,40 @@
+import { cva } from "class-variance-authority";
+
+/**
+ * Shared visual surface for every editable field control.
+ *
+ * Structural concerns such as height, padding, and layout stay in each
+ * primitive. Background, border, radius, elevation, and interaction states
+ * live here so Input remains the visual baseline without duplicating its class
+ * list across Select, Dropzone, and future field types.
+ */
+export const fieldControlVariants = cva(
+  [
+    "rounded-md-plus border border-input bg-background text-foreground shadow-xs",
+    "transition-[color,box-shadow] outline-none placeholder:text-muted-foreground",
+    "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]",
+    "aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40",
+    "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50",
+    "data-[disabled=true]:pointer-events-none data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-50",
+    "dark:bg-input/30",
+  ],
+  {
+    variants: {
+      variant: {
+        default: "",
+        card: [
+          "border-border bg-zinc-100 text-foreground shadow-sm shadow-zinc-300",
+          "inset-shadow-xs inset-shadow-white placeholder:text-zinc-400",
+          "hover:bg-zinc-300/40",
+          "dark:border-border dark:border-b-0 dark:bg-zinc-700/30",
+          "dark:placeholder:text-zinc-500 dark:shadow-sm dark:shadow-zinc-900",
+          "dark:inset-shadow-none dark:inset-ring dark:inset-ring-zinc-600/20",
+          "dark:hover:bg-zinc-700/40",
+        ],
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  },
+);

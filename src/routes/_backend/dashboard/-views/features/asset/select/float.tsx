@@ -2,11 +2,6 @@
 
 import { AssetsSelectContent } from "@/routes/_backend/dashboard/-components/assets-card/assets-select-content";
 import {
-  generateEditFields,
-  generateEditTitle,
-} from "../edit/edit-fields-utils";
-import { useAssetEditStore } from "../edit/use-asset-edit-store";
-import {
   generateMoveDescription,
   generateMoveFields,
   generateMoveTitle,
@@ -16,22 +11,23 @@ import {
   useInfoStore,
   type ServerAction,
 } from "../../global-info/use-info-store";
-import { Button } from "@/components/ui/button";
+import { CommandBar } from "@/components/ui/command-bar";
 import { MoveFolderIcon } from "@/components/ui/icons/move-folder-icon";
-import { useMediaQuery } from "@/hooks/use-media-query";
 import { downloadMixed } from "@/lib/asset/download-utils";
-import { cn } from "@/lib/utils";
 import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { moveItems } from "@/server/asset/move-items.serverFn";
-import { updateItems } from "@/server/asset/update-items.serverFn";
-import { Download, Edit, Trash2, X } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { Download, Edit, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { useAssetsStore } from "../../../global/contents/assets/stores/assets.store";
+import { useAssetRouteActions } from "../../../global/contents/assets/hooks/use-asset-route-actions";
 
-const AssetSelectFloat = () => {
-  const isLargeScreen = useMediaQuery("(min-width: 1024px)");
+interface AssetSelectFloatProps {
+  active?: boolean;
+}
+
+const AssetSelectFloat = ({ active = true }: AssetSelectFloatProps) => {
+  const { openEditItems } = useAssetRouteActions();
 
   const { selectedItems, clearAllSelectedItems, isActionMenuOpen } =
     useAssetsStore(
@@ -46,12 +42,6 @@ const AssetSelectFloat = () => {
     useShallow((state) => ({
       handleMoveOpenChange: state.handleOpenChange,
       setAssetMoveData: state.setAssetMoveData,
-    })),
-  );
-
-  const { openAssetEdit } = useAssetEditStore(
-    useShallow((state) => ({
-      openAssetEdit: state.openAssetEdit,
     })),
   );
 
@@ -76,43 +66,13 @@ const AssetSelectFloat = () => {
   };
 
   const handleEdit = () => {
-    const items = Array.from(selectedItems.values()).map((item) => {
-      if (item.type === "folder") {
-        return {
-          id: item.id,
-          type: "folder" as const,
-          name: item.name,
-          description: item.description,
-        };
-      }
-      return {
+    const selected = Array.from(selectedItems.values());
+    openEditItems(
+      selected.map((item) => ({
         id: item.id,
-        type: "asset" as const,
-        name: item.name,
-        fileType: item.fileType,
-        extension: item.extension,
-        src: item.src,
-        alt: item.alt,
-        caption: item.caption,
-        tags: item.tags?.join(", "),
-      };
-    });
-
-    if (items.length === 0) return;
-
-    // Default to the first item
-    const firstItem = items[0];
-
-    openAssetEdit({
-      title: generateEditTitle(firstItem.type, items.length),
-      description: "Modify item details",
-      fields: generateEditFields(firstItem),
-      action: updateItems,
-      items: items,
-      onSuccess: () => {
-        clearAllSelectedItems();
-      },
-    });
+        itemType: item.type,
+      })),
+    );
   };
 
   const handleDownload = async () => {
@@ -209,70 +169,41 @@ const AssetSelectFloat = () => {
   };
 
   return (
-    <AnimatePresence>
-      {selectedItems.size > 0 && !isActionMenuOpen && (
-        <motion.div
-          key="asset-select-float"
-          whileHover="hover"
-          initial={{ opacity: 0, y: 100, x: "-50%" }}
-          animate={{ opacity: 1, y: 0, x: "-50%" }}
-          exit={{ opacity: 0, y: 200, x: "-50%" }}
-          transition={{ type: "tween" }}
-          className={cn(
-            "bg-card pl-4 h-11 pr-2 text-zinc-400 text-xs border-t border-x border-zinc-300 dark:border-zinc-950 shadow-sm/20 dark:shadow-elevation-modal flex items-center fixed bottom-3 left-1/2 z-50 rounded-full cursor-pointer pointer-events-auto",
-          )}
-        >
-          <div
-            className="overflow-hidden h-full"
-            onClick={clearAllSelectedItems}
-          >
-            {isLargeScreen ? (
-              <motion.div
-                transition={{ type: "tween" }}
-                variants={{ hover: { y: "-100%" } }}
-                className="relative h-full flex items-center w-28 justify-center"
-              >
-                <span>{selectedItems.size} Selected</span>
-                <div className="absolute -bottom-full left-0 w-full h-full flex justify-center text-destructive z-10">
-                  <span className="group w-full flex items-center justify-around">
-                    <span className="group-hover:bg-destructive/10 gap-1 px-3 py-1 rounded-full flex items-center justify-center">
-                      <X className="size-3" />
-                      Deselect {selectedItems.size}
-                    </span>
-                  </span>
-                </div>
-              </motion.div>
-            ) : (
-              <div className="h-full flex items-center justify-center text-destructive">
-                <span className="w-full flex items-center justify-around">
-                  <span className="gap-1 px-3 py-1 whitespace-nowrap rounded-full flex items-center justify-center">
-                    <X className="size-3" />
-                    Deselect {selectedItems.size}
-                  </span>
-                </span>
-              </div>
-            )}
-          </div>
-          <span className="px-2 opacity-20 ml-1">|</span>
-          <div className="flex gap-0.5 items-center">
-            <Button variant="none" size="icon" onClick={handleDelete}>
-              <Trash2 className="size-3.5 text-destructive" />
-            </Button>
-            <Button variant="none" size="icon" onClick={handleDownload}>
-              <Download className="size-3.5" />
-            </Button>
-            <Button variant="none" size="icon" onClick={handleMove}>
-              <MoveFolderIcon className="size-3.5" />
-            </Button>
-          </div>
-          <span className="px-2 opacity-20 mr-1">|</span>
-          <Button variant="form" rounded="full" onClick={handleEdit}>
-            <Edit className="size-3.5" />
-            <span className="max-sm:hidden">Edit</span>
-          </Button>
-        </motion.div>
-      )}
-    </AnimatePresence>
+    <CommandBar
+      open={active && selectedItems.size > 0 && !isActionMenuOpen}
+      value={`${selectedItems.size} selected`}
+      onClear={clearAllSelectedItems}
+      actions={[
+        {
+          id: "delete",
+          label: "Delete",
+          icon: <Trash2 className="size-3.5" />,
+          destructive: true,
+          iconOnly: true,
+          onAction: handleDelete,
+        },
+        {
+          id: "download",
+          label: "Download",
+          icon: <Download className="size-3.5" />,
+          iconOnly: true,
+          onAction: handleDownload,
+        },
+        {
+          id: "move",
+          label: "Move",
+          icon: <MoveFolderIcon className="size-3.5" />,
+          iconOnly: true,
+          onAction: handleMove,
+        },
+      ]}
+      primaryAction={{
+        id: "edit",
+        label: "Edit",
+        icon: <Edit className="size-3.5" />,
+        onAction: handleEdit,
+      }}
+    />
   );
 };
 

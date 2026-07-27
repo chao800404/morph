@@ -41,7 +41,6 @@ function getSavedFoldersHeight(folderId: string | null): number {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { downloadFolder } from "@/lib/asset/download-utils";
-import { useAssetEditStore } from "@/routes/_backend/dashboard/-views/features/asset/edit/use-asset-edit-store";
 import {
   generateMoveDescription,
   generateMoveFields,
@@ -49,11 +48,11 @@ import {
 } from "@/routes/_backend/dashboard/-views/features/asset/move/move-fields-utils";
 import { useAssetMoveStore } from "@/routes/_backend/dashboard/-views/features/asset/move/use-asset-move-store";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
-import type { AssetFolder } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
+import type { AssetFolder } from "@/routes/_backend/dashboard/-views/global/contents/assets/assets.types";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
+import { useAssetRouteActions } from "@/routes/_backend/dashboard/-views/global/contents/assets/hooks/use-asset-route-actions";
 import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { moveItems } from "@/server/asset/move-items.serverFn";
-import { updateItems } from "@/server/asset/update-items.serverFn";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
@@ -114,7 +113,7 @@ type FolderCardProps = {
   item: AssetFolder;
   onRedirect: (id: string) => void;
   onDelete: (id: string) => void;
-  onEdit: (id: string, name: string, description: string) => void;
+  onEdit: (id: string) => void;
   onMove: (id: string) => void;
   onDownload: (id: string) => void;
 };
@@ -267,7 +266,7 @@ const FolderCard = memo(function FolderCard({
         <ItemActionsMenu
           type="folder"
           onDelete={() => onDelete(id)}
-          onEdit={() => onEdit(id, item.name, description)}
+          onEdit={() => onEdit(id)}
           onMove={() => onMove(id)}
           onDownload={() => onDownload(id)}
           onOpenChange={setActionMenuOpen}
@@ -300,11 +299,7 @@ export const FoldersContent = memo(function FoldersContent({
 }: FoldersContentProps) {
   const navigate = useNavigate();
   const isDesktop = useMediaQuery("(min-width: 1280px)");
-  const { openAssetEdit } = useAssetEditStore(
-    useShallow((state) => ({
-      openAssetEdit: state.openAssetEdit,
-    })),
-  );
+  const { openEdit } = useAssetRouteActions();
 
   const { handleMoveOpenChange, setAssetMoveData } = useAssetMoveStore(
     useShallow((state) => ({
@@ -352,31 +347,8 @@ export const FoldersContent = memo(function FoldersContent({
   );
 
   const handleEdit = useCallback(
-    (id: string, name: string, description: string) => {
-      openAssetEdit({
-        title: "Edit Folder",
-        description: "Modify folder information",
-        fields: [
-          {
-            name: "Name",
-            type: "input",
-            value: name || "",
-          },
-          {
-            name: "Description",
-            type: "textarea",
-            value: description || "",
-          },
-        ],
-        items: [{ id, type: "folder", name, description }],
-        action: updateItems,
-        onSuccess: clearAllSelectedItems,
-      });
-    },
-    [
-      clearAllSelectedItems,
-      openAssetEdit,
-    ],
+    (id: string) => openEdit(id, "folder"),
+    [openEdit],
   );
 
   const handleMove = useCallback(

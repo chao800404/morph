@@ -3,32 +3,38 @@ import { useCallback, useEffect, useState } from "react";
 
 import { AssetsCardSkeleton } from "./assets-card-skeleton";
 import { AssetsCardHeader } from "@/routes/_backend/dashboard/-components/assets-card/assets-card-header";
+import { AssetsCardToolbar } from "@/routes/_backend/dashboard/-components/assets-card/assets-card-toolbar";
 import { AssetsContent } from "@/routes/_backend/dashboard/-components/assets-card/assets-content";
 import { FoldersContent } from "@/routes/_backend/dashboard/-components/assets-card/folders-content";
 import { BreadcrumbCollapse } from "@/routes/_backend/dashboard/-components/breadcrumb/breadcrumb-collapse";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
 import { useShallow } from "zustand/react/shallow";
-import type { AssetsCardComponentProps } from "../config/assets-card.types";
+import type { AssetsExplorerData } from "../assets.types";
 import { useCollapseState } from "../hooks/use-collapse-state";
 import { useSuppressTransition } from "../hooks/use-suppress-transition";
 import { useAssetsStore } from "../stores/assets.store";
 import { AssetEmptyCard } from "./asset-empty-card";
 
-type AssetsExplorerCardProps = AssetsCardComponentProps & {
+interface AssetsExplorerCardProps {
+  label: string;
+  description?: string;
+  data: AssetsExplorerData;
+  query?: string;
   isLoading?: boolean;
   errorMessage?: string;
   folderId?: string | null;
-};
+  hasActiveFilter?: boolean;
+}
 
 export const AssetsExplorerCard = ({
   label,
   description,
   data,
   query,
-  uploadConfig,
   isLoading = false,
   errorMessage,
   folderId,
+  hasActiveFilter = false,
 }: AssetsExplorerCardProps) => {
   const {
     foldersCollapsed,
@@ -173,15 +179,9 @@ export const AssetsExplorerCard = ({
       }}
       label={<BreadcrumbCollapse breadcrumbs={breadcrumbs} />}
       description={description}
-      headerButton={
-        <AssetsCardHeader
-          className="max-md:w-full max-md:flex-1"
-          id="assets-card-header"
-          data={data}
-          uploadConfig={uploadConfig}
-        />
-      }
+      headerButton={<AssetsCardHeader id="assets-card-header" />}
     >
+      <AssetsCardToolbar />
       {isLoading ? (
         <AssetsCardSkeleton />
       ) : errorMessage ? (
@@ -191,8 +191,9 @@ export const AssetsExplorerCard = ({
       ) : folders.length <= 0 &&
         assets.length <= 0 &&
         !currentFolder &&
-        !query ? (
-        <AssetEmptyCard showButton uploadConfig={uploadConfig} />
+        !query &&
+        !hasActiveFilter ? (
+        <AssetEmptyCard showButton />
       ) : (
         <div className="w-full flex-1 flex flex-col min-h-0 overflow-hidden relative select-none">
           {folders.length <= 0 && assets.length <= 0 && (

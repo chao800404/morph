@@ -79,17 +79,26 @@ export async function validateSvgContent(
     return { success: false, message: "Unable to read SVG content" };
   }
 
-  if (source.includes("\0") || !/^\s*(?:<\?xml[^>]*>\s*)?<svg\b/i.test(source)) {
+  if (
+    source.includes("\0") ||
+    !/^\s*(?:<\?xml[^>]*>\s*)?<svg\b/i.test(source)
+  ) {
     return { success: false, message: "File is not a valid SVG document" };
   }
   if (/<!DOCTYPE|<!ENTITY|<\?xml-stylesheet/i.test(source)) {
-    return { success: false, message: "SVG DTD and external entities are not allowed" };
+    return {
+      success: false,
+      message: "SVG DTD and external entities are not allowed",
+    };
   }
   if (SVG_FORBIDDEN_MARKUP.test(source) || SVG_EVENT_HANDLER.test(source)) {
     return { success: false, message: "SVG contains active content" };
   }
   if (SVG_UNSAFE_REFERENCE.test(source)) {
-    return { success: false, message: "SVG contains an unsafe external reference" };
+    return {
+      success: false,
+      message: "SVG contains an unsafe external reference",
+    };
   }
 
   return { success: true };
@@ -242,12 +251,14 @@ export const updateItemsSchema = z.object({
             alt: z.string().max(1000).optional(),
             caption: z.string().max(5000).optional(),
             tags: z.string().max(2000).optional(),
+            locationId: z.uuid("Invalid folder ID").nullable().optional(),
           }),
         )
         .min(1, "Select at least one item")
         .max(100, "A maximum of 100 items may be changed at once")
         .refine(
-          (items) => new Set(items.map((item) => item.id)).size === items.length,
+          (items) =>
+            new Set(items.map((item) => item.id)).size === items.length,
           "Duplicate item IDs are not allowed",
         )
         .parse(parsed);

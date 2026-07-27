@@ -29,7 +29,10 @@ const jsonUuidArray = z.string().transform((value, context) => {
       .max(100, "A maximum of 100 items may be changed at once")
       .parse(JSON.parse(value));
     if (new Set(ids).size !== ids.length) {
-      context.addIssue({ code: "custom", message: "Duplicate item IDs are not allowed" });
+      context.addIssue({
+        code: "custom",
+        message: "Duplicate item IDs are not allowed",
+      });
       return z.NEVER;
     }
     return ids;
@@ -40,7 +43,8 @@ const jsonUuidArray = z.string().transform((value, context) => {
 });
 
 const optionalJsonUuidArray = z.preprocess(
-  (value) => (value === null || value === undefined || value === "" ? "[]" : value),
+  (value) =>
+    value === null || value === undefined || value === "" ? "[]" : value,
   jsonUuidArray,
 );
 
@@ -62,13 +66,22 @@ const toInputError = (error: z.ZodError): AssetInputError => {
 };
 
 export const parseUpdateItemsInput = (data: unknown): UpdateItemsInput => {
-  if (!isFormDataLike(data)) return { itemsData: [], formError: "Invalid form data" };
-  const result = updateItemsSchema.safeParse({ itemsData: data.get("itemsData") });
-  return result.success ? result.data : { itemsData: [], ...toInputError(result.error) };
+  if (!isFormDataLike(data)) {
+    return { itemsData: [], formError: "Invalid form data" };
+  }
+  const result = updateItemsSchema.safeParse({
+    itemsData: data.get("itemsData"),
+  });
+  return result.success
+    ? result.data
+    : { itemsData: [], ...toInputError(result.error) };
 };
 
 const moveItemsSchema = z.object({
-  itemIds: jsonUuidArray.refine((ids) => ids.length > 0, "Select at least one item"),
+  itemIds: jsonUuidArray.refine(
+    (ids) => ids.length > 0,
+    "Select at least one item",
+  ),
   destinationFolder: z.preprocess(
     (value) =>
       value === null || value === undefined || value === "" || value === "root"
@@ -80,7 +93,11 @@ const moveItemsSchema = z.object({
 
 export const parseMoveItemsInput = (data: unknown): MoveItemsInput => {
   if (!isFormDataLike(data)) {
-    return { itemIds: [], destinationFolder: null, formError: "Invalid form data" };
+    return {
+      itemIds: [],
+      destinationFolder: null,
+      formError: "Invalid form data",
+    };
   }
   const result = moveItemsSchema.safeParse({
     itemIds: data.get("itemIds"),

@@ -14,7 +14,7 @@ const Profile = () => {
   if (!session) return null;
 
   return (
-    <section className="space-y-4 p-3 overflow-y-auto">
+    <section className="space-y-4">
       <ProfileInformationCard
         slug="profile-information"
         label="Profile Information"

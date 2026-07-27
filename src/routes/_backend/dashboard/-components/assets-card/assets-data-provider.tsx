@@ -1,12 +1,15 @@
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { getFileType } from "@/lib/utils";
-import type { AssetsCardData } from "@/routes/_backend/dashboard/-views/global/contents/assets/config/assets-card.types";
+import type { AssetsExplorerData } from "@/routes/_backend/dashboard/-views/global/contents/assets/assets.types";
+import {
+  toSelectedAssetFromCard,
+  toSelectedFolderFromCard,
+} from "@/routes/_backend/dashboard/-views/global/contents/assets/asset-view-model";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 interface AssetsDataProviderProps {
-  data: AssetsCardData;
+  data: AssetsExplorerData;
   children: React.ReactNode;
   folderId?: string | null;
 }
@@ -100,21 +103,7 @@ export const AssetsDataProvider = ({
       if (dataType === "asset-folder" && isDesktop) {
         const folder = folderMap.get(id);
         if (folder) {
-          setActiveItem({
-            type: "folder",
-            id,
-            name: folder.name,
-            createdAt: folder.createdAt,
-            updatedAt: folder.updatedAt,
-            createdBy: folder.createdBy,
-            updatedBy: folder.updatedBy,
-            description: folder.description || undefined,
-            path: folder.path,
-            parentId: folder.parentId,
-            assetCount: folder.assetCount,
-            folderCount: folder.folderCount,
-            itemCount: folder.itemCount,
-          });
+          setActiveItem(toSelectedFolderFromCard(folder));
         } else {
           setActiveItem({
             type: "folder",
@@ -126,27 +115,7 @@ export const AssetsDataProvider = ({
       } else if (dataType === "asset-asset") {
         const asset = assetMap.get(id);
         if (asset) {
-          const fileType = getFileType(asset.type);
-
-          const extension =
-            asset?.type?.split("/").pop()?.toLowerCase() || "file";
-
-          setActiveItem({
-            type: "asset",
-            id,
-            name: asset.name,
-            fileType,
-            extension,
-            src: asset.url,
-            alt: asset.alt || undefined,
-            caption: asset.caption || undefined,
-            tags: asset.tags || undefined,
-            createdAt: asset.createdAt,
-            updatedAt: asset.updatedAt,
-            uploadedBy: asset.uploadedBy || undefined,
-            duration: asset.duration || undefined,
-            size: asset.size,
-          });
+          setActiveItem(toSelectedAssetFromCard(asset));
         }
       }
     };

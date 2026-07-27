@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { createContext, useContext } from "react";
 import type { DropEvent, DropzoneOptions, FileRejection } from "react-dropzone";
 import { useDropzone } from "react-dropzone";
+import { fieldControlVariants } from "../../field-control";
 
 type DropzoneContextType = {
   src?: File[];
@@ -42,6 +43,10 @@ export type DropzoneProps = Omit<DropzoneOptions, "onDrop"> & {
   ) => void;
   children?: ReactNode;
   error?: boolean;
+  variant?: "default" | "card";
+  inputId?: string;
+  inputAriaRequired?: boolean;
+  inputAriaDescribedBy?: string;
 };
 
 export const Dropzone = ({
@@ -56,6 +61,10 @@ export const Dropzone = ({
   className,
   children,
   error,
+  variant = "default",
+  inputId,
+  inputAriaRequired,
+  inputAriaDescribedBy,
   ...props
 }: DropzoneProps) => {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -85,19 +94,26 @@ export const Dropzone = ({
       <div
         data-error={error ? "true" : undefined}
         data-disabled={disabled ? "true" : undefined}
+        aria-invalid={error || undefined}
         className={cn(
-          "relative flex flex-col items-center justify-center w-full min-h-[140px] p-6 rounded-xl cursor-pointer select-none text-center transition-all duration-200",
-          "border border-dashed border-zinc-300 dark:border-zinc-700/80",
-          "bg-zinc-50/60 dark:bg-zinc-800/30",
-          "hover:bg-zinc-100/80 dark:hover:bg-zinc-800/60 hover:border-zinc-400 dark:hover:border-zinc-600",
-          "data-[error=true]:border-destructive data-[error=true]:bg-destructive/5",
-          "data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50",
-          isDragActive && "border-primary bg-primary/5 dark:bg-primary/10 ring-2 ring-primary/20",
+          fieldControlVariants({ variant }),
+          "relative flex min-h-[140px] w-full cursor-pointer select-none flex-col items-center justify-center border-dashed p-6 text-center",
+          "data-[error=true]:bg-destructive/5",
+          isDragActive &&
+            "border-primary bg-primary/5 ring-2 ring-primary/20 dark:bg-primary/10",
           className,
         )}
         {...getRootProps()}
       >
-        <input {...getInputProps()} disabled={disabled} />
+        <input
+          {...getInputProps({
+            id: inputId,
+            "aria-required": inputAriaRequired || undefined,
+            "aria-describedby": inputAriaDescribedBy,
+            "aria-invalid": error || undefined,
+          })}
+          disabled={disabled}
+        />
         {children}
       </div>
     </DropzoneContext.Provider>
@@ -137,10 +153,10 @@ export const DropzoneContent = ({
 
   return (
     <div className={cn("flex flex-col items-center justify-center gap-1", className)}>
-      <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary mb-1">
+      <div className="mb-1 flex size-9 items-center justify-center rounded-md-plus bg-primary/10 text-primary">
         <UploadIcon size={18} />
       </div>
-      <p className="w-full truncate font-medium text-sm text-zinc-900 dark:text-zinc-100">
+      <p className="w-full truncate text-sm font-medium text-foreground">
         {src.length > maxLabelItems
           ? `${new Intl.ListFormat("en").format(
               src.slice(0, maxLabelItems).map((file) => file.name),
@@ -148,7 +164,7 @@ export const DropzoneContent = ({
           : new Intl.ListFormat("en").format(src.map((file) => file.name))}
       </p>
 
-      <p className="w-full text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="w-full text-xs text-muted-foreground">
         Drag and drop or click to replace
       </p>
     </div>
@@ -215,17 +231,17 @@ export const DropzoneEmptyState = ({
 
   return (
     <div className={cn("flex flex-col items-center justify-center gap-1 text-center w-full", className)}>
-      <div className="flex size-10 items-center justify-center rounded-lg bg-zinc-200/60 dark:bg-zinc-700/40 text-zinc-600 dark:text-zinc-300 mb-1">
+      <div className="mb-1 flex size-10 items-center justify-center rounded-md-plus bg-muted text-muted-foreground">
         <UploadIcon size={18} />
       </div>
-      <p className="font-medium text-sm text-zinc-900 dark:text-zinc-100">
+      <p className="text-sm font-medium text-foreground">
         Upload {maxFiles === 1 ? "a file" : "files"}
       </p>
-      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="text-xs text-muted-foreground">
         Drag & drop or click to upload
       </p>
       {(acceptSummary || limitText) && (
-        <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-1 max-w-[85%] leading-relaxed">
+        <p className="mt-1 max-w-[85%] text-[11px] leading-relaxed text-muted-foreground/70">
           {acceptSummary ? `${acceptSummary}${limitText ? ` (${limitText})` : ""}` : limitText}
         </p>
       )}

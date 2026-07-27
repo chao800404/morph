@@ -1,8 +1,13 @@
 import { CollectionGroup, CollectionItem } from "./create-config";
 
 /**
- * Flatten collection groups into every addressable item, including nested
- * `items`, so a route can resolve a slug in one pass.
+ * Every addressable collection, in one flat list.
+ *
+ * `items` nests a collection under another in the sidebar only — every
+ * collection, nested or not, is addressed at `/dashboard/<slug>`. Keeping URLs
+ * flat is what lets `/dashboard/<slug>/<id>` exist without colliding with a
+ * two-segment collection path, and it is what Medusa does: `product-options`,
+ * `product-tags` and `collections` are all top-level there too.
  */
 export const getAllCollections = (
   groups: CollectionGroup[],
@@ -19,77 +24,125 @@ export const getAllCollections = (
   return result;
 };
 
+/**
+ * Slugs the dashboard's own routes already occupy.
+ *
+ * A collection using one of these would be silently unreachable, because a
+ * static segment outranks the dynamic `$slug` that resolves collections.
+ */
+export const RESERVED_COLLECTION_SLUGS = ["create", "settings"] as const;
+
+/**
+ * Fail the config rather than let a collection be unreachable.
+ *
+ * Two failure modes are silent otherwise: a slug that collides with a static
+ * route never renders, and two collections sharing a slug under the same parent
+ * mean the second is unaddressable. Both surface as "the page is just blank",
+ * which is expensive to diagnose, so they are rejected where the config is
+ * built.
+ */
+export const assertCollectionsAreAddressable = (
+  groups: CollectionGroup[],
+): void => {
+  const seen = new Set<string>();
+
+  const check = (slug: string) => {
+    if (
+      RESERVED_COLLECTION_SLUGS.includes(
+        slug as (typeof RESERVED_COLLECTION_SLUGS)[number],
+      )
+    ) {
+      throw new Error(
+        `CMS Config: "${slug}" is a reserved slug. The dashboard routes that segment itself, so the collection would never render.`,
+      );
+    }
+    if (seen.has(slug)) {
+      throw new Error(
+        `CMS Config: two collections share the slug "${slug}". Every collection is addressed at /dashboard/<slug>, so only the first would be reachable — nesting one under another in the sidebar does not give it a separate namespace.`,
+      );
+    }
+    seen.add(slug);
+  };
+
+  for (const collection of getAllCollections(groups)) {
+    check(collection.slug);
+  }
+};
+
+/** Resolve the collection a dashboard URL addresses. */
+export const findCollection = (
+  groups: CollectionGroup[],
+  slug: string,
+): CollectionItem | undefined =>
+  getAllCollections(groups).find((collection) => collection.slug === slug);
+
 export interface BreadcrumbItem {
   name: string;
   href: string;
 }
 
 /**
- * Find breadcrumb path from collections
+ * Breadcrumbs for a dashboard path.
+ *
+ * URLs are flat, so a nested collection produces its parent as a label only —
+ * the trail reads Products › Options while the last crumb links to
+ * /dashboard/product-options, not to a path under /dashboard/products.
  */
 export function findBreadcrumbsFromCollections(
   groups: CollectionGroup[],
   slugs: string[],
 ): BreadcrumbItem[] {
-  if (!slugs || slugs.length === 0) {
-    return [];
-  }
-
-  const breadcrumbs: BreadcrumbItem[] = [];
+  if (!slugs || slugs.length === 0) return [];
 
   for (const group of groups ?? []) {
     const isGlobal = group.slug === "/" || group.slug === "";
     const groupMatches = !isGlobal && group.slug === slugs[0];
-
-    // If the group matches (e.g., 'settings'), the collections are searched using the next slug
     const remainingSlugs = groupMatches ? slugs.slice(1) : slugs;
 
-    // If we're in a global group but the first slug isn't found in its collections,
-    // it might be meant for another group (like 'settings')
     if (isGlobal && slugs[0] === "settings") continue;
 
-    if (groupMatches && remainingSlugs.length === 0) {
-      return [
-        {
-          name: group.slug === "settings" ? "Settings" : group.title,
-          href: `/dashboard/${group.slug}`,
-        },
-      ];
-    }
+    const groupCrumb: BreadcrumbItem[] =
+      !isGlobal && groupMatches
+        ? [
+            {
+              name: group.slug === "settings" ? "Settings" : group.title,
+              href: `/dashboard/${group.slug}`,
+            },
+          ]
+        : [];
+
+    if (groupMatches && remainingSlugs.length === 0) return groupCrumb;
+
+    const prefix = `/dashboard${isGlobal ? "" : `/${group.slug}`}`;
+    const target = remainingSlugs[0];
 
     for (const collection of group.collections ?? []) {
-      if (collection.slug === remainingSlugs[0]) {
-        // Add group to breadcrumbs if it's not global
-        if (!isGlobal && groupMatches) {
-          breadcrumbs.push({
-            name: group.slug === "settings" ? "Settings" : group.title,
-            href: `/dashboard/${group.slug}`,
-          });
-        }
+      if (collection.slug === target) {
+        return [
+          ...groupCrumb,
+          {
+            name: collection.label || collection.title,
+            href: `${prefix}/${collection.slug}`,
+          },
+        ];
+      }
 
-        breadcrumbs.push({
-          name: collection.label || collection.title,
-          href: `/dashboard${isGlobal ? "" : `/${group.slug}`}/${collection.slug}`,
-        });
-
-        if (remainingSlugs.length > 1 && collection.items) {
-          for (let i = 1; i < remainingSlugs.length; i++) {
-            const item = collection.items.find(
-              (item) => item.slug === remainingSlugs[i],
-            );
-            if (item) {
-              const prevHref = breadcrumbs[breadcrumbs.length - 1].href;
-              breadcrumbs.push({
-                name: item.label || item.title,
-                href: `${prevHref}/${item.slug}`,
-              });
-            }
-          }
-        }
-        return breadcrumbs;
+      const item = collection.items?.find((child) => child.slug === target);
+      if (item) {
+        return [
+          ...groupCrumb,
+          {
+            name: collection.label || collection.title,
+            href: `${prefix}/${collection.slug}`,
+          },
+          {
+            name: item.label || item.title,
+            href: `${prefix}/${item.slug}`,
+          },
+        ];
       }
     }
   }
 
-  return breadcrumbs;
+  return [];
 }

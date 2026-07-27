@@ -1,5 +1,10 @@
 import type { AssetActionResult } from "@/lib/asset/action-result";
 import { createCollection, deleteCollections, updateCollection } from "@/server/product/collections.serverFn";
+import {
+  createProductCategory,
+  deleteProductCategories,
+  updateProductCategory,
+} from "@/server/product/categories.serverFn";
 import { createProductOption, deleteProductOptions, updateProductOption } from "@/server/product/options.serverFn";
 import { deleteProducts, updateProduct } from "@/server/product/update-product.serverFn";
 
@@ -213,4 +218,77 @@ export const deleteProductOptionsAction = async ({
     return { success: false, message: "No options selected" };
   }
   return toActionResult(await deleteProductOptions({ data: { ids } }));
+};
+
+export const deleteProductCategoriesAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const ids = idList(data, "categoryIds");
+  if (ids.length === 0) {
+    return { success: false, message: "No categories selected" };
+  }
+  return toActionResult(await deleteProductCategories({ data: { ids } }));
+};
+
+/** Category forms submit `status` and `visibility`; the API takes booleans. */
+const categoryFlags = (data: FormData) => ({
+  isActive: text(data, "status") === "active",
+  isInternal: text(data, "visibility") === "internal",
+});
+
+export const createProductCategoryAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const name = text(data, "name");
+  if (!name) {
+    return {
+      success: false,
+      message: "Name is required",
+      errors: { name: ["Name is required"] },
+    };
+  }
+
+  const parentCategoryId = text(data, "parentCategoryId");
+
+  return toActionResult(
+    await createProductCategory({
+      data: {
+        name,
+        handle: text(data, "handle"),
+        description: text(data, "description") ?? "",
+        parentCategoryId:
+          parentCategoryId && parentCategoryId !== "__root__"
+            ? parentCategoryId
+            : null,
+        ...categoryFlags(data),
+      },
+    }),
+  );
+};
+
+export const updateProductCategoryAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing category ID" };
+  }
+
+  return toActionResult(
+    await updateProductCategory({
+      data: {
+        id,
+        name: text(data, "name"),
+        handle: text(data, "handle"),
+        description: text(data, "description") ?? "",
+        ...categoryFlags(data),
+      },
+    }),
+  );
 };

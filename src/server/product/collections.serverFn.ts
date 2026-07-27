@@ -2,6 +2,7 @@ import { productCollectionDal } from "@/lib/product/dal/product-collection.dal";
 import {
   createCollectionInputSchema,
   deleteCollectionsInputSchema,
+  getProductInputSchema,
   handleSchema,
   listCollectionsInputSchema,
   slugify,
@@ -51,6 +52,37 @@ export const listCollections = createServerFn({ method: "POST" })
             : "Failed to fetch collections",
         data: null,
         error: "LIST_FAILED",
+      };
+    }
+  });
+
+export const getCollection = createServerFn({ method: "POST" })
+  .validator((data: unknown) => getProductInputSchema.parse(data))
+  .middleware([productReadMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const collection = await productCollectionDal.findById(data.id);
+      if (!collection) {
+        return {
+          success: false,
+          message: "Collection not found",
+          data: null,
+          error: "NOT_FOUND",
+        };
+      }
+      return {
+        success: true,
+        message: "Collection fetched successfully",
+        data: collection,
+      };
+    } catch (error) {
+      console.error("Get collection error:", error);
+      return {
+        success: false,
+        message:
+          error instanceof Error ? error.message : "Failed to fetch collection",
+        data: null,
+        error: "GET_FAILED",
       };
     }
   });

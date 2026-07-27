@@ -15,13 +15,21 @@ import { getIconByName } from "../icon-map";
 export function NavMain({ items, title }: NavMainProps) {
   const location = useLocation();
   const pathname = location.pathname;
+  const isPathActive = (url: string) =>
+    pathname === url || pathname.startsWith(`${url}/`);
 
   return (
     <SidebarGroup>
       <SidebarGroupLabel>{title}</SidebarGroupLabel>
       <SidebarMenu className="text-zinc-600 dark:text-zinc-400">
         {items?.map((item) => {
-          const isActive = item.isActive || pathname === item.url;
+          const activeSubIndex =
+            item.items?.findIndex((subItem) => isPathActive(subItem.url)) ?? -1;
+          const isActive =
+            item.isActive ||
+            isPathActive(item.url) ||
+            activeSubIndex >= 0;
+          const isOpen = isPathActive(item.url) || activeSubIndex >= 0;
           const Icon =
             typeof item.icon === "string"
               ? getIconByName(item.icon)
@@ -31,7 +39,7 @@ export function NavMain({ items, title }: NavMainProps) {
             <Collapsible
               key={item.title}
               asChild
-              open={pathname.includes(item.url)}
+              open={isOpen}
             >
               <SidebarMenuItem>
                 <SidebarMenuButton
@@ -49,18 +57,14 @@ export function NavMain({ items, title }: NavMainProps) {
                     <CollapsibleContent>
                       <SidebarMenuSub>
                         {item.items?.map((subItem, index) => {
-                          const activeIndex =
-                            item.items?.findIndex(
-                              (item) => item.url === pathname,
-                            ) || 0;
                           return (
                             <SidebarMenuSubItem
-                              showLine={activeIndex > index}
+                              showLine={activeSubIndex > index}
                               key={subItem.title}
-                              isActive={index === activeIndex}
+                              isActive={index === activeSubIndex}
                             >
                               <SidebarMenuSubButton
-                                isActive={index === activeIndex}
+                                isActive={index === activeSubIndex}
                                 asChild
                               >
                                 <Link to={subItem.url}>

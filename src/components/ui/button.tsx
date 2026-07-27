@@ -55,6 +55,7 @@ function Button({
     size,
     asChild = false,
     rounded,
+    type,
     ...props
 }: React.ComponentProps<"button"> &
     VariantProps<typeof buttonVariants> & {
@@ -62,7 +63,19 @@ function Button({
     }) {
     const Comp = asChild ? Slot : "button";
 
-    return <Comp data-slot="button" className={cn(buttonVariants({ variant, size, className, rounded }))} {...props} />;
+    return (
+        <Comp
+            data-slot="button"
+            // HTML defaults a button inside a form to `submit`, so a Close or
+            // Cancel button silently submitted it. Everything that really
+            // submits states `type="submit"` itself, so defaulting the other
+            // way is the safe direction. `asChild` renders someone else's
+            // element, which may not take `type` at all.
+            type={asChild ? type : (type ?? "button")}
+            className={cn(buttonVariants({ variant, size, className, rounded }))}
+            {...props}
+        />
+    );
 }
 
 export { Button, buttonVariants };

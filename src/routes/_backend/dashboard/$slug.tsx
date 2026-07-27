@@ -1,9 +1,13 @@
 import { PageSpinner } from "@/components/loading/page-spinner";
 import { NotFound } from "@/components/not-found/not-found";
-import { getAllCollections } from "@/lib/config/navigation";
+import { findCollection } from "@/lib/config/navigation";
 import { dashboardSearchSchema } from "@/lib/validations/dashboard-search";
 import { getConfig } from "@/server/get-config";
-import { createFileRoute } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Outlet,
+  useChildMatches,
+} from "@tanstack/react-router";
 import { Suspense, useMemo } from "react";
 
 export const Route = createFileRoute("/_backend/dashboard/$slug")({
@@ -16,34 +20,65 @@ export const Route = createFileRoute("/_backend/dashboard/$slug")({
     const { queryClient, search } = context;
     const config = getConfig().client;
 
-    // Discover the collection item by slug from all global groups (including nested items)
-    const globalCollections = getAllCollections(config.collections.global);
-    const collection = globalCollections.find((c) => c.slug === params.slug);
+    const collection = findCollection(config.collections.global, params.slug);
 
-    await collection?.loadData?.({ queryClient, params, search });
+    await collection?.index?.prefetch?.({ queryClient, params, search });
   },
   component: RouteComponent,
 });
 
+/**
+ * Child destinations that replace the collection index.
+ *
+ * `/create` and `/<id>/edit` are overlays: the page behind stays mounted so
+ * closing is a navigation back with no refetch. Detail and preview pages are
+ * destinations of their own — rendering the index underneath would mount two
+ * pages and fire both queries — so the index steps aside for them.
+ */
+const DETAIL_ROUTE_ID = "/_backend/dashboard/$slug/$id";
+const PREVIEW_ROUTE_ID = "/_backend/dashboard/$slug/view";
+
 function RouteComponent() {
   const { slug } = Route.useParams();
   const config = useMemo(() => getConfig().client, []);
+  // Two selects returning booleans: a derived array would be a new reference
+  // on every render and defeat the equality check.
+  const onDetailRoute = useChildMatches({
+    select: (matches) =>
+      matches.some((match) => match.routeId === DETAIL_ROUTE_ID),
+  });
+  const onPreviewRoute = useChildMatches({
+    select: (matches) =>
+      matches.some((match) => match.routeId === PREVIEW_ROUTE_ID),
+  });
 
-  // Pick the component based on the slug from the config
-  const collection = useMemo(() => {
-    const collections = getAllCollections(config.collections.global);
-    return collections.find((c) => c.slug === slug);
-  }, [slug, config]);
+  // Pick the route view based on the slug from the config.
+  const collection = useMemo(
+    () => findCollection(config.collections.global, slug),
+    [slug, config],
+  );
 
-  const ViewComponent = collection?.component;
+  // `$id` is only a destination when the collection has a detail view. Assets
+  // declares `edit` without `detail`, so there `$id` is a bare layout carrying
+  // the id for its `/edit` child — and the explorer must stay mounted behind
+  // that overlay, or closing it would remount the list and lose its scroll,
+  // collapse and selection state.
+  if (onPreviewRoute || (onDetailRoute && collection?.detail)) {
+    return <Outlet />;
+  }
+
+  const ViewComponent = collection?.index?.view;
   if (!ViewComponent) return <NotFound />;
 
   // A view whose in-card loading state is a skeleton supplies a matching
   // fallback, so the chunk wait and the data wait look like one state.
-  const Loader = collection.loader ?? PageSpinner;
+  const PendingView = collection.index?.pendingView ?? PageSpinner;
   return (
-    <Suspense fallback={<Loader />}>
-      <ViewComponent />
-    </Suspense>
+    <>
+      <Suspense fallback={<PendingView />}>
+        <ViewComponent />
+      </Suspense>
+      <Outlet />
+    </>
   );
 }

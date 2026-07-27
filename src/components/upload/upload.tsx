@@ -188,13 +188,14 @@ export const UploadField = ({
   );
 
   return (
-    <div id={fieldId} className={cn("flex flex-col gap-2", className)}>
+    <div className={cn("flex flex-col gap-2", className)}>
       {error && <p className="text-destructive text-sm font-normal">{error}</p>}
       <Dropzone
         accept={field.accept ?? { "image/*": [] }}
         maxFiles={maxFiles}
         maxSize={field.maxSize ?? 1024 * 1024 * 10}
         minSize={field.minSize}
+        disabled={field.disabled}
         onDrop={handleDrop}
         onError={(error) => {
           const errorMsg = error.message ?? "Failed to upload file";
@@ -205,6 +206,12 @@ export const UploadField = ({
         src={fileData.map(({ file }) => file)}
         className={cn(field.inputClassName, "cursor-pointer")}
         error={error !== null}
+        variant="card"
+        inputId={fieldId}
+        inputAriaRequired={field.required}
+        inputAriaDescribedBy={
+          field.description ? `${fieldId}-description` : undefined
+        }
       >
         <DropzoneEmptyState />
         {fileData.length > 0 && (
