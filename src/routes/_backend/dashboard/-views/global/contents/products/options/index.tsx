@@ -11,6 +11,7 @@ import {
   productOptionQueries,
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { deleteProductOptionsAction } from "../product-actions";
@@ -22,6 +23,7 @@ import { useProductOptionTableControls } from "./hooks/use-product-option-table-
 
 const Options = () => {
   const { search, toolbarLeading } = useProductOptionTableControls();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const params = normalizeProductOptionListParams(search);
   const { data: result, isPending } = useQuery(
@@ -83,6 +85,12 @@ const Options = () => {
       onRetry={invalidate}
       emptyTitle="No product options yet"
       emptyDescription="Create options such as Size, Colour or Material, then pick them when you build a product."
+      onRowClick={(option) =>
+        void navigate({
+          to: "/dashboard/$slug/$id",
+          params: { slug: "product-options", id: option.id },
+        })
+      }
       rowActions={(option) => [
         ...editAction(option.id),
         {

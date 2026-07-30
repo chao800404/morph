@@ -13,6 +13,7 @@ import {
   normalizeCollectionListParams,
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -22,6 +23,7 @@ import {
 
 const Collections = () => {
   const search = useSearch({ strict: false }) as DashboardSearch;
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const params = normalizeCollectionListParams(search);
   const { data: result, isPending } = useQuery(collectionQueries.list(params));
@@ -113,6 +115,12 @@ const Collections = () => {
       onRetry={invalidate}
       emptyTitle="No collections yet"
       emptyDescription="Create collections to group related products together."
+      onRowClick={(collection) =>
+        void navigate({
+          to: "/dashboard/$slug/$id",
+          params: { slug: "collections", id: collection.id },
+        })
+      }
       rowActions={(collection) => [
         ...editAction(collection.id),
         {

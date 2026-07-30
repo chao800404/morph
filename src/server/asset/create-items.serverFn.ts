@@ -21,6 +21,14 @@ export type FormState = {
   success: boolean;
   errors?: Record<string, string[]>;
   redirectPath?: string | null;
+  /**
+   * The assets just created, in the order the files were given.
+   *
+   * A caller that uploads on behalf of another record — the product wizard
+   * picking images — has to select and draw what it just uploaded. Returning
+   * the rows saves it from re-listing the folder and guessing which are new.
+   */
+  createdAssets?: Array<{ id: string; name: string; url: string }>;
 };
 
 type CreateItemsValidationResult = {
@@ -158,6 +166,7 @@ async function internalCreateAsset(
 ): Promise<FormState> {
   const uploadedKeys: string[] = [];
   const createdAssetIds: string[] = [];
+  const createdAssets: Array<{ id: string; name: string; url: string }> = [];
   let redirectPath: string | null = null;
 
   try {
@@ -393,6 +402,9 @@ async function internalCreateAsset(
     const assetDataList = results.map((r) => r.assetData);
 
     createdAssetIds.push(...assetDataList.map((asset) => asset.id));
+    createdAssets.push(
+      ...assetDataList.map(({ id, name, url }) => ({ id, name, url })),
+    );
     await assetDal.createMany(assetDataList);
 
     if (normalizedFolderId) {
@@ -431,6 +443,7 @@ async function internalCreateAsset(
     success: true,
     message: `${uploadedKeys.length} file(s) uploaded successfully`,
     redirectPath,
+    createdAssets,
   };
 }
 

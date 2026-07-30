@@ -21,6 +21,7 @@ const category = (
   isActive: true,
   isInternal: false,
   rank: 0,
+  metadata: {},
   createdAt: new Date(),
   updatedAt: new Date(),
 });

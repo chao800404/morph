@@ -1,12 +1,17 @@
 import { getDb } from "@/db";
+import { assets } from "@/db/asset.schema";
 import {
   productAssets,
+  productCategories,
   productCategoryLinks,
+  productCollections,
   productOptionValues,
   productOptions,
   productProductOptionValues,
   productProductOptions,
   productTagLinks,
+  productTags,
+  productTypes,
   products,
 } from "@/db/product.schema";
 import {
@@ -153,32 +158,60 @@ export const productDal = {
     if (!product) return null;
 
     const db = await getDb();
-    const [options, variants, assetRows, tagRows, categoryRows] =
+    // Each link table is joined to the row it points at, so the names arrive
+    // with the ids rather than costing another query per card.
+    const [options, variants, assetRows, tagRows, categoryRows, organization] =
       await Promise.all([
         this.findOptions(id),
         productVariantDal.findByProductId(id),
         db
-          .select()
+          .select({ id: assets.id, name: assets.name, url: assets.url })
           .from(productAssets)
+          .innerJoin(assets, eq(assets.id, productAssets.assetId))
           .where(eq(productAssets.productId, id))
           .orderBy(asc(productAssets.rank)),
         db
-          .select({ tagId: productTagLinks.tagId })
+          .select({ id: productTags.id, value: productTags.value })
           .from(productTagLinks)
+          .innerJoin(productTags, eq(productTags.id, productTagLinks.tagId))
           .where(eq(productTagLinks.productId, id)),
         db
-          .select({ categoryId: productCategoryLinks.categoryId })
+          .select({ id: productCategories.id, name: productCategories.name })
           .from(productCategoryLinks)
+          .innerJoin(
+            productCategories,
+            eq(productCategories.id, productCategoryLinks.categoryId),
+          )
           .where(eq(productCategoryLinks.productId, id)),
+        // Both are nullable single links, so one row carries both names and a
+        // left join keeps the product row when neither is set.
+        db
+          .select({
+            collectionTitle: productCollections.title,
+            typeValue: productTypes.value,
+          })
+          .from(products)
+          .leftJoin(
+            productCollections,
+            eq(productCollections.id, products.collectionId),
+          )
+          .leftJoin(productTypes, eq(productTypes.id, products.typeId))
+          .where(eq(products.id, id))
+          .limit(1),
       ]);
 
     return {
       ...product,
       options,
       variants,
-      assetIds: assetRows.map((row) => row.assetId),
-      tagIds: tagRows.map((row) => row.tagId),
-      categoryIds: categoryRows.map((row) => row.categoryId),
+      assets: assetRows,
+      assetIds: assetRows.map((row) => row.id),
+      tags: tagRows,
+      tagIds: tagRows.map((row) => row.id),
+      categories: categoryRows,
+      categoryIds: categoryRows.map((row) => row.id),
+      collectionTitle: organization[0]?.collectionTitle ?? null,
+      typeValue: organization[0]?.typeValue ?? null,
     };
   },
 
@@ -187,6 +220,7 @@ export const productDal = {
     status?: ProductDTO["status"] | null;
     collectionId?: string | null;
     categoryId?: string | null;
+    optionId?: string | null;
     sortBy: "title" | "createdAt" | "updatedAt";
     sortOrder: "asc" | "desc";
     page: number;
@@ -222,6 +256,18 @@ export const productDal = {
             .select({ id: productCategoryLinks.productId })
             .from(productCategoryLinks)
             .where(eq(productCategoryLinks.categoryId, options.categoryId)),
+        ),
+      );
+    }
+    if (options.optionId) {
+      // Same reason as categories: the link table would multiply rows.
+      conditions.push(
+        inArray(
+          products.id,
+          db
+            .select({ id: productProductOptions.productId })
+            .from(productProductOptions)
+            .where(eq(productProductOptions.optionId, options.optionId)),
         ),
       );
     }

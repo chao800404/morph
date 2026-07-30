@@ -24,6 +24,10 @@ export interface ProductListParams {
   query?: string;
   /** Narrows the list to one category, used by the category detail page. */
   categoryId?: string;
+  /** Narrows the list to products built on one option. */
+  optionId?: string;
+  /** Narrows the list to one collection. */
+  collectionId?: string;
   sortBy: "title" | "createdAt" | "updatedAt";
   sortOrder: "asc" | "desc";
   page: number;

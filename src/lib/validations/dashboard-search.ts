@@ -47,6 +47,26 @@ export const dashboardSearchSchema = z.object({
   assetType: z.enum(["image", "video", "rive", "model"]).optional(),
   /** Product Options creation-date window. */
   optionCreatedWithin: z.enum(PRODUCT_OPTION_CREATED_WITHIN_VALUES).optional(),
+  /**
+   * Seeds the product create wizard with an option already chosen, so an
+   * author can start a product from the option's own page. Only a starting
+   * point — the wizard's picker can still change it.
+   */
+  seedOptionId: z.string().optional(),
+  /** Seeds the product create wizard with a category already assigned. */
+  seedCategoryId: z.string().optional(),
+  /** Seeds the product create wizard with a collection already chosen. */
+  seedCollectionId: z.string().optional(),
+  /**
+   * Where a create or edit surface returns to when it closes.
+   *
+   * Without it a surface closes to its parent route, which is right when it was
+   * opened from there and wrong when it was opened from somewhere else — the
+   * product wizard reached from an option's page would land on the product
+   * list. Kept in the URL rather than read from history so it survives a
+   * refresh and a pasted link, which is the whole reason these are routes.
+   */
+  returnTo: z.string().optional(),
   q: z.string().optional(),
   /**
    * A scalar keeps old/shareable single-sort URLs valid. Assets promotes these
@@ -69,3 +89,19 @@ export const dashboardSearchSchema = z.object({
 });
 
 export type DashboardSearch = z.infer<typeof dashboardSearchSchema>;
+
+/**
+ * Narrow an unvalidated `?returnTo` to a dashboard path.
+ *
+ * Only in-app dashboard paths are accepted. The value comes from the URL, so
+ * anything else — an absolute URL, a protocol-relative `//host`, an API route —
+ * is discarded rather than navigated to.
+ */
+export const toDashboardReturnTo = (
+  value: string | undefined,
+): string | undefined => {
+  if (!value) return undefined;
+  if (!value.startsWith("/dashboard")) return undefined;
+  if (value.startsWith("//")) return undefined;
+  return value;
+};

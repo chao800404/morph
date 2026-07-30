@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { DataTableToolbar } from "@/routes/_backend/dashboard/-components/data-table-card";
+import { DataTableToolbar } from "@/routes/_backend/dashboard/-components/data-table-card/data-table-toolbar";
 
 const SKELETON_ROW_COUNT = 16;
 const NAME_WIDTHS = [

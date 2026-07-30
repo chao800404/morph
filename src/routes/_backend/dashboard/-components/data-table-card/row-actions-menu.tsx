@@ -16,6 +16,13 @@ export interface RowAction {
   /** Rendered after a separator and in the destructive colour. */
   destructive?: boolean;
   disabled?: boolean;
+  /**
+   * Starts loading whatever the action opens.
+   *
+   * Called when the menu opens rather than on item hover: by the time a pointer
+   * reaches an item the click is milliseconds away, which is too late to help.
+   */
+  preload?: () => void;
 }
 
 /**
@@ -37,7 +44,13 @@ export const RowActionsMenu = ({
   if (actions.length === 0) return null;
 
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) {
+          for (const action of actions) action.preload?.();
+        }
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" aria-label={label}>
           <MoreHorizontal className="size-4" />

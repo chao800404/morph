@@ -178,6 +178,7 @@ export const updateCollection = createServerFn({ method: "POST" })
         title: data.title,
         handle: data.handle,
         description: data.description,
+        metadata: data.metadata,
         updatedBy: actorId,
       });
 

@@ -1,4 +1,4 @@
-import { PageSpinner } from "@/components/loading/page-spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { RouteModalCloseProvider } from "@/components/dialog/route-form-modal";
 import { NotFound } from "@/components/not-found/not-found";
 import { findCollection } from "@/lib/config/navigation";
@@ -42,7 +42,7 @@ function RouteComponent() {
   if (!edit) return <NotFound />;
 
   const EditView = edit.view;
-  const PendingView = edit.pendingView ?? PageSpinner;
+  const PendingView = edit.pendingView ?? RouteSurfacePending;
   return (
     <RouteModalCloseProvider value={collection?.detail ? ".." : "../.."}>
       <Suspense fallback={<PendingView />}>

@@ -4,6 +4,7 @@ import { getConfig } from "@/server/get-config";
 import { useNavigate } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useMemo } from "react";
+import { useViewPreload } from "../use-view-preload";
 
 /**
  * The Create button for a list page, driven by the collection's `create`
@@ -20,6 +21,9 @@ export const CollectionCreateButton = ({ slug }: { slug: string }) => {
     [slug],
   );
 
+  // Start the chunk on hover, so the click opens a form rather than a spinner.
+  const preload = useViewPreload(create?.view);
+
   if (!create) return null;
 
   // The framework owns the create URL, so the button derives it from the
@@ -29,7 +33,13 @@ export const CollectionCreateButton = ({ slug }: { slug: string }) => {
     void navigate({ to: "/dashboard/$slug/create", params: { slug } });
 
   return (
-    <Button onClick={onClick} variant="form" size="xs" className="gap-2">
+    <Button
+      onClick={onClick}
+      variant="form"
+      size="xs"
+      className="gap-2"
+      {...preload}
+    >
       <Plus className="size-4" />
       {create.label ?? "Create"}
     </Button>

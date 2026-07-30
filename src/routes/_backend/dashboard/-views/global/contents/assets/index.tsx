@@ -1,9 +1,9 @@
-import { cn } from "@/lib/utils";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getRouteApi, useLocation } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
 
 import { AssetPropertyCard } from "@/routes/_backend/dashboard/-components/assets-card/asset-property-card";
+import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
 import { AssetsDataProvider } from "@/routes/_backend/dashboard/-components/assets-card/assets-data-provider";
 import AssetSelectFloat from "@/routes/_backend/dashboard/-views/features/asset/select/float";
 import { assetQueries, normalizeAssetListParams } from "@queries/asset.queries";
@@ -90,9 +90,8 @@ export const Assets = () => {
   );
 
   return (
-    <div className="flex w-full gap-4">
-      <section className={cn("flex-1")}>
-        <div className="flex-1 min-h-0 flex flex-col">
+    <PageSplitLayout sidebar={<AssetPropertyCard />}>
+      <div className="flex-1 min-h-0 flex flex-col">
           <AssetsDataProvider data={assetsCardData} folderId={folderId}>
             <AssetDraggableProvider>
               <AssetsExplorerCard
@@ -107,13 +106,9 @@ export const Assets = () => {
               />
             </AssetDraggableProvider>
           </AssetsDataProvider>
-        </div>
-      </section>
-      <div className="h-full w-md">
-        <AssetPropertyCard />
       </div>
       <AssetSelectFloat active={isAssetsIndex} />
-    </div>
+    </PageSplitLayout>
   );
 };
 

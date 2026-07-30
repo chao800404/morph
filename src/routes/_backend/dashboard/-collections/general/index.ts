@@ -1,6 +1,6 @@
 import type { CollectionLoadContext } from "@/lib/config/create-config";
 import { CurrencyAddPendingView } from "@views/settings/store/currency-add-skeleton";
-import { lazy } from "react";
+import { lazyView } from "@/lib/config/lazy-view";
 
 export const General = {
   slug: "settings",
@@ -12,7 +12,7 @@ export const General = {
       icon: "Store",
       label: "Store",
       index: {
-        view: lazy(() => import("@views/settings/store")),
+        view: lazyView(() => import("@views/settings/store")),
         prefetch: async ({ queryClient }: CollectionLoadContext) => {
           const { currencyQueries } =
             await import("@queries/currency.queries");
@@ -21,11 +21,11 @@ export const General = {
       },
       create: {
         label: "Add currencies",
-        view: lazy(() => import("@views/settings/store/currency-add")),
+        view: lazyView(() => import("@views/settings/store/currency-add")),
         pendingView: CurrencyAddPendingView,
       },
       edit: {
-        view: lazy(() => import("@views/settings/store/store-edit")),
+        view: lazyView(() => import("@views/settings/store/store-edit")),
       },
     },
     {
@@ -34,7 +34,7 @@ export const General = {
       icon: "UsersRound",
       label: "Users",
       index: {
-        view: lazy(() => import("@views/settings/users")),
+        view: lazyView(() => import("@views/settings/users")),
       },
     },
   ],

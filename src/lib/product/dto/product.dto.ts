@@ -14,6 +14,16 @@ export interface ProductDTO {
   typeId: string | null;
   discountable: boolean;
   thumbnailAssetId: string | null;
+  // Shipping and customs attributes. Carried on the DTO because the detail page
+  // shows them; variants may override each one.
+  weight: number | null;
+  length: number | null;
+  width: number | null;
+  height: number | null;
+  originCountry: string | null;
+  hsCode: string | null;
+  midCode: string | null;
+  material: string | null;
   metadata: ProductMetadata;
   createdBy: string;
   updatedBy: string;
@@ -29,6 +39,25 @@ export interface ProductDetailDTO extends ProductDTO {
   assetIds: string[];
   tagIds: string[];
   categoryIds: string[];
+  /**
+   * The same links again, resolved to what the detail page draws.
+   *
+   * Names travel with the record rather than being looked up per card: the
+   * alternative is five more round trips on a page that already has one, and
+   * each card would flash its own loading state.
+   */
+  assets: ProductAssetDTO[];
+  collectionTitle: string | null;
+  typeValue: string | null;
+  tags: Array<{ id: string; value: string }>;
+  categories: Array<{ id: string; name: string }>;
+}
+
+/** A gallery image, in display order. */
+export interface ProductAssetDTO {
+  id: string;
+  name: string;
+  url: string;
 }
 
 export interface CreateProductDTO {

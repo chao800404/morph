@@ -1,4 +1,5 @@
 import { AssetPropertyEmptyCard } from "@/routes/_backend/dashboard/-components/assets-card/asset-property-empty";
+import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -40,9 +41,8 @@ export const AssetsCardSkeleton = ({ className }: { className?: string }) => (
  * needs no data, so there is nothing to fake.
  */
 export const AssetsPageSkeleton = () => (
-  <div className="flex w-full gap-4">
-    <section className="flex-1">
-      <div className="min-h-content bg-component ring-muted-foreground/10 dark:ring-muted-foreground/20 flex flex-col rounded-lg ring">
+  <PageSplitLayout sidebar={<AssetPropertyEmptyCard />}>
+    <div className="min-h-content bg-component ring-muted-foreground/10 dark:ring-muted-foreground/20 flex flex-col rounded-lg ring">
         <div className="flex items-center justify-between gap-2 px-6 py-4">
           <div className="flex flex-col gap-1.5">
             <Skeleton className="h-4 w-24" />
@@ -61,9 +61,5 @@ export const AssetsPageSkeleton = () => (
           <AssetsCardSkeleton />
         </div>
       </div>
-    </section>
-    <div className="h-full w-md">
-      <AssetPropertyEmptyCard />
-    </div>
-  </div>
+  </PageSplitLayout>
 );

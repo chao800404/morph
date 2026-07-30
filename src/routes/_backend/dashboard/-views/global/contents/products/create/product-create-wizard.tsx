@@ -26,11 +26,12 @@ import { StepDetails } from "./step-details";
 import { StepOrganize } from "./step-organize";
 import { StepVariants } from "./step-variants";
 import { useProductDraft } from "./use-product-draft";
+import { useSeededDraft } from "./use-seeded-draft";
 
 const STEPS = ["Details", "Organize", "Variants"] as const;
 type StepIndex = 0 | 1 | 2;
 
-export const ProductCreateWizard = () => {
+const ProductCreateWizard = () => {
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
   const currencyResult = useSuspenseQuery(currencyQueries.store()).data;
@@ -44,6 +45,7 @@ export const ProductCreateWizard = () => {
   const [pending, setPending] = useState(false);
 
   useCloseOnEscape(close);
+  useSeededDraft(dispatch);
 
   /**
    * What Details is still missing, keyed by the field that shows it.
@@ -140,6 +142,11 @@ export const ProductCreateWizard = () => {
             typeValue: draft.typeValue.trim() || null,
             tagValues: draft.tagValues,
             categoryIds: draft.categoryIds,
+            assetIds: draft.assets.map((asset) => asset.id),
+            // The first image is the thumbnail until a dedicated picker exists;
+            // a product with a gallery and no thumbnail shows a placeholder in
+            // every list.
+            thumbnailAssetId: draft.assets[0]?.id ?? null,
             discountable: draft.discountable,
             options,
             prices: draft.hasVariants ? [] : buildPrices(draft.defaultPrices),
@@ -200,7 +207,7 @@ export const ProductCreateWizard = () => {
       <RouteFullscreenSurface
         onClose={close}
         bodyClassName="overflow-y-auto"
-        header={
+        headerLeading={
           <TabsList variant="wizard" aria-label="Product creation steps">
             {STEPS.map((label, index) => {
               const isActive = index === step;
@@ -264,3 +271,5 @@ export const ProductCreateWizard = () => {
     </Tabs>
   );
 };
+
+export default ProductCreateWizard;

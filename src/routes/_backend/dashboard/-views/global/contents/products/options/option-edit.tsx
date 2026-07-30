@@ -16,7 +16,7 @@ import { updateProductOptionAction } from "../product-actions";
  * The record is loaded from the id in the URL rather than handed over by the
  * list, so the page works on a direct link or a refresh.
  */
-export const OptionEdit = () => {
+const OptionEdit = () => {
   const { id } = useParams({ strict: false }) as { id: string };
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
@@ -90,3 +90,5 @@ export const OptionEdit = () => {
     />
   );
 };
+
+export default OptionEdit;

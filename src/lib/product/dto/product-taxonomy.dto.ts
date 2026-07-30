@@ -35,6 +35,8 @@ export interface ProductCategoryDTO {
   isActive: boolean;
   isInternal: boolean;
   rank: number;
+  /** Free-form store-defined data; never trusted to hold anything private. */
+  metadata: ProductMetadata;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -77,4 +79,5 @@ export interface UpdateProductCategoryDTO {
   description?: string;
   isActive?: boolean;
   isInternal?: boolean;
+  metadata?: ProductMetadata;
 }

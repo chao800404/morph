@@ -1,3 +1,4 @@
+import { handleField } from "@/components/form/handle-field";
 import type { FormField } from "@/lib/validations/form";
 import type { ProductCategoryDTO } from "@/lib/product/dto/product-taxonomy.dto";
 import { categoryDepth } from "@/lib/product/category-tree";
@@ -19,6 +20,7 @@ export type CategoryVisibility =
   (typeof CATEGORY_VISIBILITY)[keyof typeof CATEGORY_VISIBILITY];
 
 export const NO_PARENT = "__root__";
+
 
 export const toCategoryStatus = (value: string): CategoryStatus =>
   value === CATEGORY_STATUS.active
@@ -81,16 +83,12 @@ export const categoryFormFields = (
     error: options.errors?.name,
     colSpan: 1,
   },
-  {
-    type: "input",
-    name: "handle",
-    label: "Handle",
-    optional: true,
-    placeholder: "Derived from the name",
+  handleField({
+    derivedFrom: "name",
     value: values.handle,
     error: options.errors?.handle,
     colSpan: 1,
-  },
+  }),
   {
     type: "textarea",
     name: "description",

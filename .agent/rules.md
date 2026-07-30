@@ -27,12 +27,13 @@
 - **collection 的網址一律是平的**：每個 collection，不論在側邊欄是否巢狀，都住在 `/dashboard/<slug>`。`items[]` 只影響側邊欄分組與麵包屑，不影響 URL。Medusa 也是這樣 —— 它的 `product-options`、`product-tags`、`collections` 全是頂層路由，所以 `/products/:id` 從來不會有歧義。
 - 這條規則是詳情頁能存在的前提。若 Options 住在 `/dashboard/products/options`，那 `/dashboard/products/<id>` 就無法分辨是 collection 還是 record id。
 - 因為網址是平的，**slug 必須全域唯一**（`assertCollectionsAreAddressable` 會在 `createCMSConfig` 擋下重複）。所以是 `product-options` 而不是 `options`。
-- 目前的五條動態路由已涵蓋所有情況，新增頁面請走 config：
+- 目前的六條動態路由已涵蓋所有情況，新增頁面請走 config：
   - `$slug` —— collection 列表頁，同時是底下所有 child route 的 layout，必須渲染 `<Outlet />`。
   - `$slug/create` —— 建立頁，由 config 的 `create.view` 提供。
   - `$slug/view` —— collection 層級的瀏覽頁，由 config 的 `preview.view` 提供；目前資產 id 放在 `?assetId`。
   - `$slug/$id` —— 詳情頁，由 config 的 `detail.view` 提供。`create` 是靜態片段所以優先於 `$id`。
   - `$slug/$id/edit` —— 編輯頁，由 config 的 `edit.view` 提供；有 `detail` 時疊在詳情頁上，沒有 `detail` 時疊在列表上。
+  - `$slug/$id/$page` —— 記錄的附屬頁面，由 config 的 `pages[key]` 提供。`edit` 是靜態片段所以優先於 `$page`，因此 `edit` 是保留的 page key。
 - child route 的行為不同，`$slug` 用 `useChildMatches` 區分：
   - `/create` 與 `/$id/edit` **疊在**列表上，列表維持掛載，關閉即返回，不重抓也不丟失捲動與選取狀態。
   - `/view` 一律**取代**列表。
@@ -47,15 +48,21 @@
 - `pendingView` 不是「載入中的小圖示」，它是那個頁面在 chunk 到齊前的替身。**頁面有幾欄、幾張卡，pendingView 就要有幾欄、幾張卡**，只有內容換成 skeleton。
 - 理由不是美觀，是串流 SSR 的執行順序：伺服器會解析 lazy view 並把真實 HTML 串流出去，接著瀏覽器 hydration 時該 chunk 還沒下載完，React 會**重新** suspend 一次。所以 fallback 是插在一個已經完整的畫面中間，少畫一欄就會看到那一欄出現、消失、再出現。
 - 不需要資料就能畫的區塊（例如「未選取任何項目」的空狀態卡），pendingView 直接渲染真的那個組件，不要用灰塊假裝。
+- **疊層路由的 pendingView 必須也是疊層。** `create`、`$id/edit`、`$id/$page` 與 `view` 都是 `fixed inset-0`，它們的 fallback 預設是 `RouteSurfacePending`（同一個 `RouteFullscreenSurface` 空殼加 spinner），不可用在流內排版的 `PageSpinner` —— 那會讓底下的頁面在 chunk 載入期間完全露出來，從選項頁開商品建立頁時會先看到商品列表再看到 wizard。
 - 但 `pendingView` 被 collection config **靜態** import，所以它的 import 圖不得觸及 server function。要共用真實組件時，先把不碰 server function 的部分抽成獨立檔案再共用（`asset-property-empty.tsx` 是這樣來的：`AssetPropertyCard` 的 header 會 import delete／move server function，整張卡不能直接拿來用）。
 
 ### Collection capability 設定契約
 
-- Collection config 只描述「這個 collection 有哪些 route-backed 頁面」，固定使用 `index`、`create`、`preview`、`detail`、`edit`。不可改回模糊的頂層 `component`，也不可讓 config 自行提供 `path`。
+- Collection config 只描述「這個 collection 有哪些 route-backed 頁面」。具名 capability 固定使用 `index`、`create`、`preview`、`detail`、`edit`，記錄的附屬頁面放同層的 `pages`。不可改回模糊的頂層 `component`，也不可讓 config 自行提供 `path`。
+- 為什麼是「具名五個 + 均勻的 `pages`」而不是 Medusa 那種全部均勻的 `{ path, view }` 陣列：那五個名字是**框架的分支條件** —— `create` 決定要不要渲染 Create 按鈕、`edit` 決定要不要有 Edit row action、`detail` 決定 `$id` 是否取代列表與表單關閉回哪一層。改成均勻陣列後，這些判斷只能退化成字串慣例（`path === "create"`），型別安全從編譯期擋變成打錯就靜默失效。Medusa 能用均勻陣列，是因為那些 UI 它全部手寫在各頁；我們的賣點是使用者宣告 collection 就自動獲得它們。
 - 每個 capability 的 render entry 一律叫 `view`；Suspense fallback 一律叫 `pendingView`；route 進入前的 query cache priming 一律叫 `prefetch`。`component`、`loader`、`loadData` 都是舊名稱，不得重新引入。
+- **`view` 一律用 `lazyView(() => import("..."))` 宣告，不要直接寫 `lazy(...)`。** 它保留 import factory，讓框架可以在點擊前就開始下載那個 chunk。路徑只寫一次 —— 在 `view` 旁邊另外放一個 `preload` 欄位就是兩個地方要同步，而且漂移不會報錯。
+- 開啟 view 的控制項要把 `useViewPreload(view)` 的 handlers 展開上去（hover、focus、touchstart 三者都要：只綁 hover 會讓鍵盤與觸控使用者等在原地）。Row action 這種藏在下拉裡的，改在**選單開啟時**預載 —— 指標移到項目上時距離點擊只剩幾十毫秒，太晚了。
+- `view` 指的是「這條路由渲染哪個元件」，不是「唯讀顯示」。`create.view`、`edit.view` 與 `pages[key].view` 都是表單，一樣叫 `view` —— 六個 capability 讀起來必須一致。Medusa 也是一個名字打天下（React Router 的 `Component`）。
+- **被 config 引用的 view 一律 `export default`**，config 寫 `lazy(() => import("..."))` 即可，不要 `.then((m) => ({ default: m.X }))`。那層樣板每個 capability 都要重寫一次，而且具名與預設兩種寫法並存會讓人以為它們有差別。View 的具名 export 只在真的有第二個引用者時才保留。
 - `index` 是 collection 的預設目的地；`create`、`detail`、`edit` 是 record lifecycle 頁；`preview` 是 collection-level viewer，適合需要保留目前資料集並在項目間切換的介面。不要用 `detail` 假裝 Preview，也不要讓同一功能同時存在 route 與 Dialog 兩條入口。
 - Capability 可以省略。省略代表該 collection 不支援該頁面：框架不應渲染對應按鈕，直接輸入該 URL 則回傳 `NotFound`；不可放一個空 view 或 `NotImplemented` 來假裝已支援。
-- `move`、`delete`、`download`、`post-process` 等命令不是頁面，不放進 collection config。它們由 feature action、共用確認視窗或專用工具視窗負責；只有當操作本身需要可分享、可重新整理的完整畫面時，才新增 route capability。
+- `move`、`delete`、`download`、`post-process` 等命令不是頁面，不放進 collection config。它們由 feature action、共用確認視窗或專用工具視窗負責；只有當操作本身需要可分享、可重新整理的完整畫面時，才把它加進 `pages`（而不是新增 capability）。
 - `items[]` 只表示 sidebar／breadcrumb 的視覺分組，子 collection 仍使用自己的平面 `/dashboard/<slug>` URL，並套用相同 capability contract。
 - Collection config 不得靜態 import query 或 server function。`prefetch` 內以 `await import(...)` 載入 query options，且必須與 view 使用同一個參數正規化函式，確保 query key 完全相同。
 - View 自己負責 query、mutation、fields 與 feature interaction；config 不保存 fields、action、選取項目、Dialog open state 或 query result。Config 是 capability registry，不是 runtime state container。
@@ -114,7 +121,15 @@ Cannot access 'xxxServerFn' before initialization
 
 - collection 設定裡需要 query 時，一律在 `prefetch` 內用 `await import(...)`，不可在模組頂層靜態 import。`-collections/contents/index.ts` 是正確範例。
 - 冷啟動正常、只有編輯原始碼後才壞，就是這個症狀。不要用重啟迴避，也不要在 UI 加 loading 遮罩掩蓋。
-- 驗證方式是靜態可達性檢查：從 `src/cms.config.ts` 沿著非 type-only 的 import 走訪，結果**不得包含任何 `*.serverFn.ts` 或 middleware**。修好後那張圖只有 12 個模組。
+- **這條規則已經有自動守衛：`src/lib/config/module-graph.test.ts`。** 它跑兩件事 ——「整個 app 沒有任何 import 環」與「`cms.config` 的靜態圖走不到 server function」。改完 import 就跑 `pnpm test`，不要再靠肉眼追鏈。
+
+### 沒有 import 環
+
+- 環不會被 `tsc` 或 `pnpm build` 抓到。它在冷啟動時看入口順序運氣好壞，HMR 重新求值時就爆 `Cannot access 'X' before initialization` —— 而且錯誤指的檔案通常是無辜的那個。使用者的症狀是「每次都要重啟」。
+- **共用 field／dialog／primitive 一律不得靜態 import server function 或 query 模組。** `FieldsRenderer` 在 `cms.config` 的靜態圖裡，所以任何欄位只要頂層 import 一個 `*.serverFn`，環就成立。需要時在事件處理器內 `await import(...)`，或用 `lazy()` 把整個子組件延後（`AssetLibraryPanel`、`FolderSelectField` 是這樣做的）。
+- **Barrel 是環的溫床。** `currency-add-skeleton.tsx` 只要一個 `DataTableToolbar`，卻從 `data-table-card/index.ts` 拿，於是把同資料夾的 `CollectionCreateButton` 一起拖進來，而那個按鈕會讀 `getConfig()` —— 環就從 config 繞回 config。在 `cms.config` 靜態圖內的檔案一律直接 import 具體路徑，不要走 barrel。
+- **只用到型別就寫 `import type`。** 它在編譯期被抹掉，根本不會成為 runtime edge。`navigation.ts` ↔ `create-config.ts` 那個環就只是少寫了 `type`。
+- 修好後的基準：環 0 個，`cms.config` 靜態圖 70 個模組且觸及 0 個 server function。數字會隨功能長，重點是後兩項。
 
 ### 驗證與權限
 
@@ -227,6 +242,35 @@ Cannot access 'xxxServerFn' before initialization
 - Feature class 只負責 layout、responsive placement，以及功能特有的狀態組合。顏色、盒模型、control height、圓角、邊框、陰影、focus、invalid 與 disabled 狀態必須由 primitive、shared token 或具名 variant 擁有。
 - preflight 完成後才可修改 UI；交付前再反向搜尋本次新增的原生 interactive element 與 surface class，確認沒有繞過已存在的 primitive／Fields contract。
 
+### 缺少 primitive 時優先引入 shadcn／Radix，而不是自己手寫
+
+- preflight 找不到現成 primitive 時，下一步是查 shadcn/ui 是否已有對應組件（`components.json` 已設定 `new-york` 樣式、`zinc` base、lucide icons），有就引入到 `src/components/ui/`，不要自己從 `div` 開始拼。
+- 選擇順序固定為：既有 primitive → shadcn 組件（其底層多為 Radix UI）→ 直接使用 Radix primitive → 最後才手寫。手寫必須在註解寫出前三層為什麼都不適用。
+  - 理由是 keyboard 導航、focus trap、`aria-*` 關係、portal 定位與 composition 這些行為，手寫版本通常只覆蓋到「看起來對」的部分。這些是 Radix 已經解決過的問題。
+  - 帶互動語意的東西尤其不得手寫：dropdown、popover、tooltip、dialog、select、combobox、tabs、accordion、switch、slider、context menu。
+- **引入的 shadcn 原始碼必須立刻改寫成符合本專案規則，不可原樣保留。** 具體是：
+  - surface 相關的 class（背景、邊框、圓角、陰影、focus ring、invalid、disabled）改為引用 `fieldControlVariants` 或對應的 shared token，不得保留 shadcn 預設那份複製的 class 字串。
+  - 縮排、命名與 import 排序跟隨專案既有檔案，不保留上游的 4 空白縮排。
+  - 用不到的 sub-component 直接刪掉；不要留一整包沒人用的 export。
+- 這條規則的由來是 `input-group.tsx`：引入時原樣保留了 shadcn 的 `rounded-md border shadow-xs`，於是它跟 `Input` 的 `rounded-md-plus` 對不起來。兩個呼叫端各自在外面補 `bg-background rounded-md-plus` 和 `bg-transparent` 把它拉回來 —— 那些補丁就是「引入時沒改寫」的帳單。
+
+### Handle 欄位一律使用 handleField
+
+- 任何 handle／slug 欄位都必須用 `src/components/form/handle-field.ts` 的 `handleField()`，不可在 view 裡自己寫一份 `{ type: "input", name: "handle" }`。呼叫端只提供 `value`、`derivedFrom`、`error`、`colSpan`。
+- 前綴 `/`、label、`labelHint` 與 `(Optional)` 標記屬於這個定義。handle 是 URL 片段，欄位就該長得像 URL 片段。
+- 前綴是裝飾，不是資料：它由 `InputGroupAddon` 畫出來，永遠不會進入送出的 value。唯讀顯示（`EditCard` 的 `displayValue`）則用 `` `/${handle}` `` 保持一致。
+- 需要新的靜態前後綴（貨幣代碼、單位）時，在 `InputFormField` 用既有的 `prefix`／`suffix` 就好，不要為單一頁面另包一層 input。
+
+### 左右分欄一律使用 PageSplitLayout
+
+- 任何「主內容 + 右側資訊欄」的頁面都必須使用 `dashboard/-components/layout/page-split-layout` 的 `PageSplitLayout`，不可自己寫 `flex` + 欄寬。分切的尺寸屬於這個組件：外層 `flex w-full items-start gap-4`、內容欄 `min-w-0 flex-1`、側欄 `w-md shrink-0`。
+- 這條規則的由來是實際漂移：Assets 用 `w-md`，分類詳情頁用 `lg:w-80`，兩個畫面單獨看都正常，並排才看得出來不一樣。
+- **`PageSplitLayout` 只管欄寬，不管高度，也不設 cross-axis 對齊。** 鎖定視窗高度是 Assets 獨有的行為，而且由它自己的卡片負責（`h-content`／`min-h-content`）；把高度或 `items-*` 放進這個組件，等於把那個行為交給每一個分欄頁。
+- **側欄寬度以 Assets 為準（`w-md`）**。要改寬度就改這個組件，讓所有分欄頁一起變，不可為單一頁面覆寫。
+- 內容欄必須保留 `min-w-0`。少了它，欄內一張寬表格會把側欄擠出畫面，而不是在自己的捲動區內捲動。
+- **不做窄螢幕堆疊。** 側欄不會落到內容下方 —— Assets 的 explorer 卡是 `h-content`（一個視窗高），堆疊後側欄會被推到整個視窗之下，要捲動才看得到。
+- 分欄頁的 `pendingView` 也必須用同一個組件畫出兩欄（見「pendingView 必須畫出整個頁面的外框」）。
+
 ### 唯讀資訊卡一律使用 EditCard
 
 - 詳情頁上「標籤 ／ 值」形式的資訊區塊一律使用 `dashboard/-components/edit-card` 的 `EditCard`，不可自己拼 `CardWrapper` + `<dl>` 或 grid。它已經擁有列的分隔線、label 與值的欄寬比例、`max-sm` 的斷點行為與 header 的動作選單；重拼一份就會在其中某一項上漂移。
@@ -237,6 +281,25 @@ Cannot access 'xxxServerFn' before initialization
   - 兩者都不傳就是唯讀卡，`EditCard` 不會渲染那顆 `…`，避免出現一顆打開後沒有東西可做的選單。
   - 不可同時傳兩者，那會讓同一筆記錄有兩條編輯路徑 —— 正是 capability 契約禁止的事。
 - 狀態徽章之類的 header 裝飾走 `headerActions`，排在 `…` 之前；不要為了放徽章而在卡片外面另外做一列標題。
+
+### Metadata 是公開的逃生口，不是私密欄位
+
+- `metadata` 存的是核心 schema 沒有建模、由商店自行定義的 key/value。它的設計目的就是**跨到前台** —— Medusa 的 store API 對 product-categories 預設就吐 metadata，products 雖不在預設欄位裡但也不在 `disallowedStoreFields`，前台可用 `?fields=+metadata` 取得。因此**絕不可放 API key、成本價、合約條款或任何個資**。
+- 值一律以字串儲存。從輸入內容猜型別比不猜更糟：`01234` 會維持字串而 `1234` 會靜默變成數字，同一個郵遞區號或 SKU 的意義就取決於它的位數。需要真正型別的資料屬於真正的欄位。
+- 編輯器一律使用 `metadata` field type 與 `MetadataField`，不可在 feature 內另寫一份 key/value 表單。它以 JSON 物件字串傳輸，理由與 `option-values` 相同：`FormFieldValue` 沒有物件成員，為單一 field type 擴充它會波及其他所有型別。
+- 詳情頁的摘要一律使用 `MetadataCard`（只有標題、key 數徽章與開啟鈕）。內容不攤在卡片上：一筆記錄可能有數十組,會蓋過真正描述該記錄的區塊。它不是 `EditCard` —— `EditCard` 依已知欄位清單渲染 label／值，metadata 的 key 是商店自己放的。
+- 輸入必須經 `metadataInputSchema`（key 與值長度、最多 50 組）。這個欄位由商店控制，沒有上限的話單一記錄就能塞進任意大的 payload，而之後每次讀取都要搬運它。
+
+### 記錄的附屬頁面走 `pages`，不是 query param
+
+- 一筆記錄若有主編輯表單以外的頁面（metadata、指派商品、拖曳排序），在 collection 的 `pages` 宣告，網址是 `/dashboard/<slug>/<id>/<key>`。**不可用 `?section` 之類的 query param 在同一個頁面裡切換表單** —— 那會讓 URL 不再描述畫面，而那條路由會長成一個 switch。
+- `pages` 與 `edit` 同層，不掛在 `detail` 底下：一個 collection 可以有附屬頁面卻沒有詳情頁（Assets 就是有 `edit` 沒有 `detail`）。把它藏在 `detail` 裡會讓那種 collection 平白無法宣告子頁。
+- 具名 capability 與 `pages` 的分界是「框架有沒有參與」：
+  - `index`、`create`、`preview`、`detail`、`edit` 框架要參與 —— 它渲染 Create 按鈕、解析 Edit row action、決定表單關閉後回到哪一層。這五個固定，不可增減。
+  - `pages` 框架只負責掛載，內容意義由 view 自己負責。要新增這類頁面時加進 `pages`，**不要為它新增第六個 capability**。
+- `edit` 是 `$id` 底下的靜態片段，所以它是保留的 page key；`assertCollectionsAreAddressable` 會在 `createCMSConfig` 就擋下來，而不是讓那個頁面靜默消失。
+- **每個附屬頁面只送出自己的欄位。** 共用一個提交路徑會讓沒出現在該表單裡的欄位以 `undefined` 送出，而 `undefined` 與「清空」無法區分 —— 編輯一般欄位就會把 metadata 清掉。各自走各自的 action adapter。
+- 附屬頁面的卡片自己導頁（`MetadataCard` 收 `slug` + `id` 自行推出 URL），與 `CollectionCreateButton` 一致。詳情頁不傳 handler：那等於每個 collection 各自重述一次框架已經擁有的 URL。
 
 ### 詳情頁不重複顯示記錄名稱
 
@@ -299,6 +362,9 @@ Cannot access 'xxxServerFn' before initialization
 - **Footer**：結果筆數與分頁由 `DataTablePagination` 提供；只要 feature 傳入 pagination，footer 與 First／Previous／Next／Last 四個切頁按鈕就必須持續顯示。位於第一頁、最後一頁或只有一頁時，對應按鈕只設為 disabled，不可隱藏整個 pagination。
 - 每列的操作一律收進尾端的 `RowActionsMenu`（`…` 按鈕），透過 `rowActions` 回傳 `RowAction[]`。不可在列上並排多顆圖示按鈕，否則資源長出第三、第四個操作時版面會崩。刪除類操作標記 `destructive: true`，會自動排到分隔線之後並套用警示色。
 - Loading、error、empty 三種狀態由 `DataTableCard` 統一處理並在卡片內置中；表格本身維持靠上。頁面只負責傳 `isPending`、`errorMessage`、`onRetry`、`emptyTitle`、`emptyDescription`，不可自己再寫一套分支。
+- **這三種狀態有高度下限，取自 `DATA_TABLE_STATE_HEIGHT`**（`noRecords` 150px、`noResults` 400px）。是下限不是固定值：Medusa 把它們釘死在那個高度，但它的空狀態圖示是約 20px 的字型圖示，我們的 `EmptyFileIcon` 是 87×74，釘死會把圖示、標題與說明擠在一起。有下限就夠達成目的 —— 沒有的話一張空的 section 會縮成文案剛好的高度，掛在詳情頁上忽高忽低。
+- 「資源本來就是空的」與「查詢把資料濾光了」是兩種狀態，高度不同。查詢無結果用**較高**的那個，因為它是使用者打字時出現的 —— 每按一鍵就把卡片縮到 150px 會讓頁面跳動。判斷由 `DataTableEmptyState` 自己讀 route 決定，不由頁面傳入。
+- `DataTableCard` 本身不讀 route：搜尋、排序、分頁與空狀態各自是會讀 route 的**兄弟組件**。這個界線讓卡片可以在沒有 router 的測試裡渲染，加東西時不要把 `useSearch` 放回卡片本體。
 - 搜尋詞、排序與頁碼寫入 route 的 `q`、`sortBy`／`sortOrder`、`page` search param，不放 component state；換搜尋詞或改排序時 `page` 會被清掉，避免停在超出範圍的頁數。
 - 排序透過 `sortOptions` 提供，由 `DataTableSort` 渲染成 header 的下拉（與 Assets card 相同的 `BarsArrowDownIcon`），再選一次同一欄位即翻轉方向。`sortBy` 的可用值由 `dashboardSearchSchema` 定義，各資源在自己的 `normalize*ListParams` 裡對應到實際欄位名。
 - 表格的首尾欄位左右各補到 `pl-6`／`pr-6`，與 `CardHeader` 的 `px-6` 對齊。`Table` 的 cell 預設是 `px-4`，直接使用會比標題少 8px。這個補償寫在 `DataTableCard` 內，頁面不需要也不應該自己處理。
@@ -313,7 +379,13 @@ Cannot access 'xxxServerFn' before initialization
 - 建立頁一律填滿視窗（`RouteFormModal` 組合 `RouteFullscreenSurface` 的 `fixed inset-0`），不做側邊抽屜。欄位少的表單靠 `createSurface.content` 的 `max-w-3xl mx-auto` 收窄內容欄，卡片本身仍是滿版 —— 讓所有建立介面的外框一致，只有內容寬度隨表單變化。
 - 為什麼不留 dialog 那條路：共用視窗是「框架拿著 fields 幫你渲染」，config 因此被迫要裝 `fields`、`action`、要 invalidate 的 query key，還要泛型才能讓取值函式有型別。建立頁是一個 view 的話，那些它自己做就好，config 只需要一行。
 - 欄位很少的建立頁用 `RouteFormPage`：宣告 `fields` 與 `action` 即可，外殼、submit、footer 由它提供。有步驟或自訂版面的（例如商品 wizard）直接用 `RouteFormModal` 自己組 header／footer。
-- 關閉一律是 `useRouteModalClose()`（`navigate({ to: "..", replace: true })`），不可寫死路徑。列表在底下維持掛載，所以關閉不會重抓資料；`replace` 讓 Back 不會退回已放棄的表單。
+- 關閉一律是 `useRouteModalClose()`，不可寫死路徑，也不可用 `history.back()`。列表在底下維持掛載，所以關閉不會重抓資料；`replace` 讓 Back 不會退回已放棄的表單。
+- 預設關閉到父路由。**從別處開啟時，由開啟方傳 `?returnTo`** —— 例如從某個選項的頁面開商品建立頁，關閉應該回到那個選項而不是商品列表。
+  - 用 URL 而不是 `history.back()`：建立頁是可以直接貼網址開啟的，重新整理之後「上一頁」就變成別的東西，而可分享、可重新整理正是它做成路由的理由。
+  - `returnTo` 必須經 `toDashboardReturnTo()` 收斂。它是唯一一個由 URL 控制、而且會變成導頁目的地的參數，所以只接受 `/dashboard` 開頭的站內路徑，絕對網址與 `//host` 一律丟棄。
+- **從別的資源開啟建立頁時，預填與返回是一組的。** 開啟方同時傳 `?seed<Thing>Id`（要預先套用什麼）與 `?returnTo`（關閉回哪裡）；只傳其中一個，作者不是要重新挑一次剛剛看的東西，就是被丟到一個沒去過的列表。
+  - 預填一律叫 `seed*`：它是**起點不是鎖定**，目標頁的既有控制項仍然可以改或移除它。
+  - 套用的 hook 要滿足三件事，缺一個都會出錯：沒有該參數就完全不動作；等關聯資料載入完才套用（例如選項的值還沒到就套，會生出一條空的變體軸）；**只套用一次**，否則查詢 refetch 會把作者剛移除的東西加回去。`use-seeded-option.ts` 是範例，測試也照這三條寫。
 - 唯二的例外：
   - **刪除**維持 `InfoAlert`。那是確認不是表單，沒有會遺失的輸入，也沒有值得存在的 URL。
   - 一個 collection 若有多種建立形式（Assets 的資料夾與上傳），由同一個建立頁讀 `?variant` 決定，不是兩條路由也不是退回 dialog。目標資料夾同樣走 search param（`?folderId`），所以「上傳到這個資料夾」是可以分享的連結。
@@ -353,6 +425,14 @@ Cannot access 'xxxServerFn' before initialization
 - Error log 不可包含 secret、OTP、完整 token、敏感 request body 或不必要的個資。
 
 ## 7. 驗證與交付
+
+### 絕對不要用 git 還原未提交的檔案
+
+- **禁止對工作區檔案執行 `git checkout -- <file>`、`git restore <file>`、`git stash`、`git reset --hard`。** 這個專案長期有大量未提交的變更,這些指令會把它們無聲刪除,且沒有 reflog 可救。
+- 需要「撤銷剛才的實驗性修改」時,用 Edit 把那次修改改回去 —— 你知道自己剛寫了什麼,不需要問 git。
+- 需要臨時改檔案做實驗(例如驗證某個測試會不會紅)時,先把原始內容記在腦中或另存一份,改完再用 Edit 還原。
+- 這條是實際踩過兩次的帳:一次是 reindent 腳本比對錯 `return (`,一次是為了重現 HMR 錯誤而 `git checkout` 了六個檔案,把兩輪的工作全部清掉。第二次只能靠 `dist/` 的建置產物逐段還原 —— server 端的 Vite 輸出未壓縮且保留註解,所以救得回來,但這是運氣,不是流程。
+
 
 依修改風險執行最小充分驗證：
 

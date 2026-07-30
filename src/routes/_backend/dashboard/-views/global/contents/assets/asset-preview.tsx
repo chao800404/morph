@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { AssetPreviewSurface } from "./component/asset-preview-surface";
 import { useAssetPreviewController } from "./hooks/use-asset-preview-controller";
 
-export const AssetPreview = () => {
+const AssetPreview = () => {
   const controller = useAssetPreviewController();
 
   if (controller.status === "pending") return <PageSpinner />;
@@ -32,3 +32,5 @@ export const AssetPreview = () => {
 
   return <AssetPreviewSurface {...controller} />;
 };
+
+export default AssetPreview;

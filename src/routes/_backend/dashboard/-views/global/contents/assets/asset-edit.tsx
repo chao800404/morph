@@ -27,7 +27,7 @@ const routeApi = getRouteApi("/_backend/dashboard/$slug/$id/edit");
 
 const itemTypeOf = (item: AssetEditItem) => item.type;
 
-export const AssetEdit = () => {
+const AssetEdit = () => {
   const { id } = routeApi.useParams();
   const search = routeApi.useSearch();
   const navigate = useNavigate();
@@ -274,3 +274,5 @@ export const AssetEdit = () => {
     />
   );
 };
+
+export default AssetEdit;

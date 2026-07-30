@@ -59,7 +59,7 @@ export const DataTableSearch = ({
       </InputGroupAddon>
       <InputGroupInput
         key={query || "empty"}
-        className="bg-transparent py-0 text-zinc-300 placeholder:text-zinc-500 max-md:w-full"
+        className="py-0 text-zinc-300 placeholder:text-zinc-500 max-md:w-full"
         placeholder={placeholder}
         defaultValue={query}
         onChange={(event) => {

@@ -88,11 +88,28 @@ export const optionSelectionValueCount = (
 ): number =>
   "optionId" in selection ? selection.valueIds.length : selection.values.length;
 
+/**
+ * A record's free-form metadata.
+ *
+ * Values are strings on purpose: guessing types would turn "01234" into a
+ * number and lose the leading zero.
+ */
+export const metadataInputSchema = z
+  .record(
+    z.string().trim().min(1, "A metadata key cannot be blank").max(100),
+    z.string().max(2000),
+  )
+  .refine(
+    (value) => Object.keys(value).length <= 50,
+    "A record may have at most 50 metadata keys",
+  );
+
 export const listProductsInputSchema = z.object({
   query: z.string().trim().max(200).nullish(),
   status: productStatusSchema.nullish(),
   collectionId: z.uuid().nullish(),
   categoryId: z.uuid().nullish(),
+  optionId: z.uuid().nullish(),
   sortBy: z.enum(["title", "createdAt", "updatedAt"]).default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
   page: z.number().int().min(1).max(10_000).default(1),
@@ -171,6 +188,7 @@ export const updateProductInputSchema = z.object({
   discountable: z.boolean().optional(),
   thumbnailAssetId: z.uuid().nullish(),
   assetIds: z.array(z.uuid()).max(50).optional(),
+  metadata: metadataInputSchema.optional(),
 });
 
 export const deleteProductsInputSchema = z.object({
@@ -222,6 +240,7 @@ export const updateCollectionInputSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   handle: handleSchema.optional(),
   description: z.string().trim().max(2000).nullish(),
+  metadata: metadataInputSchema.optional(),
 });
 
 export const deleteCollectionsInputSchema = z.object({
@@ -264,6 +283,7 @@ export const updateProductOptionInputSchema = z.object({
       "Values must be unique",
     )
     .optional(),
+  metadata: metadataInputSchema.optional(),
 });
 
 export const deleteProductOptionsInputSchema = z.object({
@@ -304,6 +324,7 @@ export const updateProductCategoryInputSchema = z.object({
   description: z.string().trim().max(2000).optional(),
   isActive: z.boolean().optional(),
   isInternal: z.boolean().optional(),
+  metadata: metadataInputSchema.optional(),
 });
 
 export const deleteProductCategoriesInputSchema = z.object({

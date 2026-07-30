@@ -1,5 +1,5 @@
 import type { CollectionLoadContext } from "@/lib/config/create-config";
-import { lazy } from "react";
+import { lazyView } from "@/lib/config/lazy-view";
 
 export const Account = {
   slug: "settings",
@@ -11,7 +11,7 @@ export const Account = {
       icon: "UserRoundCog",
       label: "Profile",
       index: {
-        view: lazy(() => import("@views/settings/profile")),
+        view: lazyView(() => import("@views/settings/profile")),
         prefetch: async ({ queryClient }: CollectionLoadContext) => {
           // Imported here rather than at module scope. A static import would pull
           // `auth.queries` — and through it `list-sessions.serverFn` and the auth

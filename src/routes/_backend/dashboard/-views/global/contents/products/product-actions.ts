@@ -67,6 +67,8 @@ export const updateProductAction = async ({
     return { success: false, message: "Missing product ID" };
   }
 
+  const status = text(data, "status");
+
   return toActionResult(
     await updateProduct({
       data: {
@@ -75,6 +77,90 @@ export const updateProductAction = async ({
         handle: text(data, "handle"),
         subtitle: text(data, "subtitle") ?? null,
         description: text(data, "description") ?? null,
+        status:
+          status === "draft" || status === "published" || status === "archived"
+            ? status
+            : undefined,
+        // An unchecked switch submits nothing, so absence is false rather than
+        // "leave alone" — this form always renders the switch.
+        discountable: data.get("discountable") === "on",
+      },
+    }),
+  );
+};
+
+/**
+ * Where the product sits in the catalogue.
+ *
+ * Separate from the details form for the same reason metadata is: each field
+ * here replaces a whole link set, so a form that did not render them would
+ * clear them by omission.
+ */
+export const updateProductOrganizationAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing product ID" };
+  }
+
+  const collectionId = text(data, "collectionId");
+
+  return toActionResult(
+    await updateProduct({
+      data: {
+        id,
+        collectionId:
+          !collectionId || collectionId === NO_COLLECTION ? null : collectionId,
+        typeValue: valueList(data, "typeValue").at(0) ?? null,
+        tagValues: valueList(data, "tagValues"),
+        categoryIds: idList(data, "categoryIds"),
+      },
+    }),
+  );
+};
+
+/** The value the Collection select uses for "none"; Zod would reject "". */
+export const NO_COLLECTION = "__none__";
+
+export const updateProductMediaAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing product ID" };
+  }
+
+  const raw = data.get("assets");
+  let assetIds: string[] = [];
+  if (typeof raw === "string" && raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      assetIds = Array.isArray(parsed)
+        ? parsed.flatMap((item) =>
+            typeof item === "object" &&
+            item !== null &&
+            typeof (item as { id?: unknown }).id === "string"
+              ? [(item as { id: string }).id]
+              : [],
+          )
+        : [];
+    } catch {
+      return { success: false, message: "Could not read the selected media" };
+    }
+  }
+
+  return toActionResult(
+    await updateProduct({
+      data: {
+        id,
+        assetIds,
+        // First image is the thumbnail, matching what the create wizard does.
+        thumbnailAssetId: assetIds[0] ?? null,
       },
     }),
   );
@@ -291,4 +377,107 @@ export const updateProductCategoryAction = async ({
       },
     }),
   );
+};
+
+/**
+ * The metadata field submits a JSON object string; this reads it back.
+ *
+ * Returns `null` when the payload is unreadable so the caller can report it
+ * rather than silently saving an empty object over the store's data.
+ */
+const readMetadata = (data: FormData): Record<string, string> | null => {
+  const raw = data.get("metadata");
+  if (typeof raw !== "string" || raw === "") return {};
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [
+        key,
+        String(value),
+      ]),
+    );
+  } catch {
+    return null;
+  }
+};
+
+const METADATA_READ_ERROR: AssetActionResult = {
+  success: false,
+  message: "Metadata could not be read",
+  errors: { metadata: ["Metadata could not be read"] },
+};
+
+/**
+ * Metadata is submitted on its own so the two edit forms cannot overwrite each
+ * other: the details form has no metadata field, and sending `undefined` for
+ * it would be indistinguishable from clearing it.
+ */
+export const updateProductCategoryMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing category ID" };
+  }
+
+  const metadata = readMetadata(data);
+  if (!metadata) return METADATA_READ_ERROR;
+
+  return toActionResult(
+    await updateProductCategory({ data: { id, metadata } }),
+  );
+};
+
+export const updateCollectionMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing collection ID" };
+  }
+
+  const metadata = readMetadata(data);
+  if (!metadata) return METADATA_READ_ERROR;
+
+  return toActionResult(await updateCollection({ data: { id, metadata } }));
+};
+
+export const updateProductOptionMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing option ID" };
+  }
+
+  const metadata = readMetadata(data);
+  if (!metadata) return METADATA_READ_ERROR;
+
+  return toActionResult(await updateProductOption({ data: { id, metadata } }));
+};
+
+export const updateProductMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing product ID" };
+  }
+
+  const metadata = readMetadata(data);
+  if (!metadata) return METADATA_READ_ERROR;
+
+  return toActionResult(await updateProduct({ data: { id, metadata } }));
 };

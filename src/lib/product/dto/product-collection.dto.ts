@@ -1,3 +1,5 @@
+import type { ProductMetadata } from "@/db/product.schema";
+
 export interface CreateProductCollectionDTO {
   title: string;
   handle: string;
@@ -11,6 +13,8 @@ export interface ProductCollectionDTO {
   title: string;
   handle: string;
   description: string | null;
+  /** Free-form store-defined data; never trusted to hold anything private. */
+  metadata: ProductMetadata;
   createdBy: string;
   updatedBy: string;
   createdAt: Date;
@@ -24,6 +28,7 @@ export interface ProductCollectionInsertDTO extends CreateProductCollectionDTO {
 }
 
 export interface UpdateProductCollectionDTO {
+  metadata?: ProductMetadata;
   title?: string;
   handle?: string;
   description?: string | null;

@@ -3,6 +3,7 @@ import {
   productCategories,
   productTags,
   productTypes,
+  type ProductMetadata,
 } from "@/db/product.schema";
 import { containsPattern } from "@/lib/db/like-pattern";
 import {
@@ -61,6 +62,7 @@ const toCategoryDTO = (row: {
   isActive: boolean;
   isInternal: boolean;
   rank: number;
+  metadata: ProductMetadata | null;
   createdAt: string;
   updatedAt: string;
 }): ProductCategoryDTO => ({
@@ -73,6 +75,7 @@ const toCategoryDTO = (row: {
   isActive: row.isActive,
   isInternal: row.isInternal,
   rank: row.rank,
+  metadata: row.metadata ?? {},
   createdAt: new Date(row.createdAt),
   updatedAt: new Date(row.updatedAt),
 });
@@ -408,6 +411,7 @@ export const productCategoryDal = {
       isActive: data.isActive ?? false,
       isInternal: data.isInternal ?? false,
       rank: siblings[0]?.value ?? 0,
+      metadata: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -431,6 +435,7 @@ export const productCategoryDal = {
         }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
         ...(data.isInternal !== undefined && { isInternal: data.isInternal }),
+        ...(data.metadata !== undefined && { metadata: data.metadata }),
         updatedAt: now,
       })
       .where(eq(productCategories.id, id));

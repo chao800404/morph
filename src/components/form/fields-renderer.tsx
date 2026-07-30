@@ -1,4 +1,3 @@
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -8,16 +7,35 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { FormField, FormFieldValue } from "@/lib/validations/form";
-import { ComponentRef, RefObject } from "react";
+import { Info } from "lucide-react";
+import { ComponentRef, lazy, RefObject, Suspense } from "react";
 import type { Country } from "react-phone-number-input";
-import { FolderSelectField } from "../folder-select/folder-select";
 import { Tip } from "../ui/tip";
 import { PhoneInput } from "../ui/phone-input";
 import { UploadField } from "../upload/upload";
+import { AssetSelectField } from "./asset-select-field";
+import { InputField } from "./input-field";
+import { MetadataField } from "./metadata-field";
 import { OptionValuesField } from "./option-values-field";
 import { SwitchField } from "./switch-field";
+
+/**
+ * Loaded on demand: it reaches `assetQueries`, and therefore server functions,
+ * while this module sits in `cms.config`'s static graph. Only the Assets forms
+ * render it, so nothing else pays for the chunk either.
+ */
+const FolderSelectField = lazy(() =>
+  import("../folder-select/folder-select").then((module) => ({
+    default: module.FolderSelectField,
+  })),
+);
 
 /**
  * Every control that can be the first focusable field. The ref is shared across
@@ -89,6 +107,25 @@ export const FieldsRenderer = ({
             {!rendersOwnLabel && (
               <Label htmlFor={id} className="text-sm font-medium">
                 {field.label}
+                {field.labelHint ? (
+                  <Tooltip>
+                    {/* A button, not the icon alone: the hint has to be
+                        reachable by keyboard, and Radix needs a focusable
+                        trigger to open on focus. */}
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
+                        aria-label={`About ${field.label}`}
+                      >
+                        <Info className="size-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-64">
+                      {field.labelHint}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : null}
                 {field.optional ? (
                   <>
                     {" "}
@@ -100,21 +137,13 @@ export const FieldsRenderer = ({
               </Label>
             )}
             {field.type === "input" && (
-              <Input
-                id={id}
-                variant="card"
-                name={field.name}
-                type={field.inputType || "text"}
-                defaultValue={stringValue}
-                onChange={(e) => onChange?.(field.name, e.target.value)}
-                placeholder={field.placeholder || `Enter ${field.label}...`}
-                autoFocus={field.autoFocus}
-                disabled={field.disabled}
-                required={field.required}
-                aria-invalid={field.error ? true : undefined}
-                aria-describedby={describedBy}
-                className={field.inputClassName}
-                ref={
+              <InputField
+                field={field}
+                fieldId={id}
+                value={stringValue}
+                describedBy={describedBy}
+                onChange={(value) => onChange?.(field.name, value)}
+                inputRef={
                   isFirstField
                     ? (firstFieldRef as RefObject<HTMLInputElement>)
                     : undefined
@@ -202,13 +231,15 @@ export const FieldsRenderer = ({
             )}
 
             {field.type === "folder-select" && (
-              <FolderSelectField
-                field={field}
-                fieldId={id}
-                initialValue={stringValue}
-                onChange={(value) => onChange?.(field.name, value)}
-                className={field.componentClassName}
-              />
+              <Suspense fallback={null}>
+                <FolderSelectField
+                  field={field}
+                  fieldId={id}
+                  initialValue={stringValue}
+                  onChange={(value) => onChange?.(field.name, value)}
+                  className={field.componentClassName}
+                />
+              </Suspense>
             )}
 
             {field.type === "upload" && (
@@ -244,6 +275,22 @@ export const FieldsRenderer = ({
                   className={field.componentClassName}
                 />
               ))}
+            {field.type === "asset-select" && (
+              <AssetSelectField
+                field={field}
+                fieldId={id}
+                value={stringValue}
+                onChange={(next) => onChange?.(field.name, next)}
+                className={field.componentClassName}
+              />
+            )}
+            {field.type === "metadata" && (
+              <MetadataField
+                name={field.name}
+                value={stringValue}
+                onChange={(fieldName, val) => onChange?.(fieldName, val)}
+              />
+            )}
             {field.type === "switch" ? (
               <SwitchField
                 field={field}

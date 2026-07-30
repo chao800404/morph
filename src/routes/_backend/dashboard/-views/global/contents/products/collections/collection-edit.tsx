@@ -3,6 +3,7 @@ import {
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
+import { handleField } from "@/components/form/handle-field";
 import { Spinner } from "@/components/ui/spinner";
 import { collectionQueries } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -11,7 +12,7 @@ import { toast } from "sonner";
 import { updateCollectionAction } from "../product-actions";
 
 /** Edit page for a product collection, at /dashboard/collections/<id>/edit. */
-export const CollectionEdit = () => {
+const CollectionEdit = () => {
   const { id } = useParams({ strict: false }) as { id: string };
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
@@ -70,12 +71,7 @@ export const CollectionEdit = () => {
           required: true,
           autoFocus: true,
         },
-        {
-          type: "input",
-          name: "handle",
-          label: "Handle",
-          value: collection.handle,
-        },
+        handleField({ derivedFrom: "title", value: collection.handle }),
         {
           type: "textarea",
           name: "description",
@@ -88,3 +84,5 @@ export const CollectionEdit = () => {
     />
   );
 };
+
+export default CollectionEdit;

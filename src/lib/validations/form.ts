@@ -115,6 +115,13 @@ export interface FormFieldBase {
    * is wrong with it.
    */
   error?: string;
+  /**
+   * Explains the field from an info icon beside the label.
+   *
+   * For background a reader only needs once — what a handle is for — where
+   * `description` would keep a permanent line of small text under the control.
+   */
+  labelHint?: string;
   /** Shows the shared muted "(Optional)" marker beside the label. */
   optional?: boolean;
   disabled?: boolean;
@@ -133,6 +140,14 @@ export type SelectOption = z.infer<typeof selectOptionSchema>;
 export type InputFormField = FormFieldBase & {
   type: "input";
   inputType?: string;
+  /**
+   * Static text attached to the control, inside the same box.
+   *
+   * A handle uses `prefix: "/"` so the value reads as the URL segment it will
+   * become. It is decoration, not data: the submitted value never includes it.
+   */
+  prefix?: string;
+  suffix?: string;
 };
 
 export type TextareaFormField = FormFieldBase & {
@@ -194,6 +209,31 @@ export interface OptionValueChoice {
   value: string;
 }
 
+/**
+ * Free-form key/value pairs for a record's `metadata` column.
+ *
+ * The value is a JSON object string, matching how `option-values` transports
+ * its list: `FormFieldValue` has no object member, and widening it for one
+ * field type would ripple through every other.
+ */
+export type MetadataFormField = FormFieldBase & {
+  type: "metadata";
+};
+
+/**
+ * Images chosen for a record, by upload or from the asset library.
+ *
+ * The value is a JSON array of `{ id, name, url }`, matching how `metadata`
+ * travels: `FormFieldValue` has no object member, and a thumbnail needs more
+ * than the id it eventually submits.
+ */
+export type AssetSelectFormField = FormFieldBase & {
+  type: "asset-select";
+  maxSelected?: number;
+  /** Folder new uploads land in. Omitted means the library root. */
+  uploadFolderId?: string;
+};
+
 export type HiddenFormField = FormFieldBase & {
   type: "hidden";
 };
@@ -206,6 +246,8 @@ export type FormField =
   | FolderSelectFormField
   | UploadFormField
   | OptionValuesFormField
+  | MetadataFormField
+  | AssetSelectFormField
   | SwitchFormField
   | TipFormField
   | HiddenFormField;
@@ -221,6 +263,7 @@ const formFieldBaseShape = {
   placeholder: z.string().optional(),
   required: z.boolean().optional(),
   error: z.string().optional(),
+  labelHint: z.string().max(300).optional(),
   optional: z.boolean().optional(),
   disabled: z.boolean().optional(),
   autoFocus: z.boolean().optional(),
@@ -236,6 +279,8 @@ const inputFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("input"),
   inputType: z.string().optional(),
+  prefix: z.string().max(20).optional(),
+  suffix: z.string().max(20).optional(),
 });
 
 const textareaFormFieldSchema = z.object({
@@ -310,6 +355,18 @@ const tipFormFieldSchema = z.object({
   description: z.string().min(1).max(2000),
 });
 
+const metadataFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("metadata"),
+});
+
+const assetSelectFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("asset-select"),
+  maxSelected: z.number().int().positive().max(50).optional(),
+  uploadFolderId: z.uuid().optional(),
+});
+
 const hiddenFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("hidden"),
@@ -326,6 +383,8 @@ export const formFieldSchema: z.ZodType<FormField> = z.discriminatedUnion(
     folderSelectFormFieldSchema,
     uploadFormFieldSchema,
     optionValuesFormFieldSchema,
+    metadataFormFieldSchema,
+    assetSelectFormFieldSchema,
     switchFormFieldSchema,
     tipFormFieldSchema,
     hiddenFormFieldSchema,

@@ -20,4 +20,21 @@ describe("RouteFullscreenSurface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("places leading header content beside the close controls", () => {
+    render(
+      <RouteFullscreenSurface
+        onClose={vi.fn()}
+        headerLeading={<nav aria-label="Steps">Steps</nav>}
+      >
+        Content
+      </RouteFullscreenSurface>,
+    );
+
+    const closeButton = screen.getByRole("button", { name: "Close" });
+    const steps = screen.getByRole("navigation", { name: "Steps" });
+    const leadingRegion = closeButton.parentElement?.parentElement;
+
+    expect(leadingRegion?.contains(steps)).toBe(true);
+  });
 });

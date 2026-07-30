@@ -24,7 +24,7 @@ import {
  * every descendant's materialised path, and Medusa's edit form cannot do it
  * either — re-parenting is a separate operation there.
  */
-export const CategoryEdit = () => {
+const CategoryEdit = () => {
   const { id } = useParams({ strict: false }) as { id: string };
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
@@ -84,3 +84,5 @@ export const CategoryEdit = () => {
     />
   );
 };
+
+export default CategoryEdit;

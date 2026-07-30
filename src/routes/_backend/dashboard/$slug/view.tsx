@@ -1,4 +1,4 @@
-import { PageSpinner } from "@/components/loading/page-spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { NotFound } from "@/components/not-found/not-found";
 import { findCollection } from "@/lib/config/navigation";
 import { getConfig } from "@/server/get-config";
@@ -28,7 +28,7 @@ function RouteComponent() {
   if (!preview) return <NotFound />;
 
   const PreviewView = preview.view;
-  const PendingView = preview.pendingView ?? PageSpinner;
+  const PendingView = preview.pendingView ?? RouteSurfacePending;
   return (
     <Suspense fallback={<PendingView />}>
       <PreviewView />

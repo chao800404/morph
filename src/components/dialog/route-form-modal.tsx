@@ -1,7 +1,11 @@
 import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { cn } from "@/lib/utils";
 import type { FormField } from "@/lib/validations/form";
-import { useNavigate } from "@tanstack/react-router";
+import {
+  toDashboardReturnTo,
+  type DashboardSearch,
+} from "@/lib/validations/dashboard-search";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { createContext, useContext } from "react";
 import {
   useActionState,
@@ -67,13 +71,21 @@ export const RouteModalCloseProvider = RouteModalCloseContext.Provider;
 /**
  * Closing returns to an ancestor route, which never unmounted. `replace` keeps
  * an abandoned form out of the history stack, so Back does not reopen it.
+ *
+ * An explicit `?returnTo` wins: a surface opened from somewhere other than its
+ * parent — the product wizard reached from an option's page — should go back
+ * where it came from. Reading it from the URL rather than from history means a
+ * refresh or a pasted link still closes to the right place.
  */
 export const useRouteModalClose = () => {
   const navigate = useNavigate();
-  const to = useContext(RouteModalCloseContext);
+  const search = useSearch({ strict: false }) as DashboardSearch;
+  const parent = useContext(RouteModalCloseContext);
+  const returnTo = toDashboardReturnTo(search.returnTo);
+
   return useCallback(() => {
-    void navigate({ to, replace: true });
-  }, [navigate, to]);
+    void navigate({ to: returnTo ?? parent, replace: true });
+  }, [navigate, parent, returnTo]);
 };
 
 /** Esc closes the surface, matching the hint next to the close button. */

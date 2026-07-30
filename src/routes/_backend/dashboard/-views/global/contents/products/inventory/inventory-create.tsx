@@ -1,6 +1,6 @@
 import { NotImplementedCreate } from "@/routes/_backend/dashboard/-views/features/not-implemented-create";
 
-export const InventoryCreate = () => (
+const InventoryCreate = () => (
   <NotImplementedCreate
     feature="Inventory management"
     title="Add Inventory Item"
@@ -23,3 +23,5 @@ export const InventoryCreate = () => (
     ]}
   />
 );
+
+export default InventoryCreate;

@@ -1,4 +1,4 @@
-import { lazy } from "react";
+import { lazyView } from "@/lib/config/lazy-view";
 
 export const Marketing = {
   slug: "/",
@@ -10,13 +10,11 @@ export const Marketing = {
       icon: "ShoppingCart",
       label: "Orders",
       index: {
-        view: lazy(() => import("@views/global/marketing/orders")),
+        view: lazyView(() => import("@views/global/marketing/orders")),
       },
       create: {
-        view: lazy(() =>
-          import("@views/global/marketing/orders/order-create").then((m) => ({
-            default: m.OrderCreate,
-          })),
+        view: lazyView(() =>
+          import("@views/global/marketing/orders/order-create"),
         ),
       },
     },
@@ -26,13 +24,11 @@ export const Marketing = {
       icon: "TicketPercent",
       label: "Promotions",
       index: {
-        view: lazy(() => import("@views/global/marketing/promotions")),
+        view: lazyView(() => import("@views/global/marketing/promotions")),
       },
       create: {
-        view: lazy(() =>
-          import("@views/global/marketing/promotion-create").then((m) => ({
-            default: m.PromotionCreate,
-          })),
+        view: lazyView(() =>
+          import("@views/global/marketing/promotion-create"),
         ),
       },
     },

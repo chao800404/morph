@@ -3,13 +3,14 @@ import {
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
+import { handleField } from "@/components/form/handle-field";
 import { collectionQueries } from "@queries/product.queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { createCollectionAction } from "../product-actions";
 
 /** Create page for product collections, at /dashboard/collections/create. */
-export const CollectionCreate = () => {
+const CollectionCreate = () => {
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
 
@@ -44,12 +45,7 @@ export const CollectionCreate = () => {
           required: true,
           autoFocus: true,
         },
-        {
-          type: "input",
-          name: "handle",
-          label: "Handle",
-          placeholder: "Leave blank to derive from the title",
-        },
+        handleField({ derivedFrom: "title" }),
         {
           type: "textarea",
           name: "description",
@@ -61,3 +57,5 @@ export const CollectionCreate = () => {
     />
   );
 };
+
+export default CollectionCreate;

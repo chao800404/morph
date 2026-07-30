@@ -1,4 +1,4 @@
-import { CollectionGroup, CollectionItem } from "./create-config";
+import type { CollectionGroup, CollectionItem } from "./create-config";
 
 /**
  * Every addressable collection, in one flat list.
@@ -31,6 +31,14 @@ export const getAllCollections = (
  * static segment outranks the dynamic `$slug` that resolves collections.
  */
 export const RESERVED_COLLECTION_SLUGS = ["create", "settings"] as const;
+
+/**
+ * Segments already routed beneath a record.
+ *
+ * A detail sub-page using one of these would be shadowed by the static route
+ * and never render.
+ */
+export const RESERVED_DETAIL_PAGE_KEYS = ["edit"] as const;
 
 /**
  * Fail the config rather than let a collection be unreachable.
@@ -66,6 +74,14 @@ export const assertCollectionsAreAddressable = (
 
   for (const collection of getAllCollections(groups)) {
     check(collection.slug);
+
+    for (const key of Object.keys(collection.pages ?? {})) {
+      if (RESERVED_DETAIL_PAGE_KEYS.includes(key as "edit")) {
+        throw new Error(
+          `CMS Config: "${collection.slug}" declares a detail page "${key}", which is already a route beneath a record. It would never render.`,
+        );
+      }
+    }
   }
 };
 

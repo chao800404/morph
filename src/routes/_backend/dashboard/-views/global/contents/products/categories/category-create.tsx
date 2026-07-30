@@ -16,7 +16,7 @@ import {
 } from "./config/product-category-form";
 
 /** Create page for product categories, at /dashboard/product-categories/create. */
-export const CategoryCreate = () => {
+const CategoryCreate = () => {
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
 
@@ -56,3 +56,5 @@ export const CategoryCreate = () => {
     />
   );
 };
+
+export default CategoryCreate;

@@ -10,6 +10,7 @@ export const toProductCollectionDTO = (
   title: row.title,
   handle: row.handle,
   description: row.description ?? null,
+  metadata: row.metadata ?? {},
   createdBy: row.createdBy,
   updatedBy: row.updatedBy,
   createdAt: new Date(row.createdAt),

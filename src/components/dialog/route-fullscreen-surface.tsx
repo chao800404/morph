@@ -9,6 +9,7 @@ import { createSurface } from "./create-surface";
 interface RouteFullscreenSurfaceProps {
   children: ReactNode;
   onClose: () => void;
+  headerLeading?: ReactNode;
   header?: ReactNode;
   headerActions?: ReactNode;
   footer?: ReactNode;
@@ -28,6 +29,7 @@ interface RouteFullscreenSurfaceProps {
 export const RouteFullscreenSurface = ({
   children,
   onClose,
+  headerLeading,
   header,
   headerActions,
   footer,
@@ -50,20 +52,27 @@ export const RouteFullscreenSurface = ({
       <header
         className={cn(
           createSurface.header,
-          "grid min-h-12 grid-cols-3 items-center",
+          "grid min-h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center",
         )}
       >
-        <div className="flex items-center gap-2 px-4 py-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="Close"
-            onClick={onClose}
-          >
-            <X className="size-4" />
-          </Button>
-          <Kbd>esc</Kbd>
+        <div className="flex h-full min-w-0 items-center">
+          <div className="flex shrink-0 items-center gap-2 px-4 py-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Close"
+              onClick={onClose}
+            >
+              <X className="size-4" />
+            </Button>
+            <Kbd>esc</Kbd>
+          </div>
+          {headerLeading ? (
+            <div className="flex h-full min-w-0 items-stretch">
+              {headerLeading}
+            </div>
+          ) : null}
         </div>
         <div className="flex min-w-0 items-center justify-center">{header}</div>
         <div className="flex items-center justify-end gap-2 px-4 py-2">

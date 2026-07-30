@@ -1,3 +1,4 @@
+import type { SelectedAsset } from "@/components/form/asset-tile";
 import { useReducer } from "react";
 
 /**
@@ -58,6 +59,14 @@ export interface ProductDraft {
   hasVariants: boolean;
   options: DraftOption[];
   currencies: string[];
+  /**
+   * Gallery images, already uploaded and living in the asset library.
+   *
+   * The full rows rather than ids: the wizard's steps are tabs, so this step
+   * unmounts when the author moves on, and the field could not redraw its
+   * thumbnails from ids alone on the way back.
+   */
+  assets: SelectedAsset[];
   variants: DraftVariant[];
   /** Prices for the single default variant when `hasVariants` is false. */
   defaultPrices: Record<string, string>;
@@ -77,6 +86,7 @@ export type DraftAction =
     }
   | { type: "setTagValues"; values: string[] }
   | { type: "setCategoryIds"; ids: string[] }
+  | { type: "setAssets"; assets: SelectedAsset[] }
   | { type: "setDiscountable"; value: boolean }
   | { type: "setHasVariants"; value: boolean }
   | { type: "addOption"; option: Omit<DraftOption, "key"> }
@@ -213,6 +223,9 @@ const reducer = (draft: ProductDraft, action: DraftAction): ProductDraft => {
     case "setCategoryIds":
       return { ...draft, categoryIds: action.ids };
 
+    case "setAssets":
+      return { ...draft, assets: action.assets };
+
     case "setDiscountable":
       return { ...draft, discountable: action.value };
 
@@ -284,6 +297,7 @@ const initialDraft: ProductDraft = {
   typeValue: "",
   tagValues: [],
   categoryIds: [],
+  assets: [],
   discountable: true,
   hasVariants: false,
   options: [],

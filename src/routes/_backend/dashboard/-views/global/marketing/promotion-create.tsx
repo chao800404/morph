@@ -1,6 +1,6 @@
 import { NotImplementedCreate } from "@/routes/_backend/dashboard/-views/features/not-implemented-create";
 
-export const PromotionCreate = () => (
+const PromotionCreate = () => (
   <NotImplementedCreate
     feature="Promotions"
     title="Create Promotion"
@@ -23,3 +23,5 @@ export const PromotionCreate = () => (
     ]}
   />
 );
+
+export default PromotionCreate;

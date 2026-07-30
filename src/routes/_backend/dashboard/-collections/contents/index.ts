@@ -1,6 +1,6 @@
 import type { CollectionLoadContext } from "@/lib/config/create-config";
+import { lazyView } from "@/lib/config/lazy-view";
 import { AssetsPageSkeleton } from "@views/global/contents/assets/component/assets-card-skeleton";
-import { lazy } from "react";
 
 const prefetchAssetItem = async ({
   queryClient,
@@ -31,17 +31,52 @@ export const Contents = {
       // Multi-step, and it generates variants: losing it half-filled costs
       // real work, so it gets its own page at /dashboard/products/create.
       create: {
-        view: lazy(() =>
-          import("@views/global/contents/products/create/product-create-wizard").then(
-            (m) => ({ default: m.ProductCreateWizard }),
-          ),
+        view: lazyView(
+          () =>
+            import(
+              "@views/global/contents/products/create/product-create-wizard"
+            ),
         ),
       },
       detail: {
-        view: lazy(() => import("@views/global/contents/products/detail")),
+        view: lazyView(() => import("@views/global/contents/products/detail")),
+        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+          if (!params.id) return;
+          const { productQueries } = await import("@queries/product.queries");
+          void queryClient.prefetchQuery(productQueries.detail(params.id));
+        },
+      },
+      edit: {
+        view: lazyView(
+          () => import("@views/global/contents/products/detail/product-edit"),
+        ),
+      },
+      // One page per card on the detail view. Each replaces a whole link set,
+      // so they cannot be merged into the details form without clearing what
+      // that form does not render.
+      pages: {
+        organization: {
+          view: lazyView(
+            () =>
+              import(
+                "@views/global/contents/products/detail/product-organization"
+              ),
+          ),
+        },
+        media: {
+          view: lazyView(
+            () => import("@views/global/contents/products/detail/product-media"),
+          ),
+        },
+        metadata: {
+          view: lazyView(
+            () =>
+              import("@views/global/contents/products/detail/product-metadata"),
+          ),
+        },
       },
       index: {
-        view: lazy(() => import("@views/global/contents/products")),
+        view: lazyView(() => import("@views/global/contents/products")),
         prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
           const { productQueries, normalizeProductListParams } =
             await import("@queries/product.queries");
@@ -58,21 +93,64 @@ export const Contents = {
           slug: "collections",
           label: "Collections",
           create: {
-            view: lazy(() =>
-              import("@views/global/contents/products/collections/collection-create").then(
-                (m) => ({ default: m.CollectionCreate }),
-              ),
+            view: lazyView(
+              () =>
+                import(
+                  "@views/global/contents/products/collections/collection-create"
+                ),
             ),
+          },
+          detail: {
+            view: lazyView(
+              () =>
+                import(
+                  "@views/global/contents/products/collections/collection-detail"
+                ),
+            ),
+            prefetch: async ({
+              queryClient,
+              params,
+              search,
+            }: CollectionLoadContext) => {
+              if (!params.id) return;
+              const {
+                collectionQueries,
+                productQueries,
+                normalizeProductListParams,
+              } = await import("@queries/product.queries");
+              void queryClient.prefetchQuery(
+                collectionQueries.detail(params.id),
+              );
+              // Same params the page's Products card uses, so it primes that
+              // cache entry rather than a second one.
+              void queryClient.prefetchQuery(
+                productQueries.list({
+                  ...normalizeProductListParams(search),
+                  collectionId: params.id,
+                }),
+              );
+            },
           },
           edit: {
-            view: lazy(() =>
-              import("@views/global/contents/products/collections/collection-edit").then(
-                (m) => ({ default: m.CollectionEdit }),
-              ),
+            view: lazyView(
+              () =>
+                import(
+                  "@views/global/contents/products/collections/collection-edit"
+                ),
             ),
           },
+          pages: {
+            metadata: {
+              view: lazyView(
+                () =>
+                  import(
+                    "@views/global/contents/products/collections/collection-metadata"
+                  ),
+              ),
+            },
+          },
           index: {
-            view: lazy(
+            view: lazyView(
               () => import("@views/global/contents/products/collections"),
             ),
             prefetch: async ({
@@ -92,40 +170,62 @@ export const Contents = {
           slug: "product-categories",
           label: "Categories",
           create: {
-            view: lazy(() =>
-              import("@views/global/contents/products/categories/category-create").then(
-                (m) => ({ default: m.CategoryCreate }),
-              ),
+            view: lazyView(
+              () =>
+                import(
+                  "@views/global/contents/products/categories/category-create"
+                ),
             ),
           },
           detail: {
-            view: lazy(() =>
-              import("@views/global/contents/products/categories/category-detail").then(
-                (m) => ({ default: m.CategoryDetail }),
-              ),
+            view: lazyView(
+              () =>
+                import(
+                  "@views/global/contents/products/categories/category-detail"
+                ),
             ),
             prefetch: async ({
               queryClient,
               params,
+              search,
             }: CollectionLoadContext) => {
               if (!params.id) return;
-              const { productCategoryQueries } = await import(
-                "@queries/product.queries"
-              );
+              const {
+                productCategoryQueries,
+                productQueries,
+                normalizeProductListParams,
+              } = await import("@queries/product.queries");
               void queryClient.prefetchQuery(
                 productCategoryQueries.detail(params.id),
+              );
+              void queryClient.prefetchQuery(
+                productQueries.list({
+                  ...normalizeProductListParams(search),
+                  categoryId: params.id,
+                }),
               );
             },
           },
           edit: {
-            view: lazy(() =>
-              import("@views/global/contents/products/categories/category-edit").then(
-                (m) => ({ default: m.CategoryEdit }),
-              ),
+            view: lazyView(
+              () =>
+                import(
+                  "@views/global/contents/products/categories/category-edit"
+                ),
             ),
           },
+          pages: {
+            metadata: {
+              view: lazyView(
+                () =>
+                  import(
+                    "@views/global/contents/products/categories/category-metadata"
+                  ),
+              ),
+            },
+          },
           index: {
-            view: lazy(
+            view: lazyView(
               () => import("@views/global/contents/products/categories"),
             ),
             prefetch: async ({
@@ -149,14 +249,15 @@ export const Contents = {
           slug: "inventory",
           label: "Inventory",
           create: {
-            view: lazy(() =>
-              import("@views/global/contents/products/inventory/inventory-create").then(
-                (m) => ({ default: m.InventoryCreate }),
-              ),
+            view: lazyView(
+              () =>
+                import(
+                  "@views/global/contents/products/inventory/inventory-create"
+                ),
             ),
           },
           index: {
-            view: lazy(
+            view: lazyView(
               () => import("@views/global/contents/products/inventory"),
             ),
           },
@@ -166,21 +267,58 @@ export const Contents = {
           slug: "product-options",
           label: "Options",
           create: {
-            view: lazy(() =>
-              import("@views/global/contents/products/options/option-create").then(
-                (m) => ({ default: m.OptionCreate }),
-              ),
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/options/option-create"),
             ),
+          },
+          detail: {
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/options/option-detail"),
+            ),
+            prefetch: async ({
+              queryClient,
+              params,
+              search,
+            }: CollectionLoadContext) => {
+              if (!params.id) return;
+              const {
+                productOptionQueries,
+                productQueries,
+                normalizeProductListParams,
+              } = await import("@queries/product.queries");
+              void queryClient.prefetchQuery(
+                productOptionQueries.detail(params.id),
+              );
+              void queryClient.prefetchQuery(
+                productQueries.list({
+                  ...normalizeProductListParams(search),
+                  optionId: params.id,
+                }),
+              );
+            },
           },
           edit: {
-            view: lazy(() =>
-              import("@views/global/contents/products/options/option-edit").then(
-                (m) => ({ default: m.OptionEdit }),
-              ),
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/options/option-edit"),
             ),
           },
+          pages: {
+            metadata: {
+              view: lazyView(
+                () =>
+                  import(
+                    "@views/global/contents/products/options/option-metadata"
+                  ),
+              ),
+            },
+          },
           index: {
-            view: lazy(() => import("@views/global/contents/products/options")),
+            view: lazyView(
+              () => import("@views/global/contents/products/options"),
+            ),
             prefetch: async ({
               queryClient,
               search,
@@ -206,17 +344,13 @@ export const Contents = {
       // `?variant`. The header's Create menu navigates here; drag-and-drop onto
       // the explorer remains a separate, faster path.
       create: {
-        view: lazy(() =>
-          import("@views/global/contents/assets/asset-create").then((m) => ({
-            default: m.AssetCreate,
-          })),
+        view: lazyView(
+          () => import("@views/global/contents/assets/asset-create"),
         ),
       },
       preview: {
-        view: lazy(() =>
-          import("@views/global/contents/assets/asset-preview").then((m) => ({
-            default: m.AssetPreview,
-          })),
+        view: lazyView(
+          () => import("@views/global/contents/assets/asset-preview"),
         ),
         prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
           const { assetQueries, normalizeAssetListParams } =
@@ -227,15 +361,11 @@ export const Contents = {
         },
       },
       edit: {
-        view: lazy(() =>
-          import("@views/global/contents/assets/asset-edit").then((m) => ({
-            default: m.AssetEdit,
-          })),
-        ),
+        view: lazyView(() => import("@views/global/contents/assets/asset-edit")),
         prefetch: prefetchAssetItem,
       },
       index: {
-        view: lazy(() => import("@views/global/contents/assets")),
+        view: lazyView(() => import("@views/global/contents/assets")),
         // The explorer shows a skeleton while its query runs, so the chunk wait
         // uses the same shape instead of a spinner that then swaps to a skeleton.
         pendingView: AssetsPageSkeleton,

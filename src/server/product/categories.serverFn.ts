@@ -188,6 +188,7 @@ export const updateProductCategory = createServerFn({ method: "POST" })
           description: data.description,
           isActive: data.isActive,
           isInternal: data.isInternal,
+          metadata: data.metadata,
         },
         new Date().toISOString(),
       );

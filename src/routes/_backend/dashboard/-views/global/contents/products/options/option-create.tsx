@@ -13,7 +13,7 @@ import { createProductOptionAction } from "../product-actions";
  *
  * Its URL is /dashboard/product-options/create.
  */
-export const OptionCreate = () => {
+const OptionCreate = () => {
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
 
@@ -60,3 +60,5 @@ export const OptionCreate = () => {
     />
   );
 };
+
+export default OptionCreate;

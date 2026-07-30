@@ -28,7 +28,7 @@ import {
  * child of it, so the destination folder comes from the URL rather than from
  * page state — which also makes "upload into this folder" a shareable link.
  */
-export const AssetCreate = () => {
+const AssetCreate = () => {
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
   const search = useSearch({ strict: false }) as DashboardSearch;
@@ -104,3 +104,5 @@ export const AssetCreate = () => {
     />
   );
 };
+
+export default AssetCreate;

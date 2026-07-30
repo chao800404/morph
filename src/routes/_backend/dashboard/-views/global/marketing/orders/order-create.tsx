@@ -1,6 +1,6 @@
 import { NotImplementedCreate } from "@/routes/_backend/dashboard/-views/features/not-implemented-create";
 
-export const OrderCreate = () => (
+const OrderCreate = () => (
   <NotImplementedCreate
     feature="Order creation"
     title="Create Order"
@@ -23,3 +23,5 @@ export const OrderCreate = () => (
     ]}
   />
 );
+
+export default OrderCreate;

@@ -1,3 +1,4 @@
+import { viewPreloader } from "@/lib/config/lazy-view";
 import { findCollection } from "@/lib/config/navigation";
 import { getConfig } from "@/server/get-config";
 import { useNavigate } from "@tanstack/react-router";
@@ -26,6 +27,7 @@ export const useCollectionEditAction = (slug: string) => {
             {
               label: edit.label ?? "Edit",
               icon: editActionIcon,
+              preload: () => void viewPreloader(edit.view)?.(),
               onSelect: () =>
                 void navigate({
                   to: "/dashboard/$slug/$id/edit",

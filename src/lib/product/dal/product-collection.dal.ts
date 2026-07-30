@@ -132,6 +132,7 @@ export const productCollectionDal = {
         ...(data.description !== undefined
           ? { description: data.description }
           : {}),
+        ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
         updatedBy: data.updatedBy,
         updatedAt: new Date().toISOString(),
       })

@@ -17,7 +17,7 @@ export const PasswordInput = ({
   const handleOnShow = () => setShow((toggle) => !toggle);
 
   return (
-    <InputGroup className={cn("bg-background rounded-md-plus")}>
+    <InputGroup>
       <InputGroupInput
         {...props}
         className={cn(className)}

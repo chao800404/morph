@@ -1,4 +1,3 @@
-import { EmptyFileIcon } from "@/components/ui/icons/empty-file-icon";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
@@ -14,6 +13,10 @@ import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 import { CardWrapper } from "../card-wrapper";
 import { DataTablePagination } from "./data-table-pagination";
+import {
+  DataTableEmptyState,
+  DATA_TABLE_STATE_HEIGHT,
+} from "./data-table-empty-state";
 import { DataTableSearch } from "./data-table-search";
 import {
   DataTableSort,
@@ -237,11 +240,21 @@ export const DataTableCard = <TRow,>({
         />
       ) : null}
       {isPending ? (
-        <div className="flex items-center justify-center p-8">
+        <div
+          className={cn(
+            "flex items-center justify-center py-8",
+            DATA_TABLE_STATE_HEIGHT.noRecords,
+          )}
+        >
           <Spinner />
         </div>
       ) : errorMessage ? (
-        <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-3 px-8 py-8 text-center",
+            DATA_TABLE_STATE_HEIGHT.noRecords,
+          )}
+        >
           <p className="text-sm text-destructive">{errorMessage}</p>
           {onRetry && (
             <Button variant="outline" size="sm" onClick={onRetry}>
@@ -250,18 +263,11 @@ export const DataTableCard = <TRow,>({
           )}
         </div>
       ) : rows.length === 0 ? (
-        <div className="flex flex-col items-center justify-center p-8 text-center">
-          <div className="flex flex-col items-center gap-3 opacity-70">
-            <EmptyFileIcon />
-            <h3 className="mt-2 text-lg font-medium text-foreground">
-              {emptyTitle}
-            </h3>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              {emptyDescription}
-            </p>
-            {headerActions && <div className="mt-4">{headerActions}</div>}
-          </div>
-        </div>
+        <DataTableEmptyState
+          title={emptyTitle}
+          description={emptyDescription}
+          action={headerActions}
+        />
       ) : (
         <>
           <TableViewport>{table}</TableViewport>

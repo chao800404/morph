@@ -164,6 +164,7 @@ export const updateProductOption = createServerFn({ method: "POST" })
       await productOptionDal.update(data.id, {
         title: data.title,
         values: data.values,
+        metadata: data.metadata,
         updatedBy: actorId,
       });
 

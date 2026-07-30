@@ -6,6 +6,16 @@ vi.mock("../folder-select/folder-select", () => ({
   FolderSelectField: () => null,
 }));
 
+// Both reach a server function, whose module graph ends at `cloudflare:workers`
+// and cannot be loaded under jsdom. Neither field is what these tests assert on.
+vi.mock("@/server/asset/create-items.serverFn", () => ({
+  createItems: vi.fn(),
+}));
+vi.mock("./asset-library-panel", () => ({ AssetLibraryPanel: () => null }));
+vi.mock("@queries/asset.queries", () => ({
+  assetQueries: { all: () => ["assets"] },
+}));
+
 describe("FieldsRenderer switch and tip fields", () => {
   it("emits a boolean from the shared switch field", () => {
     const onChange = vi.fn();
@@ -103,5 +113,70 @@ describe("FieldsRenderer error", () => {
     expect(input.hasAttribute("aria-invalid")).toBe(false);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByText("Shown on the storefront")).toBeDefined();
+  });
+});
+
+describe("FieldsRenderer input affixes", () => {
+  it("shows the prefix without putting it in the submitted value", () => {
+    // The affix is decoration. If it ever became part of the input's value the
+    // server would store "//winter-jacket" as the handle.
+    render(
+      <FieldsRenderer
+        fields={[
+          {
+            type: "input",
+            name: "handle",
+            label: "Handle",
+            prefix: "/",
+            value: "winter-jacket",
+          },
+        ]}
+      />,
+    );
+
+    const input = screen.getByLabelText("Handle") as HTMLInputElement;
+
+    expect(input.value).toBe("winter-jacket");
+    expect(screen.getByText("/")).toBeDefined();
+  });
+
+  it("still reports changes through the field name when affixed", () => {
+    const onChange = vi.fn();
+
+    render(
+      <FieldsRenderer
+        fields={[
+          { type: "input", name: "handle", label: "Handle", prefix: "/" },
+        ]}
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Handle"), {
+      target: { value: "summer" },
+    });
+
+    expect(onChange).toHaveBeenCalledWith("handle", "summer");
+  });
+
+  it("exposes the label hint to keyboard users", () => {
+    render(
+      <FieldsRenderer
+        fields={[
+          {
+            type: "input",
+            name: "handle",
+            label: "Handle",
+            labelHint: "Part of the storefront URL.",
+          },
+        ]}
+      />,
+    );
+
+    // A focusable trigger, not a bare icon — otherwise the explanation is
+    // reachable only with a mouse.
+    expect(
+      screen.getByRole("button", { name: "About Handle" }),
+    ).toBeDefined();
   });
 });

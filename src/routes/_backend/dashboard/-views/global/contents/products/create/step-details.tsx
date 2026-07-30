@@ -1,4 +1,9 @@
+import { handleField } from "@/components/form/handle-field";
 import { createSurface } from "@/components/dialog/create-surface";
+import {
+  parseSelectedAssets,
+  serializeSelectedAssets,
+} from "@/components/form/asset-select-field";
 import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { cn } from "@/lib/utils";
 import type { FormField, FormFieldValue } from "@/lib/validations/form";
@@ -49,15 +54,7 @@ export const StepDetails = ({
       value: draft.subtitle,
       colSpan: 1,
     },
-    {
-      type: "input",
-      name: "handle",
-      label: "Handle",
-      placeholder: "Derived from the title",
-      optional: true,
-      value: draft.handle,
-      colSpan: 1,
-    },
+    handleField({ derivedFrom: "title", value: draft.handle, colSpan: 1 }),
     {
       type: "textarea",
       name: "description",
@@ -67,6 +64,19 @@ export const StepDetails = ({
       rows: 4,
       colSpan: 1,
       className: "sm:col-span-3",
+    },
+  ];
+
+  const mediaFields: FormField[] = [
+    {
+      type: "asset-select",
+      name: "assets",
+      label: "Media",
+      optional: true,
+      labelHint:
+        "Images are stored in the asset library, so the same image can be reused across products.",
+      value: serializeSelectedAssets(draft.assets),
+      colSpan: 1,
     },
   ];
 
@@ -89,6 +99,11 @@ export const StepDetails = ({
     dispatch({ type: "setField", field: name, value });
   };
 
+  const handleMediaChange = (name: string, value: FormFieldValue | File[]) => {
+    if (name !== "assets" || typeof value !== "string") return;
+    dispatch({ type: "setAssets", assets: parseSelectedAssets(value) });
+  };
+
   const handleVariantChange = (
     name: string,
     value: FormFieldValue | File[],
@@ -106,6 +121,17 @@ export const StepDetails = ({
           fields={generalFields}
           className="grid-cols-1 sm:grid-cols-3"
           onChange={handleGeneralChange}
+        />
+      </section>
+
+      {/* No section heading: the field's own label already says "Media", and it
+          is the only field here. General and Variants keep theirs because they
+          hold several fields that need a name above them. */}
+      <section className="flex flex-col gap-4">
+        <FieldsRenderer
+          fields={mediaFields}
+          className="grid-cols-1"
+          onChange={handleMediaChange}
         />
       </section>
 

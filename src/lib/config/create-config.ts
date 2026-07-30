@@ -94,6 +94,27 @@ export interface CollectionCreate {
  * flat: a nested collection at `/dashboard/products/options` would make
  * `/dashboard/products/<id>` ambiguous.
  */
+/**
+ * A page hanging off a record, at `/dashboard/<slug>/<id>/<key>`.
+ *
+ * Named capabilities cover the pages the framework itself participates in — it
+ * renders the Create button, resolves the Edit row action, decides where a form
+ * closes to. `pages` is the rest: metadata, an assignment screen, a reordering
+ * tool. The framework only mounts them; what they mean is the view's business,
+ * so they are a uniform map rather than more named keys.
+ *
+ * This is the shape Medusa's route map has — a flat list of path/component
+ * pairs — kept for the pages that need no interpretation, while the five the
+ * framework must recognise stay named and typed.
+ */
+export interface CollectionSubPage {
+  view: ComponentType;
+  /** Suspense fallback while `view` loads. */
+  pendingView?: ComponentType;
+  /** Start priming this page's query cache before rendering it. */
+  prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
+}
+
 export interface CollectionDetail {
   view: ComponentType;
   /** Suspense fallback while `view` loads. */
@@ -152,6 +173,18 @@ export interface CollectionItem {
   preview?: CollectionPreview;
   detail?: CollectionDetail;
   edit?: CollectionEdit;
+  /**
+   * Extra pages for a single record, keyed by their URL segment.
+   *
+   * Record-level like `edit`, not nested under `detail`: a collection can have
+   * sub-pages without a detail page. Assets is exactly that — it has `edit` and
+   * no `detail`.
+   *
+   * `edit` is not among them; it is a named capability because the framework
+   * needs to know it exists to render the Edit action and to decide where a
+   * closing form returns to.
+   */
+  pages?: Record<string, CollectionSubPage>;
   items?: {
     title: string;
     slug: string;
@@ -161,6 +194,7 @@ export interface CollectionItem {
     preview?: CollectionPreview;
     detail?: CollectionDetail;
     edit?: CollectionEdit;
+    pages?: Record<string, CollectionSubPage>;
   }[];
 }
 
