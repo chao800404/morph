@@ -4,12 +4,19 @@ import {
 } from "@/components/ui/shadcn-io/dropzone";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { AssetSelectFormField } from "@/lib/validations/form";
 import { useQueryClient } from "@tanstack/react-query";
+import { Star } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { toast } from "sonner";
-import { AssetTile, type SelectedAsset } from "./asset-tile";
+import type { SelectedAsset } from "@/components/asset/asset-tile";
+import { SortableAssetGrid } from "@/components/asset/sortable-asset-grid";
 
 /**
  * Loaded on demand, for two reasons that point the same way: the Library tab is
@@ -40,6 +47,10 @@ const AssetLibraryPanel = lazy(() =>
  * The value travels as a JSON string, the same transport `metadata` uses:
  * `FormFieldValue` has no object member, and a tile needs the name and url, not
  * just the id.
+ *
+ * Order is part of the value. The server writes it as `rank` and takes the
+ * first entry as the record's thumbnail, so dragging an image to the front is
+ * how the thumbnail is chosen — there is no separate control for it.
  */
 
 export const parseSelectedAssets = (value: string): SelectedAsset[] => {
@@ -151,17 +162,27 @@ export const AssetSelectField = ({
       <input type="hidden" name={field.name} value={value} />
 
       {selected.length > 0 ? (
-        <div className="grid grid-cols-6 gap-2">
-          {selected.map((asset) => (
-            <AssetTile
-              key={asset.id}
-              asset={asset}
-              onRemove={() =>
-                commit(selected.filter((item) => item.id !== asset.id))
-              }
-            />
-          ))}
-        </div>
+        <SortableAssetGrid
+          assets={selected}
+          onReorder={commit}
+          onRemove={(asset) =>
+            commit(selected.filter((item) => item.id !== asset.id))
+          }
+          renderBadge={(_asset, index) =>
+            index === 0 ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                    <Star className="size-3 fill-current" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Thumbnail — drag another image here to change it
+                </TooltipContent>
+              </Tooltip>
+            ) : null
+          }
+        />
       ) : null}
 
       <Tabs defaultValue="upload">

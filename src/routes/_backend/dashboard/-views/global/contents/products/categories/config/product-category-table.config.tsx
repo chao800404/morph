@@ -1,4 +1,4 @@
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
 import type { ProductCategoryListItemDTO } from "@/lib/product/dto/product-taxonomy.dto";
 import type {
   DataTableColumn,
@@ -45,9 +45,9 @@ export const PRODUCT_CATEGORY_COLUMNS = [
     header: "Status",
     className: "w-32",
     cell: (category) => (
-      <Badge variant={category.isActive ? "default" : "secondary"}>
+      <StatusBadge variant="plain" color={category.isActive ? "green" : "grey"}>
         {category.isActive ? "Active" : "Inactive"}
-      </Badge>
+      </StatusBadge>
     ),
   },
   {
@@ -55,9 +55,9 @@ export const PRODUCT_CATEGORY_COLUMNS = [
     header: "Visibility",
     className: "w-32",
     cell: (category) => (
-      <Badge variant={category.isInternal ? "outline" : "secondary"}>
+      <StatusBadge variant="plain" color={category.isInternal ? "grey" : "green"}>
         {category.isInternal ? "Internal" : "Public"}
-      </Badge>
+      </StatusBadge>
     ),
   },
 ] satisfies DataTableColumn<ProductCategoryListItemDTO>[];

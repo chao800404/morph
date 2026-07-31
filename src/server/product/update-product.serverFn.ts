@@ -60,7 +60,6 @@ export const updateProduct = createServerFn({ method: "POST" })
         collectionId: data.collectionId,
         typeId,
         discountable: data.discountable,
-        thumbnailAssetId: data.thumbnailAssetId,
         metadata: data.metadata,
         updatedBy: actorId,
       });

@@ -52,6 +52,10 @@ const PRODUCT_LINK_COLUMNS = 2;
 const mapFirst = (rows: ProductRow[]): ProductDTO | null =>
   rows.length > 0 ? toProductDTO(rows[0]) : null;
 
+/** The gallery's lead image, which is what the thumbnail always is. */
+export const thumbnailOf = (assetIds: string[]): string | null =>
+  assetIds[0] ?? null;
+
 export const productDal = {
   async findById(id: string): Promise<ProductDTO | null> {
     const db = await getDb();
@@ -461,6 +465,15 @@ export const productDal = {
     for (const group of chunkForInsert(rows, PRODUCT_ASSET_COLUMNS)) {
       await db.insert(productAssets).values(group);
     }
+
+    // The thumbnail is the first image, and it is derived here rather than by
+    // each caller: the two that existed both computed `assetIds[0]`, and the
+    // third would have been the one that forgot. Kept as a column instead of a
+    // join at read time because the storefront reads it on every product.
+    await db
+      .update(products)
+      .set({ thumbnailAssetId: thumbnailOf(assetIds) })
+      .where(eq(products.id, productId));
   },
 
   /** Replace the product's tags. Ids are assumed to exist. */

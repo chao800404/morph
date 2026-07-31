@@ -68,6 +68,14 @@ export const Contents = {
             () => import("@views/global/contents/products/detail/product-media"),
           ),
         },
+        // Which variant is `?variantId`: the page names the surface, the search
+        // param names the record inside it.
+        variant: {
+          view: lazyView(
+            () =>
+              import("@views/global/contents/products/detail/product-variant"),
+          ),
+        },
         metadata: {
           view: lazyView(
             () =>

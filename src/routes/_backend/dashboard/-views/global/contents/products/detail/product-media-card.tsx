@@ -1,3 +1,5 @@
+import { AssetGrid } from "@/components/asset/asset-grid";
+import { AssetTile } from "@/components/asset/asset-tile";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -6,16 +8,21 @@ import {
 } from "@/components/ui/tooltip";
 import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
+import { EditCardHeader } from "@/routes/_backend/dashboard/-components/edit-card/edit-card-header";
 import { Star } from "lucide-react";
 
 /**
  * The product's gallery.
  *
  * Not an `EditCard`: that renders label/value rows, and images are a grid. The
- * card shell is still the shared one, so only the grid is local.
+ * card shell, the `…` menu and the tiles are all the shared ones, so only the
+ * grid's column rule is local.
  *
  * The thumbnail is marked rather than pulled out into its own card — it is one
  * of these images, and showing it twice would suggest a separate upload.
+ *
+ * `CardContent` carries no padding of its own, so the grid supplies it; without
+ * the top value the first row sits on the header's divider.
  */
 export const ProductMediaCard = ({
   product,
@@ -27,11 +34,7 @@ export const ProductMediaCard = ({
   <CardWrapper
     id="product-media"
     label="Media"
-    headerButton={
-      <Button variant="form" size="xs" onClick={onEdit}>
-        Edit
-      </Button>
-    }
+    headerButton={<EditCardHeader onClickEdit={onEdit} />}
   >
     {product.assets.length === 0 ? (
       <div className="flex flex-col items-center gap-3 px-6 pb-8 pt-2 text-center">
@@ -46,31 +49,28 @@ export const ProductMediaCard = ({
         </Button>
       </div>
     ) : (
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-4 px-6 pb-6">
-        {product.assets.map((asset) => (
-          <div
+      <AssetGrid className="p-6">
+        {product.assets.map((asset, index) => (
+          <AssetTile
             key={asset.id}
-            className="relative aspect-square overflow-hidden rounded-md-plus border bg-background"
-          >
-            <img
-              src={asset.url}
-              alt={asset.name}
-              loading="lazy"
-              className="size-full object-cover"
-            />
-            {asset.id === product.thumbnailAssetId ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="absolute left-2 top-2 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
-                    <Star className="size-3 fill-current" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>Thumbnail</TooltipContent>
-              </Tooltip>
-            ) : null}
-          </div>
+            asset={asset}
+            badge={
+              // First by rank, which is what the thumbnail is. Reordering
+              // happens in the editor, so this card only reports it.
+              index === 0 ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                      <Star className="size-3 fill-current" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>Thumbnail</TooltipContent>
+                </Tooltip>
+              ) : null
+            }
+          />
         ))}
-      </div>
+      </AssetGrid>
     )}
   </CardWrapper>
 );

@@ -11,8 +11,9 @@ import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
  * card is read-only until a variant-level editor exists, because editing them
  * here without showing which variants override them would be misleading.
  */
+/** `EditCard` renders its own placeholder when a row has nothing to show. */
 const measurement = (value: number | null, unit: string) =>
-  value === null ? "—" : `${value} ${unit}`;
+  value === null ? undefined : `${value} ${unit}`;
 
 export const ProductAttributesCard = ({
   product,
@@ -24,12 +25,12 @@ export const ProductAttributesCard = ({
     { key: "width", label: "Width", displayValue: measurement(product.width, "mm") },
     { key: "length", label: "Length", displayValue: measurement(product.length, "mm") },
     { key: "weight", label: "Weight", displayValue: measurement(product.weight, "g") },
-    { key: "midCode", label: "MID code", displayValue: product.midCode || "—" },
-    { key: "hsCode", label: "HS code", displayValue: product.hsCode || "—" },
+    { key: "midCode", label: "MID code", displayValue: product.midCode || undefined },
+    { key: "hsCode", label: "HS code", displayValue: product.hsCode || undefined },
     {
       key: "originCountry",
       label: "Country of origin",
-      displayValue: product.originCountry || "—",
+      displayValue: product.originCountry || undefined,
     },
   ];
 

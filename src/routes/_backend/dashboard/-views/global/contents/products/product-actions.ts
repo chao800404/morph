@@ -1,3 +1,4 @@
+import { deleteVariants, updateVariant } from "@/server/product/variants.serverFn";
 import type { AssetActionResult } from "@/lib/asset/action-result";
 import { createCollection, deleteCollections, updateCollection } from "@/server/product/collections.serverFn";
 import {
@@ -156,12 +157,9 @@ export const updateProductMediaAction = async ({
 
   return toActionResult(
     await updateProduct({
-      data: {
-        id,
-        assetIds,
-        // First image is the thumbnail, matching what the create wizard does.
-        thumbnailAssetId: assetIds[0] ?? null,
-      },
+      // The order is the payload: `setAssets` writes it as `rank` and takes
+      // the first entry as the thumbnail.
+      data: { id, assetIds },
     }),
   );
 };
@@ -480,4 +478,61 @@ export const updateProductMetadataAction = async ({
   if (!metadata) return METADATA_READ_ERROR;
 
   return toActionResult(await updateProduct({ data: { id, metadata } }));
+};
+
+/**
+ * One variant's own fields.
+ *
+ * Prices arrive as `price-<code>` keys in major units, because the form renders
+ * one field per store currency and `FormData` has no nested shape. A blank or
+ * zero field drops the currency rather than storing a free variant.
+ */
+export const updateVariantAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing variant ID" };
+  }
+
+  const prices: Array<{ currencyCode: string; amount: number }> = [];
+  for (const [key, value] of data.entries()) {
+    if (!key.startsWith("price-") || typeof value !== "string") continue;
+    const amount = Math.round(Number(value) * 100);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    prices.push({ currencyCode: key.slice("price-".length), amount });
+  }
+
+  const quantity = Number(text(data, "inventoryQuantity") ?? "0");
+
+  return toActionResult(
+    await updateVariant({
+      data: {
+        id,
+        title: text(data, "title"),
+        sku: text(data, "sku") ?? null,
+        // Unchecked switches submit nothing; this form always renders both.
+        manageInventory: data.get("manageInventory") === "on",
+        allowBackorder: data.get("allowBackorder") === "on",
+        inventoryQuantity: Number.isFinite(quantity)
+          ? Math.max(0, Math.floor(quantity))
+          : 0,
+        prices,
+      },
+    }),
+  );
+};
+
+export const deleteVariantsAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const ids = idList(data, "variantIds");
+  if (ids.length === 0) {
+    return { success: false, message: "No variants selected" };
+  }
+  return toActionResult(await deleteVariants({ data: { ids } }));
 };

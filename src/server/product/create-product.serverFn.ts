@@ -121,7 +121,6 @@ export const createProduct = createServerFn({ method: "POST" })
         collectionId: data.collectionId,
         typeId,
         discountable: data.discountable,
-        thumbnailAssetId: data.thumbnailAssetId,
         createdBy: actorId,
         updatedBy: actorId,
       });

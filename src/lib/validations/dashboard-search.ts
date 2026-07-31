@@ -52,6 +52,14 @@ export const dashboardSearchSchema = z.object({
    * author can start a product from the option's own page. Only a starting
    * point — the wizard's picker can still change it.
    */
+  /**
+   * Which variant the product's variant editor is opening.
+   *
+   * A `pages` key names the surface; this names the record inside it. The
+   * variant has no page of its own because it is only reachable from its
+   * product.
+   */
+  variantId: z.string().optional(),
   seedOptionId: z.string().optional(),
   /** Seeds the product create wizard with a category already assigned. */
   seedCategoryId: z.string().optional(),

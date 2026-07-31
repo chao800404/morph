@@ -1,9 +1,9 @@
-import { Badge } from "@/components/ui/badge";
 import {
   EditCard,
   type EditCardField,
 } from "@/routes/_backend/dashboard/-components/edit-card/edit-card";
 import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
+import { ProductStatusBadge } from "../components/product-status-badge";
 
 /**
  * The product's own fields, and its status.
@@ -11,12 +11,6 @@ import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
  * The card title is the product name, so this is the one place the record's
  * name appears on the page — the breadcrumb carries it everywhere else.
  */
-const STATUS_VARIANT = {
-  published: "default",
-  draft: "secondary",
-  archived: "outline",
-} as const;
-
 export const ProductGeneralCard = ({
   product,
   onEdit,
@@ -28,12 +22,12 @@ export const ProductGeneralCard = ({
     {
       key: "description",
       label: "Description",
-      displayValue: product.description || "—",
+      displayValue: product.description || undefined,
     },
     {
       key: "subtitle",
       label: "Subtitle",
-      displayValue: product.subtitle || "—",
+      displayValue: product.subtitle || undefined,
     },
     // Shown with the leading slash it takes in a storefront URL, matching the
     // handle field's own prefix.
@@ -41,7 +35,7 @@ export const ProductGeneralCard = ({
     {
       key: "material",
       label: "Material",
-      displayValue: product.material || "—",
+      displayValue: product.material || undefined,
     },
     {
       key: "discountable",
@@ -56,9 +50,7 @@ export const ProductGeneralCard = ({
       title={product.title}
       fields={fields}
       onEdit={onEdit}
-      headerActions={
-        <Badge variant={STATUS_VARIANT[product.status]}>{product.status}</Badge>
-      }
+      headerActions={<ProductStatusBadge status={product.status} />}
     />
   );
 };

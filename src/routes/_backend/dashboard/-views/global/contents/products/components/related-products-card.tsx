@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { findCollection } from "@/lib/config/navigation";
 import type { ProductDTO } from "@/lib/product/dto/product.dto";
@@ -17,6 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useCallback, useMemo } from "react";
+import { ProductStatusBadge } from "./product-status-badge";
 
 /**
  * The products belonging to another record — an option, a category, later a
@@ -30,12 +30,6 @@ import { useCallback, useMemo } from "react";
  * module does not exist here yet; an empty column would imply missing data
  * rather than a missing feature.
  */
-const STATUS_VARIANT = {
-  published: "default",
-  draft: "secondary",
-  archived: "outline",
-} as const;
-
 const COLUMNS = [
   {
     key: "title",
@@ -54,7 +48,7 @@ const COLUMNS = [
     header: "Status",
     className: "w-32",
     cell: (product) => (
-      <Badge variant={STATUS_VARIANT[product.status]}>{product.status}</Badge>
+      <ProductStatusBadge status={product.status} variant="plain" />
     ),
   },
 ] satisfies DataTableColumn<ProductDTO>[];

@@ -282,6 +282,15 @@ Cannot access 'xxxServerFn' before initialization
   - 不可同時傳兩者，那會讓同一筆記錄有兩條編輯路徑 —— 正是 capability 契約禁止的事。
 - 狀態徽章之類的 header 裝飾走 `headerActions`，排在 `…` 之前；不要為了放徽章而在卡片外面另外做一列標題。
 
+### 縮圖是圖庫的第一張，由 DAL 推導
+
+- `products.thumbnailAssetId` 與 `productVariants.thumbnailAssetId` **不是客戶端可以指定的欄位**，它們已經從 `updateProductInputSchema`／`createProductInputSchema` 移除。想換縮圖就把那張圖拖到第一個。
+- 推導寫在 `productDal.setAssets()` 裡，跟 `rank` 同一次寫入。**不可在呼叫端算 `assetIds[0]`** —— 這條規則的由來就是它曾經被複製在建立精靈和 Media 編輯兩個地方，第三條寫入路徑（variant 圖片、匯入）遲早會忘掉其中一個。
+- 這跟 Medusa 不同是有原因的：Medusa 的 `thumbnail` 是裸 URL，可以是不在 gallery 裡的圖，所以它必須是獨立欄位。我們的 schema 把它做成 `assets.id` 的外鍵，縮圖本來就一定是 gallery 的一員，用順序表達就少一個概念。
+- 欄位保留而不是每次 join 取 rank 0：前台每一筆商品都會讀它。它是衍生資料，但衍生的地方只有一處。
+- 圖片排序一律使用 `components/asset/sortable-asset-grid` 的 `SortableAssetGrid`，排序邏輯用 `reorderAssets()`。往前拖與往後拖落點不同，那是它有測試的原因。
+- **排序只在編輯介面提供**。詳情頁的 Media 卡是唯讀的，跟同頁其他卡片一致；它只用第一格的徽章「回報」目前的縮圖。
+
 ### Metadata 是公開的逃生口，不是私密欄位
 
 - `metadata` 存的是核心 schema 沒有建模、由商店自行定義的 key/value。它的設計目的就是**跨到前台** —— Medusa 的 store API 對 product-categories 預設就吐 metadata，products 雖不在預設欄位裡但也不在 `disallowedStoreFields`，前台可用 `?fields=+metadata` 取得。因此**絕不可放 API key、成本價、合約條款或任何個資**。

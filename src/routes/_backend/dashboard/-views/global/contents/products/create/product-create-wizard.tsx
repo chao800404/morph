@@ -142,11 +142,9 @@ const ProductCreateWizard = () => {
             typeValue: draft.typeValue.trim() || null,
             tagValues: draft.tagValues,
             categoryIds: draft.categoryIds,
+            // Order matters: the first image becomes the thumbnail, derived
+            // server-side by `setAssets`.
             assetIds: draft.assets.map((asset) => asset.id),
-            // The first image is the thumbnail until a dedicated picker exists;
-            // a product with a gallery and no thumbnail shows a placeholder in
-            // every list.
-            thumbnailAssetId: draft.assets[0]?.id ?? null,
             discountable: draft.discountable,
             options,
             prices: draft.hasVariants ? [] : buildPrices(draft.defaultPrices),

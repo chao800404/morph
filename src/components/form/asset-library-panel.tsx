@@ -4,6 +4,7 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group";
+import { focusRing } from "@/components/ui/field-control";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { assetQueries } from "@queries/asset.queries";
@@ -12,7 +13,8 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Folder, Search } from "lucide-react";
 import { useState } from "react";
 import { useDebouncedCallback } from "use-debounce";
-import { AssetTile, type SelectedAsset } from "./asset-tile";
+import { AssetGrid } from "@/components/asset/asset-grid";
+import { AssetTile, type SelectedAsset } from "@/components/asset/asset-tile";
 
 /**
  * Browse the asset library and pick from it.
@@ -130,7 +132,11 @@ export const AssetLibraryPanel = ({
                     key={folder.id}
                     type="button"
                     onClick={() => openFolder(String(folder.id))}
-                    className="flex h-9 w-full items-center gap-2 rounded-md-plus border border-dashed px-3 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                    className={cn(
+                      "flex h-9 w-full items-center gap-2 rounded-md-plus border border-dashed px-3",
+                      "text-left text-sm text-muted-foreground transition-colors hover:bg-muted/50",
+                      focusRing,
+                    )}
                   >
                     <Folder className="size-4 shrink-0" />
                     <span className="min-w-0 flex-1 truncate">
@@ -142,7 +148,7 @@ export const AssetLibraryPanel = ({
               </div>
             ) : null}
 
-            <div className="grid grid-cols-4 gap-2">
+            <AssetGrid>
               {assets.map((asset) => {
                 const isSelected = selected.has(String(asset.id));
                 return (
@@ -165,7 +171,7 @@ export const AssetLibraryPanel = ({
                   />
                 );
               })}
-            </div>
+            </AssetGrid>
           </div>
         )}
       </div>

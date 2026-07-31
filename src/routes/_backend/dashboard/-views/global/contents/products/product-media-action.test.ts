@@ -16,6 +16,10 @@ vi.mock("@/server/product/categories.serverFn", () => ({
   deleteProductCategories: vi.fn(),
   updateProductCategory: vi.fn(),
 }));
+vi.mock("@/server/product/variants.serverFn", () => ({
+  updateVariant: vi.fn(),
+  deleteVariants: vi.fn(),
+}));
 vi.mock("@/server/product/options.serverFn", () => ({
   createProductOption: vi.fn(),
   deleteProductOptions: vi.fn(),
@@ -34,7 +38,9 @@ const formWith = (assets: string) => {
 describe("updateProductMediaAction", () => {
   beforeEach(() => updateProduct.mockClear());
 
-  it("submits ids in order and makes the first one the thumbnail", async () => {
+  it("submits the ids in the order the author arranged them", async () => {
+    // Order is the payload: the server writes it as `rank` and derives the
+    // thumbnail from the first entry, so a set would lose the thumbnail.
     await updateProductMediaAction({
       data: formWith(
         JSON.stringify([
@@ -45,21 +51,17 @@ describe("updateProductMediaAction", () => {
     });
 
     expect(updateProduct).toHaveBeenCalledWith({
-      data: {
-        id: "prod_1",
-        assetIds: ["a1", "a2"],
-        thumbnailAssetId: "a1",
-      },
+      data: { id: "prod_1", assetIds: ["a1", "a2"] },
     });
   });
 
-  it("clears the gallery and the thumbnail when every image is removed", async () => {
+  it("clears the gallery when every image is removed", async () => {
     // Empty must reach the server as an empty list, not as "leave alone" —
     // otherwise removing the last image silently does nothing.
     await updateProductMediaAction({ data: formWith("[]") });
 
     expect(updateProduct).toHaveBeenCalledWith({
-      data: { id: "prod_1", assetIds: [], thumbnailAssetId: null },
+      data: { id: "prod_1", assetIds: [] },
     });
   });
 

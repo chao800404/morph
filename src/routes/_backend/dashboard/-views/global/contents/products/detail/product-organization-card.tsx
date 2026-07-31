@@ -21,12 +21,11 @@ const LinkedBadge = ({ to, children }: { to: string; children: ReactNode }) => (
   </Badge>
 );
 
-const emptyOr = (nodes: ReactNode[]): ReactNode =>
+/** Undefined rather than a dash: the empty row belongs to `EditCard`. */
+const badgeRow = (nodes: ReactNode[]): ReactNode =>
   nodes.length > 0 ? (
     <div className="flex flex-wrap justify-end gap-1">{nodes}</div>
-  ) : (
-    "—"
-  );
+  ) : undefined;
 
 export const ProductOrganizationCard = ({
   product,
@@ -39,7 +38,7 @@ export const ProductOrganizationCard = ({
     {
       key: "tags",
       label: "Tags",
-      displayValue: emptyOr(
+      displayValue: badgeRow(
         product.tags.map((tag) => (
           <Badge key={tag.id} variant="secondary">
             {tag.value}
@@ -52,9 +51,7 @@ export const ProductOrganizationCard = ({
       label: "Type",
       displayValue: product.typeValue ? (
         <Badge variant="secondary">{product.typeValue}</Badge>
-      ) : (
-        "—"
-      ),
+      ) : undefined,
     },
     {
       key: "collection",
@@ -64,14 +61,12 @@ export const ProductOrganizationCard = ({
           <LinkedBadge to={`/dashboard/collections/${product.collectionId}`}>
             {product.collectionTitle}
           </LinkedBadge>
-        ) : (
-          "—"
-        ),
+        ) : undefined,
     },
     {
       key: "categories",
       label: "Categories",
-      displayValue: emptyOr(
+      displayValue: badgeRow(
         product.categories.map((category) => (
           <LinkedBadge
             key={category.id}

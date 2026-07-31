@@ -161,7 +161,8 @@ export const createProductInputSchema = z.object({
   tagValues: productTagValuesSchema,
   categoryIds: z.array(z.uuid()).max(20).default([]),
   discountable: z.boolean().default(true),
-  thumbnailAssetId: z.uuid().nullish(),
+  // No `thumbnailAssetId`: it is the first entry of `assetIds`, derived by the
+  // DAL so every write path agrees.
   assetIds: z.array(z.uuid()).max(50).default([]),
   options: z.array(productOptionSelectionInputSchema).max(3).default([]),
   /** Prices applied to every generated variant when `variants` is omitted. */
@@ -186,7 +187,6 @@ export const updateProductInputSchema = z.object({
   tagValues: productTagValuesSchema.optional(),
   categoryIds: z.array(z.uuid()).max(20).optional(),
   discountable: z.boolean().optional(),
-  thumbnailAssetId: z.uuid().nullish(),
   assetIds: z.array(z.uuid()).max(50).optional(),
   metadata: metadataInputSchema.optional(),
 });

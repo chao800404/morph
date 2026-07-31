@@ -1,168 +1,202 @@
-import {
-  Table,
-  TableBody,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
-import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
-import { productQueries } from "@queries/product.queries";
+import type { ProductVariantDTO } from "@/lib/product/dto/product-variant.dto";
 import {
-  deleteVariants,
-  updateVariant,
-} from "@/server/product/variants.serverFn";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { toast } from "sonner";
-import { VariantRow, toMinor, type VariantEdit } from "./variant-row";
+  filterVariants,
+  paginateVariants,
+  sortVariants,
+  variantOptionValue,
+  VARIANT_PAGE_SIZE,
+  type VariantSortKey,
+} from "@/lib/product/variant-table";
+import type { DashboardSearch } from "@/lib/validations/dashboard-search";
+import {
+  DataTableCard,
+  deleteActionIcon,
+  editActionIcon,
+  type DataTableColumn,
+  type DataTableSortOption,
+} from "@/routes/_backend/dashboard/-components/data-table-card";
+import { useInfoStore } from "@views/features/global-info/use-info-store";
+import { productQueries } from "@queries/product.queries";
+import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { ImageIcon } from "lucide-react";
+import { useCallback, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { deleteVariantsAction } from "../product-actions";
 
 /**
- * The variant matrix, editable in place.
+ * The variant matrix, as a list.
  *
- * This is the page's reason for existing: before it, a variant's price, stock
- * and SKU were fixed at creation and could only be changed by deleting the
- * product and building it again. Medusa puts variants in a paginated data
- * table; here the rows are the editor, so they stay on one page.
+ * Same shape as Medusa's: a thumbnail cell, the identifying columns, one column
+ * per option axis, inventory, and a row menu. Editing is a route rather than
+ * inline fields — a variant carries prices per currency, and a row wide enough
+ * for those stops being readable.
+ *
+ * Paged in the browser, not by the server: `findDetail` already returns every
+ * variant with the product, so a request per page would re-fetch data that is
+ * in hand. The page still lives in `?page` so it survives a refresh.
  */
+const SORT_OPTIONS = [
+  { value: "name", label: "Title" },
+  { value: "createdAt", label: "Created" },
+  { value: "updatedAt", label: "Updated" },
+] satisfies DataTableSortOption[];
+
+const isVariantSortKey = (value: unknown): value is VariantSortKey =>
+  value === "name" || value === "createdAt" || value === "updatedAt";
+
+const inventoryLabel = (variant: ProductVariantDTO): string => {
+  if (!variant.manageInventory) return "Not tracked";
+  // Medusa says "at 1 location" here; stock locations are not modelled in this
+  // catalogue, and naming one would imply a feature that does not exist.
+  return `${variant.inventoryQuantity} available`;
+};
+
 export const ProductVariantsCard = ({
   product,
 }: {
   product: ProductDetailDTO;
 }) => {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const search = useSearch({ strict: false }) as DashboardSearch;
 
-  // Which row is mid-request, so only that row shows a spinner.
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  const refresh = () =>
-    queryClient.invalidateQueries({ queryKey: productQueries.all() });
-
-  const save = useMutation({
-    mutationFn: async ({
-      variantId,
-      edit,
-    }: {
-      variantId: string;
-      edit: VariantEdit;
-    }) =>
-      updateVariant({
-        data: {
-          id: variantId,
-          title: edit.title.trim(),
-          sku: edit.sku.trim() || null,
-          manageInventory: edit.manageInventory,
-          allowBackorder: edit.allowBackorder,
-          inventoryQuantity: Math.max(
-            0,
-            Math.floor(Number(edit.inventoryQuantity) || 0),
-          ),
-          prices: Object.entries(edit.prices)
-            .map(([currencyCode, value]) => ({
-              currencyCode,
-              amount: toMinor(value),
-            }))
-            .filter((price) => price.amount > 0),
-        },
-      }),
-    onSettled: () => setBusyId(null),
-    onSuccess: async (response) => {
-      if (!response.success) {
-        toast.error(response.message, { position: "top-center" });
-        return;
-      }
-      await refresh();
-      toast.success("Variant updated", { position: "top-center" });
-    },
-    onError: (error: Error) =>
-      toast.error(error.message, { position: "top-center" }),
-  });
-
-  const remove = useMutation({
-    mutationFn: async (variantId: string) =>
-      deleteVariants({ data: { ids: [variantId] } }),
-    onSettled: () => setDeletingId(null),
-    onSuccess: async (response) => {
-      if (!response.success) {
-        toast.error(response.message, { position: "top-center" });
-        return;
-      }
-      await refresh();
-      toast.success("Variant deleted", { position: "top-center" });
-    },
-    onError: (error: Error) =>
-      toast.error(error.message, { position: "top-center" }),
-  });
-
-  // Every currency any variant is priced in, so a variant missing one still
-  // gets an empty field to fill rather than silently having no column.
-  const currencies = [
-    ...new Set(
-      product.variants.flatMap((variant) =>
-        variant.prices.map((price) => price.currencyCode),
+  const columns = useMemo<DataTableColumn<ProductVariantDTO>[]>(
+    () => [
+      {
+        key: "thumbnail",
+        header: "",
+        className: "w-10 text-muted-foreground",
+        // Variant-level images are a separate link table that this page does
+        // not load yet, so every row shows the placeholder.
+        cell: () => <ImageIcon className="size-4" aria-hidden />,
+      },
+      {
+        key: "title",
+        header: "Title",
+        className: "font-medium",
+        cell: (variant) => variant.title,
+      },
+      {
+        key: "sku",
+        header: "SKU",
+        className: "text-muted-foreground",
+        cell: (variant) => variant.sku || "—",
+      },
+      ...product.options.map(
+        (option): DataTableColumn<ProductVariantDTO> => ({
+          key: `option-${option.id}`,
+          header: option.title,
+          cell: (variant) => {
+            const value = variantOptionValue(variant, option);
+            return value ? <Badge variant="secondary">{value}</Badge> : "—";
+          },
+        }),
       ),
-    ),
-  ].sort();
+      {
+        key: "inventory",
+        header: "Inventory",
+        className: "text-muted-foreground",
+        cell: inventoryLabel,
+      },
+    ],
+    [product.options],
+  );
+
+  const { setInfoData, setOpen: setInfoOpen } = useInfoStore(
+    useShallow((state) => ({
+      setInfoData: state.setInfoData,
+      setOpen: state.setOpen,
+    })),
+  );
+
+  // Deleting goes through the shared confirmation, like every other delete in
+  // the dashboard: a variant takes its prices and stock with it, and the row
+  // menu is one slip away from the Edit item directly above.
+  const confirmDelete = useCallback(
+    (variantId: string, title: string) => {
+      setInfoData({
+        title: "Delete Variant",
+        description: `Are you sure you want to delete "${title}"? Its prices and stock go with it. This action cannot be undone.`,
+        fields: [
+          {
+            type: "hidden",
+            name: "variantIds",
+            value: JSON.stringify([variantId]),
+          },
+        ],
+        action: deleteVariantsAction,
+        confirmLabel: "Delete",
+        confirmVariant: "destructive",
+        onSuccess: () => {
+          void queryClient.invalidateQueries({
+            queryKey: productQueries.all(),
+          });
+        },
+      });
+      setInfoOpen(true);
+    },
+    [queryClient, setInfoData, setInfoOpen],
+  );
+
+  const openVariant = useCallback(
+    (variantId: string) =>
+      void navigate({
+        to: "/dashboard/$slug/$id/$page",
+        params: { slug: "products", id: product.id, page: "variant" },
+        search: { variantId },
+      }),
+    [navigate, product.id],
+  );
+
+  // The shared sort control writes `?sortBy`/`?sortOrder`; both can be arrays
+  // once a second heading is selected, and only the first applies here.
+  const routeSortBy = Array.isArray(search.sortBy)
+    ? search.sortBy[0]
+    : search.sortBy;
+  const routeSortOrder = Array.isArray(search.sortOrder)
+    ? search.sortOrder[0]
+    : search.sortOrder;
+
+  const matching = sortVariants(
+    filterVariants(product.variants, search.q, product.options),
+    isVariantSortKey(routeSortBy) ? routeSortBy : "createdAt",
+    routeSortOrder === "asc" ? "asc" : "desc",
+  );
+  const { rows, pagination } = paginateVariants(
+    matching,
+    search.page ?? 1,
+    VARIANT_PAGE_SIZE,
+  );
 
   return (
-    <CardWrapper
-      id="product-variants"
+    <DataTableCard
       label="Variants"
-      description={`${product.variants.length} variant${
-        product.variants.length === 1 ? "" : "s"
-      }. Changes are saved per row.`}
-    >
-      {product.variants.length === 0 ? (
-        <p className="px-6 pb-6 text-sm text-muted-foreground">
-          This product has no variants.
-        </p>
-      ) : (
-        <div className="overflow-x-auto px-6 pb-6">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="min-w-[180px]">Title</TableHead>
-                <TableHead className="min-w-[140px]">SKU</TableHead>
-                <TableHead className="w-32 text-center">
-                  Managed inventory
-                </TableHead>
-                <TableHead className="w-28 text-center">
-                  Allow backorder
-                </TableHead>
-                <TableHead className="w-28">Quantity</TableHead>
-                {currencies.map((currency) => (
-                  <TableHead key={currency} className="min-w-[120px]">
-                    Price {currency.toUpperCase()}
-                  </TableHead>
-                ))}
-                <TableHead className="w-24 pr-6" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {product.variants.map((variant) => (
-                <VariantRow
-                  // Remount when the server's copy changes, so the row's local
-                  // edits reset to what was actually saved.
-                  key={`${variant.id}-${variant.updatedAt}`}
-                  variant={variant}
-                  currencies={currencies}
-                  isSaving={busyId === variant.id}
-                  isDeleting={deletingId === variant.id}
-                  onSave={(edit) => {
-                    setBusyId(variant.id);
-                    save.mutate({ variantId: variant.id, edit });
-                  }}
-                  onDelete={() => {
-                    setDeletingId(variant.id);
-                    remove.mutate(variant.id);
-                  }}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
-    </CardWrapper>
+      columns={columns}
+      rows={rows}
+      getRowId={(variant) => variant.id}
+      searchPlaceholder="Search"
+      sortOptions={SORT_OPTIONS}
+      defaultSortBy="createdAt"
+      emptyTitle="No variants yet"
+      emptyDescription="Variants are generated from the product's options."
+      onRowClick={(variant) => openVariant(variant.id)}
+      rowActions={(variant) => [
+        {
+          label: "Edit",
+          icon: editActionIcon,
+          onSelect: () => openVariant(variant.id),
+        },
+        {
+          label: "Delete",
+          icon: deleteActionIcon,
+          destructive: true,
+          onSelect: () => confirmDelete(variant.id, variant.title),
+        },
+      ]}
+      pagination={pagination}
+    />
   );
 };

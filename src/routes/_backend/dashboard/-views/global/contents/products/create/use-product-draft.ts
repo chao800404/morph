@@ -1,4 +1,4 @@
-import type { SelectedAsset } from "@/components/form/asset-tile";
+import type { SelectedAsset } from "@/components/asset/asset-tile";
 import { useReducer } from "react";
 
 /**

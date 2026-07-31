@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import type { ProductDTO } from "@/lib/product/dto/product.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
@@ -17,12 +16,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { deleteProductsAction } from "./product-actions";
-
-const STATUS_VARIANT = {
-  published: "default",
-  draft: "secondary",
-  archived: "outline",
-} as const;
+import { ProductStatusBadge } from "./components/product-status-badge";
 
 const Products = () => {
   const search = useSearch({ strict: false }) as DashboardSearch;
@@ -86,9 +80,7 @@ const Products = () => {
         header: "Status",
         className: "w-32",
         cell: (product) => (
-          <Badge variant={STATUS_VARIANT[product.status]}>
-            {product.status}
-          </Badge>
+          <ProductStatusBadge status={product.status} variant="plain" />
         ),
       },
       {

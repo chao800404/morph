@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { usePageBreadcrumb } from "@/routes/_backend/dashboard/-components/breadcrumb/use-page-breadcrumb";
 import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
 import {
@@ -129,12 +130,12 @@ const CategoryDetail = () => {
           onEdit={openEdit}
           headerActions={
             <>
-              <Badge variant={category.isActive ? "default" : "secondary"}>
+              <StatusBadge color={category.isActive ? "green" : "grey"}>
                 {category.isActive ? "Active" : "Inactive"}
-              </Badge>
-              <Badge variant={category.isInternal ? "outline" : "secondary"}>
+              </StatusBadge>
+              <StatusBadge color={category.isInternal ? "grey" : "green"}>
                 {category.isInternal ? "Internal" : "Public"}
-              </Badge>
+              </StatusBadge>
             </>
           }
         />

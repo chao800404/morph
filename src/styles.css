@@ -25,6 +25,8 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
+  --color-tile-border: var(--tile-border);
+  --color-tile-shadow: var(--tile-shadow);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-chart-1: var(--chart-1);
@@ -123,6 +125,14 @@
   --sidebar-border: oklch(0.92 0.004 286.32);
   --sidebar-ring: oklch(0.705 0.015 286.067);
   --form-buttons: oklch(0.141 0.005 285.823);
+  /*
+   * Image tiles sit on top of a card rather than beside a field, so they carry
+   * a heavier edge than --border and a soft drop shadow. Named here rather than
+   * hard-coded in the component: re-theming the dashboard has to be able to
+   * find them next to every other colour.
+   */
+  --tile-border: oklch(86.9% 0.005 56.366);
+  --tile-shadow: oklch(70.9% 0.01 56.259 / 20%);
   --border-menu-top: rgba(228, 228, 231, 0.7);
   --border-menu-bot: rgba(255, 255, 255, 1);
   --buttons-inverted:
@@ -182,6 +192,8 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.552 0.016 285.938);
+  --tile-border: oklch(26.8% 0.007 34.298);
+  --tile-shadow: oklch(14.7% 0.004 49.25 / 30%);
   --border-menu-top: rgba(33, 33, 36, 1);
   --border-menu-bot: rgba(255, 255, 255, 0.08);
   --form-buttons: rgba(82, 82, 91, 1);
