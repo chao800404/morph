@@ -136,7 +136,17 @@ function RouteComponent() {
                 from <TopLoader /> in _backend.tsx, and each dynamic route
                 Suspends on its own lazy component for a genuine first load.
               */}
-              <div className="h-full min-h-0 p-4 max-lg:h-auto">
+              {/*
+                The shell above is a fixed viewport box with `overflow-hidden`,
+                so this is the only scroll container a page gets. Without it a
+                page taller than the viewport is simply clipped — the product
+                detail page's cards were unreachable below the fold.
+
+                Assets needs no exception: its cards are `h-content`
+                (`100lvh - 5.5rem`), which is exactly this box minus its own
+                padding, so it fills the area and never scrolls.
+              */}
+              <div className="h-full min-h-0 overflow-y-auto p-4 max-lg:h-auto">
                 <Outlet />
               </div>
               <Toaster />

@@ -23,9 +23,19 @@ export const General = {
         label: "Add currencies",
         view: lazyView(() => import("@views/settings/store/currency-add")),
         pendingView: CurrencyAddPendingView,
+        prefetch: async ({ queryClient }: CollectionLoadContext) => {
+          const { currencyQueries } = await import("@queries/currency.queries");
+          // The table lists every currency and ticks the enabled ones.
+          void queryClient.prefetchQuery(currencyQueries.store());
+          void queryClient.prefetchQuery(currencyQueries.available());
+        },
       },
       edit: {
         view: lazyView(() => import("@views/settings/store/store-edit")),
+        prefetch: async ({ queryClient }: CollectionLoadContext) => {
+          const { currencyQueries } = await import("@queries/currency.queries");
+          void queryClient.prefetchQuery(currencyQueries.store());
+        },
       },
     },
     {

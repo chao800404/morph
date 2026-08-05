@@ -32,6 +32,7 @@ export const cmsConfig = defineConfig({
     maxFileSize: 50 * 1024 * 1024,
     minFiles: 1,
     maxFiles: 10,
+    maxAssetsPerRecord: 50,
     allowedTypes: [
       "image/jpeg",
       "image/png",

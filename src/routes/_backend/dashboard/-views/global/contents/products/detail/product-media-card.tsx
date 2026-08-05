@@ -49,7 +49,7 @@ export const ProductMediaCard = ({
         </Button>
       </div>
     ) : (
-      <AssetGrid className="p-6">
+      <AssetGrid leadTile className="p-6">
         {product.assets.map((asset, index) => (
           <AssetTile
             key={asset.id}
@@ -64,7 +64,10 @@ export const ProductMediaCard = ({
                       <Star className="size-3 fill-current" />
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent>Thumbnail</TooltipContent>
+                  <TooltipContent>
+                    Thumbnail — the first image. Reorder them in Edit to
+                    change it.
+                  </TooltipContent>
                 </Tooltip>
               ) : null
             }

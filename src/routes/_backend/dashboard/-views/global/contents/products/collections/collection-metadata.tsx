@@ -1,10 +1,11 @@
+import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
 import {
   RouteFormPage,
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
 import { metadataFields } from "@/components/form/metadata-fields";
-import { Spinner } from "@/components/ui/spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { collectionQueries } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
@@ -37,21 +38,15 @@ const CollectionMetadata = () => {
   };
 
   if (isPending) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <Spinner />
-      </div>
-    );
+    return <RouteSurfacePending />;
   }
 
   const collection = result?.success ? result.data : null;
   if (!collection) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">
+      <RouteSurfaceMessage>
           {result?.message ?? "Collection not found"}
-        </p>
-      </div>
+      </RouteSurfaceMessage>
     );
   }
 

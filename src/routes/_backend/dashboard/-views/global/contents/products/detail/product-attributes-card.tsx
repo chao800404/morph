@@ -7,9 +7,7 @@ import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
 /**
  * Shipping and customs attributes.
  *
- * They live on the product as defaults; a variant may override each one. The
- * card is read-only until a variant-level editor exists, because editing them
- * here without showing which variants override them would be misleading.
+ * They live on the product as defaults; a variant may override each one.
  */
 /** `EditCard` renders its own placeholder when a row has nothing to show. */
 const measurement = (value: number | null, unit: string) =>
@@ -17,8 +15,10 @@ const measurement = (value: number | null, unit: string) =>
 
 export const ProductAttributesCard = ({
   product,
+  onEdit,
 }: {
   product: ProductDetailDTO;
+  onEdit: () => void;
 }) => {
   const fields: EditCardField[] = [
     { key: "height", label: "Height", displayValue: measurement(product.height, "mm") },
@@ -39,6 +39,7 @@ export const ProductAttributesCard = ({
       id={`product-attributes-${product.id}`}
       title="Attributes"
       fields={fields}
+      onEdit={onEdit}
     />
   );
 };

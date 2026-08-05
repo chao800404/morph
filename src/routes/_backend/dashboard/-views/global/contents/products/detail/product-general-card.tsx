@@ -1,3 +1,4 @@
+import { deleteActionIcon } from "@/routes/_backend/dashboard/-components/data-table-card/row-actions-menu";
 import {
   EditCard,
   type EditCardField,
@@ -14,9 +15,11 @@ import { ProductStatusBadge } from "../components/product-status-badge";
 export const ProductGeneralCard = ({
   product,
   onEdit,
+  onDelete,
 }: {
   product: ProductDetailDTO;
   onEdit: () => void;
+  onDelete: () => void;
 }) => {
   const fields: EditCardField[] = [
     {
@@ -50,6 +53,14 @@ export const ProductGeneralCard = ({
       title={product.title}
       fields={fields}
       onEdit={onEdit}
+      actions={[
+        {
+          label: "Delete",
+          icon: deleteActionIcon,
+          destructive: true,
+          onSelect: onDelete,
+        },
+      ]}
       headerActions={<ProductStatusBadge status={product.status} />}
     />
   );

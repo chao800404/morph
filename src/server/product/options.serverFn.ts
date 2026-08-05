@@ -1,11 +1,16 @@
 import { productOptionDal } from "@/lib/product/dal/product-option.dal";
 import {
+  setProductOptionsInputSchema,
   createProductOptionInputSchema,
   deleteProductOptionsInputSchema,
   getProductInputSchema,
   listProductOptionsInputSchema,
   updateProductOptionInputSchema,
 } from "@/lib/validations/product";
+import { productDal } from "@/lib/product/dal/product.dal";
+import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
+import { MAX_GENERATED_VARIANTS } from "@/lib/product/variant-limits";
+import { missingCombinations } from "@/lib/product/variant-table";
 import { createServerFn } from "@tanstack/react-start";
 import {
   productAdminMiddleware,
@@ -222,6 +227,148 @@ export const deleteProductOptions = createServerFn({ method: "POST" })
           error instanceof Error ? error.message : "Failed to delete options",
         data: null,
         error: "DELETE_FAILED",
+      };
+    }
+  });
+
+/**
+ * Set which option axes a product has.
+ *
+ * Adds the new ones and detaches the rest. Detaching is refused while a variant
+ * still references the axis: removing it would leave several variants in the
+ * same cell — "S / Black" and "L / Black" both become "Black" — and there is no
+ * right answer for which survives.
+ */
+export const setProductOptions = createServerFn({ method: "POST" })
+  .validator((data: unknown) => setProductOptionsInputSchema.parse(data))
+  .middleware([productAdminMiddleware])
+  .handler(async ({ data, context }) => {
+    const actorId = context.user.id;
+
+    try {
+      const product = await productDal.findById(data.productId);
+      if (!product) {
+        return {
+          success: false,
+          message: "Product not found",
+          data: null,
+          error: "NOT_FOUND",
+        };
+      }
+
+      const existing = await productDal.findOptions(data.productId);
+      const wanted = new Set(
+        data.options.flatMap((selection) =>
+          "optionId" in selection ? [selection.optionId] : [],
+        ),
+      );
+      const removing = existing.filter((option) => !wanted.has(option.id));
+
+      if (removing.length > 0) {
+        const inUse = await productDal.variantsByOption(data.productId);
+        const blocked = removing.filter((option) => inUse.has(option.id));
+
+        if (blocked.length > 0 && data.removeVariantsInUse) {
+          // The matrix collapses without this axis, and there is no right
+          // answer for which of the merged variants keeps its price and stock,
+          // so they go. The caller has already confirmed the count.
+          const detail = await productDal.findDetail(data.productId);
+          const owned = new Set(
+            (detail?.options ?? [])
+              .filter((option) => blocked.some((row) => row.id === option.id))
+              .flatMap((option) => option.values.map((value) => value.id)),
+          );
+          const doomed = (detail?.variants ?? [])
+            .filter((variant) =>
+              variant.optionValueIds.some((id) => owned.has(id)),
+            )
+            .map((variant) => variant.id);
+
+          await productVariantDal.softDelete(doomed, actorId);
+        } else if (blocked.length > 0) {
+          // Named, so the author can go and look rather than take it on trust.
+          const detail = blocked
+            .map((option) => {
+              const users = inUse.get(option.id) ?? [];
+              const shown = users.slice(0, 3).join(", ");
+              const rest = users.length > 3 ? ` and ${users.length - 3} more` : "";
+              return `${option.title} (${shown}${rest})`;
+            })
+            .join("; ");
+
+          return {
+            success: false,
+            message: `Delete these variants first — ${detail}`,
+            data: null,
+            errors: { optionIds: ["In use by a variant"] },
+          };
+        }
+
+        await productDal.removeOptions(
+          data.productId,
+          removing.map((option) => option.id),
+          actorId,
+        );
+      }
+
+      const options = await productDal.addOptions(
+        data.productId,
+        data.options,
+        actorId,
+      );
+
+      /**
+       * Fill the matrix the options describe.
+       *
+       * Variants follow options: defining an axis is the decision, and making
+       * the author press a second button to act on it asks the same question
+       * twice. Only cells with no variant are created, so prices and stock on
+       * the ones that already exist are untouched.
+       *
+       * A variant that predates an axis holds no value on it, so it occupies no
+       * cell and is left alone — the Variants table shows a dash and its editor
+       * is where that is fixed.
+       */
+      const detail = await productDal.findDetail(data.productId);
+      const missing = detail
+        ? missingCombinations(detail.options, detail.variants)
+        : [];
+      const room = MAX_GENERATED_VARIANTS - (detail?.variants.length ?? 0);
+
+      if (missing.length > 0 && missing.length <= room) {
+        await productVariantDal.createMany(
+          missing.map((combination, index) => ({
+            id: crypto.randomUUID(),
+            productId: data.productId,
+            title: combination.title,
+            rank: (detail?.variants.length ?? 0) + index,
+            optionValueIds: combination.valueIds,
+            prices: [],
+            createdBy: actorId,
+            updatedBy: actorId,
+          })),
+        );
+      }
+
+      const created = missing.length > 0 && missing.length <= room
+        ? missing.length
+        : 0;
+
+      return {
+        success: true,
+        message: created
+          ? `Options updated — ${created} variant${created === 1 ? "" : "s"} created`
+          : "Options updated",
+        data: { count: options.length, created },
+      };
+    } catch (error) {
+      console.error("Set product options error:", error);
+      return {
+        success: false,
+        message:
+          error instanceof Error ? error.message : "Failed to update options",
+        data: null,
+        error: "UPDATE_FAILED",
       };
     }
   });

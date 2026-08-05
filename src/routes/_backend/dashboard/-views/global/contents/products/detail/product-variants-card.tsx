@@ -1,13 +1,15 @@
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
 import type { ProductVariantDTO } from "@/lib/product/dto/product-variant.dto";
 import {
   filterVariants,
+  optionSortKey,
   paginateVariants,
   sortVariants,
+  toVariantSortKey,
   variantOptionValue,
   VARIANT_PAGE_SIZE,
-  type VariantSortKey,
 } from "@/lib/product/variant-table";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
@@ -21,7 +23,7 @@ import { useInfoStore } from "@views/features/global-info/use-info-store";
 import { productQueries } from "@queries/product.queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { ImageIcon } from "lucide-react";
+import { ImageIcon, Plus } from "lucide-react";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { deleteVariantsAction } from "../product-actions";
@@ -38,15 +40,6 @@ import { deleteVariantsAction } from "../product-actions";
  * variant with the product, so a request per page would re-fetch data that is
  * in hand. The page still lives in `?page` so it survives a refresh.
  */
-const SORT_OPTIONS = [
-  { value: "name", label: "Title" },
-  { value: "createdAt", label: "Created" },
-  { value: "updatedAt", label: "Updated" },
-] satisfies DataTableSortOption[];
-
-const isVariantSortKey = (value: unknown): value is VariantSortKey =>
-  value === "name" || value === "createdAt" || value === "updatedAt";
-
 const inventoryLabel = (variant: ProductVariantDTO): string => {
   if (!variant.manageInventory) return "Not tracked";
   // Medusa says "at 1 location" here; stock locations are not modelled in this
@@ -141,14 +134,36 @@ export const ProductVariantsCard = ({
     [queryClient, setInfoData, setInfoOpen],
   );
 
+  // No `variantId` opens the same page in create mode.
   const openVariant = useCallback(
-    (variantId: string) =>
+    (variantId?: string) =>
       void navigate({
         to: "/dashboard/$slug/$id/$page",
         params: { slug: "products", id: product.id, page: "variant" },
-        search: { variantId },
+        search: variantId ? { variantId } : {},
       }),
     [navigate, product.id],
+  );
+
+  /**
+   * The table's own columns, as sort keys.
+   *
+   * The axes sit between Title and the dates so the menu reads in the same
+   * order as the columns it sorts. Derived from the product because the axes
+   * are the product's — a fixed list could only offer Title and the dates,
+   * which is every column except the ones a reader actually scans by.
+   */
+  const sortOptions = useMemo<DataTableSortOption[]>(
+    () => [
+      { value: "name", label: "Title" },
+      ...product.options.map((option) => ({
+        value: optionSortKey(option.id),
+        label: option.title,
+      })),
+      { value: "createdAt", label: "Created" },
+      { value: "updatedAt", label: "Updated" },
+    ],
+    [product.options],
   );
 
   // The shared sort control writes `?sortBy`/`?sortOrder`; both can be arrays
@@ -162,8 +177,9 @@ export const ProductVariantsCard = ({
 
   const matching = sortVariants(
     filterVariants(product.variants, search.q, product.options),
-    isVariantSortKey(routeSortBy) ? routeSortBy : "createdAt",
+    toVariantSortKey(routeSortBy, product.options),
     routeSortOrder === "asc" ? "asc" : "desc",
+    product.options,
   );
   const { rows, pagination } = paginateVariants(
     matching,
@@ -178,10 +194,25 @@ export const ProductVariantsCard = ({
       rows={rows}
       getRowId={(variant) => variant.id}
       searchPlaceholder="Search"
-      sortOptions={SORT_OPTIONS}
+      headerActions={
+        // Variants are generated with the product; this is how a combination
+        // comes back after someone deleted it.
+        product.options.length > 0 ? (
+          <Button
+            variant="form"
+            size="xs"
+            className="gap-2"
+            onClick={() => openVariant()}
+          >
+            <Plus className="size-4" />
+            Create
+          </Button>
+        ) : undefined
+      }
+      sortOptions={sortOptions}
       defaultSortBy="createdAt"
       emptyTitle="No variants yet"
-      emptyDescription="Variants are generated from the product's options."
+      emptyDescription="Saving the product's options creates one for every combination."
       onRowClick={(variant) => openVariant(variant.id)}
       rowActions={(variant) => [
         {

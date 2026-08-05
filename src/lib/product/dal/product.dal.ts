@@ -337,9 +337,24 @@ export const productDal = {
         ...(data.collectionId !== undefined
           ? { collectionId: data.collectionId }
           : {}),
+        // `typeId` and `discountable` were in the DTO and passed by the server
+        // function, but never written — changing the product type or turning
+        // discounts off looked like it saved and did nothing.
+        ...(data.typeId !== undefined ? { typeId: data.typeId } : {}),
+        ...(data.discountable !== undefined
+          ? { discountable: data.discountable }
+          : {}),
         ...(data.thumbnailAssetId !== undefined
           ? { thumbnailAssetId: data.thumbnailAssetId }
           : {}),
+        ...(data.weight !== undefined ? { weight: data.weight } : {}),
+        ...(data.length !== undefined ? { length: data.length } : {}),
+        ...(data.width !== undefined ? { width: data.width } : {}),
+        ...(data.height !== undefined ? { height: data.height } : {}),
+        ...(data.originCountry !== undefined ? { originCountry: data.originCountry } : {}),
+        ...(data.hsCode !== undefined ? { hsCode: data.hsCode } : {}),
+        ...(data.midCode !== undefined ? { midCode: data.midCode } : {}),
+        ...(data.material !== undefined ? { material: data.material } : {}),
         ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
         updatedBy: data.updatedBy,
         updatedAt: new Date().toISOString(),
@@ -395,7 +410,130 @@ export const productDal = {
         .where(inArray(productOptions.id, group));
     }
 
-    for (const [index, selection] of selections.entries()) {
+    await this.linkOptions(productId, selections, actorId, 0);
+
+    return this.findOptions(productId);
+  },
+
+  /**
+   * Attach option axes to a product without disturbing the ones already there.
+   *
+   * `replaceOptions` deletes every link first, which orphans the option value
+   * ids the existing variants store. Adding an axis has to leave those alone —
+   * the old variants simply have no value on the new axis until someone edits
+   * them.
+   */
+  async addOptions(
+    productId: string,
+    selections: ProductOptionSelectionDTO[],
+    actorId: string,
+  ): Promise<ProductOptionDTO[]> {
+    const existing = await this.findOptions(productId);
+    const taken = new Set(existing.map((option) => option.id));
+
+    const additions = selections.filter(
+      (selection) => !("optionId" in selection) || !taken.has(selection.optionId),
+    );
+    if (additions.length === 0) return existing;
+
+    await this.linkOptions(productId, additions, actorId, existing.length);
+
+    return this.findOptions(productId);
+  },
+
+  /**
+   * Detach option axes from a product.
+   *
+   * Only the link and its value links go; the option itself survives unless it
+   * was exclusive to this product. The caller decides whether removal is
+   * allowed — this does not check, because "is a variant using it" is a
+   * question the server function answers with a message.
+   */
+  async removeOptions(
+    productId: string,
+    optionIds: string[],
+    actorId: string,
+  ): Promise<void> {
+    if (optionIds.length === 0) return;
+    const db = await getDb();
+    const now = new Date().toISOString();
+
+    const links = await db
+      .select()
+      .from(productProductOptions)
+      .where(
+        and(
+          eq(productProductOptions.productId, productId),
+          inArray(productProductOptions.optionId, optionIds),
+        ),
+      );
+    if (links.length === 0) return;
+
+    for (const group of chunk(links.map((link) => link.id), 50)) {
+      await db
+        .delete(productProductOptionValues)
+        .where(inArray(productProductOptionValues.productProductOptionId, group));
+      await db
+        .delete(productProductOptions)
+        .where(inArray(productProductOptions.id, group));
+    }
+
+    // An exclusive option exists only to serve this product, so it goes too.
+    const exclusiveIds = (
+      await db
+        .select({ id: productOptions.id })
+        .from(productOptions)
+        .where(
+          and(
+            inArray(productOptions.id, links.map((link) => link.optionId)),
+            eq(productOptions.isExclusive, true),
+          ),
+        )
+    ).map((row) => row.id);
+
+    for (const group of chunk(exclusiveIds, 50)) {
+      await db
+        .update(productOptions)
+        .set({ deletedAt: now, updatedAt: now, updatedBy: actorId })
+        .where(inArray(productOptions.id, group));
+    }
+  },
+
+  /**
+   * Which variants reference each option, keyed by option id.
+   *
+   * Titles rather than a boolean so the refusal can name them: "Size is in use"
+   * leaves the author hunting, and the Variants table only shows one page.
+   */
+  async variantsByOption(
+    productId: string,
+  ): Promise<Map<string, string[]>> {
+    const options = await this.findOptions(productId);
+    const variants = await productVariantDal.findByProductId(productId);
+
+    const byOption = new Map<string, string[]>();
+    for (const option of options) {
+      const owned = new Set(option.values.map((value) => value.id));
+      const users = variants
+        .filter((variant) => variant.optionValueIds.some((id) => owned.has(id)))
+        .map((variant) => variant.title);
+      if (users.length > 0) byOption.set(option.id, users);
+    }
+    return byOption;
+  },
+
+  /** Shared by `replaceOptions` and `addOptions`; `rankFrom` offsets the order. */
+  async linkOptions(
+    productId: string,
+    selections: ProductOptionSelectionDTO[],
+    actorId: string,
+    rankFrom: number,
+  ): Promise<void> {
+    const db = await getDb();
+    const now = new Date().toISOString();
+
+    for (const [offset, selection] of selections.entries()) {
+      const index = rankFrom + offset;
       let optionId: string;
       let valueIds: string[];
 
@@ -448,8 +586,6 @@ export const productDal = {
         await db.insert(productProductOptionValues).values(group);
       }
     }
-
-    return this.findOptions(productId);
   },
 
   /** Replace the gallery. `assetIds` order becomes the display order. */

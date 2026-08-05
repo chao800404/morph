@@ -1,9 +1,10 @@
+import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
 import {
   RouteFormPage,
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
-import { Spinner } from "@/components/ui/spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { categoryDepth } from "@/lib/product/category-tree";
 import type { FormField } from "@/lib/validations/form";
 import {
@@ -63,21 +64,15 @@ const ProductOrganization = () => {
   };
 
   if (isPending || collectionsPending || taxonomyPending) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <Spinner />
-      </div>
-    );
+    return <RouteSurfacePending />;
   }
 
   const product = result?.success ? result.data : null;
   if (!product) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">
+      <RouteSurfaceMessage>
           {result?.message ?? "Product not found"}
-        </p>
-      </div>
+      </RouteSurfaceMessage>
     );
   }
 

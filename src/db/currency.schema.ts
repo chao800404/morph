@@ -8,6 +8,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import type { Metadata } from "./json";
 
 /**
  * The standard currency catalogue.
@@ -38,12 +39,54 @@ export const currencies = sqliteTable(
   ],
 );
 
+/**
+ * The store's own record.
+ *
+ * The three `default*Id` columns are plain text with no foreign key: each
+ * points into a different commerce module, and that boundary is the one
+ * `region.schema.ts` explains. They are what a request falls back to when it
+ * names no channel, region or location of its own — a storefront call with a
+ * publishable key resolves its channel, an admin call has none.
+ */
 export const stores = sqliteTable("stores", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  defaultSalesChannelId: text("default_sales_channel_id"),
+  defaultRegionId: text("default_region_id"),
+  defaultLocationId: text("default_location_id"),
+  metadata: text("metadata", { mode: "json" }).$type<Metadata>(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+/**
+ * The languages the storefront is offered in.
+ *
+ * A table rather than a column on `stores` for the same reason
+ * `storeSupportedCurrencies` is one: there are several, and one of them is the
+ * default. Codes are BCP 47 language tags, e.g. `en-US` — not ISO 639, because
+ * `zh-TW` and `zh-CN` are different storefronts.
+ */
+export const storeLocales = sqliteTable(
+  "store_locales",
+  {
+    storeId: text("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    localeCode: text("locale_code").notNull(),
+    isDefault: integer("is_default", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.storeId, table.localeCode] }),
+    uniqueIndex("store_locales_one_default")
+      .on(table.storeId)
+      .where(sql`${table.isDefault} = 1`),
+  ],
+);
 
 /**
  * Currencies accepted by a store.

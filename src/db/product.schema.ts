@@ -5,28 +5,20 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import { assets } from "./asset.schema";
+import type { Metadata } from "./json";
 
 export type ProductStatus = "draft" | "published" | "archived";
 
-/**
- * Metadata crosses the server/client boundary, so it is constrained to values
- * that survive JSON serialisation. `Record<string, unknown>` would compile here
- * but fails TanStack Start's serialisability check at the server function.
- */
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
-
-export type ProductMetadata = Record<string, JsonValue>;
+// Both moved to `./json` once the other commerce modules needed them; the
+// aliases stay so the catalogue's call sites keep reading in product terms.
+export type { JsonValue } from "./json";
+export type ProductMetadata = Metadata;
 
 /**
  * Commerce catalogue schema.
@@ -54,6 +46,8 @@ export const productCollections = sqliteTable(
     title: text("title").notNull(),
     handle: text("handle").notNull(),
     description: text("description"),
+    // Every other catalogue table carries one; collections were the omission.
+    externalId: text("external_id"),
     metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
     createdBy: text("created_by").notNull(),
     updatedBy: text("updated_by").notNull(),
@@ -178,10 +172,12 @@ export const products = sqliteTable(
       onDelete: "set null",
     }),
     // Shipping and customs attributes. Variants may override each of these.
-    weight: integer("weight"),
-    length: integer("length"),
-    width: integer("width"),
-    height: integer("height"),
+    // Real, not integer: a carrier's rate table takes 12.5 mm, and Medusa
+    // models them as floats too.
+    weight: real("weight"),
+    length: real("length"),
+    width: real("width"),
+    height: real("height"),
     originCountry: text("origin_country"),
     hsCode: text("hs_code"),
     midCode: text("mid_code"),
@@ -380,10 +376,10 @@ export const productVariants = sqliteTable(
       .default(false),
     inventoryQuantity: integer("inventory_quantity").notNull().default(0),
     // Override the product-level shipping and customs attributes.
-    weight: integer("weight"),
-    length: integer("length"),
-    width: integer("width"),
-    height: integer("height"),
+    weight: real("weight"),
+    length: real("length"),
+    width: real("width"),
+    height: real("height"),
     originCountry: text("origin_country"),
     hsCode: text("hs_code"),
     midCode: text("mid_code"),

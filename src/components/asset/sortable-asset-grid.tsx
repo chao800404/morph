@@ -1,10 +1,10 @@
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider } from "@dnd-kit/react";
-import { useSortable } from "@dnd-kit/react/sortable";
+import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import { useMemo, type ReactNode } from "react";
 import { AssetGrid } from "./asset-grid";
 import { AssetTile, type SelectedAsset } from "./asset-tile";
-import { reorderAssets } from "./reorder-assets";
+import { moveAsset } from "./reorder-assets";
 
 /**
  * An asset grid whose order the author can change by dragging.
@@ -78,10 +78,14 @@ export const SortableAssetGrid = ({
         // would save an order the author explicitly abandoned.
         if (event.canceled) return;
 
-        const { source, target } = event.operation;
-        if (!source || !target) return;
+        // Read the move off the sortable itself. `operation.target` is null
+        // whenever the pointer is released between two tiles, and keying off it
+        // meant the reorder was shown but never saved.
+        const { source } = event.operation;
+        if (!source || !isSortable(source)) return;
 
-        onReorder(reorderAssets(assets, String(source.id), String(target.id)));
+        const { initialIndex, index } = source.sortable;
+        onReorder(moveAsset(assets, initialIndex, index));
       }}
     >
       <AssetGrid className={className}>

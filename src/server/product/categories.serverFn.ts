@@ -3,9 +3,8 @@ import {
   createProductCategoryInputSchema,
   deleteProductCategoriesInputSchema,
   getProductInputSchema,
-  handleSchema,
   listProductCategoriesInputSchema,
-  slugify,
+  toHandle,
   updateProductCategoryInputSchema,
 } from "@/lib/validations/product";
 import { createServerFn } from "@tanstack/react-start";
@@ -90,9 +89,7 @@ export const createProductCategory = createServerFn({ method: "POST" })
   .middleware([productAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const handleResult = handleSchema.safeParse(
-        data.handle ?? slugify(data.name),
-      );
+      const handleResult = toHandle(data.handle, data.name);
       if (!handleResult.success) {
         return {
           success: false,
@@ -168,12 +165,28 @@ export const updateProductCategory = createServerFn({ method: "POST" })
         };
       }
 
-      if (data.handle && data.handle !== existing.handle) {
-        const clash = await productCategoryDal.findByHandle(data.handle);
+      // Slugified first, so a typed "Summer Shirt" becomes `summer-shirt`
+      // rather than failing validation the author cannot see.
+      let handle: string | undefined;
+      if (data.handle !== undefined) {
+        const result = toHandle(data.handle, data.name ?? existing.name);
+        if (!result.success) {
+          return {
+            success: false,
+            message: "Could not derive a valid handle",
+            data: null,
+            errors: { handle: [result.error.issues[0].message] },
+          };
+        }
+        handle = result.data;
+      }
+
+      if (handle && handle !== existing.handle) {
+        const clash = await productCategoryDal.findByHandle(handle);
         if (clash && clash.id !== data.id) {
           return {
             success: false,
-            message: `A category with the handle "${data.handle}" already exists`,
+            message: `A category with the handle "${handle}" already exists`,
             data: null,
             errors: { handle: ["This handle is already in use"] },
           };
@@ -184,7 +197,7 @@ export const updateProductCategory = createServerFn({ method: "POST" })
         data.id,
         {
           name: data.name,
-          handle: data.handle,
+          handle,
           description: data.description,
           isActive: data.isActive,
           isInternal: data.isInternal,

@@ -1,13 +1,38 @@
 import { z } from "zod";
 import { PRODUCT_OPTION_CREATED_WITHIN_VALUES } from "@/lib/product/config/product-option-list";
 
-export const dashboardSortKeySchema = z.enum([
+/**
+ * Sort keys every table shares.
+ *
+ * A closed set on purpose: it is what stops the same column being called
+ * `name` in one table and `title` in the next.
+ */
+export const dashboardFixedSortKeySchema = z.enum([
   "name",
   "code",
   "extension",
   "size",
   "createdAt",
   "updatedAt",
+]);
+
+/**
+ * A column that only one record has — a product's option axes, today.
+ *
+ * The shared set cannot name these: which axes exist is a property of the
+ * product being viewed, not of the dashboard. Namespacing them behind
+ * `option:` keeps them from ever colliding with a fixed key, and the id is
+ * still validated, so a mistyped key is rejected rather than silently sorting
+ * by nothing.
+ */
+export const dashboardOptionSortKeySchema = z.templateLiteral([
+  "option:",
+  z.uuid(),
+]);
+
+export const dashboardSortKeySchema = z.union([
+  dashboardFixedSortKeySchema,
+  dashboardOptionSortKeySchema,
 ]);
 export const dashboardSortOrderSchema = z.enum(["asc", "desc"]);
 

@@ -1,9 +1,10 @@
+import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
 import {
   RouteFormPage,
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
-import { Spinner } from "@/components/ui/spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import {
   productCategoryQueries,
   productTaxonomyQueries,
@@ -16,7 +17,7 @@ import { metadataFields } from "@/components/form/metadata-fields";
 
 /**
  * Metadata editor for a category, at
- * /dashboard/product-categories/<id>/metadata.
+ * /dashboard/categories/<id>/metadata.
  *
  * Its own page rather than a section of the edit form: it submits only the
  * metadata field, so editing a category's name can never clear its metadata,
@@ -54,21 +55,15 @@ const CategoryMetadata = () => {
   };
 
   if (isPending) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <Spinner />
-      </div>
-    );
+    return <RouteSurfacePending />;
   }
 
   const category = result?.success ? result.data : null;
   if (!category) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">
+      <RouteSurfaceMessage>
           {result?.message ?? "Category not found"}
-        </p>
-      </div>
+      </RouteSurfaceMessage>
     );
   }
 

@@ -1,26 +1,47 @@
-// Import your custom application schemas here
-// Example:
-// import { posts } from "./posts.schema";
-// import { comments } from "./comments.schema";
-
 /**
- * Unified schema export for Drizzle migrations
+ * Unified schema export for Drizzle migrations.
  *
- * This re-exports all database schemas (auth + your custom schemas)
- * for drizzle-kit to generate migrations.
+ * drizzle-kit reads only this file, so a table that is not re-exported here
+ * does not exist as far as `pnpm db:generate` is concerned.
  *
- * To add new schemas:
- * 1. Create a new schema file (e.g., ./posts.schema.ts)
- * 2. Import it above
- * 3. Re-export it below
+ * To add a schema:
+ * 1. Create `./<name>.schema.ts`
+ * 2. Re-export it below
+ *
+ * The commerce modules are translated from Medusa one module per file, and
+ * none of them import each other — ids that cross a module boundary are plain
+ * `text` and the relationship is declared in `link.schema.ts`. The reasoning is
+ * in `region.schema.ts`, which is the first of them.
  */
 
-// Re-export all auth schema tables
+// Platform
 export * from "./asset.schema";
 export * from "./auth.schema";
-export * from "./currency.schema";
-export * from "./product.schema";
+export * from "./invite.schema";
+export * from "./notification.schema";
+export * from "./api-key.schema";
 
-// Re-export your custom schemas here:
-// export * from "./posts.schema";
-// export * from "./comments.schema";
+// Store configuration
+export * from "./currency.schema";
+export * from "./region.schema";
+export * from "./sales-channel.schema";
+export * from "./stock-location.schema";
+
+// Catalogue
+export * from "./product.schema";
+export * from "./inventory.schema";
+export * from "./pricing.schema";
+
+// Selling
+export * from "./customer.schema";
+export * from "./promotion.schema";
+export * from "./tax.schema";
+export * from "./fulfillment.schema";
+
+// Checkout and after
+export * from "./cart.schema";
+export * from "./payment.schema";
+export * from "./order.schema";
+
+// The joins between all of the above
+export * from "./link.schema";

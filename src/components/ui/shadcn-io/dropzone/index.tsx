@@ -97,7 +97,7 @@ export const Dropzone = ({
         aria-invalid={error || undefined}
         className={cn(
           fieldControlVariants({ variant }),
-          "relative flex min-h-[140px] w-full cursor-pointer select-none flex-col items-center justify-center border-dashed p-6 text-center",
+          "relative flex min-h-[140px] w-full cursor-pointer select-none flex-col items-center justify-center border-dashed p-4 text-center",
           "data-[error=true]:bg-destructive/5",
           isDragActive &&
             "border-primary bg-primary/5 ring-2 ring-primary/20 dark:bg-primary/10",

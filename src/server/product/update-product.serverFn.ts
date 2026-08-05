@@ -6,13 +6,19 @@ import {
 } from "@/lib/product/dal/product-taxonomy.dal";
 import {
   deleteProductsInputSchema,
+  toHandle,
   updateProductInputSchema,
 } from "@/lib/validations/product";
 import { createServerFn } from "@tanstack/react-start";
+import { getConfig } from "../get-config";
 import { productAdminMiddleware } from "../middleware/auth.middleware";
 
 export const updateProduct = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateProductInputSchema.parse(data))
+  .validator((data: unknown) =>
+    updateProductInputSchema(
+      getConfig().server.upload.maxAssetsPerRecord,
+    ).parse(data),
+  )
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -28,12 +34,28 @@ export const updateProduct = createServerFn({ method: "POST" })
         };
       }
 
-      if (data.handle && data.handle !== existing.handle) {
-        const clash = await productDal.findByHandle(data.handle);
+      // Slugified first, so a typed "Summer Shirt" becomes `summer-shirt`
+      // rather than failing validation the author cannot see.
+      let handle: string | undefined;
+      if (data.handle !== undefined) {
+        const result = toHandle(data.handle, data.title ?? existing.title);
+        if (!result.success) {
+          return {
+            success: false,
+            message: "Could not derive a valid handle",
+            data: null,
+            errors: { handle: [result.error.issues[0].message] },
+          };
+        }
+        handle = result.data;
+      }
+
+      if (handle && handle !== existing.handle) {
+        const clash = await productDal.findByHandle(handle);
         if (clash && clash.id !== data.id) {
           return {
             success: false,
-            message: `A product with the handle "${data.handle}" already exists`,
+            message: `A product with the handle "${handle}" already exists`,
             data: null,
             errors: { handle: ["This handle is already in use"] },
           };
@@ -53,7 +75,7 @@ export const updateProduct = createServerFn({ method: "POST" })
 
       await productDal.update(data.id, {
         title: data.title,
-        handle: data.handle,
+        handle,
         subtitle: data.subtitle,
         description: data.description,
         status: data.status,

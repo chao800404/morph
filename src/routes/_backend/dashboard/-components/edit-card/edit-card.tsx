@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import type { FormField } from "@/lib/validations/form";
 import { useEditStore } from "@views/features/global-edit/use-edit-store";
 import { CardWrapper } from "../card-wrapper";
+import type { RowAction } from "../data-table-card/row-actions-menu";
 import { EditCardHeader } from "./edit-card-header";
 
 export interface SelectOption {
@@ -16,7 +17,12 @@ export interface SelectOption {
 
 export interface EditCardField {
   key: string;
-  label: string;
+  /**
+   * A node for the same reason `title` is: a pending view needs a block in the
+   * label column. `onSave` builds a `FormField` from it, and that needs text,
+   * so an editable card must pass a string.
+   */
+  label: ReactNode;
   value?: string;
   /**
    * What the row shows, when that differs from the editable value — a resolved
@@ -46,7 +52,17 @@ export interface EditCardState {
 
 interface EditCardProps {
   id: string;
-  title: string;
+  /**
+   * A node, not a string, so a pending view can put a skeleton where the
+   * record's name goes and still get the card's real row geometry rather than
+   * a second copy of it.
+   *
+   * `CardWrapper` already takes a `ReactNode` label; only the built-in edit
+   * dialog needs text, and `editLabel` covers that.
+   */
+  title: ReactNode;
+  /** Heading for the `onSave` dialog. Defaults to `title` when it is a string. */
+  editLabel?: string;
   description?: string;
   icon?: LucideIcon;
   fields: EditCardField[];
@@ -61,6 +77,13 @@ interface EditCardProps {
   onEdit?: () => void;
   /** Shown in the card header before the actions menu, e.g. status badges. */
   headerActions?: ReactNode;
+  /**
+   * Extra items in the card's "…" menu, beyond Edit.
+   *
+   * Same shape as a table row's, so Delete is `destructive: true` and lands
+   * after the separator without the card deciding anything.
+   */
+  actions?: RowAction[];
   /** Feature-owned layout only; the card's own styling stays in the primitive. */
   className?: string;
   /** Omit both `onSave` and `onEdit` for a read-only information card. */
@@ -68,6 +91,7 @@ interface EditCardProps {
 
 export const EditCard = ({
   title,
+  editLabel,
   description,
   icon,
   fields,
@@ -75,6 +99,7 @@ export const EditCard = ({
   onSave,
   onEdit,
   headerActions,
+  actions,
   className,
 }: EditCardProps) => {
   const { setEditData, setOpen } = useEditStore();
@@ -86,7 +111,9 @@ export const EditCard = ({
       .map((field): FormField => {
         const base = {
           name: field.key,
-          label: field.label,
+          // `FormField.label` is text. A card that opens the edit dialog always
+          // labels its rows with strings; anything else is a display-only card.
+          label: typeof field.label === "string" ? field.label : field.key,
           value: field.value || "",
           required: true,
         };
@@ -114,7 +141,10 @@ export const EditCard = ({
 
     // Set up the edit dialog
     setEditData({
-      title: `Edit ${title}`,
+      // Only reachable via `onSave`, and an editable card always has a name to
+      // show — but `title` is a node now, so template-stringing it blind would
+      // print "[object Object]" in the dialog heading.
+      title: `Edit ${editLabel ?? (typeof title === "string" ? title : "")}`.trim(),
       fields: formFields,
       action: onSave,
       onSuccess: () => {
@@ -136,8 +166,11 @@ export const EditCard = ({
       headerButton={
         <div className="flex items-center gap-2">
           {headerActions}
-          {(onEdit || onSave) && (
-            <EditCardHeader onClickEdit={onEdit ?? handleEdit} />
+          {(onEdit || onSave || actions?.length) && (
+            <EditCardHeader
+              onClickEdit={onEdit ?? (onSave ? handleEdit : undefined)}
+              actions={actions}
+            />
           )}
         </div>
       }
@@ -153,7 +186,12 @@ export const EditCard = ({
           <Label htmlFor={field.key} className="text-sm text-muted-foreground">
             {field.label}
           </Label>
-          <p className="text-sm">{field.displayValue || field.value || "-"}</p>
+          {/* A div, not a p: `displayValue` is a ReactNode and cards pass
+              flex containers. The HTML parser closes a <p> at a block child on
+              the SSR pass while React does not on hydration. */}
+          <div className="text-sm">
+            {field.displayValue || field.value || "-"}
+          </div>
         </div>
       ))}
     </CardWrapper>

@@ -24,7 +24,7 @@ const LinkedBadge = ({ to, children }: { to: string; children: ReactNode }) => (
 /** Undefined rather than a dash: the empty row belongs to `EditCard`. */
 const badgeRow = (nodes: ReactNode[]): ReactNode =>
   nodes.length > 0 ? (
-    <div className="flex flex-wrap justify-end gap-1">{nodes}</div>
+    <div className="flex flex-wrap gap-1">{nodes}</div>
   ) : undefined;
 
 export const ProductOrganizationCard = ({

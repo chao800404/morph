@@ -1,9 +1,10 @@
+import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
 import {
   RouteFormPage,
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
-import { Spinner } from "@/components/ui/spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { updateStoreGeneral } from "@/server/currency/currencies.serverFn";
 import { currencyQueries } from "@queries/currency.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,21 +32,15 @@ const StoreEdit = () => {
   };
 
   if (query.isPending) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <Spinner />
-      </div>
-    );
+    return <RouteSurfacePending />;
   }
 
   const store = query.data?.success ? query.data.data : null;
   if (!store) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">
+      <RouteSurfaceMessage>
           {query.data?.message ?? "Store settings could not be loaded"}
-        </p>
-      </div>
+      </RouteSurfaceMessage>
     );
   }
 

@@ -1,11 +1,11 @@
+import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
 import {
   RouteFormPage,
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
-import { Spinner } from "@/components/ui/spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { toMajorUnits } from "@/lib/currency/catalog";
-import { variantOptionValue } from "@/lib/product/variant-table";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import type { FormField } from "@/lib/validations/form";
 import { currencyQueries } from "@queries/currency.queries";
@@ -13,15 +13,25 @@ import { productQueries } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { updateVariantAction } from "../product-actions";
+import {
+  createVariantAction,
+  updateVariantAction,
+} from "../product-actions";
 
 /**
- * One variant's editor, at /dashboard/products/<id>/variant?variantId=…
+ * One variant's editor, at /dashboard/products/<id>/variant.
+ *
+ * `?variantId` picks the variant to edit; without it the page creates one. Two
+ * modes on one surface rather than two routes, the way the Assets create page
+ * serves folders and uploads — it is the same form, and only the option values
+ * change from readable to choosable.
  *
  * A route rather than an inline row: prices are one field per store currency,
- * and a table row wide enough to hold them stops being readable. The option
- * values are shown but not editable — changing them would move the variant to a
- * different cell of the matrix, which is a different operation.
+ * and a table row wide enough to hold them stops being readable.
+ *
+ * Editing can change the option values: adding an option axis later leaves the
+ * variants that predate it with no value on that axis, and this is where the
+ * gap is filled. The server refuses a combination another variant already has.
  */
 const ProductVariant = () => {
   const { id } = useParams({ strict: false }) as { id: string };
@@ -38,9 +48,14 @@ const ProductVariant = () => {
     _state: RouteFormState,
     formData: FormData,
   ): Promise<RouteFormState> => {
-    if (!variantId) return { success: false, message: "Missing variant" };
-    formData.set("id", variantId);
-    const response = await updateVariantAction({ data: formData });
+    let response;
+    if (variantId) {
+      formData.set("id", variantId);
+      response = await updateVariantAction({ data: formData });
+    } else {
+      formData.set("productId", id);
+      response = await createVariantAction({ data: formData });
+    }
 
     if (!response.success) {
       toast.error(response.message, { position: "top-center" });
@@ -54,22 +69,18 @@ const ProductVariant = () => {
   };
 
   if (isPending || currenciesPending) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <Spinner />
-      </div>
-    );
+    return <RouteSurfacePending />;
   }
 
   const product = result?.success ? result.data : null;
-  const variant = product?.variants.find((row) => row.id === variantId);
-  if (!product || !variant) {
+  const variant = variantId
+    ? product?.variants.find((row) => row.id === variantId)
+    : undefined;
+  if (!product || (variantId && !variant)) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">
+      <RouteSurfaceMessage>
           {result?.message ?? "Variant not found"}
-        </p>
-      </div>
+      </RouteSurfaceMessage>
     );
   }
 
@@ -77,14 +88,14 @@ const ProductVariant = () => {
     ? currencyResult.data.supportedCurrencies
     : [];
   const priceOf = (code: string) =>
-    variant.prices.find((price) => price.currencyCode === code);
+    variant?.prices.find((price) => price.currencyCode === code);
 
   const fields: FormField[] = [
     {
       type: "input",
       name: "title",
       label: "Title",
-      value: variant.title,
+      value: variant?.title ?? "",
       required: true,
       autoFocus: true,
       colSpan: 1,
@@ -94,42 +105,77 @@ const ProductVariant = () => {
       name: "sku",
       label: "SKU",
       optional: true,
-      value: variant.sku ?? "",
+      value: variant?.sku ?? "",
       colSpan: 1,
     },
-    // Read-only context: which cell of the matrix this variant is.
-    ...product.options.map(
-      (option): FormField => ({
-        type: "input",
+    {
+      type: "input",
+      name: "barcode",
+      label: "Barcode",
+      optional: true,
+      value: variant?.barcode ?? "",
+      labelHint:
+        "EAN, UPC or another scannable code. Must be unique across variants.",
+      colSpan: 1,
+    },
+    // Which cell of the matrix this variant occupies.
+    ...product.options.map((option): FormField => {
+      const owned = new Set(option.values.map((value) => value.id));
+      return {
+        type: "select",
         name: `option-${option.id}`,
         label: option.title,
-        value: variantOptionValue(variant, option) ?? "—",
-        disabled: true,
+        required: true,
+        // Empty for a variant that predates this axis, which is exactly the
+        // case this field exists to fix.
+        value: variant?.optionValueIds.find((id) => owned.has(id)) ?? "",
+        options: option.values.map((value) => ({
+          value: value.id,
+          label: value.value,
+        })),
         colSpan: 1,
-      }),
-    ),
+      };
+    }),
     {
       type: "switch",
       name: "manageInventory",
       label: "Manage inventory",
       description: "Track stock for this variant and stop selling at zero.",
-      value: variant.manageInventory,
+      value: variant?.manageInventory ?? true,
     },
     {
       type: "switch",
       name: "allowBackorder",
       label: "Allow backorder",
       description: "Keep selling once stock reaches zero.",
-      value: variant.allowBackorder,
+      value: variant?.allowBackorder ?? false,
     },
     {
       type: "input",
       name: "inventoryQuantity",
       label: "Quantity",
       inputType: "number",
-      value: String(variant.inventoryQuantity),
+      value: String(variant?.inventoryQuantity ?? 0),
       colSpan: 1,
     },
+    ...(["height", "width", "length", "weight"] as const).map(
+      (name): FormField => ({
+        type: "input",
+        name,
+        label: name[0].toUpperCase() + name.slice(1),
+        inputType: "number",
+        // Decimals are legitimate measurements; the default step rejects them.
+        step: "any",
+        optional: true,
+        suffix: name === "weight" ? "g" : "mm",
+        // Blank, not the product's value: an empty field means "inherit the
+        // product's", and pre-filling it would turn the first save into a copy
+        // that then stops following the product.
+        value: variant?.[name] === null ? "" : String(variant?.[name] ?? ""),
+        labelHint: "Overrides the product's value. Leave blank to inherit it.",
+        colSpan: 1,
+      }),
+    ),
     ...currencies.map(
       (currency): FormField => ({
         type: "input",
@@ -149,11 +195,13 @@ const ProductVariant = () => {
 
   return (
     <RouteFormPage
-      title="Edit Variant"
-      description={`${product.title} — ${variant.title}`}
+      title={variant ? "Edit Variant" : "Create Variant"}
+      description={
+        variant ? `${product.title} — ${variant.title}` : product.title
+      }
       action={submit}
-      submitLabel="Save"
-      loadingLabel="Saving..."
+      submitLabel={variant ? "Save" : "Create"}
+      loadingLabel={variant ? "Saving..." : "Creating..."}
       fields={fields}
       fieldsClassName="sm:grid-cols-2"
     />

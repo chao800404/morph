@@ -5,7 +5,7 @@ import { create } from "zustand";
  * The trailing breadcrumb a detail page contributes.
  *
  * The layout builds crumbs from the URL's slugs, which cannot name a record:
- * `/dashboard/product-categories/<id>` only says "Categories". The record's
+ * `/dashboard/categories/<id>` only says "Categories". The record's
  * name is known by the view that loaded it, so the view publishes it here and
  * the header appends it.
  *

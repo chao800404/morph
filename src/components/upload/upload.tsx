@@ -1,3 +1,4 @@
+import { AssetGrid } from "@/components/asset/asset-grid";
 import {
   Dropzone,
   DropzoneContent,
@@ -5,7 +6,7 @@ import {
 } from "@/components/ui/shadcn-io/dropzone";
 import { extractVideoDuration } from "@/lib/config/video-duration";
 import { cn, formatDuration, getFileExtension, getFileType } from "@/lib/utils";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import { PlusIcon, X } from "lucide-react";
 import { toast } from "sonner";
@@ -121,6 +122,21 @@ export const UploadField = ({
     })),
   );
 
+  /**
+   * Drop the field's files when it goes away.
+   *
+   * The store is global, so a create page closed without submitting leaves its
+   * files behind — they reappear the next time the same field mounts, and their
+   * object URLs stay allocated until the tab is closed. Clearing here rather
+   * than in each page means every consumer of the field gets it.
+   */
+  useEffect(
+    () => () => {
+      useUploadStore.getState().clearFiles(field.name);
+    },
+    [field.name],
+  );
+
   const remainingSlots = useMemo(
     () => Math.max(maxFiles - fileData.length, 0),
     [fileData.length, maxFiles],
@@ -216,7 +232,10 @@ export const UploadField = ({
         <DropzoneEmptyState />
         {fileData.length > 0 && (
           <DropzoneContent>
-            <div className="grid grid-cols-6 gap-2 w-full">
+            {/* The shared grid, so a file waiting to upload is the same size as
+                the same image once it is in the library. No `leadTile`: the
+                order files were dropped in means nothing here. */}
+            <AssetGrid className="w-full">
               {fileData.map(({ file, preview, duration }, index) => {
                 if (!preview) return null;
 
@@ -234,7 +253,6 @@ export const UploadField = ({
                     src={preview}
                     alt={file.name}
                     onRemove={() => handleRemove(index)}
-                    className="first:row-span-2 first:col-span-2 col-span-1 row-span-1"
                     duration={duration}
                   />
                 );
@@ -244,7 +262,7 @@ export const UploadField = ({
                   <PlusIcon className="size-6 text-muted-foreground/50" />
                 </div>
               )}
-            </div>
+            </AssetGrid>
           </DropzoneContent>
         )}
       </Dropzone>

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { AssetSelectFormField } from "@/lib/validations/form";
+import { getConfig } from "@/server/get-config";
 import { useQueryClient } from "@tanstack/react-query";
 import { Star } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
@@ -87,12 +88,36 @@ export const AssetSelectField = ({
 }) => {
   const queryClient = useQueryClient();
   const [uploading, setUploading] = useState(false);
-  const selected = parseSelectedAssets(value);
-  const maxSelected = field.maxSelected ?? 20;
+  /**
+   * The selection lives here, seeded from `value`, the way `MetadataField`
+   * holds its entries.
+   *
+   * `RouteFormPage` renders fields declaratively and passes no `onChange` — it
+   * submits the form natively — so a field that only reported upwards would
+   * never change anything on an edit page. `onChange` is a notification for
+   * callers that do keep their own copy, such as the create wizard's draft.
+   */
+  const [selected, setSelected] = useState<SelectedAsset[]>(() =>
+    parseSelectedAssets(value),
+  );
+  // The store's own ceiling, the same one the server validates against. A
+  // field may narrow it (a single cover image), never widen it.
+  const maxSelected = Math.min(
+    field.maxSelected ?? Number.POSITIVE_INFINITY,
+    getConfig().client.upload.maxAssetsPerRecord,
+  );
   const atLimit = selected.length >= maxSelected;
 
-  const commit = (next: SelectedAsset[]) =>
-    onChange?.(serializeSelectedAssets(next.slice(0, maxSelected)));
+  /**
+   * Never trims. An earlier version capped the list here, which meant a record
+   * holding more images than the current limit lost the extras simply by being
+   * opened and saved. Adding past the limit is refused at the point of adding,
+   * where there is someone to tell.
+   */
+  const commit = (next: SelectedAsset[]) => {
+    setSelected(next);
+    onChange?.(serializeSelectedAssets(next));
+  };
 
   const toggle = (asset: SelectedAsset) => {
     const exists = selected.some((item) => item.id === asset.id);
@@ -111,6 +136,15 @@ export const AssetSelectField = ({
 
   const upload = async (files: File[]) => {
     if (files.length === 0) return;
+    // Checked before the request, not after: assets uploaded and then dropped
+    // for want of room would still exist in the library, attached to nothing.
+    if (selected.length + files.length > maxSelected) {
+      toast.error(
+        `You can select up to ${maxSelected} images. Remove some first.`,
+        { position: "top-center" },
+      );
+      return;
+    }
     setUploading(true);
 
     // Dropzone gives back real `File`s, and `createItems` reads them off
@@ -142,8 +176,7 @@ export const AssetSelectField = ({
       // The library list is now stale — the new rows belong in it.
       void queryClient.invalidateQueries({ queryKey: assetQueries.all() });
 
-      const room = maxSelected - selected.length;
-      commit([...selected, ...result.createdAssets.slice(0, room)]);
+      commit([...selected, ...result.createdAssets]);
       toast.success(result.message, { position: "top-center" });
     } catch (error) {
       toast.error(
@@ -158,8 +191,14 @@ export const AssetSelectField = ({
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       {/* Carries the value on a native submit, the way `option-values` does —
-          the tiles and tabs are not form controls. */}
-      <input type="hidden" name={field.name} value={value} />
+          the tiles and tabs are not form controls. Driven by the field's own
+          state, not the prop, or an edit page would always submit what it
+          loaded. */}
+      <input
+        type="hidden"
+        name={field.name}
+        value={serializeSelectedAssets(selected)}
+      />
 
       {selected.length > 0 ? (
         <SortableAssetGrid
@@ -194,7 +233,7 @@ export const AssetSelectField = ({
         <TabsContent value="upload" className="mt-3">
           <Dropzone
             accept={{ "image/*": [] }}
-            maxFiles={maxSelected}
+            maxFiles={Math.max(maxSelected - selected.length, 1)}
             disabled={field.disabled || uploading || atLimit}
             onDrop={(files) => void upload(files)}
             onError={(error) =>

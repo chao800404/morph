@@ -6,8 +6,13 @@ import type { CollectionGroup, CollectionItem } from "./create-config";
  * `items` nests a collection under another in the sidebar only — every
  * collection, nested or not, is addressed at `/dashboard/<slug>`. Keeping URLs
  * flat is what lets `/dashboard/<slug>/<id>` exist without colliding with a
- * two-segment collection path, and it is what Medusa does: `product-options`,
- * `product-tags` and `collections` are all top-level there too.
+ * two-segment collection path, and it is what Medusa does: `collections` and
+ * `categories` are top-level there too.
+ *
+ * Flat does not mean prefixed. This once said Medusa uses `product-categories`
+ * and `product-tags`; those are its *API* routes. Its dashboard addresses them
+ * as `/categories` and `/collections`, and a slug only has to be unique across
+ * the whole config, not namespaced by the collection it is nested under.
  */
 export const getAllCollections = (
   groups: CollectionGroup[],

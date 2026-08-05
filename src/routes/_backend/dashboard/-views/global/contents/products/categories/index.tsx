@@ -67,7 +67,7 @@ const Categories = () => {
     [invalidate, setInfoData, setInfoOpen],
   );
 
-  const editAction = useCollectionEditAction("product-categories");
+  const editAction = useCollectionEditAction("categories");
 
   const categoryRows = result?.success ? (result.data?.categories ?? []) : [];
 
@@ -77,7 +77,7 @@ const Categories = () => {
       description="Organise products into a browsable tree for your storefront."
       searchPlaceholder="Search"
       sortOptions={PRODUCT_CATEGORY_SORT_OPTIONS}
-      headerActions={<CollectionCreateButton slug="product-categories" />}
+      headerActions={<CollectionCreateButton slug="categories" />}
       columns={PRODUCT_CATEGORY_COLUMNS}
       rows={categoryRows}
       getRowId={(category) => category.id}
@@ -89,7 +89,7 @@ const Categories = () => {
       onRowClick={(category) =>
         void navigate({
           to: "/dashboard/$slug/$id",
-          params: { slug: "product-categories", id: category.id },
+          params: { slug: "categories", id: category.id },
         })
       }
       rowActions={(category) => [

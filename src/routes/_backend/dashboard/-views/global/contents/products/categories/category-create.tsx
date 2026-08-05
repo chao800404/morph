@@ -15,7 +15,7 @@ import {
   emptyCategoryForm,
 } from "./config/product-category-form";
 
-/** Create page for product categories, at /dashboard/product-categories/create. */
+/** Create page for product categories, at /dashboard/categories/create. */
 const CategoryCreate = () => {
   const queryClient = useQueryClient();
   const close = useRouteModalClose();

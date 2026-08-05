@@ -2,7 +2,7 @@ import { DialogFooterActions } from "@/components/dialog/dialog-footer-actions";
 import {
   useCloseOnEscape,
   useRouteModalClose,
-} from "@/components/dialog/route-form-modal";
+} from "@/components/dialog/route-modal-close";
 import { RouteFullscreenSurface } from "@/components/dialog/route-fullscreen-surface";
 import { Skeleton } from "@/components/ui/skeleton";
 import {

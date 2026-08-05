@@ -3,9 +3,8 @@ import {
   createCollectionInputSchema,
   deleteCollectionsInputSchema,
   getProductInputSchema,
-  handleSchema,
   listCollectionsInputSchema,
-  slugify,
+  toHandle,
   updateCollectionInputSchema,
 } from "@/lib/validations/product";
 import { createServerFn } from "@tanstack/react-start";
@@ -94,9 +93,7 @@ export const createCollection = createServerFn({ method: "POST" })
     const actorId = context.user.id;
 
     try {
-      const handleResult = handleSchema.safeParse(
-        data.handle ?? slugify(data.title),
-      );
+      const handleResult = toHandle(data.handle, data.title);
       if (!handleResult.success) {
         return {
           success: false,
@@ -162,12 +159,28 @@ export const updateCollection = createServerFn({ method: "POST" })
         };
       }
 
-      if (data.handle && data.handle !== existing.handle) {
-        const clash = await productCollectionDal.findByHandle(data.handle);
+      // Slugified first, so a typed "Summer Shirt" becomes `summer-shirt`
+      // rather than failing validation the author cannot see.
+      let handle: string | undefined;
+      if (data.handle !== undefined) {
+        const result = toHandle(data.handle, data.title ?? existing.title);
+        if (!result.success) {
+          return {
+            success: false,
+            message: "Could not derive a valid handle",
+            data: null,
+            errors: { handle: [result.error.issues[0].message] },
+          };
+        }
+        handle = result.data;
+      }
+
+      if (handle && handle !== existing.handle) {
+        const clash = await productCollectionDal.findByHandle(handle);
         if (clash && clash.id !== data.id) {
           return {
             success: false,
-            message: `A collection with the handle "${data.handle}" already exists`,
+            message: `A collection with the handle "${handle}" already exists`,
             data: null,
             errors: { handle: ["This handle is already in use"] },
           };
@@ -176,7 +189,7 @@ export const updateCollection = createServerFn({ method: "POST" })
 
       await productCollectionDal.update(data.id, {
         title: data.title,
-        handle: data.handle,
+        handle,
         description: data.description,
         metadata: data.metadata,
         updatedBy: actorId,

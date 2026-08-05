@@ -1,9 +1,10 @@
+import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
 import {
   RouteFormPage,
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
-import { Spinner } from "@/components/ui/spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import {
   productCategoryQueries,
   productTaxonomyQueries,
@@ -18,7 +19,7 @@ import {
 } from "./config/product-category-form";
 
 /**
- * Edit page for a category, at /dashboard/product-categories/<id>/edit.
+ * Edit page for a category, at /dashboard/categories/<id>/edit.
  *
  * The parent is deliberately absent: moving a category would have to rewrite
  * every descendant's materialised path, and Medusa's edit form cannot do it
@@ -54,21 +55,15 @@ const CategoryEdit = () => {
   };
 
   if (isPending) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <Spinner />
-      </div>
-    );
+    return <RouteSurfacePending />;
   }
 
   const category = result?.success ? result.data : null;
   if (!category) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">
+      <RouteSurfaceMessage>
           {result?.message ?? "Category not found"}
-        </p>
-      </div>
+      </RouteSurfaceMessage>
     );
   }
 

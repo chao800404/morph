@@ -41,7 +41,7 @@ const CategoryDetail = () => {
     () =>
       void navigate({
         to: "/dashboard/$slug/$id/edit",
-        params: { slug: "product-categories", id },
+        params: { slug: "categories", id },
       }),
     [id, navigate],
   );
@@ -61,7 +61,7 @@ const CategoryDetail = () => {
           {result?.message ?? "Category not found"}
         </p>
         <Button variant="outline" size="sm" asChild>
-          <Link to="/dashboard/$slug" params={{ slug: "product-categories" }}>
+          <Link to="/dashboard/$slug" params={{ slug: "categories" }}>
             Back to categories
           </Link>
         </Button>
@@ -102,7 +102,7 @@ const CategoryDetail = () => {
               <Link
                 key={child.id}
                 to="/dashboard/$slug/$id"
-                params={{ slug: "product-categories", id: child.id }}
+                params={{ slug: "categories", id: child.id }}
               >
                 <Badge variant="secondary" className="hover:bg-muted">
                   {child.name}
@@ -144,12 +144,12 @@ const CategoryDetail = () => {
           description="Products filed under this category."
           filter={{ categoryId: id }}
           seed={{ seedCategoryId: id }}
-          returnTo={`/dashboard/product-categories/${id}`}
+          returnTo={`/dashboard/categories/${id}`}
           emptyTitle="No products in this category"
           emptyDescription="Create one here, or assign this category from a product's Organize step."
         />
         <MetadataCard
-          slug="product-categories"
+          slug="categories"
           id={id}
           keyCount={Object.keys(category.metadata).length}
         />

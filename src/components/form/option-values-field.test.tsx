@@ -83,3 +83,46 @@ describe("OptionValuesField, creatable choices", () => {
     expect(screen.queryByText(/^Create/)).toBeNull();
   });
 });
+
+describe("OptionValuesField without a selection handler", () => {
+  const hiddenValue = (container: HTMLElement) =>
+    (container.querySelector('input[name="tags"]') as HTMLInputElement).value;
+
+  it("still records a pick", () => {
+    // `RouteFormPage` renders fields declaratively and submits natively, so it
+    // passes no handler. Purely controlled meant clicking a choice on the Add
+    // Options and Organization pages did nothing at all.
+    const { container } = render(
+      <OptionValuesField name="tags" choices={CHOICES} selectedIds={[]} />,
+    );
+
+    openDropdown(container);
+    fireEvent.click(screen.getByText("shirt"));
+
+    expect(JSON.parse(hiddenValue(container))).toEqual(["shirt"]);
+  });
+
+  it("follows the caller when it owns the value", () => {
+    // The create wizard seeds an option after its values load, so the field has
+    // to accept a value arriving later.
+    const { container, rerender } = render(
+      <OptionValuesField
+        name="tags"
+        choices={CHOICES}
+        selectedIds={[]}
+        onSelectionChange={vi.fn()}
+      />,
+    );
+
+    rerender(
+      <OptionValuesField
+        name="tags"
+        choices={CHOICES}
+        selectedIds={["trousers"]}
+        onSelectionChange={vi.fn()}
+      />,
+    );
+
+    expect(JSON.parse(hiddenValue(container))).toEqual(["trousers"]);
+  });
+});

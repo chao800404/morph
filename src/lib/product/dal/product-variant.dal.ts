@@ -104,6 +104,45 @@ export const productVariantDal = {
   },
 
   /**
+   * Which of a variant's unique identifiers is already taken.
+   *
+   * `sku` and `barcode` each have an active-only unique index, so a duplicate
+   * is a D1 constraint failure wrapped in Drizzle's `Failed query:` — unusable
+   * as a form error. Checking first is what lets the handler point at the field.
+   *
+   * Racy in principle: nothing stops a concurrent insert between this read and
+   * the write. The index is still the real guarantee; this only decides which
+   * of the two errors the author sees, and on a single-operator dashboard the
+   * friendly one wins nearly always.
+   */
+  async findIdentifierConflict(options: {
+    sku?: string | null;
+    barcode?: string | null;
+    excludeId?: string;
+  }): Promise<"sku" | "barcode" | null> {
+    const db = await getDb();
+
+    for (const [field, column, value] of [
+      ["sku", productVariants.sku, options.sku],
+      ["barcode", productVariants.barcode, options.barcode],
+    ] as const) {
+      // A blank identifier is "no value" and many variants may share it — the
+      // index is partial on `IS NOT NULL` for exactly that reason.
+      if (!value) continue;
+
+      const rows = await db
+        .select({ id: productVariants.id })
+        .from(productVariants)
+        .where(and(eq(column, value), isNull(productVariants.deletedAt)))
+        .limit(2);
+
+      if (rows.some((row) => row.id !== options.excludeId)) return field;
+    }
+
+    return null;
+  },
+
+  /**
    * Insert variants together with their option links and prices.
    *
    * D1 has no interactive transactions, so a failure part-way leaves the rows

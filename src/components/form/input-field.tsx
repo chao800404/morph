@@ -40,6 +40,7 @@ export const InputField = ({
       variant={affixed ? undefined : "card"}
       name={field.name}
       type={field.inputType || "text"}
+      step={field.step}
       defaultValue={value}
       onChange={(e) => onChange?.(e.target.value)}
       placeholder={field.placeholder || `Enter ${field.label}...`}

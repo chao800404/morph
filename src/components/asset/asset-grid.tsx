@@ -16,14 +16,25 @@ import type { ReactNode } from "react";
  */
 export const AssetGrid = ({
   children,
+  leadTile = false,
   className,
 }: {
   children: ReactNode;
+  /**
+   * Gives the first tile a 2×2 cell.
+   *
+   * Opt-in, and only for grids where the first position *means* something —
+   * a product's gallery, where it is the thumbnail. Size is a strong signal,
+   * so using it where the order is arbitrary (the Assets upload preview) would
+   * imply a rule that does not exist.
+   */
+  leadTile?: boolean;
   className?: string;
 }) => (
   <div
     className={cn(
       "grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-3",
+      leadTile && "[&>*:first-child]:col-span-2 [&>*:first-child]:row-span-2",
       className,
     )}
   >

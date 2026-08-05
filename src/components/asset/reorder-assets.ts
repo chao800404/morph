@@ -1,26 +1,26 @@
 import type { SelectedAsset } from "./asset-tile";
 
 /**
- * Move one asset to another's position.
+ * Move one asset from one position to another.
  *
- * Pure and separate from the grid because the ordering *is* the data here — the
- * first entry becomes the product's thumbnail — and the two directions are easy
- * to get wrong: dragging forwards and backwards land on different indices once
- * the item is removed from the list.
+ * Indices rather than ids because that is what dnd-kit reports: a sortable
+ * tracks `initialIndex` and `index`, and by the time the drag ends the second
+ * one has already been updated by the optimistic sorting plugin. The drop
+ * *target* is not reliable at that moment — releasing the pointer between two
+ * tiles leaves it null, which is how the first version of this silently saved
+ * nothing.
  *
- * Unknown ids are a no-op rather than an error: a drop can land after the list
- * has already changed underneath it.
+ * Out-of-range indices are a no-op: a drop can resolve after the list has
+ * already changed underneath it.
  */
-export const reorderAssets = (
+export const moveAsset = (
   assets: SelectedAsset[],
-  sourceId: string,
-  targetId: string,
+  from: number,
+  to: number,
 ): SelectedAsset[] => {
-  if (sourceId === targetId) return assets;
-
-  const from = assets.findIndex((asset) => asset.id === sourceId);
-  const to = assets.findIndex((asset) => asset.id === targetId);
-  if (from === -1 || to === -1) return assets;
+  if (from === to) return assets;
+  if (from < 0 || from >= assets.length) return assets;
+  if (to < 0 || to >= assets.length) return assets;
 
   const next = [...assets];
   const [moved] = next.splice(from, 1);

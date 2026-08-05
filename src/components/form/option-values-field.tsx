@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { OptionValueChoice } from "@/lib/validations/form";
 import { ChevronsUpDown, GripVertical, Plus, X } from "lucide-react";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 
 export type { OptionValueChoice } from "@/lib/validations/form";
 
@@ -103,14 +103,38 @@ const ChoiceValues = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const atLimit =
-    maxSelected !== undefined && selectedIds.length >= maxSelected;
+
+  /**
+   * The selection lives here, and follows the prop whenever the caller changes
+   * it.
+   *
+   * Two kinds of caller: the create wizard owns the value and feeds it back
+   * (seeding an option applies after its values load, so the field has to
+   * follow), while `RouteFormPage` renders fields declaratively, passes no
+   * handler and submits natively. Purely controlled meant clicking a choice on
+   * a route-backed form did nothing at all.
+   */
+  const [selected, setSelected] = useState<string[]>(selectedIds);
+  const fromProps = selectedIds.join("|");
+  useEffect(() => {
+    setSelected(selectedIds.slice());
+    // Compared by contents: an inline `[]` is a new array every render, and
+    // depending on the reference would reset the field on each keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromProps]);
+
+  const commit = (next: string[]) => {
+    setSelected(next);
+    onSelectionChange?.(next);
+  };
+
+  const atLimit = maxSelected !== undefined && selected.length >= maxSelected;
 
   // Selection order follows `choices`, so the chips and anything derived from
   // them stay in the order the source defines rather than click order.
-  const toggle = (id: string, selected: boolean) => {
-    if (!selected) {
-      onSelectionChange?.(selectedIds.filter((current) => current !== id));
+  const toggle = (id: string, isSelected: boolean) => {
+    if (!isSelected) {
+      commit(selected.filter((current) => current !== id));
       return;
     }
 
@@ -118,21 +142,19 @@ const ChoiceValues = ({
     // just-created values appended — those have no choice to sort against yet,
     // and rebuilding the list from `choices` alone would drop them.
     const fromChoices = choices
-      .filter((c) => c.id === id || selectedIds.includes(c.id))
+      .filter((c) => c.id === id || selected.includes(c.id))
       .map((c) => c.id);
-    const created = [...selectedIds, id].filter(
+    const created = [...selected, id].filter(
       (current) => !choices.some((choice) => choice.id === current),
     );
-    onSelectionChange?.([...new Set([...fromChoices, ...created])]);
+    commit([...new Set([...fromChoices, ...created])]);
   };
 
   // Derived from the selection rather than from `choices`, because a value the
   // user just created is selected before it exists as a choice. Falling back to
   // the id is safe in that mode: there the id is the value.
   const byId = new Map(choices.map((choice) => [choice.id, choice]));
-  const selected = selectedIds.map(
-    (id) => byId.get(id) ?? { id, value: id },
-  );
+  const chips = selected.map((id) => byId.get(id) ?? { id, value: id });
 
   // Offered only when nothing already matches, so picking an existing value is
   // never ambiguous with creating a duplicate of it.
@@ -147,7 +169,7 @@ const ChoiceValues = ({
 
   return (
     <div className={cn("w-full", className)}>
-      <input type="hidden" name={name} value={JSON.stringify(selectedIds)} />
+      <input type="hidden" name={name} value={JSON.stringify(selected)} />
 
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
@@ -173,7 +195,7 @@ const ChoiceValues = ({
                   {placeholder}
                 </span>
               ) : (
-                selected.map((choice) => (
+                chips.map((choice) => (
                   <Badge
                     key={choice.id}
                     variant="secondary"
@@ -218,7 +240,7 @@ const ChoiceValues = ({
                   <CommandItem
                     value={typed}
                     onSelect={() => {
-                      onSelectionChange?.([...selectedIds, typed]);
+                      commit([...selected, typed]);
                       setSearch("");
                     }}
                   >
@@ -227,7 +249,7 @@ const ChoiceValues = ({
                   </CommandItem>
                 )}
                 {choices.map((choice) => {
-                  const checked = selectedIds.includes(choice.id);
+                  const checked = selected.includes(choice.id);
                   return (
                     <CommandItem
                       key={choice.id}

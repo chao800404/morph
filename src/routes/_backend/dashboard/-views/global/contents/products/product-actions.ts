@@ -1,4 +1,8 @@
-import { deleteVariants, updateVariant } from "@/server/product/variants.serverFn";
+import {
+  createVariant,
+  deleteVariants,
+  updateVariant,
+} from "@/server/product/variants.serverFn";
 import type { AssetActionResult } from "@/lib/asset/action-result";
 import { createCollection, deleteCollections, updateCollection } from "@/server/product/collections.serverFn";
 import {
@@ -6,7 +10,12 @@ import {
   deleteProductCategories,
   updateProductCategory,
 } from "@/server/product/categories.serverFn";
-import { createProductOption, deleteProductOptions, updateProductOption } from "@/server/product/options.serverFn";
+import {
+  setProductOptions,
+  createProductOption,
+  deleteProductOptions,
+  updateProductOption,
+} from "@/server/product/options.serverFn";
 import { deleteProducts, updateProduct } from "@/server/product/update-product.serverFn";
 
 /**
@@ -82,9 +91,52 @@ export const updateProductAction = async ({
           status === "draft" || status === "published" || status === "archived"
             ? status
             : undefined,
+        material: text(data, "material") ?? null,
         // An unchecked switch submits nothing, so absence is false rather than
         // "leave alone" — this form always renders the switch.
         discountable: data.get("discountable") === "on",
+      },
+    }),
+  );
+};
+
+/**
+ * Shipping and customs.
+ *
+ * Blank clears the field rather than leaving it: the form always renders every
+ * one of them, so an empty box is the author saying "no value", not "unchanged".
+ *
+ * Not rounded — the columns are `real`, because a carrier's rate table takes
+ * 12.5 mm and rounding it would quietly change what is shipped.
+ */
+const measurement = (data: FormData, key: string): number | null => {
+  const raw = text(data, key);
+  if (raw === undefined) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+};
+
+export const updateProductAttributesAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing product ID" };
+  }
+
+  return toActionResult(
+    await updateProduct({
+      data: {
+        id,
+        weight: measurement(data, "weight"),
+        length: measurement(data, "length"),
+        width: measurement(data, "width"),
+        height: measurement(data, "height"),
+        originCountry: text(data, "originCountry")?.toUpperCase() ?? null,
+        hsCode: text(data, "hsCode") ?? null,
+        midCode: text(data, "midCode") ?? null,
       },
     }),
   );
@@ -481,6 +533,106 @@ export const updateProductMetadataAction = async ({
 };
 
 /**
+ * `price-<code>` keys in major units, one per store currency, because the form
+ * renders a field each and `FormData` has no nested shape. A blank or zero
+ * field drops the currency rather than storing a free variant.
+ */
+const readPrices = (data: FormData) => {
+  const prices: Array<{ currencyCode: string; amount: number }> = [];
+  for (const [key, value] of data.entries()) {
+    if (!key.startsWith("price-") || typeof value !== "string") continue;
+    const amount = Math.round(Number(value) * 100);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    prices.push({ currencyCode: key.slice("price-".length), amount });
+  }
+  return prices;
+};
+
+/** One `option-<optionId>` select per axis, each holding a value id. */
+const readOptionValueIds = (data: FormData) =>
+  [...data.entries()].flatMap(([key, value]) =>
+    key.startsWith("option-") && typeof value === "string" && value
+      ? [value]
+      : [],
+  );
+
+const readQuantity = (data: FormData) => {
+  const quantity = Number(text(data, "inventoryQuantity") ?? "0");
+  return Number.isFinite(quantity) ? Math.max(0, Math.floor(quantity)) : 0;
+};
+
+/** The full option set the author left ticked; the server diffs it. */
+export const setProductOptionsAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const productId = text(data, "productId");
+  if (!productId) {
+    return { success: false, message: "Missing product ID" };
+  }
+
+  // `{ optionId, valueIds }` pairs: the server rejects an option with no
+  // values, and only the page has the library loaded to expand them.
+  const raw = data.get("optionSelections");
+  let options: Array<{ optionId: string; valueIds: string[] }> = [];
+  if (typeof raw === "string" && raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      options = Array.isArray(parsed)
+        ? (parsed as Array<{ optionId: string; valueIds: string[] }>)
+        : [];
+    } catch {
+      return { success: false, message: "Could not read the selected options" };
+    }
+  }
+
+  // An empty set is legitimate: it detaches every axis from a product that has
+  // no variants using them.
+  return toActionResult(
+    await setProductOptions({
+      data: {
+        productId,
+        options,
+        // Only ever set by the confirmation, which states the count first.
+        removeVariantsInUse: data.get("removeVariantsInUse") === "on",
+      },
+    }),
+  );
+};
+
+export const createVariantAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const productId = text(data, "productId");
+  if (!productId) {
+    return { success: false, message: "Missing product ID" };
+  }
+
+  return toActionResult(
+    await createVariant({
+      data: {
+        productId,
+        title: text(data, "title") ?? "",
+        sku: text(data, "sku") ?? null,
+        barcode: text(data, "barcode") ?? null,
+        weight: measurement(data, "weight"),
+        length: measurement(data, "length"),
+        width: measurement(data, "width"),
+        height: measurement(data, "height"),
+        manageInventory: data.get("manageInventory") === "on",
+        allowBackorder: data.get("allowBackorder") === "on",
+        inventoryQuantity: readQuantity(data),
+        optionValueIds: readOptionValueIds(data),
+        prices: readPrices(data),
+      },
+    }),
+  );
+};
+
+/**
  * One variant's own fields.
  *
  * Prices arrive as `price-<code>` keys in major units, because the form renders
@@ -497,15 +649,8 @@ export const updateVariantAction = async ({
     return { success: false, message: "Missing variant ID" };
   }
 
-  const prices: Array<{ currencyCode: string; amount: number }> = [];
-  for (const [key, value] of data.entries()) {
-    if (!key.startsWith("price-") || typeof value !== "string") continue;
-    const amount = Math.round(Number(value) * 100);
-    if (!Number.isFinite(amount) || amount <= 0) continue;
-    prices.push({ currencyCode: key.slice("price-".length), amount });
-  }
-
-  const quantity = Number(text(data, "inventoryQuantity") ?? "0");
+  const prices = readPrices(data);
+  const quantity = readQuantity(data);
 
   return toActionResult(
     await updateVariant({
@@ -513,13 +658,20 @@ export const updateVariantAction = async ({
         id,
         title: text(data, "title"),
         sku: text(data, "sku") ?? null,
+        barcode: text(data, "barcode") ?? null,
+        // The variant's own shipping attributes, overriding the product's.
+        // Blank clears rather than leaves unchanged, for the same reason the
+        // product's attributes form does — see `measurement`.
+        weight: measurement(data, "weight"),
+        length: measurement(data, "length"),
+        width: measurement(data, "width"),
+        height: measurement(data, "height"),
         // Unchecked switches submit nothing; this form always renders both.
         manageInventory: data.get("manageInventory") === "on",
         allowBackorder: data.get("allowBackorder") === "on",
-        inventoryQuantity: Number.isFinite(quantity)
-          ? Math.max(0, Math.floor(quantity))
-          : 0,
+        inventoryQuantity: quantity,
         prices,
+        optionValueIds: readOptionValueIds(data),
       },
     }),
   );

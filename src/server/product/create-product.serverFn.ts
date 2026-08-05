@@ -6,6 +6,7 @@ import {
   productTypeDal,
 } from "@/lib/product/dal/product-taxonomy.dal";
 import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
+import { MAX_GENERATED_VARIANTS } from "@/lib/product/variant-limits";
 import type {
   ProductOptionDTO,
   ProductOptionValueDTO,
@@ -13,15 +14,12 @@ import type {
 import type { ProductVariantInsertDTO } from "@/lib/product/dto/product-variant.dto";
 import {
   createProductInputSchema,
-  handleSchema,
   optionSelectionValueCount,
-  slugify,
+  toHandle,
 } from "@/lib/validations/product";
 import { createServerFn } from "@tanstack/react-start";
+import { getConfig } from "../get-config";
 import { productAdminMiddleware } from "../middleware/auth.middleware";
-
-/** Cap the generated matrix so a careless option set cannot blow up D1. */
-const MAX_GENERATED_VARIANTS = 200;
 
 /**
  * Cartesian product of the option values, in option order.
@@ -39,15 +37,17 @@ const buildCombinations = (
   );
 
 export const createProduct = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createProductInputSchema.parse(data))
+  .validator((data: unknown) =>
+    createProductInputSchema(
+      getConfig().server.upload.maxAssetsPerRecord,
+    ).parse(data),
+  )
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
 
     try {
-      const handleResult = handleSchema.safeParse(
-        data.handle ?? slugify(data.title),
-      );
+      const handleResult = toHandle(data.handle, data.title);
       if (!handleResult.success) {
         return {
           success: false,

@@ -13,6 +13,8 @@ export interface ProductCollectionDTO {
   title: string;
   handle: string;
   description: string | null;
+  /** Set by whatever system owns this collection upstream. */
+  externalId: string | null;
   /** Free-form store-defined data; never trusted to hold anything private. */
   metadata: ProductMetadata;
   createdBy: string;

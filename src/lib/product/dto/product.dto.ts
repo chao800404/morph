@@ -91,6 +91,16 @@ export interface UpdateProductDTO {
   typeId?: string | null;
   discountable?: boolean;
   thumbnailAssetId?: string | null;
+  // Shipping and customs. The columns existed and the detail page read them,
+  // but nothing could write them until now.
+  weight?: number | null;
+  length?: number | null;
+  width?: number | null;
+  height?: number | null;
+  originCountry?: string | null;
+  hsCode?: string | null;
+  midCode?: string | null;
+  material?: string | null;
   metadata?: ProductMetadata;
   updatedBy: string;
 }

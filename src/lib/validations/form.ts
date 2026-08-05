@@ -148,6 +148,13 @@ export type InputFormField = FormFieldBase & {
    */
   prefix?: string;
   suffix?: string;
+  /**
+   * `step` for a numeric input.
+   *
+   * The browser validates against it, and the default of 1 rejects decimals —
+   * so a measurement field has to say `"any"` or it silently refuses 12.5.
+   */
+  step?: string | number;
 };
 
 export type TextareaFormField = FormFieldBase & {
@@ -229,6 +236,11 @@ export type MetadataFormField = FormFieldBase & {
  */
 export type AssetSelectFormField = FormFieldBase & {
   type: "asset-select";
+  /**
+   * Narrows the store's `upload.maxAssetsPerRecord` for this one field — a
+   * cover image is `1`. It cannot raise it: the server validates against the
+   * configured value.
+   */
   maxSelected?: number;
   /** Folder new uploads land in. Omitted means the library root. */
   uploadFolderId?: string;
@@ -281,6 +293,7 @@ const inputFormFieldSchema = z.object({
   inputType: z.string().optional(),
   prefix: z.string().max(20).optional(),
   suffix: z.string().max(20).optional(),
+  step: z.union([z.string(), z.number()]).optional(),
 });
 
 const textareaFormFieldSchema = z.object({
@@ -363,7 +376,7 @@ const metadataFormFieldSchema = z.object({
 const assetSelectFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("asset-select"),
-  maxSelected: z.number().int().positive().max(50).optional(),
+  maxSelected: z.number().int().positive().optional(),
   uploadFolderId: z.uuid().optional(),
 });
 

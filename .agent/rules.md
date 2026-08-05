@@ -224,6 +224,21 @@ Cannot access 'xxxServerFn' before initialization
 - 上限值取自 `bulkOperationLimits()`（`src/lib/db/operation-limits.ts`），依 `cms.config.ts` 的 `cloudflare.plan` 決定。Cloudflare 沒有 runtime API 可以查方案，只能宣告。
 - 調高上限前要有真實部署的量測。subrequest 通常不是最先耗盡的資源，串流檔案內容吃掉的 CPU 時間才是。
 
+### Commerce 模組邊界
+
+Medusa 的每個模組是可以各自部署的服務，所以模組之間**不能有資料庫層級的外鍵**。這份 schema 照抄了那條界線，理由不只是致敬：
+
+- **同模組內用真的外鍵，跨模組只用 `text` 欄位。** `carts.regionId`、`inventoryLevels.locationId`、`fulfillments.locationId` 都是純文字。關聯宣告在 `link.schema.ts`。
+- **因此每個 `*.schema.ts` 都不 import 另一個 `*.schema.ts`。** 這順便讓 schema 層永遠不可能製造 import cycle —— 也就是 `Cannot access 'X' before initialization` 那一類 bug 的來源。破壞這條界線就是把那個風險放回來。
+- **link table 沒有 cascade。** 沒有外鍵，SQLite 就不會幫你刪。刪產品時必須自己刪 `product_sales_channels`、`product_variant_price_sets` 等等，沒有別的東西會做。
+- **link table 也沒有 referential integrity。** 讀取時要 join 後丟掉對不到的列，不能相信那一列指向的東西還在。
+- 共用欄位群組在 `src/db/columns.ts`（`timestamps`、`metadata()`、`providerData()`）。`product.schema.ts` 早於它們，仍是逐欄寫開，不需要回頭改。
+- 金額一律是幣別最小單位的 `integer`；稅率與百分比是 `real`（`taxRates.rate` 的 8.25 代表 8.25%，不是 0.0825）；尺寸重量是 `real`。
+- **totals 一律不落地**（Medusa 全部標成 computed）。唯一例外是 `orderSummaries.totals`：去年開的發票不能用今年的稅率重算。
+- `orders.displayId`、`orderChangeActions.ordering` 在 Medusa 是 Postgres sequence。D1 沒有 sequence，必須由 DAL 指派，而且要在同一個 `batch()` 裡。
+- `apiKeys.token` 與 `invites.token` 存的是 **hash**，不是 token 本身。顯示一律用 `apiKeys.redacted`。
+- Line item 是**快照不是指標**：`cartLineItems` / `orderLineItems` 把 title、SKU、價格複製進去。商品改名或刪除後，購物車與訂單顯示的內容不能跟著變。地址同理（`cartAddresses`、`orderAddresses`、`fulfillmentAddresses` 各自一張表）。
+
 ## 5. UI、樣式與可存取性
 
 - 優先重用 `src/components/ui/`、既有 feature component 與 `cn()`，不要在 view 中複製一套基礎按鈕、dialog、table 或 form control。
@@ -260,6 +275,14 @@ Cannot access 'xxxServerFn' before initialization
 - 前綴 `/`、label、`labelHint` 與 `(Optional)` 標記屬於這個定義。handle 是 URL 片段，欄位就該長得像 URL 片段。
 - 前綴是裝飾，不是資料：它由 `InputGroupAddon` 畫出來，永遠不會進入送出的 value。唯讀顯示（`EditCard` 的 `displayValue`）則用 `` `/${handle}` `` 保持一致。
 - 需要新的靜態前後綴（貨幣代碼、單位）時，在 `InputFormField` 用既有的 `prefix`／`suffix` 就好，不要為單一頁面另包一層 input。
+
+### 頁面捲動由 Dashboard 外殼負責,功能頁不自己開捲動區
+
+- `dashboard.tsx` 的 `#dashboard-content` 是固定視窗高度且 `overflow-hidden`,底下包住 `<Outlet />` 的那一層是**唯一**的捲動容器(`h-full min-h-0 overflow-y-auto p-4`)。所有頁面因此都能往下捲。
+- **功能頁不得自己在最外層加 `overflow-y-auto` 或 `h-screen`**,那會變成兩層捲軸。頁面只管內容,高度自然長。
+- **Assets 是唯一不捲的頁面,而且它不需要例外處理**:它的卡片是 `h-content`（`100lvh - 5.5rem`），剛好等於捲動容器扣掉自身 `p-4` 之後的高度,所以填滿、不溢出、不出現捲軸。改動這兩個數字任一個都要一起看。
+- 卡片內部需要捲動的區域（Assets 的檔案清單、圖片挑選面板）自己開 `overflow-y-auto`，那是區域捲動，跟頁面捲動是兩件事。
+- 這條的由來:商品詳情頁長出第五張卡之後,超出視窗的部分完全點不到也捲不到 —— 外殼 `overflow-hidden` 把它裁掉了,而沒有任何一層負責捲。
 
 ### 左右分欄一律使用 PageSplitLayout
 
@@ -298,6 +321,18 @@ Cannot access 'xxxServerFn' before initialization
 - 編輯器一律使用 `metadata` field type 與 `MetadataField`，不可在 feature 內另寫一份 key/value 表單。它以 JSON 物件字串傳輸，理由與 `option-values` 相同：`FormFieldValue` 沒有物件成員，為單一 field type 擴充它會波及其他所有型別。
 - 詳情頁的摘要一律使用 `MetadataCard`（只有標題、key 數徽章與開啟鈕）。內容不攤在卡片上：一筆記錄可能有數十組,會蓋過真正描述該記錄的區塊。它不是 `EditCard` —— `EditCard` 依已知欄位清單渲染 label／值，metadata 的 key 是商店自己放的。
 - 輸入必須經 `metadataInputSchema`（key 與值長度、最多 50 組）。這個欄位由商店控制，沒有上限的話單一記錄就能塞進任意大的 payload，而之後每次讀取都要搬運它。
+
+### 每個 capability 都要宣告 prefetch，包含 `pages`
+
+- **只要 view 會 `useQuery`，該 capability 就必須有 `prefetch`，而且參數要跟 view 完全一致。** 少了它，畫面會出現兩層 loading：route 等 lazy chunk 一個、view 自己的 `isPending` 又一個。使用者看到的是兩顆轉圈。
+- 這條最常漏的是 `pages`。`index`／`detail` 因為列表明顯會抓資料，通常記得寫；子頁看起來「只是一張表單」，但它同樣要讀那筆記錄。商品的五個子頁一度全部沒宣告，直接開 `/dashboard/products/<id>/variant` 就會看到兩顆 spinner。
+- **view 需要幾個 query 就 prefetch 幾個。** 變體編輯頁除了商品本身還要 `currencyQueries.store()`（每個店面幣別一個價格欄位），少一個就少不了那顆 spinner。
+- 參數必須跟 view 正規化後的結果一模一樣，否則 loader 準備的是另一個 cache entry，view 仍然會重抓 —— 這也是列表頁一律用同一個 `normalize*ListParams` 的原因。
+- `prefetch` 一律 `void queryClient.prefetchQuery(...)` 不要 `await`：導覽不該被資料擋住，chunk 載入的時間本來就會蓋掉大部分等待。
+- 剩下的那一顆 skeleton 是 route 等 lazy chunk，那是應該存在的，用 `pendingView` 畫出頁面外框而不是換成 spinner。
+- **間接的查詢也算。** 欄位自己會抓資料：`folder-select` 會讀整棵資料夾樹、商品建立精靈的 Organize 步驟會讀 collections／taxonomy／option library。看 view 有沒有寫 `useQuery` 不夠，要看它渲染的 `fields` 裡有哪些 field type。
+- 只用 `useQueryClient` 做 invalidate 的 view **不需要** prefetch —— 它沒有讀取。稽核時別把兩者搞混。
+- **route-backed 頁面的 loading 與「找不到記錄」一律用 `RouteSurfacePending`／`RouteSurfaceMessage`,不可自己寫 `fixed inset-0` 的置中遮罩。** 那會是第二層覆蓋層,從它切換到真正的表單外殼看起來就是「視窗打開、關閉、又打開」。同一個 `RouteFullscreenSurface` 從頭到尾只換內容,畫面才不會閃。
 
 ### 記錄的附屬頁面走 `pages`，不是 query param
 

@@ -3,11 +3,14 @@ import type { ProductOptionDTO } from "./dto/product-option.dto";
 import type { ProductVariantDTO } from "./dto/product-variant.dto";
 import {
   filterVariants,
+  optionSortKey,
   paginateVariants,
   sortVariants,
+  toVariantSortKey,
   variantOptionValue,
 } from "./variant-table";
 
+/** `rank` is the position given: it is the order the author arranged. */
 const option = (
   id: string,
   title: string,
@@ -16,7 +19,11 @@ const option = (
   ({
     id,
     title,
-    values: values.map(([valueId, value]) => ({ id: valueId, value })),
+    values: values.map(([valueId, value], rank) => ({
+      id: valueId,
+      value,
+      rank,
+    })),
   }) as ProductOptionDTO;
 
 const variant = (
@@ -139,5 +146,91 @@ describe("sortVariants", () => {
     sortVariants(rows, "name", "asc");
 
     expect(rows).toEqual(original);
+  });
+});
+
+describe("sortVariants by an option axis", () => {
+  // Declared S, M, L, XL — the order a wearer expects and the order the author
+  // arranged in the option library.
+  const WEAR = option("opt-wear", "Size", [
+    ["v-s", "S"],
+    ["v-m", "M"],
+    ["v-l", "L"],
+    ["v-xl", "XL"],
+  ]);
+
+  const rows = [
+    variant("xl", "XL", null, ["v-xl"]),
+    variant("s", "S", null, ["v-s"]),
+    variant("l", "L", null, ["v-l"]),
+    variant("m", "M", null, ["v-m"]),
+  ];
+
+  const ids = (list: ProductVariantDTO[]) => list.map((row) => row.id);
+
+  it("orders by the axis's own rank, not alphabetically", () => {
+    // This is the whole point. Comparing the values as strings gives
+    // L, M, S, XL — an order nobody asked for, and the one a naive
+    // `localeCompare` on the column text would produce.
+    expect(
+      ids(sortVariants(rows, optionSortKey("opt-wear"), "asc", [WEAR])),
+    ).toEqual(["s", "m", "l", "xl"]);
+  });
+
+  it("reverses on desc", () => {
+    expect(
+      ids(sortVariants(rows, optionSortKey("opt-wear"), "desc", [WEAR])),
+    ).toEqual(["xl", "l", "m", "s"]);
+  });
+
+  it("puts variants with no value on the axis last in both directions", () => {
+    // A variant added before this axis existed holds no value on it. Folding it
+    // in with the direction would hide it at the top on one click, and it is
+    // exactly the row that needs filling in.
+    const withGap = [...rows, variant("none", "Legacy", null, [])];
+
+    expect(ids(sortVariants(withGap, optionSortKey("opt-wear"), "asc", [WEAR])).at(-1)).toBe("none");
+    expect(ids(sortVariants(withGap, optionSortKey("opt-wear"), "desc", [WEAR])).at(-1)).toBe("none");
+  });
+
+  it("leaves the order alone when the axis is gone", () => {
+    // A bookmarked `?sortBy` outlives the option it names. Inventing an order
+    // would be worse than keeping the one already on screen.
+    expect(ids(sortVariants(rows, optionSortKey("opt-removed"), "asc", [WEAR]))).toEqual(
+      ids(rows),
+    );
+  });
+
+  it("does not mutate the input", () => {
+    const original = ids(rows);
+    sortVariants(rows, optionSortKey("opt-wear"), "asc", [WEAR]);
+
+    expect(ids(rows)).toEqual(original);
+  });
+});
+
+describe("toVariantSortKey", () => {
+  const OPTIONS = [SIZE, COLOR];
+
+  it("keeps the fixed keys", () => {
+    expect(toVariantSortKey("name", OPTIONS)).toBe("name");
+    expect(toVariantSortKey("updatedAt", OPTIONS)).toBe("updatedAt");
+  });
+
+  it("accepts an axis the product actually has", () => {
+    expect(toVariantSortKey("option:opt-size", OPTIONS)).toBe("option:opt-size");
+  });
+
+  it("falls back when the axis is not on this product", () => {
+    // The same URL opened on a different product, or after the axis was
+    // removed. Sorting by nothing would look like the control is broken.
+    expect(toVariantSortKey("option:opt-gone", OPTIONS)).toBe("createdAt");
+  });
+
+  it("falls back for anything else", () => {
+    expect(toVariantSortKey("size", OPTIONS)).toBe("createdAt");
+    expect(toVariantSortKey("option:", OPTIONS)).toBe("createdAt");
+    expect(toVariantSortKey(undefined, OPTIONS)).toBe("createdAt");
+    expect(toVariantSortKey(["name"], OPTIONS)).toBe("createdAt");
   });
 });

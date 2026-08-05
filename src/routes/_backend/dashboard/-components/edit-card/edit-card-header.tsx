@@ -1,32 +1,35 @@
-"use client";
-
-import { Button } from "@/components/ui/button";
 import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { MoreVertical, Pencil } from "lucide-react";
+  editActionIcon,
+  RowActionsMenu,
+  type RowAction,
+} from "../data-table-card/row-actions-menu";
 
-interface EditCardHeaderProps {
-    onClickEdit: () => void;
-}
-
-export const EditCardHeader = ({ onClickEdit }: EditCardHeaderProps) => {
-    return (
-        <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-                <Button type="button" variant="none" size="icon">
-                    <MoreVertical className="h-4 w-4" />
-                </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="shadow-lg/20 inset-shadow-xs inset-shadow-border" align="end">
-                <DropdownMenuItem onClick={onClickEdit}>
-                    <Pencil className="mr-2 h-4 w-4" />
-                    Edit
-                </DropdownMenuItem>
-            </DropdownMenuContent>
-        </DropdownMenu>
-    );
-};
+/**
+ * The "…" menu on an information card.
+ *
+ * Built on `RowActionsMenu` rather than a second dropdown: destructive items,
+ * the separator before them, and the preload-on-open behaviour are already
+ * decided there, and a card that grew a Delete would otherwise have to
+ * re-decide all three.
+ */
+export const EditCardHeader = ({
+  onClickEdit,
+  actions = [],
+  label = "Card actions",
+}: {
+  /** Omit for a card whose only actions are the extra ones. */
+  onClickEdit?: () => void;
+  /** Anything beyond Edit — Delete, "go to source", and so on. */
+  actions?: RowAction[];
+  label?: string;
+}) => (
+  <RowActionsMenu
+    label={label}
+    actions={[
+      ...(onClickEdit
+        ? [{ label: "Edit", icon: editActionIcon, onSelect: onClickEdit }]
+        : []),
+      ...actions,
+    ]}
+  />
+);

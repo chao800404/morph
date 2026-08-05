@@ -114,6 +114,50 @@ export const productReadMiddleware = createMiddleware({
   });
 });
 
+/**
+ * The same check the four middlewares above make, expressed once.
+ *
+ * They predate it and are left alone — they work, and rewriting middleware that
+ * guards every existing mutation is not a change worth making blind. New
+ * modules use this.
+ *
+ * `forbidden` is a per-domain message on purpose: "Forbidden" alone gives an
+ * operator no way to know which permission they are missing.
+ */
+const roleMiddleware = (allowedRoles: readonly string[], forbidden: string) =>
+  createMiddleware({ type: "function" }).server(async ({ next }) => {
+    const request = getRequest();
+    const auth = getAuthWithAdmin();
+    const session = await auth.api.getSession({ headers: request.headers });
+
+    if (!session?.user) {
+      throw new Error("Unauthorized: Please sign in to continue");
+    }
+    if (!hasAnyRole(session.user.role, allowedRoles)) {
+      throw new Error(forbidden);
+    }
+
+    return next({
+      context: { session, user: session.user, auth },
+    });
+  });
+
+/**
+ * Commerce configuration — regions, channels, locations, customers.
+ *
+ * Writes are admin-only for the same reason catalogue writes are: these decide
+ * what the storefront sells, where it ships and what it charges.
+ */
+export const commerceAdminMiddleware = roleMiddleware(
+  ["admin"],
+  "Forbidden: Administrator access is required",
+);
+
+export const commerceReadMiddleware = roleMiddleware(
+  ["admin", "user"],
+  "Forbidden: Commerce access is not assigned to this account",
+);
+
 export const assetReadMiddleware = createMiddleware({
   type: "function",
 }).server(async ({ next }) => {

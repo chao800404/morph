@@ -216,7 +216,15 @@ export interface CMSConfigInput {
   upload: {
     maxFileSize: number;
     minFiles: number;
+    /** Files one upload request may carry. */
     maxFiles: number;
+    /**
+     * Images one record's gallery may hold.
+     *
+     * A different axis from `maxFiles`: that one bounds a single request, this
+     * one bounds what a product ends up with after any number of them.
+     */
+    maxAssetsPerRecord: number;
     allowedTypes: string[];
     allowedExtensions: string[];
   };
@@ -291,7 +299,15 @@ export interface ClientSafeConfig {
   upload: {
     maxFileSize: number;
     minFiles: number;
+    /** Files one upload request may carry. */
     maxFiles: number;
+    /**
+     * Images one record's gallery may hold.
+     *
+     * A different axis from `maxFiles`: that one bounds a single request, this
+     * one bounds what a product ends up with after any number of them.
+     */
+    maxAssetsPerRecord: number;
     allowedTypes: string[];
     allowedExtensions: string[];
   };
@@ -345,6 +361,7 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
       maxFileSize: config.upload.maxFileSize,
       minFiles: config.upload.minFiles,
       maxFiles: config.upload.maxFiles,
+      maxAssetsPerRecord: config.upload.maxAssetsPerRecord,
       allowedTypes: config.upload.allowedTypes,
       allowedExtensions: config.upload.allowedExtensions,
     },
