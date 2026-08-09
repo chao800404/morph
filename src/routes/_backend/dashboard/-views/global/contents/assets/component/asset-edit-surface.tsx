@@ -5,6 +5,7 @@ import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { Button } from "@/components/ui/button";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { SplitEditorLayout } from "@/routes/_backend/dashboard/-components/layout/split-editor-layout";
 import type { AssetEditItem } from "@/routes/_backend/dashboard/-views/features/asset/edit/asset-edit.types";
 import { generateEditFields } from "@/routes/_backend/dashboard/-views/features/asset/edit/edit-fields-utils";
 import { Wand2 } from "lucide-react";
@@ -125,7 +126,7 @@ export const AssetEditSurface = ({
           </Button>
         ) : undefined
       }
-      bodyClassName="flex min-h-0 max-lg:flex-col"
+      bodyClassName="min-h-0"
       footer={
         <DialogFooterActions
           isSheet={false}
@@ -138,71 +139,85 @@ export const AssetEditSurface = ({
         />
       }
     >
-      <ScrollArea className="min-w-0 flex-1 border-r bg-accent/40 max-lg:border-b max-lg:border-r-0">
-        <ScrollBar />
-        <div
-          ref={gridContainerRef}
-          className="grid grid-cols-4 gap-3 p-4 max-md:grid-cols-2"
-        >
-          {items.map((item) => {
-            const canRemove = items.length > 1;
-            return (
-              <div
-                role="button"
-                tabIndex={0}
-                key={`${item.type}:${item.id}`}
-                data-item-id={item.id}
-                className={cn(
-                  "cursor-pointer rounded-lg border p-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary",
-                  item.id === activeItem?.id && "ring-2 ring-primary",
-                )}
-                onClick={() => onActivate(item)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onActivate(item);
-                  }
-                }}
-              >
-                {item.type === "folder" ? (
-                  <AssetBlockMap
-                    type="folder"
-                    name={item.name}
-                    onRemove={canRemove ? () => onRemove(item) : undefined}
-                  />
-                ) : (
-                  <AssetBlockMap
-                    type="asset"
-                    name={item.name}
-                    fileType={item.fileType}
-                    extension={item.extension}
-                    src={item.fileType === "video" ? undefined : item.src}
-                    alt={item.alt}
-                    onRemove={canRemove ? () => onRemove(item) : undefined}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </ScrollArea>
-
-      <div className="w-full max-w-xl overflow-y-auto p-5">
-        <h2 className="mb-2 truncate text-base font-semibold">
-          {activeItem?.name}
-        </h2>
-        <p className="mb-6 text-sm text-muted-foreground">
-          Modify item details
-        </p>
-        <FieldsRenderer
-          key={`${activeItem?.type}:${activeItem?.id}`}
-          fields={fields}
-          onChange={(name, value) => {
-            if (typeof value === "string") onFieldChange(name, value);
-          }}
-          className="grid-cols-1"
-        />
-      </div>
+      <SplitEditorLayout
+        main={
+          <ScrollArea className="size-full">
+            <ScrollBar />
+            <div
+              ref={gridContainerRef}
+              className="grid grid-cols-4 gap-3 p-4 max-md:grid-cols-2"
+            >
+              {items.map((item) => {
+                const canRemove = items.length > 1;
+                return (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    key={`${item.type}:${item.id}`}
+                    data-item-id={item.id}
+                    className={cn(
+                      "cursor-pointer rounded-lg border p-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary",
+                      item.id === activeItem?.id &&
+                        "ring-[1.5px] ring-blue-500/50",
+                    )}
+                    onClick={() => onActivate(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onActivate(item);
+                      }
+                    }}
+                  >
+                    {item.type === "folder" ? (
+                      <AssetBlockMap
+                        type="folder"
+                        name={item.name}
+                        onRemove={canRemove ? () => onRemove(item) : undefined}
+                      />
+                    ) : (
+                      <AssetBlockMap
+                        type="asset"
+                        fileType={item.fileType}
+                        showCategory={false}
+                        src={item.src}
+                        alt={item.alt}
+                        onRemove={canRemove ? () => onRemove(item) : undefined}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
+        }
+        sidebar={
+          <>
+            <h2 className="mb-2 truncate text-base font-semibold">
+              {activeItem?.name}
+            </h2>
+            <p className="mb-6 text-sm text-muted-foreground">
+              Modify item details
+            </p>
+            {activeItem?.type === "asset" ? (
+              <dl className="mb-6 flex items-center justify-between border-y py-3 text-sm">
+                <dt className="text-muted-foreground">Format</dt>
+                <dd className="font-medium uppercase text-foreground">
+                  {activeItem.extension || activeItem.fileType}
+                </dd>
+              </dl>
+            ) : null}
+            <FieldsRenderer
+              key={`${activeItem?.type}:${activeItem?.id}`}
+              fields={fields}
+              onChange={(name, value) => {
+                if (typeof value === "string") onFieldChange(name, value);
+              }}
+              className="grid-cols-1"
+            />
+          </>
+        }
+        sidebarClassName="p-5"
+      />
     </RouteFullscreenSurface>
   );
 };

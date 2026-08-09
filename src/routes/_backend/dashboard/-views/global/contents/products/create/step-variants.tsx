@@ -1,16 +1,15 @@
-import { createSurface } from "@/components/dialog/create-surface";
-import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { cn } from "@/lib/utils";
+  DataGrid,
+  DataGridBody,
+  DataGridBooleanCell,
+  DataGridCell,
+  DataGridHead,
+  DataGridHeader,
+  DataGridInput,
+  DataGridReadonlyCell,
+  DataGridRow,
+} from "@/components/ui/data-grid";
 import type { StoreCurrencyDTO } from "@/lib/currency/dto/currency.dto";
 import type { Dispatch } from "react";
 import type { DraftAction, ProductDraft } from "./use-product-draft";
@@ -31,43 +30,17 @@ export const StepVariants = ({
   currencies: StoreCurrencyDTO[];
 }) => {
   const included = draft.variants.filter((variant) => variant.included);
+  const displayedVariants = draft.hasVariants
+    ? included
+    : [draft.defaultVariant];
+  const optionHeader = draft.hasVariants
+    ? draft.options
+        .filter((option) => option.selectedValueIds.length > 0)
+        .map((option) => option.title)
+        .join(" / ")
+    : "";
 
-  if (!draft.hasVariants) {
-    return (
-      <div className={cn(createSurface.content, "flex w-full flex-col gap-6")}>
-        <div className="space-y-1">
-          <h2 className="text-lg font-medium text-foreground">Variants</h2>
-          <p className="text-sm text-muted-foreground">
-            This product has no options, so a single default variant is created.
-          </p>
-        </div>
-
-        <FieldsRenderer
-          fields={currencies.map((currency) => ({
-            type: "input" as const,
-            name: `default-price-${currency.code}`,
-            label: `Price ${currency.code.toUpperCase()}`,
-            inputType: "number",
-            placeholder:
-              currency.decimalDigits > 0
-                ? `0.${"0".repeat(currency.decimalDigits)}`
-                : "0",
-            value: draft.defaultPrices[currency.code] ?? "",
-            colSpan: 1 as const,
-          }))}
-          className="grid-cols-1 sm:grid-cols-2"
-          onChange={(name, value) => {
-            const currency = name.replace("default-price-", "");
-            if (typeof value === "string") {
-              dispatch({ type: "setDefaultPrice", currency, value });
-            }
-          }}
-        />
-      </div>
-    );
-  }
-
-  if (included.length === 0) {
+  if (draft.hasVariants && included.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-10 text-center">
         <p className="max-w-md text-sm text-muted-foreground">
@@ -79,45 +52,47 @@ export const StepVariants = ({
   }
 
   return (
-    <div className="relative z-50 flex w-full flex-col gap-4 px-5 pt-24 pb-10">
-      <div className="space-y-1">
-        <h2 className="text-lg font-medium text-foreground">Variants</h2>
-        <p className="text-sm text-muted-foreground">
-          {included.length} variant{included.length === 1 ? "" : "s"} will be
-          created.
-        </p>
-      </div>
-
-      <div className="overflow-x-auto rounded-lg border border-border/60">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="min-w-[160px]">Options</TableHead>
-              <TableHead className="min-w-[180px]">Title</TableHead>
-              <TableHead className="min-w-[140px]">SKU</TableHead>
-              <TableHead className="w-32 text-center">
+    <div className="flex size-full min-h-0 flex-col overflow-hidden">
+      {!draft.hasVariants ? (
+        <div className="border-b px-4 py-3">
+          <p className="text-sm text-muted-foreground">
+            This product has no options, so a single default variant is created.
+          </p>
+        </div>
+      ) : null}
+      <div className="min-h-0 flex-1">
+        <DataGrid>
+          <DataGridHeader>
+            <DataGridRow>
+              <DataGridHead className="min-w-[180px]">
+                {optionHeader || "Options"}
+              </DataGridHead>
+              <DataGridHead className="min-w-[200px]">Title</DataGridHead>
+              <DataGridHead className="min-w-[160px]">SKU</DataGridHead>
+              <DataGridHead className="w-36 text-center">
                 Managed inventory
-              </TableHead>
-              <TableHead className="w-28 text-center">
+              </DataGridHead>
+              <DataGridHead className="w-32 text-center">
                 Allow backorder
-              </TableHead>
-              <TableHead className="w-28">Quantity</TableHead>
+              </DataGridHead>
+              <DataGridHead className="w-32">Quantity</DataGridHead>
               {currencies.map((currency) => (
-                <TableHead key={currency.code} className="min-w-[120px]">
+                <DataGridHead key={currency.code} className="min-w-[140px]">
                   Price {currency.code.toUpperCase()}
-                </TableHead>
+                </DataGridHead>
               ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {included.map((variant) => (
-              <TableRow key={variant.key}>
-                <TableCell className="text-muted-foreground">
-                  {variant.key}
-                </TableCell>
-                <TableCell>
-                  <Input
-                    variant="card"
+            </DataGridRow>
+          </DataGridHeader>
+          <DataGridBody>
+            {displayedVariants.map((variant) => (
+              <DataGridRow key={variant.key}>
+                <DataGridCell>
+                  <DataGridReadonlyCell>
+                    {variant.optionValues.join(" / ") || "Default"}
+                  </DataGridReadonlyCell>
+                </DataGridCell>
+                <DataGridCell>
+                  <DataGridInput
                     aria-label={`Title for ${variant.key}`}
                     value={variant.title}
                     onChange={(event) =>
@@ -129,10 +104,9 @@ export const StepVariants = ({
                       })
                     }
                   />
-                </TableCell>
-                <TableCell>
-                  <Input
-                    variant="card"
+                </DataGridCell>
+                <DataGridCell>
+                  <DataGridInput
                     aria-label={`SKU for ${variant.key}`}
                     value={variant.sku}
                     onChange={(event) =>
@@ -144,40 +118,44 @@ export const StepVariants = ({
                       })
                     }
                   />
-                </TableCell>
-                <TableCell className="text-center">
-                  <Checkbox
-                    checked={variant.manageInventory}
-                    aria-label={`Manage inventory for ${variant.key}`}
-                    onCheckedChange={(checked) =>
-                      dispatch({
-                        type: "setVariantFlag",
-                        key: variant.key,
-                        field: "manageInventory",
-                        value: checked === true,
-                      })
-                    }
-                  />
-                </TableCell>
-                <TableCell className="text-center">
-                  <Checkbox
-                    checked={variant.allowBackorder}
-                    aria-label={`Allow backorder for ${variant.key}`}
-                    onCheckedChange={(checked) =>
-                      dispatch({
-                        type: "setVariantFlag",
-                        key: variant.key,
-                        field: "allowBackorder",
-                        value: checked === true,
-                      })
-                    }
-                  />
-                </TableCell>
-                <TableCell>
-                  <Input
-                    variant="card"
+                </DataGridCell>
+                <DataGridCell>
+                  <DataGridBooleanCell>
+                    <Checkbox
+                      checked={variant.manageInventory}
+                      aria-label={`Manage inventory for ${variant.key}`}
+                      onCheckedChange={(checked) =>
+                        dispatch({
+                          type: "setVariantFlag",
+                          key: variant.key,
+                          field: "manageInventory",
+                          value: checked === true,
+                        })
+                      }
+                    />
+                  </DataGridBooleanCell>
+                </DataGridCell>
+                <DataGridCell>
+                  <DataGridBooleanCell>
+                    <Checkbox
+                      checked={variant.allowBackorder}
+                      aria-label={`Allow backorder for ${variant.key}`}
+                      onCheckedChange={(checked) =>
+                        dispatch({
+                          type: "setVariantFlag",
+                          key: variant.key,
+                          field: "allowBackorder",
+                          value: checked === true,
+                        })
+                      }
+                    />
+                  </DataGridBooleanCell>
+                </DataGridCell>
+                <DataGridCell>
+                  <DataGridInput
                     type="number"
                     min="0"
+                    disabled={!variant.manageInventory}
                     aria-label={`Quantity for ${variant.key}`}
                     value={variant.inventoryQuantity}
                     onChange={(event) =>
@@ -189,11 +167,10 @@ export const StepVariants = ({
                       })
                     }
                   />
-                </TableCell>
+                </DataGridCell>
                 {currencies.map((currency) => (
-                  <TableCell key={currency.code}>
-                    <Input
-                      variant="card"
+                  <DataGridCell key={currency.code}>
+                    <DataGridInput
                       type="number"
                       min="0"
                       step={10 ** -currency.decimalDigits}
@@ -213,12 +190,12 @@ export const StepVariants = ({
                         })
                       }
                     />
-                  </TableCell>
+                  </DataGridCell>
                 ))}
-              </TableRow>
+              </DataGridRow>
             ))}
-          </TableBody>
-        </Table>
+          </DataGridBody>
+        </DataGrid>
       </div>
     </div>
   );

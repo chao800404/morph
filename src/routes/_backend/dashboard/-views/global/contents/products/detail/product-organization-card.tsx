@@ -77,6 +77,20 @@ export const ProductOrganizationCard = ({
         )),
       ),
     },
+    {
+      key: "sales-channels",
+      label: "Sales Channels",
+      displayValue: badgeRow(
+        product.salesChannels.map((channel) => (
+          <LinkedBadge
+            key={channel.id}
+            to={`/dashboard/sales-channels/${channel.id}`}
+          >
+            {channel.name}
+          </LinkedBadge>
+        )),
+      ),
+    },
   ];
 
   return (

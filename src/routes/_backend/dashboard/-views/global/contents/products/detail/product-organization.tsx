@@ -17,6 +17,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
+  normalizeSalesChannelListParams,
+  salesChannelQueries,
+} from "@queries/sales-channel.queries";
+import {
   NO_COLLECTION,
   updateProductOrganizationAction,
 } from "../product-actions";
@@ -44,6 +48,12 @@ const ProductOrganization = () => {
   const { data: taxonomyResult, isPending: taxonomyPending } = useQuery(
     productTaxonomyQueries.list(),
   );
+  const { data: channelResult, isPending: channelsPending } = useQuery(
+    salesChannelQueries.list({
+      ...normalizeSalesChannelListParams({ sortBy: "name", sortOrder: "asc" }),
+      limit: 100,
+    }),
+  );
 
   const submit = async (
     _state: RouteFormState,
@@ -63,7 +73,7 @@ const ProductOrganization = () => {
     return response;
   };
 
-  if (isPending || collectionsPending || taxonomyPending) {
+  if (isPending || collectionsPending || taxonomyPending || channelsPending) {
     return <RouteSurfacePending />;
   }
 
@@ -83,6 +93,9 @@ const ProductOrganization = () => {
   const toValueChoices = (values: { value: string }[]) =>
     values.map(({ value }) => ({ id: value, value }));
   const categories = taxonomy?.categories ?? [];
+  const salesChannels = channelResult?.success
+    ? (channelResult.data?.salesChannels ?? [])
+    : [];
 
   const fields: FormField[] = [
     {
@@ -137,6 +150,20 @@ const ProductOrganization = () => {
       placeholder: "Select categories...",
       searchPlaceholder: "Search categories...",
       emptyMessage: "No category found.",
+    },
+    {
+      type: "option-values",
+      name: "salesChannelIds",
+      label: "Sales Channels",
+      optional: true,
+      choices: salesChannels.map((channel) => ({
+        id: channel.id,
+        value: channel.name,
+      })),
+      value: product.salesChannelIds,
+      placeholder: "Select sales channels...",
+      searchPlaceholder: "Search sales channels...",
+      emptyMessage: "No sales channel found.",
     },
   ];
 

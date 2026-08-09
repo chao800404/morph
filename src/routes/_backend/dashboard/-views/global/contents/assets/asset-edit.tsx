@@ -238,11 +238,16 @@ const AssetEdit = () => {
       if (!result.success) throw new Error(result.message);
 
       await queryClient.invalidateQueries({ queryKey: assetQueries.all() });
-      clearAllSelectedItems();
       toast.success(result.message || "Items updated successfully", {
         position: "top-center",
       });
-      closeRoute();
+
+      if (items.length > 1) {
+        setInitialItems(structuredClone(items));
+      } else {
+        clearAllSelectedItems();
+        closeRoute();
+      }
     } catch (error) {
       toast.error(getActionErrorMessage(error, "Failed to update items"), {
         position: "top-center",

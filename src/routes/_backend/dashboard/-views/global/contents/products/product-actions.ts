@@ -17,6 +17,7 @@ import {
   updateProductOption,
 } from "@/server/product/options.serverFn";
 import { deleteProducts, updateProduct } from "@/server/product/update-product.serverFn";
+import { setProductSalesChannels } from "@/server/sales-channel/sales-channels.serverFn";
 
 /**
  * FormData adapters for the shared dashboard dialogs.
@@ -161,8 +162,7 @@ export const updateProductOrganizationAction = async ({
 
   const collectionId = text(data, "collectionId");
 
-  return toActionResult(
-    await updateProduct({
+  const organizationResult = await updateProduct({
       data: {
         id,
         collectionId:
@@ -171,6 +171,14 @@ export const updateProductOrganizationAction = async ({
         tagValues: valueList(data, "tagValues"),
         categoryIds: idList(data, "categoryIds"),
       },
+    });
+  if (!organizationResult.success) {
+    return toActionResult(organizationResult);
+  }
+
+  return toActionResult(
+    await setProductSalesChannels({
+      data: { productId: id, salesChannelIds: idList(data, "salesChannelIds") },
     }),
   );
 };

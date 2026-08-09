@@ -1,7 +1,7 @@
-import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
-import { XIcon } from "lucide-react";
 import { MaximizeButton } from "../button/maximize-button";
+import { AssetCardCaption } from "./asset-card-caption";
+import { AssetRemoveButton } from "./asset-remove-button";
 
 type Props = {
   src: string;
@@ -31,25 +31,9 @@ export const ImageUploadBlock = ({
         <img src={src} alt={alt} className="size-full object-cover" />
       )}
 
-      {(name || category) && (
-        <div className="absolute bottom-1 left-1 right-1 flex gap-2 rounded-md bg-card/70 p-2 text-xs">
-          <p className="truncate">{name}</p>
-          {category && <Kbd className="ml-auto">{category}</Kbd>}
-        </div>
-      )}
+      <AssetCardCaption name={name} category={category} variant="subtle" />
 
-      {onRemove && (
-        <div
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          className="absolute top-1 right-1 size-5 cursor-pointer rounded-md-plus shadow-sm shadow-background bg-zinc-400/50 text-destructive-foreground flex items-center justify-center transition-opacity"
-          aria-label="Remove image"
-        >
-          <XIcon className="size-4" />
-        </div>
-      )}
+      <AssetRemoveButton onRemove={onRemove} label="Remove image" />
     </div>
   );
 };
@@ -72,24 +56,8 @@ export const ImageBlock = ({
       {src && src.length > 0 && (
         <img src={src} alt={alt} className="size-full object-cover" />
       )}
-      {(name || category) && (
-        <div className="absolute gap-2 flex p-3 bg-card/50 rounded-md shadow-elevation-modal bottom-1 left-1 right-1 text-xs text-white">
-          <p className="truncate">{name}</p>
-          {category && <Kbd className="ml-auto">{category}</Kbd>}
-        </div>
-      )}
-      {onRemove && (
-        <div
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          className="absolute top-1 right-1 size-5 cursor-pointer rounded-md-plus shadow-sm shadow-background bg-zinc-400/50 text-destructive-foreground flex items-center justify-center transition-opacity"
-          aria-label="Remove image"
-        >
-          <XIcon className="size-4" />
-        </div>
-      )}
+      <AssetCardCaption name={name} category={category} />
+      <AssetRemoveButton onRemove={onRemove} label="Remove image" />
     </div>
   );
 };

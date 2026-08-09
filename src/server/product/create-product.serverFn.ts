@@ -20,6 +20,9 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import { getConfig } from "../get-config";
 import { productAdminMiddleware } from "../middleware/auth.middleware";
+import { salesChannelDal } from "@/lib/sales-channel/dal/sales-channel.dal";
+import { resolveVariantSku } from "./product-sku";
+import { inventoryDal } from "@/lib/inventory/dal/inventory.dal";
 
 /**
  * Cartesian product of the option values, in option order.
@@ -84,6 +87,18 @@ export const createProduct = createServerFn({ method: "POST" })
         };
       }
 
+      const selectedChannels = await salesChannelDal.findByIds(
+        data.salesChannelIds,
+      );
+      if (selectedChannels.length !== data.salesChannelIds.length) {
+        return {
+          success: false,
+          message: "One or more sales channels no longer exist",
+          data: null,
+          errors: { salesChannelIds: ["Review the selected sales channels"] },
+        };
+      }
+
       // Only the generated matrix needs capping; an explicit list is already
       // bounded by the input schema.
       const combinationCount = data.options.reduce(
@@ -100,6 +115,15 @@ export const createProduct = createServerFn({ method: "POST" })
           message: `These options would generate ${combinationCount} variants, above the limit of ${MAX_GENERATED_VARIANTS}`,
           data: null,
           errors: { options: ["Too many option value combinations"] },
+        };
+      }
+      if (data.options.length === 0 && (data.variants?.length ?? 0) > 1) {
+        return {
+          success: false,
+          message:
+            "A product without options can only have one default variant",
+          data: null,
+          errors: { variants: ["Only one default variant is allowed"] },
         };
       }
 
@@ -125,6 +149,11 @@ export const createProduct = createServerFn({ method: "POST" })
         updatedBy: actorId,
       });
 
+      await salesChannelDal.setProductChannels(
+        productId,
+        selectedChannels.map((channel) => channel.id),
+      );
+
       if (data.assetIds.length > 0) {
         await productDal.setAssets(productId, data.assetIds);
       }
@@ -147,14 +176,21 @@ export const createProduct = createServerFn({ method: "POST" })
 
       let variantCount = 0;
       if (data.options.length > 0) {
-        const options = await productDal.replaceOptions(productId, data.options, actorId);
+        const options = await productDal.replaceOptions(
+          productId,
+          data.options,
+          actorId,
+        );
 
         // Option value IDs only exist after the server creates them, so the
         // client's string values are resolved against the freshly stored rows.
         const valueIdByOptionAndValue = new Map<string, string>();
         options.forEach((option, optionIndex) => {
           option.values.forEach((value) => {
-            valueIdByOptionAndValue.set(`${optionIndex}:${value.value}`, value.id);
+            valueIdByOptionAndValue.set(
+              `${optionIndex}:${value.value}`,
+              value.id,
+            );
           });
         });
 
@@ -188,21 +224,67 @@ export const createProduct = createServerFn({ method: "POST" })
               updatedBy: actorId,
             }));
 
-        await productVariantDal.createMany(variants);
+        const reservedSkus = new Set<string>();
+        const variantsWithSkus: ProductVariantInsertDTO[] = [];
+        for (const [index, variant] of variants.entries()) {
+          variantsWithSkus.push({
+            ...variant,
+            sku: await resolveVariantSku({
+              sku: variant.sku,
+              productHandle: handle,
+              variantTitle: variant.title,
+              optionValues:
+                data.variants?.[index]?.optionValues ??
+                variants[index].title.split(" / "),
+              index,
+              reserved: reservedSkus,
+            }),
+          });
+        }
+
+        await productVariantDal.createMany(variantsWithSkus);
+        for (const variant of variantsWithSkus) {
+          if (variant.manageInventory ?? true) {
+            await inventoryDal.ensureForVariant({
+              variantId: variant.id,
+              sku: variant.sku ?? null,
+              title: `${data.title} - ${variant.title}`,
+              quantity: variant.inventoryQuantity ?? 0,
+            });
+          }
+        }
         variantCount = variants.length;
       } else {
         // A product with no options still needs one sellable variant.
-        await productVariantDal.createMany([
-          {
-            id: crypto.randomUUID(),
-            productId,
-            title: "Default",
-            rank: 0,
-            prices: data.prices,
-            createdBy: actorId,
-            updatedBy: actorId,
-          },
-        ]);
+        const input = data.variants?.[0];
+        const defaultVariant: ProductVariantInsertDTO = {
+          id: crypto.randomUUID(),
+          productId,
+          title: input?.title ?? "Default",
+          sku: await resolveVariantSku({
+            sku: input?.sku,
+            productHandle: handle,
+            variantTitle: input?.title ?? "Default",
+            optionValues: [],
+            index: 0,
+          }),
+          rank: 0,
+          manageInventory: input?.manageInventory ?? true,
+          allowBackorder: input?.allowBackorder ?? false,
+          inventoryQuantity: input?.inventoryQuantity ?? 0,
+          prices: input && input.prices.length > 0 ? input.prices : data.prices,
+          createdBy: actorId,
+          updatedBy: actorId,
+        };
+        await productVariantDal.createMany([defaultVariant]);
+        if (defaultVariant.manageInventory ?? true) {
+          await inventoryDal.ensureForVariant({
+            variantId: defaultVariant.id,
+            sku: defaultVariant.sku ?? null,
+            title: `${data.title} - ${defaultVariant.title}`,
+            quantity: defaultVariant.inventoryQuantity ?? 0,
+          });
+        }
         variantCount = 1;
       }
 

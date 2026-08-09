@@ -41,7 +41,10 @@ export const AssetsCardSkeleton = ({ className }: { className?: string }) => (
  * needs no data, so there is nothing to fake.
  */
 export const AssetsPageSkeleton = () => (
-  <PageSplitLayout sidebar={<AssetPropertyEmptyCard />}>
+  <PageSplitLayout
+    sidebar={<AssetPropertyEmptyCard />}
+    stackBelow1280={false}
+  >
     <div className="min-h-content bg-component ring-muted-foreground/10 dark:ring-muted-foreground/20 flex flex-col rounded-lg ring">
         <div className="flex items-center justify-between gap-2 px-6 py-4">
           <div className="flex flex-col gap-1.5">

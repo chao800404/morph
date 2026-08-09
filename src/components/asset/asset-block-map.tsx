@@ -9,6 +9,7 @@ type BaseProps = {
     onRemove?: () => void;
     onMaximize?: () => void;
     className?: string;
+    showCategory?: boolean;
 };
 
 type AssetBlockProps = BaseProps &
@@ -65,7 +66,7 @@ export const AssetBlockMap = (props: AssetBlockProps) => {
         const commonProps = {
             name: props.name,
             onRemove: props.onRemove,
-            category: props.extension || props.fileType,
+            category: props.showCategory === false ? undefined : props.extension || props.fileType,
         };
 
         // 圖片資產
@@ -138,7 +139,7 @@ export const AssetBlockMap = (props: AssetBlockProps) => {
         return (
           <div className={cn("size-full border bg-muted flex flex-col items-center justify-center p-2 rounded-md", props.className)}>
             <span className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">
-              {props.extension || props.fileType || "FILE"}
+              {props.showCategory === false ? "FILE" : props.extension || props.fileType || "FILE"}
             </span>
           </div>
         );

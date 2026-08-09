@@ -29,6 +29,17 @@ export interface CloudflareDeployment {
   plan?: CloudflarePlan;
 }
 
+export interface ProductSkuConfig {
+  /** Generate a SKU only when the client leaves it blank. Defaults to true. */
+  autoGenerate?: boolean;
+  /** Supported tokens: product, variant, options, index and random. */
+  pattern?: string;
+  separator?: string;
+  casing?: "upper" | "lower" | "preserve";
+  /** Characters in the random token and collision suffix. */
+  suffixLength?: number;
+}
+
 /**
  * Context handed to a collection's `prefetch` by the dynamic dashboard routes.
  * `search` has already passed `dashboardSearchSchema` in the route.
@@ -228,6 +239,9 @@ export interface CMSConfigInput {
     allowedTypes: string[];
     allowedExtensions: string[];
   };
+  products?: {
+    sku?: ProductSkuConfig;
+  };
   localization: typeof localization;
   auth: {
     autoLogout: {
@@ -260,6 +274,7 @@ export interface CMSUserConfig {
     settings: CollectionGroup[];
   };
   upload: CMSConfigInput["upload"];
+  products?: CMSConfigInput["products"];
   localization: typeof localization;
   auth: CMSConfigInput["auth"];
   features?: CMSConfigInput["features"];

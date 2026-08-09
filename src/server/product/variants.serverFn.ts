@@ -9,6 +9,8 @@ import {
 } from "@/lib/validations/product";
 import { createServerFn } from "@tanstack/react-start";
 import { productAdminMiddleware } from "../middleware/auth.middleware";
+import { resolveVariantSku } from "./product-sku";
+import { inventoryDal } from "@/lib/inventory/dal/inventory.dal";
 
 export const updateVariant = createServerFn({ method: "POST" })
   .validator((data: unknown) => updateVariantInputSchema.parse(data))
@@ -108,6 +110,24 @@ export const updateVariant = createServerFn({ method: "POST" })
         prices: data.prices,
         updatedBy: actorId,
       });
+
+      if (data.manageInventory ?? existing.manageInventory) {
+        const product = await productDal.findById(existing.productId);
+        if (product) {
+          await inventoryDal.ensureForVariant({
+            variantId: data.id,
+            sku: data.sku ?? existing.sku,
+            title: `${product.title} - ${data.title ?? existing.title}`,
+            quantity: data.inventoryQuantity ?? existing.inventoryQuantity,
+          });
+          if (data.inventoryQuantity !== undefined) {
+            await inventoryDal.setPrimaryLevelQuantity(
+              data.id,
+              data.inventoryQuantity,
+            );
+          }
+        }
+      }
 
       return {
         success: true,
@@ -275,12 +295,23 @@ export const createVariant = createServerFn({ method: "POST" })
       }
 
       const id = crypto.randomUUID();
+      const sku = await resolveVariantSku({
+        sku: data.sku,
+        productHandle: product.handle,
+        variantTitle: data.title,
+        optionValues: product.options.flatMap((option) =>
+          option.values
+            .filter((value) => data.optionValueIds.includes(value.id))
+            .map((value) => value.value),
+        ),
+        index: product.variants.length,
+      });
       await productVariantDal.createMany([
         {
           id,
           productId: data.productId,
           title: data.title,
-          sku: data.sku,
+          sku,
           barcode: data.barcode,
           weight: data.weight,
           length: data.length,
@@ -297,6 +328,14 @@ export const createVariant = createServerFn({ method: "POST" })
           updatedBy: actorId,
         },
       ]);
+      if (data.manageInventory) {
+        await inventoryDal.ensureForVariant({
+          variantId: id,
+          sku,
+          title: `${product.title} - ${data.title}`,
+          quantity: data.inventoryQuantity,
+        });
+      }
 
       return { success: true, message: "Variant created", data: { id } };
     } catch (error) {

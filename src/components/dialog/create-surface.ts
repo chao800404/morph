@@ -26,7 +26,7 @@ export const createSurface = {
   headerPadding: "px-4 py-2",
 
   /** The scrolling middle. */
-  body: "bg-component w-full flex-1 min-h-0 border-b relative z-20 dark:shadow-elevation-modal dark:border-border/30",
+  body: "bg-component w-full flex-1 min-h-0 overflow-hidden border-b relative z-20 dark:shadow-elevation-modal dark:border-border/30",
 
   /** The centred column the fields sit in. */
   content: "pt-24 px-5 pb-10 max-w-3xl mx-auto relative z-50",

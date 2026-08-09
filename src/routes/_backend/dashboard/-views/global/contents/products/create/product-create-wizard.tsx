@@ -1,17 +1,10 @@
 import { DialogFooterActions } from "@/components/dialog/dialog-footer-actions";
-import {
-  RouteFullscreenSurface,
-} from "@/components/dialog/route-fullscreen-surface";
+import { RouteFullscreenSurface } from "@/components/dialog/route-fullscreen-surface";
 import {
   useCloseOnEscape,
   useRouteModalClose,
 } from "@/components/dialog/route-form-modal";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { toMinorUnits } from "@/lib/currency/catalog";
 import type { ProductStatus } from "@/db/product.schema";
@@ -116,9 +109,7 @@ const ProductCreateWizard = () => {
               .map((option) => ({
                 optionId: option.optionId,
                 valueIds: option.available
-                  .filter((value) =>
-                    option.selectedValueIds.includes(value.id),
-                  )
+                  .filter((value) => option.selectedValueIds.includes(value.id))
                   .map((value) => value.id),
               }))
           : [];
@@ -142,28 +133,28 @@ const ProductCreateWizard = () => {
             typeValue: draft.typeValue.trim() || null,
             tagValues: draft.tagValues,
             categoryIds: draft.categoryIds,
+            salesChannelIds: draft.salesChannelIds,
             // Order matters: the first image becomes the thumbnail, derived
             // server-side by `setAssets`.
             assetIds: draft.assets.map((asset) => asset.id),
             discountable: draft.discountable,
             options,
-            prices: draft.hasVariants ? [] : buildPrices(draft.defaultPrices),
-            variants: draft.hasVariants
-              ? draft.variants
-                  .filter((variant) => variant.included)
-                  .map((variant) => ({
-                    title: variant.title.trim() || variant.key,
-                    sku: variant.sku.trim() || null,
-                    manageInventory: variant.manageInventory,
-                    allowBackorder: variant.allowBackorder,
-                    inventoryQuantity:
-                      Number(variant.inventoryQuantity) > 0
-                        ? Math.floor(Number(variant.inventoryQuantity))
-                        : 0,
-                    optionValues: variant.optionValues,
-                    prices: buildPrices(variant.prices),
-                  }))
-              : undefined,
+            prices: [],
+            variants: (draft.hasVariants
+              ? draft.variants.filter((variant) => variant.included)
+              : [draft.defaultVariant]
+            ).map((variant) => ({
+              title: variant.title.trim() || variant.key,
+              sku: variant.sku.trim() || null,
+              manageInventory: variant.manageInventory,
+              allowBackorder: variant.allowBackorder,
+              inventoryQuantity:
+                Number(variant.inventoryQuantity) > 0
+                  ? Math.floor(Number(variant.inventoryQuantity))
+                  : 0,
+              optionValues: variant.optionValues,
+              prices: buildPrices(variant.prices),
+            })),
           },
         });
 
@@ -197,11 +188,7 @@ const ProductCreateWizard = () => {
   };
 
   return (
-    <Tabs
-      value={String(step)}
-      onValueChange={selectStep}
-      className="contents"
-    >
+    <Tabs value={String(step)} onValueChange={selectStep} className="contents">
       <RouteFullscreenSurface
         onClose={close}
         bodyClassName="overflow-y-auto"
@@ -218,7 +205,7 @@ const ProductCreateWizard = () => {
                   aria-current={isActive ? "step" : undefined}
                 >
                   {isDone ? (
-                    <CheckCircle2 className="size-4" />
+                    <CheckCircle2 className="size-4 text-emerald-500 dark:text-emerald-400" />
                   ) : (
                     <CircleDashed
                       className={cn("size-4", isActive && "text-primary")}

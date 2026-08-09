@@ -42,7 +42,7 @@ export const RouteFullscreenSurface = ({
     <motion.section
       className={cn(
         createSurface.shell,
-        "min-h-0 flex-1 overflow-hidden rounded-lg dark:shadow-elevation-modal",
+        "grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-lg dark:shadow-elevation-modal",
         surfaceClassName,
       )}
       initial={animated ? { opacity: 0, y: 20 } : false}

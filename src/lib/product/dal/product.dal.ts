@@ -42,6 +42,9 @@ import { chunk, chunkForInsert } from "./d1-batch";
 import { productOptionDal } from "./product-option.dal";
 import { productVariantDal } from "./product-variant.dal";
 import { containsPattern } from "@/lib/db/like-pattern";
+import { productSalesChannels } from "@/db/link.schema";
+import { salesChannels } from "@/db/sales-channel.schema";
+import { toSalesChannelDTO } from "@/lib/sales-channel/mappers/sales-channel.mapper";
 
 // Column counts drive the insert batch size; see d1-batch.ts.
 const PRODUCT_OPTION_VALUE_LINK_COLUMNS = 3;
@@ -164,7 +167,7 @@ export const productDal = {
     const db = await getDb();
     // Each link table is joined to the row it points at, so the names arrive
     // with the ids rather than costing another query per card.
-    const [options, variants, assetRows, tagRows, categoryRows, organization] =
+    const [options, variants, assetRows, tagRows, categoryRows, organization, channelRows] =
       await Promise.all([
         this.findOptions(id),
         productVariantDal.findByProductId(id),
@@ -202,6 +205,17 @@ export const productDal = {
           .leftJoin(productTypes, eq(productTypes.id, products.typeId))
           .where(eq(products.id, id))
           .limit(1),
+        db
+          .select({ channel: salesChannels })
+          .from(productSalesChannels)
+          .innerJoin(
+            salesChannels,
+            and(
+              eq(salesChannels.id, productSalesChannels.salesChannelId),
+              isNull(salesChannels.deletedAt),
+            ),
+          )
+          .where(eq(productSalesChannels.productId, id)),
       ]);
 
     return {
@@ -216,6 +230,8 @@ export const productDal = {
       categoryIds: categoryRows.map((row) => row.id),
       collectionTitle: organization[0]?.collectionTitle ?? null,
       typeValue: organization[0]?.typeValue ?? null,
+      salesChannels: channelRows.map(({ channel }) => toSalesChannelDTO(channel)),
+      salesChannelIds: channelRows.map(({ channel }) => channel.id),
     };
   },
 

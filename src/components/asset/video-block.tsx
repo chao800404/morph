@@ -1,8 +1,9 @@
 import { MaximizeButton } from "@/components/button/maximize-button";
 import { FileTIcon } from "@/components/ui/icons/file-t-icon";
-import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
-import { Film, XIcon } from "lucide-react";
+import { Film } from "lucide-react";
+import { AssetCardCaption } from "./asset-card-caption";
+import { AssetRemoveButton } from "./asset-remove-button";
 
 type Props = {
   src: string;
@@ -12,21 +13,6 @@ type Props = {
   category?: string;
   onRemove?: () => void;
 };
-
-const RemoveButton = ({ onRemove }: { onRemove?: () => void }) =>
-  onRemove ? (
-    <button
-      type="button"
-      onClick={(event) => {
-        event.stopPropagation();
-        onRemove();
-      }}
-      className="absolute right-1 top-1 z-30 flex size-6 items-center justify-center rounded-md bg-background/80 text-destructive"
-      aria-label="Remove video"
-    >
-      <XIcon className="size-4" />
-    </button>
-  ) : null;
 
 export const VideoUploadBlock = ({
   src,
@@ -53,13 +39,8 @@ export const VideoUploadBlock = ({
     ) : (
       <Film className="absolute left-1/2 top-1/2 size-10 -translate-x-1/2 -translate-y-1/2" />
     )}
-    {(name || category) && (
-      <div className="absolute bottom-1 left-1 right-1 flex gap-2 rounded-md bg-card/70 p-2 text-xs">
-        <p className="truncate">{name}</p>
-        {category && <Kbd className="ml-auto">{category}</Kbd>}
-      </div>
-    )}
-    <RemoveButton onRemove={onRemove} />
+    <AssetCardCaption name={name} category={category} variant="subtle" />
+    <AssetRemoveButton onRemove={onRemove} label="Remove video" />
   </div>
 );
 
@@ -94,13 +75,8 @@ export const VideoBlock = ({
         <FileTIcon className="size-28" />
       </div>
     )}
-    {(name || category) && (
-      <div className="absolute bottom-1 left-1 right-1 flex gap-2 rounded-md bg-card/70 p-2 text-xs">
-        <p className="truncate">{name}</p>
-        {category && <Kbd className="ml-auto">{category}</Kbd>}
-      </div>
-    )}
-    <RemoveButton onRemove={onRemove} />
+    <AssetCardCaption name={name} category={category} variant="subtle" />
+    <AssetRemoveButton onRemove={onRemove} label="Remove video" />
   </div>
 );
 

@@ -46,6 +46,15 @@ export const cmsConfig = defineConfig({
     ],
     allowedExtensions: [".riv"],
   },
+  products: {
+    sku: {
+      autoGenerate: true,
+      pattern: "{product}-{options}",
+      separator: "-",
+      casing: "upper",
+      suffixLength: 2,
+    },
+  },
   localization,
   auth: {
     autoLogout: {

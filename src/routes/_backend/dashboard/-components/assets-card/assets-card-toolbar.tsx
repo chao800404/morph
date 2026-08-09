@@ -34,6 +34,7 @@ export const AssetsCardToolbar = () => {
 
   return (
     <DataTableToolbar
+      className="border-t-0"
       leading={
         <DataTableFilter
           label="Add filter"

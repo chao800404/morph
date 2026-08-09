@@ -21,6 +21,24 @@ describe("RouteFullscreenSurface", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("reserves separate rows for the header, body and footer", () => {
+    const { container } = render(
+      <RouteFullscreenSurface onClose={vi.fn()} footer={<p>Actions</p>}>
+        Content
+      </RouteFullscreenSurface>,
+    );
+
+    const surface = container.querySelector("section");
+    const body = container.querySelector("main");
+
+    expect(surface?.className).toContain("grid");
+    expect(surface?.className).toContain(
+      "grid-rows-[auto_minmax(0,1fr)_auto]",
+    );
+    expect(body?.className).toContain("min-h-0");
+    expect(body?.className).toContain("overflow-hidden");
+  });
+
   it("places leading header content beside the close controls", () => {
     render(
       <RouteFullscreenSurface

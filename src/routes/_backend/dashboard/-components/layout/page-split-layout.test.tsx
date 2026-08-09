@@ -1,6 +1,10 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { PageSplitLayout } from "./page-split-layout";
+import {
+  PAGE_SIDEBAR_WIDTH,
+  RESPONSIVE_PAGE_SIDEBAR_WIDTH,
+  PageSplitLayout,
+} from "./page-split-layout";
 
 /**
  * The split's widths belong to this component. Assets and the category detail
@@ -18,25 +22,53 @@ describe("PageSplitLayout", () => {
     const aside = container.querySelector("aside");
     const section = container.querySelector("section");
 
-    expect(aside?.className).toContain("w-md");
+    expect(aside?.className).toContain(RESPONSIVE_PAGE_SIDEBAR_WIDTH);
     expect(aside?.className).toContain("shrink-0");
-    expect(section?.className).toContain("flex-1");
     // Without `min-w-0` a wide table inside the content column pushes the
     // sidebar off screen instead of scrolling.
     expect(section?.className).toContain("min-w-0");
   });
 
-  it("keeps both columns on one row", () => {
-    // Stacking would push the sidebar a full viewport down, because the assets
-    // explorer's card is `h-content`.
+  it("stacks detail pages below 1280px", () => {
     const { container } = render(
       <PageSplitLayout sidebar={<p>side</p>}>
         <p>main</p>
       </PageSplitLayout>,
     );
 
-    expect(container.firstElementChild?.className).toContain("flex");
-    expect(container.firstElementChild?.className).not.toContain("flex-col");
+    expect(container.firstElementChild?.className).toContain("grid-cols-1");
+    expect(container.firstElementChild?.className).toContain(
+      "xl:grid-cols-[minmax(0,1fr)_auto]",
+    );
+  });
+
+  it("allows Assets to keep both columns on one row", () => {
+    const { container } = render(
+      <PageSplitLayout sidebar={<p>side</p>} stackBelow1280={false}>
+        <p>main</p>
+      </PageSplitLayout>,
+    );
+
+    expect(container.firstElementChild?.className).toContain(
+      "grid-cols-[minmax(0,1fr)_auto]",
+    );
+    expect(container.firstElementChild?.className).not.toContain("grid-cols-1");
+    expect(container.querySelector("aside")?.className).toContain(
+      PAGE_SIDEBAR_WIDTH,
+    );
+  });
+
+  it("allows a page to override the shared sidebar width", () => {
+    const { container } = render(
+      <PageSplitLayout
+        sidebar={<p>side</p>}
+        sidebarClassName="w-72"
+      >
+        <p>main</p>
+      </PageSplitLayout>,
+    );
+
+    expect(container.querySelector("aside")?.className).toContain("w-72");
   });
 
   it("sets no height or alignment of its own", () => {

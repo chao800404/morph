@@ -13,6 +13,51 @@ export interface SelectedAsset {
   url: string;
 }
 
+const assetTileCornerControlClassName =
+  "absolute right-2 top-2 flex size-6 items-center justify-center rounded-md border bg-background/85 shadow-sm backdrop-blur-sm";
+
+const AssetTileCornerControl = ({
+  variant,
+  label,
+  onClick,
+}: {
+  variant: "selected" | "remove";
+  label?: string;
+  onClick?: () => void;
+}) => {
+  const icon =
+    variant === "selected" ? (
+      <Check className="size-3.5" strokeWidth={3} />
+    ) : (
+      <X className="size-3.5" strokeWidth={2.5} />
+    );
+  const className = cn(
+    assetTileCornerControlClassName,
+    variant === "selected"
+      ? "text-emerald-500 dark:text-emerald-400"
+      : "text-destructive opacity-0 transition-[color,opacity] hover:bg-background hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100",
+  );
+
+  if (variant === "remove") {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        className={className}
+      >
+        {icon}
+      </button>
+    );
+  }
+
+  return (
+    <span aria-hidden="true" className={className}>
+      {icon}
+    </span>
+  );
+};
+
 /**
  * One image in an asset grid.
  *
@@ -75,7 +120,8 @@ export const AssetTile = ({
         "group relative aspect-square overflow-hidden",
         "transition-[border-color,box-shadow]",
         focusRing,
-        selected && "border-primary ring-[3px] ring-primary/30",
+        selected &&
+          "border-blue-500/50 ring-[1.5px] ring-inset ring-blue-500/50 dark:border-blue-400/50 dark:ring-blue-400/50",
         dragging && "opacity-50",
       )}
       title={asset.name}
@@ -88,21 +134,16 @@ export const AssetTile = ({
       />
       {badge ? <span className="absolute left-2 top-2">{badge}</span> : null}
       {selected ? (
-        <span className="absolute right-2 top-2 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
-          <Check className="size-3" />
-        </span>
+        <AssetTileCornerControl variant="selected" />
       ) : null}
       {onRemove ? (
         // Nested inside a div, never inside the button above: the two wrappers
         // are mutually exclusive, so this never nests interactive elements.
-        <button
-          type="button"
+        <AssetTileCornerControl
+          variant="remove"
           onClick={onRemove}
-          aria-label={`Remove ${asset.name}`}
-          className="absolute right-2 top-2 rounded-full border bg-background/80 p-1 opacity-0 shadow-sm transition-opacity hover:bg-background focus-visible:opacity-100 group-hover:opacity-100"
-        >
-          <X className="size-3" />
-        </button>
+          label={`Remove ${asset.name}`}
+        />
       ) : null}
     </Wrapper>
   );

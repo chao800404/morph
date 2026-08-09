@@ -291,7 +291,8 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - **`PageSplitLayout` 只管欄寬，不管高度，也不設 cross-axis 對齊。** 鎖定視窗高度是 Assets 獨有的行為，而且由它自己的卡片負責（`h-content`／`min-h-content`）；把高度或 `items-*` 放進這個組件，等於把那個行為交給每一個分欄頁。
 - **側欄寬度以 Assets 為準（`w-md`）**。要改寬度就改這個組件，讓所有分欄頁一起變，不可為單一頁面覆寫。
 - 內容欄必須保留 `min-w-0`。少了它，欄內一張寬表格會把側欄擠出畫面，而不是在自己的捲動區內捲動。
-- **不做窄螢幕堆疊。** 側欄不會落到內容下方 —— Assets 的 explorer 卡是 `h-content`（一個視窗高），堆疊後側欄會被推到整個視窗之下，要捲動才看得到。
+- **1280px 以下預設改為單欄。** `PageSplitLayout` 使用 `grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto]`；側欄在窄於 `xl` 時是 `w-full` 並排到主內容下方，`xl` 起才套用共用 clamp 寬度。Feature 不得自行選另一個 breakpoint 或重複 responsive class。
+- **Assets 是唯一不堆疊的例外。** Assets 的 explorer 卡是 `h-content`（一個視窗高），側欄落到下方會完全離開目前 viewport，因此 Assets index 與 matching skeleton 必須傳 `stackBelow1280={false}`，維持左右兩欄。其他分欄頁不得關閉堆疊。
 - 分欄頁的 `pendingView` 也必須用同一個組件畫出兩欄（見「pendingView 必須畫出整個頁面的外框」）。
 
 ### 唯讀資訊卡一律使用 EditCard
@@ -305,6 +306,14 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
   - 不可同時傳兩者，那會讓同一筆記錄有兩條編輯路徑 —— 正是 capability 契約禁止的事。
 - 狀態徽章之類的 header 裝飾走 `headerActions`，排在 `…` 之前；不要為了放徽章而在卡片外面另外做一列標題。
 
+### Title 與 Name 跟隨資源的正式語意
+
+- UI 欄位名稱必須跟隨該資源 schema／DTO 的正式欄位語意，不可只依畫面偏好互換 `Title` 與 `Name`。
+- 內容、可銷售項目或有展示標題的資源使用 `Title`，例如 Product、Product Variant、Inventory Item、Collection。
+- 身分、分類或設定型實體使用 `Name`，例如 Category、Sales Channel、Stock Location、Customer。
+- 同一資源的表格欄名、表單 label、排序選項、搜尋說明與空狀態文案必須使用一致名稱；不可讓 `title` 在其中一處顯示為 `Name`，或讓 `name` 顯示為 `Title`。
+- 特殊流程若因使用者語意需要不同文案，必須在該 feature 註解或工作說明中交代理由，不可只為視覺偏好改名；資料欄位本身仍維持 schema／DTO 的正式名稱。
+
 ### 縮圖是圖庫的第一張，由 DAL 推導
 
 - `products.thumbnailAssetId` 與 `productVariants.thumbnailAssetId` **不是客戶端可以指定的欄位**，它們已經從 `updateProductInputSchema`／`createProductInputSchema` 移除。想換縮圖就把那張圖拖到第一個。
@@ -313,6 +322,13 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 欄位保留而不是每次 join 取 rank 0：前台每一筆商品都會讀它。它是衍生資料，但衍生的地方只有一處。
 - 圖片排序一律使用 `components/asset/sortable-asset-grid` 的 `SortableAssetGrid`，排序邏輯用 `reorderAssets()`。往前拖與往後拖落點不同，那是它有測試的原因。
 - **排序只在編輯介面提供**。詳情頁的 Media 卡是唯讀的，跟同頁其他卡片一致；它只用第一格的徽章「回報」目前的縮圖。
+
+### Variant SKU 由 server 的單一 policy 產生
+
+- SKU 屬於 Variant，不屬於 Product；沒有 options 的商品也會為 Default Variant 產生 SKU。
+- SKU policy 一律宣告在 `cms.config.ts` 的 `products.sku`，支援 `{product}`、`{variant}`、`{options}`、`{index}`、`{random}`。建立商品、單獨新增 Variant 與未來匯入流程必須共用 `lib/product/sku.ts`，不可在 client 或各 handler 自行拼字串。
+- Client 有提供非空 SKU 時保留原值；只有空白時才自動產生。商品、option 或 variant 改名後不可回頭重算既有 SKU，避免外部系統與歷史訂單的識別碼漂移。
+- 自動產生必須在 server 執行並處理碰撞；先嘗試 pattern，重複時加入固定寬度流水號。`product_variants_active_sku_unique` 仍是併發情境的最終保證。
 
 ### Metadata 是公開的逃生口，不是私密欄位
 
@@ -366,6 +382,15 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
   - 不具分頁語意且資料量有明確小上限的 form matrix／ranking table 不切頁；它仍使用相同 Table primitive，超出容器時在既有 scroll region 內捲動。
 - **不要重新推導 primitive 已經擁有的盒模型。** 圓角、邊框、內距、字級屬於 primitive；新組件只帶自己的顏色與裝飾。需要新外觀時在該 primitive 加一個具名 variant，不要在旁邊蓋一個尺寸相同的新組件 —— 那樣 primitive 改了它不會跟著改。
   - `Tip` 是這樣做的：盒模型來自 `Alert` 的 `muted` variant，surface 顏色與其他 card fields 一樣來自 `fieldControlVariants({ variant: "card" })`；它自己只負責左側導軌與 `role="note"`（`Alert` 預設 `role="alert"` 會打斷螢幕閱讀器，提示不該這樣）。
+
+### 批次與矩陣編輯一律使用 DataGrid
+
+- Variant、Inventory、Price 等「列與欄本身就是編輯介面」的批次／矩陣編輯，一律使用 `src/components/ui/data-grid.tsx` 的 `DataGrid` 系列，不可在 feature 內重複 table、cell input、focus ring 或 boolean cell 的 class。一般資源列表仍使用 `DataTableCard`；`DataGrid` 不取代列表頁的搜尋、filter、pagination 與 row actions contract。
+- DataGrid 的可編輯文字、數字與價格欄位使用 `DataGridInput`：靜止時是透明背景、無獨立輸入框外殼的 cell；focus 時由 primitive 顯示 `1.5px`、`blue-500/50`、`ring-inset` 的藍色半透明邊線。Feature 不得用一般 `Input` 的 card variant 塞進 cell，也不得自行覆寫另一種 focus 色、寬度或陰影。
+- Boolean 欄位使用 `DataGridBooleanCell` 並置中承載共用 `Checkbox`；純顯示值使用 `DataGridReadonlyCell` 與 muted text。不要用 disabled input 假裝唯讀，也不要把 checkbox 的定位與 focus surface 分散到各 feature。
+- DataGrid 必須保留真正的 table 語意，並由 `DataGridHeader`、`DataGridHead`、`DataGridBody`、`DataGridRow`、`DataGridCell` 組成。欄位超出容器時在 grid 自己的 scroll region 水平捲動；長矩陣垂直捲動時表頭保持可見。欄寬由 head/cell contract 決定，不用 `div + flex-1` 模擬欄位。
+- 欄位集合、disabled 條件、驗證與提交形狀由 feature 的真實資料模型決定。參考 Medusa 或其他產品時只移植目前後端能完整讀寫的行為；不得為了視覺一致加入 schema、DTO、server function 與 DAL 尚未支援的欄位。需要新欄位時先完成整條資料契約，再接進 DataGrid。
+- DataGrid 的 shared primitive 擁有密度、cell padding、背景、分隔線、focus、readonly、disabled 與 boolean placement。Feature 只提供欄位順序、語意 label、寬度需求、值與 change handler；跨兩個以上 DataGrid 的視覺改動必須回到 primitive，不可逐頁修補。
 
 ### 視窗內容與 Fields 單一來源
 

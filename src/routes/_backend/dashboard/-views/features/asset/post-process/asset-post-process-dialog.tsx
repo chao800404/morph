@@ -9,6 +9,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { EDITOR_SIDEBAR_WIDTH } from "@/routes/_backend/dashboard/-components/layout/split-editor-layout";
 import { getConfig } from "@/server/get-config";
 import { processImage } from "@/server/asset/process-image.serverFn";
 import { removeBackground } from "@/server/asset/remove-background.serverFn";
@@ -554,8 +555,8 @@ export const AssetPostProcessDialog = () => {
                 {/* Sidebar Controls */}
                 <div
                   className={cn(
-                    "p-4 max-w-xl w-full flex flex-col",
-                    "max-xl:max-w-sm",
+                    EDITOR_SIDEBAR_WIDTH,
+                    "flex min-h-0 shrink-0 flex-col overflow-hidden p-4",
                   )}
                 >
                   <Tabs

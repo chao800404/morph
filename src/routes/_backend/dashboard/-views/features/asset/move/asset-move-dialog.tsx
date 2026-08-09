@@ -5,6 +5,7 @@ import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { getActionErrorMessage } from "@/lib/asset/action-result";
+import { SplitEditorLayout } from "@/routes/_backend/dashboard/-components/layout/split-editor-layout";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -87,51 +88,56 @@ export const AssetMoveDialog = () => {
             onClose={() => handleOpenChange(false)}
             title={title || "Move items"}
           />
-          <div className="flex min-h-0 flex-1 max-lg:flex-col">
-            <ScrollArea className="min-w-0 flex-1 border-r bg-accent/40 max-lg:border-b max-lg:border-r-0">
-              <ScrollBar />
-              <div className="grid grid-cols-4 gap-3 p-4 max-md:grid-cols-2">
-                {items?.map((item) =>
-                  item.type === "folder" ? (
-                    <AssetBlockMap
-                      key={item.id}
-                      type="folder"
-                      name={item.name}
-                      onRemove={() => removeItem(item.id)}
-                    />
-                  ) : (
-                    <AssetBlockMap
-                      key={item.id}
-                      type="asset"
-                      name={item.name}
-                      fileType={item.fileType}
-                      extension={item.extension}
-                      src={item.src}
-                      alt={item.alt}
-                      onRemove={() => removeItem(item.id)}
-                    />
-                  ),
+          <SplitEditorLayout
+            main={
+              <ScrollArea className="size-full">
+                <ScrollBar />
+                <div className="grid grid-cols-4 gap-3 p-4 max-md:grid-cols-2">
+                  {items?.map((item) =>
+                    item.type === "folder" ? (
+                      <AssetBlockMap
+                        key={item.id}
+                        type="folder"
+                        name={item.name}
+                        onRemove={() => removeItem(item.id)}
+                      />
+                    ) : (
+                      <AssetBlockMap
+                        key={item.id}
+                        type="asset"
+                        name={item.name}
+                        fileType={item.fileType}
+                        extension={item.extension}
+                        src={item.src}
+                        alt={item.alt}
+                        onRemove={() => removeItem(item.id)}
+                      />
+                    ),
+                  )}
+                </div>
+              </ScrollArea>
+            }
+            sidebar={
+              <>
+                {description && (
+                  <p className="mb-6 text-sm text-muted-foreground">
+                    {description}
+                  </p>
                 )}
-              </div>
-            </ScrollArea>
-            <div className="w-full max-w-xl p-5">
-              {description && (
-                <p className="mb-6 text-sm text-muted-foreground">
-                  {description}
-                </p>
-              )}
-              {fields && (
-                <FieldsRenderer
-                  fields={fields}
-                  onChange={(name, value) => {
-                    if (typeof value === "string")
-                      updateFieldValue(name, value);
-                  }}
-                  className="grid-cols-1"
-                />
-              )}
-            </div>
-          </div>
+                {fields && (
+                  <FieldsRenderer
+                    fields={fields}
+                    onChange={(name, value) => {
+                      if (typeof value === "string")
+                        updateFieldValue(name, value);
+                    }}
+                    className="grid-cols-1"
+                  />
+                )}
+              </>
+            }
+            sidebarClassName="p-5"
+          />
           <DialogFooterActions
             isLoading={isExecuting}
             isDisabled={!items?.length}

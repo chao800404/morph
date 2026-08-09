@@ -400,6 +400,13 @@ export const Contents = {
             view: lazyView(
               () => import("@views/global/contents/products/inventory"),
             ),
+            prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
+              const { inventoryQueries, normalizeInventoryListParams } =
+                await import("@queries/inventory.queries");
+              void queryClient.prefetchQuery(
+                inventoryQueries.list(normalizeInventoryListParams(search)),
+              );
+            },
           },
         },
         {

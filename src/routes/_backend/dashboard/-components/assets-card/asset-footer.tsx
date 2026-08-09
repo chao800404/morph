@@ -52,7 +52,7 @@ export const AssetFooter = ({ pagination }: Props) => {
   );
 
   return (
-    <div className="px-6 py-4 text-sm border-t">
+    <div className="relative z-30 -mt-px border-t bg-component px-6 py-4 text-sm">
       <CardPagination
         page={pagination.page}
         totalPages={pagination.totalPages}

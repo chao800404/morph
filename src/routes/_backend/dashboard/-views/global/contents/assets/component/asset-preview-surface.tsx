@@ -3,6 +3,7 @@ import { RouteFullscreenSurface } from "@/components/dialog/route-fullscreen-sur
 import { Button } from "@/components/ui/button";
 import { NextArrowIcon } from "@/components/ui/icons/next-arrow-icon";
 import { PreviousArrowIcon } from "@/components/ui/icons/previous-arrow-icon";
+import { Badge } from "@/components/ui/badge";
 import { Kbd } from "@/components/ui/kbd";
 import type { AssetPreviewController } from "../hooks/use-asset-preview-controller";
 import { Download, Trash2 } from "lucide-react";
@@ -50,7 +51,7 @@ export const AssetPreviewSurface = ({
       header={
         <div className="flex min-w-0 items-center justify-center gap-2 text-center text-sm text-muted-foreground">
           <span className="max-w-md truncate">{currentAsset.name}</span>
-          {currentAsset.extension && <Kbd>{currentAsset.extension}</Kbd>}
+          {currentAsset.extension && <Badge>{currentAsset.extension}</Badge>}
         </div>
       }
       headerActions={

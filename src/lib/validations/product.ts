@@ -195,6 +195,7 @@ export const createProductInputSchema = (maxAssets: number) =>
   typeValue: productTypeValueSchema.nullish(),
   tagValues: productTagValuesSchema,
   categoryIds: z.array(z.uuid()).max(20).default([]),
+  salesChannelIds: z.array(z.uuid()).max(100).default([]),
   discountable: z.boolean().default(true),
   // No `thumbnailAssetId`: it is the first entry of `assetIds`, derived by the
   // DAL so every write path agrees.

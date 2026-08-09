@@ -12,6 +12,10 @@ import { useQuery } from "@tanstack/react-query";
 import type { Dispatch } from "react";
 import { categoryDepth } from "@/lib/product/category-tree";
 import type { DraftAction, ProductDraft } from "./use-product-draft";
+import {
+  normalizeSalesChannelListParams,
+  salesChannelQueries,
+} from "@queries/sales-channel.queries";
 
 const NO_COLLECTION = "__none__";
 
@@ -35,8 +39,14 @@ export const StepOrganize = ({
   const { data: taxonomyResult, isPending: taxonomyPending } = useQuery(
     productTaxonomyQueries.list(),
   );
+  const { data: channelResult, isPending: channelsPending } = useQuery(
+    salesChannelQueries.list({
+      ...normalizeSalesChannelListParams({ sortBy: "name", sortOrder: "asc" }),
+      limit: 100,
+    }),
+  );
 
-  if (collectionsPending || taxonomyPending) {
+  if (collectionsPending || taxonomyPending || channelsPending) {
     return (
       <div className={cn(createSurface.content, "flex w-full justify-center")}>
         <Spinner className="size-4 text-muted-foreground" />
@@ -55,6 +65,9 @@ export const StepOrganize = ({
     values.map(({ value }) => ({ id: value, value }));
 
   const categories = taxonomy?.categories ?? [];
+  const salesChannels = channelResult?.success
+    ? (channelResult.data?.salesChannels ?? [])
+    : [];
 
   const fields: FormField[] = [
     {
@@ -132,11 +145,18 @@ export const StepOrganize = ({
           colSpan: 1,
         },
     {
-      type: "tip",
-      name: "channels-note",
-      label: "Tip:",
-      description:
-        "Sales channels and shipping profiles are not part of the catalogue yet, so a product is available everywhere once published.",
+      type: "option-values",
+      name: "salesChannelIds",
+      label: "Sales Channels",
+      optional: true,
+      choices: salesChannels.map((channel) => ({
+        id: channel.id,
+        value: channel.name,
+      })),
+      value: draft.salesChannelIds,
+      placeholder: "Select sales channels...",
+      searchPlaceholder: "Search sales channels...",
+      emptyMessage: "No sales channel found.",
       colSpan: 1,
     },
   ];
@@ -175,6 +195,11 @@ export const StepOrganize = ({
       case "categoryIds":
         if (isStringArray(value)) {
           dispatch({ type: "setCategoryIds", ids: value });
+        }
+        return;
+      case "salesChannelIds":
+        if (isStringArray(value)) {
+          dispatch({ type: "setSalesChannelIds", ids: value });
         }
         return;
     }

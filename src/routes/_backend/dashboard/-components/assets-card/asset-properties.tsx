@@ -136,7 +136,7 @@ export const AssetProperties = () => {
         {isAsset && activeItem.type === "asset" ? (
           <button
             type="button"
-            className="size-full overflow-hidden rounded-md border bg-muted"
+            className="size-full overflow-hidden border-b bg-muted"
             onClick={() => openPreview(activeItem.id)}
           >
             <AssetBlockMap
@@ -152,7 +152,7 @@ export const AssetProperties = () => {
           </button>
         ) : (
           <div className={cn(
-            "size-full border rounded-md flex flex-col items-center justify-center gap-2.5",
+            "size-full border-b flex flex-col items-center justify-center gap-2.5",
             "bg-gradient-to-b from-zinc-50 to-zinc-100 dark:from-zinc-800/60 dark:to-zinc-900/80",
           )}>
             <FluentFolderIcon className="w-14 h-14 drop-shadow-md" />

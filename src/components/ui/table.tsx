@@ -4,47 +4,56 @@ import * as React from "react";
 export const TABLE_HEADER_HEIGHT_PX = 48;
 export const TABLE_ROW_HEIGHT_PX = 48;
 
-const Table = React.forwardRef<
-  HTMLTableElement,
-  React.HTMLAttributes<HTMLTableElement>
->(({ className, ...props }, ref) => {
-  const divRef = React.useRef<null | HTMLDivElement>(null);
+interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
+  containerClassName?: string;
+}
 
-  const [isScrolled, setIsScrolled] = React.useState(false);
+const Table = React.forwardRef<HTMLTableElement, TableProps>(
+  ({ className, containerClassName, ...props }, ref) => {
+    const divRef = React.useRef<null | HTMLDivElement>(null);
 
-  React.useEffect(() => {
-    const scrollContainer = divRef.current;
-    if (!scrollContainer) return;
+    const [isScrolled, setIsScrolled] = React.useState(false);
 
-    const handleScroll = () => {
-      setIsScrolled(scrollContainer.scrollLeft > 0);
-    };
+    React.useEffect(() => {
+      const scrollContainer = divRef.current;
+      if (!scrollContainer) return;
 
-    // 初始檢查
-    handleScroll();
+      const handleScroll = () => {
+        setIsScrolled(scrollContainer.scrollLeft > 0);
+      };
 
-    // 監聽 scroll 事件
-    scrollContainer.addEventListener("scroll", handleScroll);
+      // 初始檢查
+      handleScroll();
 
-    return () => {
-      scrollContainer.removeEventListener("scroll", handleScroll);
-    };
-  }, []);
+      // 監聽 scroll 事件
+      scrollContainer.addEventListener("scroll", handleScroll);
 
-  return (
-    <div
-      data-scrolled={isScrolled}
-      ref={divRef}
-      className="relative w-full overflow-auto group"
-    >
-      <table
-        ref={ref}
-        className={cn("w-full shadow-accent caption-bottom text-sm", className)}
-        {...props}
-      />
-    </div>
-  );
-});
+      return () => {
+        scrollContainer.removeEventListener("scroll", handleScroll);
+      };
+    }, []);
+
+    return (
+      <div
+        data-scrolled={isScrolled}
+        ref={divRef}
+        className={cn(
+          "group relative w-full overflow-auto",
+          containerClassName,
+        )}
+      >
+        <table
+          ref={ref}
+          className={cn(
+            "w-full shadow-accent caption-bottom text-sm",
+            className,
+          )}
+          {...props}
+        />
+      </div>
+    );
+  },
+);
 Table.displayName = "Table";
 
 interface TableHeaderProps extends React.HTMLAttributes<HTMLTableSectionElement> {

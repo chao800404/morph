@@ -275,7 +275,7 @@ export const AssetsTable = memo(function AssetsTable({
           })}
         </TableRow>
       </TableHeader>
-      <TableBody>
+      <TableBody className="[&_tr:last-child]:border-b">
         {tableContent.map((asset) => (
           <AssetTableRow
             {...asset}

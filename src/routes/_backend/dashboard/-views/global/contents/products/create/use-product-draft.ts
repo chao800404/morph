@@ -55,6 +55,7 @@ export interface ProductDraft {
   typeValue: string;
   tagValues: string[];
   categoryIds: string[];
+  salesChannelIds: string[];
   discountable: boolean;
   hasVariants: boolean;
   options: DraftOption[];
@@ -68,8 +69,8 @@ export interface ProductDraft {
    */
   assets: SelectedAsset[];
   variants: DraftVariant[];
-  /** Prices for the single default variant when `hasVariants` is false. */
-  defaultPrices: Record<string, string>;
+  /** The sellable row used when the product has no option axes. */
+  defaultVariant: DraftVariant;
 }
 
 export type DraftAction =
@@ -86,6 +87,7 @@ export type DraftAction =
     }
   | { type: "setTagValues"; values: string[] }
   | { type: "setCategoryIds"; ids: string[] }
+  | { type: "setSalesChannelIds"; ids: string[] }
   | { type: "setAssets"; assets: SelectedAsset[] }
   | { type: "setDiscountable"; value: boolean }
   | { type: "setHasVariants"; value: boolean }
@@ -108,8 +110,7 @@ export type DraftAction =
       field: "manageInventory" | "allowBackorder";
       value: boolean;
     }
-  | { type: "setVariantPrice"; key: string; currency: string; value: string }
-  | { type: "setDefaultPrice"; currency: string; value: string };
+  | { type: "setVariantPrice"; key: string; currency: string; value: string };
 
 export const buildVariantKey = (optionValues: string[]): string =>
   optionValues.join(" / ");
@@ -144,7 +145,9 @@ const syncVariants = (draft: ProductDraft): ProductDraft => {
     return { ...draft, variants: [] };
   }
 
-  const previous = new Map(draft.variants.map((variant) => [variant.key, variant]));
+  const previous = new Map(
+    draft.variants.map((variant) => [variant.key, variant]),
+  );
 
   // Rebuilding resets a manual reorder: the combinations changed, so there is
   // no meaningful order to carry over.
@@ -173,12 +176,15 @@ const mapVariant = (
   draft: ProductDraft,
   key: string,
   update: (variant: DraftVariant) => DraftVariant,
-): ProductDraft => ({
-  ...draft,
-  variants: draft.variants.map((variant) =>
-    variant.key === key ? update(variant) : variant,
-  ),
-});
+): ProductDraft =>
+  draft.defaultVariant.key === key
+    ? { ...draft, defaultVariant: update(draft.defaultVariant) }
+    : {
+        ...draft,
+        variants: draft.variants.map((variant) =>
+          variant.key === key ? update(variant) : variant,
+        ),
+      };
 
 const reducer = (draft: ProductDraft, action: DraftAction): ProductDraft => {
   switch (action.type) {
@@ -222,6 +228,9 @@ const reducer = (draft: ProductDraft, action: DraftAction): ProductDraft => {
 
     case "setCategoryIds":
       return { ...draft, categoryIds: action.ids };
+
+    case "setSalesChannelIds":
+      return { ...draft, salesChannelIds: action.ids };
 
     case "setAssets":
       return { ...draft, assets: action.assets };
@@ -276,16 +285,19 @@ const reducer = (draft: ProductDraft, action: DraftAction): ProductDraft => {
         ...variant,
         prices: { ...variant.prices, [action.currency]: action.value },
       }));
-
-    case "setDefaultPrice":
-      return {
-        ...draft,
-        defaultPrices: {
-          ...draft.defaultPrices,
-          [action.currency]: action.value,
-        },
-      };
   }
+};
+
+const defaultVariant: DraftVariant = {
+  key: "__default__",
+  optionValues: [],
+  included: true,
+  title: "Default",
+  sku: "",
+  manageInventory: true,
+  allowBackorder: false,
+  inventoryQuantity: "0",
+  prices: {},
 };
 
 const initialDraft: ProductDraft = {
@@ -297,13 +309,14 @@ const initialDraft: ProductDraft = {
   typeValue: "",
   tagValues: [],
   categoryIds: [],
+  salesChannelIds: [],
   assets: [],
   discountable: true,
   hasVariants: false,
   options: [],
   currencies: [],
   variants: [],
-  defaultPrices: {},
+  defaultVariant,
 };
 
 export const useProductDraft = (currencies: string[]) =>

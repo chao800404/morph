@@ -1,7 +1,7 @@
 import { FluentFolderIcon } from "@/components/ui/icons/fluent-folder-icon";
-import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 import { XIcon } from "lucide-react";
+import { AssetCardCaption } from "./asset-card-caption";
 
 type Props = {
     className?: string;
@@ -23,12 +23,7 @@ export const FolderBlock = ({ className, name, onRemove, category }: Props) => {
                     <FluentFolderIcon />
                 </div>
             </div>
-            {(name || category) && (
-                <div className="absolute gap-2 flex p-3 bg-card/50 rounded-md shadow-elevation-modal bottom-1 left-1 right-1 text-xs text-white">
-                    <p className="truncate">{name}</p>
-                    {category && <Kbd className="ml-auto">{category}</Kbd>}
-                </div>
-            )}
+            <AssetCardCaption name={name} category={category} />
             {onRemove && (
                 <div
                     onClick={e => {

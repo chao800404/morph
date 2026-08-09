@@ -1,6 +1,7 @@
 import type { ProductMetadata, ProductStatus } from "@/db/product.schema";
 import type { ProductOptionDTO } from "./product-option.dto";
 import type { ProductVariantDTO } from "./product-variant.dto";
+import type { SalesChannelDTO } from "@/lib/sales-channel/dto/sales-channel.dto";
 
 
 export interface ProductDTO {
@@ -51,6 +52,8 @@ export interface ProductDetailDTO extends ProductDTO {
   typeValue: string | null;
   tags: Array<{ id: string; value: string }>;
   categories: Array<{ id: string; name: string }>;
+  salesChannels: SalesChannelDTO[];
+  salesChannelIds: string[];
 }
 
 /** A gallery image, in display order. */
