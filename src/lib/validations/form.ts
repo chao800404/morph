@@ -172,6 +172,11 @@ export type SelectFormField = FormFieldBase & {
   options: SelectOption[];
 };
 
+export type ChoiceCardsFormField = FormFieldBase & {
+  type: "choice-cards";
+  options: Array<SelectOption & { description?: string }>;
+};
+
 export type FolderSelectFormField = FormFieldBase & {
   type: "folder-select";
   excludedIds?: string[];
@@ -244,6 +249,15 @@ export type AssetSelectFormField = FormFieldBase & {
   maxSelected?: number;
   /** Folder new uploads land in. Omitted means the library root. */
   uploadFolderId?: string;
+  /**
+   * Restricts the picker to a record-owned gallery.
+   *
+   * Omitted keeps the normal Upload / Library picker. Present — including an
+   * empty array — disables both global sources and only offers these assets.
+   * Variant media uses this so it can reference Product Media without quietly
+   * attaching an unrelated library asset to the variant.
+   */
+  availableAssets?: Array<{ id: string; name: string; url: string }>;
 };
 
 export type HiddenFormField = FormFieldBase & {
@@ -255,6 +269,7 @@ export type FormField =
   | TextareaFormField
   | PhoneFormField
   | SelectFormField
+  | ChoiceCardsFormField
   | FolderSelectFormField
   | UploadFormField
   | OptionValuesFormField
@@ -330,6 +345,12 @@ const selectFormFieldSchema = z
     },
   );
 
+const choiceCardsFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("choice-cards"),
+  options: z.array(selectOptionSchema.safeExtend({ description: z.string().optional() })).min(1).max(20),
+});
+
 const folderSelectFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("folder-select"),
@@ -348,9 +369,7 @@ const uploadFormFieldSchema = z.object({
 const optionValuesFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("option-values"),
-  choices: z
-    .array(z.object({ id: z.string(), value: z.string() }))
-    .optional(),
+  choices: z.array(z.object({ id: z.string(), value: z.string() })).optional(),
   allowCreate: z.boolean().optional(),
   maxSelected: z.number().int().positive().optional(),
   searchPlaceholder: z.string().optional(),
@@ -378,6 +397,15 @@ const assetSelectFormFieldSchema = z.object({
   type: z.literal("asset-select"),
   maxSelected: z.number().int().positive().optional(),
   uploadFolderId: z.uuid().optional(),
+  availableAssets: z
+    .array(
+      z.object({
+        id: z.uuid(),
+        name: z.string().min(1),
+        url: z.string().min(1),
+      }),
+    )
+    .optional(),
 });
 
 const hiddenFormFieldSchema = z.object({
@@ -393,6 +421,7 @@ export const formFieldSchema: z.ZodType<FormField> = z.discriminatedUnion(
     textareaFormFieldSchema,
     phoneFormFieldSchema,
     selectFormFieldSchema,
+    choiceCardsFormFieldSchema,
     folderSelectFormFieldSchema,
     uploadFormFieldSchema,
     optionValuesFormFieldSchema,

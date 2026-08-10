@@ -5,6 +5,7 @@ import {
   DataTableCard,
   deleteActionIcon,
   useCollectionEditAction,
+  useCollectionDetailPreload,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import {
@@ -24,6 +25,7 @@ import {
 const Categories = () => {
   const search = useSearch({ strict: false }) as DashboardSearch;
   const navigate = useNavigate();
+  const preloadDetail = useCollectionDetailPreload("categories");
   const queryClient = useQueryClient();
   const params = normalizeProductCategoryListParams(search);
   const { data: result, isPending } = useQuery(
@@ -92,6 +94,7 @@ const Categories = () => {
           params: { slug: "categories", id: category.id },
         })
       }
+      onRowPreload={(category) => preloadDetail(category.id)}
       rowActions={(category) => [
         ...editAction(category.id),
         {

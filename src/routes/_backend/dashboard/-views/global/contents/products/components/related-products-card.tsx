@@ -4,6 +4,7 @@ import type { ProductDTO } from "@/lib/product/dto/product.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   DataTableCard,
+  useCollectionDetailPreload,
   type DataTableColumn,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useViewPreload } from "@/routes/_backend/dashboard/-components/use-view-preload";
@@ -76,6 +77,7 @@ export const RelatedProductsCard = ({
   emptyTitle: string;
   emptyDescription: string;
 }) => {
+  const preloadDetail = useCollectionDetailPreload("products");
   const search = useSearch({ strict: false }) as DashboardSearch;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -140,6 +142,7 @@ export const RelatedProductsCard = ({
           params: { slug: "products", id: product.id },
         })
       }
+      onRowPreload={(product) => preloadDetail(product.id)}
       pagination={
         result?.success && result.data ? result.data.pagination : undefined
       }

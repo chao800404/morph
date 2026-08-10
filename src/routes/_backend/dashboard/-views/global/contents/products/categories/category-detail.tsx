@@ -2,7 +2,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { usePageBreadcrumb } from "@/routes/_backend/dashboard/-components/breadcrumb/use-page-breadcrumb";
 import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
 import {
   EditCard,
@@ -34,8 +33,6 @@ const CategoryDetail = () => {
     productCategoryQueries.detail(id),
   );
   const category = result?.success ? result.data : null;
-
-  usePageBreadcrumb(category?.name ?? null);
 
   const openEdit = useCallback(
     () =>
@@ -119,7 +116,11 @@ const CategoryDetail = () => {
       sidebar={
         /* Read-only: the path follows from the parent chosen at creation, and
            children are edited on their own records. */
-        <EditCard id="category-organize" title="Organize" fields={organizeFields} />
+        <EditCard
+          id="category-organize"
+          title="Organize"
+          fields={organizeFields}
+        />
       }
     >
       <div className="flex flex-col gap-4">

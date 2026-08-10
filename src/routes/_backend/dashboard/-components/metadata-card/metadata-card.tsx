@@ -28,6 +28,8 @@ export const MetadataCard = ({
   keyCount,
   label = "Metadata",
   page = "metadata",
+  childId,
+  returnTo,
 }: {
   slug: string;
   id: string;
@@ -35,6 +37,10 @@ export const MetadataCard = ({
   label?: string;
   /** The `detail.pages` key holding the editor. */
   page?: string;
+  /** Child-resource identity, such as a product variant. */
+  childId?: string;
+  /** Detail surface to restore after closing a child editor. */
+  returnTo?: string;
 }) => {
   const navigate = useNavigate();
   const view = useMemo(
@@ -45,33 +51,44 @@ export const MetadataCard = ({
   );
   const preload = useViewPreload(view);
 
+  const openEditor = () => {
+    if (childId) {
+      void navigate({
+        to: "/dashboard/$slug/$id/$page/$childId",
+        params: { slug, id, page, childId },
+        search: returnTo ? { returnTo } : undefined,
+      });
+      return;
+    }
+
+    void navigate({
+      to: "/dashboard/$slug/$id/$page",
+      params: { slug, id, page },
+    });
+  };
+
   return (
-  <CardWrapper
-    id="metadata-card"
-    label={
-      <span className="flex items-center gap-3">
-        {label}
-        <Badge variant="secondary">
-          {keyCount} {keyCount === 1 ? "key" : "keys"}
-        </Badge>
-      </span>
-    }
-    headerButton={
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label={`Edit ${label.toLowerCase()}`}
-        {...preload}
-        onClick={() =>
-          void navigate({
-            to: "/dashboard/$slug/$id/$page",
-            params: { slug, id, page },
-          })
-        }
-      >
-        <SquareArrowOutUpRight className="size-4" />
-      </Button>
-    }
+    <CardWrapper
+      id="metadata-card"
+      label={
+        <span className="flex items-center gap-3">
+          {label}
+          <Badge variant="secondary">
+            {keyCount} {keyCount === 1 ? "key" : "keys"}
+          </Badge>
+        </span>
+      }
+      headerButton={
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`Edit ${label.toLowerCase()}`}
+          {...preload}
+          onClick={openEditor}
+        >
+          <SquareArrowOutUpRight className="size-4" />
+        </Button>
+      }
     />
   );
 };

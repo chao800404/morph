@@ -2,6 +2,7 @@ import type { CollectionLoadContext } from "@/lib/config/create-config";
 import { lazyView } from "@/lib/config/lazy-view";
 import { AssetsPageSkeleton } from "@views/global/contents/assets/component/assets-card-skeleton";
 import { ProductDetailSkeleton } from "@views/global/contents/products/detail/product-detail-skeleton";
+import { ProductVariantDetailSkeleton } from "@views/global/contents/products/detail/product-variant-detail-skeleton";
 
 const prefetchAssetItem = async ({
   queryClient,
@@ -34,9 +35,7 @@ export const Contents = {
       create: {
         view: lazyView(
           () =>
-            import(
-              "@views/global/contents/products/create/product-create-wizard"
-            ),
+            import("@views/global/contents/products/create/product-create-wizard"),
         ),
         // The wizard suspends on store currencies, and its Organize step reads
         // three more lists. Priming them all is what keeps the whole flow to a
@@ -62,6 +61,14 @@ export const Contents = {
       },
       detail: {
         view: lazyView(() => import("@views/global/contents/products/detail")),
+        breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
+          if (!params.id) return null;
+          const { productQueries } = await import("@queries/product.queries");
+          const result = await queryClient.ensureQueryData(
+            productQueries.detail(params.id),
+          );
+          return result.success ? result.data.title : null;
+        },
         // Both columns and all seven cards; the page draws the same component
         // while its query runs, so the chunk wait and the fetch wait are one
         // continuous state.
@@ -89,9 +96,7 @@ export const Contents = {
         organization: {
           view: lazyView(
             () =>
-              import(
-                "@views/global/contents/products/detail/product-organization"
-              ),
+              import("@views/global/contents/products/detail/product-organization"),
           ),
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
@@ -114,7 +119,8 @@ export const Contents = {
         },
         media: {
           view: lazyView(
-            () => import("@views/global/contents/products/detail/product-media"),
+            () =>
+              import("@views/global/contents/products/detail/product-media"),
           ),
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
@@ -144,28 +150,96 @@ export const Contents = {
         // Which variant is `?variantId`: the page names the surface, the search
         // param names the record inside it.
         variant: {
+          presentation: "replace" as const,
+          breadcrumb: async ({
+            queryClient,
+            params,
+            search,
+          }: CollectionLoadContext) => {
+            const variantId = params.childId ?? search.variantId;
+            if (!variantId) return null;
+            const { productVariantQueries } =
+              await import("@queries/product.queries");
+            const result = await queryClient.ensureQueryData(
+              productVariantQueries.detail(variantId),
+            );
+            return result.success ? result.data.variant.title : null;
+          },
+          view: lazyView(
+            () =>
+              import("@views/global/contents/products/detail/product-variant-detail"),
+          ),
+          pendingView: ProductVariantDetailSkeleton,
+          prefetch: async ({
+            queryClient,
+            params,
+            search,
+          }: CollectionLoadContext) => {
+            const variantId = params.childId ?? search.variantId;
+            if (!params.id || !variantId) return;
+            const { productQueries, productVariantQueries } =
+              await import("@queries/product.queries");
+            void queryClient.prefetchQuery(productQueries.detail(params.id));
+            void queryClient.prefetchQuery(
+              productVariantQueries.detail(variantId),
+            );
+          },
+        },
+        "variant-edit": {
           view: lazyView(
             () =>
               import("@views/global/contents/products/detail/product-variant"),
           ),
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
-            const [{ productQueries }, { currencyQueries }] = await Promise.all([
-              import("@queries/product.queries"),
-              import("@queries/currency.queries"),
-            ]);
+            const [{ productQueries }, { currencyQueries }] = await Promise.all(
+              [
+                import("@queries/product.queries"),
+                import("@queries/currency.queries"),
+              ],
+            );
             // Both, because the form renders a price field per store currency
             // and would otherwise show its own spinner after the chunk lands.
             void queryClient.prefetchQuery(productQueries.detail(params.id));
             void queryClient.prefetchQuery(currencyQueries.store());
           },
         },
+        "variant-metadata": {
+          view: lazyView(
+            () =>
+              import("@views/global/contents/products/detail/product-variant-metadata"),
+          ),
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.childId) return;
+            const { productVariantQueries } =
+              await import("@queries/product.queries");
+            void queryClient.prefetchQuery(
+              productVariantQueries.detail(params.childId),
+            );
+          },
+        },
+        "variant-pricing": {
+          view: lazyView(
+            () =>
+              import("@views/global/contents/products/detail/product-variant-pricing"),
+          ),
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.childId) return;
+            const [{ productVariantQueries }, { currencyQueries }] =
+              await Promise.all([
+                import("@queries/product.queries"),
+                import("@queries/currency.queries"),
+              ]);
+            void queryClient.prefetchQuery(
+              productVariantQueries.detail(params.childId),
+            );
+            void queryClient.prefetchQuery(currencyQueries.store());
+          },
+        },
         attributes: {
           view: lazyView(
             () =>
-              import(
-                "@views/global/contents/products/detail/product-attributes"
-              ),
+              import("@views/global/contents/products/detail/product-attributes"),
           ),
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
@@ -205,18 +279,26 @@ export const Contents = {
           create: {
             view: lazyView(
               () =>
-                import(
-                  "@views/global/contents/products/collections/collection-create"
-                ),
+                import("@views/global/contents/products/collections/collection-create"),
             ),
           },
           detail: {
             view: lazyView(
               () =>
-                import(
-                  "@views/global/contents/products/collections/collection-detail"
-                ),
+                import("@views/global/contents/products/collections/collection-detail"),
             ),
+            breadcrumb: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return null;
+              const { collectionQueries } =
+                await import("@queries/product.queries");
+              const result = await queryClient.ensureQueryData(
+                collectionQueries.detail(params.id),
+              );
+              return result.success ? result.data.title : null;
+            },
             prefetch: async ({
               queryClient,
               params,
@@ -244,30 +326,38 @@ export const Contents = {
           edit: {
             view: lazyView(
               () =>
-                import(
-                  "@views/global/contents/products/collections/collection-edit"
-                ),
+                import("@views/global/contents/products/collections/collection-edit"),
             ),
-         
-            prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+
+            prefetch: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
               if (!params.id) return;
-              const { collectionQueries } = await import("@queries/product.queries");
-              void queryClient.prefetchQuery(collectionQueries.detail(params.id));
+              const { collectionQueries } =
+                await import("@queries/product.queries");
+              void queryClient.prefetchQuery(
+                collectionQueries.detail(params.id),
+              );
             },
           },
           pages: {
             metadata: {
               view: lazyView(
                 () =>
-                  import(
-                    "@views/global/contents/products/collections/collection-metadata"
-                  ),
+                  import("@views/global/contents/products/collections/collection-metadata"),
               ),
-           
-              prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+
+              prefetch: async ({
+                queryClient,
+                params,
+              }: CollectionLoadContext) => {
                 if (!params.id) return;
-                const { collectionQueries } = await import("@queries/product.queries");
-                void queryClient.prefetchQuery(collectionQueries.detail(params.id));
+                const { collectionQueries } =
+                  await import("@queries/product.queries");
+                void queryClient.prefetchQuery(
+                  collectionQueries.detail(params.id),
+                );
               },
             },
           },
@@ -294,9 +384,7 @@ export const Contents = {
           create: {
             view: lazyView(
               () =>
-                import(
-                  "@views/global/contents/products/categories/category-create"
-                ),
+                import("@views/global/contents/products/categories/category-create"),
             ),
             // The parent picker lists the whole category tree.
             prefetch: async ({ queryClient }: CollectionLoadContext) => {
@@ -308,10 +396,20 @@ export const Contents = {
           detail: {
             view: lazyView(
               () =>
-                import(
-                  "@views/global/contents/products/categories/category-detail"
-                ),
+                import("@views/global/contents/products/categories/category-detail"),
             ),
+            breadcrumb: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return null;
+              const { productCategoryQueries } =
+                await import("@queries/product.queries");
+              const result = await queryClient.ensureQueryData(
+                productCategoryQueries.detail(params.id),
+              );
+              return result.success ? result.data.name : null;
+            },
             prefetch: async ({
               queryClient,
               params,
@@ -337,30 +435,38 @@ export const Contents = {
           edit: {
             view: lazyView(
               () =>
-                import(
-                  "@views/global/contents/products/categories/category-edit"
-                ),
+                import("@views/global/contents/products/categories/category-edit"),
             ),
-         
-            prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+
+            prefetch: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
               if (!params.id) return;
-              const { productCategoryQueries } = await import("@queries/product.queries");
-              void queryClient.prefetchQuery(productCategoryQueries.detail(params.id));
+              const { productCategoryQueries } =
+                await import("@queries/product.queries");
+              void queryClient.prefetchQuery(
+                productCategoryQueries.detail(params.id),
+              );
             },
           },
           pages: {
             metadata: {
               view: lazyView(
                 () =>
-                  import(
-                    "@views/global/contents/products/categories/category-metadata"
-                  ),
+                  import("@views/global/contents/products/categories/category-metadata"),
               ),
-           
-              prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+
+              prefetch: async ({
+                queryClient,
+                params,
+              }: CollectionLoadContext) => {
                 if (!params.id) return;
-                const { productCategoryQueries } = await import("@queries/product.queries");
-                void queryClient.prefetchQuery(productCategoryQueries.detail(params.id));
+                const { productCategoryQueries } =
+                  await import("@queries/product.queries");
+                void queryClient.prefetchQuery(
+                  productCategoryQueries.detail(params.id),
+                );
               },
             },
           },
@@ -391,16 +497,17 @@ export const Contents = {
           create: {
             view: lazyView(
               () =>
-                import(
-                  "@views/global/contents/products/inventory/inventory-create"
-                ),
+                import("@views/global/contents/products/inventory/inventory-create"),
             ),
           },
           index: {
             view: lazyView(
               () => import("@views/global/contents/products/inventory"),
             ),
-            prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
+            prefetch: async ({
+              queryClient,
+              search,
+            }: CollectionLoadContext) => {
               const { inventoryQueries, normalizeInventoryListParams } =
                 await import("@queries/inventory.queries");
               void queryClient.prefetchQuery(
@@ -424,6 +531,18 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/options/option-detail"),
             ),
+            breadcrumb: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return null;
+              const { productOptionQueries } =
+                await import("@queries/product.queries");
+              const result = await queryClient.ensureQueryData(
+                productOptionQueries.detail(params.id),
+              );
+              return result.success ? result.data.title : null;
+            },
             prefetch: async ({
               queryClient,
               params,
@@ -451,26 +570,36 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/options/option-edit"),
             ),
-         
-            prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+
+            prefetch: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
               if (!params.id) return;
-              const { productOptionQueries } = await import("@queries/product.queries");
-              void queryClient.prefetchQuery(productOptionQueries.detail(params.id));
+              const { productOptionQueries } =
+                await import("@queries/product.queries");
+              void queryClient.prefetchQuery(
+                productOptionQueries.detail(params.id),
+              );
             },
           },
           pages: {
             metadata: {
               view: lazyView(
                 () =>
-                  import(
-                    "@views/global/contents/products/options/option-metadata"
-                  ),
+                  import("@views/global/contents/products/options/option-metadata"),
               ),
-           
-              prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+
+              prefetch: async ({
+                queryClient,
+                params,
+              }: CollectionLoadContext) => {
                 if (!params.id) return;
-                const { productOptionQueries } = await import("@queries/product.queries");
-                void queryClient.prefetchQuery(productOptionQueries.detail(params.id));
+                const { productOptionQueries } =
+                  await import("@queries/product.queries");
+                void queryClient.prefetchQuery(
+                  productOptionQueries.detail(params.id),
+                );
               },
             },
           },
@@ -526,7 +655,9 @@ export const Contents = {
         },
       },
       edit: {
-        view: lazyView(() => import("@views/global/contents/assets/asset-edit")),
+        view: lazyView(
+          () => import("@views/global/contents/assets/asset-edit"),
+        ),
         prefetch: prefetchAssetItem,
       },
       index: {

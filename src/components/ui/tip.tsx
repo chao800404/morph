@@ -1,5 +1,8 @@
 import { Alert } from "@/components/ui/alert";
-import { fieldControlVariants } from "@/components/ui/field-control";
+import {
+  fieldControlDensity,
+  fieldControlVariants,
+} from "@/components/ui/field-control";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 
@@ -28,6 +31,7 @@ export const Tip = ({
     role="note"
     className={cn(
       fieldControlVariants({ variant: "card" }),
+      fieldControlDensity.default,
       "flex items-stretch gap-3 text-muted-foreground",
       className,
     )}

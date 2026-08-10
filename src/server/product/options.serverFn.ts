@@ -11,16 +11,16 @@ import { productDal } from "@/lib/product/dal/product.dal";
 import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
 import { MAX_GENERATED_VARIANTS } from "@/lib/product/variant-limits";
 import { missingCombinations } from "@/lib/product/variant-table";
+import { inventoryDal } from "@/lib/inventory/dal/inventory.dal";
 import { createServerFn } from "@tanstack/react-start";
 import {
   productAdminMiddleware,
   productReadMiddleware,
 } from "../middleware/auth.middleware";
+import { resolveVariantSku } from "./product-sku";
 
 export const listProductOptions = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listProductOptionsInputSchema.parse(data ?? {}),
-  )
+  .validator((data: unknown) => listProductOptionsInputSchema.parse(data ?? {}))
   .middleware([productReadMiddleware])
   .handler(async ({ data }) => {
     try {
@@ -90,9 +90,7 @@ export const getProductOption = createServerFn({ method: "POST" })
   });
 
 export const createProductOption = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    createProductOptionInputSchema.parse(data),
-  )
+  .validator((data: unknown) => createProductOptionInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -134,9 +132,7 @@ export const createProductOption = createServerFn({ method: "POST" })
   });
 
 export const updateProductOption = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    updateProductOptionInputSchema.parse(data),
-  )
+  .validator((data: unknown) => updateProductOptionInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -191,9 +187,7 @@ export const updateProductOption = createServerFn({ method: "POST" })
   });
 
 export const deleteProductOptions = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    deleteProductOptionsInputSchema.parse(data),
-  )
+  .validator((data: unknown) => deleteProductOptionsInputSchema.parse(data))
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -291,7 +285,8 @@ export const setProductOptions = createServerFn({ method: "POST" })
             .map((option) => {
               const users = inUse.get(option.id) ?? [];
               const shown = users.slice(0, 3).join(", ");
-              const rest = users.length > 3 ? ` and ${users.length - 3} more` : "";
+              const rest =
+                users.length > 3 ? ` and ${users.length - 3} more` : "";
               return `${option.title} (${shown}${rest})`;
             })
             .join("; ");
@@ -330,36 +325,143 @@ export const setProductOptions = createServerFn({ method: "POST" })
        * is where that is fixed.
        */
       const detail = await productDal.findDetail(data.productId);
-      const missing = detail
+      let missing = detail
         ? missingCombinations(detail.options, detail.variants)
         : [];
+      const valueById = new Map(
+        (detail?.options ?? []).flatMap((option) =>
+          option.values.map((value) => [value.id, value.value] as const),
+        ),
+      );
+      const defaultVariant =
+        existing.length === 0 &&
+        detail?.variants.length === 1 &&
+        detail.variants[0].optionValueIds.length === 0
+          ? detail.variants[0]
+          : null;
+      const firstCombination = defaultVariant ? missing[0] : undefined;
+
+      if (defaultVariant && firstCombination) {
+        const sku = await resolveVariantSku({
+          productHandle: product.handle,
+          variantTitle: firstCombination.title,
+          optionValues: firstCombination.valueIds.map(
+            (id) => valueById.get(id) ?? "",
+          ),
+          index: 0,
+        });
+        await productVariantDal.update(defaultVariant.id, {
+          title: firstCombination.title,
+          sku,
+          updatedBy: actorId,
+        });
+        await productVariantDal.setOptionValues(
+          defaultVariant.id,
+          firstCombination.valueIds,
+        );
+        await inventoryDal.ensureForVariant({
+          variantId: defaultVariant.id,
+          sku,
+          title: `${product.title} - ${firstCombination.title}`,
+          quantity: defaultVariant.inventoryQuantity,
+        });
+        missing = missing.slice(1);
+      }
+
       const room = MAX_GENERATED_VARIANTS - (detail?.variants.length ?? 0);
 
       if (missing.length > 0 && missing.length <= room) {
-        await productVariantDal.createMany(
-          missing.map((combination, index) => ({
+        const reservedSkus = new Set<string>();
+        const generated = [];
+        for (const [index, combination] of missing.entries()) {
+          const sku = await resolveVariantSku({
+            productHandle: product.handle,
+            variantTitle: combination.title,
+            optionValues: combination.valueIds.map(
+              (id) => valueById.get(id) ?? "",
+            ),
+            index: (detail?.variants.length ?? 0) + index,
+            reserved: reservedSkus,
+          });
+          generated.push({
             id: crypto.randomUUID(),
             productId: data.productId,
             title: combination.title,
+            sku,
             rank: (detail?.variants.length ?? 0) + index,
+            manageInventory: true,
+            allowBackorder: false,
+            inventoryQuantity: 0,
             optionValueIds: combination.valueIds,
             prices: [],
             createdBy: actorId,
             updatedBy: actorId,
-          })),
-        );
+          });
+        }
+        await productVariantDal.createMany(generated);
+        for (const variant of generated) {
+          await inventoryDal.ensureForVariant({
+            variantId: variant.id,
+            sku: variant.sku,
+            title: `${product.title} - ${variant.title}`,
+            quantity: 0,
+          });
+        }
       }
 
-      const created = missing.length > 0 && missing.length <= room
-        ? missing.length
-        : 0;
+      let restoredDefault = false;
+      if (options.length === 0 && (detail?.variants.length ?? 0) === 0) {
+        const id = crypto.randomUUID();
+        const sku = await resolveVariantSku({
+          productHandle: product.handle,
+          variantTitle: "Default",
+          optionValues: [],
+          index: 0,
+        });
+        await productVariantDal.createMany([
+          {
+            id,
+            productId: data.productId,
+            title: "Default",
+            sku,
+            rank: 0,
+            manageInventory: true,
+            allowBackorder: false,
+            inventoryQuantity: 0,
+            optionValueIds: [],
+            prices: [],
+            createdBy: actorId,
+            updatedBy: actorId,
+          },
+        ]);
+        await inventoryDal.ensureForVariant({
+          variantId: id,
+          sku,
+          title: `${product.title} - Default`,
+          quantity: 0,
+        });
+        restoredDefault = true;
+      }
+
+      const created =
+        missing.length > 0 && missing.length <= room ? missing.length : 0;
+      const converted = Boolean(defaultVariant && firstCombination);
 
       return {
         success: true,
-        message: created
-          ? `Options updated — ${created} variant${created === 1 ? "" : "s"} created`
-          : "Options updated",
-        data: { count: options.length, created },
+        message: restoredDefault
+          ? "Options updated — Default variant restored"
+          : created
+            ? `Options updated — ${created} variant${created === 1 ? "" : "s"} created${converted ? " and Default converted" : ""}`
+            : converted
+              ? "Options updated — Default converted"
+              : "Options updated",
+        data: {
+          count: options.length,
+          created,
+          converted,
+          restoredDefault,
+        },
       };
     } catch (error) {
       console.error("Set product options error:", error);

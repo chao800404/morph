@@ -43,26 +43,26 @@ export const AssetsCardSkeleton = ({ className }: { className?: string }) => (
 export const AssetsPageSkeleton = () => (
   <PageSplitLayout
     sidebar={<AssetPropertyEmptyCard />}
-    stackBelow1280={false}
+    sidebarClassName="hidden xl:block"
   >
     <div className="min-h-content bg-component ring-muted-foreground/10 dark:ring-muted-foreground/20 flex flex-col rounded-lg ring">
-        <div className="flex items-center justify-between gap-2 px-6 py-4">
-          <div className="flex flex-col gap-1.5">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-3 w-48" />
-          </div>
-          <Skeleton className="h-7 w-20" />
+      <div className="flex items-center justify-between gap-2 px-6 py-4">
+        <div className="flex flex-col gap-1.5">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-3 w-48" />
         </div>
-        <div className="flex min-h-16 items-center justify-between gap-3 border-y px-6 py-4">
-          <Skeleton className="h-7 w-20" />
-          <div className="flex items-center gap-2">
-            <Skeleton className="h-7 w-52" />
-            <Skeleton className="h-7 w-7" />
-          </div>
-        </div>
-        <div className="flex-1">
-          <AssetsCardSkeleton />
+        <Skeleton className="h-7 w-20" />
+      </div>
+      <div className="flex min-h-16 items-center justify-between gap-3 border-y px-6 py-4">
+        <Skeleton className="h-7 w-20" />
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-7 w-52" />
+          <Skeleton className="h-7 w-7" />
         </div>
       </div>
+      <div className="flex-1">
+        <AssetsCardSkeleton />
+      </div>
+    </div>
   </PageSplitLayout>
 );

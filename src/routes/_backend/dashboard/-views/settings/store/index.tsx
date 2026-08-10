@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { CommandBar } from "@/components/ui/command-bar";
+import { StatusBadge } from "@/components/ui/status-badge";
 import type { StoreCurrencyDTO } from "@/lib/currency/dto/currency.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
@@ -40,9 +41,12 @@ const columns: DataTableColumn<StoreCurrencyDTO>[] = [
     header: "Tax inclusive pricing",
     className: "w-48",
     cell: (currency) => (
-      <Badge variant={currency.isTaxInclusive ? "success" : "neutral"}>
+      <StatusBadge
+        variant="plain"
+        color={currency.isTaxInclusive ? "green" : "grey"}
+      >
         {currency.isTaxInclusive ? "True" : "False"}
-      </Badge>
+      </StatusBadge>
     ),
   },
 ];

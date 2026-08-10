@@ -1,4 +1,4 @@
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
 import type { ProductOptionCreatedWithin } from "@/lib/product/config/product-option-list";
 import type { ProductOptionDTO } from "@/lib/product/dto/product-option.dto";
 import type {
@@ -8,8 +8,7 @@ import type {
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 
 export const PRODUCT_OPTION_CREATED_FILTER = {
-  label: "Add filter",
-  filterLabel: "Created",
+  label: "Created",
   options: [
     { value: "7d", label: "Last 7 days" },
     { value: "30d", label: "Last 30 days" },
@@ -42,6 +41,10 @@ export const PRODUCT_OPTION_COLUMNS = [
     className: "w-32",
     // Entries in this library are global; product-exclusive options are
     // authored and managed on the product itself.
-    cell: () => <Badge variant="default">Global</Badge>,
+    cell: () => (
+      <StatusBadge variant="plain" color="blue">
+        Global
+      </StatusBadge>
+    ),
   },
 ] satisfies DataTableColumn<ProductOptionDTO>[];

@@ -136,6 +136,8 @@ export const metadataInputSchema = z
 export const listProductsInputSchema = z.object({
   query: z.string().trim().max(200).nullish(),
   status: productStatusSchema.nullish(),
+  createdWithin: z.enum(["24h", "7d", "30d", "90d"]).nullish(),
+  updatedWithin: z.enum(["24h", "7d", "30d", "90d"]).nullish(),
   collectionId: z.uuid().nullish(),
   categoryId: z.uuid().nullish(),
   optionId: z.uuid().nullish(),
@@ -161,7 +163,10 @@ export const productVariantInputSchema = z.object({
   manageInventory: z.boolean().default(true),
   allowBackorder: z.boolean().default(false),
   inventoryQuantity: z.number().int().min(0).max(1_000_000).default(0),
-  optionValues: z.array(z.string().trim().min(1)).max(MAX_PRODUCT_OPTIONS).default([]),
+  optionValues: z
+    .array(z.string().trim().min(1))
+    .max(MAX_PRODUCT_OPTIONS)
+    .default([]),
   prices: z.array(priceInputSchema).max(20).default([]),
 });
 
@@ -186,47 +191,51 @@ export const productTagValuesSchema = z
  */
 export const createProductInputSchema = (maxAssets: number) =>
   z.object({
-  title: z.string().trim().min(1, "Title is required").max(200),
-  handle: typedHandleSchema.optional(),
-  subtitle: z.string().trim().max(200).nullish(),
-  description: z.string().trim().max(5000).nullish(),
-  status: productStatusSchema.default("draft"),
-  collectionId: z.uuid().nullish(),
-  typeValue: productTypeValueSchema.nullish(),
-  tagValues: productTagValuesSchema,
-  categoryIds: z.array(z.uuid()).max(20).default([]),
-  salesChannelIds: z.array(z.uuid()).max(100).default([]),
-  discountable: z.boolean().default(true),
-  // No `thumbnailAssetId`: it is the first entry of `assetIds`, derived by the
-  // DAL so every write path agrees.
-  assetIds: z.array(z.uuid()).max(maxAssets).default([]),
-  options: z.array(productOptionSelectionInputSchema).max(MAX_PRODUCT_OPTIONS).default([]),
-  /** Prices applied to every generated variant when `variants` is omitted. */
-  prices: z.array(priceInputSchema).max(20).default([]),
-  /**
-   * Explicit variant list. When present it replaces the generated cartesian
-   * product, so the caller controls which combinations exist and what each one
-   * costs. Omit it to have every combination generated automatically.
-   */
-  variants: z.array(productVariantInputSchema).max(200).optional(),
-});
+    title: z.string().trim().min(1, "Title is required").max(200),
+    handle: typedHandleSchema.optional(),
+    subtitle: z.string().trim().max(200).nullish(),
+    description: z.string().trim().max(5000).nullish(),
+    status: productStatusSchema.default("draft"),
+    collectionId: z.uuid().nullish(),
+    typeValue: productTypeValueSchema.nullish(),
+    tagValues: productTagValuesSchema,
+    categoryIds: z.array(z.uuid()).max(20).default([]),
+    salesChannelIds: z.array(z.uuid()).max(100).default([]),
+    discountable: z.boolean().default(true),
+    // No `thumbnailAssetId`: it is the first entry of `assetIds`, derived by the
+    // DAL so every write path agrees.
+    assetIds: z.array(z.uuid()).max(maxAssets).default([]),
+    metadata: metadataInputSchema.optional(),
+    options: z
+      .array(productOptionSelectionInputSchema)
+      .max(MAX_PRODUCT_OPTIONS)
+      .default([]),
+    /** Prices applied to every generated variant when `variants` is omitted. */
+    prices: z.array(priceInputSchema).max(20).default([]),
+    /**
+     * Explicit variant list. When present it replaces the generated cartesian
+     * product, so the caller controls which combinations exist and what each one
+     * costs. Omit it to have every combination generated automatically.
+     */
+    variants: z.array(productVariantInputSchema).max(200).optional(),
+  });
 
 export const updateProductInputSchema = (maxAssets: number) =>
   z.object({
-  id: z.uuid("Invalid product ID"),
-  title: z.string().trim().min(1).max(200).optional(),
-  handle: typedHandleSchema.optional(),
-  subtitle: z.string().trim().max(200).nullish(),
-  description: z.string().trim().max(5000).nullish(),
-  status: productStatusSchema.optional(),
-  collectionId: z.uuid().nullish(),
-  typeValue: productTypeValueSchema.nullish(),
-  tagValues: productTagValuesSchema.optional(),
-  categoryIds: z.array(z.uuid()).max(20).optional(),
-  discountable: z.boolean().optional(),
-  assetIds: z.array(z.uuid()).max(maxAssets).optional(),
-  metadata: metadataInputSchema.optional(),
-});
+    id: z.uuid("Invalid product ID"),
+    title: z.string().trim().min(1).max(200).optional(),
+    handle: typedHandleSchema.optional(),
+    subtitle: z.string().trim().max(200).nullish(),
+    description: z.string().trim().max(5000).nullish(),
+    status: productStatusSchema.optional(),
+    collectionId: z.uuid().nullish(),
+    typeValue: productTypeValueSchema.nullish(),
+    tagValues: productTagValuesSchema.optional(),
+    categoryIds: z.array(z.uuid()).max(20).optional(),
+    discountable: z.boolean().optional(),
+    assetIds: z.array(z.uuid()).max(maxAssets).optional(),
+    metadata: metadataInputSchema.optional(),
+  });
 
 export const deleteProductsInputSchema = z.object({
   ids: z
@@ -252,9 +261,7 @@ export const deleteProductsInputSchema = z.object({
  */
 export const setProductOptionsInputSchema = z.object({
   productId: z.uuid("Invalid product ID"),
-  options: z
-    .array(productOptionSelectionInputSchema)
-    .max(MAX_PRODUCT_OPTIONS),
+  options: z.array(productOptionSelectionInputSchema).max(MAX_PRODUCT_OPTIONS),
   /**
    * Deletes the variants that reference an axis being removed.
    *
@@ -264,47 +271,54 @@ export const setProductOptionsInputSchema = z.object({
   removeVariantsInUse: z.boolean().default(false),
 });
 
-export const createVariantInputSchema = z.object({
-  productId: z.uuid("Invalid product ID"),
-  title: z.string().trim().min(1, "Title is required").max(200),
-  sku: z.string().trim().max(100).nullish(),
-  barcode: z.string().trim().max(100).nullish(),
-  // No `.int()`: the columns are `real`, because a carrier's rate table takes
-  // 12.5 mm. Same reasoning as the product's own attributes.
-  weight: z.number().min(0).nullish(),
-  length: z.number().min(0).nullish(),
-  width: z.number().min(0).nullish(),
-  height: z.number().min(0).nullish(),
-  manageInventory: z.boolean().default(true),
-  allowBackorder: z.boolean().default(false),
-  inventoryQuantity: z.number().int().min(0).max(1_000_000).default(0),
-  optionValueIds: z.array(z.uuid()).max(MAX_PRODUCT_OPTIONS).default([]),
-  prices: z.array(priceInputSchema).max(20).default([]),
-});
+export const createVariantInputSchema = (maxAssets: number) =>
+  z.object({
+    productId: z.uuid("Invalid product ID"),
+    title: z.string().trim().min(1, "Title is required").max(200),
+    sku: z.string().trim().max(100).nullish(),
+    barcode: z.string().trim().max(100).nullish(),
+    // No `.int()`: the columns are `real`, because a carrier's rate table takes
+    // 12.5 mm. Same reasoning as the product's own attributes.
+    weight: z.number().min(0).nullish(),
+    length: z.number().min(0).nullish(),
+    width: z.number().min(0).nullish(),
+    height: z.number().min(0).nullish(),
+    manageInventory: z.boolean().default(true),
+    allowBackorder: z.boolean().default(false),
+    inventoryQuantity: z.number().int().min(0).max(1_000_000).default(0),
+    optionValueIds: z.array(z.uuid()).max(MAX_PRODUCT_OPTIONS).default([]),
+    prices: z.array(priceInputSchema).max(20).default([]),
+    assetIds: z.array(z.uuid()).max(maxAssets).default([]),
+    metadata: metadataInputSchema.optional(),
+  });
 
-export const updateVariantInputSchema = z.object({
-  id: z.uuid("Invalid variant ID"),
-  title: z.string().trim().min(1).max(200).optional(),
-  sku: z.string().trim().max(100).nullish(),
-  barcode: z.string().trim().max(100).nullish(),
-  rank: z.number().int().min(0).max(10_000).optional(),
-  manageInventory: z.boolean().optional(),
-  allowBackorder: z.boolean().optional(),
-  inventoryQuantity: z.number().int().min(0).max(1_000_000).optional(),
-  weight: z.number().min(0).nullish(),
-  length: z.number().min(0).nullish(),
-  width: z.number().min(0).nullish(),
-  height: z.number().min(0).nullish(),
-  prices: z.array(priceInputSchema).max(20).optional(),
-  /**
-   * Moves the variant to another cell of the matrix.
-   *
-   * Absent leaves it where it is. Present replaces the whole set, because a
-   * variant holds exactly one value per axis and a partial update could not say
-   * which axis it meant.
-   */
-  optionValueIds: z.array(z.uuid()).max(MAX_PRODUCT_OPTIONS).optional(),
-});
+export const updateVariantInputSchema = (maxAssets: number) =>
+  z.object({
+    id: z.uuid("Invalid variant ID"),
+    title: z.string().trim().min(1).max(200).optional(),
+    sku: z.string().trim().max(100).nullish(),
+    barcode: z.string().trim().max(100).nullish(),
+    rank: z.number().int().min(0).max(10_000).optional(),
+    manageInventory: z.boolean().optional(),
+    allowBackorder: z.boolean().optional(),
+    inventoryQuantity: z.number().int().min(0).max(1_000_000).optional(),
+    weight: z.number().min(0).nullish(),
+    length: z.number().min(0).nullish(),
+    width: z.number().min(0).nullish(),
+    height: z.number().min(0).nullish(),
+    prices: z.array(priceInputSchema).max(20).optional(),
+    /**
+     * Moves the variant to another cell of the matrix.
+     *
+     * Absent leaves it where it is. Present replaces the whole set, because a
+     * variant holds exactly one value per axis and a partial update could not say
+     * which axis it meant.
+     */
+    optionValueIds: z.array(z.uuid()).max(MAX_PRODUCT_OPTIONS).optional(),
+    /** Present replaces the full ordered variant gallery. */
+    assetIds: z.array(z.uuid()).max(maxAssets).optional(),
+    metadata: metadataInputSchema.optional(),
+  });
 
 export const deleteVariantsInputSchema = z.object({
   ids: z
@@ -433,4 +447,6 @@ export type CreateProductInput = z.infer<
 export type UpdateProductInput = z.infer<
   ReturnType<typeof updateProductInputSchema>
 >;
-export type UpdateVariantInput = z.infer<typeof updateVariantInputSchema>;
+export type UpdateVariantInput = z.infer<
+  ReturnType<typeof updateVariantInputSchema>
+>;

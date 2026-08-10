@@ -25,6 +25,10 @@ import {
 } from "./data-table-sort";
 import { RowActionsMenu, type RowAction } from "./row-actions-menu";
 import { DataTableToolbar } from "./data-table-toolbar";
+import {
+  DataTableFilters,
+  type DataTableFilterDefinition,
+} from "./data-table-filters";
 
 export interface DataTableColumn<TRow> {
   /** Stable key; also used as the React key for the cell. */
@@ -69,7 +73,16 @@ export interface DataTableCardProps<TRow> {
    * the actions cell swallows its own clicks so the menu still works.
    */
   onRowClick?: (row: TRow) => void;
+  /**
+   * Starts loading the row destination before activation. Clickable rows are
+   * navigation controls even though a native Link cannot wrap a table row.
+   */
+  onRowPreload?: (row: TRow) => void;
+  /** Limits row navigation when only some rows have a valid destination. */
+  isRowClickable?: (row: TRow) => boolean;
   pagination?: DataTablePaginationInfo;
+  /** Declarative filters rendered by the shared Add filter control. */
+  filters?: DataTableFilterDefinition[];
   /** Filters and active filter chips shown on the toolbar's leading edge. */
   toolbarLeading?: ReactNode;
   selection?: {
@@ -107,6 +120,8 @@ export const DataTableCard = <TRow,>({
   rows,
   getRowId,
   onRowClick,
+  onRowPreload,
+  isRowClickable,
   isPending,
   errorMessage,
   onRetry,
@@ -118,17 +133,16 @@ export const DataTableCard = <TRow,>({
   defaultSortBy,
   rowActions,
   pagination,
+  filters,
   toolbarLeading,
   selection,
 }: DataTableCardProps<TRow>) => {
   const hasToolbar = Boolean(
-    toolbarLeading || searchPlaceholder || sortOptions,
+    filters?.length || toolbarLeading || searchPlaceholder || sortOptions,
   );
   const controls = (
     <>
-      {searchPlaceholder && (
-        <DataTableSearch placeholder={searchPlaceholder} />
-      )}
+      {searchPlaceholder && <DataTableSearch placeholder={searchPlaceholder} />}
       {sortOptions && (
         <DataTableSort options={sortOptions} defaultSortBy={defaultSortBy} />
       )}
@@ -174,50 +188,83 @@ export const DataTableCard = <TRow,>({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {rows.map((row) => (
-          <TableRow
-            key={getRowId(row)}
-            data-state={
-              selection?.selectedIds.has(getRowId(row))
-                ? "selected"
-                : undefined
-            }
-            className={onRowClick ? "cursor-pointer" : undefined}
-            onClick={onRowClick ? () => onRowClick(row) : undefined}
-          >
-            {selection ? (
-              <TableCell
-                className="w-14"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <Checkbox
-                  aria-label={`Select row ${getRowId(row)}`}
-                  checked={selection.selectedIds.has(getRowId(row))}
-                  disabled={!(selection.isRowSelectable?.(row) ?? true)}
-                  onCheckedChange={(checked) => {
-                    const next = new Set(selection.selectedIds);
-                    if (checked === true) next.add(getRowId(row));
-                    else next.delete(getRowId(row));
-                    selection.onChange(next);
-                  }}
-                />
-              </TableCell>
-            ) : null}
-            {columns.map((column) => (
-              <TableCell key={column.key} className={column.className}>
-                {column.cell(row)}
-              </TableCell>
-            ))}
-            {rowActions && (
-              <TableCell
-                className="w-16 text-right"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <RowActionsMenu actions={rowActions(row)} />
-              </TableCell>
-            )}
-          </TableRow>
-        ))}
+        {rows.map((row) => {
+          const rowIsClickable =
+            Boolean(onRowClick) && (isRowClickable?.(row) ?? true);
+
+          return (
+            <TableRow
+              key={getRowId(row)}
+              data-state={
+                selection?.selectedIds.has(getRowId(row))
+                  ? "selected"
+                  : undefined
+              }
+              className={rowIsClickable ? "cursor-pointer" : undefined}
+              role={rowIsClickable ? "link" : undefined}
+              tabIndex={rowIsClickable ? 0 : undefined}
+              onMouseEnter={
+                rowIsClickable && onRowPreload
+                  ? () => onRowPreload(row)
+                  : undefined
+              }
+              onFocus={
+                rowIsClickable && onRowPreload
+                  ? () => onRowPreload(row)
+                  : undefined
+              }
+              onTouchStart={
+                rowIsClickable && onRowPreload
+                  ? () => onRowPreload(row)
+                  : undefined
+              }
+              onClick={
+                rowIsClickable && onRowClick ? () => onRowClick(row) : undefined
+              }
+              onKeyDown={
+                rowIsClickable && onRowClick
+                  ? (event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      onRowClick(row);
+                    }
+                  : undefined
+              }
+            >
+              {selection ? (
+                <TableCell
+                  className="w-14"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <Checkbox
+                    aria-label={`Select row ${getRowId(row)}`}
+                    checked={selection.selectedIds.has(getRowId(row))}
+                    disabled={!(selection.isRowSelectable?.(row) ?? true)}
+                    onCheckedChange={(checked) => {
+                      const next = new Set(selection.selectedIds);
+                      if (checked === true) next.add(getRowId(row));
+                      else next.delete(getRowId(row));
+                      selection.onChange(next);
+                    }}
+                  />
+                </TableCell>
+              ) : null}
+              {columns.map((column) => (
+                <TableCell key={column.key} className={column.className}>
+                  {column.cell(row)}
+                </TableCell>
+              ))}
+              {rowActions && (
+                <TableCell
+                  className="w-16 text-right"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <RowActionsMenu actions={rowActions(row)} />
+                </TableCell>
+              )}
+            </TableRow>
+          );
+        })}
       </TableBody>
     </Table>
   );
@@ -235,7 +282,12 @@ export const DataTableCard = <TRow,>({
       {hasToolbar ? (
         <DataTableToolbar
           className="border-t-0"
-          leading={toolbarLeading}
+          leading={
+            <>
+              {filters?.length ? <DataTableFilters filters={filters} /> : null}
+              {toolbarLeading}
+            </>
+          }
           trailing={controls}
         />
       ) : null}
@@ -271,9 +323,7 @@ export const DataTableCard = <TRow,>({
       ) : (
         <>
           <TableViewport>{table}</TableViewport>
-          {pagination ? (
-            <DataTablePagination pagination={pagination} />
-          ) : null}
+          {pagination ? <DataTablePagination pagination={pagination} /> : null}
         </>
       )}
     </CardWrapper>

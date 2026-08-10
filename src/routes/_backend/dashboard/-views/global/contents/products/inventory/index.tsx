@@ -1,4 +1,6 @@
 import type { InventoryListItemDTO } from "@/lib/inventory/dto/inventory.dto";
+import { viewPreloader } from "@/lib/config/lazy-view";
+import { findCollection } from "@/lib/config/navigation";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   CollectionCreateButton,
@@ -9,9 +11,15 @@ import {
   inventoryQueries,
   normalizeInventoryListParams,
 } from "@queries/inventory.queries";
+import { getConfig } from "@/server/get-config";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearch } from "@tanstack/react-router";
-import { useCallback } from "react";
+import {
+  useLocation,
+  useNavigate,
+  useRouter,
+  useSearch,
+} from "@tanstack/react-router";
+import { useCallback, useMemo } from "react";
 
 const columns: DataTableColumn<InventoryListItemDTO>[] = [
   {
@@ -53,6 +61,17 @@ const columns: DataTableColumn<InventoryListItemDTO>[] = [
 ];
 
 const Inventory = () => {
+  const navigate = useNavigate();
+  const router = useRouter();
+  const variantDetailView = useMemo(
+    () =>
+      findCollection(getConfig().client.collections.global, "products")?.pages
+        ?.variant?.view,
+    [],
+  );
+  const returnTo = useLocation({
+    select: (location) => location.href,
+  });
   const search = useSearch({ strict: false }) as DashboardSearch;
   const queryClient = useQueryClient();
   const params = normalizeInventoryListParams(search);
@@ -76,6 +95,34 @@ const Inventory = () => {
       columns={columns}
       rows={items}
       getRowId={(item) => item.id}
+      isRowClickable={(item) => Boolean(item.productId && item.variantId)}
+      onRowClick={(item) => {
+        if (!item.productId || !item.variantId) return;
+        void navigate({
+          to: "/dashboard/$slug/$id/$page/$childId",
+          params: {
+            slug: "products",
+            id: item.productId,
+            page: "variant",
+            childId: item.variantId,
+          },
+          search: { returnTo },
+        });
+      }}
+      onRowPreload={(item) => {
+        if (!item.productId || !item.variantId) return;
+        void viewPreloader(variantDetailView)?.();
+        void router.preloadRoute({
+          to: "/dashboard/$slug/$id/$page/$childId",
+          params: {
+            slug: "products",
+            id: item.productId,
+            page: "variant",
+            childId: item.variantId,
+          },
+          search: { returnTo },
+        });
+      }}
       isPending={isPending}
       errorMessage={result && !result.success ? result.message : null}
       onRetry={invalidate}

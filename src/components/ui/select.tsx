@@ -6,7 +6,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 import { ChevronUpDownIcon } from "./icons/chevron-up-down-icon";
-import { fieldControlVariants } from "./field-control";
+import { fieldControlDensity, fieldControlVariants } from "./field-control";
 
 function Select({
   ...props
@@ -42,7 +42,8 @@ function SelectTrigger({
       data-size={size}
       className={cn(
         fieldControlVariants({ variant }),
-        "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-sm whitespace-nowrap",
+        fieldControlDensity.control,
+        "flex w-full items-center justify-between gap-2 text-sm whitespace-nowrap",
         "data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground",
         "data-[size=default]:h-9 data-[size=sm]:h-8",
         "*:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2",

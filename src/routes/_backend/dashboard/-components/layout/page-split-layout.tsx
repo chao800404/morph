@@ -13,9 +13,9 @@ export const RESPONSIVE_PAGE_SIDEBAR_WIDTH =
  * page had already drifted apart — `w-md` against `lg:w-80` — which is the kind
  * of difference nobody notices until the two screens sit side by side.
  *
- * Detail pages use one grid column below 1280px so both areas retain a usable reading
- * width. Assets opts out because its viewport-height explorer must keep the
- * Properties panel visible beside it.
+ * Detail pages use one grid column below 1280px so both areas retain a usable
+ * reading width. Assets hides its grid sidebar at that breakpoint and presents
+ * the same Properties content in a sheet instead.
  *
  * It sets no height and no cross-axis alignment. Only Assets locks to the
  * viewport, and it does so on its own cards (`h-content` / `min-h-content`) —
@@ -34,7 +34,7 @@ export const PageSplitLayout = ({
   className?: string;
   /** Allows a feature to tune the sidebar responsively without affecting others. */
   sidebarClassName?: string;
-  /** Assets keeps its viewport-height explorer and Properties panel side by side. */
+  /** Opt out only for a feature that must keep both columns below 1280px. */
   stackBelow1280?: boolean;
 }) => (
   <div
@@ -49,9 +49,7 @@ export const PageSplitLayout = ({
     <section className="min-w-0">{children}</section>
     <aside
       className={cn(
-        stackBelow1280
-          ? RESPONSIVE_PAGE_SIDEBAR_WIDTH
-          : PAGE_SIDEBAR_WIDTH,
+        stackBelow1280 ? RESPONSIVE_PAGE_SIDEBAR_WIDTH : PAGE_SIDEBAR_WIDTH,
         "shrink-0",
         sidebarClassName,
       )}

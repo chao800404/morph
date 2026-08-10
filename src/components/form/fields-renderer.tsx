@@ -21,6 +21,7 @@ import { Tip } from "../ui/tip";
 import { PhoneInput } from "../ui/phone-input";
 import { UploadField } from "../upload/upload";
 import { AssetSelectField } from "./asset-select-field";
+import { ChoiceCardsField } from "./choice-cards-field";
 import { InputField } from "./input-field";
 import { MetadataField } from "./metadata-field";
 import { OptionValuesField } from "./option-values-field";
@@ -92,14 +93,16 @@ export const FieldsRenderer = ({
             : undefined;
         const rendersOwnLabel =
           field.type === "hidden" ||
+          field.type === "choice-cards" ||
           field.type === "switch" ||
           field.type === "tip";
 
         return (
           <div
             key={field.name}
+            id={`${id}-wrapper`}
             className={cn(
-              "space-y-2",
+              "scroll-mt-28 scroll-mb-24 space-y-2",
               colSpan === 1 ? "col-span-1" : "col-span-2",
               field.className,
             )}
@@ -201,6 +204,13 @@ export const FieldsRenderer = ({
                 </SelectContent>
               </Select>
             )}
+            {field.type === "choice-cards" && (
+              <ChoiceCardsField
+                field={field}
+                value={stringValue}
+                onChange={(value) => onChange?.(field.name, value)}
+              />
+            )}
             {field.type === "hidden" && (
               <input type="hidden" name={field.name} value={stringValue} />
             )}
@@ -296,7 +306,11 @@ export const FieldsRenderer = ({
                 field={field}
                 fieldId={id}
                 checked={booleanValue}
-                onChange={(checked) => onChange?.(field.name, checked)}
+                onChange={
+                  onChange
+                    ? (checked) => onChange(field.name, checked)
+                    : undefined
+                }
               />
             ) : null}
             {field.type === "tip" ? (

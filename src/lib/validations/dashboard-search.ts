@@ -70,21 +70,35 @@ export const dashboardSearchSchema = z.object({
   assetId: z.string().optional(),
   /** Assets-only media category filter. */
   assetType: z.enum(["image", "video", "rive", "model"]).optional(),
+  /** Assets-only file-size bucket. */
+  assetSize: z.enum(["under-1mb", "1mb-10mb", "over-10mb"]).optional(),
+  /** Assets-only upload-date window. */
+  assetCreatedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
+  /** Products list filters. */
+  productStatus: z.enum(["draft", "published", "archived"]).optional(),
+  productCreatedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
+  productUpdatedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
   /** Product Options creation-date window. */
   optionCreatedWithin: z.enum(PRODUCT_OPTION_CREATED_WITHIN_VALUES).optional(),
+  /** Price History filters are URL state so filtered audit views are shareable. */
+  priceHistoryCurrencies: z.array(z.string()).max(50).optional(),
+  priceHistoryChanges: z
+    .array(z.enum(["created", "increased", "decreased", "removed"]))
+    .max(4)
+    .optional(),
+  priceHistoryChangedBy: z.array(z.string()).max(50).optional(),
+  priceHistoryChangedWithin: z
+    .enum(["24h", "7d", "30d", "90d"])
+    .optional(),
   /**
    * Seeds the product create wizard with an option already chosen, so an
    * author can start a product from the option's own page. Only a starting
    * point — the wizard's picker can still change it.
    */
-  /**
-   * Which variant the product's variant editor is opening.
-   *
-   * A `pages` key names the surface; this names the record inside it. The
-   * variant has no page of its own because it is only reachable from its
-   * product.
-   */
-  variantId: z.string().optional(),
+  /** Which variant a product's detail or edit subpage is opening. */
+  variantId: z.uuid().optional(),
+  /** Field group a detail card should reveal when opening a shared editor. */
+  editSection: z.enum(["general", "media", "inventory"]).optional(),
   seedOptionId: z.string().optional(),
   /** Seeds the product create wizard with a category already assigned. */
   seedCategoryId: z.string().optional(),

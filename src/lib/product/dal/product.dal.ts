@@ -20,6 +20,7 @@ import {
   count,
   desc,
   eq,
+  gte,
   inArray,
   isNull,
   like,
@@ -238,6 +239,8 @@ export const productDal = {
   async listPage(options: {
     query?: string | null;
     status?: ProductDTO["status"] | null;
+    createdWithin?: "24h" | "7d" | "30d" | "90d" | null;
+    updatedWithin?: "24h" | "7d" | "30d" | "90d" | null;
     collectionId?: string | null;
     categoryId?: string | null;
     optionId?: string | null;
@@ -261,6 +264,28 @@ export const productDal = {
     }
     if (options.status) {
       conditions.push(eq(products.status, options.status));
+    }
+    const withinHours = (within: "24h" | "7d" | "30d" | "90d") =>
+      ({ "24h": 24, "7d": 168, "30d": 720, "90d": 2160 })[within];
+    if (options.createdWithin) {
+      conditions.push(
+        gte(
+          products.createdAt,
+          new Date(
+            Date.now() - withinHours(options.createdWithin) * 60 * 60 * 1000,
+          ).toISOString(),
+        ),
+      );
+    }
+    if (options.updatedWithin) {
+      conditions.push(
+        gte(
+          products.updatedAt,
+          new Date(
+            Date.now() - withinHours(options.updatedWithin) * 60 * 60 * 1000,
+          ).toISOString(),
+        ),
+      );
     }
     if (options.collectionId) {
       conditions.push(eq(products.collectionId, options.collectionId));

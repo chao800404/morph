@@ -1,6 +1,5 @@
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { usePageBreadcrumb } from "@/routes/_backend/dashboard/-components/breadcrumb/use-page-breadcrumb";
 import {
   EditCard,
   type EditCardField,
@@ -25,8 +24,6 @@ const CollectionDetail = () => {
 
   const { data: result, isPending } = useQuery(collectionQueries.detail(id));
   const collection = result?.success ? result.data : null;
-
-  usePageBreadcrumb(collection?.title ?? null);
 
   const openEdit = useCallback(
     () =>

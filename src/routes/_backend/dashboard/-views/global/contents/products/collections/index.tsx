@@ -4,6 +4,7 @@ import {
   CollectionCreateButton,
   DataTableCard,
   useCollectionEditAction,
+  useCollectionDetailPreload,
   deleteActionIcon,
   type DataTableColumn,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
@@ -17,18 +18,15 @@ import { useNavigate } from "@tanstack/react-router";
 import { useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
-import {
-  deleteCollectionsAction,
-} from "../product-actions";
+import { deleteCollectionsAction } from "../product-actions";
 
 const Collections = () => {
   const search = useSearch({ strict: false }) as DashboardSearch;
   const navigate = useNavigate();
+  const preloadDetail = useCollectionDetailPreload("collections");
   const queryClient = useQueryClient();
   const params = normalizeCollectionListParams(search);
   const { data: result, isPending } = useQuery(collectionQueries.list(params));
-
-
 
   const { setInfoData, setOpen: setInfoOpen } = useInfoStore(
     useShallow((state) => ({
@@ -40,8 +38,6 @@ const Collections = () => {
   const invalidate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: collectionQueries.all() });
   }, [queryClient]);
-
-
 
   const handleDelete = useCallback(
     (collection: ProductCollectionDTO) => {
@@ -104,9 +100,7 @@ const Collections = () => {
         { value: "createdAt", label: "Created" },
         { value: "updatedAt", label: "Updated" },
       ]}
-      headerActions={
-        <CollectionCreateButton slug="collections" />
-      }
+      headerActions={<CollectionCreateButton slug="collections" />}
       columns={columns}
       rows={collections}
       getRowId={(collection) => collection.id}
@@ -121,6 +115,7 @@ const Collections = () => {
           params: { slug: "collections", id: collection.id },
         })
       }
+      onRowPreload={(collection) => preloadDetail(collection.id)}
       rowActions={(collection) => [
         ...editAction(collection.id),
         {

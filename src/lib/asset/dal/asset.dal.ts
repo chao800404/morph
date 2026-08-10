@@ -11,6 +11,8 @@ import {
   isNotNull,
   isNull,
   like,
+  lt,
+  gte,
   or,
   SQL,
   sql,
@@ -76,6 +78,8 @@ export const assetDal = {
     folderId?: string | null;
     query?: string | null;
     type?: AssetType;
+    size?: "under-1mb" | "1mb-10mb" | "over-10mb";
+    createdWithin?: "24h" | "7d" | "30d" | "90d";
     sorts: Array<{
       sortBy: "name" | "extension" | "size" | "createdAt" | "updatedAt";
       sortOrder: "asc" | "desc";
@@ -92,6 +96,24 @@ export const assetDal = {
 
     if (options.type) {
       conditions.push(eq(assets.type, options.type));
+    }
+
+    if (options.size === "under-1mb") {
+      conditions.push(lt(assets.size, 1024 * 1024));
+    } else if (options.size === "1mb-10mb") {
+      conditions.push(
+        and(gte(assets.size, 1024 * 1024), lt(assets.size, 10 * 1024 * 1024)) as SQL,
+      );
+    } else if (options.size === "over-10mb") {
+      conditions.push(gte(assets.size, 10 * 1024 * 1024));
+    }
+
+    if (options.createdWithin) {
+      const hours = { "24h": 24, "7d": 168, "30d": 720, "90d": 2160 }[
+        options.createdWithin
+      ];
+      const createdAfter = new Date(Date.now() - hours * 60 * 60 * 1000);
+      conditions.push(gte(assets.createdAt, createdAfter.toISOString()));
     }
 
     if (options.query?.trim()) {

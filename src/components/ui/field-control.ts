@@ -19,6 +19,26 @@ import { cva } from "class-variance-authority";
 export const focusRing =
   "focus-visible:outline-none focus-visible:ring-ring/50 focus-visible:ring-[3px]";
 
+/**
+ * Form-field density rules.
+ *
+ * Density follows information structure, never the feature that owns a field:
+ * - `control`: one-line inputs, selects and buttons.
+ * - `compact`: a two-line summary or disclosure trigger.
+ * - `default`: a descriptive card containing a control, title and supporting
+ *   copy.
+ *
+ * Content-sized controls — textarea, dropzone, asset grid and wrapping token
+ * picker — deliberately keep their intrinsic height. They still use
+ * `fieldControlVariants` for the shared surface, but forcing one of these
+ * vertical metrics on them would clip content or create unexplained whitespace.
+ */
+export const fieldControlDensity = {
+  control: "h-9 px-3 py-1.5",
+  compact: "min-h-14 px-3 py-2",
+  default: "p-4",
+} as const;
+
 export const fieldControlVariants = cva(
   [
     "rounded-md-plus border border-input bg-background text-foreground shadow-xs",

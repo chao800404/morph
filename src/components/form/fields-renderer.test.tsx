@@ -17,6 +17,17 @@ vi.mock("@queries/asset.queries", () => ({
 }));
 
 describe("FieldsRenderer switch and tip fields", () => {
+  it("renders reusable choice cards and emits the selected value", () => {
+    const onChange = vi.fn();
+    render(<FieldsRenderer fields={[{ type: "choice-cards", name: "status", label: "Status", value: "draft", options: [{ label: "Draft", value: "draft", description: "Keep unavailable." }, { label: "Active", value: "active", description: "Publish now." }] }]} onChange={onChange} />);
+
+    expect(screen.getByText("Status")).toBeTruthy();
+    expect(screen.getByRole("radiogroup").getAttribute("aria-labelledby")).toBe("field-status-label");
+    expect(screen.getByRole("radio", { name: /Draft/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: /Active/ }));
+    expect(onChange).toHaveBeenCalledWith("status", "active");
+  });
+
   it("emits a boolean from the shared switch field", () => {
     const onChange = vi.fn();
 

@@ -19,11 +19,15 @@ vi.mock("@/server/product/categories.serverFn", () => ({
 vi.mock("@/server/product/variants.serverFn", () => ({
   updateVariant: vi.fn(),
   deleteVariants: vi.fn(),
+  getVariantDetail: vi.fn(),
 }));
 vi.mock("@/server/product/options.serverFn", () => ({
   createProductOption: vi.fn(),
   deleteProductOptions: vi.fn(),
   updateProductOption: vi.fn(),
+}));
+vi.mock("@/server/sales-channel/sales-channels.serverFn", () => ({
+  setProductSalesChannels: vi.fn(),
 }));
 
 const { updateProductMediaAction } = await import("./product-actions");

@@ -81,7 +81,7 @@ const ProductOrganization = () => {
   if (!product) {
     return (
       <RouteSurfaceMessage>
-          {result?.message ?? "Product not found"}
+        {result?.message ?? "Product not found"}
       </RouteSurfaceMessage>
     );
   }
@@ -111,6 +111,7 @@ const ProductOrganization = () => {
           label: collection.title,
         })),
       ],
+      colSpan: 1,
     },
     {
       type: "option-values",
@@ -124,6 +125,7 @@ const ProductOrganization = () => {
       placeholder: "Select or create a type...",
       searchPlaceholder: "Search types...",
       emptyMessage: "No type found.",
+      colSpan: 1,
     },
     {
       type: "option-values",
@@ -136,6 +138,7 @@ const ProductOrganization = () => {
       placeholder: "Select or create tags...",
       searchPlaceholder: "Search tags...",
       emptyMessage: "No tag found.",
+      colSpan: 1,
     },
     {
       type: "option-values",
@@ -150,6 +153,7 @@ const ProductOrganization = () => {
       placeholder: "Select categories...",
       searchPlaceholder: "Search categories...",
       emptyMessage: "No category found.",
+      colSpan: 1,
     },
     {
       type: "option-values",
@@ -164,6 +168,7 @@ const ProductOrganization = () => {
       placeholder: "Select sales channels...",
       searchPlaceholder: "Search sales channels...",
       emptyMessage: "No sales channel found.",
+      colSpan: 1,
     },
   ];
 
@@ -175,6 +180,7 @@ const ProductOrganization = () => {
       submitLabel="Save"
       loadingLabel="Saving..."
       fields={fields}
+      fieldsClassName="sm:grid-cols-2"
     />
   );
 };

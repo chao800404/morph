@@ -211,7 +211,7 @@ export const StepOrganize = ({
 
       <FieldsRenderer
         fields={fields}
-        className="grid-cols-1 gap-y-6"
+        className="grid-cols-1 gap-x-6 gap-y-6 sm:grid-cols-2"
         onChange={handleChange}
       />
     </div>

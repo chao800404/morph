@@ -5,7 +5,6 @@ import { IdleTimerProvider } from "@/components/provider/idle-timer-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { findBreadcrumbsFromCollections } from "@/lib/config/navigation";
-import { usePageBreadcrumbStore } from "./dashboard/-components/breadcrumb/use-page-breadcrumb";
 import { cn } from "@/lib/utils";
 import { getSession } from "@/server/auth/getSession";
 import { NotFound } from "@/components/not-found/not-found";
@@ -15,6 +14,7 @@ import {
   Outlet,
   redirect,
   useLocation,
+  useMatches,
 } from "@tanstack/react-router";
 import { lazy, Suspense } from "react";
 
@@ -84,11 +84,28 @@ function RouteComponent() {
   ];
 
   const breadcrumbs = findBreadcrumbsFromCollections(allCollections, slugs);
-  // A detail view names the record it loaded; the URL cannot.
-  const trailingCrumb = usePageBreadcrumbStore((state) => state.label);
-  const items = trailingCrumb
-    ? [...breadcrumbs, { name: trailingCrumb, href: location.pathname }]
-    : breadcrumbs;
+  // Like Medusa's route handles, every matched record route contributes its
+  // own loader-resolved label. The parent product and child variant therefore
+  // compose naturally without a page publishing global state in an effect.
+  const trailingCrumbs = useMatches({
+    select: (matches) =>
+      matches.flatMap((match) => {
+        const data = match.loaderData as
+          | { breadcrumb?: unknown; breadcrumbHref?: unknown }
+          | undefined;
+        if (typeof data?.breadcrumb !== "string" || !data.breadcrumb) return [];
+        return [
+          {
+            name: data.breadcrumb,
+            href:
+              typeof data.breadcrumbHref === "string"
+                ? data.breadcrumbHref
+                : match.pathname,
+          },
+        ];
+      }),
+  });
+  const items = [...breadcrumbs, ...trailingCrumbs];
 
   return (
     <>
@@ -146,7 +163,10 @@ function RouteComponent() {
                 (`100lvh - 5.5rem`), which is exactly this box minus its own
                 padding, so it fills the area and never scrolls.
               */}
-              <div className="h-full min-h-0 overflow-y-auto p-4 max-lg:h-auto">
+              <div
+                id="dashboard-scroll-container"
+                className="h-full min-h-0 overflow-y-auto p-4 max-lg:h-auto"
+              >
                 <Outlet />
               </div>
               <Toaster />

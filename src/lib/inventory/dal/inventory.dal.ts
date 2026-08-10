@@ -11,9 +11,11 @@ import {
   count,
   desc,
   eq,
+  exists,
   inArray,
   isNull,
   like,
+  notExists,
   or,
   sql,
   type SQL,
@@ -50,14 +52,28 @@ export const inventoryDal = {
     quantity: number;
   }): Promise<void> {
     const db = await getDb();
+    const now = new Date().toISOString();
     const linked = await db
       .select({ id: productVariantInventoryItems.inventoryItemId })
       .from(productVariantInventoryItems)
       .where(eq(productVariantInventoryItems.variantId, input.variantId))
       .limit(1);
-    if (linked.length > 0) return;
+    if (linked[0]) {
+      const linkedVariants = await db
+        .select({ value: count() })
+        .from(productVariantInventoryItems)
+        .where(eq(productVariantInventoryItems.inventoryItemId, linked[0].id));
+      // A one-to-one item mirrors its variant identity. Shared inventory is a
+      // deliberate aggregate and must not be renamed by one of its consumers.
+      if (Number(linkedVariants[0]?.value ?? 0) === 1) {
+        await db
+          .update(inventoryItems)
+          .set({ sku: input.sku, title: input.title, updatedAt: now })
+          .where(and(eq(inventoryItems.id, linked[0].id), active));
+      }
+      return;
+    }
 
-    const now = new Date().toISOString();
     const locationId = await this.ensureDefaultLocation();
     const matchingItem = input.sku
       ? await db
@@ -178,11 +194,39 @@ export const inventoryDal = {
     limit: number;
   }): Promise<{ items: InventoryListItemDTO[]; total: number }> {
     const db = await getDb();
-    const conditions: SQL[] = [active];
+    const hasAnyVariantLink = db
+      .select({ value: sql<number>`1` })
+      .from(productVariantInventoryItems)
+      .where(
+        eq(productVariantInventoryItems.inventoryItemId, inventoryItems.id),
+      );
+    const hasActiveVariantLink = db
+      .select({ value: sql<number>`1` })
+      .from(productVariantInventoryItems)
+      .innerJoin(
+        productVariants,
+        eq(productVariants.id, productVariantInventoryItems.variantId),
+      )
+      .where(
+        and(
+          eq(productVariantInventoryItems.inventoryItemId, inventoryItems.id),
+          isNull(productVariants.deletedAt),
+        ),
+      );
+    const conditions: SQL[] = [
+      active,
+      // Standalone inventory items are valid. Items whose only links point to
+      // soft-deleted variants are lifecycle residue and must not appear as a
+      // second copy of the product's current stock.
+      or(notExists(hasAnyVariantLink), exists(hasActiveVariantLink)) as SQL,
+    ];
     if (options.query?.trim()) {
       const pattern = containsPattern(options.query.trim());
       conditions.push(
-        or(like(inventoryItems.title, pattern), like(inventoryItems.sku, pattern)) as SQL,
+        or(
+          like(inventoryItems.title, pattern),
+          like(inventoryItems.sku, pattern),
+        ) as SQL,
       );
     }
     const condition = and(...conditions);
@@ -198,27 +242,39 @@ export const inventoryDal = {
         .select()
         .from(inventoryItems)
         .where(condition)
-        .orderBy(options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn))
+        .orderBy(
+          options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn),
+        )
         .limit(options.limit)
         .offset((options.page - 1) * options.limit),
     ]);
 
     const ids = rows.map((row) => row.id);
-    const [variantCounts, levelTotals] =
+    const [variantLinks, levelTotals] =
       ids.length === 0
         ? [[], []]
         : await Promise.all([
             db
               .select({
-                inventoryItemId:
-                  productVariantInventoryItems.inventoryItemId,
-                value: count(),
+                inventoryItemId: productVariantInventoryItems.inventoryItemId,
+                variantId: productVariants.id,
+                productId: productVariants.productId,
+                variantTitle: productVariants.title,
+                variantSku: productVariants.sku,
+                productTitle: products.title,
               })
               .from(productVariantInventoryItems)
-              .where(
-                inArray(productVariantInventoryItems.inventoryItemId, ids),
+              .innerJoin(
+                productVariants,
+                eq(productVariants.id, productVariantInventoryItems.variantId),
               )
-              .groupBy(productVariantInventoryItems.inventoryItemId),
+              .innerJoin(products, eq(products.id, productVariants.productId))
+              .where(
+                and(
+                  inArray(productVariantInventoryItems.inventoryItemId, ids),
+                  isNull(productVariants.deletedAt),
+                ),
+              ),
             db
               .select({
                 inventoryItemId: inventoryLevels.inventoryItemId,
@@ -235,22 +291,46 @@ export const inventoryDal = {
               )
               .groupBy(inventoryLevels.inventoryItemId),
           ]);
-    const variantCountByItem = new Map(
-      variantCounts.map((row) => [row.inventoryItemId, Number(row.value)]),
-    );
+    const variantLinksByItem = new Map<
+      string,
+      Array<{
+        variantId: string;
+        productId: string;
+        variantTitle: string;
+        variantSku: string | null;
+        productTitle: string;
+      }>
+    >();
+    for (const link of variantLinks) {
+      const links = variantLinksByItem.get(link.inventoryItemId) ?? [];
+      links.push({
+        variantId: link.variantId,
+        productId: link.productId,
+        variantTitle: link.variantTitle,
+        variantSku: link.variantSku,
+        productTitle: link.productTitle,
+      });
+      variantLinksByItem.set(link.inventoryItemId, links);
+    }
     const levelTotalsByItem = new Map(
       levelTotals.map((row) => [row.inventoryItemId, row]),
     );
     return {
       items: rows.map((row) => {
         const totals = levelTotalsByItem.get(row.id);
+        const links = variantLinksByItem.get(row.id) ?? [];
+        const editTarget = links.length === 1 ? links[0] : null;
         const stocked = Number(totals?.stocked ?? 0);
         const reserved = Number(totals?.reserved ?? 0);
         return {
           id: row.id,
-          title: row.title,
-          sku: row.sku,
-          variantCount: variantCountByItem.get(row.id) ?? 0,
+          productId: editTarget?.productId ?? null,
+          variantId: editTarget?.variantId ?? null,
+          title: editTarget
+            ? `${editTarget.productTitle} - ${editTarget.variantTitle}`
+            : row.title,
+          sku: editTarget?.variantSku ?? row.sku,
+          variantCount: links.length,
           stockedQuantity: stocked,
           reservedQuantity: reserved,
           incomingQuantity: Number(totals?.incoming ?? 0),

@@ -4,7 +4,11 @@ import {
   updateVariant,
 } from "@/server/product/variants.serverFn";
 import type { AssetActionResult } from "@/lib/asset/action-result";
-import { createCollection, deleteCollections, updateCollection } from "@/server/product/collections.serverFn";
+import {
+  createCollection,
+  deleteCollections,
+  updateCollection,
+} from "@/server/product/collections.serverFn";
 import {
   createProductCategory,
   deleteProductCategories,
@@ -16,7 +20,10 @@ import {
   deleteProductOptions,
   updateProductOption,
 } from "@/server/product/options.serverFn";
-import { deleteProducts, updateProduct } from "@/server/product/update-product.serverFn";
+import {
+  deleteProducts,
+  updateProduct,
+} from "@/server/product/update-product.serverFn";
 import { setProductSalesChannels } from "@/server/sales-channel/sales-channels.serverFn";
 
 /**
@@ -163,15 +170,15 @@ export const updateProductOrganizationAction = async ({
   const collectionId = text(data, "collectionId");
 
   const organizationResult = await updateProduct({
-      data: {
-        id,
-        collectionId:
-          !collectionId || collectionId === NO_COLLECTION ? null : collectionId,
-        typeValue: valueList(data, "typeValue").at(0) ?? null,
-        tagValues: valueList(data, "tagValues"),
-        categoryIds: idList(data, "categoryIds"),
-      },
-    });
+    data: {
+      id,
+      collectionId:
+        !collectionId || collectionId === NO_COLLECTION ? null : collectionId,
+      typeValue: valueList(data, "typeValue").at(0) ?? null,
+      tagValues: valueList(data, "tagValues"),
+      categoryIds: idList(data, "categoryIds"),
+    },
+  });
   if (!organizationResult.success) {
     return toActionResult(organizationResult);
   }
@@ -196,7 +203,25 @@ export const updateProductMediaAction = async ({
     return { success: false, message: "Missing product ID" };
   }
 
-  const raw = data.get("assets");
+  const media = readAssetIds(data, "assets");
+  if (!media.ok) return media.error;
+
+  return toActionResult(
+    await updateProduct({
+      // The order is the payload: `setAssets` writes it as `rank` and takes
+      // the first entry as the thumbnail.
+      data: { id, assetIds: media.assetIds },
+    }),
+  );
+};
+
+const readAssetIds = (
+  data: FormData,
+  name: string,
+):
+  | { ok: true; assetIds: string[] }
+  | { ok: false; error: AssetActionResult } => {
+  const raw = data.get(name);
   let assetIds: string[] = [];
   if (typeof raw === "string" && raw) {
     try {
@@ -211,17 +236,13 @@ export const updateProductMediaAction = async ({
           )
         : [];
     } catch {
-      return { success: false, message: "Could not read the selected media" };
+      return {
+        ok: false,
+        error: { success: false, message: "Could not read the selected media" },
+      };
     }
   }
-
-  return toActionResult(
-    await updateProduct({
-      // The order is the payload: `setAssets` writes it as `rank` and takes
-      // the first entry as the thumbnail.
-      data: { id, assetIds },
-    }),
-  );
+  return { ok: true, assetIds };
 };
 
 export const deleteProductsAction = async ({
@@ -321,9 +342,7 @@ export const createProductOptionAction = async ({
     };
   }
 
-  return toActionResult(
-    await createProductOption({ data: { title, values } }),
-  );
+  return toActionResult(await createProductOption({ data: { title, values } }));
 };
 
 export const updateProductOptionAction = async ({
@@ -548,10 +567,25 @@ export const updateProductMetadataAction = async ({
 const readPrices = (data: FormData) => {
   const prices: Array<{ currencyCode: string; amount: number }> = [];
   for (const [key, value] of data.entries()) {
-    if (!key.startsWith("price-") || typeof value !== "string") continue;
-    const amount = Math.round(Number(value) * 100);
+    if (
+      !key.startsWith("price-") ||
+      key.startsWith("price-decimals-") ||
+      typeof value !== "string"
+    )
+      continue;
+    const currencyCode = key.slice("price-".length);
+    const decimalDigits = Number(
+      text(data, `price-decimals-${currencyCode}`) ?? "2",
+    );
+    const amount = Math.round(
+      Number(value) *
+        10 **
+          (Number.isInteger(decimalDigits) && decimalDigits >= 0
+            ? decimalDigits
+            : 2),
+    );
     if (!Number.isFinite(amount) || amount <= 0) continue;
-    prices.push({ currencyCode: key.slice("price-".length), amount });
+    prices.push({ currencyCode, amount });
   }
   return prices;
 };
@@ -618,6 +652,8 @@ export const createVariantAction = async ({
   if (!productId) {
     return { success: false, message: "Missing product ID" };
   }
+  const media = readAssetIds(data, "assets");
+  if (!media.ok) return media.error;
 
   return toActionResult(
     await createVariant({
@@ -635,6 +671,8 @@ export const createVariantAction = async ({
         inventoryQuantity: readQuantity(data),
         optionValueIds: readOptionValueIds(data),
         prices: readPrices(data),
+        assetIds: media.assetIds,
+        metadata: {},
       },
     }),
   );
@@ -657,9 +695,9 @@ export const updateVariantAction = async ({
     return { success: false, message: "Missing variant ID" };
   }
 
-  const prices = readPrices(data);
   const quantity = readQuantity(data);
-
+  const media = data.has("assets") ? readAssetIds(data, "assets") : null;
+  if (media && !media.ok) return media.error;
   return toActionResult(
     await updateVariant({
       data: {
@@ -678,11 +716,44 @@ export const updateVariantAction = async ({
         manageInventory: data.get("manageInventory") === "on",
         allowBackorder: data.get("allowBackorder") === "on",
         inventoryQuantity: quantity,
-        prices,
         optionValueIds: readOptionValueIds(data),
+        ...(media ? { assetIds: media.assetIds } : {}),
       },
     }),
   );
+};
+
+/** Base prices own a spreadsheet editor, so no unrelated variant field is sent. */
+export const updateVariantPricingAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing variant ID" };
+  }
+
+  return toActionResult(
+    await updateVariant({ data: { id, prices: readPrices(data) } }),
+  );
+};
+
+/** Variant metadata owns a separate editor, matching every other detail card. */
+export const updateVariantMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}): Promise<AssetActionResult> => {
+  const id = text(data, "id");
+  if (!id) {
+    return { success: false, message: "Missing variant ID" };
+  }
+
+  const metadata = readMetadata(data);
+  if (!metadata) return METADATA_READ_ERROR;
+
+  return toActionResult(await updateVariant({ data: { id, metadata } }));
 };
 
 export const deleteVariantsAction = async ({

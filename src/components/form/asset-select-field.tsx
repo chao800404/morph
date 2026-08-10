@@ -13,11 +13,22 @@ import { cn } from "@/lib/utils";
 import type { AssetSelectFormField } from "@/lib/validations/form";
 import { getConfig } from "@/server/get-config";
 import { useQueryClient } from "@tanstack/react-query";
-import { Star } from "lucide-react";
+import { ChevronDown, Images, Star } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { toast } from "sonner";
 import type { SelectedAsset } from "@/components/asset/asset-tile";
 import { SortableAssetGrid } from "@/components/asset/sortable-asset-grid";
+import { AssetGrid } from "@/components/asset/asset-grid";
+import { AssetTile } from "@/components/asset/asset-tile";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  fieldControlDensity,
+  fieldControlVariants,
+} from "@/components/ui/field-control";
 
 /**
  * Loaded on demand, for two reasons that point the same way: the Library tab is
@@ -88,6 +99,7 @@ export const AssetSelectField = ({
 }) => {
   const queryClient = useQueryClient();
   const [uploading, setUploading] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(false);
   /**
    * The selection lives here, seeded from `value`, the way `MetadataField`
    * holds its entries.
@@ -107,6 +119,10 @@ export const AssetSelectField = ({
     getConfig().client.upload.maxAssetsPerRecord,
   );
   const atLimit = selected.length >= maxSelected;
+  const restricted = field.availableAssets !== undefined;
+  const available = (field.availableAssets ?? []).filter(
+    (asset) => !selected.some((item) => item.id === asset.id),
+  );
 
   /**
    * Never trims. An earlier version capped the list here, which meant a record
@@ -188,6 +204,31 @@ export const AssetSelectField = ({
     }
   };
 
+  const selectedGrid =
+    selected.length > 0 ? (
+      <SortableAssetGrid
+        assets={selected}
+        onReorder={commit}
+        onRemove={(asset) =>
+          commit(selected.filter((item) => item.id !== asset.id))
+        }
+        renderBadge={(_asset, index) =>
+          index === 0 ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                  <Star className="size-3 fill-current" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                Thumbnail — drag another image here to change it
+              </TooltipContent>
+            </Tooltip>
+          ) : null
+        }
+      />
+    ) : null;
+
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       {/* Carries the value on a native submit, the way `option-values` does —
@@ -200,78 +241,137 @@ export const AssetSelectField = ({
         value={serializeSelectedAssets(selected)}
       />
 
-      {selected.length > 0 ? (
-        <SortableAssetGrid
-          assets={selected}
-          onReorder={commit}
-          onRemove={(asset) =>
-            commit(selected.filter((item) => item.id !== asset.id))
-          }
-          renderBadge={(_asset, index) =>
-            index === 0 ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
-                    <Star className="size-3 fill-current" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Thumbnail — drag another image here to change it
-                </TooltipContent>
-              </Tooltip>
-            ) : null
-          }
-        />
-      ) : null}
+      {restricted ? (
+        <Collapsible open={mediaOpen} onOpenChange={setMediaOpen}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                fieldControlVariants({ variant: "card" }),
+                fieldControlDensity.compact,
+                "flex w-full items-center gap-3 text-left",
+              )}
+            >
+              {selected[0] ? (
+                <img
+                  src={selected[0].url}
+                  alt=""
+                  className="size-9 shrink-0 rounded-md border object-cover"
+                />
+              ) : (
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
+                  <Images className="size-4" aria-hidden />
+                </span>
+              )}
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">Variant media</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {selected.length > 0
+                    ? `${selected.length} image${selected.length === 1 ? "" : "s"} selected`
+                    : "Use images from Product Media"}
+                </span>
+              </span>
+              <ChevronDown
+                className={cn(
+                  "size-4 shrink-0 text-muted-foreground transition-transform",
+                  mediaOpen && "rotate-180",
+                )}
+                aria-hidden
+              />
+            </button>
+          </CollapsibleTrigger>
 
-      <Tabs defaultValue="upload">
-        <TabsList aria-label="How to add images">
-          <TabsTrigger value="upload">Upload</TabsTrigger>
-          <TabsTrigger value="library">Library</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="upload" className="mt-3">
-          <Dropzone
-            accept={{ "image/*": [] }}
-            maxFiles={Math.max(maxSelected - selected.length, 1)}
-            disabled={field.disabled || uploading || atLimit}
-            onDrop={(files) => void upload(files)}
-            onError={(error) =>
-              toast.error(error.message ?? "Failed to read the file", {
-                position: "top-center",
-              })
-            }
-            variant="card"
-            inputId={fieldId}
-            className="cursor-pointer"
-          >
-            {uploading ? (
-              <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground">
-                <Spinner className="size-4" />
-                Uploading...
+          <CollapsibleContent className="mt-3 flex flex-col gap-4">
+            {selectedGrid ? (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium">Selected</p>
+                  <p className="text-xs text-muted-foreground">
+                    Drag to reorder · first image is the thumbnail
+                  </p>
+                </div>
+                {selectedGrid}
               </div>
-            ) : (
-              <DropzoneEmptyState />
-            )}
-          </Dropzone>
-        </TabsContent>
+            ) : null}
 
-        <TabsContent value="library" className="mt-3">
-          <Suspense
-            fallback={
-              <div className="flex h-64 items-center justify-center">
-                <Spinner className="size-4 text-muted-foreground" />
-              </div>
-            }
-          >
-            <AssetLibraryPanel
-              selectedIds={selected.map((asset) => asset.id)}
-              onToggle={toggle}
-              atLimit={atLimit}
-            />
-          </Suspense>
-        </TabsContent>
-      </Tabs>
+            <div className="flex flex-col gap-2">
+              <p className="text-sm font-medium">Product media</p>
+              {available.length > 0 ? (
+                <div className="max-h-80 overflow-y-auto rounded-md-plus border border-border/60 p-2">
+                  <AssetGrid>
+                    {available.map((asset) => (
+                      <AssetTile
+                        key={asset.id}
+                        asset={asset}
+                        disabled={atLimit}
+                        onClick={() => toggle(asset)}
+                      />
+                    ))}
+                  </AssetGrid>
+                </div>
+              ) : (
+                <div className="rounded-md-plus border border-dashed px-6 py-8 text-center text-sm text-muted-foreground">
+                  {field.availableAssets?.length
+                    ? "All Product Media images are selected."
+                    : "Add images to Product Media before assigning them to this variant."}
+                </div>
+              )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : (
+        <>
+          {selectedGrid}
+          <Tabs defaultValue="upload">
+            <TabsList aria-label="How to add images">
+              <TabsTrigger value="upload">Upload</TabsTrigger>
+              <TabsTrigger value="library">Library</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="upload" className="mt-3">
+              <Dropzone
+                accept={{ "image/*": [] }}
+                maxFiles={Math.max(maxSelected - selected.length, 1)}
+                disabled={field.disabled || uploading || atLimit}
+                onDrop={(files) => void upload(files)}
+                onError={(error) =>
+                  toast.error(error.message ?? "Failed to read the file", {
+                    position: "top-center",
+                  })
+                }
+                variant="card"
+                inputId={fieldId}
+                className="cursor-pointer"
+              >
+                {uploading ? (
+                  <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground">
+                    <Spinner className="size-4" />
+                    Uploading...
+                  </div>
+                ) : (
+                  <DropzoneEmptyState />
+                )}
+              </Dropzone>
+            </TabsContent>
+
+            <TabsContent value="library" className="mt-3">
+              <Suspense
+                fallback={
+                  <div className="flex h-64 items-center justify-center">
+                    <Spinner className="size-4 text-muted-foreground" />
+                  </div>
+                }
+              >
+                <AssetLibraryPanel
+                  selectedIds={selected.map((asset) => asset.id)}
+                  onToggle={toggle}
+                  atLimit={atLimit}
+                />
+              </Suspense>
+            </TabsContent>
+          </Tabs>
+        </>
+      )}
     </div>
   );
 };

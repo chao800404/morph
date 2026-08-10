@@ -3,6 +3,7 @@ import {
   CollectionCreateButton,
   DataTableCard,
   useCollectionEditAction,
+  useCollectionDetailPreload,
   deleteActionIcon,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
@@ -22,8 +23,9 @@ import {
 import { useProductOptionTableControls } from "./hooks/use-product-option-table-controls";
 
 const Options = () => {
-  const { search, toolbarLeading } = useProductOptionTableControls();
+  const { search, filters } = useProductOptionTableControls();
   const navigate = useNavigate();
+  const preloadDetail = useCollectionDetailPreload("product-options");
   const queryClient = useQueryClient();
   const params = normalizeProductOptionListParams(search);
   const { data: result, isPending } = useQuery(
@@ -73,7 +75,7 @@ const Options = () => {
     <DataTableCard
       label="Options"
       description="Manage product options and their associated values."
-      toolbarLeading={toolbarLeading}
+      filters={filters}
       searchPlaceholder="Search"
       sortOptions={PRODUCT_OPTION_SORT_OPTIONS}
       headerActions={<CollectionCreateButton slug="product-options" />}
@@ -91,6 +93,7 @@ const Options = () => {
           params: { slug: "product-options", id: option.id },
         })
       }
+      onRowPreload={(option) => preloadDetail(option.id)}
       rowActions={(option) => [
         ...editAction(option.id),
         {

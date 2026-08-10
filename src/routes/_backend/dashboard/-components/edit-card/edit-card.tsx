@@ -144,7 +144,8 @@ export const EditCard = ({
       // Only reachable via `onSave`, and an editable card always has a name to
       // show — but `title` is a node now, so template-stringing it blind would
       // print "[object Object]" in the dialog heading.
-      title: `Edit ${editLabel ?? (typeof title === "string" ? title : "")}`.trim(),
+      title:
+        `Edit ${editLabel ?? (typeof title === "string" ? title : "")}`.trim(),
       fields: formFields,
       action: onSave,
       onSuccess: () => {
@@ -170,6 +171,7 @@ export const EditCard = ({
             <EditCardHeader
               onClickEdit={onEdit ?? (onSave ? handleEdit : undefined)}
               actions={actions}
+              label={`${editLabel ?? (typeof title === "string" ? title : "Card")} actions`}
             />
           )}
         </div>

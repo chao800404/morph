@@ -1,27 +1,35 @@
 import { getDb } from "@/db";
 import {
+  productVariantAssets,
   productVariantOptionValues,
+  productVariantPriceHistory,
   productVariantPrices,
   productVariants,
 } from "@/db/product.schema";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { assets } from "@/db/asset.schema";
+import { users } from "@/db/auth.schema";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { chunk, chunkForInsert } from "./d1-batch";
 import type {
   ProductVariantDTO,
   ProductVariantInsertDTO,
+  ProductVariantPriceHistoryDTO,
   UpdateProductVariantDTO,
 } from "../dto/product-variant.dto";
 import {
   toProductVariantDTO,
   type ProductVariantOptionValueRow,
+  type ProductVariantAssetRow,
   type ProductVariantPriceRow,
   type ProductVariantRow,
 } from "../mappers/product-variant.mapper";
 
 // Column counts drive the insert batch size; see d1-batch.ts.
-const VARIANT_COLUMNS = 18;
+const VARIANT_COLUMNS = 19;
 const PRICE_COLUMNS = 6;
 const OPTION_LINK_COLUMNS = 2;
+const ASSET_LINK_COLUMNS = 3;
 
 /** Load prices and option links for a set of variants, then assemble the DTOs. */
 const hydrate = async (
@@ -33,9 +41,10 @@ const hydrate = async (
 
   const priceRows: ProductVariantPriceRow[] = [];
   const linkRows: ProductVariantOptionValueRow[] = [];
+  const assetRows: ProductVariantAssetRow[] = [];
 
   for (const ids of chunk(variantIds, 50)) {
-    const [prices, links] = await Promise.all([
+    const [prices, links, variantAssets] = await Promise.all([
       db
         .select()
         .from(productVariantPrices)
@@ -44,12 +53,26 @@ const hydrate = async (
         .select()
         .from(productVariantOptionValues)
         .where(inArray(productVariantOptionValues.variantId, ids)),
+      db
+        .select({
+          variantId: productVariantAssets.variantId,
+          assetId: productVariantAssets.assetId,
+          rank: productVariantAssets.rank,
+          name: assets.name,
+          url: assets.url,
+        })
+        .from(productVariantAssets)
+        .innerJoin(assets, eq(assets.id, productVariantAssets.assetId))
+        .where(inArray(productVariantAssets.variantId, ids)),
     ]);
     priceRows.push(...prices);
     linkRows.push(...links);
+    assetRows.push(...variantAssets);
   }
 
-  return variantRows.map((row) => toProductVariantDTO(row, priceRows, linkRows));
+  return variantRows.map((row) =>
+    toProductVariantDTO(row, priceRows, linkRows, assetRows),
+  );
 };
 
 export const productVariantDal = {
@@ -58,9 +81,7 @@ export const productVariantDal = {
     const rows = await db
       .select()
       .from(productVariants)
-      .where(
-        and(eq(productVariants.id, id), isNull(productVariants.deletedAt)),
-      )
+      .where(and(eq(productVariants.id, id), isNull(productVariants.deletedAt)))
       .limit(1);
     const hydrated = await hydrate(rows);
     return hydrated[0] ?? null;
@@ -170,6 +191,7 @@ export const productVariantDal = {
           length: data.length ?? null,
           width: data.width ?? null,
           height: data.height ?? null,
+          metadata: data.metadata ?? {},
           createdBy: data.createdBy,
           updatedBy: data.updatedBy,
           createdAt: data.createdAt?.toISOString() ?? now,
@@ -201,6 +223,10 @@ export const productVariantDal = {
     for (const group of chunkForInsert(prices, PRICE_COLUMNS)) {
       await db.insert(productVariantPrices).values(group);
     }
+
+    for (const data of dataList) {
+      if (data.assetIds?.length) await this.setAssets(data.id, data.assetIds);
+    }
   },
 
   async update(id: string, data: UpdateProductVariantDTO): Promise<void> {
@@ -227,6 +253,7 @@ export const productVariantDal = {
         ...(data.length !== undefined ? { length: data.length } : {}),
         ...(data.width !== undefined ? { width: data.width } : {}),
         ...(data.height !== undefined ? { height: data.height } : {}),
+        ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
         updatedBy: data.updatedBy,
         updatedAt: now,
       })
@@ -235,7 +262,7 @@ export const productVariantDal = {
       );
 
     if (data.prices) {
-      await this.replacePrices(id, data.prices);
+      await this.replacePrices(id, data.prices, data.updatedBy);
     }
   },
 
@@ -243,13 +270,40 @@ export const productVariantDal = {
   async replacePrices(
     variantId: string,
     prices: { currencyCode: string; amount: number }[],
+    changedBy: string,
   ): Promise<void> {
     const db = await getDb();
     const now = new Date().toISOString();
 
-    await db
-      .delete(productVariantPrices)
+    const previous = await db
+      .select()
+      .from(productVariantPrices)
       .where(eq(productVariantPrices.variantId, variantId));
+    const previousByCurrency = new Map(
+      previous.map((price) => [price.currencyCode, price.amount]),
+    );
+    const nextByCurrency = new Map(
+      prices.map((price) => [price.currencyCode, price.amount]),
+    );
+    const changedCurrencies = new Set([
+      ...previousByCurrency.keys(),
+      ...nextByCurrency.keys(),
+    ]);
+    const historyRows = [...changedCurrencies]
+      .filter(
+        (currencyCode) =>
+          previousByCurrency.get(currencyCode) !==
+          nextByCurrency.get(currencyCode),
+      )
+      .map((currencyCode) => ({
+        id: crypto.randomUUID(),
+        variantId,
+        currencyCode,
+        oldAmount: previousByCurrency.get(currencyCode) ?? null,
+        newAmount: nextByCurrency.get(currencyCode) ?? null,
+        changedBy,
+        changedAt: now,
+      }));
 
     const rows = prices.map((price) => ({
       id: crypto.randomUUID(),
@@ -259,9 +313,42 @@ export const productVariantDal = {
       createdAt: now,
       updatedAt: now,
     }));
+    const statements: BatchItem<"sqlite">[] = [
+      db
+        .delete(productVariantPrices)
+        .where(eq(productVariantPrices.variantId, variantId)),
+    ];
     for (const group of chunkForInsert(rows, PRICE_COLUMNS)) {
-      await db.insert(productVariantPrices).values(group);
+      statements.push(db.insert(productVariantPrices).values(group));
     }
+    for (const group of chunkForInsert(historyRows, 7)) {
+      statements.push(db.insert(productVariantPriceHistory).values(group));
+    }
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
+  },
+
+  async findPriceHistory(
+    variantId: string,
+    limit = 20,
+  ): Promise<ProductVariantPriceHistoryDTO[]> {
+    const db = await getDb();
+    const rows = await db
+      .select({
+        history: productVariantPriceHistory,
+        changedByName: users.name,
+      })
+      .from(productVariantPriceHistory)
+      .leftJoin(users, eq(productVariantPriceHistory.changedBy, users.id))
+      .where(eq(productVariantPriceHistory.variantId, variantId))
+      .orderBy(desc(productVariantPriceHistory.changedAt))
+      .limit(Math.min(Math.max(limit, 1), 100));
+    return rows.map((row) => ({
+      ...row.history,
+      changedByName: row.changedByName,
+      changedAt: new Date(row.history.changedAt),
+    }));
   },
 
   async setOptionValues(
@@ -280,6 +367,33 @@ export const productVariantDal = {
     for (const group of chunkForInsert(rows, OPTION_LINK_COLUMNS)) {
       await db.insert(productVariantOptionValues).values(group);
     }
+  },
+
+  /** Replace variant media; order defines display order and thumbnail. */
+  async setAssets(variantId: string, assetIds: string[]): Promise<void> {
+    const db = await getDb();
+    await db
+      .delete(productVariantAssets)
+      .where(eq(productVariantAssets.variantId, variantId));
+
+    const rows = [...new Set(assetIds)].map((assetId, rank) => ({
+      variantId,
+      assetId,
+      rank,
+    }));
+    for (const group of chunkForInsert(rows, ASSET_LINK_COLUMNS)) {
+      await db.insert(productVariantAssets).values(group);
+    }
+
+    await db
+      .update(productVariants)
+      .set({ thumbnailAssetId: rows[0]?.assetId ?? null })
+      .where(
+        and(
+          eq(productVariants.id, variantId),
+          isNull(productVariants.deletedAt),
+        ),
+      );
   },
 
   async softDelete(ids: string[], updatedBy: string): Promise<void> {

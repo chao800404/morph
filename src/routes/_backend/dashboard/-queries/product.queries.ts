@@ -18,10 +18,14 @@ import {
 } from "@/server/product/categories.serverFn";
 import { listProductTaxonomy } from "@/server/product/taxonomy.serverFn";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
+import { getVariantDetail } from "@/server/product/variants.serverFn";
 
 /** Params the product list query and its server function agree on. */
 export interface ProductListParams {
   query?: string;
+  status?: "draft" | "published" | "archived";
+  createdWithin?: "24h" | "7d" | "30d" | "90d";
+  updatedWithin?: "24h" | "7d" | "30d" | "90d";
   /** Narrows the list to one category, used by the category detail page. */
   categoryId?: string;
   /** Narrows the list to products built on one option. */
@@ -54,6 +58,9 @@ export const normalizeProductListParams = (
 
   return {
     query: search.q,
+    status: search.productStatus,
+    createdWithin: search.productCreatedWithin,
+    updatedWithin: search.productUpdatedWithin,
     sortBy:
       routeSortBy === "name"
         ? "title"
@@ -119,6 +126,15 @@ export const productQueries = {
     queryOptions({
       queryKey: [...productQueries.all(), "detail", id],
       queryFn: () => getProduct({ data: { id } }),
+    }),
+};
+
+export const productVariantQueries = {
+  all: () => ["product-variants"] as const,
+  detail: (id: string) =>
+    queryOptions({
+      queryKey: [...productVariantQueries.all(), "detail", id],
+      queryFn: () => getVariantDetail({ data: { id } }),
     }),
 };
 

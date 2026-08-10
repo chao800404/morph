@@ -112,6 +112,11 @@ describe("StepVariants", () => {
     expect(screen.getByDisplayValue("Default")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "SKU" })).toBeTruthy();
     expect(
+      screen
+        .getByLabelText("SKU for __default__")
+        .getAttribute("placeholder"),
+    ).toBe("SHIRT");
+    expect(
       screen.getByRole("columnheader", { name: "Managed inventory" }),
     ).toBeTruthy();
   });

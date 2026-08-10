@@ -58,10 +58,16 @@
 - 每個 capability 的 render entry 一律叫 `view`；Suspense fallback 一律叫 `pendingView`；route 進入前的 query cache priming 一律叫 `prefetch`。`component`、`loader`、`loadData` 都是舊名稱，不得重新引入。
 - **`view` 一律用 `lazyView(() => import("..."))` 宣告，不要直接寫 `lazy(...)`。** 它保留 import factory，讓框架可以在點擊前就開始下載那個 chunk。路徑只寫一次 —— 在 `view` 旁邊另外放一個 `preload` 欄位就是兩個地方要同步，而且漂移不會報錯。
 - 開啟 view 的控制項要把 `useViewPreload(view)` 的 handlers 展開上去（hover、focus、touchstart 三者都要：只綁 hover 會讓鍵盤與觸控使用者等在原地）。Row action 這種藏在下拉裡的，改在**選單開啟時**預載 —— 指標移到項目上時距離點擊只剩幾十毫秒，太晚了。
+- 所有 Dashboard 內部導覽必須支援 intent preload。真正的 TanStack `<Link>`／`RouterLink` 使用 Router 全域 `defaultPreload: "intent"`（共用 wrapper 亦明確帶 `preload="intent"`），不可改成裸 `<a>` 或關閉 preload。Table row、card、command item 等因 DOM 限制而以 `navigate()` 模擬連結的控制項，必須在 hover、focus、touchstart 預載目的 route 的 loader/data，並透過 `viewPreloader`／`useViewPreload` 預載 config `lazyView` chunk；只在 click 後才載入不符合規則。共用 table 一律使用 `onRowPreload`，不可各自重寫 pointer handlers。
 - `view` 指的是「這條路由渲染哪個元件」，不是「唯讀顯示」。`create.view`、`edit.view` 與 `pages[key].view` 都是表單，一樣叫 `view` —— 六個 capability 讀起來必須一致。Medusa 也是一個名字打天下（React Router 的 `Component`）。
 - **被 config 引用的 view 一律 `export default`**，config 寫 `lazy(() => import("..."))` 即可，不要 `.then((m) => ({ default: m.X }))`。那層樣板每個 capability 都要重寫一次，而且具名與預設兩種寫法並存會讓人以為它們有差別。View 的具名 export 只在真的有第二個引用者時才保留。
 - `index` 是 collection 的預設目的地；`create`、`detail`、`edit` 是 record lifecycle 頁；`preview` 是 collection-level viewer，適合需要保留目前資料集並在項目間切換的介面。不要用 `detail` 假裝 Preview，也不要讓同一功能同時存在 route 與 Dialog 兩條入口。
 - Capability 可以省略。省略代表該 collection 不支援該頁面：框架不應渲染對應按鈕，直接輸入該 URL 則回傳 `NotFound`；不可放一個空 view 或 `NotImplemented` 來假裝已支援。
+- 子資源一旦同時承載多個可獨立閱讀的區塊（例如 Variant 的價格、價格歷史、庫存、媒體與 metadata），table row 應先進唯讀詳情頁，再由卡片或 row action 進入編輯頁。詳情與編輯必須是兩個 `pages` key，不能讓同一 URL 依入口偷偷改變語意；簡單子資源才可維持 row click 直接編輯。這類詳情 subpage 必須宣告 `presentation: "replace"`，讓它取代父層內容；route-backed editor 則維持預設 overlay，不可讓詳情頁接在父層頁面下方。
+- `presentation: "replace"` 的 subpage 進入時必須把 Dashboard 自訂 scroll container 與 mobile window scroll 重設到頂部；overlay 不可重設，否則關閉 editor 會失去父頁原本位置。
+- 動態 record breadcrumb 必須由 collection config 的 `detail.breadcrumb`／`pages[key].breadcrumb` resolver 提供，並由匹配路由的 loader data 組合；不可由 view 透過 Zustand、context 或 `useEffect` 手動發布／清除。每層 route 只負責自己的 label，父 Product 與子 Variant 會自然組成 `Products > Product > Variant`。
+- 有獨立身份的子資源必須使用真實 record path `/dashboard/<collection>/<parentId>/<page>/<childId>`；不可把 child ID 只放在 query string。Query 僅保留 filter、排序、pagination、return target 等 view state。
+- 價格列表與價格歷史是不同資料：Price List 表達期間、客群、區域或數量條件；Price History 是 append-only 稽核軌跡。詳情頁不可用 Price List 假裝歷史，價格更新必須在同一個資料寫入流程留下舊值、新值、幣別、操作者與時間。
 - `move`、`delete`、`download`、`post-process` 等命令不是頁面，不放進 collection config。它們由 feature action、共用確認視窗或專用工具視窗負責；只有當操作本身需要可分享、可重新整理的完整畫面時，才把它加進 `pages`（而不是新增 capability）。
 - `items[]` 只表示 sidebar／breadcrumb 的視覺分組，子 collection 仍使用自己的平面 `/dashboard/<slug>` URL，並套用相同 capability contract。
 - Collection config 不得靜態 import query 或 server function。`prefetch` 內以 `await import(...)` 載入 query options，且必須與 view 使用同一個參數正規化函式，確保 query key 完全相同。
@@ -239,6 +245,13 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - `apiKeys.token` 與 `invites.token` 存的是 **hash**，不是 token 本身。顯示一律用 `apiKeys.redacted`。
 - Line item 是**快照不是指標**：`cartLineItems` / `orderLineItems` 把 title、SKU、價格複製進去。商品改名或刪除後，購物車與訂單顯示的內容不能跟著變。地址同理（`cartAddresses`、`orderAddresses`、`fulfillmentAddresses` 各自一張表）。
 
+### 聚合資料必須原子寫入，且完成完整 round-trip
+
+- 一個使用者動作若會建立或更新同一聚合根下的多張表（例如 Promotion + application method + campaign + budget + rules），所有 statements 必須組成**同一次** D1 `batch()`。不得先建立主記錄、再逐筆 `await insert` 關聯資料；中途失敗不能留下半套可見資料。
+- 可編輯資料必須完成 `create → read DTO → edit defaults → update → detail display` 的 round-trip。任何 action 接受的欄位，都必須由 detail query/DTO 讀回；編輯器未呈現的既有欄位必須原值保留，不得用 `[]`、空字串或 `undefined` 靜默覆蓋。
+- 新增複合功能時，驗證至少包含：建立後詳情可見、重新開啟編輯值仍存在、只改一個無關欄位不會清除其他資料，以及 batch 中任一 statement 失敗時不留下部分資料。
+- DAL 負責聚合寫入與關聯讀取；DTO／mapper 負責輸出形狀。View 不得自行補出 DAL 沒有讀回的預設值來假裝資料存在。
+
 ## 5. UI、樣式與可存取性
 
 - 優先重用 `src/components/ui/`、既有 feature component 與 `cn()`，不要在 view 中複製一套基礎按鈕、dialog、table 或 form control。
@@ -336,6 +349,11 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 值一律以字串儲存。從輸入內容猜型別比不猜更糟：`01234` 會維持字串而 `1234` 會靜默變成數字，同一個郵遞區號或 SKU 的意義就取決於它的位數。需要真正型別的資料屬於真正的欄位。
 - 編輯器一律使用 `metadata` field type 與 `MetadataField`，不可在 feature 內另寫一份 key/value 表單。它以 JSON 物件字串傳輸，理由與 `option-values` 相同：`FormFieldValue` 沒有物件成員，為單一 field type 擴充它會波及其他所有型別。
 - 詳情頁的摘要一律使用 `MetadataCard`（只有標題、key 數徽章與開啟鈕）。內容不攤在卡片上：一筆記錄可能有數十組,會蓋過真正描述該記錄的區塊。它不是 `EditCard` —— `EditCard` 依已知欄位清單渲染 label／值，metadata 的 key 是商店自己放的。
+- Metadata 必須維持「摘要卡片＋獨立 metadata editor」的單一入口。一般 details／edit form 不得再次渲染 metadata fields，也不得在一般儲存 payload 帶入空 metadata；否則未顯示的資料會被意外清空。子資源（例如 Variant）使用帶 child id 的 metadata route，並以 `returnTo` 回到原本子資源詳情頁。
+- 詳情頁多張卡片共用同一個 editor 時，卡片的 edit action 必須帶入受驗證的 section，並在 editor 掛載後捲到對應 field group；不可讓 Media、Pricing、Inventory 等入口全部落在表單頂部。共用 field wrapper 提供穩定的 `field-<name>-wrapper` 錨點，禁止用 label 文字或 DOM 順序定位。
+- Product Attributes 是商品層級的預設摘要，只在 Product 詳情頁顯示。Variant 詳情頁不得重複顯示 Attributes 卡片；Variant Edit 可保留尺寸與重量欄位，僅作為該 Variant 對產品預設值的覆寫。
+- Variant Pricing 使用獨立的 spreadsheet editor：直接重用共用 `DataGrid`，一列代表 Variant、支援幣別各一欄。Pricing 不得混入一般 Variant Edit，也不得另外重做 table/input 樣式；獨立 action 只送 prices，避免其他 Variant 欄位被覆寫。
+- Spreadsheet 工作區可以滿版，但少量欄位時 DataGrid 必須保持內容寬度（`w-auto`＋欄位最小寬度），不可把兩三欄平均拉伸到整個 viewport；幣別增加超過可視寬度後才使用水平捲動。
 - 輸入必須經 `metadataInputSchema`（key 與值長度、最多 50 組）。這個欄位由商店控制，沒有上限的話單一記錄就能塞進任意大的 payload，而之後每次讀取都要搬運它。
 
 ### 每個 capability 都要宣告 prefetch，包含 `pages`
@@ -374,6 +392,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
   - `TableHead` 與 `TableCell` 已經有 `px-4` 與 `[&:has([role=checkbox])]:pr-0`，不要再自己補 `pl-4` 之類的 padding。
 - **Table 的預設密度是固定格式，不由 feature 自行決定。** `TableHead` 與 `TableRow` 統一為 `h-12`，`TableCell` 統一使用 primitive 的 `px-4 py-1.5`；feature 不得用 `h-*`、`min-h-*` 或 `py-*` 改寫一般資料列。若產品真的需要 compact／comfortable 密度，必須先在 `Table` primitive 建立具名 variant，並讓 header、row、cell 一起切換，不可只縮其中一層。
 - Checkbox、文字、Badge、Switch 與 row actions 都必須放進同一套 `TableHead`／`TableRow`／`TableCell` 結構；欄寬只由 column contract 或對應的 head/cell class 決定，禁止為單一頁面建立另一套 table row 盒模型。
+- **Table 中所有狀態語意一律使用 `src/components/ui/status-badge.tsx` 的 `StatusBadge`，並指定 `variant="plain"`。** 樣式固定為小色點加文字，不得在單一 table 改用實心 `Badge`、只有文字或自行拼色點。顏色語意統一：green 表示有效／已發布／啟用／True，grey 表示草稿／停用／False，amber 表示等待或警告，red 表示封存或錯誤，blue 表示資訊型範圍（例如 Global）。一般資料標籤（選項值、檔案格式、貨幣代碼）不是狀態，繼續使用一般 `Badge`。Card header 的狀態可使用 `StatusBadge` 預設帶底色 variant，不受 table 的 `plain` 限制。
 - **一般 Dashboard Card（包含 Table Card）一律使用 `h-auto`；Table 使用固定 page size。** Card 高度由內容自然撐開，不得用 `ResizeObserver`、`window.innerHeight` 或 Card 可用高度動態改寫 page size。
   - Server-side 分頁的 `limit` 只能來自穩定的 route search、使用者明確選擇的 rows-per-page，或該 feature 的固定預設；視窗縮放、sidebar 展開與 Card layout 變化不得改寫 URL `limit` 或觸發新的資料請求。
   - `DataTableCard` 統一擁有 `h-auto`；feature 不得用 `h-full`、`h-content`、`flex-1` 或 `min-h-*` 改寫一般列表 Card 的高度。資料超過固定 page size 時交給 pagination。
@@ -440,7 +459,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 欄位內容盡量用摘要而非展開全部資料（例如顯示「4 values」而不是列出四個 badge），細節留給編輯視窗或詳情頁。
 - Card header 的主要操作按鈕統一使用 `variant="form"` 與 `size="xs"`，與 Assets card 的 Create 按鈕同高同色。Toolbar 內的 Add filter、排序與其他次要工具使用 `variant="cardHeader"`；搜尋使用共用 `DataTableSearch`。
 - 需要新的共用能力（欄位排序、批次選取、篩選 chip）時，加在 `DataTableCard` 上讓所有列表頁一起受益，不可只在單一頁面實作。
-- Feature 只透過 `toolbarLeading` 傳入共用 `DataTableFilter`；filter 值必須保存於 route search，切換時清除 `page`，並在 server／DAL 分頁前生效。沒有真實可用的 filter 時不可放一顆空的 Add filter。
+- 所有列表的 Add filter 一律使用 `dashboard/-components/data-table-card/data-table-filters.tsx` 的 `DataTableFilters`，並優先透過 `DataTableCard.filters` 宣告 filter definitions；不得在 feature 內重做 Add filter、active filter chips、Clear all，亦不得新增單一列表專用的 filter primitive。filter 值必須保存於 route search，切換時清除 `page`，並在 server／DAL 分頁前生效。沒有真實可用的 filter 時不可放一顆空的 Add filter。
 
 ### 新增資源一律是路由，不是從頁面狀態開啟的視窗
 
@@ -501,7 +520,6 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 需要「撤銷剛才的實驗性修改」時,用 Edit 把那次修改改回去 —— 你知道自己剛寫了什麼,不需要問 git。
 - 需要臨時改檔案做實驗(例如驗證某個測試會不會紅)時,先把原始內容記在腦中或另存一份,改完再用 Edit 還原。
 - 這條是實際踩過兩次的帳:一次是 reindent 腳本比對錯 `return (`,一次是為了重現 HMR 錯誤而 `git checkout` 了六個檔案,把兩輪的工作全部清掉。第二次只能靠 `dist/` 的建置產物逐段還原 —— server 端的 Vite 輸出未壓縮且保留註解,所以救得回來,但這是運氣,不是流程。
-
 
 依修改風險執行最小充分驗證：
 

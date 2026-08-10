@@ -30,7 +30,13 @@ export const Route = createFileRoute("/_backend/dashboard/$slug/$id")({
       getConfig().client.collections.global,
       params.slug,
     );
-    await collection?.detail?.prefetch?.({ queryClient, params, search });
+    const loadContext = { queryClient, params, search };
+    await collection?.detail?.prefetch?.(loadContext);
+    const breadcrumb = await collection?.detail?.breadcrumb?.(loadContext);
+    return {
+      breadcrumb: breadcrumb ?? null,
+      breadcrumbHref: `/dashboard/${params.slug}/${params.id}`,
+    };
   },
   component: RouteComponent,
 });
@@ -39,11 +45,26 @@ function RouteComponent() {
   const { slug } = Route.useParams();
   const config = useMemo(() => getConfig().client, []);
   const hasChild = useChildMatches({ select: (matches) => matches.length > 0 });
+  const childPage = useChildMatches({
+    select: (matches) => {
+      const page = matches
+        .map((match) => (match.params as Record<string, unknown>).page)
+        .find((value) => typeof value === "string");
+      return typeof page === "string" ? page : undefined;
+    },
+  });
 
-  const detail = useMemo(
-    () => findCollection(config.collections.global, slug)?.detail,
+  const collection = useMemo(
+    () => findCollection(config.collections.global, slug),
     [slug, config],
   );
+  const detail = collection?.detail;
+
+  // Child-resource detail pages replace their parent in the content region.
+  // Editors and dialogs omit this flag and keep the parent mounted underneath.
+  if (childPage && collection?.pages?.[childPage]?.presentation === "replace") {
+    return <Outlet />;
+  }
 
   // No detail page and nothing below it means this URL addresses nothing.
   if (!detail) return hasChild ? <Outlet /> : <NotFound />;

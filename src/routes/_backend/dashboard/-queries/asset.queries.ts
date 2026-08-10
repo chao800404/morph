@@ -14,6 +14,8 @@ export interface AssetListParams {
   folderId: string | null;
   query?: string;
   type?: AssetType;
+  size?: "under-1mb" | "1mb-10mb" | "over-10mb";
+  createdWithin?: "24h" | "7d" | "30d" | "90d";
   sortBy: Array<"name" | "extension" | "size" | "createdAt" | "updatedAt">;
   sortOrder: Array<"asc" | "desc">;
   page: number;
@@ -37,6 +39,8 @@ export const normalizeAssetListParams = (
     folderId: search.folderId || null,
     query: search.q,
     type: search.assetType,
+    size: search.assetSize,
+    createdWithin: search.assetCreatedWithin,
     sortBy: sorts.map((sort) => sort.key),
     sortOrder: sorts.map((sort) => sort.direction),
     page: Number(search.page) || 1,

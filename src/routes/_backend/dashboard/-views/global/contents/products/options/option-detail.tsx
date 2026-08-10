@@ -1,7 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { usePageBreadcrumb } from "@/routes/_backend/dashboard/-components/breadcrumb/use-page-breadcrumb";
 import {
   EditCard,
   type EditCardField,
@@ -26,13 +25,8 @@ const OptionDetail = () => {
   const { id } = useParams({ strict: false }) as { id: string };
   const navigate = useNavigate();
 
-  const { data: result, isPending } = useQuery(
-    productOptionQueries.detail(id),
-  );
+  const { data: result, isPending } = useQuery(productOptionQueries.detail(id));
   const option = result?.success ? result.data : null;
-
-  usePageBreadcrumb(option?.title ?? null);
-
 
   const openEdit = useCallback(
     () =>

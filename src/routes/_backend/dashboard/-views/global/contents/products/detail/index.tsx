@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { usePageBreadcrumb } from "@/routes/_backend/dashboard/-components/breadcrumb/use-page-breadcrumb";
 import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
 import { MetadataCard } from "@/routes/_backend/dashboard/-components/metadata-card/metadata-card";
 import { productQueries } from "@queries/product.queries";
@@ -40,8 +39,6 @@ const ProductDetail = () => {
       setOpen: state.setOpen,
     })),
   );
-
-  usePageBreadcrumb(product?.title ?? null);
 
   const openEdit = useCallback(
     () =>

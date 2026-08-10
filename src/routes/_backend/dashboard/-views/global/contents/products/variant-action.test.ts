@@ -15,6 +15,7 @@ vi.mock("@/server/product/variants.serverFn", () => ({
   updateVariant,
   createVariant,
   deleteVariants: vi.fn(),
+  getVariantDetail: vi.fn(),
 }));
 vi.mock("@/server/product/update-product.serverFn", () => ({
   updateProduct: vi.fn(),
@@ -35,9 +36,16 @@ vi.mock("@/server/product/options.serverFn", () => ({
   deleteProductOptions: vi.fn(),
   updateProductOption: vi.fn(),
 }));
+vi.mock("@/server/sales-channel/sales-channels.serverFn", () => ({
+  setProductSalesChannels: vi.fn(),
+}));
 
-const { createVariantAction, updateVariantAction } =
-  await import("./product-actions");
+const {
+  createVariantAction,
+  updateVariantAction,
+  updateVariantMetadataAction,
+  updateVariantPricingAction,
+} = await import("./product-actions");
 
 const editForm = (fields: Record<string, string>) => {
   const data = new FormData();
@@ -107,6 +115,52 @@ describe("updateVariantAction", () => {
     await updateVariantAction({ data: editForm({ width: "-5" }) });
 
     expect(sentToUpdate()?.width).toBeNull();
+  });
+
+  it("does not overwrite metadata from the general editor", async () => {
+    await updateVariantAction({
+      data: editForm({ metadata: JSON.stringify({ erp_id: "00124" }) }),
+    });
+
+    expect(sentToUpdate()).not.toHaveProperty("metadata");
+  });
+
+  it("does not overwrite prices from the general editor", async () => {
+    await updateVariantAction({
+      data: editForm({ "price-usd": "10" }),
+    });
+
+    expect(sentToUpdate()).not.toHaveProperty("prices");
+  });
+
+  it("round-trips metadata through its independent editor", async () => {
+    await updateVariantMetadataAction({
+      data: editForm({ metadata: JSON.stringify({ erp_id: "00124" }) }),
+    });
+
+    expect(sentToUpdate()).toEqual({
+      id: "var_1",
+      metadata: { erp_id: "00124" },
+    });
+  });
+
+  it("updates all submitted currencies through the pricing grid action", async () => {
+    await updateVariantPricingAction({
+      data: editForm({
+        "price-usd": "12.50",
+        "price-decimals-usd": "2",
+        "price-jpy": "1800",
+        "price-decimals-jpy": "0",
+      }),
+    });
+
+    expect(sentToUpdate()).toEqual({
+      id: "var_1",
+      prices: [
+        { currencyCode: "usd", amount: 1250 },
+        { currencyCode: "jpy", amount: 1800 },
+      ],
+    });
   });
 });
 

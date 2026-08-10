@@ -1,5 +1,8 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ImageSmBlock } from "@/components/asset/image-block";
+import { viewPreloader } from "@/lib/config/lazy-view";
+import { findCollection } from "@/lib/config/navigation";
 import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
 import type { ProductVariantDTO } from "@/lib/product/dto/product-variant.dto";
 import {
@@ -20,9 +23,10 @@ import {
   type DataTableSortOption,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useInfoStore } from "@views/features/global-info/use-info-store";
+import { getConfig } from "@/server/get-config";
 import { productQueries } from "@queries/product.queries";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { ImageIcon, Plus } from "lucide-react";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -53,8 +57,15 @@ export const ProductVariantsCard = ({
   product: ProductDetailDTO;
 }) => {
   const navigate = useNavigate();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as DashboardSearch;
+  const variantDetailView = useMemo(
+    () =>
+      findCollection(getConfig().client.collections.global, "products")?.pages
+        ?.variant?.view,
+    [],
+  );
 
   const columns = useMemo<DataTableColumn<ProductVariantDTO>[]>(
     () => [
@@ -62,9 +73,18 @@ export const ProductVariantsCard = ({
         key: "thumbnail",
         header: "",
         className: "w-10 text-muted-foreground",
-        // Variant-level images are a separate link table that this page does
-        // not load yet, so every row shows the placeholder.
-        cell: () => <ImageIcon className="size-4" aria-hidden />,
+        cell: (variant) => {
+          const thumbnail = variant.assets[0];
+          return (
+            <span className="flex w-6 items-center justify-center">
+              {thumbnail ? (
+                <ImageSmBlock src={thumbnail.url} alt={thumbnail.name} />
+              ) : (
+                <ImageIcon className="size-4" aria-hidden />
+              )}
+            </span>
+          );
+        },
       },
       {
         key: "title",
@@ -134,12 +154,42 @@ export const ProductVariantsCard = ({
     [queryClient, setInfoData, setInfoOpen],
   );
 
-  // No `variantId` opens the same page in create mode.
-  const openVariant = useCallback(
+  const openVariantDetail = useCallback(
+    (variantId: string) =>
+      void navigate({
+        to: "/dashboard/$slug/$id/$page/$childId",
+        params: {
+          slug: "products",
+          id: product.id,
+          page: "variant",
+          childId: variantId,
+        },
+      }),
+    [navigate, product.id],
+  );
+
+  const preloadVariantDetail = useCallback(
+    (variantId: string) => {
+      void viewPreloader(variantDetailView)?.();
+      void router.preloadRoute({
+        to: "/dashboard/$slug/$id/$page/$childId",
+        params: {
+          slug: "products",
+          id: product.id,
+          page: "variant",
+          childId: variantId,
+        },
+      });
+    },
+    [product.id, router, variantDetailView],
+  );
+
+  // No `variantId` opens the editor in create mode.
+  const openVariantEditor = useCallback(
     (variantId?: string) =>
       void navigate({
         to: "/dashboard/$slug/$id/$page",
-        params: { slug: "products", id: product.id, page: "variant" },
+        params: { slug: "products", id: product.id, page: "variant-edit" },
         search: variantId ? { variantId } : {},
       }),
     [navigate, product.id],
@@ -202,7 +252,7 @@ export const ProductVariantsCard = ({
             variant="form"
             size="xs"
             className="gap-2"
-            onClick={() => openVariant()}
+            onClick={() => openVariantEditor()}
           >
             <Plus className="size-4" />
             Create
@@ -213,12 +263,13 @@ export const ProductVariantsCard = ({
       defaultSortBy="createdAt"
       emptyTitle="No variants yet"
       emptyDescription="Saving the product's options creates one for every combination."
-      onRowClick={(variant) => openVariant(variant.id)}
+      onRowClick={(variant) => openVariantDetail(variant.id)}
+      onRowPreload={(variant) => preloadVariantDetail(variant.id)}
       rowActions={(variant) => [
         {
           label: "Edit",
           icon: editActionIcon,
-          onSelect: () => openVariant(variant.id),
+          onSelect: () => openVariantEditor(variant.id),
         },
         {
           label: "Delete",

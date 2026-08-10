@@ -466,6 +466,38 @@ export const productVariantPrices = sqliteTable(
 );
 
 /**
+ * Append-only audit trail for base variant prices.
+ *
+ * Price lists describe scheduled or targeted prices; this table answers the
+ * separate audit question of who changed the variant's ordinary price and
+ * what the previous amount was.
+ */
+export const productVariantPriceHistory = sqliteTable(
+  "product_variant_price_history",
+  {
+    id: text("id").primaryKey(),
+    variantId: text("variant_id")
+      .notNull()
+      .references(() => productVariants.id, { onDelete: "cascade" }),
+    currencyCode: text("currency_code").notNull(),
+    oldAmount: integer("old_amount"),
+    newAmount: integer("new_amount"),
+    changedBy: text("changed_by").notNull(),
+    changedAt: text("changed_at").notNull(),
+  },
+  (table) => [
+    index("product_variant_price_history_variant_date_idx").on(
+      table.variantId,
+      table.changedAt,
+    ),
+    check(
+      "product_variant_price_history_currency_code_check",
+      sql`length(${table.currencyCode}) = 3 AND ${table.currencyCode} = lower(${table.currencyCode})`,
+    ),
+  ],
+);
+
+/**
  * Product gallery.
  *
  * Medusa stores a bare `url` here; this references the asset library instead so
@@ -510,4 +542,3 @@ export const productVariantAssets = sqliteTable(
     index("product_variant_assets_asset_idx").on(table.assetId),
   ],
 );
-

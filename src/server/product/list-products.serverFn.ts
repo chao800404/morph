@@ -14,6 +14,8 @@ export const listProducts = createServerFn({ method: "POST" })
       const page = await productDal.listPage({
         query: data.query,
         status: data.status,
+        createdWithin: data.createdWithin,
+        updatedWithin: data.updatedWithin,
         collectionId: data.collectionId,
         categoryId: data.categoryId,
         optionId: data.optionId,

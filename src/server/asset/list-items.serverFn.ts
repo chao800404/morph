@@ -18,6 +18,8 @@ const listItemsInputSchema = z.object({
   folderId: z.union([z.uuid(), z.literal("root")]).nullish(),
   query: z.string().trim().max(200).nullish(),
   type: z.enum(["image", "video", "rive", "model"]).optional(),
+  size: z.enum(["under-1mb", "1mb-10mb", "over-10mb"]).optional(),
+  createdWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
   sortBy: z
     .union([sortKeySchema, z.array(sortKeySchema).min(1).max(5)])
     .default("createdAt")
@@ -63,6 +65,8 @@ export const listItemsServerFn = createServerFn({ method: "POST" })
           folderId: parentId,
           query: data.query,
           type: data.type,
+          size: data.size,
+          createdWithin: data.createdWithin,
           sorts: assetSorts,
           page: data.page,
           limit: data.limit,

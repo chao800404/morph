@@ -13,10 +13,9 @@ import { productQueries } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
-import {
-  createVariantAction,
-  updateVariantAction,
-} from "../product-actions";
+import { useLayoutEffect } from "react";
+import { serializeSelectedAssets } from "@/components/form/asset-select-field";
+import { createVariantAction, updateVariantAction } from "../product-actions";
 
 /**
  * One variant's editor, at /dashboard/products/<id>/variant.
@@ -35,7 +34,9 @@ import {
  */
 const ProductVariant = () => {
   const { id } = useParams({ strict: false }) as { id: string };
-  const { variantId } = useSearch({ strict: false }) as DashboardSearch;
+  const { variantId, editSection } = useSearch({
+    strict: false,
+  }) as DashboardSearch;
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
 
@@ -68,25 +69,41 @@ const ProductVariant = () => {
     return response;
   };
 
-  if (isPending || currenciesPending) {
-    return <RouteSurfacePending />;
-  }
-
   const product = result?.success ? result.data : null;
   const variant = variantId
     ? product?.variants.find((row) => row.id === variantId)
     : undefined;
+  const currencies = currencyResult?.success
+    ? currencyResult.data.supportedCurrencies
+    : [];
+
+  useLayoutEffect(() => {
+    if (!editSection || isPending || currenciesPending) return;
+    const fieldName = {
+      general: "title",
+      media: product?.options.length ? "assets" : "title",
+      inventory: "inventoryQuantity",
+    }[editSection];
+    const frame = window.requestAnimationFrame(() => {
+      document
+        .getElementById(`field-${fieldName}-wrapper`)
+        ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [currencies, currenciesPending, editSection, isPending, product]);
+
+  if (isPending || currenciesPending) {
+    return <RouteSurfacePending />;
+  }
+
   if (!product || (variantId && !variant)) {
     return (
       <RouteSurfaceMessage>
-          {result?.message ?? "Variant not found"}
+        {result?.message ?? "Variant not found"}
       </RouteSurfaceMessage>
     );
   }
 
-  const currencies = currencyResult?.success
-    ? currencyResult.data.supportedCurrencies
-    : [];
   const priceOf = (code: string) =>
     variant?.prices.find((price) => price.currencyCode === code);
 
@@ -136,6 +153,20 @@ const ProductVariant = () => {
         colSpan: 1,
       };
     }),
+    ...(product.options.length > 0
+      ? [
+          {
+            type: "asset-select" as const,
+            name: "assets",
+            label: "Media",
+            optional: true,
+            labelHint:
+              "Choose from Product Media. The first image is this variant's thumbnail.",
+            value: serializeSelectedAssets(variant?.assets ?? []),
+            availableAssets: product.assets,
+          },
+        ]
+      : []),
     {
       type: "switch",
       name: "manageInventory",
@@ -176,21 +207,28 @@ const ProductVariant = () => {
         colSpan: 1,
       }),
     ),
-    ...currencies.map(
-      (currency): FormField => ({
-        type: "input",
-        name: `price-${currency.code}`,
-        label: `Price ${currency.code.toUpperCase()}`,
-        inputType: "number",
-        optional: true,
-        prefix: currency.code.toUpperCase(),
-        value: (() => {
-          const price = priceOf(currency.code);
-          return price ? String(toMajorUnits(price.amount, currency)) : "";
-        })(),
-        colSpan: 1,
-      }),
-    ),
+    ...(variant
+      ? []
+      : currencies.flatMap((currency): FormField[] => [
+          {
+            type: "hidden",
+            name: `price-decimals-${currency.code}`,
+            value: String(currency.decimalDigits),
+          },
+          {
+            type: "input",
+            name: `price-${currency.code}`,
+            label: `Price ${currency.code.toUpperCase()}`,
+            inputType: "number",
+            optional: true,
+            prefix: currency.code.toUpperCase(),
+            value: (() => {
+              const price = priceOf(currency.code);
+              return price ? String(toMajorUnits(price.amount, currency)) : "";
+            })(),
+            colSpan: 1,
+          },
+        ])),
   ];
 
   return (

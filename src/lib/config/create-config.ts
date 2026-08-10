@@ -120,6 +120,15 @@ export interface CollectionCreate {
  */
 export interface CollectionSubPage {
   view: ComponentType;
+  /**
+   * `overlay` keeps the record detail mounted underneath route-backed forms.
+   * `replace` lets a true child-resource detail page own the content region.
+   */
+  presentation?: "overlay" | "replace";
+  /** Resolve this route level's record label for the dashboard breadcrumb. */
+  breadcrumb?: (
+    context: CollectionLoadContext,
+  ) => Promise<string | null> | string | null;
   /** Suspense fallback while `view` loads. */
   pendingView?: ComponentType;
   /** Start priming this page's query cache before rendering it. */
@@ -128,6 +137,10 @@ export interface CollectionSubPage {
 
 export interface CollectionDetail {
   view: ComponentType;
+  /** Resolve the record label appended after the collection breadcrumb. */
+  breadcrumb?: (
+    context: CollectionLoadContext,
+  ) => Promise<string | null> | string | null;
   /** Suspense fallback while `view` loads. */
   pendingView?: ComponentType;
   /** Start priming the detail route's query cache before rendering it. */
@@ -307,6 +320,9 @@ export const defineConfig = <T extends CMSUserConfig>(config: T): T => config;
 export interface ClientSafeConfig {
   appName: string;
   localization: typeof localization;
+  products?: {
+    sku?: ProductSkuConfig;
+  };
   collections: {
     global: CollectionGroup[];
     settings: CollectionGroup[];
@@ -371,6 +387,7 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
   const clientSafeConfig: ClientSafeConfig = {
     appName: config.appName,
     localization: config.localization,
+    products: config.products,
     collections: config.collections || { global: [], settings: [] },
     upload: {
       maxFileSize: config.upload.maxFileSize,

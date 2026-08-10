@@ -22,6 +22,7 @@ type RouterLinkProps = {
 const TanstackLink = Link as unknown as React.ComponentType<{
   to: string;
   search?: Record<string, string>;
+  preload?: "intent" | false;
   className?: string;
   onClick?: React.MouseEventHandler<HTMLAnchorElement>;
   children?: React.ReactNode;
@@ -30,5 +31,5 @@ const TanstackLink = Link as unknown as React.ComponentType<{
 export const RouterLink = ({ href, ...rest }: RouterLinkProps) => {
   const [to, queryString] = href.split("?");
   const search = Object.fromEntries(new URLSearchParams(queryString ?? ""));
-  return <TanstackLink to={to} search={search} {...rest} />;
+  return <TanstackLink to={to} search={search} preload="intent" {...rest} />;
 };

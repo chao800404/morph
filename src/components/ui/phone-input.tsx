@@ -20,6 +20,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Input } from "./input";
+import { fieldControlDensity, fieldControlVariants } from "./field-control";
 
 type PhoneInputProps = Omit<
   React.ComponentProps<"input">,
@@ -64,6 +65,7 @@ const InputComponent = React.forwardRef<
 >(({ className, size: _, ...props }, ref) => (
   <Input
     ref={ref}
+    variant="card"
     className={cn("rounded-md-plus rounded-s-none", className)}
     {...props}
   />
@@ -101,8 +103,12 @@ const CountrySelect = ({
       <PopoverTrigger asChild>
         <Button
           type="button"
-          variant="outline"
-          className="flex gap-1 rounded-e-none rounded-md-plus border-r-0 px-3 focus:z-10"
+          variant="none"
+          className={cn(
+            fieldControlVariants({ variant: "card" }),
+            fieldControlDensity.control,
+            "flex gap-1 rounded-e-none rounded-md-plus border-r-0 focus:z-10",
+          )}
           disabled={disabled}
         >
           <FlagComponent

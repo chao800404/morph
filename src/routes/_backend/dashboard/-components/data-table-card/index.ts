@@ -1,5 +1,6 @@
 export { CollectionCreateButton } from "./collection-create-button";
 export { useCollectionEditAction } from "./use-collection-row-actions";
+export { useCollectionDetailPreload } from "./use-collection-detail-preload";
 export { DataTableCard } from "./data-table-card";
 export type {
   DataTableCardProps,
@@ -9,9 +10,10 @@ export type {
 export { DataTablePagination } from "./data-table-pagination";
 export { DataTableSearch } from "./data-table-search";
 export {
-  DataTableFilter,
+  DataTableFilters,
+  type DataTableFilterDefinition,
   type DataTableFilterOption,
-} from "./data-table-filter";
+} from "./data-table-filters";
 export { DataTableToolbar } from "./data-table-toolbar";
 export {
   DataTableSort,

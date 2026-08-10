@@ -8,12 +8,21 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { cn } from "@/lib/utils";
 import { Button } from "./button";
 
-function Command({ className, ...props }: React.ComponentProps<typeof CommandPrimitive>) {
+function Command({
+    className,
+    variant = "default",
+    ...props
+}: React.ComponentProps<typeof CommandPrimitive> & {
+    variant?: "default" | "embedded";
+}) {
     return (
         <CommandPrimitive
             data-slot="command"
             className={cn(
-                "bg-sidebar shadow-sm/20 border text-popover-foreground dark:border-0 dark:shadow-elevation-modal flex h-full w-full flex-col overflow-hidden rounded-lg",
+                "text-popover-foreground flex h-full w-full flex-col overflow-hidden",
+                variant === "default"
+                    ? "bg-sidebar shadow-sm/20 border dark:border-0 dark:shadow-elevation-modal rounded-lg"
+                    : "bg-transparent shadow-none border-0 rounded-none",
                 className
             )}
             {...props}

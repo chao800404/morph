@@ -96,4 +96,30 @@ describe("DataTableCard selection", () => {
     expect(header?.textContent).toContain("Create");
     expect(header?.textContent).not.toContain("Search control");
   });
+
+  it("preloads clickable rows on pointer, focus, and touch intent", () => {
+    const onRowClick = vi.fn();
+    const onRowPreload = vi.fn();
+    render(
+      <DataTableCard
+        label="Currencies"
+        columns={[{ key: "name", header: "Name", cell: (row) => row.name }]}
+        rows={[rows[0]]}
+        getRowId={(row) => row.id}
+        emptyTitle="No currencies"
+        emptyDescription="Add a currency."
+        onRowClick={onRowClick}
+        onRowPreload={onRowPreload}
+      />,
+    );
+
+    const row = screen.getByRole("link");
+    fireEvent.mouseEnter(row);
+    fireEvent.focus(row);
+    fireEvent.touchStart(row);
+    expect(onRowPreload).toHaveBeenCalledTimes(3);
+
+    fireEvent.keyDown(row, { key: "Enter" });
+    expect(onRowClick).toHaveBeenCalledWith(rows[0]);
+  });
 });

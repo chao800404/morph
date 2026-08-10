@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toDashboardReturnTo } from "./dashboard-search";
+import { dashboardSearchSchema, toDashboardReturnTo } from "./dashboard-search";
 
 /**
  * `returnTo` is navigated to on close and comes straight from the URL, so it is
@@ -19,5 +19,28 @@ describe("toDashboardReturnTo", () => {
     expect(toDashboardReturnTo("https://example.com")).toBeUndefined();
     // Protocol-relative: the browser reads this as another host.
     expect(toDashboardReturnTo("//example.com/dashboard")).toBeUndefined();
+  });
+});
+
+describe("asset filters", () => {
+  it("accepts the supported size and upload-date buckets", () => {
+    expect(
+      dashboardSearchSchema.parse({
+        assetSize: "1mb-10mb",
+        assetCreatedWithin: "30d",
+      }),
+    ).toMatchObject({
+      assetSize: "1mb-10mb",
+      assetCreatedWithin: "30d",
+    });
+  });
+
+  it("rejects unknown buckets", () => {
+    expect(() =>
+      dashboardSearchSchema.parse({ assetSize: "huge" }),
+    ).toThrow();
+    expect(() =>
+      dashboardSearchSchema.parse({ assetCreatedWithin: "all-time" }),
+    ).toThrow();
   });
 });

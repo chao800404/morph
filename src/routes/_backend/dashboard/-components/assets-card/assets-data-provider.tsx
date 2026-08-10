@@ -1,4 +1,3 @@
-import { useMediaQuery } from "@/hooks/use-media-query";
 import type { AssetsExplorerData } from "@/routes/_backend/dashboard/-views/global/contents/assets/assets.types";
 import {
   toSelectedAssetFromCard,
@@ -20,7 +19,6 @@ export const AssetsDataProvider = ({
   folderId,
 }: AssetsDataProviderProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const isDesktop = useMediaQuery("(min-width: 1280px)");
   const { setAssetsData, setActiveItem } = useAssetsStore(
     useShallow((state) => ({
       setAssetsData: state.setAssetsData,
@@ -100,7 +98,7 @@ export const AssetsDataProvider = ({
 
       if (!id) return;
 
-      if (dataType === "asset-folder" && isDesktop) {
+      if (dataType === "asset-folder") {
         const folder = folderMap.get(id);
         if (folder) {
           setActiveItem(toSelectedFolderFromCard(folder));
@@ -125,7 +123,7 @@ export const AssetsDataProvider = ({
     return () => {
       container.removeEventListener("click", handleClick);
     };
-  }, [folderMap, assetMap, setActiveItem, isDesktop]);
+  }, [folderMap, assetMap, setActiveItem]);
 
   return <div ref={containerRef}>{children}</div>;
 };

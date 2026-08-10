@@ -2,14 +2,14 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getRouteApi, useLocation } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
 
-import { AssetPropertyCard } from "@/routes/_backend/dashboard/-components/assets-card/asset-property-card";
-import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
+import { AssetPropertiesResponsive } from "@/routes/_backend/dashboard/-components/assets-card/asset-properties-responsive";
 import { AssetsDataProvider } from "@/routes/_backend/dashboard/-components/assets-card/assets-data-provider";
+import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
 import AssetSelectFloat from "@/routes/_backend/dashboard/-views/features/asset/select/float";
 import { assetQueries, normalizeAssetListParams } from "@queries/asset.queries";
+import { toAssetCardAsset, toAssetCardFolder } from "./asset-view-model";
 import { AssetsExplorerCard } from "./component/assets-explorer-card";
 import { AssetDraggableProvider } from "./component/draggable-provider";
-import { toAssetCardAsset, toAssetCardFolder } from "./asset-view-model";
 import { useAssetsStore } from "./stores/assets.store";
 
 const routeApi = getRouteApi("/_backend/dashboard/$slug");
@@ -91,24 +91,28 @@ export const Assets = () => {
 
   return (
     <PageSplitLayout
-      sidebar={<AssetPropertyCard />}
-      stackBelow1280={false}
+      sidebar={<AssetPropertiesResponsive />}
+      sidebarClassName="max-xl:hidden"
     >
       <div className="flex-1 min-h-0 flex flex-col">
-          <AssetsDataProvider data={assetsCardData} folderId={folderId}>
-            <AssetDraggableProvider>
-              <AssetsExplorerCard
-                label="Assets"
-                description="Manage your media and files"
-                query={query}
-                data={assetsCardData}
-                isLoading={isInitialLoading}
-                errorMessage={errorMessage}
-                folderId={folderId}
-                hasActiveFilter={Boolean(search.assetType)}
-              />
-            </AssetDraggableProvider>
-          </AssetsDataProvider>
+        <AssetsDataProvider data={assetsCardData} folderId={folderId}>
+          <AssetDraggableProvider>
+            <AssetsExplorerCard
+              label="Assets"
+              description="Manage your media and files"
+              query={query}
+              data={assetsCardData}
+              isLoading={isInitialLoading}
+              errorMessage={errorMessage}
+              folderId={folderId}
+              hasActiveFilter={Boolean(
+                search.assetType ||
+                  search.assetSize ||
+                  search.assetCreatedWithin,
+              )}
+            />
+          </AssetDraggableProvider>
+        </AssetsDataProvider>
       </div>
       <AssetSelectFloat active={isAssetsIndex} />
     </PageSplitLayout>

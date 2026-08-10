@@ -4,7 +4,10 @@ import {
   FieldDescription,
   FieldLabel,
 } from "@/components/ui/field";
-import { fieldControlVariants } from "@/components/ui/field-control";
+import {
+  fieldControlDensity,
+  fieldControlVariants,
+} from "@/components/ui/field-control";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import type { SwitchFormField } from "@/lib/validations/form";
@@ -23,12 +26,16 @@ export const SwitchField = ({
   <Field
     orientation="horizontal"
     data-disabled={field.disabled || undefined}
-    className={cn(fieldControlVariants({ variant: "card" }), "rounded-lg p-4")}
+    className={cn(
+      fieldControlVariants({ variant: "card" }),
+      fieldControlDensity.default,
+      "rounded-lg",
+    )}
   >
     <Switch
       id={fieldId}
       name={field.name}
-      checked={checked}
+      {...(onChange ? { checked } : { defaultChecked: checked })}
       disabled={field.disabled}
       required={field.required}
       aria-describedby={

@@ -11,6 +11,8 @@ import {
   DataGridRow,
 } from "@/components/ui/data-grid";
 import type { StoreCurrencyDTO } from "@/lib/currency/dto/currency.dto";
+import { formatSku } from "@/lib/product/sku";
+import { getConfig } from "@/server/get-config";
 import type { Dispatch } from "react";
 import type { DraftAction, ProductDraft } from "./use-product-draft";
 
@@ -33,6 +35,23 @@ export const StepVariants = ({
   const displayedVariants = draft.hasVariants
     ? included
     : [draft.defaultVariant];
+  const skuPolicy = getConfig().client.products?.sku;
+  const skuPreviews = new Map(
+    displayedVariants.map((variant, index) => [
+      variant.key,
+      skuPolicy?.autoGenerate === false
+        ? ""
+        : formatSku(
+            {
+              product: draft.handle.trim() || draft.title,
+              variant: variant.title,
+              options: variant.optionValues,
+              index,
+            },
+            skuPolicy,
+          ),
+    ]),
+  );
   const optionHeader = draft.hasVariants
     ? draft.options
         .filter((option) => option.selectedValueIds.length > 0)
@@ -109,6 +128,7 @@ export const StepVariants = ({
                   <DataGridInput
                     aria-label={`SKU for ${variant.key}`}
                     value={variant.sku}
+                    placeholder={skuPreviews.get(variant.key)}
                     onChange={(event) =>
                       dispatch({
                         type: "setVariantField",

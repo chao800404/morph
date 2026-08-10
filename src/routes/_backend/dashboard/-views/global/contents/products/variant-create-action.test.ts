@@ -25,6 +25,7 @@ vi.mock("@/server/product/variants.serverFn", () => ({
   createVariant,
   updateVariant,
   deleteVariants: vi.fn(),
+  getVariantDetail: vi.fn(),
 }));
 const updateProduct = vi.fn(
   async (_input: {
@@ -55,6 +56,9 @@ vi.mock("@/server/product/options.serverFn", () => ({
   createProductOption: vi.fn(),
   deleteProductOptions: vi.fn(),
   updateProductOption: vi.fn(),
+}));
+vi.mock("@/server/sales-channel/sales-channels.serverFn", () => ({
+  setProductSalesChannels: vi.fn(),
 }));
 
 const {

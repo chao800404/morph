@@ -11,9 +11,47 @@ import { createServerFn } from "@tanstack/react-start";
 import { productAdminMiddleware } from "../middleware/auth.middleware";
 import { resolveVariantSku } from "./product-sku";
 import { inventoryDal } from "@/lib/inventory/dal/inventory.dal";
+import { getConfig } from "@/server/get-config";
+import { z } from "zod";
+import { productReadMiddleware } from "../middleware/auth.middleware";
+
+const variantMediaLimit = () => getConfig().server.upload.maxAssetsPerRecord;
+
+export const getVariantDetail = createServerFn({ method: "GET" })
+  .validator((data: unknown) =>
+    z.object({ id: z.uuid("Invalid variant ID") }).parse(data),
+  )
+  .middleware([productReadMiddleware])
+  .handler(async ({ data }) => {
+    const variant = await productVariantDal.findById(data.id);
+    if (!variant) {
+      return {
+        success: false as const,
+        message: "Variant not found",
+        data: null,
+        error: "NOT_FOUND",
+      };
+    }
+    const priceHistory = await productVariantDal.findPriceHistory(data.id, 100);
+    return {
+      success: true as const,
+      message: "Variant loaded",
+      data: { variant, priceHistory },
+    };
+  });
+
+const validateVariantAssets = (
+  product: ProductDetailDTO,
+  assetIds: string[],
+): string | null => {
+  const allowed = new Set(product.assetIds);
+  return assetIds.find((id) => !allowed.has(id)) ?? null;
+};
 
 export const updateVariant = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateVariantInputSchema.parse(data))
+  .validator((data: unknown) =>
+    updateVariantInputSchema(variantMediaLimit()).parse(data),
+  )
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -27,6 +65,33 @@ export const updateVariant = createServerFn({ method: "POST" })
           data: null,
           error: "NOT_FOUND",
         };
+      }
+
+      let productDetail: ProductDetailDTO | null = null;
+      if (data.assetIds !== undefined || data.optionValueIds) {
+        productDetail = await productDal.findDetail(existing.productId);
+        if (!productDetail) {
+          return {
+            success: false,
+            message: "Product not found",
+            data: null,
+            error: "NOT_FOUND",
+          };
+        }
+      }
+      if (data.assetIds !== undefined) {
+        const invalidAsset = validateVariantAssets(
+          productDetail!,
+          data.assetIds,
+        );
+        if (invalidAsset) {
+          return {
+            success: false,
+            message: "Variant images must come from this product's media",
+            data: null,
+            errors: { assetIds: ["Choose images from Product Media"] },
+          };
+        }
       }
 
       if (data.prices) {
@@ -54,7 +119,7 @@ export const updateVariant = createServerFn({ method: "POST" })
 
       // Moving to another cell is validated exactly as creating one is.
       if (data.optionValueIds) {
-        const product = await productDal.findDetail(existing.productId);
+        const product = productDetail;
         if (!product) {
           return {
             success: false,
@@ -108,8 +173,12 @@ export const updateVariant = createServerFn({ method: "POST" })
         width: data.width,
         height: data.height,
         prices: data.prices,
+        metadata: data.metadata,
         updatedBy: actorId,
       });
+      if (data.assetIds !== undefined) {
+        await productVariantDal.setAssets(data.id, data.assetIds);
+      }
 
       if (data.manageInventory ?? existing.manageInventory) {
         const product = await productDal.findById(existing.productId);
@@ -153,12 +222,63 @@ export const deleteVariants = createServerFn({ method: "POST" })
     const actorId = context.user.id;
 
     try {
+      const targeted = (
+        await Promise.all(data.ids.map((id) => productVariantDal.findById(id)))
+      ).filter((variant) => variant !== null);
+      const affectedProductIds = [
+        ...new Set(targeted.map((variant) => variant.productId)),
+      ];
+
       await productVariantDal.softDelete(data.ids, actorId);
+
+      const restoredProductIds: string[] = [];
+      for (const productId of affectedProductIds) {
+        if ((await productVariantDal.findByProductId(productId)).length > 0) {
+          continue;
+        }
+
+        const product = await productDal.findById(productId);
+        if (!product) continue;
+
+        const id = crypto.randomUUID();
+        const sku = await resolveVariantSku({
+          productHandle: product.handle,
+          variantTitle: "Default",
+          optionValues: [],
+          index: 0,
+        });
+        await productVariantDal.createMany([
+          {
+            id,
+            productId,
+            title: "Default",
+            sku,
+            rank: 0,
+            manageInventory: true,
+            allowBackorder: false,
+            inventoryQuantity: 0,
+            optionValueIds: [],
+            prices: [],
+            createdBy: actorId,
+            updatedBy: actorId,
+          },
+        ]);
+        await inventoryDal.ensureForVariant({
+          variantId: id,
+          sku,
+          title: `${product.title} - Default`,
+          quantity: 0,
+        });
+        restoredProductIds.push(productId);
+      }
 
       return {
         success: true,
-        message: `${data.ids.length} variant${data.ids.length === 1 ? "" : "s"} deleted`,
-        data: { deleted: data.ids.length },
+        message: `${targeted.length} variant${targeted.length === 1 ? "" : "s"} deleted${restoredProductIds.length > 0 ? ` — Default restored for ${restoredProductIds.length} product${restoredProductIds.length === 1 ? "" : "s"}` : ""}`,
+        data: {
+          deleted: targeted.length,
+          restoredProductIds,
+        },
       };
     } catch (error) {
       console.error("Delete variants error:", error);
@@ -192,9 +312,7 @@ const checkCombination = (
   product: ProductDetailDTO,
   optionValueIds: string[],
   exceptVariantId?: string,
-):
-  | { ok: true }
-  | { ok: false; message: string; issue: string } => {
+): { ok: true } | { ok: false; message: string; issue: string } => {
   const chosen = new Set(optionValueIds);
   const perAxis = product.options.map((option) =>
     option.values.filter((value) => chosen.has(value.id)),
@@ -234,7 +352,9 @@ const checkCombination = (
 };
 
 export const createVariant = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createVariantInputSchema.parse(data))
+  .validator((data: unknown) =>
+    createVariantInputSchema(variantMediaLimit()).parse(data),
+  )
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     const actorId = context.user.id;
@@ -247,6 +367,14 @@ export const createVariant = createServerFn({ method: "POST" })
           message: "Product not found",
           data: null,
           error: "NOT_FOUND",
+        };
+      }
+      if (validateVariantAssets(product, data.assetIds)) {
+        return {
+          success: false,
+          message: "Variant images must come from this product's media",
+          data: null,
+          errors: { assetIds: ["Choose images from Product Media"] },
         };
       }
 
@@ -269,7 +397,10 @@ export const createVariant = createServerFn({ method: "POST" })
           errors: { prices: ["Duplicate currency code"] },
         };
       }
-      if (currencies.length > 0 && !(await currencyDal.areSupported(currencies))) {
+      if (
+        currencies.length > 0 &&
+        !(await currencyDal.areSupported(currencies))
+      ) {
         return {
           success: false,
           message: "A price uses a currency that is not enabled for this store",
@@ -324,6 +455,8 @@ export const createVariant = createServerFn({ method: "POST" })
           inventoryQuantity: data.inventoryQuantity,
           optionValueIds: data.optionValueIds,
           prices: data.prices,
+          assetIds: data.assetIds,
+          metadata: data.metadata,
           createdBy: actorId,
           updatedBy: actorId,
         },

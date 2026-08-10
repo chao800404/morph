@@ -86,6 +86,32 @@ describe("AssetSelectField inside a plain form", () => {
   });
 });
 
+describe("AssetSelectField with a restricted source", () => {
+  it("offers only the provided record media and hides global sources", () => {
+    const { container } = render(
+      <AssetSelectField
+        field={{ ...FIELD, availableAssets: ASSETS }}
+        fieldId="field-assets"
+        value="[]"
+      />,
+    );
+
+    expect(screen.queryByRole("tab", { name: "Upload" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Library" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "front" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Variant media/ }));
+
+    fireEvent.click(screen.getByRole("button", { name: "front" }));
+
+    const submitted = parseSelectedAssets(
+      (container.querySelector('input[name="assets"]') as HTMLInputElement)
+        .value,
+    );
+    expect(submitted).toEqual([ASSETS[0]]);
+  });
+});
+
 describe("AssetSelectField selection limit", () => {
   const many = (count: number): SelectedAsset[] =>
     Array.from({ length: count }, (_, index) => ({

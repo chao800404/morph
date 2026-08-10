@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { normalizeProductOptionListParams } from "./product.queries";
+import {
+  normalizeProductListParams,
+  normalizeProductOptionListParams,
+} from "./product.queries";
 
 vi.mock("@/server/product/collections.serverFn", () => ({
   getCollection: vi.fn(),
@@ -25,6 +28,10 @@ vi.mock("@/server/product/taxonomy.serverFn", () => ({
   listProductTaxonomy: vi.fn(),
 }));
 
+vi.mock("@/server/product/variants.serverFn", () => ({
+  getVariantDetail: vi.fn(),
+}));
+
 describe("normalizeProductOptionListParams", () => {
   it("keeps the option date filter in the server-side list params", () => {
     expect(
@@ -35,6 +42,24 @@ describe("normalizeProductOptionListParams", () => {
     ).toMatchObject({
       createdWithin: "30d",
       page: 3,
+    });
+  });
+});
+
+describe("normalizeProductListParams", () => {
+  it("keeps product filters in the server-side list params", () => {
+    expect(
+      normalizeProductListParams({
+        productStatus: "published",
+        productCreatedWithin: "7d",
+        productUpdatedWithin: "24h",
+        page: 2,
+      }),
+    ).toMatchObject({
+      status: "published",
+      createdWithin: "7d",
+      updatedWithin: "24h",
+      page: 2,
     });
   });
 });

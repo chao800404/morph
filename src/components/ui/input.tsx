@@ -1,11 +1,12 @@
 import { cn } from "@/lib/utils";
 import { cva, VariantProps } from "class-variance-authority";
 import * as React from "react";
-import { fieldControlVariants } from "./field-control";
+import { fieldControlDensity, fieldControlVariants } from "./field-control";
 
 const inputVariants = cva(
   cn(
-    "relative flex w-full min-w-0 px-3 py-1.5 text-sm leading-5",
+    "relative flex w-full min-w-0 text-sm leading-5",
+    fieldControlDensity.control,
     "file:text-foreground selection:bg-primary selection:text-primary-foreground",
     "file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium",
   ),

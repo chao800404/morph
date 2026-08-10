@@ -3,8 +3,8 @@ import { RouteModalCloseProvider } from "@/components/dialog/route-form-modal";
 import { NotFound } from "@/components/not-found/not-found";
 import { findCollection } from "@/lib/config/navigation";
 import { getConfig } from "@/server/get-config";
-import { createFileRoute } from "@tanstack/react-router";
-import { Suspense, useMemo } from "react";
+import { createFileRoute, useLocation } from "@tanstack/react-router";
+import { Suspense, useLayoutEffect, useMemo } from "react";
 
 /**
  * A page hanging off a record, declared in the collection's `pages`.
@@ -19,23 +19,27 @@ import { Suspense, useMemo } from "react";
  * `edit` is a reserved page key.
  */
 export const Route = createFileRoute("/_backend/dashboard/$slug/$id/$page")({
-  loader: async ({ context, params }) => {
+  loader: async ({ context, params, location }) => {
     const { queryClient, search } = context;
     const collection = findCollection(
       getConfig().client.collections.global,
       params.slug,
     );
-    await collection?.pages?.[params.page]?.prefetch?.({
-      queryClient,
-      params,
-      search,
-    });
+    const loadContext = { queryClient, params, search };
+    const page = collection?.pages?.[params.page];
+    await page?.prefetch?.(loadContext);
+    const breadcrumb = await page?.breadcrumb?.(loadContext);
+    return {
+      breadcrumb: breadcrumb ?? null,
+      breadcrumbHref: location.href,
+    };
   },
   component: RouteComponent,
 });
 
 function RouteComponent() {
   const { slug, page } = Route.useParams();
+  const location = useLocation();
   const config = useMemo(() => getConfig().client, []);
 
   const collection = useMemo(
@@ -44,6 +48,29 @@ function RouteComponent() {
   );
 
   const subPage = collection?.pages?.[page];
+
+  // The dashboard uses its own scroll viewport, so browser scroll restoration
+  // cannot move a replacing child page to the top. Overlay pages deliberately
+  // keep the underlying record's position for a natural close/back flow.
+  useLayoutEffect(() => {
+    if (subPage?.presentation !== "replace") return;
+    const scrollToTop = () => {
+      document
+        .getElementById("dashboard-scroll-container")
+        ?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    };
+    scrollToTop();
+    // Router/view-transition work may restore layout after this effect. Run
+    // once more on the next frame so the final committed page owns position 0.
+    const frame = window.requestAnimationFrame(scrollToTop);
+    return () => window.cancelAnimationFrame(frame);
+    // Search parameters belong to the current page state (sorting, filtering,
+    // pagination, and so on). Resetting the viewport for those updates fights
+    // the router's scroll restoration and causes a visible top-then-back jump.
+    // Only a real path change represents a newly opened replacement page.
+  }, [location.pathname, subPage?.presentation]);
+
   if (!subPage) return <NotFound />;
 
   const PageView = subPage.view;

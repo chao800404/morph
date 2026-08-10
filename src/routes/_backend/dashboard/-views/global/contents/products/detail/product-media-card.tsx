@@ -34,10 +34,10 @@ export const ProductMediaCard = ({
   <CardWrapper
     id="product-media"
     label="Media"
-    headerButton={<EditCardHeader onClickEdit={onEdit} />}
+    headerButton={<EditCardHeader onClickEdit={onEdit} label="Media actions" />}
   >
     {product.assets.length === 0 ? (
-      <div className="flex flex-col items-center gap-3 px-6 pb-8 pt-2 text-center">
+      <div className="flex flex-col items-center gap-3 px-6 py-8 text-center">
         <p className="text-sm font-medium text-foreground">
           No media added yet
         </p>
@@ -65,8 +65,8 @@ export const ProductMediaCard = ({
                     </span>
                   </TooltipTrigger>
                   <TooltipContent>
-                    Thumbnail — the first image. Reorder them in Edit to
-                    change it.
+                    Thumbnail — the first image. Reorder them in Edit to change
+                    it.
                   </TooltipContent>
                 </Tooltip>
               ) : null
