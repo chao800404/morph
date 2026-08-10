@@ -51,6 +51,16 @@ export interface ProductVariantDTO {
   updatedAt: Date;
 }
 
+/** Lightweight projection returned by the global Product Variant search. */
+export interface ProductVariantSearchResultDTO {
+  id: string;
+  productId: string;
+  productTitle: string;
+  title: string;
+  sku: string | null;
+  optionValues: string | null;
+}
+
 export interface CreateProductVariantDTO {
   title: string;
   sku?: string | null;

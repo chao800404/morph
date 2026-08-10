@@ -119,6 +119,32 @@ export const assetFolderDal = {
     return rows.map(toAssetFolderDTO);
   },
 
+  /** Cross-tree folder search used by the dashboard's global search. */
+  async search(options: {
+    query: string;
+    limit: number;
+  }): Promise<{ folders: AssetFolderDTO[]; total: number }> {
+    const db = await getDb();
+    const pattern = containsPattern(options.query.trim());
+    const condition = and(
+      isNull(assetFolders.deletedAt),
+      like(assetFolders.name, pattern),
+    );
+    const [totals, rows] = await Promise.all([
+      db.select({ value: sql<number>`count(*)` }).from(assetFolders).where(condition),
+      db
+        .select()
+        .from(assetFolders)
+        .where(condition)
+        .orderBy(desc(assetFolders.updatedAt), asc(assetFolders.id))
+        .limit(options.limit),
+    ]);
+    return {
+      folders: rows.map(toAssetFolderDTO),
+      total: Number(totals[0]?.value ?? 0),
+    };
+  },
+
   async listChildrenWithActors(options: {
     parentId: string | null;
     query?: string | null;

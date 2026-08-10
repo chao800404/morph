@@ -1,13 +1,14 @@
 import {
   InputGroup,
   InputGroupAddon,
+  InputGroupButton,
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { cn } from "@/lib/utils";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Search, X } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDebouncedCallback } from "use-debounce";
 
 /**
@@ -27,7 +28,14 @@ export const DataTableSearch = ({
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as DashboardSearch;
   const query = search.q ?? "";
+  const [value, setValue] = useState(query);
   const [isComposing, setIsComposing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Route state can change through Back/Forward or a filter reset. Keep the
+  // draft in sync without keying/remounting the input, which would discard its
+  // focus and selection every time the debounced search updates the URL.
+  useEffect(() => setValue(query), [query]);
 
   const patchQuery = useCallback(
     (value: string | undefined) => {
@@ -58,12 +66,14 @@ export const DataTableSearch = ({
         <Search className="size-4" />
       </InputGroupAddon>
       <InputGroupInput
-        key={query || "empty"}
+        ref={inputRef}
         className="py-0 text-zinc-300 placeholder:text-zinc-500 max-md:w-full"
         placeholder={placeholder}
-        defaultValue={query}
+        value={value}
         onChange={(event) => {
-          if (!isComposing) debouncedSearch(event.target.value);
+          const nextValue = event.target.value;
+          setValue(nextValue);
+          if (!isComposing) debouncedSearch(nextValue);
         }}
         onCompositionStart={() => setIsComposing(true)}
         onCompositionEnd={(event) => {
@@ -71,13 +81,22 @@ export const DataTableSearch = ({
           debouncedSearch(event.currentTarget.value);
         }}
       />
-      {query && (
-        <InputGroupAddon
-          align="inline-end"
-          className="cursor-pointer"
-          onClick={() => patchQuery(undefined)}
-        >
-          <X className="size-4 text-destructive" />
+      {value && (
+        <InputGroupAddon align="inline-end">
+          <InputGroupButton
+            aria-label="Clear search"
+            variant="none"
+            size="icon-xs"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              debouncedSearch.cancel();
+              setValue("");
+              patchQuery(undefined);
+              inputRef.current?.focus();
+            }}
+          >
+            <X className="size-4 text-destructive" />
+          </InputGroupButton>
         </InputGroupAddon>
       )}
     </InputGroup>

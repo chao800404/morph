@@ -5,16 +5,20 @@ import {
   productVariantPriceHistory,
   productVariantPrices,
   productVariants,
+  products,
 } from "@/db/product.schema";
 import { assets } from "@/db/asset.schema";
 import { users } from "@/db/auth.schema";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
+import { containsPattern } from "@/lib/db/like-pattern";
+import { toGlobalSearchTerms } from "@/lib/search/global-search";
 import { chunk, chunkForInsert } from "./d1-batch";
 import type {
   ProductVariantDTO,
   ProductVariantInsertDTO,
   ProductVariantPriceHistoryDTO,
+  ProductVariantSearchResultDTO,
   UpdateProductVariantDTO,
 } from "../dto/product-variant.dto";
 import {
@@ -122,6 +126,75 @@ export const productVariantDal = {
       );
     }
     return hydrate(rows);
+  },
+
+  /**
+   * Global search across a variant and its parent product/options.
+   * Every whitespace-delimited term must match somewhere, so a query such as
+   * `p01 red` can match the product title and an option value respectively.
+   */
+  async searchPage(options: { query: string; limit: number }): Promise<{
+    variants: ProductVariantSearchResultDTO[];
+    total: number;
+  }> {
+    const db = await getDb();
+    const optionSearchText = sql<string>`coalesce((
+      select group_concat(po.title || ' ' || pov.value, ' ')
+      from product_variant_option_values as pvov
+      inner join product_option_values as pov on pov.id = pvov.option_value_id
+      inner join product_options as po on po.id = pov.option_id
+      where pvov.variant_id = ${productVariants.id}
+        and pov.deleted_at is null
+        and po.deleted_at is null
+    ), '')`;
+    const searchableText = sql<string>`
+      coalesce(${products.title}, '') || ' ' ||
+      coalesce(${products.handle}, '') || ' ' ||
+      coalesce(${productVariants.title}, '') || ' ' ||
+      coalesce(${productVariants.sku}, '') || ' ' ||
+      coalesce(${productVariants.barcode}, '') || ' ' ||
+      coalesce(${productVariants.ean}, '') || ' ' ||
+      coalesce(${productVariants.upc}, '') || ' ' ||
+      ${optionSearchText}
+    `;
+    const matches = toGlobalSearchTerms(options.query).map((term) =>
+      like(searchableText, containsPattern(term)),
+    );
+    const condition = and(
+      isNull(productVariants.deletedAt),
+      isNull(products.deletedAt),
+      ...matches,
+    );
+
+    const [totals, rows] = await Promise.all([
+      db
+        .select({ value: count() })
+        .from(productVariants)
+        .innerJoin(products, eq(products.id, productVariants.productId))
+        .where(condition),
+      db
+        .select({
+          id: productVariants.id,
+          productId: productVariants.productId,
+          productTitle: products.title,
+          title: productVariants.title,
+          sku: productVariants.sku,
+          optionValues: sql<string | null>`(
+            select group_concat(pov.value, ' / ')
+            from product_variant_option_values as pvov
+            inner join product_option_values as pov on pov.id = pvov.option_value_id
+            where pvov.variant_id = ${productVariants.id}
+              and pov.deleted_at is null
+          )`,
+        })
+        .from(productVariants)
+        .innerJoin(products, eq(products.id, productVariants.productId))
+        .where(condition)
+        .orderBy(desc(productVariants.updatedAt), asc(productVariants.id))
+        .limit(options.limit),
+    ]);
+
+    return { variants: rows, total: Number(totals[0]?.value ?? 0) };
   },
 
   /**

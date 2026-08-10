@@ -7,6 +7,7 @@ import * as React from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { Button } from "./button";
+import { Spinner } from "./spinner";
 
 function Command({
     className,
@@ -62,9 +63,19 @@ function CommandInput({
     className,
     showSearchIcon = true,
     onValueChange,
+    value: controlledValue,
+    loading = false,
     ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input> & { showSearchIcon?: boolean }) {
+}: React.ComponentProps<typeof CommandPrimitive.Input> & {
+    showSearchIcon?: boolean;
+    loading?: boolean;
+}) {
     const [value, setValue] = React.useState("");
+    const displayedValue = controlledValue ?? value;
+    const setDisplayedValue = (nextValue: string) => {
+        if (controlledValue === undefined) setValue(nextValue);
+        onValueChange?.(nextValue);
+    };
     return (
         <div data-slot="command-input-wrapper" className="flex h-9 items-center relative gap-2 border-b px-3">
             {showSearchIcon && <SearchIcon className="size-4 shrink-0 opacity-50" />}
@@ -74,23 +85,25 @@ function CommandInput({
                     "placeholder:text-muted-foreground flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50",
                     className
                 )}
-                value={value}
-                onValueChange={value => {
-                    setValue(value);
-                    onValueChange?.(value);
-                }}
+                value={displayedValue}
+                onValueChange={setDisplayedValue}
                 {...props}
             />
-            {value.length > 0 && (
+            {loading ? (
+                <Spinner className="absolute right-20 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            ) : null}
+            {displayedValue.length > 0 ? (
                 <Button
-                    variant="ghost"
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-                    size="sm"
-                    onClick={() => setValue("")}
+                    type="button"
+                    variant="destructive"
+                    className="absolute right-3 top-1/2 -translate-y-1/2"
+                    size="xs"
+                    aria-label="Clear search"
+                    onClick={() => setDisplayedValue("")}
                 >
                     Clear
                 </Button>
-            )}
+            ) : null}
         </div>
     );
 }
