@@ -24,7 +24,9 @@ export const createRegionInputSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(200),
   currencyCode: currencyCodeSchema,
   automaticTaxes: z.boolean().optional(),
+  isTaxInclusive: z.boolean().optional(),
   countries: z.array(countryCodeSchema).max(250).default([]),
+  paymentProviderIds: z.array(z.string().trim().min(1).max(200)).min(1).max(50),
 });
 
 export const updateRegionInputSchema = z.object({
@@ -32,8 +34,14 @@ export const updateRegionInputSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   currencyCode: currencyCodeSchema.optional(),
   automaticTaxes: z.boolean().optional(),
+  isTaxInclusive: z.boolean().optional(),
   // Absent means "leave them alone"; an empty array means "serve nowhere".
   countries: z.array(countryCodeSchema).max(250).optional(),
+  paymentProviderIds: z
+    .array(z.string().trim().min(1).max(200))
+    .min(1)
+    .max(50)
+    .optional(),
   metadata: metadataInputSchema.optional(),
 });
 

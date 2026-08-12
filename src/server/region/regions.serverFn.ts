@@ -81,6 +81,22 @@ export const listAssignableCountries = createServerFn({ method: "POST" })
     }
   });
 
+export const listRegionPaymentProviders = createServerFn({ method: "GET" })
+  .middleware([commerceReadMiddleware])
+  .handler(async () => {
+    try {
+      const providers = await regionDal.listEnabledPaymentProviders();
+      return ok("Payment providers fetched successfully", { providers });
+    } catch (error) {
+      return failure(
+        "List region payment providers error",
+        error,
+        "LIST_FAILED",
+        "Failed to fetch payment providers",
+      );
+    }
+  });
+
 export const createRegion = createServerFn({ method: "POST" })
   .validator((data: unknown) => createRegionInputSchema.parse(data))
   .middleware([commerceAdminMiddleware])
@@ -104,13 +120,30 @@ export const createRegion = createServerFn({ method: "POST" })
       }
 
       const id = crypto.randomUUID();
+      const enabledProviders = new Set(
+        (await regionDal.listEnabledPaymentProviders()).map(
+          (provider) => provider.id,
+        ),
+      );
+      const invalidProviders = data.paymentProviderIds.filter(
+        (id) => !enabledProviders.has(id),
+      );
+      if (invalidProviders.length > 0) {
+        return fail("One or more payment providers are unavailable", {
+          errors: {
+            paymentProviderIds: ["Select an enabled payment provider"],
+          },
+        });
+      }
       await regionDal.create({
         id,
         name: data.name,
         currencyCode: data.currencyCode,
         automaticTaxes: data.automaticTaxes,
+        isTaxInclusive: data.isTaxInclusive,
       });
       await regionDal.setCountries(id, data.countries);
+      await regionDal.setPaymentProviders(id, data.paymentProviderIds);
 
       return ok(`Region "${data.name}" created`, { id });
     } catch (error) {
@@ -149,11 +182,27 @@ export const updateRegion = createServerFn({ method: "POST" })
         name: data.name,
         currencyCode: data.currencyCode,
         automaticTaxes: data.automaticTaxes,
+        isTaxInclusive: data.isTaxInclusive,
         metadata: data.metadata,
       });
 
       if (data.countries) {
         await regionDal.setCountries(data.id, data.countries);
+      }
+      if (data.paymentProviderIds) {
+        const enabledProviders = new Set(
+          (await regionDal.listEnabledPaymentProviders()).map(
+            (provider) => provider.id,
+          ),
+        );
+        if (data.paymentProviderIds.some((id) => !enabledProviders.has(id))) {
+          return fail("One or more payment providers are unavailable", {
+            errors: {
+              paymentProviderIds: ["Select an enabled payment provider"],
+            },
+          });
+        }
+        await regionDal.setPaymentProviders(data.id, data.paymentProviderIds);
       }
 
       return ok("Region updated successfully", { id: data.id });

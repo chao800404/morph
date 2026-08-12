@@ -52,6 +52,7 @@ export * from "./types";
 
 import { render } from "@react-email/components";
 import PasswordResetEmail from "./templates/password-reset";
+import UserInviteEmail from "./templates/user-invite";
 
 /**
  * Send password reset email
@@ -79,6 +80,24 @@ export async function sendPasswordResetEmail({
   await sendEmail({
     to: email,
     subject: `Reset your password for ${config.server.appName}`,
+    html: emailHtml,
+  });
+}
+
+export async function sendUserInviteEmail({
+  email,
+  inviteUrl,
+}: {
+  email: string;
+  inviteUrl: string;
+}) {
+  const config = getConfig();
+  const emailHtml = await render(
+    UserInviteEmail({ appName: config.server.appName, inviteUrl }),
+  );
+  return sendEmail({
+    to: email,
+    subject: `You have been invited to ${config.server.appName}`,
     html: emailHtml,
   });
 }

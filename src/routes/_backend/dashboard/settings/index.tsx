@@ -1,9 +1,11 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_backend/dashboard/settings/")({
-  component: RouteComponent,
+  beforeLoad: () => {
+    throw redirect({
+      to: "/dashboard/settings/$slug",
+      params: { slug: "store" },
+      replace: true,
+    });
+  },
 });
-
-function RouteComponent() {
-  return <div>Hello "/dashboard/settings/sss"!</div>;
-}

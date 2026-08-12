@@ -1,5 +1,7 @@
 import { getDb } from "@/db";
 import { regionCountries, regions } from "@/db/region.schema";
+import { regionPaymentProviders } from "@/db/link.schema";
+import { paymentProviders } from "@/db/payment.schema";
 import { containsPattern } from "@/lib/db/like-pattern";
 import { chunkForInsert } from "@/lib/product/dal/d1-batch";
 import {
@@ -59,7 +61,11 @@ export const regionDal = {
   async findDetail(id: string): Promise<RegionDetailDTO | null> {
     const region = await this.findById(id);
     if (!region) return null;
-    return { ...region, countries: await this.listCountries(id) };
+    return {
+      ...region,
+      countries: await this.listCountries(id),
+      paymentProviderIds: await this.listPaymentProviderIds(id),
+    };
   },
 
   async listPage(options: {
@@ -75,7 +81,10 @@ export const regionDal = {
     if (options.query?.trim()) {
       const pattern = containsPattern(options.query.trim());
       conditions.push(
-        or(like(regions.name, pattern), like(regions.currencyCode, pattern)) as SQL,
+        or(
+          like(regions.name, pattern),
+          like(regions.currencyCode, pattern),
+        ) as SQL,
       );
     }
 
@@ -171,6 +180,29 @@ export const regionDal = {
     return rows.map(toRegionCountryDTO);
   },
 
+  async listEnabledPaymentProviders(): Promise<Array<{ id: string }>> {
+    const db = await getDb();
+    return db
+      .select({ id: paymentProviders.id })
+      .from(paymentProviders)
+      .where(
+        and(
+          eq(paymentProviders.isEnabled, true),
+          isNull(paymentProviders.deletedAt),
+        ),
+      )
+      .orderBy(asc(paymentProviders.id));
+  },
+
+  async listPaymentProviderIds(regionId: string): Promise<string[]> {
+    const db = await getDb();
+    const rows = await db
+      .select({ id: regionPaymentProviders.paymentProviderId })
+      .from(regionPaymentProviders)
+      .where(eq(regionPaymentProviders.regionId, regionId));
+    return rows.map((row) => row.id);
+  },
+
   /**
    * Fill `region_countries` from the runtime's ICU catalogue.
    *
@@ -221,6 +253,7 @@ export const regionDal = {
       name: data.name,
       currencyCode: data.currencyCode,
       automaticTaxes: data.automaticTaxes ?? true,
+      isTaxInclusive: data.isTaxInclusive ?? false,
       createdAt: now,
       updatedAt: now,
     });
@@ -237,6 +270,9 @@ export const regionDal = {
           : {}),
         ...(data.automaticTaxes !== undefined
           ? { automaticTaxes: data.automaticTaxes }
+          : {}),
+        ...(data.isTaxInclusive !== undefined
+          ? { isTaxInclusive: data.isTaxInclusive }
           : {}),
         ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
         updatedAt: new Date().toISOString(),
@@ -270,6 +306,27 @@ export const regionDal = {
     }
   },
 
+  async setPaymentProviders(
+    regionId: string,
+    providerIds: string[],
+  ): Promise<void> {
+    const db = await getDb();
+    const uniqueIds = [...new Set(providerIds)];
+    const now = new Date().toISOString();
+    await db
+      .delete(regionPaymentProviders)
+      .where(eq(regionPaymentProviders.regionId, regionId));
+    if (uniqueIds.length === 0) return;
+    await db.insert(regionPaymentProviders).values(
+      uniqueIds.map((paymentProviderId) => ({
+        regionId,
+        paymentProviderId,
+        createdAt: now,
+        updatedAt: now,
+      })),
+    );
+  },
+
   /**
    * Soft delete, releasing the countries first.
    *
@@ -292,6 +349,9 @@ export const regionDal = {
         .update(regions)
         .set({ deletedAt: now, updatedAt: now })
         .where(and(inArray(regions.id, chunk), isNull(regions.deletedAt)));
+      await db
+        .delete(regionPaymentProviders)
+        .where(inArray(regionPaymentProviders.regionId, chunk));
     }
   },
 };

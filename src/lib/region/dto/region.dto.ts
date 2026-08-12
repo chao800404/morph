@@ -17,6 +17,7 @@ export interface RegionDTO {
   currencyCode: string;
   /** When true the region's tax rates apply without the author opting in. */
   automaticTaxes: boolean;
+  isTaxInclusive: boolean;
   /** Free-form store-defined data; never trusted to hold anything private. */
   metadata: Metadata;
   createdAt: Date;
@@ -25,6 +26,7 @@ export interface RegionDTO {
 
 export interface RegionDetailDTO extends RegionDTO {
   countries: RegionCountryDTO[];
+  paymentProviderIds: string[];
 }
 
 export interface RegionSummaryDTO extends RegionDTO {
@@ -36,11 +38,13 @@ export interface RegionInsertDTO {
   name: string;
   currencyCode: string;
   automaticTaxes?: boolean;
+  isTaxInclusive?: boolean;
 }
 
 export interface UpdateRegionDTO {
   name?: string;
   currencyCode?: string;
   automaticTaxes?: boolean;
+  isTaxInclusive?: boolean;
   metadata?: Metadata;
 }

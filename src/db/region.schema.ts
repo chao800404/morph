@@ -35,11 +35,18 @@ export const regions = sqliteTable(
     automaticTaxes: integer("automatic_taxes", { mode: "boolean" })
       .notNull()
       .default(true),
+    /** Whether storefront prices in this market are displayed with tax included. */
+    isTaxInclusive: integer("is_tax_inclusive", { mode: "boolean" })
+      .notNull()
+      .default(false),
     metadata: metadata(),
     ...timestamps,
   },
   (table) => [
-    index("regions_currency_active_idx").on(table.currencyCode, table.deletedAt),
+    index("regions_currency_active_idx").on(
+      table.currencyCode,
+      table.deletedAt,
+    ),
     check(
       "regions_currency_code_check",
       sql`length(${table.currencyCode}) = 3 AND ${table.currencyCode} = lower(${table.currencyCode})`,

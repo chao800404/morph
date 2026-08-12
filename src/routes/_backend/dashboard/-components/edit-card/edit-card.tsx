@@ -75,6 +75,8 @@ interface EditCardProps {
    * the same record.
    */
   onEdit?: () => void;
+  /** Preloads a route-backed editor when the card action menu opens. */
+  onEditPreload?: () => void;
   /** Shown in the card header before the actions menu, e.g. status badges. */
   headerActions?: ReactNode;
   /**
@@ -98,6 +100,7 @@ export const EditCard = ({
   id,
   onSave,
   onEdit,
+  onEditPreload,
   headerActions,
   actions,
   className,
@@ -170,6 +173,7 @@ export const EditCard = ({
           {(onEdit || onSave || actions?.length) && (
             <EditCardHeader
               onClickEdit={onEdit ?? (onSave ? handleEdit : undefined)}
+              onPreloadEdit={onEditPreload}
               actions={actions}
               label={`${editLabel ?? (typeof title === "string" ? title : "Card")} actions`}
             />

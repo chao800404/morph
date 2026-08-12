@@ -1,8 +1,13 @@
 import { PageSpinner } from "@/components/loading/page-spinner";
 import { NotFound } from "@/components/not-found/not-found";
 import { dashboardSearchSchema } from "@/lib/validations/dashboard-search";
+import { findCollection } from "@/lib/config/navigation";
 import { getConfig } from "@/server/get-config";
-import { createFileRoute, Outlet } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Outlet,
+  useChildMatches,
+} from "@tanstack/react-router";
 import { Suspense, useMemo } from "react";
 
 export const Route = createFileRoute("/_backend/dashboard/settings/$slug")({
@@ -13,10 +18,7 @@ export const Route = createFileRoute("/_backend/dashboard/settings/$slug")({
     const config = getConfig().client;
 
     // Discover the collection item by slug from all settings groups
-    const settingsCollections = config.collections.settings.flatMap(
-      (group) => group.collections,
-    );
-    const collection = settingsCollections.find((c) => c.slug === params.slug);
+    const collection = findCollection(config.collections.settings, params.slug);
 
     if (collection?.index?.prefetch) {
       await collection.index.prefetch({ queryClient, params, search });
@@ -25,17 +27,26 @@ export const Route = createFileRoute("/_backend/dashboard/settings/$slug")({
   component: RouteComponent,
 });
 
+const DETAIL_ROUTE_ID = "/_backend/dashboard/settings/$slug/$id";
+
 function RouteComponent() {
   const { slug } = Route.useParams();
   const config = useMemo(() => getConfig().client, []);
+  const onDetailRoute = useChildMatches({
+    select: (matches) =>
+      matches.some((match) => match.routeId === DETAIL_ROUTE_ID),
+  });
 
   // Pick the route view based on the slug from the config.
   const collection = useMemo(() => {
-    const settingsCollections = config.collections.settings.flatMap(
-      (group) => group.collections,
-    );
-    return settingsCollections.find((c) => c.slug === slug);
+    return findCollection(config.collections.settings, slug);
   }, [slug, config]);
+
+  // Record details are full destinations, while create and collection-level
+  // edit routes are overlays that intentionally keep the index mounted.
+  if (onDetailRoute && collection?.detail) {
+    return <Outlet />;
+  }
 
   const ViewComponent = collection?.index?.view;
   if (!ViewComponent) return <NotFound />;

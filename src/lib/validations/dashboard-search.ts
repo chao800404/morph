@@ -9,6 +9,9 @@ import { PRODUCT_OPTION_CREATED_WITHIN_VALUES } from "@/lib/product/config/produ
  */
 export const dashboardFixedSortKeySchema = z.enum([
   "name",
+  "email",
+  "firstName",
+  "lastName",
   "code",
   "extension",
   "size",
@@ -87,9 +90,7 @@ export const dashboardSearchSchema = z.object({
     .max(4)
     .optional(),
   priceHistoryChangedBy: z.array(z.string()).max(50).optional(),
-  priceHistoryChangedWithin: z
-    .enum(["24h", "7d", "30d", "90d"])
-    .optional(),
+  priceHistoryChangedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
   /**
    * Seeds the product create wizard with an option already chosen, so an
    * author can start a product from the option's own page. Only a starting

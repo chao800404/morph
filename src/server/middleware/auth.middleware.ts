@@ -158,6 +158,12 @@ export const commerceReadMiddleware = roleMiddleware(
   "Forbidden: Commerce access is not assigned to this account",
 );
 
+/** Dashboard accounts expose identity and access data, so only admins read them. */
+export const userAdminMiddleware = roleMiddleware(
+  ["admin"],
+  "Forbidden: User administration access is required",
+);
+
 export const assetReadMiddleware = createMiddleware({
   type: "function",
 }).server(async ({ next }) => {

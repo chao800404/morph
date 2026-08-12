@@ -14,11 +14,14 @@ import {
  */
 export const EditCardHeader = ({
   onClickEdit,
+  onPreloadEdit,
   actions = [],
   label = "Card actions",
 }: {
   /** Omit for a card whose only actions are the extra ones. */
   onClickEdit?: () => void;
+  /** Starts the route-backed editor chunk and loader when the menu opens. */
+  onPreloadEdit?: () => void;
   /** Anything beyond Edit — Delete, "go to source", and so on. */
   actions?: RowAction[];
   label?: string;
@@ -27,7 +30,14 @@ export const EditCardHeader = ({
     label={label}
     actions={[
       ...(onClickEdit
-        ? [{ label: "Edit", icon: editActionIcon, onSelect: onClickEdit }]
+        ? [
+            {
+              label: "Edit",
+              icon: editActionIcon,
+              onSelect: onClickEdit,
+              preload: onPreloadEdit,
+            },
+          ]
         : []),
       ...actions,
     ]}

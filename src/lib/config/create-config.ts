@@ -95,6 +95,8 @@ export interface CollectionCreate {
   view: ComponentType;
   /** Suspense fallback while `view` loads. */
   pendingView?: ComponentType;
+  /** Start priming data needed by the create route before rendering it. */
+  prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
   label?: string;
 }
 

@@ -1,5 +1,6 @@
-import { PageSpinner } from "@/components/loading/page-spinner";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { NotFound } from "@/components/not-found/not-found";
+import { findCollection } from "@/lib/config/navigation";
 import { dashboardSearchSchema } from "@/lib/validations/dashboard-search";
 import { getConfig } from "@/server/get-config";
 import { createFileRoute } from "@tanstack/react-router";
@@ -9,6 +10,14 @@ export const Route = createFileRoute(
   "/_backend/dashboard/settings/$slug/create",
 )({
   validateSearch: dashboardSearchSchema,
+  loader: async ({ context, params }) => {
+    const { queryClient, search } = context;
+    const collection = findCollection(
+      getConfig().client.collections.settings,
+      params.slug,
+    );
+    await collection?.create?.prefetch?.({ queryClient, params, search });
+  },
   component: RouteComponent,
 });
 
@@ -16,17 +25,14 @@ function RouteComponent() {
   const { slug } = Route.useParams();
   const config = useMemo(() => getConfig().client, []);
   const create = useMemo(
-    () =>
-      config.collections.settings
-        .flatMap((group) => group.collections)
-        .find((collection) => collection.slug === slug)?.create,
+    () => findCollection(config.collections.settings, slug)?.create,
     [config, slug],
   );
 
   if (!create) return <NotFound />;
 
   const CreateView = create.view;
-  const PendingView = create.pendingView ?? PageSpinner;
+  const PendingView = create.pendingView ?? RouteSurfacePending;
   return (
     <Suspense fallback={<PendingView />}>
       <CreateView />

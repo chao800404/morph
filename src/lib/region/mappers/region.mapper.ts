@@ -9,6 +9,7 @@ export const toRegionDTO = (row: RegionRow): RegionDTO => ({
   name: row.name,
   currencyCode: row.currencyCode,
   automaticTaxes: row.automaticTaxes,
+  isTaxInclusive: row.isTaxInclusive,
   metadata: row.metadata ?? {},
   createdAt: new Date(row.createdAt),
   updatedAt: new Date(row.updatedAt),

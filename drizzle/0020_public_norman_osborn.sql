@@ -1,0 +1,1 @@
+ALTER TABLE `regions` ADD `is_tax_inclusive` integer DEFAULT false NOT NULL;

@@ -27,7 +27,7 @@ type Props = React.ComponentProps<typeof Sidebar> &
     publicURL: string;
   };
 
-export function AppSidebar({
+function AppSidebarComponent({
   appName,
   user,
   sideData,
@@ -108,3 +108,12 @@ export function AppSidebar({
     </Sidebar>
   );
 }
+
+/**
+ * Route content changes frequently, while the sidebar shell only changes when
+ * switching between the dashboard and Settings or when its config/user does.
+ * Stable props from the dashboard layout keep header, search and footer from
+ * joining every collection navigation render. Active rows subscribe below in
+ * `NavMain` at item granularity.
+ */
+export const AppSidebar = React.memo(AppSidebarComponent);

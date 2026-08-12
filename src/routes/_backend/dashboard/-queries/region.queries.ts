@@ -2,6 +2,7 @@ import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   getRegion,
   listAssignableCountries,
+  listRegionPaymentProviders,
   listRegions,
 } from "@/server/region/regions.serverFn";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
@@ -60,5 +61,10 @@ export const regionQueries = {
     queryOptions({
       queryKey: [...regionQueries.all(), "assignable-countries", regionId],
       queryFn: () => listAssignableCountries({ data: { regionId } }),
+    }),
+  paymentProviders: () =>
+    queryOptions({
+      queryKey: [...regionQueries.all(), "payment-providers"],
+      queryFn: () => listRegionPaymentProviders(),
     }),
 };

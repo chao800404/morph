@@ -16,7 +16,7 @@ import {
   useLocation,
   useMatches,
 } from "@tanstack/react-router";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useMemo } from "react";
 
 const EditDialog = lazy(() =>
   import("./dashboard/-views/features/global-edit/edit-dialog").then((m) => ({
@@ -62,20 +62,32 @@ function RouteComponent() {
     ? config.collections.settings
     : config.collections.global;
 
-  const sideData = rawSideData.map((group) => ({
-    title: group.title,
-    items: group.collections.map((item) => ({
-      title: item.title,
-      url: `/dashboard${group.slug === "/" ? "" : `/${group.slug}`}/${item.slug}`,
-      icon: item.icon,
-      // Nesting is a sidebar affordance only; a nested collection has its own
-      // top-level URL, not one under its parent.
-      items: item.items?.map((sub) => ({
-        title: sub.title,
-        url: `/dashboard${group.slug === "/" ? "" : `/${group.slug}`}/${sub.slug}`,
+  const sideData = useMemo(
+    () =>
+      rawSideData.map((group) => ({
+        title: group.title,
+        items: group.collections.map((item) => ({
+          title: item.title,
+          url: `/dashboard${group.slug === "/" ? "" : `/${group.slug}`}/${item.slug}`,
+          icon: item.icon,
+          // Nesting is a sidebar affordance only; a nested collection has its
+          // own flat URL, not one under its visual parent.
+          items: item.items?.map((sub) => ({
+            title: sub.title,
+            url: `/dashboard${group.slug === "/" ? "" : `/${group.slug}`}/${sub.slug}`,
+          })),
+        })),
       })),
-    })),
-  }));
+    [rawSideData],
+  );
+  const sidebarUser = useMemo(
+    () => ({
+      name: session.user.name,
+      email: session.user.email,
+      avatar: session.user.image,
+    }),
+    [session.user.email, session.user.image, session.user.name],
+  );
 
   const slugs = location.pathname.split("/").filter(Boolean).slice(1);
   const allCollections = [
@@ -122,11 +134,7 @@ function RouteComponent() {
             showSettings={!isSettings}
             appName={config.appName}
             publicURL={publicURL}
-            user={{
-              name: session.user.name,
-              email: session.user.email,
-              avatar: session.user.image,
-            }}
+            user={sidebarUser}
           />
           <SidebarInset>
             <DashboardHeader items={items} />
