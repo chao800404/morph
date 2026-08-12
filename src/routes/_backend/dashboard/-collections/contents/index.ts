@@ -1,4 +1,7 @@
-import type { CollectionGroup, CollectionLoadContext } from "@/lib/config/create-config";
+import type {
+  CollectionGroup,
+  CollectionLoadContext,
+} from "@/lib/config/create-config";
 import { lazyView } from "@/lib/config/lazy-view";
 import { AssetsPageSkeleton } from "@views/global/contents/assets/component/assets-card-skeleton";
 import { ProductDetailSkeleton } from "@views/global/contents/products/detail/product-detail-skeleton";
@@ -10,6 +13,7 @@ import {
   TableDetailSkeleton,
 } from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
 import { createRouteSurfacePendingView } from "@/components/dialog/route-surface-pending";
+import { referenceDataCollections } from "../general";
 
 const ProductCreatePendingView = createRouteSurfacePendingView(8);
 const ProductEditPendingView = createRouteSurfacePendingView(8);
@@ -292,17 +296,28 @@ export const Contents: CollectionGroup = {
           },
         },
         "variant-prices": {
-          view: lazyView(() => import("@views/global/contents/products/detail/product-variants-bulk-prices")),
+          view: lazyView(
+            () =>
+              import("@views/global/contents/products/detail/product-variants-bulk-prices"),
+          ),
           pendingView: ProductVariantPricesPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
-            const [{ productQueries }, { currencyQueries }] = await Promise.all([import("@queries/product.queries"), import("@queries/currency.queries")]);
+            const [{ productQueries }, { currencyQueries }] = await Promise.all(
+              [
+                import("@queries/product.queries"),
+                import("@queries/currency.queries"),
+              ],
+            );
             void queryClient.prefetchQuery(productQueries.detail(params.id));
             void queryClient.prefetchQuery(currencyQueries.store());
           },
         },
         "variant-inventory": {
-          view: lazyView(() => import("@views/global/contents/products/detail/product-variants-bulk-inventory")),
+          view: lazyView(
+            () =>
+              import("@views/global/contents/products/detail/product-variants-bulk-inventory"),
+          ),
           pendingView: ProductVariantInventoryPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
@@ -350,7 +365,9 @@ export const Contents: CollectionGroup = {
           );
           // Column order is part of the first table frame. Await it so SSR and
           // client navigation never paint the default order before the user's.
-          await queryClient.ensureQueryData(tableViewQueries.detail("products"));
+          await queryClient.ensureQueryData(
+            tableViewQueries.detail("products"),
+          );
         },
       },
       items: [
@@ -713,6 +730,9 @@ export const Contents: CollectionGroup = {
             },
           },
         },
+        ...referenceDataCollections.filter(
+          ({ slug }) => slug === "product-types" || slug === "product-tags",
+        ),
       ],
     },
     {

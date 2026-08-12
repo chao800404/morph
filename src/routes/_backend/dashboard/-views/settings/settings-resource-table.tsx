@@ -28,6 +28,7 @@ export function SettingsResourceTable<T extends { id: string }>({
   deleteAction,
   deleteName,
   isDeleteDisabled,
+  scope = "settings",
 }: {
   slug: string;
   label: string;
@@ -50,20 +51,20 @@ export function SettingsResourceTable<T extends { id: string }>({
   }>;
   deleteName: (row: T) => string;
   isDeleteDisabled?: (row: T) => boolean;
+  scope?: "global" | "settings";
 }) {
   const navigate = useNavigate();
   const router = useRouter();
   const detailView = useMemo(
     () =>
-      findCollection(getConfig().client.collections.settings, slug)?.detail
-        ?.view,
-    [slug],
+      findCollection(getConfig().client.collections[scope], slug)?.detail?.view,
+    [scope, slug],
   );
-  const preloadDetail = useCollectionDetailPreload(slug, "settings");
+  const preloadDetail = useCollectionDetailPreload(slug, scope);
   const editView = useMemo(
     () =>
-      findCollection(getConfig().client.collections.settings, slug)?.edit?.view,
-    [slug],
+      findCollection(getConfig().client.collections[scope], slug)?.edit?.view,
+    [scope, slug],
   );
   const { setInfoData, setInfoOpen } = useInfoStore(
     useShallow((s) => ({ setInfoData: s.setInfoData, setInfoOpen: s.setOpen })),
@@ -71,12 +72,13 @@ export function SettingsResourceTable<T extends { id: string }>({
   const preloadEdit = useCallback(
     (id: string) => {
       void viewPreloader(editView)?.();
-      void router.preloadRoute({
-        to: "/dashboard/settings/$slug/$id/edit",
-        params: { slug, id },
-      });
+      void router.preloadRoute(
+        scope === "settings"
+          ? { to: "/dashboard/settings/$slug/$id/edit", params: { slug, id } }
+          : { to: "/dashboard/$slug/$id/edit", params: { slug, id } },
+      );
     },
-    [editView, router, slug],
+    [editView, router, scope, slug],
   );
   const remove = useCallback(
     (row: T) => {
@@ -105,7 +107,7 @@ export function SettingsResourceTable<T extends { id: string }>({
         { value: "createdAt", label: "Created" },
         { value: "updatedAt", label: "Updated" },
       ]}
-      headerActions={<CollectionCreateButton slug={slug} scope="settings" />}
+      headerActions={<CollectionCreateButton slug={slug} scope={scope} />}
       columns={columns}
       rows={rows}
       getRowId={(row) => row.id}
@@ -117,10 +119,17 @@ export function SettingsResourceTable<T extends { id: string }>({
       onRowClick={
         detailView
           ? (row) =>
-              void navigate({
-                to: "/dashboard/settings/$slug/$id",
-                params: { slug, id: row.id },
-              })
+              void navigate(
+                scope === "settings"
+                  ? {
+                      to: "/dashboard/settings/$slug/$id",
+                      params: { slug, id: row.id },
+                    }
+                  : {
+                      to: "/dashboard/$slug/$id",
+                      params: { slug, id: row.id },
+                    },
+              )
           : undefined
       }
       onRowPreload={detailView ? (row) => preloadDetail(row.id) : undefined}
@@ -131,10 +140,17 @@ export function SettingsResourceTable<T extends { id: string }>({
             label: "Edit",
             icon: editActionIcon,
             onSelect: () =>
-              void navigate({
-                to: "/dashboard/settings/$slug/$id/edit",
-                params: { slug, id: row.id },
-              }),
+              void navigate(
+                scope === "settings"
+                  ? {
+                      to: "/dashboard/settings/$slug/$id/edit",
+                      params: { slug, id: row.id },
+                    }
+                  : {
+                      to: "/dashboard/$slug/$id/edit",
+                      params: { slug, id: row.id },
+                    },
+              ),
             preload: () => preloadEdit(row.id),
           });
         }

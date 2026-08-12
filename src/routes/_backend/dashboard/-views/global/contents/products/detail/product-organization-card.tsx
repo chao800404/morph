@@ -12,8 +12,8 @@ import type { ReactNode } from "react";
  *
  * Every value is a link to the record it names, matching Medusa: an author who
  * opens a product to check which collection it is in usually wants to go there
- * next. Type and tags are not addressable in this dashboard yet, so those two
- * stay plain badges rather than links that would 404.
+ * next. Types and tags are product child records, so their badges link into
+ * the same addressable collection lifecycle as the other organization data.
  */
 const LinkedBadge = ({ to, children }: { to: string; children: ReactNode }) => (
   <Badge variant="secondary" className="max-w-full truncate" asChild>
@@ -40,18 +40,21 @@ export const ProductOrganizationCard = ({
       label: "Tags",
       displayValue: badgeRow(
         product.tags.map((tag) => (
-          <Badge key={tag.id} variant="secondary">
+          <LinkedBadge key={tag.id} to={`/dashboard/product-tags/${tag.id}`}>
             {tag.value}
-          </Badge>
+          </LinkedBadge>
         )),
       ),
     },
     {
       key: "type",
       label: "Type",
-      displayValue: product.typeValue ? (
-        <Badge variant="secondary">{product.typeValue}</Badge>
-      ) : undefined,
+      displayValue:
+        product.typeId && product.typeValue ? (
+          <LinkedBadge to={`/dashboard/product-types/${product.typeId}`}>
+            {product.typeValue}
+          </LinkedBadge>
+        ) : undefined,
     },
     {
       key: "collection",
@@ -84,7 +87,7 @@ export const ProductOrganizationCard = ({
         product.salesChannels.map((channel) => (
           <LinkedBadge
             key={channel.id}
-            to={`/dashboard/sales-channels/${channel.id}`}
+            to={`/dashboard/settings/sales-channels/${channel.id}`}
           >
             {channel.name}
           </LinkedBadge>

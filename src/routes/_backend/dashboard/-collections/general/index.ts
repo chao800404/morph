@@ -31,6 +31,164 @@ const LocationsIndexPendingView = createCollectionIndexPendingView(3);
 const LocationCreatePendingView = createRouteSurfacePendingView(5);
 const LocationEditPendingView = createRouteSurfacePendingView(5);
 const LocationMetadataPendingView = createRouteSurfacePendingView(3);
+const ReferenceTaxonomyIndexPendingView = createCollectionIndexPendingView(3);
+const ReferenceReasonIndexPendingView = createCollectionIndexPendingView(5);
+const ReferenceRefundIndexPendingView = createCollectionIndexPendingView(4);
+const ReferenceTaxonomyFormPendingView = createRouteSurfacePendingView(1);
+const ReferenceReasonFormPendingView = createRouteSurfacePendingView(4);
+const ReferenceRefundFormPendingView = createRouteSurfacePendingView(3);
+const ReferenceDataMetadataPendingView = createRouteSurfacePendingView(3);
+
+export const referenceDataCollections = [
+  { slug: "return-reasons", title: "Return Reasons", icon: "Undo2" },
+  { slug: "refund-reasons", title: "Refund Reasons", icon: "BadgeDollarSign" },
+  { slug: "product-types", title: "Types", icon: "Boxes" },
+  { slug: "product-tags", title: "Tags", icon: "Tags" },
+].map(({ slug, title, icon }) => ({
+  title,
+  slug,
+  icon,
+  label: title,
+  index: {
+    view: lazyView(() => import("@views/settings/reference-data")),
+    pendingView:
+      slug === "refund-reasons"
+        ? ReferenceRefundIndexPendingView
+        : slug.startsWith("product-")
+          ? ReferenceTaxonomyIndexPendingView
+          : ReferenceReasonIndexPendingView,
+    prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
+      const { normalizeReferenceDataListParams, referenceDataQueries } =
+        await import("@queries/reference-data.queries");
+      void queryClient.prefetchQuery(
+        referenceDataQueries.list(
+          normalizeReferenceDataListParams(
+            slug as
+              | "return-reasons"
+              | "refund-reasons"
+              | "product-types"
+              | "product-tags",
+            search,
+          ),
+        ),
+      );
+    },
+  },
+  create: {
+    view: lazyView(
+      () => import("@views/settings/reference-data/reference-data-create"),
+    ),
+    pendingView:
+      slug === "refund-reasons"
+        ? ReferenceRefundFormPendingView
+        : slug.startsWith("product-")
+          ? ReferenceTaxonomyFormPendingView
+          : ReferenceReasonFormPendingView,
+    prefetch: async ({ queryClient }: CollectionLoadContext) => {
+      if (slug !== "return-reasons") return;
+      const { normalizeReferenceDataListParams, referenceDataQueries } =
+        await import("@queries/reference-data.queries");
+      void queryClient.prefetchQuery(
+        referenceDataQueries.list(
+          normalizeReferenceDataListParams("return-reasons", { limit: 100 }),
+        ),
+      );
+    },
+  },
+  detail: {
+    view: lazyView(
+      () => import("@views/settings/reference-data/reference-data-detail"),
+    ),
+    pendingView: SimpleDetailSkeleton,
+    breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
+      if (!params.id) return null;
+      const { referenceDataQueries } =
+        await import("@queries/reference-data.queries");
+      const result = await queryClient.ensureQueryData(
+        referenceDataQueries.detail(
+          slug as
+            | "return-reasons"
+            | "refund-reasons"
+            | "product-types"
+            | "product-tags",
+          params.id,
+        ),
+      );
+      return result.success ? result.data.name : null;
+    },
+    prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+      if (!params.id) return;
+      const { referenceDataQueries } =
+        await import("@queries/reference-data.queries");
+      void queryClient.prefetchQuery(
+        referenceDataQueries.detail(
+          slug as
+            | "return-reasons"
+            | "refund-reasons"
+            | "product-types"
+            | "product-tags",
+          params.id,
+        ),
+      );
+    },
+  },
+  edit: {
+    view: lazyView(
+      () => import("@views/settings/reference-data/reference-data-edit"),
+    ),
+    pendingView:
+      slug === "refund-reasons"
+        ? ReferenceRefundFormPendingView
+        : slug.startsWith("product-")
+          ? ReferenceTaxonomyFormPendingView
+          : ReferenceReasonFormPendingView,
+    prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+      if (!params.id) return;
+      const { normalizeReferenceDataListParams, referenceDataQueries } =
+        await import("@queries/reference-data.queries");
+      void queryClient.prefetchQuery(
+        referenceDataQueries.detail(
+          slug as
+            | "return-reasons"
+            | "refund-reasons"
+            | "product-types"
+            | "product-tags",
+          params.id,
+        ),
+      );
+      if (slug === "return-reasons") {
+        void queryClient.prefetchQuery(
+          referenceDataQueries.list(
+            normalizeReferenceDataListParams("return-reasons", { limit: 100 }),
+          ),
+        );
+      }
+    },
+  },
+  pages: {
+    metadata: {
+      view: lazyView(
+        () => import("@views/settings/reference-data/reference-data-metadata"),
+      ),
+      pendingView: ReferenceDataMetadataPendingView,
+      prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+        if (!params.id) return;
+        const { referenceDataQueries } =
+          await import("@queries/reference-data.queries");
+        void queryClient.prefetchQuery(
+          referenceDataQueries.detail(
+            slug as
+              | "return-reasons"
+              | "refund-reasons"
+              | "product-types"
+              | "product-tags",
+            params.id,
+          ),
+        );
+      },
+    },
+  },
+}));
 
 export const General: CollectionGroup = {
   slug: "settings",
@@ -220,6 +378,9 @@ export const General: CollectionGroup = {
         },
       },
     },
+    ...referenceDataCollections.filter(
+      ({ slug }) => slug === "return-reasons" || slug === "refund-reasons",
+    ),
     {
       title: "Sales Channels",
       slug: "sales-channels",

@@ -179,7 +179,12 @@ export const AssetsExplorerCard = ({
       }}
       label={<BreadcrumbCollapse breadcrumbs={breadcrumbs} />}
       description={description}
-      headerButton={<AssetsCardHeader id="assets-card-header" />}
+      headerButton={
+        <AssetsCardHeader
+          id="assets-card-header"
+          currentFolder={currentFolder}
+        />
+      }
     >
       <AssetsCardToolbar />
       {isLoading ? (

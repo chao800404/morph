@@ -181,25 +181,30 @@ export const EditCard = ({
         </div>
       }
     >
-      {fields.map((field) => (
-        <div
-          key={field.key}
-          className={cn(
-            "grid grid-cols-2 py-3 items-center px-6 border-b border-dashed last:border-none",
-            "max-sm:grid-cols-[1fr_1.2fr]",
-          )}
-        >
-          <Label htmlFor={field.key} className="text-sm text-muted-foreground">
-            {field.label}
-          </Label>
-          {/* A div, not a p: `displayValue` is a ReactNode and cards pass
-              flex containers. The HTML parser closes a <p> at a block child on
-              the SSR pass while React does not on hydration. */}
-          <div className="text-sm">
-            {field.displayValue || field.value || "-"}
-          </div>
-        </div>
-      ))}
+      {fields.length > 0
+        ? fields.map((field) => (
+            <div
+              key={field.key}
+              className={cn(
+                "grid grid-cols-2 py-3 items-center px-6 border-b border-dashed last:border-none",
+                "max-sm:grid-cols-[1fr_1.2fr]",
+              )}
+            >
+              <Label
+                htmlFor={field.key}
+                className="text-sm text-muted-foreground"
+              >
+                {field.label}
+              </Label>
+              {/* A div, not a p: `displayValue` is a ReactNode and cards pass
+                  flex containers. The HTML parser closes a <p> at a block child on
+                  the SSR pass while React does not on hydration. */}
+              <div className="text-sm">
+                {field.displayValue || field.value || "-"}
+              </div>
+            </div>
+          ))
+        : null}
     </CardWrapper>
   );
 };

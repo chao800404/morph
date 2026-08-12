@@ -19,6 +19,14 @@ const openMenu = () => {
 };
 
 describe("EditCard", () => {
+  it("does not render an empty content section when there are no fields", () => {
+    const { container } = render(
+      <EditCard id="c" title="Options" fields={[]} onEdit={vi.fn()} />,
+    );
+
+    expect(container.querySelector('[data-slot="card-content"]')).toBeNull();
+  });
+
   it("shows no actions menu on a read-only card", () => {
     // Neither `onSave` nor `onEdit`: nothing to offer, so the trigger would be
     // a dead control.

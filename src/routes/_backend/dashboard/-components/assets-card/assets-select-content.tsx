@@ -1,10 +1,10 @@
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { AssetBlockMap } from "@/components/asset/asset-block-map";
+import { getFileType } from "@/lib/utils";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { FileIcon, Folder, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-// import { AssetBlockMap } from "../../../asset-preview/asset/asset-block-map";
 
 export const AssetsSelectContent = () => {
   const { selectedItems, assetsData, deleteItemById } = useAssetsStore(
@@ -78,36 +78,20 @@ export const AssetsSelectContent = () => {
               {selectedAssets.map((asset) => {
                 const assetData = getAssetData(asset.id);
                 return (
-                  // <AssetBlockMap
-                  //     key={index}
-                  //     className="first:col-span-1"
-                  //     type="asset"
-                  //     variant="upload"
-                  //     fileType={asset.fileType}
-                  //     name={assetData?.name || asset.name}
-                  //     src={assetData?.url || asset.src || ""}
-                  //     alt={assetData?.alt || asset.alt || ""}
-                  //     extension={asset.extension}
-                  //     onRemove={() => deleteItemById(asset.id, "asset")}
-                  // />
-                  <div
+                  <AssetBlockMap
                     key={asset.id}
-                    className="group relative flex aspect-square flex-col items-center justify-center rounded-md border bg-muted p-2 text-xs"
-                  >
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      size="icon"
-                      aria-label={`Remove ${assetData?.name || asset.name} from selection`}
-                      className="absolute right-1 top-1 size-6 rounded-full opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-                      onClick={() => deleteItemById(asset.id, "asset")}
-                    >
-                      <X className="size-3" aria-hidden />
-                    </Button>
-                    <span className="truncate w-full text-center">
-                      {assetData?.name || asset.name}
-                    </span>
-                  </div>
+                    className="first:col-span-1 first:row-span-1"
+                    type="asset"
+                    variant="upload"
+                    showCategory={false}
+                    fileType={getFileType(assetData?.type ?? asset.fileType)}
+                    name={assetData?.name || asset.name}
+                    src={asset.src || assetData?.url || ""}
+                    alt={asset.alt || assetData?.alt || asset.name}
+                    extension={asset.extension}
+                    duration={asset.duration}
+                    onRemove={() => deleteItemById(asset.id, "asset")}
+                  />
                 );
               })}
             </div>

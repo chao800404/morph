@@ -12,6 +12,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { env } from "cloudflare:workers";
 import { randomUUID } from "crypto";
 import { assetDal } from "../../lib/asset";
+import { batchMoveItemsInD1 } from "@/lib/asset/dal/asset-batch.dal";
 import { z } from "zod";
 import { getConfig } from "../get-config";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
@@ -37,6 +38,7 @@ type CreateItemsValidationResult = {
   parentId?: string;
   durations: Array<number | null>;
   assets: File[];
+  selectedAssetIds: string[];
   formError?: string;
   errors?: Record<string, string[]>;
 };
@@ -82,9 +84,16 @@ const createItemsInputSchema = (maxFiles: number) =>
       assets: z
         .array(uploadedFileSchema)
         .max(maxFiles, `Maximum ${maxFiles} files allowed`),
+      selectedAssetIds: z
+        .array(z.uuid("Invalid selected asset ID"))
+        .max(maxFiles, `Maximum ${maxFiles} selected assets allowed`),
     })
     .superRefine((value, context) => {
-      if (!value.name && value.assets.length === 0) {
+      if (
+        !value.name &&
+        value.assets.length === 0 &&
+        value.selectedAssetIds.length === 0
+      ) {
         context.addIssue({
           code: "custom",
           path: ["assets"],
@@ -115,6 +124,23 @@ const readDurationsInput = (formData: FormData): unknown => {
   }
 };
 
+const readSelectedAssetIds = (formData: FormData): unknown => {
+  const value = formData.get("selected-assets");
+  if (typeof value !== "string" || !value) return [];
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return parsed;
+    return parsed.map((item) =>
+      typeof item === "object" && item !== null && "id" in item
+        ? (item as { id: unknown }).id
+        : item,
+    );
+  } catch {
+    return value;
+  }
+};
+
 const getFirstZodError = (errors: Record<string, string[] | undefined>) =>
   Object.values(errors).find((messages): messages is string[] =>
     Boolean(messages?.length),
@@ -125,6 +151,7 @@ const parseCreateItemsInput = (data: unknown): CreateItemsValidationResult => {
     return {
       assets: [],
       durations: [],
+      selectedAssetIds: [],
       formError: "Invalid upload form data",
     };
   }
@@ -135,6 +162,7 @@ const parseCreateItemsInput = (data: unknown): CreateItemsValidationResult => {
     parentId: data.get("parent-id"),
     durations: readDurationsInput(data),
     assets: data.getAll("assets"),
+    selectedAssetIds: readSelectedAssetIds(data),
   };
 
   const result = createItemsInputSchema(
@@ -153,6 +181,7 @@ const parseCreateItemsInput = (data: unknown): CreateItemsValidationResult => {
   return {
     assets: [],
     durations: [],
+    selectedAssetIds: [],
     formError: getFirstZodError(fieldErrors) || "Invalid upload form data",
     errors,
   };
@@ -251,11 +280,18 @@ async function internalCreateAsset(
         let effectiveMime: string;
 
         if (expectedMime) {
-          const extensionMatchesMime = expectedExtensions[expectedMime]?.includes(ext);
-          const configuredMime = config.server.upload.allowedTypes.includes(expectedMime);
-          const declaredMimeMatches = isGenericMime || declaredMime === expectedMime;
+          const extensionMatchesMime =
+            expectedExtensions[expectedMime]?.includes(ext);
+          const configuredMime =
+            config.server.upload.allowedTypes.includes(expectedMime);
+          const declaredMimeMatches =
+            isGenericMime || declaredMime === expectedMime;
 
-          if (!extensionMatchesMime || !configuredMime || !declaredMimeMatches) {
+          if (
+            !extensionMatchesMime ||
+            !configuredMime ||
+            !declaredMimeMatches
+          ) {
             throw new Error(
               `File ${file.name} has a MIME type that does not match its extension.`,
             );
@@ -391,7 +427,10 @@ async function internalCreateAsset(
       (result): result is PromiseRejectedResult => result.status === "rejected",
     );
     if (failedUpload) {
-      console.error("❌ [Server File Processing Rejected]", failedUpload.reason);
+      console.error(
+        "❌ [Server File Processing Rejected]",
+        failedUpload.reason,
+      );
       throw failedUpload.reason;
     }
 
@@ -470,6 +509,7 @@ export const createItems = createServerFn({ method: "POST" })
     let parentId = parsedInput.parentId;
     const durations = parsedInput.durations;
     const assets = parsedInput.assets;
+    const selectedAssetIds = [...new Set(parsedInput.selectedAssetIds)];
 
     if (parentId === "root") {
       parentId = undefined;
@@ -479,6 +519,7 @@ export const createItems = createServerFn({ method: "POST" })
       // Folder Creation Logic
       let redirectPath: string | null = null;
       const hasAssets = assets.length > 0;
+      const hasSelectedAssets = selectedAssetIds.length > 0;
 
       const validationResult = assetFolderCreateSchema.safeParse({
         name,
@@ -537,6 +578,25 @@ export const createItems = createServerFn({ method: "POST" })
         description: createDto.description,
         createdBy: createDto.createdBy,
       });
+
+      if (hasSelectedAssets) {
+        const selectedAssets = await assetDal.findByIds(selectedAssetIds);
+        if (selectedAssets.length !== selectedAssetIds.length) {
+          return {
+            success: false,
+            message:
+              "Folder created, but one or more selected assets no longer exist",
+            redirectPath: `/dashboard/assets?folderId=${folderId}`,
+          };
+        }
+
+        await batchMoveItemsInD1({
+          assetIds: selectedAssetIds,
+          targetFolderId: folderId,
+          folderUpdates: [],
+          userId: user.id,
+        });
+      }
 
       if (hasAssets) {
         const assetResult = await internalCreateAsset(
