@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { OrderDetailSkeleton } from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
 import type { OrderDetailDTO } from "@/lib/commerce/dto";
 import {
   DataTableCard,
@@ -15,6 +15,7 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { OrderStatusBadge } from "../status-badges";
 import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
+import { MetadataCard } from "@/routes/_backend/dashboard/-components/metadata-card/metadata-card";
 
 const money = (amount: number, currency: string) =>
   new Intl.NumberFormat(undefined, {
@@ -81,12 +82,7 @@ const OrderDetail = () => {
     ],
     [order?.currencyCode],
   );
-  if (isPending)
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner />
-      </div>
-    );
+  if (isPending) return <OrderDetailSkeleton />;
   if (!order)
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
@@ -173,6 +169,11 @@ const OrderDetail = () => {
           getRowId={(item) => item.id}
           emptyTitle="No items"
           emptyDescription="This draft does not have any line items yet."
+        />
+        <MetadataCard
+          slug="orders"
+          id={id}
+          keyCount={Object.keys(order.metadata).length}
         />
       </div>
     </PageSplitLayout>

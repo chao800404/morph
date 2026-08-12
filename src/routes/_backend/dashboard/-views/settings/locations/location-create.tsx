@@ -6,6 +6,7 @@ import { stockLocationQueries } from "@queries/stock-location.queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { createLocationAction } from "../commerce-actions";
+import { locationFormFields } from "./config/location-form-fields";
 export default function LocationCreate() {
   const client = useQueryClient();
   const close = useRouteModalClose();
@@ -14,39 +15,7 @@ export default function LocationCreate() {
       title="Create Location"
       description="Add a warehouse, store, or other inventory location."
       fieldsClassName="md:grid-cols-2"
-      fields={[
-        {
-          type: "input",
-          name: "name",
-          label: "Name",
-          required: true,
-          autoFocus: true,
-          colSpan: 2,
-        },
-        {
-          type: "input",
-          name: "address1",
-          label: "Street address",
-          required: true,
-          colSpan: 2,
-        },
-        {
-          type: "input",
-          name: "address2",
-          label: "Address line 2",
-          colSpan: 2,
-        },
-        { type: "input", name: "city", label: "City" },
-        { type: "input", name: "province", label: "Province / State" },
-        { type: "input", name: "postalCode", label: "Postal code" },
-        {
-          type: "input",
-          name: "countryCode",
-          label: "Country code",
-          placeholder: "US",
-          required: true,
-        },
-      ]}
+      fields={locationFormFields()}
       action={async (state, form) => {
         const value = await createLocationAction(state, form);
         if (value.success) {

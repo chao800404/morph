@@ -7,6 +7,7 @@ import { productOptionQueries } from "@queries/product.queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { createProductOptionAction } from "../product-actions";
+import { optionFormFields } from "./config/option-form-fields";
 
 /**
  * Create page for the shared option library.
@@ -41,22 +42,7 @@ const OptionCreate = () => {
       title="Create Product Option"
       description="Define a reusable option such as Size or Colour."
       action={submit}
-      fields={[
-        {
-          type: "input",
-          name: "title",
-          label: "Title",
-          placeholder: "e.g. Size, Colour, Material",
-          required: true,
-          autoFocus: true,
-        },
-        {
-          type: "option-values",
-          name: "values",
-          label: "Values",
-          placeholder: "Type a value and press Enter...",
-        },
-      ]}
+      fields={optionFormFields()}
     />
   );
 };

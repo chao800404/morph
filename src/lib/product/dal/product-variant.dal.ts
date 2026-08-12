@@ -9,7 +9,17 @@ import {
 } from "@/db/product.schema";
 import { assets } from "@/db/asset.schema";
 import { users } from "@/db/auth.schema";
-import { and, asc, count, desc, eq, inArray, isNull, like, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  like,
+  sql,
+} from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { containsPattern } from "@/lib/db/like-pattern";
 import { toGlobalSearchTerms } from "@/lib/search/global-search";
@@ -67,7 +77,12 @@ const hydrate = async (
         })
         .from(productVariantAssets)
         .innerJoin(assets, eq(assets.id, productVariantAssets.assetId))
-        .where(inArray(productVariantAssets.variantId, ids)),
+        .where(
+          and(
+            inArray(productVariantAssets.variantId, ids),
+            isNull(assets.deletedAt),
+          ),
+        ),
     ]);
     priceRows.push(...prices);
     linkRows.push(...links);

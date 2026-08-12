@@ -1,4 +1,6 @@
 import { salesChannelDal } from "@/lib/sales-channel/dal/sales-channel.dal";
+import { currencyDal } from "@/lib/currency/dal/currency.dal";
+import { productDal } from "@/lib/product/dal/product.dal";
 import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
 import {
   createSalesChannelInputSchema,
@@ -20,9 +22,15 @@ export const listSalesChannels = createServerFn({ method: "POST" })
   .middleware([commerceReadMiddleware])
   .handler(async ({ data }) => {
     try {
-      const page = await salesChannelDal.listPage(data);
+      const [page, defaultSalesChannelId] = await Promise.all([
+        salesChannelDal.listPage(data),
+        currencyDal.getDefaultSalesChannelId(),
+      ]);
       return ok("Sales channels fetched successfully", {
-        salesChannels: page.channels,
+        salesChannels: page.channels.map((channel) => ({
+          ...channel,
+          isDefault: channel.id === defaultSalesChannelId,
+        })),
         pagination: paginationOf(page.total, data.page, data.limit),
       });
     } catch (error) {
@@ -45,9 +53,13 @@ export const getSalesChannel = createServerFn({ method: "POST" })
         return fail("Sales channel not found", { error: "NOT_FOUND" });
       }
 
-      const counts = await salesChannelDal.countProducts([channel.id]);
+      const [counts, defaultSalesChannelId] = await Promise.all([
+        salesChannelDal.countProducts([channel.id]),
+        currencyDal.getDefaultSalesChannelId(),
+      ]);
       return ok("Sales channel fetched successfully", {
         ...channel,
+        isDefault: channel.id === defaultSalesChannelId,
         productCount: counts.get(channel.id) ?? 0,
       });
     } catch (error) {
@@ -141,6 +153,15 @@ export const deleteSalesChannels = createServerFn({ method: "POST" })
         });
       }
 
+      const defaultSalesChannelId =
+        await currencyDal.getDefaultSalesChannelId();
+      if (existing.some((channel) => channel.id === defaultSalesChannelId)) {
+        return fail(
+          "The default sales channel cannot be deleted. Choose another default in Store settings first.",
+          { error: "DEFAULT_CHANNEL" },
+        );
+      }
+
       // Products are not touched — only their listing in this channel. A
       // product in no channel is unlisted, not deleted.
       await salesChannelDal.softDelete(existing.map((channel) => channel.id));
@@ -161,9 +182,7 @@ export const deleteSalesChannels = createServerFn({ method: "POST" })
 
 export const getProductSalesChannels = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
-    setProductSalesChannelsInputSchema
-      .pick({ productId: true })
-      .parse(data),
+    setProductSalesChannelsInputSchema.pick({ productId: true }).parse(data),
   )
   .middleware([commerceReadMiddleware])
   .handler(async ({ data }) => {
@@ -227,10 +246,18 @@ export const addProductsToSalesChannel = createServerFn({ method: "POST" })
         return fail("Sales channel not found", { error: "NOT_FOUND" });
       }
 
-      await salesChannelDal.addProducts(data.salesChannelId, data.productIds);
+      const productIds = [...new Set(data.productIds)];
+      const products = await productDal.findByIds(productIds);
+      if (products.length !== productIds.length) {
+        return fail("One or more products no longer exist", {
+          error: "NOT_FOUND",
+        });
+      }
+
+      await salesChannelDal.addProducts(data.salesChannelId, productIds);
       return ok(
-        `${data.productIds.length} product${data.productIds.length === 1 ? "" : "s"} added to ${channel.name}`,
-        { added: data.productIds.length },
+        `${productIds.length} product${productIds.length === 1 ? "" : "s"} added to ${channel.name}`,
+        { added: productIds.length },
       );
     } catch (error) {
       return failure(

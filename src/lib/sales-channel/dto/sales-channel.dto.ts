@@ -13,6 +13,8 @@ export interface SalesChannelDTO {
 }
 
 export interface SalesChannelSummaryDTO extends SalesChannelDTO {
+  /** The Store points to this channel; it cannot be deleted. */
+  isDefault?: boolean;
   /** How many products list in this channel. Counted, not joined. */
   productCount: number;
 }

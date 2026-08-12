@@ -143,6 +143,7 @@ const parseStoreGeneralFormData = (data: unknown) => {
   return {
     name: data.get("name"),
     defaultCurrencyCode: data.get("defaultCurrencyCode"),
+    defaultSalesChannelId: data.get("defaultSalesChannelId"),
   };
 };
 
@@ -156,6 +157,7 @@ export const updateStoreGeneral = createServerFn({ method: "POST" })
       await currencyDal.updateStoreGeneral(
         data.name,
         data.defaultCurrencyCode,
+        data.defaultSalesChannelId,
       );
       return { success: true, message: "Store details updated" };
     } catch (error) {

@@ -27,7 +27,13 @@ import { getConfig } from "@/server/get-config";
 import { productQueries } from "@queries/product.queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
-import { ImageIcon, Plus } from "lucide-react";
+import { BadgeDollarSign, ImageIcon, MoreHorizontal, Plus, Warehouse } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { deleteVariantsAction } from "../product-actions";
@@ -194,6 +200,14 @@ export const ProductVariantsCard = ({
       }),
     [navigate, product.id],
   );
+  const openBulkEditor = useCallback(
+    (page: "variant-prices" | "variant-inventory") =>
+      void navigate({
+        to: "/dashboard/$slug/$id/$page",
+        params: { slug: "products", id: product.id, page },
+      }),
+    [navigate, product.id],
+  );
 
   /**
    * The table's own columns, as sort keys.
@@ -247,17 +261,36 @@ export const ProductVariantsCard = ({
       headerActions={
         // Variants are generated with the product; this is how a combination
         // comes back after someone deleted it.
-        product.options.length > 0 ? (
-          <Button
-            variant="form"
-            size="xs"
-            className="gap-2"
-            onClick={() => openVariantEditor()}
-          >
-            <Plus className="size-4" />
-            Create
-          </Button>
-        ) : undefined
+        <div className="flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="cardHeader" size="xs" aria-label="Variant actions">
+                <MoreHorizontal />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => openBulkEditor("variant-prices")}>
+                <BadgeDollarSign className="size-4" />
+                Edit prices
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => openBulkEditor("variant-inventory")}>
+                <Warehouse className="size-4" />
+                Edit inventory
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {product.options.length > 0 ? (
+            <Button
+              variant="form"
+              size="xs"
+              className="gap-2"
+              onClick={() => openVariantEditor()}
+            >
+              <Plus className="size-4" />
+              Create
+            </Button>
+          ) : null}
+        </div>
       }
       sortOptions={sortOptions}
       defaultSortBy="createdAt"

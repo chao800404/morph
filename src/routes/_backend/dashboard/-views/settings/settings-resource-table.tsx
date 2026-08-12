@@ -4,6 +4,7 @@ import { getConfig } from "@/server/get-config";
 import {
   CollectionCreateButton,
   DataTableCard,
+  useCollectionDetailPreload,
   deleteActionIcon,
   editActionIcon,
   type DataTableColumn,
@@ -26,6 +27,7 @@ export function SettingsResourceTable<T extends { id: string }>({
   invalidate,
   deleteAction,
   deleteName,
+  isDeleteDisabled,
 }: {
   slug: string;
   label: string;
@@ -47,9 +49,17 @@ export function SettingsResourceTable<T extends { id: string }>({
     errors?: Record<string, string[]>;
   }>;
   deleteName: (row: T) => string;
+  isDeleteDisabled?: (row: T) => boolean;
 }) {
   const navigate = useNavigate();
   const router = useRouter();
+  const detailView = useMemo(
+    () =>
+      findCollection(getConfig().client.collections.settings, slug)?.detail
+        ?.view,
+    [slug],
+  );
+  const preloadDetail = useCollectionDetailPreload(slug, "settings");
   const editView = useMemo(
     () =>
       findCollection(getConfig().client.collections.settings, slug)?.edit?.view,
@@ -104,6 +114,16 @@ export function SettingsResourceTable<T extends { id: string }>({
       onRetry={invalidate}
       emptyTitle={`No ${label.toLowerCase()} yet`}
       emptyDescription={`Create your first ${label.replace(/s$/, "").toLowerCase()}.`}
+      onRowClick={
+        detailView
+          ? (row) =>
+              void navigate({
+                to: "/dashboard/settings/$slug/$id",
+                params: { slug, id: row.id },
+              })
+          : undefined
+      }
+      onRowPreload={detailView ? (row) => preloadDetail(row.id) : undefined}
       rowActions={(row) => {
         const actions: RowAction[] = [];
         if (editView) {
@@ -122,6 +142,7 @@ export function SettingsResourceTable<T extends { id: string }>({
           label: "Delete",
           icon: deleteActionIcon,
           destructive: true,
+          disabled: isDeleteDisabled?.(row) ?? false,
           onSelect: () => remove(row),
         });
         return actions;

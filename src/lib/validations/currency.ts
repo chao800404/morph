@@ -33,4 +33,5 @@ export const updateStoreCurrencyInputSchema =
 export const updateStoreGeneralInputSchema = z.object({
   name: z.string().trim().min(1, "Store name is required").max(100),
   defaultCurrencyCode: currencyCodeSchema,
+  defaultSalesChannelId: z.uuid("Select a valid default sales channel"),
 });

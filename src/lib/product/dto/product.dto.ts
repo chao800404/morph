@@ -32,6 +32,15 @@ export interface ProductDTO {
   updatedAt: Date;
 }
 
+/** Product list projection used by the dashboard table. */
+export interface ProductListItemDTO extends ProductDTO {
+  thumbnailUrl: string | null;
+  collectionTitle: string | null;
+  typeValue: string | null;
+  salesChannels: Array<{ id: string; name: string }>;
+  variantCount: number;
+}
+
 /** A product with everything the detail view needs, in one shape. */
 export interface ProductDetailDTO extends ProductDTO {
   options: ProductOptionDTO[];

@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { CollectionDetailSkeleton } from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
 import {
@@ -43,13 +43,7 @@ const CategoryDetail = () => {
     [id, navigate],
   );
 
-  if (isPending) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner />
-      </div>
-    );
-  }
+  if (isPending) return <CollectionDetailSkeleton />;
 
   if (!category) {
     return (

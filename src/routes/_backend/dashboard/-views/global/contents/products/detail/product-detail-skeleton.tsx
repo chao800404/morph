@@ -6,6 +6,7 @@ import {
   type EditCardField,
 } from "@/routes/_backend/dashboard/-components/edit-card/edit-card";
 import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
+import { DataTableCardSkeleton } from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
 
 /**
  * Placeholder for the product detail page.
@@ -43,13 +44,7 @@ const skeletonRows = (count: number): EditCardField[] =>
     displayValue: <Skeleton className={index % 2 ? "h-4 w-40" : "h-4 w-28"} />,
   }));
 
-const SkeletonEditCard = ({
-  id,
-  rows,
-}: {
-  id: string;
-  rows: number;
-}) => (
+const SkeletonEditCard = ({ id, rows }: { id: string; rows: number }) => (
   <EditCard
     id={id}
     title={<Skeleton className="h-4 w-28" />}
@@ -62,8 +57,8 @@ export const ProductDetailSkeleton = () => (
   <PageSplitLayout
     sidebar={
       <div className="flex flex-col gap-4">
-        {/* Organization: tags, type, collection, categories. */}
-        <SkeletonEditCard id="product-organization-skeleton" rows={4} />
+        {/* Organization: tags, type, collection, categories, sales channels. */}
+        <SkeletonEditCard id="product-organization-skeleton" rows={5} />
         {/* Attributes: four measurements plus MID, HS and country of origin. */}
         <SkeletonEditCard id="product-attributes-skeleton" rows={7} />
         {/* Metadata is header-only on the real page too — there is no body to
@@ -104,29 +99,9 @@ export const ProductDetailSkeleton = () => (
           costs a small reflow, an absent card costs the whole column. */}
       <SkeletonEditCard id="product-options-skeleton" rows={2} />
 
-      <CardWrapper
-        id="product-variants-skeleton"
-        label={<Skeleton className="h-4 w-20" />}
-        headerButton={<Skeleton className="h-7 w-24 rounded-md" />}
-      >
-        <div className="flex flex-col">
-          {/* The real card is a DataTableCard: a toolbar, then rows. */}
-          <div className="flex items-center justify-between gap-3 border-y px-6 py-4">
-            <Skeleton className="h-7 w-40" />
-            <Skeleton className="h-7 w-7" />
-          </div>
-          {Array.from({ length: 4 }, (_, index) => (
-            <div
-              key={index}
-              className="flex items-center gap-4 border-b px-6 py-3 last:border-none"
-            >
-              <Skeleton className="size-10 shrink-0 rounded-md" />
-              <Skeleton className="h-4 w-40" />
-              <Skeleton className="ml-auto h-4 w-20" />
-            </div>
-          ))}
-        </div>
-      </CardWrapper>
+      <div id="product-variants-skeleton">
+        <DataTableCardSkeleton columnCount={4} />
+      </div>
     </div>
   </PageSplitLayout>
 );

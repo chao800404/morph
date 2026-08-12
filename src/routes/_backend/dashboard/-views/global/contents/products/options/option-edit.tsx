@@ -10,6 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { updateProductOptionAction } from "../product-actions";
+import { optionFormFields } from "./config/option-form-fields";
 
 /**
  * Edit page for a library option, at /dashboard/product-options/<id>/edit.
@@ -65,23 +66,10 @@ const OptionEdit = () => {
       action={submit}
       submitLabel="Save"
       loadingLabel="Saving..."
-      fields={[
-        {
-          type: "input",
-          name: "title",
-          label: "Title",
-          value: option.title,
-          required: true,
-          autoFocus: true,
-        },
-        {
-          type: "option-values",
-          name: "values",
-          label: "Values",
-          value: option.values.map((value) => value.value),
-          placeholder: "Type a value and press Enter...",
-        },
-      ]}
+      fields={optionFormFields({
+        title: option.title,
+        values: option.values.map((value) => value.value),
+      })}
     />
   );
 };

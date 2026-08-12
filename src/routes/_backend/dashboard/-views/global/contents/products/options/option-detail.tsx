@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { TableDetailSkeleton } from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
 import {
   EditCard,
   type EditCardField,
@@ -37,13 +37,7 @@ const OptionDetail = () => {
     [id, navigate],
   );
 
-  if (isPending) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner />
-      </div>
-    );
-  }
+  if (isPending) return <TableDetailSkeleton />;
 
   if (!option) {
     return (

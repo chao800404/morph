@@ -83,6 +83,7 @@ export const dashboardUserDal = {
         emailVerified: users.emailVerified,
         language: users.language,
         phoneNumber: users.phoneNumber,
+        metadata: users.metadata,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
       })
@@ -91,5 +92,16 @@ export const dashboardUserDal = {
       .get();
 
     return row ? toDashboardUserDetailDTO(row) : null;
+  },
+
+  async updateMetadata(
+    id: string,
+    metadata: Record<string, string>,
+  ): Promise<void> {
+    const db = await getDb();
+    await db
+      .update(users)
+      .set({ metadata, updatedAt: new Date() })
+      .where(and(staffRole, eq(users.id, id)));
   },
 };

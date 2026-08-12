@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import type { Metadata } from "@/db/json";
 import {
   orderAddresses,
   orderItems,
@@ -76,6 +77,7 @@ export const orderDal = {
       id: row.order.id, displayId: row.order.displayId, status: row.order.status, email: row.order.email,
       currencyCode: row.order.currencyCode, isDraftOrder: row.order.isDraftOrder, total: totalFromSnapshot(row.summary),
       customerId: row.order.customerId, regionId: row.order.regionId, salesChannelId: row.order.salesChannelId,
+      metadata: row.order.metadata ?? {},
       createdAt: row.order.createdAt, updatedAt: row.order.updatedAt,
       items: items.map(({ item, state }) => ({ id: item.id, title: item.title, thumbnail: item.thumbnail, sku: item.variantSku, quantity: state.quantity, fulfilledQuantity: state.fulfilledQuantity, unitPrice: state.unitPrice ?? item.unitPrice ?? 0 })),
       shippingAddress: mapAddress(row.order.shippingAddressId), billingAddress: mapAddress(row.order.billingAddressId),
@@ -107,6 +109,11 @@ export const orderDal = {
   async update(id: string, data: { email?: string; status: OrderDetailDTO["status"]; noNotification: boolean }) {
     const db = await getDb();
     await db.update(orders).set({ email: data.email || null, status: data.status, isDraftOrder: data.status === "draft", noNotification: data.noNotification, canceledAt: data.status === "canceled" ? new Date().toISOString() : null, updatedAt: new Date().toISOString() }).where(and(eq(orders.id, id), isNull(orders.deletedAt)));
+  },
+
+  async updateMetadata(id: string, metadata: Metadata) {
+    const db = await getDb();
+    await db.update(orders).set({ metadata, updatedAt: new Date().toISOString() }).where(and(eq(orders.id, id), isNull(orders.deletedAt)));
   },
 };
 
@@ -227,7 +234,7 @@ export const promotionDal = {
       row.method ? mapRules(db, row.method.id, "target") : Promise.resolve([]),
       row.method ? mapRules(db, row.method.id, "buy") : Promise.resolve([]),
     ]);
-    return { ...mapPromotion(row), isTaxInclusive: row.promotion.isTaxInclusive, allocation: row.method?.allocation ?? null, maxQuantity: row.method?.maxQuantity ?? null, applyToQuantity: row.method?.applyToQuantity ?? null, buyRulesMinQuantity: row.method?.buyRulesMinQuantity ?? null, rules, targetRules, buyRules, campaign: row.campaign ? { id: row.campaign.id, name: row.campaign.name, description: row.campaign.description, identifier: row.campaign.campaignIdentifier, startsAt: row.campaign.startsAt, endsAt: row.campaign.endsAt } : null, createdAt: row.promotion.createdAt };
+    return { ...mapPromotion(row), metadata: row.promotion.metadata ?? {}, isTaxInclusive: row.promotion.isTaxInclusive, allocation: row.method?.allocation ?? null, maxQuantity: row.method?.maxQuantity ?? null, applyToQuantity: row.method?.applyToQuantity ?? null, buyRulesMinQuantity: row.method?.buyRulesMinQuantity ?? null, rules, targetRules, buyRules, campaign: row.campaign ? { id: row.campaign.id, name: row.campaign.name, description: row.campaign.description, identifier: row.campaign.campaignIdentifier, startsAt: row.campaign.startsAt, endsAt: row.campaign.endsAt } : null, createdAt: row.promotion.createdAt };
   },
 
   async findByCode(code: string) {
@@ -260,6 +267,11 @@ export const promotionDal = {
       db.update(promotions).set({ code: data.code, type: data.type, status: data.status, isAutomatic: data.isAutomatic, isTaxInclusive: data.isTaxInclusive, limit: data.limit ?? null, campaignId: data.campaignId ?? null, updatedAt: now }).where(and(eq(promotions.id, id), isNull(promotions.deletedAt))),
       db.update(promotionApplicationMethods).set({ type: data.methodType, targetType: data.targetType, allocation: data.allocation, value: data.value, currencyCode: data.currencyCode || null, maxQuantity: data.maxQuantity ?? null, applyToQuantity: data.applyToQuantity ?? null, buyRulesMinQuantity: data.buyRulesMinQuantity ?? null, updatedAt: now }).where(and(eq(promotionApplicationMethods.promotionId, id), isNull(promotionApplicationMethods.deletedAt))),
     ]);
+  },
+
+  async updateMetadata(id: string, metadata: Metadata) {
+    const db = await getDb();
+    await db.update(promotions).set({ metadata, updatedAt: new Date().toISOString() }).where(and(eq(promotions.id, id), isNull(promotions.deletedAt)));
   },
 
   async softDelete(id: string) {

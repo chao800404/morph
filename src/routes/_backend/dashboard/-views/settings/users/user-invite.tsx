@@ -81,6 +81,7 @@ export default function UserInvite() {
           const expired = new Date(invite.expiresAt) <= new Date();
           return (
             <StatusBadge
+              variant="plain"
               color={invite.accepted ? "green" : expired ? "red" : "amber"}
             >
               {invite.accepted ? "Accepted" : expired ? "Expired" : "Pending"}

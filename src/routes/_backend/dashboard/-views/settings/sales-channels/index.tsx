@@ -10,6 +10,8 @@ import {
 } from "@queries/sales-channel.queries";
 import { deleteSalesChannelsAction } from "../commerce-actions";
 import { SettingsResourceTable } from "../settings-resource-table";
+import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
 
 export default function SalesChannels() {
   const search = useSearch({ strict: false }) as DashboardSearch;
@@ -26,12 +28,21 @@ export default function SalesChannels() {
         key: "name",
         header: "Name",
         className: "font-medium",
-        cell: (r) => r.name,
+        cell: (r) => (
+          <span className="flex items-center gap-2">
+            {r.name}
+            {r.isDefault ? <Badge variant="embossed">Default</Badge> : null}
+          </span>
+        ),
       },
       {
         key: "status",
         header: "Status",
-        cell: (r) => (r.isDisabled ? "Disabled" : "Active"),
+        cell: (r) => (
+          <StatusBadge variant="plain" color={r.isDisabled ? "grey" : "green"}>
+            {r.isDisabled ? "Disabled" : "Enabled"}
+          </StatusBadge>
+        ),
       },
       { key: "products", header: "Products", cell: (r) => r.productCount },
       {
@@ -55,6 +66,7 @@ export default function SalesChannels() {
       pagination={result?.success ? result.data.pagination : undefined}
       invalidate={invalidate}
       deleteName={(r) => r.name}
+      isDeleteDisabled={(r) => r.isDefault}
       deleteAction={deleteSalesChannelsAction}
     />
   );

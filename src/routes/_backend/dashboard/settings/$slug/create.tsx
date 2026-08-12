@@ -1,10 +1,10 @@
-import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { NotFound } from "@/components/not-found/not-found";
 import { findCollection } from "@/lib/config/navigation";
 import { dashboardSearchSchema } from "@/lib/validations/dashboard-search";
 import { getConfig } from "@/server/get-config";
 import { createFileRoute } from "@tanstack/react-router";
 import { Suspense, useMemo } from "react";
+import { DashboardRoutePending } from "@/routes/_backend/dashboard/-components/loading/dashboard-route-pending";
 
 export const Route = createFileRoute(
   "/_backend/dashboard/settings/$slug/create",
@@ -18,6 +18,9 @@ export const Route = createFileRoute(
     );
     await collection?.create?.prefetch?.({ queryClient, params, search });
   },
+  pendingComponent: DashboardRoutePending,
+  pendingMs: 0,
+  pendingMinMs: 250,
   component: RouteComponent,
 });
 
@@ -32,7 +35,7 @@ function RouteComponent() {
   if (!create) return <NotFound />;
 
   const CreateView = create.view;
-  const PendingView = create.pendingView ?? RouteSurfacePending;
+  const PendingView = create.pendingView;
   return (
     <Suspense fallback={<PendingView />}>
       <CreateView />

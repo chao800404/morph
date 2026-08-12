@@ -103,9 +103,11 @@ export const FieldsRenderer = ({
             id={`${id}-wrapper`}
             className={cn(
               "scroll-mt-28 scroll-mb-24 space-y-2",
-              colSpan === 1 ? "col-span-1" : "col-span-2",
               field.className,
             )}
+            style={{
+              gridColumn: colSpan === 1 ? "span 1 / span 1" : "1 / -1",
+            }}
           >
             {!rendersOwnLabel && (
               <Label htmlFor={id} className="text-sm font-medium">

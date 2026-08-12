@@ -67,7 +67,8 @@ export const DataTableSearch = ({
       </InputGroupAddon>
       <InputGroupInput
         ref={inputRef}
-        className="py-0 text-zinc-300 placeholder:text-zinc-500 max-md:w-full"
+        aria-label={placeholder}
+        className="py-0 text-foreground placeholder:text-muted-foreground max-md:w-full"
         placeholder={placeholder}
         value={value}
         onChange={(event) => {

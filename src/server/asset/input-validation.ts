@@ -14,6 +14,7 @@ type MoveItemsInput = {
 type DeleteItemsInput = {
   folderIds: string[];
   assetIds: string[];
+  detachReferences: boolean;
 } & AssetInputError;
 
 export const isFormDataLike = (value: unknown): value is FormData =>
@@ -112,6 +113,10 @@ const deleteItemsSchema = z
   .object({
     folderIds: optionalJsonUuidArray,
     assetIds: optionalJsonUuidArray,
+    detachReferences: z.preprocess(
+      (value) => value === "true" || value === "1" || value === true,
+      z.boolean(),
+    ),
   })
   .refine((value) => value.folderIds.length + value.assetIds.length > 0, {
     message: "Select at least one item",
@@ -119,13 +124,24 @@ const deleteItemsSchema = z
 
 export const parseDeleteItemsInput = (data: unknown): DeleteItemsInput => {
   if (!isFormDataLike(data)) {
-    return { folderIds: [], assetIds: [], formError: "Invalid form data" };
+    return {
+      folderIds: [],
+      assetIds: [],
+      detachReferences: false,
+      formError: "Invalid form data",
+    };
   }
   const result = deleteItemsSchema.safeParse({
     folderIds: data.get("folderIds"),
     assetIds: data.get("assetIds"),
+    detachReferences: data.get("detachReferences"),
   });
   return result.success
     ? result.data
-    : { folderIds: [], assetIds: [], ...toInputError(result.error) };
+    : {
+        folderIds: [],
+        assetIds: [],
+        detachReferences: false,
+        ...toInputError(result.error),
+      };
 };

@@ -17,23 +17,24 @@
 - `src/routes/` 使用 TanStack Router file-based routing；route 負責 URL 驗證、權限入口、loader/prefetch 與 view 組裝。
 - Dashboard 的頁面來源為：
   `src/cms.config.ts` → `dashboard/-collections/**` → dynamic dashboard route → `dashboard/-views/**`。
-- 新增 Dashboard 功能時，應建立或延伸對應 view，再於既有 collection 設定的 capability（`index`、`create`、`preview`、`detail`、`edit`）下註冊 `view` 與必要的 `pendingView`／`prefetch`；不可另寫一份 sidebar 或 breadcrumb 對照表。
+- 新增 Dashboard 功能時，應建立或延伸對應 view，再於既有 collection 設定的 capability（`index`、`create`、`preview`、`detail`、`edit`）下註冊 `view`、必填的 `pendingView` 與需要時才加入的 `prefetch`；不可另寫一份 sidebar 或 breadcrumb 對照表。
 - `-components`、`-queries`、`-views`、`-collections` 是 route-internal 模組，不應被無關的頂層功能反向依賴。
 - Route search params 必須用 schema 驗證。可分享、可返回或影響資料集的狀態，例如 `folderId`、`q`、排序與分頁，應以 URL 為單一真實來源。
 
 ### Dashboard 路由由 config 決定，不新增靜態路由檔
 
 - 「有哪些頁面」的唯一來源是 collection config。不得為了單一 collection 新增靜態路由檔 —— 靜態片段的排序高於 `$slug`，會無聲蓋掉同名的 collection，頁面直接變空白而不報錯。
-- **collection 的網址一律是平的**：每個 collection，不論在側邊欄是否巢狀，都住在 `/dashboard/<slug>`。`items[]` 只影響側邊欄分組與麵包屑，不影響 URL。Medusa 也是這樣 —— 它的 `product-options`、`product-tags`、`collections` 全是頂層路由，所以 `/products/:id` 從來不會有歧義。
+- **collection 在自己的 namespace 內一律是平的**：Global collection 住在 `/dashboard/<slug>`；Settings collection 住在 `/dashboard/settings/<slug>`。`items[]` 只影響側邊欄分組與麵包屑，不增加 URL 層級。不可把 Products 的子項做成 `/dashboard/products/options`，也不可把 Settings 子項再巢狀一層。
 - 這條規則是詳情頁能存在的前提。若 Options 住在 `/dashboard/products/options`，那 `/dashboard/products/<id>` 就無法分辨是 collection 還是 record id。
-- 因為網址是平的，**slug 必須全域唯一**（`assertCollectionsAreAddressable` 會在 `createCMSConfig` 擋下重複）。所以是 `product-options` 而不是 `options`。
-- 目前的六條動態路由已涵蓋所有情況，新增頁面請走 config：
+- 因為網址在 namespace 內是平的，**slug 必須在同一 namespace 內唯一**（`assertCollectionsAreAddressable` 會分別驗證 Global 與 Settings）。Global 的 `settings` 仍是保留字，因為它是 Settings namespace 的入口。
+- Global 與 Settings 各自使用同一套 capability 路由形狀；新增頁面請走 config，不可為單一 collection 增加專屬 route：
   - `$slug` —— collection 列表頁，同時是底下所有 child route 的 layout，必須渲染 `<Outlet />`。
   - `$slug/create` —— 建立頁，由 config 的 `create.view` 提供。
   - `$slug/view` —— collection 層級的瀏覽頁，由 config 的 `preview.view` 提供；目前資產 id 放在 `?assetId`。
   - `$slug/$id` —— 詳情頁，由 config 的 `detail.view` 提供。`create` 是靜態片段所以優先於 `$id`。
   - `$slug/$id/edit` —— 編輯頁，由 config 的 `edit.view` 提供；有 `detail` 時疊在詳情頁上，沒有 `detail` 時疊在列表上。
   - `$slug/$id/$page` —— 記錄的附屬頁面，由 config 的 `pages[key]` 提供。`edit` 是靜態片段所以優先於 `$page`，因此 `edit` 是保留的 page key。
+- Global 另有 `$slug/$id/$page/$childId`，只負責讓 `pages` 中的獨立子資源（例如 Product Variant）具有可分享的 record URL；實際 view、prefetch 與 presentation 仍由父層 `pages[key]` capability 提供。不得為個別子資源再建立專屬 route。
 - child route 的行為不同，`$slug` 用 `useChildMatches` 區分：
   - `/create` 與 `/$id/edit` **疊在**列表上，列表維持掛載，關閉即返回，不重抓也不丟失捲動與選取狀態。
   - `/view` 一律**取代**列表。
@@ -45,17 +46,21 @@
 
 ### pendingView 必須畫出整個頁面的外框
 
+- 所有可導覽的 capability（`index`、`create`、`preview`、`detail`、`edit` 與 `pages[*]`）都**必須**宣告 `pendingView`；這是型別層級的必要欄位，不可提供一個全域 generic fallback 來掩蓋遺漏。新增頁面卻沒提供 pendingView 時，必須讓 TypeScript 直接報錯。
+- Dashboard 動態路由的 route-level `pendingComponent` 一律使用中央選擇器 `DashboardRoutePending`。它只依 TanStack Router 的 **requested destination pathname** 找到 collection/capability，然後渲染該 capability 自己的 `pendingView`；不可在每條 route 重寫 pathname 判斷，也不可把某個頁面的視覺骨架塞進中央選擇器。
+- 跨 Global／Settings 或 collection 導覽時，sidebar shell 應立即依 requested destination 切換，`<Outlet />` 則在目的 route loader/chunk 完成前顯示**目的頁自己的** pendingView。動態 Dashboard routes 統一使用 `pendingMs: 0` 與 `pendingMinMs: 250`，避免舊內容停留及骨架一閃而過；不可先顯示空白、舊頁或全域 spinner。
 - `pendingView` 不是「載入中的小圖示」，它是那個頁面在 chunk 到齊前的替身。**頁面有幾欄、幾張卡，pendingView 就要有幾欄、幾張卡**，只有內容換成 skeleton。
 - 理由不是美觀，是串流 SSR 的執行順序：伺服器會解析 lazy view 並把真實 HTML 串流出去，接著瀏覽器 hydration 時該 chunk 還沒下載完，React 會**重新** suspend 一次。所以 fallback 是插在一個已經完整的畫面中間，少畫一欄就會看到那一欄出現、消失、再出現。
 - 不需要資料就能畫的區塊（例如「未選取任何項目」的空狀態卡），pendingView 直接渲染真的那個組件，不要用灰塊假裝。
-- **疊層路由的 pendingView 必須也是疊層。** `create`、`$id/edit`、`$id/$page` 與 `view` 都是 `fixed inset-0`，它們的 fallback 預設是 `RouteSurfacePending`（同一個 `RouteFullscreenSurface` 空殼加 spinner），不可用在流內排版的 `PageSpinner` —— 那會讓底下的頁面在 chunk 載入期間完全露出來，從選項頁開商品建立頁時會先看到商品列表再看到 wizard。
+- **疊層路由的 pendingView 必須也是疊層。** `create`、`$id/edit`、overlay presentation 的 `$id/$page` 與 `view` 都要保留 `RouteFullscreenSurface` 外框；表單型頁面使用頁面具名 pendingView，並以 `createRouteSurfacePendingView(fieldCount)` 或共享 skeleton primitives 畫出相符的欄位結構。不可退回只有空殼加 spinner 的 fallback，也不可用在流內排版的 `PageSpinner` —— 那會讓底下頁面露出來或產生明顯跳版。
+- 列表型頁面可用 `createCollectionIndexPendingView(columnCount)` 建立一致的 table card 骨架；表單型頁面可用 `createRouteSurfacePendingView(fieldCount)`。這些 factory 只是共享 primitive，collection config 仍須宣告具名 pendingView 並提供符合實頁的欄位數。Products、Assets、detail dashboard 等版型不同的頁面要沿用它們既有的專用 skeleton，不可為了共用而犧牲形狀準確度。
 - 但 `pendingView` 被 collection config **靜態** import，所以它的 import 圖不得觸及 server function。要共用真實組件時，先把不碰 server function 的部分抽成獨立檔案再共用（`asset-property-empty.tsx` 是這樣來的：`AssetPropertyCard` 的 header 會 import delete／move server function，整張卡不能直接拿來用）。
 
 ### Collection capability 設定契約
 
 - Collection config 只描述「這個 collection 有哪些 route-backed 頁面」。具名 capability 固定使用 `index`、`create`、`preview`、`detail`、`edit`，記錄的附屬頁面放同層的 `pages`。不可改回模糊的頂層 `component`，也不可讓 config 自行提供 `path`。
 - 為什麼是「具名五個 + 均勻的 `pages`」而不是 Medusa 那種全部均勻的 `{ path, view }` 陣列：那五個名字是**框架的分支條件** —— `create` 決定要不要渲染 Create 按鈕、`edit` 決定要不要有 Edit row action、`detail` 決定 `$id` 是否取代列表與表單關閉回哪一層。改成均勻陣列後，這些判斷只能退化成字串慣例（`path === "create"`），型別安全從編譯期擋變成打錯就靜默失效。Medusa 能用均勻陣列，是因為那些 UI 它全部手寫在各頁；我們的賣點是使用者宣告 collection 就自動獲得它們。
-- 每個 capability 的 render entry 一律叫 `view`；Suspense fallback 一律叫 `pendingView`；route 進入前的 query cache priming 一律叫 `prefetch`。`component`、`loader`、`loadData` 都是舊名稱，不得重新引入。
+- 每個 capability 的 render entry 一律叫 `view`；必要的 Suspense fallback 一律叫 `pendingView`；route 進入前的 query cache priming 一律叫 `prefetch`。`component`、`loader`、`loadData` 都是舊名稱，不得重新引入。
 - **`view` 一律用 `lazyView(() => import("..."))` 宣告，不要直接寫 `lazy(...)`。** 它保留 import factory，讓框架可以在點擊前就開始下載那個 chunk。路徑只寫一次 —— 在 `view` 旁邊另外放一個 `preload` 欄位就是兩個地方要同步，而且漂移不會報錯。
 - 開啟 view 的控制項要把 `useViewPreload(view)` 的 handlers 展開上去（hover、focus、touchstart 三者都要：只綁 hover 會讓鍵盤與觸控使用者等在原地）。Row action 這種藏在下拉裡的，改在**選單開啟時**預載 —— 指標移到項目上時距離點擊只剩幾十毫秒，太晚了。
 - 所有 Dashboard 內部導覽必須支援 intent preload。真正的 TanStack `<Link>`／`RouterLink` 使用 Router 全域 `defaultPreload: "intent"`（共用 wrapper 亦明確帶 `preload="intent"`），不可改成裸 `<a>` 或關閉 preload。Table row、card、command item 等因 DOM 限制而以 `navigate()` 模擬連結的控制項，必須在 hover、focus、touchstart 預載目的 route 的 loader/data，並透過 `viewPreloader`／`useViewPreload` 預載 config `lazyView` chunk；只在 click 後才載入不符合規則。共用 table 一律使用 `onRowPreload`，不可各自重寫 pointer handlers。
@@ -179,6 +184,7 @@ Cannot access 'xxxServerFn' before initialization
 - Route loader/prefetch 與 component query 必須共用相同的參數正規化函式與 query options，避免不同 cache key、重複請求或載入閃爍。
 - 分頁、搜尋、排序或資料夾切換時，若保留上一筆資料不會造成誤操作，使用 `keepPreviousData` 維持畫面穩定。
 - Mutation 成功後，精準 invalidate 或更新相關 query cache；不可用整頁 reload 代替 cache 一致性。
+- Dashboard 導覽與 server data 使用同一套 stale-while-revalidate cache policy：Router route cache 與 TanStack Query 必須對齊短期 `staleTime`，並保留足夠的 `gcTime` 供返回已瀏覽頁面直接使用。資料過期後應先渲染 last-known-good cache、再背景重新驗證；只有首次進入、cache miss 或無法安全顯示舊資料時才使用 capability `pendingView`。Dashboard shell 不可用全域 `isLoading` 強制以 skeleton 蓋掉已快取的 `<Outlet />`，否則會破壞 Router 的 background stale reload。
 
 ### React 與 Zustand
 
@@ -345,6 +351,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 
 ### Metadata 是公開的逃生口，不是私密欄位
 
+- **所有 record 詳情頁都必須包含 Metadata。** 只要 collection 宣告了 `detail.view`，該 view 就必須渲染共用 `MetadataCard`，並在 collection 的 `pages.metadata` 提供獨立 editor；Settings 與 Global collection、主資源與具有獨立詳情頁的子資源都適用，不得因目前 metadata 為空而省略。若既有資料模型尚未支援 metadata，應沿著 schema → DAL → DTO/mapper → validation → server function/action → query → detail/editor 的既有架構補齊，不可用前端假資料、空卡片或 feature-local state 代替。
 - `metadata` 存的是核心 schema 沒有建模、由商店自行定義的 key/value。它的設計目的就是**跨到前台** —— Medusa 的 store API 對 product-categories 預設就吐 metadata，products 雖不在預設欄位裡但也不在 `disallowedStoreFields`，前台可用 `?fields=+metadata` 取得。因此**絕不可放 API key、成本價、合約條款或任何個資**。
 - 值一律以字串儲存。從輸入內容猜型別比不猜更糟：`01234` 會維持字串而 `1234` 會靜默變成數字，同一個郵遞區號或 SKU 的意義就取決於它的位數。需要真正型別的資料屬於真正的欄位。
 - 編輯器一律使用 `metadata` field type 與 `MetadataField`，不可在 feature 內另寫一份 key/value 表單。它以 JSON 物件字串傳輸，理由與 `option-values` 相同：`FormFieldValue` 沒有物件成員，為單一 field type 擴充它會波及其他所有型別。
@@ -366,7 +373,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 剩下的那一顆 skeleton 是 route 等 lazy chunk，那是應該存在的，用 `pendingView` 畫出頁面外框而不是換成 spinner。
 - **間接的查詢也算。** 欄位自己會抓資料：`folder-select` 會讀整棵資料夾樹、商品建立精靈的 Organize 步驟會讀 collections／taxonomy／option library。看 view 有沒有寫 `useQuery` 不夠，要看它渲染的 `fields` 裡有哪些 field type。
 - 只用 `useQueryClient` 做 invalidate 的 view **不需要** prefetch —— 它沒有讀取。稽核時別把兩者搞混。
-- **route-backed 頁面的 loading 與「找不到記錄」一律用 `RouteSurfacePending`／`RouteSurfaceMessage`,不可自己寫 `fixed inset-0` 的置中遮罩。** 那會是第二層覆蓋層,從它切換到真正的表單外殼看起來就是「視窗打開、關閉、又打開」。同一個 `RouteFullscreenSurface` 從頭到尾只換內容,畫面才不會閃。
+- **route-backed 頁面的 loading 必須由 capability `pendingView` 選擇符合實頁的 skeleton；「找不到記錄」一律用 `RouteSurfaceMessage`。** 兩者都要沿用同一個 `RouteFullscreenSurface`，不可自己寫第二層 `fixed inset-0` 置中遮罩；否則從 pending／message 切到真正表單時會像「視窗打開、關閉、又打開」。
 
 ### 記錄的附屬頁面走 `pages`，不是 query param
 
@@ -381,17 +388,27 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 
 ### 詳情頁不重複顯示記錄名稱
 
-- 詳情頁不做「返回鍵 + 記錄名稱 + 徽章」的頁面標題列。記錄名稱是麵包屑的最後一段，由 view 呼叫 `usePageBreadcrumb(name)` 發布；資料還在載入時傳 `null`，讓那一段等名稱確定後才出現，而不是先閃一個佔位字串。
-- 麵包屑的其餘部分仍由 `findBreadcrumbsFromCollections` 從 URL slug 推導 —— 它看不到 record id，這正是需要 view 補上最後一段的原因。
+- 詳情頁不做「返回鍵 + 記錄名稱 + 徽章」的頁面標題列。Collection／group 層級由 `findBreadcrumbsFromCollections` 從 URL slug 推導；動態 record 名稱則由 collection config 的 `detail.breadcrumb`／`pages[key].breadcrumb` resolver 取得，匹配 route 的 loader data 逐層組合。View 不得再透過 hook、Zustand、context 或 effect 發布全域 breadcrumb。
+- Breadcrumb 最後一項代表目前頁面，必須使用 `BreadcrumbPage` 並帶 `aria-current="page"`，不可渲染成可點擊自己的連結；前面項目使用 `BreadcrumbLink`。分隔符一律使用 `BreadcrumbSeparator`，長路徑交由共用 `BreadcrumbCollapse` 收合與截斷，不可由單一頁面自行拼 icon 或另一套 breadcrumb。
+- `/dashboard/settings/**` 已由持續顯示的 Settings sidebar 表達所在區域，內容區 Breadcrumb 不得再以前置 `Settings` 重複同一層；路徑直接從目前 collection（例如 `Users`、`Profile`）開始，後續再接 record 與附屬頁名稱。
 - 返回上一層靠麵包屑，不另外放返回鍵。狀態徽章放進資訊卡的 `headerActions`。
 
 ### 表格與既有 primitive 的重用界線
 
+- Dashboard 的 resource list、詳情頁關聯資料表與 selector table，一律先使用共用 `DataTableCard` 及其既有 toolbar contract（`filters`、`searchPlaceholder`、`sortOptions`、`toolbarLeading`、selection、pagination、row actions）。若 `/dashboard/products` 等既有頁面已具備相同資料型別的 filters、sort options 或 table controls，必須抽成該 feature 的共用 config／hook 供其他頁面重用；不得在 Settings 或詳情頁另做外觀相似的 Card、toolbar、Add filter、Search、Sort 或 Pagination。
+- 需要讓管理員客製列表欄位時，使用 `DataTableCard.columnConfigurationKey` 啟用共用的 Medusa-style column configuration：toolbar 顯示 Adjustments menu、可切換欄位顯示、拖曳 header 排序、Reset columns，並以該 key 持久化使用者選擇。持久化的權威來源必須是 `user_table_views`，以登入者 `user_id + table_key + view name` 隔離；`localStorage` 只能作為離線或 API／migration 暫時不可用時的 last-known-good fallback，不可作為唯一資料來源。Feature 不得自己建立另一套欄位選單、DnD 或儲存 API；utility column 以 `column.fixed = true` 保持顯示且禁止拖曳，非文字 header 必須提供 `column.label`。Products table 固定啟用 key `products`，Thumbnail 與 row actions 維持固定欄位。
+  - **任何重用 Product Card／Product resource columns 的頁面都不可預設顯示所有欄位。** `/dashboard/products`、Sales Channel 詳情的 Products Card、Add-products selector 與其他嵌入式 Product table 必須重用 `PRODUCT_TABLE_COLUMNS`，並使用相同的 `columnConfigurationKey="products"` 與 loader-prefetched `initialColumnConfiguration`。預設只顯示 Thumbnail、Product、Collection、Sales Channels、Variants、Status、Updated；Handle、Created、Type、Discountable、Weight、Metadata keys 等次要欄位必須維持 `defaultVisible = false`，只供使用者從 Column Settings 主動開啟。不可因為 selector、detail card 或 `hideHeader` 模式沒有傳 configuration key，就把完整 column array 全部展開；任一 Product Card 調整顯示或排序後，其他 Product Card 必須透過同一筆 `user_table_views` 設定互通。
+  - 啟用資料庫欄位配置的 route 必須在 loader prefetch 中 `await queryClient.ensureQueryData(tableViewQueries.detail(tableKey))`，view 使用同一 query key 並將結果傳入 `initialColumnConfiguration`。不得等到 `useEffect`／首次 paint 後才套用遠端順序，造成 table 欄位跳動；localStorage 同步初始化只負責 API 失敗的 fallback。
+  - `DataTableCard` toolbar 的 Column、Sort、Filter 等 dropdown 必須使用同一套 compact menu 尺寸：trigger 使用 `variant="cardHeader" size="xs"`；content 沿用 `DropdownMenuContent` 預設 `min-w-[8rem] p-1`，不可為單一 menu 任意放大；label、item、checkbox item 統一 `text-xs`、`px-2/py-1.5` 節奏（checkbox 為 indicator 保留 `pl-8`）；footer action 使用 `DropdownMenuItem`，不可在 menu 裡嵌入另一套 Button 尺寸。圖示沿用 dropdown primitive 的預設 `size-4`，只有狀態 dot／kbd 等語意圖示可使用既定例外。
+  - Column Settings 應同時提供主要欄位與有管理價值的次要欄位；次要欄位使用 `column.defaultVisible = false`，只出現在選單且首次／Reset 後維持隱藏，不能為了增加選項改變既有預設 table。新增欄位後，舊 View 未記錄的新次要欄位也必須維持隱藏。欄位項目區固定 `max-h-56 overflow-y-auto overscroll-contain`，只有清單捲動，標題與 Reset 必須保持可見；不可讓大量欄位把整個 popup 撐出 viewport。
 - **任何列與欄的資料都必須用 `src/components/ui/table.tsx` 的 `Table` 系列**，不可用 `div` + `flex-1` 拼一張看起來像表格的東西。這條不只適用於列表頁：表單或 wizard 裡的表格（例如商品建立的變體矩陣）同樣適用。列表頁另外還要包在 `DataTableCard` 裡，那是額外要求，不是替代。
   - `flex-1` 拼出來的欄寬只是「看起來對齊」，欄位一多或內容一長就會各列不同寬；而且沒有 table 語意，螢幕閱讀器讀不出列與欄的關係。
   - `TableHead` 與 `TableCell` 已經有 `px-4` 與 `[&:has([role=checkbox])]:pr-0`，不要再自己補 `pl-4` 之類的 padding。
 - **Table 的預設密度是固定格式，不由 feature 自行決定。** `TableHead` 與 `TableRow` 統一為 `h-12`，`TableCell` 統一使用 primitive 的 `px-4 py-1.5`；feature 不得用 `h-*`、`min-h-*` 或 `py-*` 改寫一般資料列。若產品真的需要 compact／comfortable 密度，必須先在 `Table` primitive 建立具名 variant，並讓 header、row、cell 一起切換，不可只縮其中一層。
 - Checkbox、文字、Badge、Switch 與 row actions 都必須放進同一套 `TableHead`／`TableRow`／`TableCell` 結構；欄寬只由 column contract 或對應的 head/cell class 決定，禁止為單一頁面建立另一套 table row 盒模型。
+- **同一張 `DataTableCard` 的一般資料欄必須使用一致的欄寬策略。** Thumbnail、checkbox、status actions 等 utility columns 可使用固定窄寬；其餘同層資料欄若沒有明確的資訊層級差異，應使用相同比例（例如同為 `w-1/5`），不可混用未指定寬度、`w-64`、`w-32` 造成任意伸縮。可能過長的文字要在 cell 內使用 `truncate`，不能讓內容反向撐大欄位。只有欄位本身確實需要不同閱讀空間時才能配置不同寬度，且 header 與 cell 必須透過同一個 column `className` 同步。
+  - Products table 的既定資訊層級是：Thumbnail `w-10`；Product 與 Sales Channels 各 `w-[24%]`；Collection `w-[16%]`；Variants 與 Status 各 `w-32 min-w-32 whitespace-nowrap`；Updated `w-36 min-w-36 whitespace-nowrap`；row actions 由 `DataTableCard` 固定 `w-16`。不可再改成全部等寬，也不可移除寬度讓內容自行決定版面。固定資訊欄在窄畫面不得換行或縮到小於 `min-w-*`；空間不足交給 `DataTableCard` 的既有橫向 scroll viewport。Updated 必須顯示，因為這張表提供 Updated 排序；可排序但看不到排序依據屬於不完整的 table contract。
+- **`DataTableCard` 的 Product／Variant 資源縮圖以本專案 Variants table 的欄位格式為準，尺寸與圖片模式對齊 Medusa Dashboard `Thumbnail`。** 縮圖必須是獨立、無標題的 `w-10` column，圖片 cell 使用 `w-6` 對齊容器；Product／Title 欄只顯示文字，不可把圖片塞進 Product／Title cell。圖片使用共用 `ImageSmBlock` 的 `w-6 h-8`（24×32px）、`object-cover object-center`，盒模型固定 `rounded-[4px]`、border、component background 與 overflow hidden。Medusa 的 `rounded` 實際為 4px；不可改用本專案的 `rounded-sm`（目前 token 為 6px），也不得自行改成 `size-8` 正方形或 feature-specific thumbnail wrapper。無圖片時仍保留相同 `w-6` 對齊容器並置中顯示 `size-4` placeholder icon。其他 Table Card 只要呈現相同 Product／Variant identity，也重用這套 column contract 與 primitive；若需要不同密度，先在共用 thumbnail primitive 建立具名 size variant，不得由單一頁面覆寫。
 - **Table 中所有狀態語意一律使用 `src/components/ui/status-badge.tsx` 的 `StatusBadge`，並指定 `variant="plain"`。** 樣式固定為小色點加文字，不得在單一 table 改用實心 `Badge`、只有文字或自行拼色點。顏色語意統一：green 表示有效／已發布／啟用／True，grey 表示草稿／停用／False，amber 表示等待或警告，red 表示封存或錯誤，blue 表示資訊型範圍（例如 Global）。一般資料標籤（選項值、檔案格式、貨幣代碼）不是狀態，繼續使用一般 `Badge`。Card header 的狀態可使用 `StatusBadge` 預設帶底色 variant，不受 table 的 `plain` 限制。
 - **一般 Dashboard Card（包含 Table Card）一律使用 `h-auto`；Table 使用固定 page size。** Card 高度由內容自然撐開，不得用 `ResizeObserver`、`window.innerHeight` 或 Card 可用高度動態改寫 page size。
   - Server-side 分頁的 `limit` 只能來自穩定的 route search、使用者明確選擇的 rows-per-page，或該 feature 的固定預設；視窗縮放、sidebar 展開與 Card layout 變化不得改寫 URL `limit` 或觸發新的資料請求。
@@ -405,6 +422,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 ### 批次與矩陣編輯一律使用 DataGrid
 
 - Variant、Inventory、Price 等「列與欄本身就是編輯介面」的批次／矩陣編輯，一律使用 `src/components/ui/data-grid.tsx` 的 `DataGrid` 系列，不可在 feature 內重複 table、cell input、focus ring 或 boolean cell 的 class。一般資源列表仍使用 `DataTableCard`；`DataGrid` 不取代列表頁的搜尋、filter、pagination 與 row actions contract。
+  - Product Variants 的批次價格與庫存沿用同一個 `ProductVariantsBulkEditor`、`RouteFormModal`、`DialogFooterActions` 與 `DataGrid`：價格矩陣為 Variant × Store Currency，庫存矩陣為 Variant × Available quantity；Variants card 只提供進入這兩個 route editor 的 action，不得另做 feature-specific modal/table。提交必須驗證所有 variant 都屬於目前 product，價格只接受 Store 已啟用 currency，未追蹤庫存的 variant 顯示唯讀 `Not tracked` 且不送出數量。
 - DataGrid 的可編輯文字、數字與價格欄位使用 `DataGridInput`：靜止時是透明背景、無獨立輸入框外殼的 cell；focus 時由 primitive 顯示 `1.5px`、`blue-500/50`、`ring-inset` 的藍色半透明邊線。Feature 不得用一般 `Input` 的 card variant 塞進 cell，也不得自行覆寫另一種 focus 色、寬度或陰影。
 - Boolean 欄位使用 `DataGridBooleanCell` 並置中承載共用 `Checkbox`；純顯示值使用 `DataGridReadonlyCell` 與 muted text。不要用 disabled input 假裝唯讀，也不要把 checkbox 的定位與 focus surface 分散到各 feature。
 - DataGrid 必須保留真正的 table 語意，並由 `DataGridHeader`、`DataGridHead`、`DataGridBody`、`DataGridRow`、`DataGridCell` 組成。欄位超出容器時在 grid 自己的 scroll region 水平捲動；長矩陣垂直捲動時表頭保持可見。欄寬由 head/cell contract 決定，不用 `div + flex-1` 模擬欄位。
@@ -415,6 +433,11 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 
 - 所有 Dialog、Sheet、Drawer、Alert Dialog 或其他開啟式視窗，只要包含表單或可編輯資料，其欄位內容都必須由 `fields` 設定提供，使用既有 `FormField`／`FieldConfig` 型別並交由 `FieldsRenderer` 渲染。
 - Route-backed create／edit wizard 只要已採用 fields-driven 區塊，也套用同一規則；`Input`、`Textarea`、`Select`、Switch 設定卡與表單內提示都必須宣告為 `FormField`，不可在 feature view 旁邊再硬寫一份 JSX。
+- **`/dashboard/products/create` 的 Organize step 維持兩欄 fields grid，但 `Discountable` Switch 必須設定 `colSpan: 2`、獨占完整一列。** `FieldsRenderer` 必須把 `colSpan: 2` 實際映射為 `grid-column: 1 / -1`，使欄位跨滿目前 responsive grid 的所有欄；不可只加一個未驗證實際 computed grid placement 的 utility class，也不可寫死為只在特定 breakpoint／固定欄數成立的寬度。Collection、Type、Tags、Categories、Sales Channels 等 picker 繼續使用 `colSpan: 1` 成對排列；不可讓帶說明文字的 Discountable panel 只塞在半欄並與 Collection 並排，也不可為了達成滿寬在 `StepOrganize` 寫 feature-specific wrapper/class。欄位排列的單一來源是 `productOrganizationFields`，由 `FieldsRenderer` 依 `colSpan` 渲染。
+- **多欄 fields grid 中的長文字 `textarea` 預設必須占滿整列。** `/dashboard/products/create` Details step 的 Title、Subtitle、Handle 使用三個 `colSpan: 1` 欄位；Description 必須使用 `colSpan: 2` 的「滿列」語意，由 `FieldsRenderer` 映射為 `grid-column: 1 / -1`。不可同時宣告 `colSpan: 1` 再用 `sm:col-span-3`、feature `className` 或 wrapper 嘗試覆蓋，因為 fields contract 與 CSS placement 會互相衝突。只有產品明確要求短版 textarea 與另一欄並排時，才可宣告單欄並在規則或設計稿中說明。
+- 同一資源的 Create／Edit 若共用兩個以上相同語意欄位，不得在兩個 view 內各自維護 `fields={[...]}`。必須抽到該 feature 自己的 `config/<resource>-form-fields.ts`，由單一 factory 回傳 `FormField[]`；Create／Edit 只能傳入初始值、可選項或明確的 mode 差異。
+- form-fields config 只負責欄位 contract、文案、排列與初始值映射，不得匯入 query、server function、action 或 mutation。提交與資料載入仍留在對應 view／action 邊界，避免 config 反向承擔流程責任。
+- 不同工作流程不得為了共用而硬合併。例如多步驟 Create Wizard 與簡單 Edit 表單若欄位結構、狀態模型不同，應各自保留；只有實際重複的欄位群才抽成 feature-local factory。
 - `fields` 是視窗內表單內容的單一真實來源，必須包含欄位名稱、label、type、初始值、placeholder、options、required、validation 與版面資訊；視窗 component 只負責標題、說明、開關狀態、submit action 與整體 layout。
 - 不可直接在個別 Dialog 或 Sheet 內硬寫 `Input`、`Textarea`、`Select`、`PhoneInput` 或其他資料欄位。若現有 `FieldsRenderer` 不支援需求，應新增可重用的 field type 與對應 renderer，再由 `fields` 宣告使用。
 - `type: "switch"` 的 control、label、description 與 panel 盒模型由共用 `SwitchField` 負責，feature 只提供 boolean value 並處理 change；不得為不同功能各自拼一個 Switch 卡片。
@@ -430,6 +453,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 資產專用操作沿用既有邊界：Edit 的 `Folder` 與 Name／Alt 等欄位相同，屬於目前 active item，必須顯示該 Asset 的 `folderId` 或 Folder 的 `parentId`；切換左側 item 時 fields 必須重新掛載並顯示該 item 自己的值。多選 Float Move 才是把全部選取項目移到單一共同目的地，仍使用 `AssetMoveDialog`。圖片處理使用 `AssetPostProcessDialog`。預覽使用 `/dashboard/assets/view?assetId=...` 路由；單選與複選編輯都使用 `/dashboard/assets/$id/edit`，並共用 `AssetEditSurface`。複選清單必須序列化在 `?editItems`，由 route 重新批次讀取，不得依賴 explorer 的 Zustand selection，也不得重新加入 `AssetBulkEditDialog`／Bulk Edit store 或 Preview Dialog。
 - Edit 不得另外建立 `Location` section、selection-level destination、`Keep current location` 或獨立 Move 按鈕；Folder 必須是 `generateEditFields(activeItem)` 內的一般 `folder-select` field。每個 `AssetEditItem` 保存自己的 `locationId`，其中 folder id 表示該 item 的父資料夾、`null` 表示 Root；底部 Save 一次提交所有 item 各自的 Metadata 與 location，後端在同一個 D1 batch 原子更新。被選取的 Folder ids 必須透過 `excludedIds` 排除於 FolderSelect；循環移動、父子同選、目的地重名，以及 Folder 同時重新命名與移動後的 effective path，必須在任何 D1 statement 執行前完成驗證。
 - Assets table 每列 `…` 選單不提供 Move；單筆位置變更由 Edit 的 Folder field 負責，多選共同目的地由 Float Move 負責，拖放 Move 維持快速路徑。不得重新把單筆 `AssetMoveDialog` 接回 table row menu。
+- Asset library 使用 soft delete，因此資料庫的 `ON DELETE CASCADE` 不會替 Product media 清理關聯。刪除 Asset／含 Asset 的 Folder 前，server 必須在展開完整 selection 後檢查 active Product 與 Variant 引用；有引用時第一步只回傳影響數量與範例名稱，必須由共用確認視窗取得明確的 `detachReferences` 二次確認。確認後在同一個 D1 batch 刪除 `product_assets`／`product_variant_assets`、依剩餘 rank 重算 Product／Variant thumbnail、更新 affected records，再 soft-delete Asset；不可級聯刪除 Product／Variant，也不可只靠讀取端隱藏壞圖。R2 封存接續既有流程，client 成功後必須同步 invalidate Assets、Products 與 Product Variants query families。
 - Assets 編輯路由的 `$id` 代表目前右側正在編輯的項目；切換左側項目時使用 `replace` 更新 `$id`，選取集合仍由 `editItems` 保存。Server 必須以單次 assets query 加單次 folders query 批次載入，不可為每個 tile 各發一個 detail request。
 - 共用視窗只能在 `src/routes/_backend/dashboard.tsx` 的 Dashboard layout 掛載一次，功能頁不得再次 mount 相同視窗。新增共用視窗時，也必須在 layout 集中 lazy-load 與掛載。
 - 刪除操作不得由頁面或 action menu 直接呼叫 delete server function。必須先透過 `InfoAlert` 顯示目標、影響範圍與不可復原提示，再由確認按鈕提交 hidden fields 與 delete action。
@@ -445,7 +469,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 任何「資源清單」頁面（Products、Collections、Options、未來的 Orders、Customers 等）都必須使用 `dashboard/-components/data-table-card` 的 `DataTableCard`，不可自行拼一份 `CardWrapper` + `Table`。
 - 版面固定為三段，順序不可調換：
   - **Header**：只放 `label`、`description` 與主要操作按鈕（通常是 Create）；搜尋、filter、排序不得放在 Header。
-  - **Toolbar**：只要頁面提供搜尋、filter 或排序，就統一渲染在 Header 下方、Table 上方的 `DataTableToolbar`。Add filter 與 active filter chips 放左側，Search 與 Sort 放右側；頁面不得自行選擇另一個位置或重建一列 controls。
+  - **Toolbar**：只要頁面提供搜尋、filter 或排序，就統一渲染在 Header 下方、Table 上方的 `DataTableToolbar`。Add filter 與 active filter chips 放左側；右側固定依序為 Search → Column Settings → Sort，沒有提供的 control 才略過。頁面不得自行交換順序、選擇另一個位置或重建一列 controls。
   - **Table**：欄位由 `columns` 宣告，每欄提供 `key`、`header`、`cell` 與可選 `className`；`className` 會同時套到 `TableHead` 與 `TableCell`，欄寬才會對齊。
 - **Footer**：結果筆數與分頁由 `DataTablePagination` 提供；只要 feature 傳入 pagination，footer 與 First／Previous／Next／Last 四個切頁按鈕就必須持續顯示。位於第一頁、最後一頁或只有一頁時，對應按鈕只設為 disabled，不可隱藏整個 pagination。
 - 每列的操作一律收進尾端的 `RowActionsMenu`（`…` 按鈕），透過 `rowActions` 回傳 `RowAction[]`。不可在列上並排多顆圖示按鈕，否則資源長出第三、第四個操作時版面會崩。刪除類操作標記 `destructive: true`，會自動排到分隔線之後並套用警示色。

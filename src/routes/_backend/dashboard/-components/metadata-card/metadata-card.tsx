@@ -30,6 +30,7 @@ export const MetadataCard = ({
   page = "metadata",
   childId,
   returnTo,
+  scope = "global",
 }: {
   slug: string;
   id: string;
@@ -41,13 +42,14 @@ export const MetadataCard = ({
   childId?: string;
   /** Detail surface to restore after closing a child editor. */
   returnTo?: string;
+  scope?: "global" | "settings";
 }) => {
   const navigate = useNavigate();
   const view = useMemo(
     () =>
-      findCollection(getConfig().client.collections.global, slug)?.pages?.[page]
+      findCollection(getConfig().client.collections[scope], slug)?.pages?.[page]
         ?.view,
-    [slug, page],
+    [page, scope, slug],
   );
   const preload = useViewPreload(view);
 
@@ -61,10 +63,17 @@ export const MetadataCard = ({
       return;
     }
 
-    void navigate({
-      to: "/dashboard/$slug/$id/$page",
-      params: { slug, id, page },
-    });
+    if (scope === "settings") {
+      void navigate({
+        to: "/dashboard/settings/$slug/$id/$page",
+        params: { slug, id, page },
+      });
+    } else {
+      void navigate({
+        to: "/dashboard/$slug/$id/$page",
+        params: { slug, id, page },
+      });
+    }
   };
 
   return (

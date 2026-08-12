@@ -13,8 +13,8 @@ import {
   createFileRoute,
   Outlet,
   redirect,
-  useLocation,
   useMatches,
+  useRouterState,
 } from "@tanstack/react-router";
 import { lazy, Suspense, useMemo } from "react";
 
@@ -53,11 +53,14 @@ export const Route = createFileRoute("/_backend/dashboard")({
 
 function RouteComponent() {
   const { publicURL, session } = Route.useRouteContext();
-  // Read from the router rather than threading a snapshot through beforeLoad:
-  // this stays reactive and does not rely on route context inference.
-  const location = useLocation();
+  // The shell follows the requested location immediately. Route-level pending
+  // components below replace the outlet with the destination's skeleton while
+  // its loader resolves, so the sidebar never describes the previous page.
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  });
   const config = getConfig().client;
-  const isSettings = location.pathname.startsWith("/dashboard/settings");
+  const isSettings = pathname.startsWith("/dashboard/settings");
   const rawSideData = isSettings
     ? config.collections.settings
     : config.collections.global;
@@ -89,7 +92,7 @@ function RouteComponent() {
     [session.user.email, session.user.image, session.user.name],
   );
 
-  const slugs = location.pathname.split("/").filter(Boolean).slice(1);
+  const slugs = pathname.split("/").filter(Boolean).slice(1);
   const allCollections = [
     ...config.collections.global,
     ...config.collections.settings,
@@ -127,7 +130,7 @@ function RouteComponent() {
         timeout={config.auth?.autoLogout?.timeout ?? 30}
         promptBeforeIdle={config.auth?.autoLogout?.promptBeforeIdle ?? 25}
       >
-        <RegisterPathnameHistory />
+        <RegisterPathnameHistory pathname={pathname} />
         <SidebarProvider>
           <AppSidebar
             sideData={sideData}
@@ -135,6 +138,7 @@ function RouteComponent() {
             appName={config.appName}
             publicURL={publicURL}
             user={sidebarUser}
+            activePathname={pathname}
           />
           <SidebarInset>
             <DashboardHeader items={items} />
@@ -152,15 +156,6 @@ function RouteComponent() {
                 <AssetPostProcessDialog />
               </Suspense>
 
-              {/* <AssetsDialogs /> */}
-              {/*
-                Keep the outlet mounted across navigations. Swapping it for a
-                spinner while the router is pending remounts the whole view on
-                every search-param change, so sorting or paging made the list
-                card disappear and come back. Navigation feedback already comes
-                from <TopLoader /> in _backend.tsx, and each dynamic route
-                Suspends on its own lazy component for a genuine first load.
-              */}
               {/*
                 The shell above is a fixed viewport box with `overflow-hidden`,
                 so this is the only scroll container a page gets. Without it a

@@ -1,51 +1,45 @@
-import type { ProductDTO } from "@/lib/product/dto/product.dto";
-import type { ProductStatus } from "@/db/product.schema";
-import type { DashboardSearch } from "@/lib/validations/dashboard-search";
+import type { ProductListItemDTO } from "@/lib/product/dto/product.dto";
 import {
   CollectionCreateButton,
   DataTableCard,
   deleteActionIcon,
   useCollectionEditAction,
   useCollectionDetailPreload,
-  type DataTableColumn,
-  type DataTableFilterDefinition,
-  type DataTableFilterOption,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import {
   normalizeProductListParams,
   productQueries,
 } from "@queries/product.queries";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useCallback, useMemo } from "react";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
+import { useCallback } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { deleteProductsAction } from "./product-actions";
-import { ProductStatusBadge } from "./components/product-status-badge";
-
-const PRODUCT_STATUS_OPTIONS = [
-  { value: "draft", label: "Draft" },
-  { value: "published", label: "Published" },
-  { value: "archived", label: "Archived" },
-] satisfies DataTableFilterOption<ProductStatus>[];
-
-const PRODUCT_DATE_OPTIONS = [
-  { value: "24h", label: "Last 24 hours" },
-  { value: "7d", label: "Last 7 days" },
-  { value: "30d", label: "Last 30 days" },
-  { value: "90d", label: "Last 90 days" },
-] satisfies DataTableFilterOption<
-  NonNullable<DashboardSearch["productCreatedWithin"]>
->[];
+import { PRODUCT_SORT_OPTIONS } from "./config/product-table.config";
+import { PRODUCT_TABLE_COLUMNS } from "./config/product-table-columns";
+import { useProductTableControls } from "./hooks/use-product-table-controls";
+import { tableViewQueries } from "@queries/table-view.queries";
+import { ProductIndexSkeleton } from "./product-index-skeleton";
 
 const Products = () => {
-  const search = useSearch({ strict: false }) as DashboardSearch;
+  const { search, filters } = useProductTableControls();
   const navigate = useNavigate();
   const preloadDetail = useCollectionDetailPreload("products");
   const editAction = useCollectionEditAction("products");
   const queryClient = useQueryClient();
   const params = normalizeProductListParams(search);
   const { data: result, isPending } = useQuery(productQueries.list(params));
+  const { data: tableViewResult } = useSuspenseQuery(
+    tableViewQueries.detail("products"),
+  );
+  const initialColumnConfiguration =
+    tableViewResult.success && tableViewResult.data
+      ? {
+          order: tableViewResult.data.columnOrder,
+          hidden: tableViewResult.data.hiddenColumns,
+        }
+      : null;
 
   const { setInfoData, setOpen: setInfoOpen } = useInfoStore(
     useShallow((state) => ({
@@ -62,7 +56,7 @@ const Products = () => {
   // shared `fields` dialog cannot express, so it lives on its own route.
 
   const handleDelete = useCallback(
-    (product: ProductDTO) => {
+    (product: ProductListItemDTO) => {
       setInfoData({
         title: "Delete Product",
         description: `Are you sure you want to delete "${product.title}"? Its variants and prices go with it. This action cannot be undone.`,
@@ -83,113 +77,22 @@ const Products = () => {
     [invalidate, setInfoData, setInfoOpen],
   );
 
-  const columns = useMemo<DataTableColumn<ProductDTO>[]>(
-    () => [
-      {
-        key: "title",
-        header: "Title",
-        className: "w-64 font-medium",
-        cell: (product) => product.title,
-      },
-      {
-        key: "handle",
-        header: "Handle",
-        className: "text-muted-foreground",
-        cell: (product) => product.handle,
-      },
-      {
-        key: "status",
-        header: "Status",
-        className: "w-32",
-        cell: (product) => (
-          <ProductStatusBadge status={product.status} variant="plain" />
-        ),
-      },
-      {
-        key: "updatedAt",
-        header: "Updated",
-        className: "w-40 text-muted-foreground",
-        cell: (product) => new Date(product.updatedAt).toLocaleDateString(),
-      },
-    ],
-    [],
-  );
-
   const products = result?.success ? (result.data?.products ?? []) : [];
-  const setFilter = <
-    TKey extends
-      | "productStatus"
-      | "productCreatedWithin"
-      | "productUpdatedWithin",
-  >(
-    key: TKey,
-    value: DashboardSearch[TKey],
-  ) => {
-    void navigate({
-      to: ".",
-      search: (previous: DashboardSearch) => ({
-        ...previous,
-        [key]: value,
-        page: undefined,
-      }),
-      replace: true,
-    });
-  };
-  const filters: DataTableFilterDefinition[] = [
-    {
-      key: "status",
-      label: "Status",
-      options: [...PRODUCT_STATUS_OPTIONS],
-      values: search.productStatus ? [search.productStatus] : [],
-      multiple: false,
-      onValuesChange: (values) =>
-        setFilter(
-          "productStatus",
-          values.at(-1) as DashboardSearch["productStatus"],
-        ),
-    },
-    {
-      key: "created",
-      label: "Created",
-      options: [...PRODUCT_DATE_OPTIONS],
-      values: search.productCreatedWithin ? [search.productCreatedWithin] : [],
-      multiple: false,
-      onValuesChange: (values) =>
-        setFilter(
-          "productCreatedWithin",
-          values.at(-1) as DashboardSearch["productCreatedWithin"],
-        ),
-    },
-    {
-      key: "updated",
-      label: "Updated",
-      options: [...PRODUCT_DATE_OPTIONS],
-      values: search.productUpdatedWithin ? [search.productUpdatedWithin] : [],
-      multiple: false,
-      onValuesChange: (values) =>
-        setFilter(
-          "productUpdatedWithin",
-          values.at(-1) as DashboardSearch["productUpdatedWithin"],
-        ),
-    },
-  ];
+  if (isPending) return <ProductIndexSkeleton />;
 
   return (
     <DataTableCard
       label="Products"
       description="Manage your products and catalogue."
       searchPlaceholder="Search"
+      columnConfigurationKey="products"
+      initialColumnConfiguration={initialColumnConfiguration}
       filters={filters}
-      sortOptions={[
-        { value: "name", label: "Title" },
-        { value: "createdAt", label: "Created" },
-        { value: "updatedAt", label: "Updated" },
-      ]}
+      sortOptions={PRODUCT_SORT_OPTIONS}
       headerActions={<CollectionCreateButton slug="products" />}
-      columns={columns}
+      columns={PRODUCT_TABLE_COLUMNS}
       rows={products}
       getRowId={(product) => product.id}
-      isPending={isPending}
       errorMessage={result && !result.success ? result.message : null}
       onRetry={invalidate}
       emptyTitle="No products yet"

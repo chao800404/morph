@@ -1,4 +1,4 @@
-import { PageSpinner } from "@/components/loading/page-spinner";
+import { DashboardRoutePending } from "@/routes/_backend/dashboard/-components/loading/dashboard-route-pending";
 import { NotFound } from "@/components/not-found/not-found";
 import { findCollection } from "@/lib/config/navigation";
 import { getConfig } from "@/server/get-config";
@@ -24,6 +24,9 @@ export const Route = createFileRoute("/_backend/dashboard/settings/$slug/$id")({
       breadcrumbHref: `/dashboard/settings/${params.slug}/${params.id}`,
     };
   },
+  pendingComponent: DashboardRoutePending,
+  pendingMs: 0,
+  pendingMinMs: 250,
   component: RouteComponent,
 });
 
@@ -39,7 +42,7 @@ function RouteComponent() {
   if (!detail) return hasChild ? <Outlet /> : <NotFound />;
 
   const DetailView = detail.view;
-  const PendingView = detail.pendingView ?? PageSpinner;
+  const PendingView = detail.pendingView;
   return (
     <>
       <Suspense fallback={<PendingView />}>

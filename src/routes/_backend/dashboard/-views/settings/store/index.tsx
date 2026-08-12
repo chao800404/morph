@@ -54,9 +54,11 @@ const columns: DataTableColumn<StoreCurrencyDTO>[] = [
 const StoreGeneralSection = ({
   storeName,
   defaultCurrency,
+  defaultSalesChannel,
 }: {
   storeName: string;
   defaultCurrency?: StoreCurrencyDTO;
+  defaultSalesChannel?: { id: string; name: string };
 }) => {
   const navigate = useNavigate();
 
@@ -85,6 +87,10 @@ const StoreGeneralSection = ({
       <div className="grid grid-cols-2 gap-4 px-6 py-4 text-sm text-muted-foreground">
         <span className="font-medium">Name</span>
         <span>{storeName}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-4 px-6 py-4 text-sm text-muted-foreground">
+        <span className="font-medium">Default sales channel</span>
+        <span>{defaultSalesChannel?.name ?? "—"}</span>
       </div>
       <div className="grid grid-cols-2 gap-4 px-6 py-4 text-sm text-muted-foreground">
         <span className="font-medium">Default currency</span>
@@ -140,6 +146,11 @@ const Store = () => {
   const result = query.data;
   const currencies = result?.success ? result.data.supportedCurrencies : [];
   const defaultCurrency = currencies.find((currency) => currency.isDefault);
+  const defaultSalesChannel = result?.success
+    ? result.data.salesChannels.find(
+        (channel) => channel.id === result.data.defaultSalesChannelId,
+      )
+    : undefined;
   const normalizedQuery = search.q?.trim().toLocaleLowerCase() ?? "";
   const sortBy = Array.isArray(search.sortBy)
     ? search.sortBy[0]
@@ -210,6 +221,7 @@ const Store = () => {
       <StoreGeneralSection
         storeName={result?.success ? result.data.storeName : "Morph store"}
         defaultCurrency={defaultCurrency}
+        defaultSalesChannel={defaultSalesChannel}
       />
 
       <DataTableCard

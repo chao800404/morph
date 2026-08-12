@@ -28,8 +28,8 @@ describe("DataTableSearch", () => {
     rerender(<DataTableSearch />);
 
     expect(screen.getByPlaceholderText("Search")).toBe(input);
-    expect(input).toHaveFocus();
-    expect(input).toHaveValue("red");
+    expect(document.activeElement).toBe(input);
+    expect((input as HTMLInputElement).value).toBe("red");
   });
 
   it("keeps focus in the input after clearing", () => {
@@ -41,7 +41,13 @@ describe("DataTableSearch", () => {
     fireEvent.mouseDown(screen.getByRole("button", { name: "Clear search" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
 
-    expect(input).toHaveFocus();
-    expect(input).toHaveValue("");
+    expect(document.activeElement).toBe(input);
+    expect((input as HTMLInputElement).value).toBe("");
+  });
+
+  it("exposes the configured search label to assistive technology", () => {
+    render(<DataTableSearch placeholder="Search users" />);
+
+    expect(screen.getByRole("textbox", { name: "Search users" })).toBeTruthy();
   });
 });

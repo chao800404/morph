@@ -33,6 +33,9 @@ const ProductCreateWizard = () => {
     : [];
   const [draft, dispatch] = useProductDraft(
     storeCurrencies.map((currency) => currency.code),
+    currencyResult.success
+      ? currencyResult.data.defaultSalesChannelId
+      : undefined,
   );
   const [step, setStep] = useState<StepIndex>(0);
   const [pending, setPending] = useState(false);

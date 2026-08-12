@@ -17,6 +17,115 @@ import { productReadMiddleware } from "../middleware/auth.middleware";
 
 const variantMediaLimit = () => getConfig().server.upload.maxAssetsPerRecord;
 
+const bulkPriceSchema = z.object({
+  productId: z.uuid(),
+  variants: z.array(z.object({
+    id: z.uuid(),
+    prices: z.array(z.object({ currencyCode: z.string().min(3).max(3), amount: z.number().int().min(0) })),
+  })).max(500),
+});
+
+export const bulkUpdateVariantPrices = createServerFn({ method: "POST" })
+  .validator((data: unknown) => bulkPriceSchema.parse(data))
+  .middleware([productAdminMiddleware])
+  .handler(async ({ data, context }) => {
+    try {
+      const product = await productDal.findDetail(data.productId);
+      if (!product) return { success: false as const, message: "Product not found", data: null };
+      const allowed = new Set(product.variants.map((variant) => variant.id));
+      if (data.variants.some((variant) => !allowed.has(variant.id))) {
+        return { success: false as const, message: "A variant does not belong to this product", data: null };
+      }
+      const currencies = [...new Set(data.variants.flatMap((variant) => variant.prices.map((price) => price.currencyCode)))];
+      if (!(await currencyDal.areSupported(currencies))) {
+        return { success: false as const, message: "A price uses a currency that is not enabled for this store", data: null };
+      }
+      for (const variant of data.variants) {
+        if (new Set(variant.prices.map((price) => price.currencyCode)).size !== variant.prices.length) {
+          return { success: false as const, message: "Each currency may only appear once per variant", data: null };
+        }
+      }
+      const previousById = new Map(
+        product.variants.map((variant) => [variant.id, variant.prices]),
+      );
+      const updated: string[] = [];
+      try {
+        for (const variant of data.variants) {
+          // Track the current row before updating it: price replacement uses
+          // multiple D1 statements and can fail after its first mutation.
+          updated.push(variant.id);
+          await productVariantDal.update(variant.id, { prices: variant.prices, updatedBy: context.user.id });
+        }
+      } catch (error) {
+        // D1 has no interactive transaction. Restore every completed row so a
+        // failed matrix never remains partially applied.
+        await Promise.allSettled(
+          updated.map((id) =>
+            productVariantDal.update(id, {
+              prices: previousById.get(id) ?? [],
+              updatedBy: context.user.id,
+            }),
+          ),
+        );
+        throw error;
+      }
+      return { success: true as const, message: "Variant prices updated successfully", data: { count: data.variants.length } };
+    } catch (error) {
+      console.error("Bulk update variant prices error:", error);
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed to update variant prices", data: null };
+    }
+  });
+
+const bulkInventorySchema = z.object({
+  productId: z.uuid(),
+  variants: z.array(z.object({ id: z.uuid(), quantity: z.number().int().min(0).max(1_000_000) })).max(500),
+});
+
+export const bulkUpdateVariantInventory = createServerFn({ method: "POST" })
+  .validator((data: unknown) => bulkInventorySchema.parse(data))
+  .middleware([productAdminMiddleware])
+  .handler(async ({ data, context }) => {
+    try {
+      const product = await productDal.findDetail(data.productId);
+      if (!product) return { success: false as const, message: "Product not found", data: null };
+      const byId = new Map(product.variants.map((variant) => [variant.id, variant]));
+      if (data.variants.some((variant) => !byId.has(variant.id))) {
+        return { success: false as const, message: "A variant does not belong to this product", data: null };
+      }
+      const updated: string[] = [];
+      try {
+        for (const input of data.variants) {
+          const variant = byId.get(input.id)!;
+          await inventoryDal.ensureForVariant({ variantId: input.id, sku: variant.sku, title: `${product.title} - ${variant.title}`, quantity: variant.inventoryQuantity });
+          // Include the current row in compensation even if one of the two
+          // quantity writes fails midway through.
+          updated.push(input.id);
+          await productVariantDal.update(input.id, { inventoryQuantity: input.quantity, updatedBy: context.user.id });
+          await inventoryDal.setPrimaryLevelQuantity(input.id, input.quantity);
+        }
+      } catch (error) {
+        await Promise.allSettled(
+          updated.map(async (id) => {
+            const previous = byId.get(id)!;
+            await productVariantDal.update(id, {
+              inventoryQuantity: previous.inventoryQuantity,
+              updatedBy: context.user.id,
+            });
+            await inventoryDal.setPrimaryLevelQuantity(
+              id,
+              previous.inventoryQuantity,
+            );
+          }),
+        );
+        throw error;
+      }
+      return { success: true as const, message: "Variant inventory updated successfully", data: { count: data.variants.length } };
+    } catch (error) {
+      console.error("Bulk update variant inventory error:", error);
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed to update variant inventory", data: null };
+    }
+  });
+
 export const getVariantDetail = createServerFn({ method: "GET" })
   .validator((data: unknown) =>
     z.object({ id: z.uuid("Invalid variant ID") }).parse(data),

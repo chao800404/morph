@@ -1,4 +1,3 @@
-import { handleField } from "@/components/form/handle-field";
 import { createSurface } from "@/components/dialog/create-surface";
 import {
   parseSelectedAssets,
@@ -11,6 +10,7 @@ import type { Dispatch } from "react";
 import { OptionPicker } from "./option-picker";
 import type { DraftAction, ProductDraft } from "./use-product-draft";
 import { VariantMatrix } from "./variant-matrix";
+import { productGeneralFields } from "../config/product-form-fields";
 
 const detailFieldNames = [
   "title",
@@ -34,38 +34,14 @@ export const StepDetails = ({
   /** Empty until the author tries to leave the step. */
   issues?: { title?: string; options?: string };
 }) => {
-  const generalFields: FormField[] = [
-    {
-      type: "input",
-      name: "title",
-      label: "Title",
-      placeholder: "e.g. Summer T-Shirt",
-      value: draft.title,
-      autoFocus: true,
-      required: true,
-      error: issues.title,
-      colSpan: 1,
-    },
-    {
-      type: "input",
-      name: "subtitle",
-      label: "Subtitle",
-      optional: true,
-      value: draft.subtitle,
-      colSpan: 1,
-    },
-    handleField({ derivedFrom: "title", value: draft.handle, colSpan: 1 }),
-    {
-      type: "textarea",
-      name: "description",
-      label: "Description",
-      optional: true,
-      value: draft.description,
-      rows: 4,
-      colSpan: 1,
-      className: "sm:col-span-3",
-    },
-  ];
+  const generalFields = productGeneralFields({
+    title: draft.title,
+    subtitle: draft.subtitle,
+    handle: draft.handle,
+    description: draft.description,
+    titleError: issues.title,
+    mode: "create",
+  });
 
   const mediaFields: FormField[] = [
     {

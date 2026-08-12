@@ -25,6 +25,7 @@ type Props = React.ComponentProps<typeof Sidebar> &
     showSettings?: boolean;
     sideData?: NavMainProps[];
     publicURL: string;
+    activePathname: string;
   };
 
 function AppSidebarComponent({
@@ -33,6 +34,7 @@ function AppSidebarComponent({
   sideData,
   showSettings = true,
   publicURL,
+  activePathname,
   ...props
 }: Props) {
   const navigate = useNavigate();
@@ -80,6 +82,7 @@ function AppSidebarComponent({
               title={data.title}
               key={`${data.title}-${idx}`}
               items={data.items}
+              activePathname={activePathname}
             />
           ))}
         </Suspense>

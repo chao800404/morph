@@ -12,18 +12,21 @@ import {
   productTagLinks,
   productTags,
   productTypes,
+  productVariants,
   products,
 } from "@/db/product.schema";
 import {
   and,
   asc,
   count,
+  countDistinct,
   desc,
   eq,
   gte,
   inArray,
   isNull,
   like,
+  notInArray,
   or,
   SQL,
 } from "drizzle-orm";
@@ -35,6 +38,7 @@ import type {
   ProductDetailDTO,
   ProductDTO,
   ProductInsertDTO,
+  ProductListItemDTO,
   UpdateProductDTO,
 } from "../dto/product.dto";
 import { toProductOptionDTO } from "../mappers/product-option.mapper";
@@ -90,9 +94,7 @@ export const productDal = {
         ...(await db
           .select()
           .from(products)
-          .where(
-            and(inArray(products.id, group), isNull(products.deletedAt)),
-          )),
+          .where(and(inArray(products.id, group), isNull(products.deletedAt)))),
       );
     }
     return rows.map(toProductDTO);
@@ -168,56 +170,63 @@ export const productDal = {
     const db = await getDb();
     // Each link table is joined to the row it points at, so the names arrive
     // with the ids rather than costing another query per card.
-    const [options, variants, assetRows, tagRows, categoryRows, organization, channelRows] =
-      await Promise.all([
-        this.findOptions(id),
-        productVariantDal.findByProductId(id),
-        db
-          .select({ id: assets.id, name: assets.name, url: assets.url })
-          .from(productAssets)
-          .innerJoin(assets, eq(assets.id, productAssets.assetId))
-          .where(eq(productAssets.productId, id))
-          .orderBy(asc(productAssets.rank)),
-        db
-          .select({ id: productTags.id, value: productTags.value })
-          .from(productTagLinks)
-          .innerJoin(productTags, eq(productTags.id, productTagLinks.tagId))
-          .where(eq(productTagLinks.productId, id)),
-        db
-          .select({ id: productCategories.id, name: productCategories.name })
-          .from(productCategoryLinks)
-          .innerJoin(
-            productCategories,
-            eq(productCategories.id, productCategoryLinks.categoryId),
-          )
-          .where(eq(productCategoryLinks.productId, id)),
-        // Both are nullable single links, so one row carries both names and a
-        // left join keeps the product row when neither is set.
-        db
-          .select({
-            collectionTitle: productCollections.title,
-            typeValue: productTypes.value,
-          })
-          .from(products)
-          .leftJoin(
-            productCollections,
-            eq(productCollections.id, products.collectionId),
-          )
-          .leftJoin(productTypes, eq(productTypes.id, products.typeId))
-          .where(eq(products.id, id))
-          .limit(1),
-        db
-          .select({ channel: salesChannels })
-          .from(productSalesChannels)
-          .innerJoin(
-            salesChannels,
-            and(
-              eq(salesChannels.id, productSalesChannels.salesChannelId),
-              isNull(salesChannels.deletedAt),
-            ),
-          )
-          .where(eq(productSalesChannels.productId, id)),
-      ]);
+    const [
+      options,
+      variants,
+      assetRows,
+      tagRows,
+      categoryRows,
+      organization,
+      channelRows,
+    ] = await Promise.all([
+      this.findOptions(id),
+      productVariantDal.findByProductId(id),
+      db
+        .select({ id: assets.id, name: assets.name, url: assets.url })
+        .from(productAssets)
+        .innerJoin(assets, eq(assets.id, productAssets.assetId))
+        .where(and(eq(productAssets.productId, id), isNull(assets.deletedAt)))
+        .orderBy(asc(productAssets.rank)),
+      db
+        .select({ id: productTags.id, value: productTags.value })
+        .from(productTagLinks)
+        .innerJoin(productTags, eq(productTags.id, productTagLinks.tagId))
+        .where(eq(productTagLinks.productId, id)),
+      db
+        .select({ id: productCategories.id, name: productCategories.name })
+        .from(productCategoryLinks)
+        .innerJoin(
+          productCategories,
+          eq(productCategories.id, productCategoryLinks.categoryId),
+        )
+        .where(eq(productCategoryLinks.productId, id)),
+      // Both are nullable single links, so one row carries both names and a
+      // left join keeps the product row when neither is set.
+      db
+        .select({
+          collectionTitle: productCollections.title,
+          typeValue: productTypes.value,
+        })
+        .from(products)
+        .leftJoin(
+          productCollections,
+          eq(productCollections.id, products.collectionId),
+        )
+        .leftJoin(productTypes, eq(productTypes.id, products.typeId))
+        .where(eq(products.id, id))
+        .limit(1),
+      db
+        .select({ channel: salesChannels })
+        .from(productSalesChannels)
+        .innerJoin(
+          salesChannels,
+          and(
+            eq(salesChannels.id, productSalesChannels.salesChannelId),
+            isNull(salesChannels.deletedAt),
+          ),
+        )
+        .where(eq(productSalesChannels.productId, id)),
+    ]);
 
     return {
       ...product,
@@ -231,7 +240,9 @@ export const productDal = {
       categoryIds: categoryRows.map((row) => row.id),
       collectionTitle: organization[0]?.collectionTitle ?? null,
       typeValue: organization[0]?.typeValue ?? null,
-      salesChannels: channelRows.map(({ channel }) => toSalesChannelDTO(channel)),
+      salesChannels: channelRows.map(({ channel }) =>
+        toSalesChannelDTO(channel),
+      ),
       salesChannelIds: channelRows.map(({ channel }) => channel.id),
     };
   },
@@ -244,11 +255,13 @@ export const productDal = {
     collectionId?: string | null;
     categoryId?: string | null;
     optionId?: string | null;
+    salesChannelId?: string | null;
+    excludeSalesChannelId?: string | null;
     sortBy: "title" | "createdAt" | "updatedAt";
     sortOrder: "asc" | "desc";
     page: number;
     limit: number;
-  }): Promise<{ products: ProductDTO[]; total: number }> {
+  }): Promise<{ products: ProductListItemDTO[]; total: number }> {
     const db = await getDb();
     const conditions: SQL[] = [isNull(products.deletedAt)];
 
@@ -316,6 +329,35 @@ export const productDal = {
         ),
       );
     }
+    if (options.salesChannelId) {
+      conditions.push(
+        inArray(
+          products.id,
+          db
+            .select({ id: productSalesChannels.productId })
+            .from(productSalesChannels)
+            .where(
+              eq(productSalesChannels.salesChannelId, options.salesChannelId),
+            ),
+        ),
+      );
+    }
+    if (options.excludeSalesChannelId) {
+      conditions.push(
+        notInArray(
+          products.id,
+          db
+            .select({ id: productSalesChannels.productId })
+            .from(productSalesChannels)
+            .where(
+              eq(
+                productSalesChannels.salesChannelId,
+                options.excludeSalesChannelId,
+              ),
+            ),
+        ),
+      );
+    }
 
     const sortColumn = {
       title: products.title,
@@ -337,8 +379,117 @@ export const productDal = {
         .offset((options.page - 1) * options.limit),
     ]);
 
+    const productIds = rows.map((row) => row.id);
+    const thumbnailIds = rows.flatMap((row) =>
+      row.thumbnailAssetId ? [row.thumbnailAssetId] : [],
+    );
+    const collectionIds = rows.flatMap((row) =>
+      row.collectionId ? [row.collectionId] : [],
+    );
+    const typeIds = rows.flatMap((row) => (row.typeId ? [row.typeId] : []));
+    const [thumbnailRows, collectionRows, typeRows, channelRows, variantRows] =
+      productIds.length === 0
+        ? [[], [], [], [], []]
+        : await Promise.all([
+            thumbnailIds.length
+              ? db
+                  .select({ id: assets.id, url: assets.url })
+                  .from(assets)
+                  .where(
+                    and(
+                      inArray(assets.id, thumbnailIds),
+                      isNull(assets.deletedAt),
+                    ),
+                  )
+              : [],
+            collectionIds.length
+              ? db
+                  .select({
+                    id: productCollections.id,
+                    title: productCollections.title,
+                  })
+                  .from(productCollections)
+                  .where(
+                    and(
+                      inArray(productCollections.id, collectionIds),
+                      isNull(productCollections.deletedAt),
+                    ),
+                  )
+              : [],
+            typeIds.length
+              ? db
+                  .select({ id: productTypes.id, value: productTypes.value })
+                  .from(productTypes)
+                  .where(
+                    and(
+                      inArray(productTypes.id, typeIds),
+                      isNull(productTypes.deletedAt),
+                    ),
+                  )
+              : [],
+            db
+              .select({
+                productId: productSalesChannels.productId,
+                id: salesChannels.id,
+                name: salesChannels.name,
+              })
+              .from(productSalesChannels)
+              .innerJoin(
+                salesChannels,
+                eq(productSalesChannels.salesChannelId, salesChannels.id),
+              )
+              .where(
+                and(
+                  inArray(productSalesChannels.productId, productIds),
+                  isNull(salesChannels.deletedAt),
+                ),
+              ),
+            db
+              .select({
+                productId: productVariants.productId,
+                count: countDistinct(productVariants.id),
+              })
+              .from(productVariants)
+              .where(
+                and(
+                  inArray(productVariants.productId, productIds),
+                  isNull(productVariants.deletedAt),
+                ),
+              )
+              .groupBy(productVariants.productId),
+          ]);
+
+    const thumbnails = new Map(thumbnailRows.map((row) => [row.id, row.url]));
+    const collections = new Map(
+      collectionRows.map((row) => [row.id, row.title]),
+    );
+    const types = new Map(typeRows.map((row) => [row.id, row.value]));
+    const channelsByProduct = new Map<
+      string,
+      Array<{ id: string; name: string }>
+    >();
+    for (const row of channelRows) {
+      const current = channelsByProduct.get(row.productId) ?? [];
+      current.push({ id: row.id, name: row.name });
+      channelsByProduct.set(row.productId, current);
+    }
+    const variantCounts = new Map(
+      variantRows.map((row) => [row.productId, Number(row.count)]),
+    );
+
     return {
-      products: rows.map(toProductDTO),
+      products: rows.map((row) => ({
+        ...toProductDTO(row),
+        thumbnailUrl: row.thumbnailAssetId
+          ? (thumbnails.get(row.thumbnailAssetId) ?? null)
+          : null,
+        collectionTitle: row.collectionId
+          ? (collections.get(row.collectionId) ?? null)
+          : null,
+        typeValue: row.typeId ? (types.get(row.typeId) ?? null) : null,
+        salesChannels: channelsByProduct.get(row.id) ?? [],
+        variantCount: variantCounts.get(row.id) ?? 0,
+      })),
       total: Number(countRows[0]?.value ?? 0),
     };
   },
@@ -392,7 +543,9 @@ export const productDal = {
         ...(data.length !== undefined ? { length: data.length } : {}),
         ...(data.width !== undefined ? { width: data.width } : {}),
         ...(data.height !== undefined ? { height: data.height } : {}),
-        ...(data.originCountry !== undefined ? { originCountry: data.originCountry } : {}),
+        ...(data.originCountry !== undefined
+          ? { originCountry: data.originCountry }
+          : {}),
         ...(data.hsCode !== undefined ? { hsCode: data.hsCode } : {}),
         ...(data.midCode !== undefined ? { midCode: data.midCode } : {}),
         ...(data.material !== undefined ? { material: data.material } : {}),
@@ -473,7 +626,8 @@ export const productDal = {
     const taken = new Set(existing.map((option) => option.id));
 
     const additions = selections.filter(
-      (selection) => !("optionId" in selection) || !taken.has(selection.optionId),
+      (selection) =>
+        !("optionId" in selection) || !taken.has(selection.optionId),
     );
     if (additions.length === 0) return existing;
 
@@ -510,10 +664,15 @@ export const productDal = {
       );
     if (links.length === 0) return;
 
-    for (const group of chunk(links.map((link) => link.id), 50)) {
+    for (const group of chunk(
+      links.map((link) => link.id),
+      50,
+    )) {
       await db
         .delete(productProductOptionValues)
-        .where(inArray(productProductOptionValues.productProductOptionId, group));
+        .where(
+          inArray(productProductOptionValues.productProductOptionId, group),
+        );
       await db
         .delete(productProductOptions)
         .where(inArray(productProductOptions.id, group));
@@ -526,7 +685,10 @@ export const productDal = {
         .from(productOptions)
         .where(
           and(
-            inArray(productOptions.id, links.map((link) => link.optionId)),
+            inArray(
+              productOptions.id,
+              links.map((link) => link.optionId),
+            ),
             eq(productOptions.isExclusive, true),
           ),
         )
@@ -546,9 +708,7 @@ export const productDal = {
    * Titles rather than a boolean so the refusal can name them: "Size is in use"
    * leaves the author hunting, and the Variants table only shows one page.
    */
-  async variantsByOption(
-    productId: string,
-  ): Promise<Map<string, string[]>> {
+  async variantsByOption(productId: string): Promise<Map<string, string[]>> {
     const options = await this.findOptions(productId);
     const variants = await productVariantDal.findByProductId(productId);
 
@@ -623,7 +783,10 @@ export const productDal = {
         optionValueId,
         rank,
       }));
-      for (const group of chunkForInsert(valueLinks, PRODUCT_OPTION_VALUE_LINK_COLUMNS)) {
+      for (const group of chunkForInsert(
+        valueLinks,
+        PRODUCT_OPTION_VALUE_LINK_COLUMNS,
+      )) {
         await db.insert(productProductOptionValues).values(group);
       }
     }
@@ -632,7 +795,9 @@ export const productDal = {
   /** Replace the gallery. `assetIds` order becomes the display order. */
   async setAssets(productId: string, assetIds: string[]): Promise<void> {
     const db = await getDb();
-    await db.delete(productAssets).where(eq(productAssets.productId, productId));
+    await db
+      .delete(productAssets)
+      .where(eq(productAssets.productId, productId));
 
     const rows = assetIds.map((assetId, index) => ({
       productId,

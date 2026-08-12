@@ -29,6 +29,7 @@ const InfoAlertForm = () => {
     confirmLabel,
     cancelLabel,
     confirmVariant,
+    setInfoData,
   } = useInfoStore(
     useShallow((state) => ({
       handleOpenChange: state.handleOpenChange,
@@ -41,6 +42,7 @@ const InfoAlertForm = () => {
       confirmLabel: state.confirmLabel,
       cancelLabel: state.cancelLabel,
       confirmVariant: state.confirmVariant,
+      setInfoData: state.setInfoData,
     })),
   );
 
@@ -56,12 +58,34 @@ const InfoAlertForm = () => {
     try {
       const result = await action({ data: formData });
 
+      if (result.requiresConfirmation) {
+        setInfoData({
+          description:
+            result.description ??
+            "This item is in use. Confirm to remove its references and delete it.",
+          fields: [
+            ...(fields ?? []).filter(
+              (field) => field.name !== "detachReferences",
+            ),
+            {
+              type: "hidden",
+              name: "detachReferences",
+              value: "true",
+            },
+          ],
+          confirmLabel: "Remove references and delete",
+        });
+        return;
+      }
+
       if (result.success === false) {
         throw new Error(result.message || "Operation failed");
       }
 
       // The asset query is the single client-side source of truth.
       await queryClient.invalidateQueries({ queryKey: ["assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["products"] });
+      await queryClient.invalidateQueries({ queryKey: ["product-variants"] });
 
       onSuccess?.();
       handleOpenChange(false);

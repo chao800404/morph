@@ -6,6 +6,7 @@ import type {
   PromotionStatus,
   PromotionType,
 } from "@/db/schema";
+import type { Metadata } from "@/db/json";
 
 export interface OrderListDTO {
   id: string;
@@ -20,6 +21,7 @@ export interface OrderListDTO {
 }
 
 export interface OrderDetailDTO extends OrderListDTO {
+  metadata: Metadata;
   customerId: string | null;
   regionId: string | null;
   salesChannelId: string | null;
@@ -65,6 +67,7 @@ export interface PromotionListDTO {
 }
 
 export interface PromotionDetailDTO extends PromotionListDTO {
+  metadata: Metadata;
   isTaxInclusive: boolean;
   allocation: ApplicationMethodAllocation | null;
   maxQuantity: number | null;

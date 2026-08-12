@@ -10,10 +10,12 @@ import type {
   StoreCurrencySettingsDTO,
 } from "@/lib/currency/dto/currency.dto";
 import { chunkForInsert } from "@/lib/product/dal/d1-batch";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { salesChannels } from "@/db/sales-channel.schema";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 
 export const DEFAULT_STORE_ID = "default";
 const DEFAULT_CURRENCY_CODE = "twd";
+const DEFAULT_SALES_CHANNEL_ID = "00000000-0000-4000-8000-000000000001";
 
 const ensureCurrencyData = async () => {
   const db = await getDb();
@@ -38,6 +40,56 @@ const ensureCurrencyData = async () => {
       updatedAt: now,
     })
     .onConflictDoNothing({ target: stores.id });
+
+  const [store] = await db
+    .select({ defaultSalesChannelId: stores.defaultSalesChannelId })
+    .from(stores)
+    .where(eq(stores.id, DEFAULT_STORE_ID))
+    .limit(1);
+  const activeChannels = await db
+    .select({ id: salesChannels.id })
+    .from(salesChannels)
+    .where(isNull(salesChannels.deletedAt))
+    .orderBy(asc(salesChannels.createdAt))
+    .limit(1);
+  const currentDefault = store?.defaultSalesChannelId
+    ? await db
+        .select({ id: salesChannels.id })
+        .from(salesChannels)
+        .where(
+          and(
+            eq(salesChannels.id, store.defaultSalesChannelId),
+            isNull(salesChannels.deletedAt),
+          ),
+        )
+        .limit(1)
+    : [];
+
+  let defaultSalesChannelId = currentDefault[0]?.id ?? activeChannels[0]?.id;
+  if (!defaultSalesChannelId) {
+    await db
+      .insert(salesChannels)
+      .values({
+        id: DEFAULT_SALES_CHANNEL_ID,
+        name: "Default Sales Channel",
+        description: "The store's default sales channel.",
+        isDisabled: false,
+        metadata: {},
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: salesChannels.id,
+        set: { deletedAt: null, isDisabled: false, updatedAt: now },
+      });
+    defaultSalesChannelId = DEFAULT_SALES_CHANNEL_ID;
+  }
+  if (store?.defaultSalesChannelId !== defaultSalesChannelId) {
+    await db
+      .update(stores)
+      .set({ defaultSalesChannelId, updatedAt: now })
+      .where(eq(stores.id, DEFAULT_STORE_ID));
+  }
 
   await db
     .insert(storeSupportedCurrencies)
@@ -108,14 +160,21 @@ export const currencyDal = {
         eq(storeSupportedCurrencies.currencyCode, currencies.code),
       )
       .where(eq(storeSupportedCurrencies.storeId, DEFAULT_STORE_ID))
-      .orderBy(
-        asc(storeSupportedCurrencies.isDefault),
-        asc(currencies.code),
-      );
+      .orderBy(asc(storeSupportedCurrencies.isDefault), asc(currencies.code));
+    const channels = await db
+      .select({ id: salesChannels.id, name: salesChannels.name })
+      .from(salesChannels)
+      .where(isNull(salesChannels.deletedAt))
+      .orderBy(asc(salesChannels.name));
 
     return {
       storeId: DEFAULT_STORE_ID,
       storeName: store?.name ?? "Morph store",
+      defaultSalesChannelId:
+        store?.defaultSalesChannelId ??
+        channels[0]?.id ??
+        DEFAULT_SALES_CHANNEL_ID,
+      salesChannels: channels,
       supportedCurrencies: supportedCurrencies.sort(
         (left, right) => Number(right.isDefault) - Number(left.isDefault),
       ),
@@ -136,7 +195,9 @@ export const currencyDal = {
       .where(inArray(currencies.code, codes));
 
     if (valid.length !== codes.length) {
-      throw new Error("One or more currencies are not in the standard catalogue");
+      throw new Error(
+        "One or more currencies are not in the standard catalogue",
+      );
     }
 
     const now = new Date().toISOString();
@@ -257,16 +318,14 @@ export const currencyDal = {
   async updateStoreGeneral(
     name: string,
     defaultCurrencyCode: string,
+    defaultSalesChannelId: string,
   ): Promise<void> {
     await ensureCurrencyData();
     const db = await getDb();
     const now = new Date().toISOString();
     const target = and(
       eq(storeSupportedCurrencies.storeId, DEFAULT_STORE_ID),
-      eq(
-        storeSupportedCurrencies.currencyCode,
-        defaultCurrencyCode,
-      ),
+      eq(storeSupportedCurrencies.currencyCode, defaultCurrencyCode),
     );
     const [existing] = await db
       .select({ code: storeSupportedCurrencies.currencyCode })
@@ -277,11 +336,24 @@ export const currencyDal = {
     if (!existing) {
       throw new Error("Default currency must be enabled for this store");
     }
+    const [channel] = await db
+      .select({ id: salesChannels.id })
+      .from(salesChannels)
+      .where(
+        and(
+          eq(salesChannels.id, defaultSalesChannelId),
+          isNull(salesChannels.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!channel) {
+      throw new Error("Default sales channel must be active");
+    }
 
     await db.batch([
       db
         .update(stores)
-        .set({ name, updatedAt: now })
+        .set({ name, defaultSalesChannelId, updatedAt: now })
         .where(eq(stores.id, DEFAULT_STORE_ID)),
       db
         .update(storeSupportedCurrencies)
@@ -292,6 +364,18 @@ export const currencyDal = {
         .set({ isDefault: true, updatedAt: now })
         .where(target),
     ]);
+  },
+
+  async getDefaultSalesChannelId(): Promise<string> {
+    await ensureCurrencyData();
+    const db = await getDb();
+    const [store] = await db
+      .select({ id: stores.defaultSalesChannelId })
+      .from(stores)
+      .where(eq(stores.id, DEFAULT_STORE_ID))
+      .limit(1);
+    if (!store?.id) throw new Error("Store has no default sales channel");
+    return store.id;
   },
 
   async areSupported(codes: string[]): Promise<boolean> {

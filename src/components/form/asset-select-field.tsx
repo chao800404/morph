@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { AssetSelectFormField } from "@/lib/validations/form";
-import { getConfig } from "@/server/get-config";
+import { MAX_ASSETS_PER_RECORD } from "@/lib/config/upload-limits";
 import { useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Images, Star } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
@@ -116,7 +116,7 @@ export const AssetSelectField = ({
   // field may narrow it (a single cover image), never widen it.
   const maxSelected = Math.min(
     field.maxSelected ?? Number.POSITIVE_INFINITY,
-    getConfig().client.upload.maxAssetsPerRecord,
+    MAX_ASSETS_PER_RECORD,
   );
   const atLimit = selected.length >= maxSelected;
   const restricted = field.availableAssets !== undefined;

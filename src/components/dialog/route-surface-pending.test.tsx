@@ -1,8 +1,9 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("./route-form-modal", () => ({
+vi.mock("./route-modal-close", () => ({
   useRouteModalClose: () => vi.fn(),
+  useCloseOnEscape: vi.fn(),
 }));
 
 const { RouteSurfacePending } = await import("./route-surface-pending");
@@ -19,5 +20,14 @@ describe("RouteSurfacePending", () => {
     const root = container.firstElementChild;
     expect(root?.className).toContain("fixed");
     expect(root?.className).toContain("inset-0");
+  });
+
+  it("uses a form-shaped skeleton instead of a spinner", () => {
+    const { getByLabelText, queryByRole } = render(<RouteSurfacePending />);
+
+    expect(getByLabelText("Loading form").getAttribute("aria-busy")).toBe(
+      "true",
+    );
+    expect(queryByRole("status")).toBeNull();
   });
 });

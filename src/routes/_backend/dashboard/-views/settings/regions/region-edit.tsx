@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { updateRegionAction } from "../commerce-actions";
+import { regionFormFields } from "./config/region-form-fields";
 
 export default function RegionEdit() {
   const { id } = useParams({ strict: false }) as { id: string };
@@ -78,61 +79,7 @@ export default function RegionEdit() {
       action={submit}
       submitLabel="Save"
       loadingLabel="Saving..."
-      fields={[
-        {
-          type: "input",
-          name: "name",
-          label: "Name",
-          value: region.name,
-          required: true,
-          autoFocus: true,
-        },
-        {
-          type: "select",
-          name: "currencyCode",
-          label: "Currency",
-          value: region.currencyCode,
-          options: currencies,
-          required: true,
-        },
-        {
-          type: "option-values",
-          name: "countries",
-          label: "Countries",
-          value: region.countries.map((country) => country.iso2),
-          choices: countries,
-          maxSelected: 250,
-          searchPlaceholder: "Search countries",
-        },
-        {
-          type: "switch",
-          name: "automaticTaxes",
-          label: "Calculate taxes automatically",
-          value: region.automaticTaxes,
-          description:
-            "Apply the region's tax rates automatically at checkout.",
-        },
-        {
-          type: "switch",
-          name: "isTaxInclusive",
-          label: "Tax-inclusive pricing",
-          description: "Prices displayed in this region already include tax.",
-          value: region.isTaxInclusive,
-        },
-        {
-          type: "option-values",
-          name: "paymentProviderIds",
-          label: "Payment providers",
-          description:
-            "Customers in this region can pay using these providers.",
-          value: region.paymentProviderIds,
-          choices: providers,
-          maxSelected: 50,
-          searchPlaceholder: "Search payment providers",
-          emptyMessage: "No enabled payment providers found",
-          required: true,
-        },
-      ]}
+      fields={regionFormFields({ currencies, countries, providers, values: region })}
     />
   );
 }

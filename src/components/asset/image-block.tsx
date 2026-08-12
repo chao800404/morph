@@ -99,11 +99,15 @@ export const ImageSmBlock = ({
   return (
     <div
       className={cn(
-        "border w-6 h-8 rounded-sm relative bg-component overflow-hidden",
+        "border w-6 h-8 rounded-[4px] relative bg-component overflow-hidden",
         className,
       )}
     >
-      <img className="size-full object-cover" alt={alt} src={src} />
+      <img
+        className="size-full object-cover object-center"
+        alt={alt}
+        src={src}
+      />
     </div>
   );
 };

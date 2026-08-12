@@ -14,6 +14,7 @@ import {
   deleteStockLocations,
   updateStockLocation,
 } from "@/server/stock-location/stock-locations.serverFn";
+import { updateDashboardUserMetadata } from "@/server/auth/dashboard-users.serverFn";
 
 const text = (data: FormData, key: string) => {
   const value = data.get(key);
@@ -29,6 +30,29 @@ const ids = (data: FormData, key: string) => {
     return [];
   }
 };
+const metadata = (data: FormData): Record<string, string> | null => {
+  const raw = data.get("metadata");
+  if (typeof raw !== "string" || raw === "") return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [
+        key,
+        String(value),
+      ]),
+    );
+  } catch {
+    return null;
+  }
+};
+const metadataError = (): AssetActionResult => ({
+  success: false,
+  message: "Metadata could not be read",
+  errors: { metadata: ["Metadata could not be read"] },
+});
 const result = (value: {
   success: boolean;
   message: string;
@@ -103,7 +127,9 @@ export const createSalesChannelAction = async (_: unknown, data: FormData) =>
       data: {
         name: text(data, "name") ?? "",
         description: text(data, "description") ?? null,
-        isDisabled: data.get("isDisabled") === "on",
+          // The form exposes the positive author-facing state; persistence keeps
+          // Medusa's negative `is_disabled` field for compatibility.
+          isDisabled: data.get("enabled") !== "on",
       },
     }),
   );
@@ -114,7 +140,9 @@ export const updateSalesChannelAction = async (data: FormData) =>
         id: text(data, "id") ?? "",
         name: text(data, "name"),
         description: text(data, "description") ?? null,
-        isDisabled: data.get("isDisabled") === "on",
+        // The author-facing control is positive (`Enabled`), while the
+        // Medusa-compatible persistence field is negative (`is_disabled`).
+        isDisabled: data.get("enabled") !== "on",
       },
     }),
   );
@@ -138,3 +166,59 @@ export const updateLocationAction = async (data: FormData) =>
   );
 export const deleteLocationsAction = async ({ data }: { data: FormData }) =>
   result(await deleteStockLocations({ data: { ids: ids(data, "ids") } }));
+
+export const updateRegionMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}) => {
+  const value = metadata(data);
+  if (!value) return metadataError();
+  return result(
+    await updateRegion({
+      data: { id: text(data, "id") ?? "", metadata: value },
+    }),
+  );
+};
+
+export const updateSalesChannelMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}) => {
+  const value = metadata(data);
+  if (!value) return metadataError();
+  return result(
+    await updateSalesChannel({
+      data: { id: text(data, "id") ?? "", metadata: value },
+    }),
+  );
+};
+
+export const updateLocationMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}) => {
+  const value = metadata(data);
+  if (!value) return metadataError();
+  return result(
+    await updateStockLocation({
+      data: { id: text(data, "id") ?? "", metadata: value },
+    }),
+  );
+};
+
+export const updateUserMetadataAction = async ({
+  data,
+}: {
+  data: FormData;
+}) => {
+  const value = metadata(data);
+  if (!value) return metadataError();
+  return result(
+    await updateDashboardUserMetadata({
+      data: { id: text(data, "id") ?? "", metadata: value },
+    }),
+  );
+};

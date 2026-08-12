@@ -1,8 +1,45 @@
-import type { CollectionLoadContext } from "@/lib/config/create-config";
+import type { CollectionGroup, CollectionLoadContext } from "@/lib/config/create-config";
 import { lazyView } from "@/lib/config/lazy-view";
 import { AssetsPageSkeleton } from "@views/global/contents/assets/component/assets-card-skeleton";
 import { ProductDetailSkeleton } from "@views/global/contents/products/detail/product-detail-skeleton";
 import { ProductVariantDetailSkeleton } from "@views/global/contents/products/detail/product-variant-detail-skeleton";
+import { ProductIndexSkeleton } from "@views/global/contents/products/product-index-skeleton";
+import {
+  createCollectionIndexPendingView,
+  SimpleDetailSkeleton,
+  TableDetailSkeleton,
+} from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
+import { createRouteSurfacePendingView } from "@/components/dialog/route-surface-pending";
+
+const ProductCreatePendingView = createRouteSurfacePendingView(8);
+const ProductEditPendingView = createRouteSurfacePendingView(8);
+const ProductOrganizationPendingView = createRouteSurfacePendingView(5);
+const ProductMediaPendingView = createRouteSurfacePendingView(1);
+const ProductOptionsPendingView = createRouteSurfacePendingView(2);
+const ProductVariantEditPendingView = createRouteSurfacePendingView(8);
+const ProductVariantMetadataPendingView = createRouteSurfacePendingView(3);
+const ProductVariantPricingPendingView = createRouteSurfacePendingView(4);
+const ProductVariantPricesPendingView = createRouteSurfacePendingView(2);
+const ProductVariantInventoryPendingView = createRouteSurfacePendingView(1);
+const ProductAttributesPendingView = createRouteSurfacePendingView(9);
+const ProductMetadataPendingView = createRouteSurfacePendingView(3);
+const CollectionsIndexPendingView = createCollectionIndexPendingView(3);
+const CollectionCreatePendingView = createRouteSurfacePendingView(2);
+const CollectionEditPendingView = createRouteSurfacePendingView(2);
+const CollectionMetadataPendingView = createRouteSurfacePendingView(3);
+const CategoriesIndexPendingView = createCollectionIndexPendingView(4);
+const CategoryCreatePendingView = createRouteSurfacePendingView(4);
+const CategoryDetailPendingView = TableDetailSkeleton;
+const CategoryEditPendingView = createRouteSurfacePendingView(4);
+const CategoryMetadataPendingView = createRouteSurfacePendingView(3);
+const InventoryIndexPendingView = createCollectionIndexPendingView(5);
+const OptionsIndexPendingView = createCollectionIndexPendingView(3);
+const OptionCreatePendingView = createRouteSurfacePendingView(3);
+const OptionEditPendingView = createRouteSurfacePendingView(3);
+const OptionMetadataPendingView = createRouteSurfacePendingView(3);
+const AssetCreatePendingView = createRouteSurfacePendingView(3);
+const AssetPreviewPendingView = AssetsPageSkeleton;
+const AssetEditPendingView = createRouteSurfacePendingView(5);
 
 const prefetchAssetItem = async ({
   queryClient,
@@ -21,7 +58,7 @@ const prefetchAssetItem = async ({
   void queryClient.prefetchQuery(assetQueries.items({ items }));
 };
 
-export const Contents = {
+export const Contents: CollectionGroup = {
   slug: "/",
   title: "Content",
   collections: [
@@ -37,13 +74,15 @@ export const Contents = {
           () =>
             import("@views/global/contents/products/create/product-create-wizard"),
         ),
-        // The wizard suspends on store currencies, and its Organize step reads
-        // three more lists. Priming them all is what keeps the whole flow to a
+        pendingView: ProductCreatePendingView,
+        // The wizard suspends on store currencies, and its later steps read
+        // four more lists. Priming them all is what keeps the whole flow to a
         // single skeleton.
         prefetch: async ({ queryClient }: CollectionLoadContext) => {
-          const [product, currency] = await Promise.all([
+          const [product, currency, salesChannel] = await Promise.all([
             import("@queries/product.queries"),
             import("@queries/currency.queries"),
+            import("@queries/sales-channel.queries"),
           ]);
           void queryClient.prefetchQuery(currency.currencyQueries.store());
           void queryClient.prefetchQuery(
@@ -56,6 +95,15 @@ export const Contents = {
             product.productOptionQueries.list(
               product.normalizeProductOptionListParams(),
             ),
+          );
+          void queryClient.prefetchQuery(
+            salesChannel.salesChannelQueries.list({
+              ...salesChannel.normalizeSalesChannelListParams({
+                sortBy: "name",
+                sortOrder: "asc",
+              }),
+              limit: 100,
+            }),
           );
         },
       },
@@ -83,6 +131,7 @@ export const Contents = {
         view: lazyView(
           () => import("@views/global/contents/products/detail/product-edit"),
         ),
+        pendingView: ProductEditPendingView,
         prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
           if (!params.id) return;
           const { productQueries } = await import("@queries/product.queries");
@@ -98,6 +147,7 @@ export const Contents = {
             () =>
               import("@views/global/contents/products/detail/product-organization"),
           ),
+          pendingView: ProductOrganizationPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
             const {
@@ -122,6 +172,7 @@ export const Contents = {
             () =>
               import("@views/global/contents/products/detail/product-media"),
           ),
+          pendingView: ProductMediaPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
             const { productQueries } = await import("@queries/product.queries");
@@ -133,6 +184,7 @@ export const Contents = {
             () =>
               import("@views/global/contents/products/detail/product-options"),
           ),
+          pendingView: ProductOptionsPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
             const {
@@ -190,6 +242,7 @@ export const Contents = {
             () =>
               import("@views/global/contents/products/detail/product-variant"),
           ),
+          pendingView: ProductVariantEditPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
             const [{ productQueries }, { currencyQueries }] = await Promise.all(
@@ -209,6 +262,7 @@ export const Contents = {
             () =>
               import("@views/global/contents/products/detail/product-variant-metadata"),
           ),
+          pendingView: ProductVariantMetadataPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.childId) return;
             const { productVariantQueries } =
@@ -223,6 +277,7 @@ export const Contents = {
             () =>
               import("@views/global/contents/products/detail/product-variant-pricing"),
           ),
+          pendingView: ProductVariantPricingPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.childId) return;
             const [{ productVariantQueries }, { currencyQueries }] =
@@ -236,11 +291,31 @@ export const Contents = {
             void queryClient.prefetchQuery(currencyQueries.store());
           },
         },
+        "variant-prices": {
+          view: lazyView(() => import("@views/global/contents/products/detail/product-variants-bulk-prices")),
+          pendingView: ProductVariantPricesPendingView,
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.id) return;
+            const [{ productQueries }, { currencyQueries }] = await Promise.all([import("@queries/product.queries"), import("@queries/currency.queries")]);
+            void queryClient.prefetchQuery(productQueries.detail(params.id));
+            void queryClient.prefetchQuery(currencyQueries.store());
+          },
+        },
+        "variant-inventory": {
+          view: lazyView(() => import("@views/global/contents/products/detail/product-variants-bulk-inventory")),
+          pendingView: ProductVariantInventoryPendingView,
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.id) return;
+            const { productQueries } = await import("@queries/product.queries");
+            void queryClient.prefetchQuery(productQueries.detail(params.id));
+          },
+        },
         attributes: {
           view: lazyView(
             () =>
               import("@views/global/contents/products/detail/product-attributes"),
           ),
+          pendingView: ProductAttributesPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
             const { productQueries } = await import("@queries/product.queries");
@@ -252,6 +327,7 @@ export const Contents = {
             () =>
               import("@views/global/contents/products/detail/product-metadata"),
           ),
+          pendingView: ProductMetadataPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
             const { productQueries } = await import("@queries/product.queries");
@@ -261,14 +337,20 @@ export const Contents = {
       },
       index: {
         view: lazyView(() => import("@views/global/contents/products")),
+        pendingView: ProductIndexSkeleton,
         prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
           const { productQueries, normalizeProductListParams } =
             await import("@queries/product.queries");
+          const { tableViewQueries } =
+            await import("@queries/table-view.queries");
           // Prefetch with the same params the view normalizes to, so the loader
           // primes the exact cache entry the component reads.
           void queryClient.prefetchQuery(
             productQueries.list(normalizeProductListParams(search)),
           );
+          // Column order is part of the first table frame. Await it so SSR and
+          // client navigation never paint the default order before the user's.
+          await queryClient.ensureQueryData(tableViewQueries.detail("products"));
         },
       },
       items: [
@@ -281,12 +363,14 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/collections/collection-create"),
             ),
+            pendingView: CollectionCreatePendingView,
           },
           detail: {
             view: lazyView(
               () =>
                 import("@views/global/contents/products/collections/collection-detail"),
             ),
+            pendingView: SimpleDetailSkeleton,
             breadcrumb: async ({
               queryClient,
               params,
@@ -328,6 +412,7 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/collections/collection-edit"),
             ),
+            pendingView: CollectionEditPendingView,
 
             prefetch: async ({
               queryClient,
@@ -347,6 +432,7 @@ export const Contents = {
                 () =>
                   import("@views/global/contents/products/collections/collection-metadata"),
               ),
+              pendingView: CollectionMetadataPendingView,
 
               prefetch: async ({
                 queryClient,
@@ -365,6 +451,7 @@ export const Contents = {
             view: lazyView(
               () => import("@views/global/contents/products/collections"),
             ),
+            pendingView: CollectionsIndexPendingView,
             prefetch: async ({
               queryClient,
               search,
@@ -386,6 +473,7 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/categories/category-create"),
             ),
+            pendingView: CategoryCreatePendingView,
             // The parent picker lists the whole category tree.
             prefetch: async ({ queryClient }: CollectionLoadContext) => {
               const { productTaxonomyQueries } =
@@ -398,6 +486,7 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/categories/category-detail"),
             ),
+            pendingView: CategoryDetailPendingView,
             breadcrumb: async ({
               queryClient,
               params,
@@ -437,6 +526,7 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/categories/category-edit"),
             ),
+            pendingView: CategoryEditPendingView,
 
             prefetch: async ({
               queryClient,
@@ -456,6 +546,7 @@ export const Contents = {
                 () =>
                   import("@views/global/contents/products/categories/category-metadata"),
               ),
+              pendingView: CategoryMetadataPendingView,
 
               prefetch: async ({
                 queryClient,
@@ -474,6 +565,7 @@ export const Contents = {
             view: lazyView(
               () => import("@views/global/contents/products/categories"),
             ),
+            pendingView: CategoriesIndexPendingView,
             prefetch: async ({
               queryClient,
               search,
@@ -494,16 +586,11 @@ export const Contents = {
           title: "Inventory",
           slug: "inventory",
           label: "Inventory",
-          create: {
-            view: lazyView(
-              () =>
-                import("@views/global/contents/products/inventory/inventory-create"),
-            ),
-          },
           index: {
             view: lazyView(
               () => import("@views/global/contents/products/inventory"),
             ),
+            pendingView: InventoryIndexPendingView,
             prefetch: async ({
               queryClient,
               search,
@@ -525,12 +612,14 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/options/option-create"),
             ),
+            pendingView: OptionCreatePendingView,
           },
           detail: {
             view: lazyView(
               () =>
                 import("@views/global/contents/products/options/option-detail"),
             ),
+            pendingView: TableDetailSkeleton,
             breadcrumb: async ({
               queryClient,
               params,
@@ -570,6 +659,7 @@ export const Contents = {
               () =>
                 import("@views/global/contents/products/options/option-edit"),
             ),
+            pendingView: OptionEditPendingView,
 
             prefetch: async ({
               queryClient,
@@ -589,6 +679,7 @@ export const Contents = {
                 () =>
                   import("@views/global/contents/products/options/option-metadata"),
               ),
+              pendingView: OptionMetadataPendingView,
 
               prefetch: async ({
                 queryClient,
@@ -607,6 +698,7 @@ export const Contents = {
             view: lazyView(
               () => import("@views/global/contents/products/options"),
             ),
+            pendingView: OptionsIndexPendingView,
             prefetch: async ({
               queryClient,
               search,
@@ -635,6 +727,7 @@ export const Contents = {
         view: lazyView(
           () => import("@views/global/contents/assets/asset-create"),
         ),
+        pendingView: AssetCreatePendingView,
         // Both variants render the destination `folder-select`, which lists the
         // whole folder tree.
         prefetch: async ({ queryClient }: CollectionLoadContext) => {
@@ -646,6 +739,7 @@ export const Contents = {
         view: lazyView(
           () => import("@views/global/contents/assets/asset-preview"),
         ),
+        pendingView: AssetPreviewPendingView,
         prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
           const { assetQueries, normalizeAssetListParams } =
             await import("@queries/asset.queries");
@@ -658,6 +752,7 @@ export const Contents = {
         view: lazyView(
           () => import("@views/global/contents/assets/asset-edit"),
         ),
+        pendingView: AssetEditPendingView,
         prefetch: prefetchAssetItem,
       },
       index: {

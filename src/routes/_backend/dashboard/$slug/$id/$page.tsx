@@ -1,10 +1,10 @@
-import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { RouteModalCloseProvider } from "@/components/dialog/route-form-modal";
 import { NotFound } from "@/components/not-found/not-found";
 import { findCollection } from "@/lib/config/navigation";
 import { getConfig } from "@/server/get-config";
 import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { Suspense, useLayoutEffect, useMemo } from "react";
+import { DashboardRoutePending } from "@/routes/_backend/dashboard/-components/loading/dashboard-route-pending";
 
 /**
  * A page hanging off a record, declared in the collection's `pages`.
@@ -34,6 +34,9 @@ export const Route = createFileRoute("/_backend/dashboard/$slug/$id/$page")({
       breadcrumbHref: location.href,
     };
   },
+  pendingComponent: DashboardRoutePending,
+  pendingMs: 0,
+  pendingMinMs: 250,
   component: RouteComponent,
 });
 
@@ -74,7 +77,7 @@ function RouteComponent() {
   if (!subPage) return <NotFound />;
 
   const PageView = subPage.view;
-  const PendingView = subPage.pendingView ?? RouteSurfacePending;
+  const PendingView = subPage.pendingView;
   return (
     // Same rule as `edit`: closing returns to the detail page when there is
     // one, and to the list when there is not.

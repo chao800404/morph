@@ -2,7 +2,10 @@ import { createServerFn } from "@tanstack/react-start";
 import { env } from "cloudflare:workers";
 import { assetDal, assetFolderDal, type AssetDTO } from "../../lib/asset";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
-import { batchSoftDeleteItemsInD1 } from "@/lib/asset/dal/asset-batch.dal";
+import {
+  batchSoftDeleteItemsInD1,
+  findAssetUsageInD1,
+} from "@/lib/asset/dal/asset-batch.dal";
 import { parseDeleteItemsInput } from "./input-validation";
 import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
 import { bulkOperationLimits } from "@/lib/db/operation-limits";
@@ -20,7 +23,7 @@ export const deleteItems = createServerFn({ method: "POST" })
         errors: parsedInput.errors,
       };
     }
-    const { folderIds, assetIds } = parsedInput;
+    const { folderIds, assetIds, detachReferences } = parsedInput;
     const userId = context.user.id;
 
     if (folderIds.length === 0 && assetIds.length === 0) {
@@ -92,9 +95,7 @@ export const deleteItems = createServerFn({ method: "POST" })
     // delete but partway through the R2 archive, leaving files hidden in the
     // UI while their objects remain in storage. Failing up front keeps the
     // operation all-or-nothing from the user's point of view.
-    const limits = bulkOperationLimits(
-      getConfig().server.cloudflare?.plan,
-    );
+    const limits = bulkOperationLimits(getConfig().server.cloudflare?.plan);
     if (uniqueAssets.length > limits.maxAssets) {
       return {
         success: false,
@@ -109,6 +110,28 @@ export const deleteItems = createServerFn({ method: "POST" })
         message: `This selection contains ${finalFolderIds.length} folders, above the limit of ${limits.maxFolders} per delete`,
         description:
           "Nothing was deleted. Delete the nested folders in smaller batches first.",
+      };
+    }
+
+    // Reference usage is checked after folder expansion, then checked again on
+    // every confirmed request. This closes the race where an asset is attached
+    // to a product between opening the dialog and pressing the final button.
+    const usage = await findAssetUsageInD1(uniqueAssetIds);
+    if (
+      !detachReferences &&
+      (usage.productCount > 0 || usage.variantCount > 0)
+    ) {
+      const productLabel = `${usage.productCount} product${usage.productCount === 1 ? "" : "s"}`;
+      const variantLabel = `${usage.variantCount} variant${usage.variantCount === 1 ? "" : "s"}`;
+      const examples = [...usage.productTitles, ...usage.variantTitles]
+        .slice(0, 5)
+        .join(", ");
+      return {
+        success: false as const,
+        requiresConfirmation: true as const,
+        message: "Some assets are currently in use",
+        description: `Deleting this selection will remove its media from ${productLabel} and ${variantLabel}.${examples ? ` Affected records include: ${examples}.` : ""} The products and variants themselves will not be deleted.`,
+        usage,
       };
     }
 

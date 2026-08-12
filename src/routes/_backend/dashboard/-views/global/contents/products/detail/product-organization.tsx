@@ -5,8 +5,6 @@ import {
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
 import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
-import { categoryDepth } from "@/lib/product/category-tree";
-import type { FormField } from "@/lib/validations/form";
 import {
   collectionQueries,
   normalizeCollectionListParams,
@@ -20,10 +18,8 @@ import {
   normalizeSalesChannelListParams,
   salesChannelQueries,
 } from "@queries/sales-channel.queries";
-import {
-  NO_COLLECTION,
-  updateProductOrganizationAction,
-} from "../product-actions";
+import { updateProductOrganizationAction } from "../product-actions";
+import { productOrganizationFields } from "../config/product-form-fields";
 
 /**
  * Where the product sits in the catalogue, at
@@ -90,87 +86,23 @@ const ProductOrganization = () => {
     ? (collectionResult.data?.collections ?? [])
     : [];
   const taxonomy = taxonomyResult?.success ? taxonomyResult.data : null;
-  const toValueChoices = (values: { value: string }[]) =>
-    values.map(({ value }) => ({ id: value, value }));
   const categories = taxonomy?.categories ?? [];
   const salesChannels = channelResult?.success
     ? (channelResult.data?.salesChannels ?? [])
     : [];
 
-  const fields: FormField[] = [
-    {
-      type: "select",
-      name: "collectionId",
-      label: "Collection",
-      optional: true,
-      value: product.collectionId || NO_COLLECTION,
-      options: [
-        { value: NO_COLLECTION, label: "No collection" },
-        ...collections.map((collection) => ({
-          value: collection.id,
-          label: collection.title,
-        })),
-      ],
-      colSpan: 1,
-    },
-    {
-      type: "option-values",
-      name: "typeValue",
-      label: "Type",
-      optional: true,
-      choices: toValueChoices(taxonomy?.types ?? []),
-      value: product.typeValue ? [product.typeValue] : [],
-      allowCreate: true,
-      maxSelected: 1,
-      placeholder: "Select or create a type...",
-      searchPlaceholder: "Search types...",
-      emptyMessage: "No type found.",
-      colSpan: 1,
-    },
-    {
-      type: "option-values",
-      name: "tagValues",
-      label: "Tags",
-      optional: true,
-      choices: toValueChoices(taxonomy?.tags ?? []),
-      value: product.tags.map((tag) => tag.value),
-      allowCreate: true,
-      placeholder: "Select or create tags...",
-      searchPlaceholder: "Search tags...",
-      emptyMessage: "No tag found.",
-      colSpan: 1,
-    },
-    {
-      type: "option-values",
-      name: "categoryIds",
-      label: "Categories",
-      optional: true,
-      choices: categories.map((category) => ({
-        id: category.id,
-        value: `${"— ".repeat(categoryDepth(category.mpath))}${category.name}`,
-      })),
-      value: product.categoryIds,
-      placeholder: "Select categories...",
-      searchPlaceholder: "Search categories...",
-      emptyMessage: "No category found.",
-      colSpan: 1,
-    },
-    {
-      type: "option-values",
-      name: "salesChannelIds",
-      label: "Sales Channels",
-      optional: true,
-      choices: salesChannels.map((channel) => ({
-        id: channel.id,
-        value: channel.name,
-      })),
-      value: product.salesChannelIds,
-      placeholder: "Select sales channels...",
-      searchPlaceholder: "Search sales channels...",
-      emptyMessage: "No sales channel found.",
-      colSpan: 1,
-    },
-  ];
+  const fields = productOrganizationFields({
+    collectionId: product.collectionId,
+    collections,
+    typeValue: product.typeValue,
+    types: taxonomy?.types ?? [],
+    tagValues: product.tags.map((tag) => tag.value),
+    tags: taxonomy?.tags ?? [],
+    categoryIds: product.categoryIds,
+    categories,
+    salesChannelIds: product.salesChannelIds,
+    salesChannels,
+  });
 
   return (
     <RouteFormPage

@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { FileIcon, Folder, X } from "lucide-react";
@@ -52,12 +53,14 @@ export const AssetsSelectContent = () => {
                     key={`folder-${folder.id}`}
                   >
                     {folderData?.name || `ID: ${folder.id}`}
-                    <div
-                      className="rounded-sm bg-zinc-400/50 p-0.5 cursor-pointer"
+                    <button
+                      type="button"
+                      aria-label={`Remove ${folderData?.name || `folder ${folder.id}`} from selection`}
+                      className="rounded-sm bg-zinc-400/50 p-0.5 transition-colors hover:bg-zinc-400/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => deleteItemById(folder.id, "folder")}
                     >
-                      <X className="size-3 cursor-pointer text-white" />
-                    </div>
+                      <X className="size-3 text-white" aria-hidden />
+                    </button>
                   </Badge>
                 );
               })}
@@ -71,8 +74,8 @@ export const AssetsSelectContent = () => {
               <FileIcon className="size-4" />
               <span>Assets ({selectedAssets.length})</span>
             </div>
-            <div className="space-y-1 gap-2 grid grid-cols-5">
-              {selectedAssets.map((asset, index) => {
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+              {selectedAssets.map((asset) => {
                 const assetData = getAssetData(asset.id);
                 return (
                   // <AssetBlockMap
@@ -88,15 +91,19 @@ export const AssetsSelectContent = () => {
                   //     onRemove={() => deleteItemById(asset.id, "asset")}
                   // />
                   <div
-                    key={index}
-                    className="first:col-span-1 aspect-square bg-muted rounded-md border flex flex-col items-center justify-center p-2 text-xs relative group"
+                    key={asset.id}
+                    className="group relative flex aspect-square flex-col items-center justify-center rounded-md border bg-muted p-2 text-xs"
                   >
-                    <div
-                      className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer bg-destructive/80 hover:bg-destructive rounded-full p-1"
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="icon"
+                      aria-label={`Remove ${assetData?.name || asset.name} from selection`}
+                      className="absolute right-1 top-1 size-6 rounded-full opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
                       onClick={() => deleteItemById(asset.id, "asset")}
                     >
-                      <X className="size-3 text-white" />
-                    </div>
+                      <X className="size-3" aria-hidden />
+                    </Button>
                     <span className="truncate w-full text-center">
                       {assetData?.name || asset.name}
                     </span>
@@ -109,7 +116,7 @@ export const AssetsSelectContent = () => {
 
         {!hasFolders && !hasAssets && (
           <div className="text-sm text-muted-foreground text-center py-4">
-            未选中任何项目
+            No items selected
           </div>
         )}
 

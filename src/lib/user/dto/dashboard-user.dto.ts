@@ -13,6 +13,7 @@ export interface DashboardUserDTO {
 export interface DashboardUserDetailDTO extends DashboardUserDTO {
   language: string | null;
   phoneNumber: string | null;
+  metadata: Metadata;
 }
 
 export interface DashboardUserPageDTO {
@@ -33,3 +34,4 @@ export interface DashboardUserListInput {
   page: number;
   limit: number;
 }
+import type { Metadata } from "@/db/json";

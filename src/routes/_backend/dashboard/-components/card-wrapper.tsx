@@ -18,6 +18,8 @@ interface BaseCardWrapperProps {
     cardWrapper?: string;
   };
   id?: string;
+  /** Omits the card heading for fill-layout selector tables. */
+  hideHeader?: boolean;
 }
 
 // Props when using default header
@@ -41,7 +43,7 @@ interface CustomHeaderProps extends BaseCardWrapperProps {
 type CardWrapperProps = DefaultHeaderProps | CustomHeaderProps;
 
 export const CardWrapper = (props: CardWrapperProps) => {
-  const { children, classNames, description, id } = props;
+  const { children, classNames, description, hideHeader, id } = props;
 
   return (
     <Card
@@ -51,42 +53,44 @@ export const CardWrapper = (props: CardWrapperProps) => {
         classNames?.cardWrapper,
       )}
     >
-      <CardHeader className="py-4 [.border-b]:pb-4" data-type="card-header">
-        {"customHeader" in props && props.customHeader ? (
-          props.customHeader
-        ) : (
-          <div
-            className={cn(
-              classNames?.headerWrapper,
-              "flex justify-between items-center gap-2",
-            )}
-          >
+      {!hideHeader ? (
+        <CardHeader className="py-4 [.border-b]:pb-4" data-type="card-header">
+          {"customHeader" in props && props.customHeader ? (
+            props.customHeader
+          ) : (
             <div
               className={cn(
-                "flex items-center gap-2 w-full",
-                props.headerButton ? "justify-between" : "justify-start",
+                classNames?.headerWrapper,
+                "flex justify-between items-center gap-2",
               )}
             >
-              {"icon" in props &&
-                props.icon &&
-                React.createElement(props.icon, { className: "w-4 h-4" })}
-              <div>
-                {"label" in props && (
-                  <CardTitle className="text-base font-medium">
-                    {props.label}
-                  </CardTitle>
+              <div
+                className={cn(
+                  "flex items-center gap-2 w-full",
+                  props.headerButton ? "justify-between" : "justify-start",
                 )}
-                {"description" in props && (
-                  <CardDescription className="text-sm text-zinc-500">
-                    {description}
-                  </CardDescription>
-                )}
+              >
+                {"icon" in props &&
+                  props.icon &&
+                  React.createElement(props.icon, { className: "w-4 h-4" })}
+                <div>
+                  {"label" in props && (
+                    <CardTitle className="text-base font-medium">
+                      {props.label}
+                    </CardTitle>
+                  )}
+                  {"description" in props && (
+                    <CardDescription className="text-sm text-zinc-500">
+                      {description}
+                    </CardDescription>
+                  )}
+                </div>
               </div>
+              {"headerButton" in props && props.headerButton}
             </div>
-            {"headerButton" in props && props.headerButton}
-          </div>
-        )}
-      </CardHeader>
+          )}
+        </CardHeader>
+      ) : null}
       {children && (
         <CardContent
           className={cn(

@@ -4,7 +4,6 @@ import {
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
-import { handleField } from "@/components/form/handle-field";
 import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import type { FormField } from "@/lib/validations/form";
 import { productQueries } from "@queries/product.queries";
@@ -12,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { updateProductAction } from "../product-actions";
+import { productGeneralFields } from "../config/product-form-fields";
 
 /**
  * The product's own fields.
@@ -52,36 +52,19 @@ const ProductEdit = () => {
   if (!product) {
     return (
       <RouteSurfaceMessage>
-          {result?.message ?? "Product not found"}
+        {result?.message ?? "Product not found"}
       </RouteSurfaceMessage>
     );
   }
 
   const fields: FormField[] = [
-    {
-      type: "input",
-      name: "title",
-      label: "Title",
-      value: product.title,
-      required: true,
-      autoFocus: true,
-    },
-    {
-      type: "input",
-      name: "subtitle",
-      label: "Subtitle",
-      optional: true,
-      value: product.subtitle ?? "",
-    },
-    handleField({ derivedFrom: "title", value: product.handle }),
-    {
-      type: "textarea",
-      name: "description",
-      label: "Description",
-      optional: true,
-      value: product.description ?? "",
-      rows: 4,
-    },
+    ...productGeneralFields({
+      title: product.title,
+      subtitle: product.subtitle ?? "",
+      handle: product.handle,
+      description: product.description ?? "",
+      mode: "edit",
+    }),
     {
       type: "input",
       name: "material",

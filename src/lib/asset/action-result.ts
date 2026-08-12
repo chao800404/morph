@@ -4,6 +4,13 @@ export interface AssetActionResult {
   success: boolean;
   message: string;
   description?: string;
+  requiresConfirmation?: boolean;
+  usage?: {
+    productCount: number;
+    variantCount: number;
+    productTitles: string[];
+    variantTitles: string[];
+  };
   errors?: AssetFieldErrors;
   redirectPath?: string | null;
 }

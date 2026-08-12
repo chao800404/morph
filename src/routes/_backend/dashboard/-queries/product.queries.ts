@@ -32,6 +32,10 @@ export interface ProductListParams {
   optionId?: string;
   /** Narrows the list to one collection. */
   collectionId?: string;
+  /** Narrows the list to products published in one sales channel. */
+  salesChannelId?: string;
+  /** Excludes products already assigned to a channel, used by selectors. */
+  excludeSalesChannelId?: string;
   sortBy: "title" | "createdAt" | "updatedAt";
   sortOrder: "asc" | "desc";
   page: number;

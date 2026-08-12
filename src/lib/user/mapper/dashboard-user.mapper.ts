@@ -2,6 +2,7 @@ import type {
   DashboardUserDTO,
   DashboardUserDetailDTO,
 } from "../dto/dashboard-user.dto";
+import type { Metadata } from "@/db/json";
 
 export interface DashboardUserRow {
   id: string;
@@ -18,6 +19,7 @@ export interface DashboardUserRow {
 export interface DashboardUserDetailRow extends DashboardUserRow {
   language: string | null;
   phoneNumber: string | null;
+  metadata: Metadata | null;
 }
 
 export const toDashboardUserDTO = (
@@ -26,4 +28,4 @@ export const toDashboardUserDTO = (
 
 export const toDashboardUserDetailDTO = (
   row: DashboardUserDetailRow,
-): DashboardUserDetailDTO => ({ ...row });
+): DashboardUserDetailDTO => ({ ...row, metadata: row.metadata ?? {} });

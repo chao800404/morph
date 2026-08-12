@@ -1,17 +1,14 @@
-import { useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
 
-export function RegisterPathnameHistory() {
-  const location = useLocation();
-
+export function RegisterPathnameHistory({ pathname }: { pathname: string }) {
   useEffect(() => {
     if (
-      !location.pathname.startsWith("/dashboard/settings") &&
+      !pathname.startsWith("/dashboard/settings") &&
       typeof window !== "undefined"
     ) {
-      sessionStorage.setItem("redirected-path", location.pathname);
+      sessionStorage.setItem("redirected-path", pathname);
     }
-  }, [location.pathname]);
+  }, [pathname]);
   return null;
 }
 

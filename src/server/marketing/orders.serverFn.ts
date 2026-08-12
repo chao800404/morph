@@ -1,6 +1,6 @@
 import { orderDal } from "@/lib/commerce/marketing.dal";
 import { failure, ok, paginationOf } from "@/lib/db/server-result";
-import { createOrderInputSchema, getMarketingRecordInputSchema, listOrdersInputSchema, updateOrderInputSchema } from "@/lib/validations/marketing";
+import { createOrderInputSchema, getMarketingRecordInputSchema, listOrdersInputSchema, updateMarketingMetadataInputSchema, updateOrderInputSchema } from "@/lib/validations/marketing";
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware, commerceReadMiddleware } from "../middleware/auth.middleware";
 
@@ -42,4 +42,14 @@ export const updateOrder = createServerFn({ method: "POST" })
       await orderDal.update(data.id, data);
       return ok("Order updated successfully", { id: data.id });
     } catch (error) { return failure("Update order error", error, "UPDATE_FAILED", "Failed to update order"); }
+  });
+
+export const updateOrderMetadata = createServerFn({ method: "POST" })
+  .validator((data: unknown) => updateMarketingMetadataInputSchema.parse(data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      await orderDal.updateMetadata(data.id, data.metadata);
+      return ok("Order metadata updated successfully", { id: data.id });
+    } catch (error) { return failure("Update order metadata error", error, "UPDATE_FAILED", "Failed to update order metadata"); }
   });

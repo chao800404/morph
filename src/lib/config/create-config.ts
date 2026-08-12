@@ -51,7 +51,7 @@ export interface CollectionLoadContext {
 }
 
 /**
- * A collection's index route, rendered at `/dashboard/<slug>`.
+ * A collection's index route, rendered at its namespace's `<slug>` route.
  *
  * `index` describes the collection's default destination. The UI can be a
  * table, grid, explorer, or any other view; its name deliberately describes
@@ -66,7 +66,7 @@ export interface CollectionIndex {
    * its in-view loading state uses the same skeleton, so code and data loading
    * appear as one continuous state.
    */
-  pendingView?: ComponentType;
+  pendingView: ComponentType;
   /** Start priming the index route's query cache before rendering it. */
   prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
 }
@@ -74,7 +74,7 @@ export interface CollectionIndex {
 /**
  * A collection's create page.
  *
- * Creating is always a route, rendered at `/dashboard/<slug>/create` as a child
+ * Creating is always a route, rendered at the namespace's `<slug>/create` as a child
  * of the list. The list stays mounted underneath, so closing is a navigation
  * back to it rather than a remount and refetch, and every create surface is
  * linkable and survives a refresh.
@@ -94,21 +94,21 @@ export interface CollectionIndex {
 export interface CollectionCreate {
   view: ComponentType;
   /** Suspense fallback while `view` loads. */
-  pendingView?: ComponentType;
+  pendingView: ComponentType;
   /** Start priming data needed by the create route before rendering it. */
   prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
   label?: string;
 }
 
 /**
- * A collection's detail page, rendered at `/dashboard/<slug>/<id>`.
+ * A collection's detail page, rendered at the namespace's `<slug>/<id>`.
  *
  * Like `create`, the framework owns the URL. This is why collection URLs are
  * flat: a nested collection at `/dashboard/products/options` would make
  * `/dashboard/products/<id>` ambiguous.
  */
 /**
- * A page hanging off a record, at `/dashboard/<slug>/<id>/<key>`.
+ * A page hanging off a record, at the namespace's `<slug>/<id>/<key>`.
  *
  * Named capabilities cover the pages the framework itself participates in — it
  * renders the Create button, resolves the Edit row action, decides where a form
@@ -132,7 +132,7 @@ export interface CollectionSubPage {
     context: CollectionLoadContext,
   ) => Promise<string | null> | string | null;
   /** Suspense fallback while `view` loads. */
-  pendingView?: ComponentType;
+  pendingView: ComponentType;
   /** Start priming this page's query cache before rendering it. */
   prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
 }
@@ -144,13 +144,13 @@ export interface CollectionDetail {
     context: CollectionLoadContext,
   ) => Promise<string | null> | string | null;
   /** Suspense fallback while `view` loads. */
-  pendingView?: ComponentType;
+  pendingView: ComponentType;
   /** Start priming the detail route's query cache before rendering it. */
   prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
 }
 
 /**
- * A collection-level preview page, rendered at `/dashboard/<slug>/view`.
+ * A collection-level preview page, rendered at the namespace's `<slug>/view`.
  *
  * This route is for browsing a collection-specific media or document view. It
  * replaces the index while mounted; the currently viewed record belongs in
@@ -160,13 +160,13 @@ export interface CollectionDetail {
 export interface CollectionPreview {
   view: ComponentType;
   /** Suspense fallback while `view` loads. */
-  pendingView?: ComponentType;
+  pendingView: ComponentType;
   /** Start priming the preview route's query cache before rendering it. */
   prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
 }
 
 /**
- * A collection's edit page, rendered at `/dashboard/<slug>/<id>/edit`.
+ * A collection's edit page, rendered at the namespace's `<slug>/<id>/edit`.
  *
  * Same contract as `create`: a route, not a dialog opened from row state. That
  * is what makes an edit surface linkable and survive a refresh — it loads its
@@ -179,7 +179,7 @@ export interface CollectionPreview {
 export interface CollectionEdit {
   view: ComponentType;
   /** Suspense fallback while `view` loads. */
-  pendingView?: ComponentType;
+  pendingView: ComponentType;
   /** Start priming the edit route's query cache before rendering it. */
   prefetch?: (context: CollectionLoadContext) => Promise<void> | void;
   /** Row action label. Defaults to "Edit". */
@@ -383,7 +383,14 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
     throw new Error("CMS Config: localization is required");
   }
 
-  assertCollectionsAreAddressable(config.collections?.global ?? []);
+  assertCollectionsAreAddressable(config.collections?.global ?? [], {
+    namespace: "global",
+    basePath: "/dashboard",
+  });
+  assertCollectionsAreAddressable(config.collections?.settings ?? [], {
+    namespace: "settings",
+    basePath: "/dashboard/settings",
+  });
 
   // Extract client-safe configuration
   const clientSafeConfig: ClientSafeConfig = {

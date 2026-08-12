@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { SimpleDetailSkeleton } from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
 import {
   EditCard,
   type EditCardField,
@@ -34,13 +34,7 @@ const CollectionDetail = () => {
     [id, navigate],
   );
 
-  if (isPending) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner />
-      </div>
-    );
-  }
+  if (isPending) return <SimpleDetailSkeleton />;
 
   if (!collection) {
     return (

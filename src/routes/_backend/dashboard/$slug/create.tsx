@@ -1,9 +1,9 @@
-import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { NotFound } from "@/components/not-found/not-found";
 import { findCollection } from "@/lib/config/navigation";
 import { getConfig } from "@/server/get-config";
 import { createFileRoute } from "@tanstack/react-router";
 import { Suspense, useMemo } from "react";
+import { DashboardRoutePending } from "@/routes/_backend/dashboard/-components/loading/dashboard-route-pending";
 
 /**
  * The create page for any collection that declares a `create` view.
@@ -17,6 +17,17 @@ import { Suspense, useMemo } from "react";
  * `create` a reserved slug, which `assertCollectionsAreAddressable` enforces.
  */
 export const Route = createFileRoute("/_backend/dashboard/$slug/create")({
+  loader: async ({ context, params }) => {
+    const { queryClient, search } = context;
+    const collection = findCollection(
+      getConfig().client.collections.global,
+      params.slug,
+    );
+    await collection?.create?.prefetch?.({ queryClient, params, search });
+  },
+  pendingComponent: DashboardRoutePending,
+  pendingMs: 0,
+  pendingMinMs: 250,
   component: RouteComponent,
 });
 
@@ -32,7 +43,7 @@ function RouteComponent() {
   if (!create) return <NotFound />;
 
   const CreateView = create.view;
-  const PendingView = create.pendingView ?? RouteSurfacePending;
+  const PendingView = create.pendingView;
   return (
     <Suspense fallback={<PendingView />}>
       <CreateView />

@@ -65,7 +65,12 @@ export const SessionDropdownMenu = ({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" disabled={pending}>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Session actions"
+          disabled={pending}
+        >
           <MoreHorizontal className="size-4" />
         </Button>
       </DropdownMenuTrigger>

@@ -4,13 +4,13 @@ import {
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
-import { handleField } from "@/components/form/handle-field";
 import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { collectionQueries } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { updateCollectionAction } from "../product-actions";
+import { collectionFormFields } from "./config/collection-form-fields";
 
 /** Edit page for a product collection, at /dashboard/collections/<id>/edit. */
 const CollectionEdit = () => {
@@ -57,25 +57,7 @@ const CollectionEdit = () => {
       action={submit}
       submitLabel="Save"
       loadingLabel="Saving..."
-      fields={[
-        {
-          type: "input",
-          name: "title",
-          label: "Title",
-          value: collection.title,
-          required: true,
-          autoFocus: true,
-        },
-        handleField({ derivedFrom: "title", value: collection.handle }),
-        {
-          type: "textarea",
-          name: "description",
-          label: "Description",
-          value: collection.description ?? "",
-          placeholder: "Short collection description...",
-          rows: 3,
-        },
-      ]}
+      fields={collectionFormFields(collection)}
     />
   );
 };

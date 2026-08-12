@@ -1,11 +1,11 @@
 import type { CollectionGroup, CollectionItem } from "./create-config";
 
 /**
- * Every addressable collection, in one flat list.
+ * Every addressable collection in one namespace, in one flat list.
  *
  * `items` nests a collection under another in the sidebar only — every
- * collection, nested or not, is addressed at `/dashboard/<slug>`. Keeping URLs
- * flat is what lets `/dashboard/<slug>/<id>` exist without colliding with a
+ * collection, nested or not, is addressed at its namespace's `<slug>`. Keeping
+ * URLs flat inside that namespace is what lets `<slug>/<id>` exist without colliding with a
  * two-segment collection path, and it is what Medusa does: `collections` and
  * `categories` are top-level there too.
  *
@@ -56,22 +56,29 @@ export const RESERVED_DETAIL_PAGE_KEYS = ["edit"] as const;
  */
 export const assertCollectionsAreAddressable = (
   groups: CollectionGroup[],
+  options: {
+    namespace?: "global" | "settings";
+    basePath?: string;
+  } = {},
 ): void => {
   const seen = new Set<string>();
+  const namespace = options.namespace ?? "global";
+  const basePath = options.basePath ?? "/dashboard";
 
   const check = (slug: string) => {
     if (
+      namespace === "global" &&
       RESERVED_COLLECTION_SLUGS.includes(
         slug as (typeof RESERVED_COLLECTION_SLUGS)[number],
       )
     ) {
       throw new Error(
-        `CMS Config: "${slug}" is a reserved slug. The dashboard routes that segment itself, so the collection would never render.`,
+        `CMS Config: "${slug}" is a reserved global slug. The dashboard routes that segment itself, so the collection would never render.`,
       );
     }
     if (seen.has(slug)) {
       throw new Error(
-        `CMS Config: two collections share the slug "${slug}". Every collection is addressed at /dashboard/<slug>, so only the first would be reachable — nesting one under another in the sidebar does not give it a separate namespace.`,
+        `CMS Config: two ${namespace} collections share the slug "${slug}". Every collection in this namespace is addressed at ${basePath}/<slug>, so only the first would be reachable — sidebar nesting does not add another URL namespace.`,
       );
     }
     seen.add(slug);
@@ -113,7 +120,9 @@ export function findBreadcrumbsFromCollections(
   groups: CollectionGroup[],
   slugs: string[],
 ): BreadcrumbItem[] {
-  if (!slugs || slugs.length === 0) return [];
+  if (!slugs || slugs.length === 0) {
+    return [{ name: "Dashboard", href: "/dashboard" }];
+  }
 
   for (const group of groups ?? []) {
     const isGlobal = group.slug === "/" || group.slug === "";
@@ -122,11 +131,14 @@ export function findBreadcrumbsFromCollections(
 
     if (isGlobal && slugs[0] === "settings") continue;
 
+    // Settings already has its own persistent sidebar shell. Repeating it as
+    // the first breadcrumb adds no navigation value, so settings trails start
+    // at the addressed collection (for example, Users or Profile).
     const groupCrumb: BreadcrumbItem[] =
-      !isGlobal && groupMatches
+      !isGlobal && groupMatches && group.slug !== "settings"
         ? [
             {
-              name: group.slug === "settings" ? "Settings" : group.title,
+              name: group.title,
               href: `/dashboard/${group.slug}`,
             },
           ]

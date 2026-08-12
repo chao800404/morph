@@ -141,6 +141,8 @@ export const listProductsInputSchema = z.object({
   collectionId: z.uuid().nullish(),
   categoryId: z.uuid().nullish(),
   optionId: z.uuid().nullish(),
+  salesChannelId: z.uuid().nullish(),
+  excludeSalesChannelId: z.uuid().nullish(),
   sortBy: z.enum(["title", "createdAt", "updatedAt"]).default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
   page: z.number().int().min(1).max(10_000).default(1),

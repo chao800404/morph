@@ -10,6 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { updateSalesChannelAction } from "../commerce-actions";
+import { salesChannelFormFields } from "./config/sales-channel-form-fields";
 
 export default function SalesChannelEdit() {
   const { id } = useParams({ strict: false }) as { id: string };
@@ -49,29 +50,7 @@ export default function SalesChannelEdit() {
       action={submit}
       submitLabel="Save"
       loadingLabel="Saving..."
-      fields={[
-        {
-          type: "input",
-          name: "name",
-          label: "Name",
-          value: channel.name,
-          required: true,
-          autoFocus: true,
-        },
-        {
-          type: "textarea",
-          name: "description",
-          label: "Description",
-          value: channel.description ?? "",
-          rows: 3,
-        },
-        {
-          type: "switch",
-          name: "isDisabled",
-          label: "Disabled",
-          value: channel.isDisabled,
-        },
-      ]}
+      fields={salesChannelFormFields(channel)}
     />
   );
 }

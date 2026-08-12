@@ -19,6 +19,8 @@ export const listProducts = createServerFn({ method: "POST" })
         collectionId: data.collectionId,
         categoryId: data.categoryId,
         optionId: data.optionId,
+        salesChannelId: data.salesChannelId,
+        excludeSalesChannelId: data.excludeSalesChannelId,
         sortBy: data.sortBy,
         sortOrder: data.sortOrder,
         page: data.page,

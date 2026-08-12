@@ -1,6 +1,6 @@
 import { promotionDal } from "@/lib/commerce/marketing.dal";
 import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
-import { createPromotionInputSchema, getMarketingRecordInputSchema, listPromotionsInputSchema, updatePromotionInputSchema } from "@/lib/validations/marketing";
+import { createPromotionInputSchema, getMarketingRecordInputSchema, listPromotionsInputSchema, updateMarketingMetadataInputSchema, updatePromotionInputSchema } from "@/lib/validations/marketing";
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware, commerceReadMiddleware } from "../middleware/auth.middleware";
 
@@ -54,6 +54,16 @@ export const updatePromotion = createServerFn({ method: "POST" })
       await promotionDal.update(id, values);
       return ok("Promotion updated successfully", { id });
     } catch (error) { return failure("Update promotion error", error, "UPDATE_FAILED", "Failed to update promotion"); }
+  });
+
+export const updatePromotionMetadata = createServerFn({ method: "POST" })
+  .validator((data: unknown) => updateMarketingMetadataInputSchema.parse(data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      await promotionDal.updateMetadata(data.id, data.metadata);
+      return ok("Promotion metadata updated successfully", { id: data.id });
+    } catch (error) { return failure("Update promotion metadata error", error, "UPDATE_FAILED", "Failed to update promotion metadata"); }
   });
 
 export const deletePromotion = createServerFn({ method: "POST" })

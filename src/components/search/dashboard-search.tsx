@@ -140,7 +140,7 @@ export const DashboardSearch = () => {
     const pageSegment = segments[3];
     const view =
       recordSegment === undefined
-        ? collection?.index.view
+        ? collection?.index?.view
         : recordSegment === "create"
           ? collection?.create?.view
           : recordSegment === "view"

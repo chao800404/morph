@@ -20,6 +20,7 @@ export * from "./auth.schema";
 export * from "./invite.schema";
 export * from "./notification.schema";
 export * from "./api-key.schema";
+export * from "./table-view.schema";
 
 // Store configuration
 export * from "./currency.schema";

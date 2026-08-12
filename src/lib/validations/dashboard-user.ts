@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { listParamsSchema } from "./commerce";
+import { metadataInputSchema } from "./product";
 
 export const listDashboardUsersInputSchema = listParamsSchema(
   ["name", "email", "firstName", "lastName", "createdAt", "updatedAt"],
@@ -20,4 +21,9 @@ export const updateDashboardUserInputSchema = z.object({
 
 export const getDashboardUserInputSchema = z.object({
   id: dashboardUserIdSchema,
+});
+
+export const updateDashboardUserMetadataInputSchema = z.object({
+  id: dashboardUserIdSchema,
+  metadata: metadataInputSchema,
 });

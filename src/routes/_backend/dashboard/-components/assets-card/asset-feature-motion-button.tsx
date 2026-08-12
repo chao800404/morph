@@ -2,12 +2,12 @@ import { Button } from "@/components/ui/button";
 import { MoveFolderIcon } from "@/components/ui/icons/move-folder-icon";
 import { downloadAsset } from "@/lib/asset/download-utils";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
+import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { moveItems } from "@/server/asset/move-items.serverFn";
 import { Download, Edit, Plus, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -57,31 +57,31 @@ export const AssetFeatureMotionButton = ({
     })),
   );
 
-  const queryClient = useQueryClient();
+  const { setInfoData, setInfoOpen } = useInfoStore(
+    useShallow((state) => ({
+      setInfoData: state.setInfoData,
+      setInfoOpen: state.setOpen,
+    })),
+  );
 
   // ... existing handlers (handleDelete, etc.)
-  const handleDelete = async () => {
-    const formData = new FormData();
-    if (type === "folder") {
-      formData.append("folderIds", JSON.stringify([id]));
-      formData.append("assetIds", JSON.stringify([]));
-    } else {
-      formData.append("folderIds", JSON.stringify([]));
-      formData.append("assetIds", JSON.stringify([id]));
-    }
-
-    const result = await deleteItems({ data: formData });
-    if (result.success) {
-      clearAllSelectedItems();
-      await queryClient.invalidateQueries({ queryKey: ["assets"] });
-      toast.success(result.message || `${type} deleted successfully`, {
-        position: "top-center",
-      });
-    } else {
-      toast.error(result.message || `Failed to delete ${type}`, {
-        position: "top-center",
-      });
-    }
+  const handleDelete = () => {
+    setInfoData({
+      title: type === "folder" ? "Delete Folder" : "Delete Asset",
+      description: `Are you sure you want to delete "${name}"? This action cannot be undone.`,
+      fields: [
+        {
+          type: "hidden",
+          name: type === "folder" ? "folderIds" : "assetIds",
+          value: JSON.stringify([id]),
+        },
+      ],
+      action: deleteItems,
+      confirmLabel: "Delete",
+      confirmVariant: "destructive",
+      onSuccess: clearAllSelectedItems,
+    });
+    setInfoOpen(true);
   };
 
   const handleDownloadAsset = async () => {
@@ -144,6 +144,9 @@ export const AssetFeatureMotionButton = ({
       className="bg-card p-1 rounded-full shadow-elevation-modal flex flex-row-reverse items-center overflow-hidden h-12"
     >
       <motion.button
+        type="button"
+        aria-label={open ? "Close asset actions" : "Open asset actions"}
+        aria-expanded={open}
         whileTap={{ scale: 0.9 }}
         onClick={() => setOpen(!open)}
         className="size-10 flex items-center justify-center rounded-full hover:bg-muted/50 transition-colors shrink-0"
@@ -168,6 +171,7 @@ export const AssetFeatureMotionButton = ({
             <Button
               variant="none"
               size="icon"
+              aria-label={`Delete ${name}`}
               className="rounded-full shrink-0"
               onClick={handleDelete}
             >
@@ -176,6 +180,7 @@ export const AssetFeatureMotionButton = ({
             <Button
               variant="none"
               size="icon"
+              aria-label={`Download ${name}`}
               className="rounded-full shrink-0"
               onClick={handleDownloadAsset}
             >
@@ -184,6 +189,7 @@ export const AssetFeatureMotionButton = ({
             <Button
               variant="none"
               size="icon"
+              aria-label={`Move ${name}`}
               className="rounded-full shrink-0"
               onClick={handleMove}
             >
@@ -192,6 +198,7 @@ export const AssetFeatureMotionButton = ({
             <Button
               variant="none"
               size="icon"
+              aria-label={`Edit ${name}`}
               className="rounded-full shrink-0"
               onClick={handleEdit}
             >

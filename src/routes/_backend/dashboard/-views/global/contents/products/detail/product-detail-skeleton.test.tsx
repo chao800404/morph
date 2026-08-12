@@ -60,6 +60,17 @@ describe("ProductDetailSkeleton", () => {
     expect(rows).toHaveLength(7);
   });
 
+  it("keeps every organization row represented while loading", () => {
+    const { container } = render(<ProductDetailSkeleton />);
+
+    const rows = container
+      .querySelector("#product-organization-skeleton")
+      ?.querySelectorAll(".border-dashed");
+
+    // Tags, type, collection, categories, and sales channels.
+    expect(rows).toHaveLength(5);
+  });
+
   it("renders no text, so nothing can flash a wrong value", () => {
     // A placeholder that prints a real-looking label is worse than a grey
     // block: it reads as loaded content for the moment before it is replaced.

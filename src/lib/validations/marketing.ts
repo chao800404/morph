@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { metadataInputSchema } from "./product";
 
 const page = z.coerce.number().int().min(1).default(1);
 const limit = z.coerce.number().int().min(1).max(100).default(20);
@@ -84,3 +85,7 @@ export const promotionInputSchema = z.object({
 export const createPromotionInputSchema = promotionInputSchema;
 export const updatePromotionInputSchema = promotionInputSchema.extend({ id: z.uuid() });
 export const getMarketingRecordInputSchema = z.object({ id: z.uuid() });
+export const updateMarketingMetadataInputSchema = z.object({
+  id: z.uuid(),
+  metadata: metadataInputSchema,
+});

@@ -1,4 +1,4 @@
-import { Spinner } from "@/components/ui/spinner";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -10,7 +10,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
+import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
+import { DragDropProvider } from "@dnd-kit/react";
+import { isSortable } from "@dnd-kit/react/sortable";
+import {
+  useCallback,
+  useMemo,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import { CardWrapper } from "../card-wrapper";
 import { DataTablePagination } from "./data-table-pagination";
 import {
@@ -29,6 +37,13 @@ import {
   DataTableFilters,
   type DataTableFilterDefinition,
 } from "./data-table-filters";
+import { DataTableColumnMenu } from "./data-table-column-menu";
+import { SortableTableHead } from "./sortable-table-head";
+import {
+  moveColumn,
+  type StoredColumnConfiguration,
+  useDataTableColumnConfiguration,
+} from "./use-data-table-column-configuration";
 
 export interface DataTableColumn<TRow> {
   /** Stable key; also used as the React key for the cell. */
@@ -37,6 +52,12 @@ export interface DataTableColumn<TRow> {
   cell: (row: TRow) => ReactNode;
   /** Applied to both the header cell and the body cells, so widths line up. */
   className?: string;
+  /** User-facing name in the shared column menu. Defaults to a string header. */
+  label?: string;
+  /** Fixed columns stay visible and cannot be dragged. */
+  fixed?: boolean;
+  /** Optional columns remain available in the menu but start hidden. */
+  defaultVisible?: boolean;
 }
 
 export interface DataTablePaginationInfo {
@@ -47,10 +68,14 @@ export interface DataTablePaginationInfo {
 }
 
 export interface DataTableCardProps<TRow> {
-  label: string;
-  description?: string;
+  label: ReactNode;
+  description?: ReactNode;
+  /** Fill-layout selectors render the table without a resource card heading. */
+  hideHeader?: boolean;
   /** Feature-owned layout only; visual styling remains inside the primitive. */
   className?: string;
+  /** Fill keeps the pager at the surface bottom and the row divider in place. */
+  layout?: "fit" | "fill";
   columns: DataTableColumn<TRow>[];
   rows: TRow[];
   getRowId: (row: TRow) => string;
@@ -68,6 +93,8 @@ export interface DataTableCardProps<TRow> {
   sortOptions?: DataTableSortOption[];
   defaultSortBy?: DataTableSortKey;
   rowActions?: (row: TRow) => RowAction[];
+  /** Feature-specific trailing control that still uses the shared actions column. */
+  renderRowActions?: (row: TRow) => ReactNode;
   /**
    * Opens the row's detail page. Set it and the whole row becomes clickable;
    * the actions cell swallows its own clicks so the menu still works.
@@ -85,10 +112,16 @@ export interface DataTableCardProps<TRow> {
   filters?: DataTableFilterDefinition[];
   /** Filters and active filter chips shown on the toolbar's leading edge. */
   toolbarLeading?: ReactNode;
+  /** Enables Medusa-style column visibility, drag ordering and persistence. */
+  columnConfigurationKey?: string;
+  /** Loader-prefetched configuration used for the table's first render. */
+  initialColumnConfiguration?: StoredColumnConfiguration | null;
   selection?: {
     selectedIds: ReadonlySet<string>;
     onChange: (ids: Set<string>) => void;
     isRowSelectable?: (row: TRow) => boolean;
+    /** Rows already related to the resource stay checked but disabled. */
+    isRowSelected?: (row: TRow) => boolean;
   };
 }
 
@@ -115,7 +148,9 @@ const TableViewport = ({ children }: { children: ReactNode }) => (
 export const DataTableCard = <TRow,>({
   label,
   description,
+  hideHeader,
   className,
+  layout = "fit",
   columns,
   rows,
   getRowId,
@@ -132,17 +167,122 @@ export const DataTableCard = <TRow,>({
   sortOptions,
   defaultSortBy,
   rowActions,
+  renderRowActions,
   pagination,
   filters,
   toolbarLeading,
+  columnConfigurationKey,
+  initialColumnConfiguration,
   selection,
 }: DataTableCardProps<TRow>) => {
-  const hasToolbar = Boolean(
-    filters?.length || toolbarLeading || searchPlaceholder || sortOptions,
+  const columnKeys = useMemo(
+    () => columns.map((column) => column.key),
+    [columns],
   );
+  const fixedColumnKeys = useMemo(
+    () =>
+      new Set(
+        columns.filter((column) => column.fixed).map((column) => column.key),
+      ),
+    [columns],
+  );
+  const defaultHiddenColumnKeys = useMemo(
+    () =>
+      new Set(
+        columns
+          .filter((column) => column.defaultVisible === false)
+          .map((column) => column.key),
+      ),
+    [columns],
+  );
+  const columnConfiguration = useDataTableColumnConfiguration({
+    configurationKey: columnConfigurationKey,
+    columnKeys,
+    fixedKeys: fixedColumnKeys,
+    defaultHiddenKeys: defaultHiddenColumnKeys,
+    initialConfiguration: initialColumnConfiguration,
+  });
+  const columnsByKey = useMemo(
+    () => new Map(columns.map((column) => [column.key, column])),
+    [columns],
+  );
+  const visibleColumns = useMemo(
+    () =>
+      (columnConfigurationKey
+        ? columnConfiguration.visibleOrder
+        : columnKeys
+      ).flatMap((key) => {
+        const column = columnsByKey.get(key);
+        return column ? [column] : [];
+      }),
+    [
+      columnConfiguration.visibleOrder,
+      columnConfigurationKey,
+      columnKeys,
+      columnsByKey,
+    ],
+  );
+  const sensors = useMemo(
+    () => [
+      PointerSensor.configure({
+        activationConstraints: [
+          new PointerActivationConstraints.Distance({ value: 8 }),
+        ],
+      }),
+    ],
+    [],
+  );
+  const handleColumnDragEnd = useCallback(
+    (
+      event: Parameters<
+        NonNullable<ComponentProps<typeof DragDropProvider>["onDragEnd"]>
+      >[0],
+    ) => {
+      if (event.canceled) return;
+      const { source } = event.operation;
+      if (!source || !isSortable(source)) return;
+      const { initialIndex, index } = source.sortable;
+      const sourceKey = visibleColumns[initialIndex]?.key;
+      const targetKey = visibleColumns[index]?.key;
+      if (!sourceKey || !targetKey || fixedColumnKeys.has(sourceKey)) return;
+      const from = columnConfiguration.order.indexOf(sourceKey);
+      const to = columnConfiguration.order.indexOf(targetKey);
+      if (from < 0 || to < 0) return;
+      columnConfiguration.setOrder((current) => moveColumn(current, from, to));
+    },
+    [columnConfiguration, fixedColumnKeys, visibleColumns],
+  );
+  const hasToolbar = Boolean(
+    filters?.length ||
+    toolbarLeading ||
+    searchPlaceholder ||
+    sortOptions ||
+    columnConfigurationKey,
+  );
+  const hasRowActions = Boolean(rowActions || renderRowActions);
   const controls = (
     <>
       {searchPlaceholder && <DataTableSearch placeholder={searchPlaceholder} />}
+      {columnConfigurationKey ? (
+        <DataTableColumnMenu
+          columns={columnConfiguration.order.flatMap((key) => {
+            const column = columnsByKey.get(key);
+            if (!column) return [];
+            return [
+              {
+                key,
+                label:
+                  column.label ??
+                  (typeof column.header === "string" ? column.header : key),
+                visible: !columnConfiguration.hidden.has(key),
+                fixed: Boolean(column.fixed),
+              },
+            ];
+          })}
+          onToggle={columnConfiguration.toggle}
+          onReset={columnConfiguration.reset}
+        />
+      ) : null}
       {sortOptions && (
         <DataTableSort options={sortOptions} defaultSortBy={defaultSortBy} />
       )}
@@ -157,7 +297,7 @@ export const DataTableCard = <TRow,>({
   const someRowsSelected = selectableRows.some((row) =>
     selection?.selectedIds.has(getRowId(row)),
   );
-  const table = (
+  const tableContent = (
     <Table>
       <TableHeader>
         <TableRow>
@@ -179,15 +319,21 @@ export const DataTableCard = <TRow,>({
               />
             </TableHead>
           ) : null}
-          {columns.map((column) => (
-            <TableHead key={column.key} className={column.className}>
+          {visibleColumns.map((column, index) => (
+            <SortableTableHead
+              key={column.key}
+              id={column.key}
+              index={index}
+              className={column.className}
+              disabled={!columnConfigurationKey || column.fixed}
+            >
               {column.header}
-            </TableHead>
+            </SortableTableHead>
           ))}
-          {rowActions && <TableHead className="w-16" />}
+          {hasRowActions && <TableHead className="w-16" />}
         </TableRow>
       </TableHeader>
-      <TableBody>
+      <TableBody preserveLastRowBorder={layout === "fill" || !pagination}>
         {rows.map((row) => {
           const rowIsClickable =
             Boolean(onRowClick) && (isRowClickable?.(row) ?? true);
@@ -196,7 +342,8 @@ export const DataTableCard = <TRow,>({
             <TableRow
               key={getRowId(row)}
               data-state={
-                selection?.selectedIds.has(getRowId(row))
+                selection?.selectedIds.has(getRowId(row)) ||
+                Boolean(selection?.isRowSelected?.(row))
                   ? "selected"
                   : undefined
               }
@@ -238,7 +385,10 @@ export const DataTableCard = <TRow,>({
                 >
                   <Checkbox
                     aria-label={`Select row ${getRowId(row)}`}
-                    checked={selection.selectedIds.has(getRowId(row))}
+                    checked={
+                      selection.selectedIds.has(getRowId(row)) ||
+                      Boolean(selection.isRowSelected?.(row))
+                    }
                     disabled={!(selection.isRowSelectable?.(row) ?? true)}
                     onCheckedChange={(checked) => {
                       const next = new Set(selection.selectedIds);
@@ -249,17 +399,19 @@ export const DataTableCard = <TRow,>({
                   />
                 </TableCell>
               ) : null}
-              {columns.map((column) => (
+              {visibleColumns.map((column) => (
                 <TableCell key={column.key} className={column.className}>
                   {column.cell(row)}
                 </TableCell>
               ))}
-              {rowActions && (
+              {hasRowActions && (
                 <TableCell
                   className="w-16 text-right"
                   onClick={(event) => event.stopPropagation()}
                 >
-                  <RowActionsMenu actions={rowActions(row)} />
+                  {renderRowActions?.(row) ?? (
+                    <RowActionsMenu actions={rowActions?.(row) ?? []} />
+                  )}
                 </TableCell>
               )}
             </TableRow>
@@ -268,11 +420,73 @@ export const DataTableCard = <TRow,>({
       </TableBody>
     </Table>
   );
+  const table = columnConfigurationKey ? (
+    <DragDropProvider sensors={sensors} onDragEnd={handleColumnDragEnd}>
+      {tableContent}
+    </DragDropProvider>
+  ) : (
+    tableContent
+  );
+
+  const pendingTable = (
+    <>
+      <TableViewport>
+        <Table aria-label="Loading table data">
+          <TableHeader>
+            <TableRow>
+              {selection ? <TableHead className="w-14" /> : null}
+              {visibleColumns.map((column) => (
+                <TableHead key={column.key} className={column.className}>
+                  {column.header}
+                </TableHead>
+              ))}
+              {hasRowActions ? <TableHead className="w-16" /> : null}
+            </TableRow>
+          </TableHeader>
+          <TableBody preserveLastRowBorder={layout === "fill" || !pagination}>
+            {Array.from({ length: 5 }, (_, rowIndex) => (
+              <TableRow key={rowIndex}>
+                {selection ? (
+                  <TableCell className="w-14">
+                    <Skeleton className="size-4 rounded" />
+                  </TableCell>
+                ) : null}
+                {visibleColumns.map((column, columnIndex) => (
+                  <TableCell key={column.key} className={column.className}>
+                    <Skeleton
+                      className={cn(
+                        "h-4",
+                        columnIndex === 0
+                          ? "w-36"
+                          : columnIndex % 2
+                            ? "w-24"
+                            : "w-28",
+                      )}
+                    />
+                  </TableCell>
+                ))}
+                {hasRowActions ? (
+                  <TableCell className="w-16">
+                    <Skeleton className="ml-auto size-7 rounded-md" />
+                  </TableCell>
+                ) : null}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableViewport>
+      <div className="flex items-center justify-between border-t px-6 py-4">
+        <Skeleton className="h-4 w-28" />
+        <Skeleton className="h-7 w-40" />
+      </div>
+    </>
+  );
 
   return (
     <CardWrapper
       label={label}
       description={description}
+      hideHeader={hideHeader}
       headerButton={headerActions}
       classNames={{
         cardWrapper: cn("h-auto", className),
@@ -292,14 +506,7 @@ export const DataTableCard = <TRow,>({
         />
       ) : null}
       {isPending ? (
-        <div
-          className={cn(
-            "flex items-center justify-center py-8",
-            DATA_TABLE_STATE_HEIGHT.noRecords,
-          )}
-        >
-          <Spinner />
-        </div>
+        pendingTable
       ) : errorMessage ? (
         <div
           className={cn(

@@ -9,41 +9,36 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { getIconByName } from "../icon-map";
 
-export function NavMain({ items, title }: NavMainProps) {
+export function NavMain({ items, title, activePathname }: NavMainProps & { activePathname: string }) {
   return (
     <SidebarGroup>
       <SidebarGroupLabel>{title}</SidebarGroupLabel>
       <SidebarMenu className="text-zinc-600 dark:text-zinc-400">
         {items?.map((item) => (
-          <NavMainItem key={item.title} item={item} />
+          <NavMainItem key={item.title} item={item} activePathname={activePathname} />
         ))}
       </SidebarMenu>
     </SidebarGroup>
   );
 }
 
-const NavMainItem = ({ item }: { item: NavMainProps["items"][number] }) => {
-  // A scalar selector is deliberate: navigating between unrelated pages no
-  // longer wakes every sidebar item. Only the old and new active item receive
-  // a different value and render.
-  const activeState = useRouterState({
-    select: (state) => {
-      const pathname = state.location.pathname;
-      const isPathActive = (url: string) =>
-        pathname === url || pathname.startsWith(`${url}/`);
-      const activeSubIndex =
-        item.items?.findIndex((subItem) => isPathActive(subItem.url)) ?? -1;
-      const direct = isPathActive(item.url);
-      return `${item.isActive || direct || activeSubIndex >= 0 ? 1 : 0}:${direct || activeSubIndex >= 0 ? 1 : 0}:${activeSubIndex}`;
-    },
-  });
-  const [active, open, activeSubIndexValue] = activeState.split(":");
-  const isActive = active === "1";
-  const isOpen = open === "1";
-  const activeSubIndex = Number(activeSubIndexValue);
+const NavMainItem = ({
+  item,
+  activePathname,
+}: {
+  item: NavMainProps["items"][number];
+  activePathname: string;
+}) => {
+  const isPathActive = (url: string) =>
+    activePathname === url || activePathname.startsWith(`${url}/`);
+  const activeSubIndex =
+    item.items?.findIndex((subItem) => isPathActive(subItem.url)) ?? -1;
+  const direct = isPathActive(item.url);
+  const isActive = Boolean(item.isActive || direct || activeSubIndex >= 0);
+  const isOpen = direct || activeSubIndex >= 0;
   const Icon =
     typeof item.icon === "string" ? getIconByName(item.icon) : item.icon;
 

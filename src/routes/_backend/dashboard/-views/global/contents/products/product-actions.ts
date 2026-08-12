@@ -3,6 +3,7 @@ import {
   deleteVariants,
   updateVariant,
 } from "@/server/product/variants.serverFn";
+import { NO_PRODUCT_COLLECTION } from "./config/product-form-fields";
 import type { AssetActionResult } from "@/lib/asset/action-result";
 import {
   createCollection,
@@ -173,7 +174,9 @@ export const updateProductOrganizationAction = async ({
     data: {
       id,
       collectionId:
-        !collectionId || collectionId === NO_COLLECTION ? null : collectionId,
+        !collectionId || collectionId === NO_PRODUCT_COLLECTION
+          ? null
+          : collectionId,
       typeValue: valueList(data, "typeValue").at(0) ?? null,
       tagValues: valueList(data, "tagValues"),
       categoryIds: idList(data, "categoryIds"),
@@ -191,7 +194,6 @@ export const updateProductOrganizationAction = async ({
 };
 
 /** The value the Collection select uses for "none"; Zod would reject "". */
-export const NO_COLLECTION = "__none__";
 
 export const updateProductMediaAction = async ({
   data,

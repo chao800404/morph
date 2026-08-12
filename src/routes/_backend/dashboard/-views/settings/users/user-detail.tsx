@@ -8,6 +8,7 @@ import {
   type EditCardField,
 } from "@/routes/_backend/dashboard/-components/edit-card/edit-card";
 import { dashboardUserQueries } from "@queries/dashboard-user.queries";
+import { MetadataCard } from "@/routes/_backend/dashboard/-components/metadata-card/metadata-card";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import {
   Link,
@@ -103,13 +104,21 @@ export default function UserDetail() {
   ];
 
   return (
-    <EditCard
-      id="user-general"
-      title={user.email}
-      editLabel="User"
-      fields={fields}
-      onEdit={openEdit}
-      onEditPreload={preloadEdit}
-    />
+    <div className="flex flex-col gap-4">
+      <EditCard
+        id="user-general"
+        title={user.email}
+        editLabel="User"
+        fields={fields}
+        onEdit={openEdit}
+        onEditPreload={preloadEdit}
+      />
+      <MetadataCard
+        slug="users"
+        id={id}
+        keyCount={Object.keys(user.metadata).length}
+        scope="settings"
+      />
+    </div>
   );
 }

@@ -319,5 +319,20 @@ const initialDraft: ProductDraft = {
   defaultVariant,
 };
 
-export const useProductDraft = (currencies: string[]) =>
-  useReducer(reducer, { ...initialDraft, currencies });
+export const createInitialProductDraft = (
+  currencies: string[],
+  defaultSalesChannelId?: string,
+): ProductDraft => ({
+  ...initialDraft,
+  currencies,
+  salesChannelIds: defaultSalesChannelId ? [defaultSalesChannelId] : [],
+});
+
+export const useProductDraft = (
+  currencies: string[],
+  defaultSalesChannelId?: string,
+) =>
+  useReducer(
+    reducer,
+    createInitialProductDraft(currencies, defaultSalesChannelId),
+  );

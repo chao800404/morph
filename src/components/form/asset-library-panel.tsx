@@ -99,6 +99,7 @@ export const AssetLibraryPanel = ({
             <Search className="size-4" />
           </InputGroupAddon>
           <InputGroupInput
+            aria-label="Search images"
             placeholder="Search images"
             defaultValue={term}
             onChange={(event) => applyTerm(event.target.value)}

@@ -15,5 +15,7 @@ export interface StoreCurrencyDTO extends CurrencyDTO {
 export interface StoreCurrencySettingsDTO {
   storeId: string;
   storeName: string;
+  defaultSalesChannelId: string;
+  salesChannels: Array<{ id: string; name: string }>;
   supportedCurrencies: StoreCurrencyDTO[];
 }

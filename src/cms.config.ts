@@ -2,6 +2,7 @@ import { createServerOnlyFn } from "@tanstack/react-start";
 import { defineConfig } from "./lib/config/create-config";
 import { localization } from "./lib/config/localization";
 import { cmsTrustedOrigins } from "./lib/config/trusted-origins";
+import { MAX_ASSETS_PER_RECORD } from "./lib/config/upload-limits";
 import {
   Account,
   Contents,
@@ -32,7 +33,7 @@ export const cmsConfig = defineConfig({
     maxFileSize: 50 * 1024 * 1024,
     minFiles: 1,
     maxFiles: 10,
-    maxAssetsPerRecord: 50,
+    maxAssetsPerRecord: MAX_ASSETS_PER_RECORD,
     allowedTypes: [
       "image/jpeg",
       "image/png",

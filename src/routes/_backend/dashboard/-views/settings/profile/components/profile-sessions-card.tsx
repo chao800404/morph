@@ -2,22 +2,18 @@
 
 import authClient from "@/auth/authClient";
 import { Button } from "@/components/ui/button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { getDeviceIcon } from "@/lib/config/agent-map";
 import { paginate } from "@/lib/config/pagination";
-import { cn, formatLastActive, simplifyUserAgent } from "@/lib/utils";
-import { CardPagination } from "@/routes/_backend/dashboard/-components/card-pagination/card-pagination";
-import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
+import { formatLastActive, simplifyUserAgent } from "@/lib/utils";
+import type { DashboardSearch } from "@/lib/validations/dashboard-search";
+import {
+  DataTableCard,
+  type DataTableColumn,
+} from "@/routes/_backend/dashboard/-components/data-table-card";
 import { sessionQueries } from "@queries/auth.queries";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useSearch } from "@tanstack/react-router";
+import { useMemo } from "react";
 import { toast } from "sonner";
 import { ProfileCardComponentProps } from "../config/profile-card.types";
 import { SessionDropdownMenu } from "./session-dropdown-menu";
@@ -39,44 +35,14 @@ export const ProfileSessionsCard = ({
   currentSessionId,
   publicURL,
 }: ProfileSessionsCardProps) => {
-  const [page, setPage] = useState(1);
   const queryClient = useQueryClient();
+  const search = useSearch({ strict: false }) as DashboardSearch;
+  const page = Math.max(1, Number(search.page) || 1);
 
   const paginationData = useMemo(
     () => paginate(sessions, page, ITEMS_PER_PAGE),
     [sessions, page],
   );
-
-  useEffect(() => {
-    const totalPages = Math.max(
-      1,
-      Math.ceil(sessions.length / ITEMS_PER_PAGE),
-    );
-    if (page > totalPages) {
-      setPage(totalPages);
-    }
-  }, [sessions.length, page]);
-
-  const handlePageChange = (action: "first" | "prev" | "next" | "last") => {
-    setPage((prev) => {
-      const totalPages = Math.max(
-        1,
-        Math.ceil(sessions.length / ITEMS_PER_PAGE),
-      );
-      switch (action) {
-        case "first":
-          return 1;
-        case "prev":
-          return prev > 1 ? prev - 1 : 1;
-        case "next":
-          return prev < totalPages ? prev + 1 : totalPages;
-        case "last":
-          return totalPages;
-        default:
-          return prev;
-      }
-    });
-  };
 
   const handleRemoveOtherSessions = async () => {
     toast.promise(authClient(publicURL).revokeOtherSessions(), {
@@ -89,17 +55,72 @@ export const ProfileSessionsCard = ({
     });
   };
 
+  const columns = useMemo<DataTableColumn<(typeof sessions)[number]>[]>(
+    () => [
+      {
+        key: "device",
+        header: "Device",
+        className: "w-20",
+        cell: (session) => (
+          <div className="flex justify-center">
+            {getDeviceIcon(session.userAgent, currentSessionId === session.id)}
+          </div>
+        ),
+      },
+      {
+        key: "city",
+        header: "City",
+        cell: (session) => session.city?.replace("City", "") || "Unknown",
+      },
+      {
+        key: "ipAddress",
+        header: "IP Address",
+        className: "whitespace-nowrap",
+        cell: (session) => session.ipAddress || "Unknown",
+      },
+      {
+        key: "userAgent",
+        header: "User Agent",
+        className: "max-w-52 whitespace-nowrap",
+        cell: (session) => {
+          const value = simplifyUserAgent(session.userAgent);
+          return (
+            <span className="block truncate" title={value}>
+              {value}
+            </span>
+          );
+        },
+      },
+      {
+        key: "lastActive",
+        header: "Last Active",
+        className: "whitespace-nowrap",
+        cell: (session) => (
+          <span suppressHydrationWarning>
+            {formatLastActive(session.updatedAt)}
+          </span>
+        ),
+      },
+      {
+        key: "created",
+        header: "Created",
+        className: "whitespace-nowrap",
+        cell: (session) => (
+          <span suppressHydrationWarning>
+            {new Date(session.createdAt).toLocaleDateString()}
+          </span>
+        ),
+      },
+    ],
+    [currentSessionId, sessions],
+  );
+
   return (
     <div id={slug}>
-      <CardWrapper
+      <DataTableCard
         label={label}
         description={description}
-        classNames={{
-          cardWrapper: "h-auto",
-          contentWrapper: "px-0",
-          headerWrapper: "max-sm:flex-col max-sm:gap-4",
-        }}
-        headerButton={
+        headerActions={
           <Button
             variant="cardHeader"
             size="xs"
@@ -108,106 +129,24 @@ export const ProfileSessionsCard = ({
             Remove Other Sessions
           </Button>
         }
-      >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead
-                  className={cn(
-                    "pl-6 w-14 whitespace-nowrap sticky left-0 z-20 bg-accent",
-                  )}
-                >
-                  Device
-                </TableHead>
-                <TableHead className="whitespace-nowrap">City</TableHead>
-                <TableHead className="whitespace-nowrap">IP Address</TableHead>
-                <TableHead className="whitespace-nowrap">User Agent</TableHead>
-                <TableHead className="whitespace-nowrap">Last Active</TableHead>
-                <TableHead className="whitespace-nowrap">Created</TableHead>
-                <TableHead className="pr-6 w-14 whitespace-nowrap"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sessions.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="text-center py-10">
-                    No active sessions found.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                paginationData.paginatedItems.map((session) => {
-                  const userAgentDisplay = simplifyUserAgent(session.userAgent);
-                  const isCurrent = currentSessionId === session.id;
-                  const Device = getDeviceIcon(session.userAgent, isCurrent);
-
-                  return (
-                    <TableRow
-                      data-active={isCurrent}
-                      className={cn("data-[active=true]:bg-muted group")}
-                      key={session.id}
-                    >
-                      <TableCell
-                        className={cn(
-                          "text-start pl-6 sticky bg-muted/50 left-0 z-20 group-data-[active=true]:bg-muted",
-                        )}
-                      >
-                        <div className="flex justify-center text-center gap-0.5">
-                          {Device}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {session.city?.replace("City", "") || "Unknown"}
-                      </TableCell>
-                      <TableCell className="font-medium whitespace-nowrap">
-                        {session.ipAddress || "Unknown"}
-                      </TableCell>
-                      <TableCell
-                        className="whitespace-nowrap max-w-[200px] truncate"
-                        title={userAgentDisplay}
-                      >
-                        {userAgentDisplay}
-                      </TableCell>
-                      <TableCell
-                        suppressHydrationWarning
-                        className="whitespace-nowrap"
-                      >
-                        {formatLastActive(session.updatedAt)}
-                      </TableCell>
-                      <TableCell
-                        suppressHydrationWarning
-                        className="whitespace-nowrap"
-                      >
-                        {new Date(session.createdAt).toLocaleDateString()}
-                      </TableCell>
-                      <TableCell
-                        className={cn(
-                          "text-center bg-muted/50 pr-6 sticky right-0 z-20 group-data-[active=true]:bg-muted",
-                        )}
-                      >
-                        <SessionDropdownMenu
-                          id={session.id}
-                          isCurrent={isCurrent}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
-        </div>
-        <div className="px-6 py-4 text-sm border-t">
-          <CardPagination
-            page={page}
-            totalPages={paginationData.totalPages}
-            itemsLength={paginationData.itemsLength}
-            startItem={paginationData.startItem}
-            endItem={paginationData.endItem}
-            onPageChange={handlePageChange}
+        columns={columns}
+        rows={paginationData.paginatedItems}
+        getRowId={(session) => session.id}
+        emptyTitle="No active sessions"
+        emptyDescription="Active dashboard sessions will appear here."
+        renderRowActions={(session) => (
+          <SessionDropdownMenu
+            id={session.id}
+            isCurrent={currentSessionId === session.id}
           />
-        </div>
-      </CardWrapper>
+        )}
+        pagination={{
+          page: paginationData.currentPage,
+          limit: ITEMS_PER_PAGE,
+          total: paginationData.itemsLength,
+          totalPages: paginationData.totalPages,
+        }}
+      />
     </div>
   );
 };

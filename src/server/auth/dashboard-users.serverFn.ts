@@ -4,6 +4,7 @@ import {
   getDashboardUserInputSchema,
   listDashboardUsersInputSchema,
   updateDashboardUserInputSchema,
+  updateDashboardUserMetadataInputSchema,
 } from "@/lib/validations/dashboard-user";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
@@ -71,6 +72,27 @@ export const getDashboardUser = createServerFn({ method: "POST" })
         error,
         "GET_FAILED",
         "Failed to fetch user",
+      );
+    }
+  });
+
+export const updateDashboardUserMetadata = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    updateDashboardUserMetadataInputSchema.parse(data),
+  )
+  .middleware([userAdminMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const user = await dashboardUserDal.findStaffById(data.id);
+      if (!user) return fail("User not found", { error: "NOT_FOUND" });
+      await dashboardUserDal.updateMetadata(data.id, data.metadata);
+      return ok("User metadata updated successfully", { id: data.id });
+    } catch (error) {
+      return failure(
+        "Update dashboard user metadata error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to update user metadata",
       );
     }
   });

@@ -7,6 +7,7 @@ import {
 import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { updateStoreGeneral } from "@/server/currency/currencies.serverFn";
 import { currencyQueries } from "@queries/currency.queries";
+import { salesChannelQueries } from "@queries/sales-channel.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -26,6 +27,9 @@ const StoreEdit = () => {
     }
 
     await queryClient.invalidateQueries({ queryKey: currencyQueries.all() });
+    await queryClient.invalidateQueries({
+      queryKey: salesChannelQueries.all(),
+    });
     toast.success(result.message, { position: "top-center" });
     close();
     return result;
@@ -39,7 +43,7 @@ const StoreEdit = () => {
   if (!store) {
     return (
       <RouteSurfaceMessage>
-          {query.data?.message ?? "Store settings could not be loaded"}
+        {query.data?.message ?? "Store settings could not be loaded"}
       </RouteSurfaceMessage>
     );
   }
@@ -64,6 +68,17 @@ const StoreEdit = () => {
           value: store.storeName,
           required: true,
           autoFocus: true,
+        },
+        {
+          type: "select",
+          name: "defaultSalesChannelId",
+          label: "Default sales channel",
+          value: store.defaultSalesChannelId,
+          options: store.salesChannels.map((channel) => ({
+            label: channel.name,
+            value: channel.id,
+          })),
+          required: true,
         },
         {
           type: "select",

@@ -77,16 +77,25 @@ const TableHeader = React.forwardRef<HTMLTableSectionElement, TableHeaderProps>(
 );
 TableHeader.displayName = "TableHeader";
 
-const TableBody = React.forwardRef<
-  HTMLTableSectionElement,
-  React.HTMLAttributes<HTMLTableSectionElement>
->(({ className, ...props }, ref) => (
-  <tbody
-    ref={ref}
-    className={cn("[&_tr:last-child]:border-0", className)}
-    {...props}
-  />
-));
+interface TableBodyProps extends React.HTMLAttributes<HTMLTableSectionElement> {
+  /** Table cards keep a divider between the final row and their footer. */
+  preserveLastRowBorder?: boolean;
+}
+
+const TableBody = React.forwardRef<HTMLTableSectionElement, TableBodyProps>(
+  ({ className, preserveLastRowBorder = false, ...props }, ref) => (
+    <tbody
+      ref={ref}
+      className={cn(
+        preserveLastRowBorder
+          ? "[&_tr:last-child]:border-b"
+          : "[&_tr:last-child]:border-0",
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
 TableBody.displayName = "TableBody";
 
 const TableFooter = React.forwardRef<

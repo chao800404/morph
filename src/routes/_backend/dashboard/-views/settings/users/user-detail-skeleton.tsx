@@ -3,6 +3,7 @@ import {
   EditCard,
   type EditCardField,
 } from "@/routes/_backend/dashboard/-components/edit-card/edit-card";
+import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
 
 const fields: EditCardField[] = [
   "Name",
@@ -20,9 +21,16 @@ const fields: EditCardField[] = [
 }));
 
 export const UserDetailPendingView = () => (
-  <EditCard
-    id="user-general-pending"
-    title={<Skeleton className="h-5 w-52" />}
-    fields={fields}
-  />
+  <div className="flex flex-col gap-4">
+    <EditCard
+      id="user-general-pending"
+      title={<Skeleton className="h-5 w-52" />}
+      fields={fields}
+    />
+    <CardWrapper
+      id="user-metadata-pending"
+      label={<Skeleton className="h-5 w-32" />}
+      headerButton={<Skeleton className="size-8 rounded-md" />}
+    />
+  </div>
 );

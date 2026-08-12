@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { CollectionDetailSkeleton } from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
 import {
   EditCard,
@@ -10,18 +10,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { PromotionStatusBadge } from "./status-badges";
 import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
+import { MetadataCard } from "@/routes/_backend/dashboard/-components/metadata-card/metadata-card";
 
 const PromotionDetail = () => {
   const { id } = useParams({ strict: false }) as { id: string };
   const navigate = useNavigate();
   const { data: result, isPending } = useQuery(promotionQueries.detail(id));
   const promotion = result?.success ? result.data : null;
-  if (isPending)
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner />
-      </div>
-    );
+  if (isPending) return <CollectionDetailSkeleton />;
   if (!promotion)
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
@@ -171,6 +167,11 @@ const PromotionDetail = () => {
             </div>
           )}
         </CardWrapper>
+        <MetadataCard
+          slug="promotions"
+          id={id}
+          keyCount={Object.keys(promotion.metadata).length}
+        />
       </div>
     </PageSplitLayout>
   );

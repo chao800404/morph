@@ -8,10 +8,10 @@ import {
 import { useAssetMoveStore } from "@/routes/_backend/dashboard/-views/features/asset/move/use-asset-move-store";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { useAssetRouteActions } from "@/routes/_backend/dashboard/-views/global/contents/assets/hooks/use-asset-route-actions";
+import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { moveItems } from "@/server/asset/move-items.serverFn";
 // import { copyPath } from "@/lib/shared/copy-path";
-import { useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
@@ -40,7 +40,6 @@ export const AssetPropertyHeader = ({
   size,
   alt,
 }: Props) => {
-  const queryClient = useQueryClient();
   const { openEdit } = useAssetRouteActions();
 
   const { handleMoveOpenChange, setAssetMoveData } = useAssetMoveStore(
@@ -56,29 +55,31 @@ export const AssetPropertyHeader = ({
     })),
   );
 
-  // ... existing handlers (handleDelete, etc.)
-  const handleDelete = async () => {
-    const formData = new FormData();
-    if (type === "folder") {
-      formData.append("folderIds", JSON.stringify([id]));
-      formData.append("assetIds", JSON.stringify([]));
-    } else {
-      formData.append("folderIds", JSON.stringify([]));
-      formData.append("assetIds", JSON.stringify([id]));
-    }
+  const { setInfoData, setInfoOpen } = useInfoStore(
+    useShallow((state) => ({
+      setInfoData: state.setInfoData,
+      setInfoOpen: state.setOpen,
+    })),
+  );
 
-    const result = await deleteItems({ data: formData });
-    if (result.success) {
-      clearAllSelectedItems();
-      await queryClient.invalidateQueries({ queryKey: ["assets"] });
-      toast.success(result.message || `${type} deleted successfully`, {
-        position: "top-center",
-      });
-    } else {
-      toast.error(result.message || `Failed to delete ${type}`, {
-        position: "top-center",
-      });
-    }
+  // ... existing handlers (handleDelete, etc.)
+  const handleDelete = () => {
+    setInfoData({
+      title: type === "folder" ? "Delete Folder" : "Delete Asset",
+      description: `Are you sure you want to delete "${name}"? This action cannot be undone.`,
+      fields: [
+        {
+          type: "hidden",
+          name: type === "folder" ? "folderIds" : "assetIds",
+          value: JSON.stringify([id]),
+        },
+      ],
+      action: deleteItems,
+      confirmLabel: "Delete",
+      confirmVariant: "destructive",
+      onSuccess: clearAllSelectedItems,
+    });
+    setInfoOpen(true);
   };
 
   const handleCopyLink = async () => {

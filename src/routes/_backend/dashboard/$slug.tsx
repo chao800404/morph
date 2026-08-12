@@ -1,4 +1,4 @@
-import { PageSpinner } from "@/components/loading/page-spinner";
+import { DashboardRoutePending } from "@/routes/_backend/dashboard/-components/loading/dashboard-route-pending";
 import { NotFound } from "@/components/not-found/not-found";
 import { findCollection } from "@/lib/config/navigation";
 import { dashboardSearchSchema } from "@/lib/validations/dashboard-search";
@@ -24,6 +24,9 @@ export const Route = createFileRoute("/_backend/dashboard/$slug")({
 
     await collection?.index?.prefetch?.({ queryClient, params, search });
   },
+  pendingComponent: DashboardRoutePending,
+  pendingMs: 0,
+  pendingMinMs: 250,
   component: RouteComponent,
 });
 
@@ -67,12 +70,13 @@ function RouteComponent() {
     return <Outlet />;
   }
 
-  const ViewComponent = collection?.index?.view;
-  if (!ViewComponent) return <NotFound />;
+  const index = collection?.index;
+  if (!index) return <NotFound />;
+  const ViewComponent = index.view;
 
   // A view whose in-card loading state is a skeleton supplies a matching
   // fallback, so the chunk wait and the data wait look like one state.
-  const PendingView = collection.index?.pendingView ?? PageSpinner;
+  const PendingView = index.pendingView;
   return (
     <>
       <Suspense fallback={<PendingView />}>

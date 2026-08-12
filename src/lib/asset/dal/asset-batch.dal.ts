@@ -36,6 +36,13 @@ export type FolderMetadataUpdate = {
   path?: string;
 };
 
+export type AssetUsageSummary = {
+  productCount: number;
+  variantCount: number;
+  productTitles: string[];
+  variantTitles: string[];
+};
+
 type MoveBatchOptions = {
   assetIds: string[];
   targetFolderId: string | null;
@@ -106,6 +113,52 @@ export async function batchSoftDeleteItemsInD1(options: {
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [];
 
+  // Soft deletes do not trigger SQLite ON DELETE actions. Remove media links
+  // explicitly, then derive a new lead image from each remaining gallery.
+  // Keeping these statements in the same D1 batch prevents products from ever
+  // committing with a thumbnail that points at a hidden asset.
+  for (const ids of chunksOf(options.assetIds)) {
+    const inClause = placeholders(ids.length);
+    statements.push(
+      env.DATABASE.prepare(
+        `DELETE FROM product_variant_assets WHERE asset_id IN (${inClause})`,
+      ).bind(...ids),
+      env.DATABASE.prepare(
+        `DELETE FROM product_assets WHERE asset_id IN (${inClause})`,
+      ).bind(...ids),
+    );
+  }
+
+  for (const ids of chunksOf(options.assetIds)) {
+    const inClause = placeholders(ids.length);
+    statements.push(
+      env.DATABASE.prepare(
+        `UPDATE product_variants
+         SET thumbnail_asset_id = (
+           SELECT pva.asset_id
+           FROM product_variant_assets pva
+           JOIN assets a ON a.id = pva.asset_id AND a.deleted_at IS NULL
+           WHERE pva.variant_id = product_variants.id
+           ORDER BY pva.rank ASC
+           LIMIT 1
+         ), updated_at = ?, updated_by = ?
+         WHERE thumbnail_asset_id IN (${inClause})`,
+      ).bind(now, options.userId, ...ids),
+      env.DATABASE.prepare(
+        `UPDATE products
+         SET thumbnail_asset_id = (
+           SELECT pa.asset_id
+           FROM product_assets pa
+           JOIN assets a ON a.id = pa.asset_id AND a.deleted_at IS NULL
+           WHERE pa.product_id = products.id
+           ORDER BY pa.rank ASC
+           LIMIT 1
+         ), updated_at = ?, updated_by = ?
+         WHERE thumbnail_asset_id IN (${inClause})`,
+      ).bind(now, options.userId, ...ids),
+    );
+  }
+
   for (const ids of chunksOf(options.assetIds)) {
     statements.push(
       env.DATABASE.prepare(
@@ -122,6 +175,66 @@ export async function batchSoftDeleteItemsInD1(options: {
   }
 
   if (statements.length > 0) await env.DATABASE.batch(statements);
+}
+
+export async function findAssetUsageInD1(
+  assetIds: string[],
+): Promise<AssetUsageSummary> {
+  const products = new Map<string, string>();
+  const variants = new Map<string, string>();
+
+  for (const ids of chunksOf(assetIds)) {
+    const inClause = placeholders(ids.length);
+    const [productResult, variantResult] = await env.DATABASE.batch([
+      env.DATABASE.prepare(
+        `SELECT DISTINCT p.id, p.title
+         FROM products p
+         WHERE p.deleted_at IS NULL
+           AND (
+             p.thumbnail_asset_id IN (${inClause})
+             OR EXISTS (
+               SELECT 1 FROM product_assets pa
+               WHERE pa.product_id = p.id AND pa.asset_id IN (${inClause})
+             )
+           )`,
+      ).bind(...ids, ...ids),
+      env.DATABASE.prepare(
+        `SELECT DISTINCT pv.id, p.title AS product_title, pv.title AS variant_title
+         FROM product_variants pv
+         JOIN products p ON p.id = pv.product_id
+         WHERE pv.deleted_at IS NULL
+           AND p.deleted_at IS NULL
+           AND (
+             pv.thumbnail_asset_id IN (${inClause})
+             OR EXISTS (
+               SELECT 1 FROM product_variant_assets pva
+               WHERE pva.variant_id = pv.id AND pva.asset_id IN (${inClause})
+             )
+           )`,
+      ).bind(...ids, ...ids),
+    ]);
+
+    for (const row of productResult.results as Array<{
+      id: string;
+      title: string;
+    }>) {
+      products.set(row.id, row.title);
+    }
+    for (const row of variantResult.results as Array<{
+      id: string;
+      product_title: string;
+      variant_title: string;
+    }>) {
+      variants.set(row.id, `${row.product_title} / ${row.variant_title}`);
+    }
+  }
+
+  return {
+    productCount: products.size,
+    variantCount: variants.size,
+    productTitles: [...products.values()].slice(0, 5),
+    variantTitles: [...variants.values()].slice(0, 5),
+  };
 }
 
 const createMetadataStatements = (

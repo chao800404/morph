@@ -35,6 +35,7 @@ import { Route as BackendDashboardSettingsSlugIdRouteImport } from './routes/_ba
 import { Route as BackendDashboardSettingsSlugCreateRouteImport } from './routes/_backend/dashboard/settings/$slug/create'
 import { Route as BackendDashboardSettingsSlugEditRouteImport } from './routes/_backend/dashboard/settings/$slug/edit'
 import { Route as BackendDashboardSlugIdPageChildIdRouteImport } from './routes/_backend/dashboard/$slug/$id/$page/$childId'
+import { Route as BackendDashboardSettingsSlugIdPageRouteImport } from './routes/_backend/dashboard/settings/$slug/$id/$page'
 import { Route as BackendDashboardSettingsSlugIdEditRouteImport } from './routes/_backend/dashboard/settings/$slug/$id/edit'
 
 const IndexRoute = IndexRouteImport.update({
@@ -179,6 +180,12 @@ const BackendDashboardSlugIdPageChildIdRoute =
     path: '/$childId',
     getParentRoute: () => BackendDashboardSlugIdPageRoute,
   } as any)
+const BackendDashboardSettingsSlugIdPageRoute =
+  BackendDashboardSettingsSlugIdPageRouteImport.update({
+    id: '/$page',
+    path: '/$page',
+    getParentRoute: () => BackendDashboardSettingsSlugIdRoute,
+  } as any)
 const BackendDashboardSettingsSlugIdEditRoute =
   BackendDashboardSettingsSlugIdEditRouteImport.update({
     id: '/edit',
@@ -211,6 +218,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
   '/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
   '/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
+  '/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRoute
   '/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
 }
 export interface FileRoutesByTo {
@@ -236,6 +244,7 @@ export interface FileRoutesByTo {
   '/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
   '/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
   '/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
+  '/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRoute
   '/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
 }
 export interface FileRoutesById {
@@ -266,6 +275,7 @@ export interface FileRoutesById {
   '/_backend/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
   '/_backend/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
   '/_backend/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
+  '/_backend/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRoute
   '/_backend/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
 }
 export interface FileRouteTypes {
@@ -295,6 +305,7 @@ export interface FileRouteTypes {
     | '/dashboard/settings/$slug/create'
     | '/dashboard/settings/$slug/edit'
     | '/dashboard/$slug/$id/$page/$childId'
+    | '/dashboard/settings/$slug/$id/$page'
     | '/dashboard/settings/$slug/$id/edit'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -320,6 +331,7 @@ export interface FileRouteTypes {
     | '/dashboard/settings/$slug/create'
     | '/dashboard/settings/$slug/edit'
     | '/dashboard/$slug/$id/$page/$childId'
+    | '/dashboard/settings/$slug/$id/$page'
     | '/dashboard/settings/$slug/$id/edit'
   id:
     | '__root__'
@@ -349,6 +361,7 @@ export interface FileRouteTypes {
     | '/_backend/dashboard/settings/$slug/create'
     | '/_backend/dashboard/settings/$slug/edit'
     | '/_backend/dashboard/$slug/$id/$page/$childId'
+    | '/_backend/dashboard/settings/$slug/$id/$page'
     | '/_backend/dashboard/settings/$slug/$id/edit'
   fileRoutesById: FileRoutesById
 }
@@ -541,6 +554,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendDashboardSlugIdPageChildIdRouteImport
       parentRoute: typeof BackendDashboardSlugIdPageRoute
     }
+    '/_backend/dashboard/settings/$slug/$id/$page': {
+      id: '/_backend/dashboard/settings/$slug/$id/$page'
+      path: '/$page'
+      fullPath: '/dashboard/settings/$slug/$id/$page'
+      preLoaderRoute: typeof BackendDashboardSettingsSlugIdPageRouteImport
+      parentRoute: typeof BackendDashboardSettingsSlugIdRoute
+    }
     '/_backend/dashboard/settings/$slug/$id/edit': {
       id: '/_backend/dashboard/settings/$slug/$id/edit'
       path: '/edit'
@@ -633,11 +653,14 @@ const BackendDashboardSlugRouteWithChildren =
   BackendDashboardSlugRoute._addFileChildren(BackendDashboardSlugRouteChildren)
 
 interface BackendDashboardSettingsSlugIdRouteChildren {
+  BackendDashboardSettingsSlugIdPageRoute: typeof BackendDashboardSettingsSlugIdPageRoute
   BackendDashboardSettingsSlugIdEditRoute: typeof BackendDashboardSettingsSlugIdEditRoute
 }
 
 const BackendDashboardSettingsSlugIdRouteChildren: BackendDashboardSettingsSlugIdRouteChildren =
   {
+    BackendDashboardSettingsSlugIdPageRoute:
+      BackendDashboardSettingsSlugIdPageRoute,
     BackendDashboardSettingsSlugIdEditRoute:
       BackendDashboardSettingsSlugIdEditRoute,
   }

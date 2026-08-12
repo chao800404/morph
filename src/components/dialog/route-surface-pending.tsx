@@ -1,6 +1,7 @@
-import { Spinner } from "@/components/ui/spinner";
+import { DialogFooterActions } from "./dialog-footer-actions";
+import { Skeleton } from "@/components/ui/skeleton";
 import { RouteFullscreenSurface } from "./route-fullscreen-surface";
-import { useRouteModalClose } from "./route-form-modal";
+import { useCloseOnEscape, useRouteModalClose } from "./route-modal-close";
 
 /**
  * What a route-backed overlay shows while its chunk loads.
@@ -13,14 +14,53 @@ import { useRouteModalClose } from "./route-form-modal";
  * its contents arrive late. Closing already works, so an author who opened it
  * by mistake need not wait for the form.
  */
-export const RouteSurfacePending = () => {
+const RouteSurfacePendingFrame = ({ fieldCount }: { fieldCount: number }) => {
   const close = useRouteModalClose();
+  useCloseOnEscape(close);
 
   return (
-    <RouteFullscreenSurface onClose={close}>
-      <div className="flex size-full items-center justify-center">
-        <Spinner className="size-6 text-foreground/70" />
+    <RouteFullscreenSurface
+      onClose={close}
+      bodyClassName="overflow-y-auto"
+      footer={
+        <DialogFooterActions
+          isSheet={false}
+          isDisabled
+          onCancel={close}
+          onSubmit={() => undefined}
+        />
+      }
+    >
+      <div
+        className="mx-auto flex w-full max-w-2xl flex-col px-6 py-16"
+        aria-label="Loading form"
+        aria-busy="true"
+      >
+        <Skeleton className="h-5 w-40" />
+        <Skeleton className="mt-2 h-4 w-64 max-w-full" />
+        <div className="mt-8 grid grid-cols-1 gap-8">
+          {Array.from({ length: fieldCount }, (_, index) => (
+            <div className="space-y-2" key={index}>
+              <Skeleton className={index % 2 ? "h-4 w-24" : "h-4 w-16"} />
+              <Skeleton
+                className={index === 1 ? "h-20 w-full" : "h-9 w-full"}
+              />
+            </div>
+          ))}
+        </div>
       </div>
     </RouteFullscreenSurface>
   );
+};
+
+export const RouteSurfacePending = () => (
+  <RouteSurfacePendingFrame fieldCount={4} />
+);
+
+/** Creates a named page fallback with the same field count as its real form. */
+export const createRouteSurfacePendingView = (fieldCount: number) => {
+  const PendingView = () => (
+    <RouteSurfacePendingFrame fieldCount={fieldCount} />
+  );
+  return PendingView;
 };

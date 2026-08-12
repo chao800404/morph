@@ -1,17 +1,18 @@
 import { RouteFormPage, useRouteModalClose, type RouteFormState } from "@/components/dialog/route-form-modal";
-import { Spinner } from "@/components/ui/spinner";
+import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
+import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
 import { updatePromotion } from "@/server/marketing/promotions.serverFn";
 import { promotionQueries } from "@queries/marketing.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { promotionFields, promotionFormData } from "./promotion-form";
+import { promotionFields, promotionFormData } from "./config/promotion-form-fields";
 
 const PromotionEdit = () => {
   const { id } = useParams({ strict: false }) as { id: string }; const close = useRouteModalClose(); const queryClient = useQueryClient();
   const { data: result, isPending } = useQuery(promotionQueries.detail(id)); const promotion = result?.success ? result.data : null;
-  if (isPending) return <div className="flex h-full items-center justify-center"><Spinner /></div>;
-  if (!promotion) return null;
+  if (isPending) return <RouteSurfacePending />;
+  if (!promotion) return <RouteSurfaceMessage>{result?.message ?? "Promotion not found"}</RouteSurfaceMessage>;
   const submit = async (_state: RouteFormState, formData: FormData): Promise<RouteFormState> => {
     const response = await updatePromotion({ data: { id, ...promotionFormData(formData, promotion) } });
     if (!response.success) { toast.error(response.message, { position: "top-center" }); return response; }

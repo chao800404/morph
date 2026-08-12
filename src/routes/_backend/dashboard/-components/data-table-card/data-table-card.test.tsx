@@ -1,7 +1,18 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DataTableCard } from "./data-table-card";
+
+vi.mock("@/server/table-view/table-views.serverFn", () => ({
+  getTableViewConfiguration: vi.fn(async () => ({
+    success: true,
+    data: null,
+  })),
+  saveTableViewConfiguration: vi.fn(async ({ data }) => ({
+    success: true,
+    data: data.configuration,
+  })),
+}));
 
 vi.mock("./data-table-search", () => ({
   DataTableSearch: () => <div>Search control</div>,
@@ -43,6 +54,15 @@ const SelectableTable = () => {
 };
 
 describe("DataTableCard selection", () => {
+  beforeEach(() => {
+    const values = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+  });
   it("selects eligible rows while keeping locked rows disabled", () => {
     const { container } = render(<SelectableTable />);
 
@@ -121,5 +141,50 @@ describe("DataTableCard selection", () => {
 
     fireEvent.keyDown(row, { key: "Enter" });
     expect(onRowClick).toHaveBeenCalledWith(rows[0]);
+  });
+
+  it("uses the shared Medusa-style menu to persist column visibility", async () => {
+    render(
+      <DataTableCard
+        label="Currencies"
+        columnConfigurationKey="currency-test"
+        columns={[
+          {
+            key: "name",
+            header: "Name",
+            cell: (row) => row.name,
+            fixed: true,
+          },
+          {
+            key: "availability",
+            header: "Availability",
+            cell: (row) => (row.locked ? "Locked" : "Available"),
+          },
+        ]}
+        rows={rows}
+        getRowId={(row) => row.id}
+        emptyTitle="No currencies"
+        emptyDescription="Add a currency."
+      />,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Edit columns" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Availability" }));
+
+    await waitFor(() => {
+      expect(localStorage.getItem("morph:data-table:currency-test:columns")).toContain(
+        '"availability"',
+      );
+    });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("columnheader", { name: "Availability" }),
+      ).toBeNull(),
+    );
+    expect(screen.getByRole("columnheader", { name: "Name" })).toBeTruthy();
   });
 });

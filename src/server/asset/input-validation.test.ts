@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseUpdateItemsInput } from "./input-validation";
+import {
+  parseDeleteItemsInput,
+  parseUpdateItemsInput,
+} from "./input-validation";
 
 const itemId = "11111111-1111-4111-8111-111111111111";
 const folderId = "22222222-2222-4222-8222-222222222222";
@@ -33,5 +36,28 @@ describe("parseUpdateItemsInput item location contract", () => {
 
     expect(result.formError).toBeDefined();
     expect(result.itemsData).toEqual([]);
+  });
+});
+
+describe("parseDeleteItemsInput reference cleanup confirmation", () => {
+  it("defaults to preserving product references until explicitly confirmed", () => {
+    const data = new FormData();
+    data.set("assetIds", JSON.stringify([itemId]));
+
+    const result = parseDeleteItemsInput(data);
+
+    expect(result.formError).toBeUndefined();
+    expect(result.detachReferences).toBe(false);
+  });
+
+  it("accepts the explicit second-step confirmation", () => {
+    const data = new FormData();
+    data.set("assetIds", JSON.stringify([itemId]));
+    data.set("detachReferences", "true");
+
+    const result = parseDeleteItemsInput(data);
+
+    expect(result.formError).toBeUndefined();
+    expect(result.detachReferences).toBe(true);
   });
 });
