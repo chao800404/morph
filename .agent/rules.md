@@ -22,6 +22,21 @@
 - 所有可發布內容都必須支援 draft 與 published 狀態分離、可追蹤版本、發布時間與回復上一版本。後續若加入排程發布、多人協作或 AI 更新產品頁，也必須建立在同一條 revision → validation → preview → publish pipeline 上，不新增旁路。
 - Storefront renderer 必須只讀取已發布版本；Dashboard editor 與 preview 可以讀取 draft。發布操作由具權限的 server function 協調，DAL 負責原子切換 active/published version，client 不可自行指定或竄改線上版本。
 
+### AI Page Authoring、Interactive Sections 與 Code Mode
+
+- Morph 一般頁面生成採 **Schema Authoring**，不是 code generation。AI 只能輸出通過共用 Zod schema 的 page document／section JSON；Visual Editor、AI authoring、preview 與 storefront renderer 必須共用同一份 document schema、schema version、section registry 與 theme tokens，不得各自建立相似但不相容的資料格式。
+- Section registry 是頁面能力的唯一來源。每個 section type 必須有穩定 identifier、props schema、允許的 variants、responsive contract、renderer 與必要的 migration；AI 只能選擇已註冊的 section、variant、資料來源與 token，不可捏造 component import、prop、CSS class 或 runtime dependency。
+- Page document 是資料，不是程式碼。禁止保存或執行任意 React／TSX、HTML script、event handler、JavaScript expression、`dangerouslySetInnerHTML` payload、動態 import、外部追蹤程式或可讀取環境變數的內容。Rich text 或嵌入內容也必須經既有 schema、allowlist 與 sanitizer 邊界處理。
+- AI 產出只能建立新的 draft revision；不得原地修改既有 revision、直接切換 published revision、直接部署或繞過 preview／人工確認。發布流程固定為 `generation → schema validation → draft revision → preview → human approval → authorized publish`，validation 失敗的結果只能留在 generation job／error 狀態，不得進入可發布 document。
+- 一般內容操作（文案、圖片、section 新增／移除／排序、variant、theme token 與資料綁定）只更新版本化資料，**不得觸發 storefront 重新 build 或 deploy**。只有新增或修改程式層 section renderer、互動能力、依賴或 runtime 時才需要正常工程 build／deploy 流程。
+- Canvas、WebGL、scroll story、3D viewer、image sequence 與其他高互動效果，第一優先做成 registry 中具名的 **Interactive Section／Preset**。Preset 自己擁有 React／Canvas 程式、資產限制、效能策略、responsive fallback、keyboard/reduced-motion 行為與 props schema；AI 只能設定經驗證的 preset、steps、assets、文案與安全參數，不可產生或注入 shader、Three.js／R3F 程式或逐幀 callback。
+- Interactive Section 必須提供不支援 WebGL、低效能裝置、reduced motion、資產載入失敗與 SSR／hydration 情境的可用 fallback。頁面作者不能透過 document props 關閉安全上限、建立無界資產下載、無界 canvas loop 或會阻塞 Dashboard／storefront 的工作量。
+- 商品、集合、價格、庫存、選項、媒體與銷售管道仍以 commerce module 為 source of truth。Page document／AI prompt 只能保存穩定 record reference、query source 與 presentation props，不得複製權威 commerce 值形成第二份可編輯資料；renderer 依目前 request context 讀取最新可公開 commerce DTO。
+- AI generation job 應保存操作者、站點／頁面、模型與 schema version、使用者指令摘要、允許的 section capability、結果 revision、validation errors、狀態與時間，以便稽核與重試；不得保存 secret、完整 session、未必要的個資或讓模型直接取得 server environment／raw database access。
+- 若未來提供 **Code Mode**，它是開發者／高階方案的獨立工程流程，不是一般 CMS Publish 的旁路。AI 修改程式碼必須在隔離 workspace／sandbox 進行，限制可用依賴與外部連線，通過 static security checks、TypeScript、lint、tests 與 production build，產生獨立 preview URL，經人工批准後才可部署，並保存 source revision、build log、artifact、deploy version 與 rollback target。
+- Code Mode 不得直接修改 production workspace、production database、published document 或 Cloudflare production resource。Build／repair loop 失敗時維持上一個 production artifact；一般 Page Schema 模式必須即使 Code Mode 不可用仍能獨立建立、預覽、發布與回復內容。
+- 產品演進順序固定為：先完成 Page Schema／Section Registry／Visual Editor／Preview／Publish；再擴充 Interactive Section Library；最後才建立 Code Mode 的 sandbox／build／preview／deploy 能力。不得為追求單一特殊視覺效果提前把一般頁面發布耦合到 code generation pipeline。
+
 ### 路由與 CMS 導航
 
 - `src/routes/` 使用 TanStack Router file-based routing；route 負責 URL 驗證、權限入口、loader/prefetch 與 view 組裝。

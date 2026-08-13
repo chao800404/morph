@@ -11,6 +11,7 @@ import type { JsonValue } from "./json";
 
 export type StorefrontStatus = "draft" | "published" | "disabled";
 export type StorefrontThemeStatus = "draft" | "published" | "archived";
+export type StorefrontPageStatus = "draft" | "published" | "archived";
 export type StorefrontDomainStatus = "pending" | "active" | "failed";
 export type StorefrontTemplateType =
   | "index"
@@ -139,6 +140,66 @@ export const storefrontThemeTemplates = sqliteTable(
       table.themeId,
       table.type,
       table.deletedAt,
+    ),
+  ],
+);
+
+/** Merchant-authored routes. Commerce records stay authoritative elsewhere. */
+export const storefrontPages = sqliteTable(
+  "storefront_pages",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    handle: text("handle").notNull(),
+    status: text("status")
+      .$type<StorefrontPageStatus>()
+      .notNull()
+      .default("draft"),
+    draftRevisionId: text("draft_revision_id"),
+    publishedRevisionId: text("published_revision_id"),
+    createdBy: text("created_by").notNull(),
+    metadata: metadata(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_pages_active_handle_unique")
+      .on(table.storefrontId, table.handle)
+      .where(sql`${table.deletedAt} IS NULL`),
+    index("storefront_pages_storefront_status_idx").on(
+      table.storefrontId,
+      table.status,
+      table.deletedAt,
+    ),
+  ],
+);
+
+/** Immutable snapshots shared by the visual editor, preview and AI authoring. */
+export const storefrontPageRevisions = sqliteTable(
+  "storefront_page_revisions",
+  {
+    id: text("id").primaryKey(),
+    pageId: text("page_id")
+      .notNull()
+      .references(() => storefrontPages.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    document: text("document", { mode: "json" })
+      .$type<StorefrontPageDocument>()
+      .notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: text("created_at").notNull(),
+    publishedAt: text("published_at"),
+  },
+  (table) => [
+    uniqueIndex("storefront_page_revisions_page_version_unique").on(
+      table.pageId,
+      table.version,
+    ),
+    index("storefront_page_revisions_page_created_idx").on(
+      table.pageId,
+      table.createdAt,
     ),
   ],
 );

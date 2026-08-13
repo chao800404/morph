@@ -8,6 +8,7 @@ import {
   Contents,
   General,
   Marketing,
+  OnlineStore,
 } from "./routes/_backend/dashboard/-collections";
 
 /**
@@ -26,7 +27,7 @@ import {
 export const cmsConfig = defineConfig({
   appName: "Morph",
   collections: {
-    global: [Marketing, Contents],
+    global: [Marketing, Contents, OnlineStore],
     settings: [General, Account],
   },
   upload: {

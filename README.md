@@ -30,17 +30,17 @@ When disabled or omitted, the AI Tools tab is hidden and the server function rej
 
 ## Technology
 
-| Area | Technology |
-| --- | --- |
-| Application | React 19, TanStack Start, TanStack Router |
-| Server state | TanStack Query |
-| Forms and validation | TanStack Form, Zod |
-| Authentication | Better Auth |
-| Database | Cloudflare D1, Drizzle ORM |
-| Object storage | Cloudflare R2 |
-| UI | Tailwind CSS v4, Radix UI, Motion |
-| Deployment | Cloudflare Workers, Wrangler |
-| Test tooling | Vitest, Testing Library |
+| Area                 | Technology                                |
+| -------------------- | ----------------------------------------- |
+| Application          | React 19, TanStack Start, TanStack Router |
+| Server state         | TanStack Query                            |
+| Forms and validation | TanStack Form, Zod                        |
+| Authentication       | Better Auth                               |
+| Database             | Cloudflare D1, Drizzle ORM                |
+| Object storage       | Cloudflare R2                             |
+| UI                   | Tailwind CSS v4, Radix UI, Motion         |
+| Deployment           | Cloudflare Workers, Wrangler              |
+| Test tooling         | Vitest, Testing Library                   |
 
 ## Local development
 
@@ -68,14 +68,14 @@ cp .env.example .env.development
 
 ### Environment variables
 
-| Variable | Purpose |
-| --- | --- |
-| `BETTER_AUTH_SECRET` | Signs Better Auth tokens and cookies; required |
-| `PUBLIC_URL` | Canonical application URL; use `http://localhost:3000` locally |
-| `RESEND_API_KEY` | Sends password-reset and verification email |
-| `CLOUDFLARE_ACCOUNT_ID` | Required by Drizzle Kit for remote D1 access |
-| `CLOUDFLARE_DATABASE_ID` | Selects the remote D1 database |
-| `CLOUDFLARE_D1_TOKEN` | Authorizes remote D1 migrations and Studio |
+| Variable                 | Purpose                                                        |
+| ------------------------ | -------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`     | Signs Better Auth tokens and cookies; required                 |
+| `PUBLIC_URL`             | Canonical application URL; use `http://localhost:3000` locally |
+| `RESEND_API_KEY`         | Sends password-reset and verification email                    |
+| `CLOUDFLARE_ACCOUNT_ID`  | Required by Drizzle Kit for remote D1 access                   |
+| `CLOUDFLARE_DATABASE_ID` | Selects the remote D1 database                                 |
+| `CLOUDFLARE_D1_TOKEN`    | Authorizes remote D1 migrations and Studio                     |
 
 Do not commit real credentials. Production secrets must be stored with Wrangler or in the deployment platform's secret store.
 
@@ -162,18 +162,18 @@ pnpm db:migrate:prod
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `pnpm dev` | Start the local development server on port 3000 |
-| `pnpm build` | Create a production build |
-| `pnpm serve` | Preview the production build |
-| `pnpm test` | Run the Vitest suite |
-| `pnpm exec tsc --noEmit` | Run the strict TypeScript check |
-| `pnpm db:generate` | Generate a Drizzle migration |
-| `pnpm db:migrate:dev` | Apply migrations to local D1 |
-| `pnpm db:studio:dev` | Open Drizzle Studio against local D1 |
-| `pnpm cf-typegen` | Refresh Cloudflare binding types |
-| `pnpm deploy` | Build and deploy with Wrangler |
+| Command                  | Purpose                                         |
+| ------------------------ | ----------------------------------------------- |
+| `pnpm dev`               | Start the local development server on port 3000 |
+| `pnpm build`             | Create a production build                       |
+| `pnpm serve`             | Preview the production build                    |
+| `pnpm test`              | Run the Vitest suite                            |
+| `pnpm exec tsc --noEmit` | Run the strict TypeScript check                 |
+| `pnpm db:generate`       | Generate a Drizzle migration                    |
+| `pnpm db:migrate:dev`    | Apply migrations to local D1                    |
+| `pnpm db:studio:dev`     | Open Drizzle Studio against local D1            |
+| `pnpm cf-typegen`        | Refresh Cloudflare binding types                |
+| `pnpm deploy`            | Build and deploy with Wrangler                  |
 
 ## Cloudflare resources
 
@@ -189,7 +189,7 @@ See [DEPLOY.md](./DEPLOY.md) for the current manual deployment procedure.
 
 ## Development rules
 
-Repository architecture, security, state-management, and validation rules are documented in [.agent/rules.md](./.agent/rules.md).
+Repository architecture, security, state-management, and validation rules are documented in [.agent/rules.md](./.agent/rules.md). The staged product and Cloudflare platform direction is documented in [ROADMAP.md](./ROADMAP.md).
 
 ## License
 

@@ -1,0 +1,1 @@
+ALTER TABLE `storefront_pages` ADD `metadata` text;
