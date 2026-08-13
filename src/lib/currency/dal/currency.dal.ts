@@ -12,6 +12,7 @@ import type {
 import { chunkForInsert } from "@/lib/product/dal/d1-batch";
 import { salesChannels } from "@/db/sales-channel.schema";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
 
 export const DEFAULT_STORE_ID = "default";
 const DEFAULT_CURRENCY_CODE = "twd";
@@ -47,14 +48,13 @@ const ensureCurrencyData = async () => {
     .where(eq(stores.id, DEFAULT_STORE_ID))
     .limit(1);
   const activeChannels = await db
-    .select({ id: salesChannels.id })
+    .select({ id: salesChannels.id, type: salesChannels.type })
     .from(salesChannels)
     .where(isNull(salesChannels.deletedAt))
-    .orderBy(asc(salesChannels.createdAt))
-    .limit(1);
+    .orderBy(asc(salesChannels.createdAt));
   const currentDefault = store?.defaultSalesChannelId
     ? await db
-        .select({ id: salesChannels.id })
+        .select({ id: salesChannels.id, type: salesChannels.type })
         .from(salesChannels)
         .where(
           and(
@@ -65,14 +65,32 @@ const ensureCurrencyData = async () => {
         .limit(1)
     : [];
 
-  let defaultSalesChannelId = currentDefault[0]?.id ?? activeChannels[0]?.id;
-  if (!defaultSalesChannelId) {
+  let storefrontChannel = activeChannels.find(
+    (channel) => channel.type === "storefront",
+  );
+
+  // Older stores only had a generic default channel. Promote that channel
+  // once instead of creating a duplicate Online Store beside it.
+  if (!storefrontChannel && currentDefault[0]) {
+    const promoted = currentDefault[0];
+    await db
+      .update(salesChannels)
+      .set({
+        type: "storefront",
+        updatedAt: now,
+      })
+      .where(eq(salesChannels.id, promoted.id));
+    storefrontChannel = { ...promoted, type: "storefront" };
+  }
+
+  if (!storefrontChannel) {
     await db
       .insert(salesChannels)
       .values({
         id: DEFAULT_SALES_CHANNEL_ID,
-        name: "Default Sales Channel",
-        description: "The store's default sales channel.",
+        name: "Online Store",
+        type: "storefront",
+        description: "Products published to the online storefront.",
         isDisabled: false,
         metadata: {},
         createdAt: now,
@@ -80,16 +98,32 @@ const ensureCurrencyData = async () => {
       })
       .onConflictDoUpdate({
         target: salesChannels.id,
-        set: { deletedAt: null, isDisabled: false, updatedAt: now },
+        set: {
+          type: "storefront",
+          deletedAt: null,
+          isDisabled: false,
+          updatedAt: now,
+        },
       });
-    defaultSalesChannelId = DEFAULT_SALES_CHANNEL_ID;
+    storefrontChannel = {
+      id: DEFAULT_SALES_CHANNEL_ID,
+      type: "storefront",
+    };
   }
+
+  const defaultSalesChannelId =
+    currentDefault[0]?.id ??
+    storefrontChannel.id ??
+    activeChannels[0]?.id ??
+    DEFAULT_SALES_CHANNEL_ID;
   if (store?.defaultSalesChannelId !== defaultSalesChannelId) {
     await db
       .update(stores)
       .set({ defaultSalesChannelId, updatedAt: now })
       .where(eq(stores.id, DEFAULT_STORE_ID));
   }
+
+  await storefrontDal.ensureDefault(storefrontChannel.id);
 
   await db
     .insert(storeSupportedCurrencies)

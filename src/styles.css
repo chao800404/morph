@@ -133,6 +133,8 @@
    */
   --tile-border: oklch(86.9% 0.005 56.366);
   --tile-shadow: oklch(70.9% 0.01 56.259 / 20%);
+  --table-image-preview-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.12);
   --border-menu-top: rgba(228, 228, 231, 0.7);
   --border-menu-bot: rgba(255, 255, 255, 1);
   --buttons-inverted:
@@ -194,6 +196,8 @@
   --sidebar-ring: oklch(0.552 0.016 285.938);
   --tile-border: oklch(26.8% 0.007 34.298);
   --tile-shadow: oklch(14.7% 0.004 49.25 / 30%);
+  --table-image-preview-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.64), 0 3px 10px rgba(0, 0, 0, 0.48);
   --border-menu-top: rgba(33, 33, 36, 1);
   --border-menu-bot: rgba(255, 255, 255, 0.08);
   --form-buttons: rgba(82, 82, 91, 1);

@@ -1,6 +1,7 @@
 import { salesChannelDal } from "@/lib/sales-channel/dal/sales-channel.dal";
 import { currencyDal } from "@/lib/currency/dal/currency.dal";
 import { productDal } from "@/lib/product/dal/product.dal";
+import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
 import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
 import {
   createSalesChannelInputSchema,
@@ -89,9 +90,18 @@ export const createSalesChannel = createServerFn({ method: "POST" })
       await salesChannelDal.create({
         id,
         name: data.name,
+        type: data.type,
         description: data.description,
         isDisabled: data.isDisabled,
       });
+      if (data.type === "storefront") {
+        try {
+          await storefrontDal.ensureDefault(id);
+        } catch (error) {
+          await salesChannelDal.softDelete([id]);
+          throw error;
+        }
+      }
 
       return ok(`Sales channel "${data.name}" created`, { id });
     } catch (error) {

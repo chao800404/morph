@@ -1,6 +1,12 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import { metadata, timestamps } from "./columns";
+import type { SalesChannelType } from "@/lib/sales-channel/types";
 
 /**
  * Sales channels — a storefront, a POS, a marketplace feed.
@@ -22,6 +28,7 @@ export const salesChannels = sqliteTable(
     id: text("id").primaryKey(),
     name: text("name").notNull(),
     description: text("description"),
+    type: text("type").$type<SalesChannelType>().notNull().default("custom"),
     isDisabled: integer("is_disabled", { mode: "boolean" })
       .notNull()
       .default(false),

@@ -26,6 +26,7 @@ export * from "./table-view.schema";
 export * from "./currency.schema";
 export * from "./region.schema";
 export * from "./sales-channel.schema";
+export * from "./storefront.schema";
 export * from "./stock-location.schema";
 
 // Catalogue

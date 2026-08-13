@@ -6,6 +6,7 @@ export type SalesChannelRow = typeof salesChannels.$inferSelect;
 export const toSalesChannelDTO = (row: SalesChannelRow): SalesChannelDTO => ({
   id: row.id,
   name: row.name,
+  type: row.type,
   description: row.description ?? null,
   isDisabled: row.isDisabled,
   metadata: row.metadata ?? {},

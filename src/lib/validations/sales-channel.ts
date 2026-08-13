@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { idSchema, idsSchema, listParamsSchema } from "./commerce";
 import { metadataInputSchema } from "./product";
+import { SALES_CHANNEL_TYPES } from "@/lib/sales-channel/types";
 
 export const listSalesChannelsInputSchema = listParamsSchema(
   ["name", "createdAt", "updatedAt"],
@@ -13,6 +14,7 @@ export const getSalesChannelInputSchema = z.object({
 
 export const createSalesChannelInputSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(200),
+  type: z.enum(SALES_CHANNEL_TYPES).default("custom"),
   description: z.string().trim().max(2000).nullish(),
   isDisabled: z.boolean().optional(),
 });

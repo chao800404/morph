@@ -1,8 +1,10 @@
 import type { Metadata } from "@/db/json";
+import type { SalesChannelType } from "@/lib/sales-channel/types";
 
 export interface SalesChannelDTO {
   id: string;
   name: string;
+  type: SalesChannelType;
   description: string | null;
   /** Disabled channels keep their products but stop serving the storefront. */
   isDisabled: boolean;
@@ -22,6 +24,7 @@ export interface SalesChannelSummaryDTO extends SalesChannelDTO {
 export interface SalesChannelInsertDTO {
   id: string;
   name: string;
+  type?: SalesChannelType;
   description?: string | null;
   isDisabled?: boolean;
 }

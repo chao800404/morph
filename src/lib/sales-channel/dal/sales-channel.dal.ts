@@ -144,6 +144,7 @@ export const salesChannelDal = {
     await db.insert(salesChannels).values({
       id: data.id,
       name: data.name,
+      type: data.type ?? "custom",
       description: data.description ?? null,
       isDisabled: data.isDisabled ?? false,
       createdAt: now,

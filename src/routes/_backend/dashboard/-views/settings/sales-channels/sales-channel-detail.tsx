@@ -33,6 +33,7 @@ import { useCallback, useMemo } from "react";
 import { PRODUCT_TABLE_COLUMNS } from "../../global/contents/products/config/product-table-columns";
 import { PRODUCT_SORT_OPTIONS } from "../../global/contents/products/config/product-table.config";
 import { useProductTableControls } from "../../global/contents/products/hooks/use-product-table-controls";
+import { salesChannelTypeLabel } from "@/lib/sales-channel/types";
 
 export default function SalesChannelDetail() {
   const { id } = useParams({ strict: false }) as { id: string };
@@ -104,6 +105,12 @@ export default function SalesChannelDetail() {
   }
 
   const fields: EditCardField[] = [
+    {
+      key: "type",
+      label: "Type",
+      value: channel.type,
+      displayValue: salesChannelTypeLabel(channel.type),
+    },
     {
       key: "status",
       label: "Status",

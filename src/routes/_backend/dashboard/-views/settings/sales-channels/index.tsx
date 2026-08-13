@@ -12,6 +12,7 @@ import { deleteSalesChannelsAction } from "../commerce-actions";
 import { SettingsResourceTable } from "../settings-resource-table";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { salesChannelTypeLabel } from "@/lib/sales-channel/types";
 
 export default function SalesChannels() {
   const search = useSearch({ strict: false }) as DashboardSearch;
@@ -34,6 +35,11 @@ export default function SalesChannels() {
             {r.isDefault ? <Badge variant="embossed">Default</Badge> : null}
           </span>
         ),
+      },
+      {
+        key: "type",
+        header: "Type",
+        cell: (r) => salesChannelTypeLabel(r.type),
       },
       {
         key: "status",

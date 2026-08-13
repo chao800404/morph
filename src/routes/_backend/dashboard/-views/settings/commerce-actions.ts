@@ -89,6 +89,7 @@ export const createRegionAction = async (_: unknown, data: FormData) =>
     await createRegion({
       data: {
         name: text(data, "name") ?? "",
+        type: text(data, "type") ?? "custom",
         currencyCode: text(data, "currencyCode") ?? "",
         automaticTaxes: data.get("automaticTaxes") === "on",
         isTaxInclusive: data.get("isTaxInclusive") === "on",
@@ -127,9 +128,9 @@ export const createSalesChannelAction = async (_: unknown, data: FormData) =>
       data: {
         name: text(data, "name") ?? "",
         description: text(data, "description") ?? null,
-          // The form exposes the positive author-facing state; persistence keeps
-          // Medusa's negative `is_disabled` field for compatibility.
-          isDisabled: data.get("enabled") !== "on",
+        // The form exposes the positive author-facing state; persistence keeps
+        // Medusa's negative `is_disabled` field for compatibility.
+        isDisabled: data.get("enabled") !== "on",
       },
     }),
   );

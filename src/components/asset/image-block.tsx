@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { MaximizeButton } from "../button/maximize-button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { AssetCardCaption } from "./asset-card-caption";
 import { AssetRemoveButton } from "./asset-remove-button";
 
@@ -97,18 +98,48 @@ export const ImageSmBlock = ({
   className?: string;
 }) => {
   return (
-    <div
-      className={cn(
-        "border w-6 h-8 rounded-[4px] relative bg-component overflow-hidden",
-        className,
-      )}
-    >
-      <img
-        className="size-full object-cover object-center"
-        alt={alt}
-        src={src}
-      />
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className={cn(
+            "border w-6 h-8 rounded-[4px] relative bg-component overflow-hidden",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            className,
+          )}
+          tabIndex={0}
+        >
+          <img
+            className="size-full object-cover object-center"
+            alt={alt}
+            src={src}
+            draggable={false}
+          />
+        </div>
+      </TooltipTrigger>
+      <TooltipContent
+        side="right"
+        align="center"
+        sideOffset={12}
+        collisionPadding={16}
+        hasArrow={false}
+        className="size-[150px] overflow-hidden border bg-card p-0.5 text-card-foreground"
+        style={{
+          boxShadow: "var(--table-image-preview-shadow)",
+        }}
+      >
+        <div
+          className="size-full overflow-hidden rounded-[calc(var(--radius-md)-2px)]"
+          style={{ background: "var(--gradient-checker-board)" }}
+        >
+          <img
+            className="size-full object-contain object-center"
+            alt=""
+            src={src}
+            draggable={false}
+          />
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 };
 
