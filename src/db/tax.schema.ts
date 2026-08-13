@@ -92,7 +92,7 @@ export const taxRates = sqliteTable(
     isDefault: integer("is_default", { mode: "boolean" })
       .notNull()
       .default(false),
-    /** Stacks on top of the default instead of replacing it. */
+    /** A province rate may stack with the matching country rate. */
     isCombinable: integer("is_combinable", { mode: "boolean" })
       .notNull()
       .default(false),

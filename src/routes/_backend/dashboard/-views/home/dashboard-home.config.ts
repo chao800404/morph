@@ -5,7 +5,19 @@ export const DASHBOARD_HOME_PRODUCT_PARAMS: ProductListParams = {
   sortBy: "updatedAt",
   sortOrder: "desc",
   page: 1,
-  limit: 3,
+  // The dashboard needs three visual previews, not merely the newest three
+  // records. Fetch a small recent window so a product without a thumbnail
+  // does not hide another recent product that has one.
+  limit: 20,
+};
+
+export const selectDashboardProductCards = <
+  T extends { thumbnailUrl: string | null },
+>(products: T[], limit = 3): T[] => {
+  const withThumbnail = products.filter((product) => product.thumbnailUrl);
+  const withoutThumbnail = products.filter((product) => !product.thumbnailUrl);
+
+  return [...withThumbnail, ...withoutThumbnail].slice(0, limit);
 };
 
 export const DASHBOARD_HOME_CHANNEL_PARAMS: SalesChannelListParams = {

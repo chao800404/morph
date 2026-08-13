@@ -22,6 +22,13 @@ const RegionsIndexPendingView = createCollectionIndexPendingView(4);
 const RegionCreatePendingView = createRouteSurfacePendingView(8);
 const RegionEditPendingView = createRouteSurfacePendingView(8);
 const RegionMetadataPendingView = createRouteSurfacePendingView(3);
+const TaxRegionsIndexPendingView = createCollectionIndexPendingView(5);
+const TaxRegionCreatePendingView = createRouteSurfacePendingView(6);
+const TaxRegionEditPendingView = createRouteSurfacePendingView(2);
+const TaxProvinceCreatePendingView = createRouteSurfacePendingView(6);
+const TaxRateFormPendingView = createRouteSurfacePendingView(5);
+const TaxOverrideFormPendingView = createRouteSurfacePendingView(9);
+const TaxRegionMetadataPendingView = createRouteSurfacePendingView(3);
 const SalesChannelsIndexPendingView = createCollectionIndexPendingView(4);
 const SalesChannelCreatePendingView = createRouteSurfacePendingView(3);
 const SalesChannelEditPendingView = createRouteSurfacePendingView(3);
@@ -374,6 +381,125 @@ export const General: CollectionGroup = {
             if (!params.id) return;
             const { regionQueries } = await import("@queries/region.queries");
             void queryClient.prefetchQuery(regionQueries.detail(params.id));
+          },
+        },
+      },
+    },
+    {
+      title: "Tax Regions",
+      slug: "tax-regions",
+      icon: "BadgePercent",
+      label: "Tax Regions",
+      index: {
+        view: lazyView(() => import("@views/settings/tax-regions")),
+        pendingView: TaxRegionsIndexPendingView,
+        prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
+          const { normalizeTaxRegionListParams, taxQueries } =
+            await import("@queries/tax.queries");
+          void queryClient.prefetchQuery(
+            taxQueries.list(normalizeTaxRegionListParams(search)),
+          );
+        },
+      },
+      create: {
+        view: lazyView(
+          () => import("@views/settings/tax-regions/tax-region-create"),
+        ),
+        pendingView: TaxRegionCreatePendingView,
+        prefetch: async ({ queryClient }: CollectionLoadContext) => {
+          const { taxQueries } = await import("@queries/tax.queries");
+          void queryClient.prefetchQuery(taxQueries.options());
+        },
+      },
+      detail: {
+        view: lazyView(
+          () => import("@views/settings/tax-regions/tax-region-detail"),
+        ),
+        pendingView: TableDetailSkeleton,
+        breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
+          if (!params.id) return null;
+          const { taxQueries } = await import("@queries/tax.queries");
+          const result = await queryClient.ensureQueryData(
+            taxQueries.detail(params.id),
+          );
+          if (!result.success) return null;
+          return result.data.provinceCode
+            ? `${result.data.countryName} — ${result.data.provinceCode}`
+            : result.data.countryName;
+        },
+        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+          if (!params.id) return;
+          const { taxQueries } = await import("@queries/tax.queries");
+          void queryClient.prefetchQuery(taxQueries.detail(params.id));
+        },
+      },
+      edit: {
+        view: lazyView(
+          () => import("@views/settings/tax-regions/tax-region-edit"),
+        ),
+        pendingView: TaxRegionEditPendingView,
+        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+          if (!params.id) return;
+          const { taxQueries } = await import("@queries/tax.queries");
+          void queryClient.prefetchQuery(taxQueries.detail(params.id));
+          void queryClient.prefetchQuery(taxQueries.options());
+        },
+      },
+      pages: {
+        "create-province": {
+          view: lazyView(
+            () => import("@views/settings/tax-regions/tax-province-create"),
+          ),
+          pendingView: TaxProvinceCreatePendingView,
+        },
+        "create-rate": {
+          view: lazyView(
+            () => import("@views/settings/tax-regions/tax-rate-create"),
+          ),
+          pendingView: TaxRateFormPendingView,
+        },
+        "create-override": {
+          view: lazyView(
+            () => import("@views/settings/tax-regions/tax-override-create"),
+          ),
+          pendingView: TaxOverrideFormPendingView,
+          prefetch: async ({ queryClient }: CollectionLoadContext) => {
+            const { taxQueries } = await import("@queries/tax.queries");
+            void queryClient.prefetchQuery(taxQueries.options());
+          },
+        },
+        "edit-rate": {
+          view: lazyView(
+            () => import("@views/settings/tax-regions/tax-rate-edit"),
+          ),
+          pendingView: TaxRateFormPendingView,
+          breadcrumb: async ({
+            queryClient,
+            params,
+          }: CollectionLoadContext) => {
+            if (!params.childId) return null;
+            const { taxQueries } = await import("@queries/tax.queries");
+            const result = await queryClient.ensureQueryData(
+              taxQueries.rate(params.childId),
+            );
+            return result.success ? result.data.name : null;
+          },
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.childId) return;
+            const { taxQueries } = await import("@queries/tax.queries");
+            void queryClient.prefetchQuery(taxQueries.rate(params.childId));
+            void queryClient.prefetchQuery(taxQueries.options());
+          },
+        },
+        metadata: {
+          view: lazyView(
+            () => import("@views/settings/tax-regions/tax-region-metadata"),
+          ),
+          pendingView: TaxRegionMetadataPendingView,
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.id) return;
+            const { taxQueries } = await import("@queries/tax.queries");
+            void queryClient.prefetchQuery(taxQueries.detail(params.id));
           },
         },
       },

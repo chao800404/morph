@@ -37,6 +37,7 @@ import { Route as BackendDashboardSettingsSlugEditRouteImport } from './routes/_
 import { Route as BackendDashboardSlugIdPageChildIdRouteImport } from './routes/_backend/dashboard/$slug/$id/$page/$childId'
 import { Route as BackendDashboardSettingsSlugIdPageRouteImport } from './routes/_backend/dashboard/settings/$slug/$id/$page'
 import { Route as BackendDashboardSettingsSlugIdEditRouteImport } from './routes/_backend/dashboard/settings/$slug/$id/edit'
+import { Route as BackendDashboardSettingsSlugIdPageChildIdRouteImport } from './routes/_backend/dashboard/settings/$slug/$id/$page/$childId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -192,6 +193,12 @@ const BackendDashboardSettingsSlugIdEditRoute =
     path: '/edit',
     getParentRoute: () => BackendDashboardSettingsSlugIdRoute,
   } as any)
+const BackendDashboardSettingsSlugIdPageChildIdRoute =
+  BackendDashboardSettingsSlugIdPageChildIdRouteImport.update({
+    id: '/$childId',
+    path: '/$childId',
+    getParentRoute: () => BackendDashboardSettingsSlugIdPageRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -218,8 +225,9 @@ export interface FileRoutesByFullPath {
   '/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
   '/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
   '/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
-  '/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRoute
+  '/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRouteWithChildren
   '/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
+  '/dashboard/settings/$slug/$id/$page/$childId': typeof BackendDashboardSettingsSlugIdPageChildIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -244,8 +252,9 @@ export interface FileRoutesByTo {
   '/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
   '/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
   '/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
-  '/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRoute
+  '/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRouteWithChildren
   '/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
+  '/dashboard/settings/$slug/$id/$page/$childId': typeof BackendDashboardSettingsSlugIdPageChildIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -275,8 +284,9 @@ export interface FileRoutesById {
   '/_backend/dashboard/settings/$slug/create': typeof BackendDashboardSettingsSlugCreateRoute
   '/_backend/dashboard/settings/$slug/edit': typeof BackendDashboardSettingsSlugEditRoute
   '/_backend/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
-  '/_backend/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRoute
+  '/_backend/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRouteWithChildren
   '/_backend/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
+  '/_backend/dashboard/settings/$slug/$id/$page/$childId': typeof BackendDashboardSettingsSlugIdPageChildIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -307,6 +317,7 @@ export interface FileRouteTypes {
     | '/dashboard/$slug/$id/$page/$childId'
     | '/dashboard/settings/$slug/$id/$page'
     | '/dashboard/settings/$slug/$id/edit'
+    | '/dashboard/settings/$slug/$id/$page/$childId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -333,6 +344,7 @@ export interface FileRouteTypes {
     | '/dashboard/$slug/$id/$page/$childId'
     | '/dashboard/settings/$slug/$id/$page'
     | '/dashboard/settings/$slug/$id/edit'
+    | '/dashboard/settings/$slug/$id/$page/$childId'
   id:
     | '__root__'
     | '/'
@@ -363,6 +375,7 @@ export interface FileRouteTypes {
     | '/_backend/dashboard/$slug/$id/$page/$childId'
     | '/_backend/dashboard/settings/$slug/$id/$page'
     | '/_backend/dashboard/settings/$slug/$id/edit'
+    | '/_backend/dashboard/settings/$slug/$id/$page/$childId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -568,6 +581,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendDashboardSettingsSlugIdEditRouteImport
       parentRoute: typeof BackendDashboardSettingsSlugIdRoute
     }
+    '/_backend/dashboard/settings/$slug/$id/$page/$childId': {
+      id: '/_backend/dashboard/settings/$slug/$id/$page/$childId'
+      path: '/$childId'
+      fullPath: '/dashboard/settings/$slug/$id/$page/$childId'
+      preLoaderRoute: typeof BackendDashboardSettingsSlugIdPageChildIdRouteImport
+      parentRoute: typeof BackendDashboardSettingsSlugIdPageRoute
+    }
   }
 }
 
@@ -652,15 +672,30 @@ const BackendDashboardSlugRouteChildren: BackendDashboardSlugRouteChildren = {
 const BackendDashboardSlugRouteWithChildren =
   BackendDashboardSlugRoute._addFileChildren(BackendDashboardSlugRouteChildren)
 
+interface BackendDashboardSettingsSlugIdPageRouteChildren {
+  BackendDashboardSettingsSlugIdPageChildIdRoute: typeof BackendDashboardSettingsSlugIdPageChildIdRoute
+}
+
+const BackendDashboardSettingsSlugIdPageRouteChildren: BackendDashboardSettingsSlugIdPageRouteChildren =
+  {
+    BackendDashboardSettingsSlugIdPageChildIdRoute:
+      BackendDashboardSettingsSlugIdPageChildIdRoute,
+  }
+
+const BackendDashboardSettingsSlugIdPageRouteWithChildren =
+  BackendDashboardSettingsSlugIdPageRoute._addFileChildren(
+    BackendDashboardSettingsSlugIdPageRouteChildren,
+  )
+
 interface BackendDashboardSettingsSlugIdRouteChildren {
-  BackendDashboardSettingsSlugIdPageRoute: typeof BackendDashboardSettingsSlugIdPageRoute
+  BackendDashboardSettingsSlugIdPageRoute: typeof BackendDashboardSettingsSlugIdPageRouteWithChildren
   BackendDashboardSettingsSlugIdEditRoute: typeof BackendDashboardSettingsSlugIdEditRoute
 }
 
 const BackendDashboardSettingsSlugIdRouteChildren: BackendDashboardSettingsSlugIdRouteChildren =
   {
     BackendDashboardSettingsSlugIdPageRoute:
-      BackendDashboardSettingsSlugIdPageRoute,
+      BackendDashboardSettingsSlugIdPageRouteWithChildren,
     BackendDashboardSettingsSlugIdEditRoute:
       BackendDashboardSettingsSlugIdEditRoute,
   }

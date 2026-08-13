@@ -35,6 +35,7 @@ import {
   DASHBOARD_HOME_CHANNEL_PARAMS,
   DASHBOARD_HOME_PRODUCT_PARAMS,
   DASHBOARD_PRODUCT_CARD_TRANSFORMS,
+  selectDashboardProductCards,
 } from "./dashboard-home.config";
 
 const QUICK_LINKS = [
@@ -151,7 +152,7 @@ export default function DashboardHome() {
   ).data;
 
   const products = productResult.success
-    ? productResult.data.products.slice(0, 3)
+    ? selectDashboardProductCards(productResult.data.products)
     : [];
   const storefront = channelResult.success
     ? channelResult.data.salesChannels.find(

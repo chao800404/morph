@@ -1,5 +1,6 @@
 import type { StockLocationDTO } from "@/lib/stock-location/dto/stock-location.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
+import { CountryFlag } from "@/components/ui/phone-input";
 import type { DataTableColumn } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
@@ -30,12 +31,28 @@ export default function Locations() {
       {
         key: "address",
         header: "Address",
-        cell: (r) =>
-          r.address
-            ? [r.address.address1, r.address.city, r.address.countryCode]
-                .filter(Boolean)
-                .join(", ")
-            : "—",
+        cell: (r) => {
+          if (!r.address) return "—";
+          const address = [r.address.address1, r.address.city]
+            .filter(Boolean)
+            .join(", ");
+          return (
+            <span className="flex min-w-0 items-center gap-2">
+              {r.address.countryCode ? (
+                <CountryFlag
+                  country={r.address.countryCode.toUpperCase()}
+                  countryName={r.address.countryCode.toUpperCase()}
+                  className="h-3.5 w-5"
+                />
+              ) : null}
+              <span className="truncate">
+                {[address, r.address.countryCode?.toUpperCase()]
+                  .filter(Boolean)
+                  .join(", ")}
+              </span>
+            </span>
+          );
+        },
       },
       {
         key: "updated",

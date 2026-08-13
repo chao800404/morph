@@ -38,7 +38,7 @@ const PhoneInput = React.forwardRef<
     <RPNInput.default
       ref={ref}
       className={cn("flex", className)}
-      flagComponent={FlagComponent}
+      flagComponent={CountryFlag}
       countrySelectComponent={CountrySelect}
       inputComponent={InputComponent}
       smartCaret={false}
@@ -111,7 +111,7 @@ const CountrySelect = ({
           )}
           disabled={disabled}
         >
-          <FlagComponent
+          <CountryFlag
             country={selectedCountry}
             countryName={selectedCountry}
           />
@@ -187,7 +187,7 @@ const CountrySelectOption = ({
 
   return (
     <CommandItem className="gap-2" onSelect={handleSelect}>
-      <FlagComponent country={country} countryName={countryName} />
+      <CountryFlag country={country} countryName={countryName} />
       <span className="flex-1 text-sm">{countryName}</span>
       <span className="text-sm text-foreground/50">{`+${RPNInput.getCountryCallingCode(country)}`}</span>
       <CheckIcon
@@ -197,14 +197,25 @@ const CountrySelectOption = ({
   );
 };
 
-const FlagComponent = ({ country, countryName }: RPNInput.FlagProps) => {
-  const Flag = flags[country];
+type CountryFlagProps = {
+  country?: string | null;
+  countryName: string;
+  className?: string;
+};
+
+const CountryFlag = ({ country, countryName, className }: CountryFlagProps) => {
+  const Flag = country ? flags[country as keyof typeof flags] : undefined;
 
   return (
-    <span className="flex h-4 w-6 overflow-hidden bg-foreground/20 [&_svg:not([class*='size-'])]:size-full">
+    <span
+      className={cn(
+        "flex h-4 w-6 shrink-0 overflow-hidden bg-foreground/20 [&_svg:not([class*='size-'])]:size-full",
+        className,
+      )}
+    >
       {Flag && <Flag title={countryName} />}
     </span>
   );
 };
 
-export { PhoneInput };
+export { CountryFlag, PhoneInput };
