@@ -24,6 +24,7 @@ import { Route as BackendAuthResetPasswordIndexRouteImport } from './routes/_bac
 import { Route as BackendAuthResetPasswordVerifyRouteImport } from './routes/_backend/_auth/reset-password.verify'
 import { Route as BackendApiAssetDownloadRouteImport } from './routes/_backend/api/asset/download'
 import { Route as BackendApiAuthSplatRouteImport } from './routes/_backend/api/auth/$'
+import { Route as BackendApiStoreSplatRouteImport } from './routes/_backend/api/store/$'
 import { Route as BackendDashboardSlugIdRouteImport } from './routes/_backend/dashboard/$slug/$id'
 import { Route as BackendDashboardSlugCreateRouteImport } from './routes/_backend/dashboard/$slug/create'
 import { Route as BackendDashboardSlugViewRouteImport } from './routes/_backend/dashboard/$slug/view'
@@ -114,6 +115,11 @@ const BackendApiAssetDownloadRoute = BackendApiAssetDownloadRouteImport.update({
 const BackendApiAuthSplatRoute = BackendApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
+  getParentRoute: () => BackendRoute,
+} as any)
+const BackendApiStoreSplatRoute = BackendApiStoreSplatRouteImport.update({
+  id: '/api/store/$',
+  path: '/api/store/$',
   getParentRoute: () => BackendRoute,
 } as any)
 const BackendDashboardSlugIdRoute = BackendDashboardSlugIdRouteImport.update({
@@ -213,6 +219,7 @@ export interface FileRoutesByFullPath {
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
+  '/api/store/$': typeof BackendApiStoreSplatRoute
   '/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
   '/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
@@ -240,6 +247,7 @@ export interface FileRoutesByTo {
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
+  '/api/store/$': typeof BackendApiStoreSplatRoute
   '/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
   '/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
@@ -272,6 +280,7 @@ export interface FileRoutesById {
   '/_backend/_auth/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/_backend/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/_backend/api/auth/$': typeof BackendApiAuthSplatRoute
+  '/_backend/api/store/$': typeof BackendApiStoreSplatRoute
   '/_backend/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
   '/_backend/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/_backend/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
@@ -303,6 +312,7 @@ export interface FileRouteTypes {
     | '/reset-password/verify'
     | '/api/asset/download'
     | '/api/auth/$'
+    | '/api/store/$'
     | '/dashboard/$slug/$id'
     | '/dashboard/$slug/create'
     | '/dashboard/$slug/view'
@@ -330,6 +340,7 @@ export interface FileRouteTypes {
     | '/reset-password/verify'
     | '/api/asset/download'
     | '/api/auth/$'
+    | '/api/store/$'
     | '/dashboard/$slug/$id'
     | '/dashboard/$slug/create'
     | '/dashboard/$slug/view'
@@ -361,6 +372,7 @@ export interface FileRouteTypes {
     | '/_backend/_auth/reset-password/verify'
     | '/_backend/api/asset/download'
     | '/_backend/api/auth/$'
+    | '/_backend/api/store/$'
     | '/_backend/dashboard/$slug/$id'
     | '/_backend/dashboard/$slug/create'
     | '/_backend/dashboard/$slug/view'
@@ -488,6 +500,13 @@ declare module '@tanstack/react-router' {
       path: '/api/auth/$'
       fullPath: '/api/auth/$'
       preLoaderRoute: typeof BackendApiAuthSplatRouteImport
+      parentRoute: typeof BackendRoute
+    }
+    '/_backend/api/store/$': {
+      id: '/_backend/api/store/$'
+      path: '/api/store/$'
+      fullPath: '/api/store/$'
+      preLoaderRoute: typeof BackendApiStoreSplatRouteImport
       parentRoute: typeof BackendRoute
     }
     '/_backend/dashboard/$slug/$id': {
@@ -750,6 +769,7 @@ interface BackendRouteChildren {
   BackendAssetsSplatRoute: typeof BackendAssetsSplatRoute
   BackendApiAssetDownloadRoute: typeof BackendApiAssetDownloadRoute
   BackendApiAuthSplatRoute: typeof BackendApiAuthSplatRoute
+  BackendApiStoreSplatRoute: typeof BackendApiStoreSplatRoute
 }
 
 const BackendRouteChildren: BackendRouteChildren = {
@@ -758,6 +778,7 @@ const BackendRouteChildren: BackendRouteChildren = {
   BackendAssetsSplatRoute: BackendAssetsSplatRoute,
   BackendApiAssetDownloadRoute: BackendApiAssetDownloadRoute,
   BackendApiAuthSplatRoute: BackendApiAuthSplatRoute,
+  BackendApiStoreSplatRoute: BackendApiStoreSplatRoute,
 }
 
 const BackendRouteWithChildren =

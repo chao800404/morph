@@ -1,11 +1,7 @@
-import { getDb } from "@/db";
-import { assets } from "@/db/asset.schema";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { createServerFn } from "@tanstack/react-start";
 import { isFormDataLike } from "./input-validation";
 import { env } from "cloudflare:workers";
-import { randomUUID } from "crypto";
-import { eq } from "drizzle-orm";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
 
 export const processImage = createServerFn({ method: "POST" })
@@ -17,7 +13,6 @@ export const processImage = createServerFn({ method: "POST" })
   })
   .middleware([assetAdminMiddleware])
   .handler(async ({ data: formData, context }) => {
-
     const assetId = formData.get("assetId") as string;
     const croppedFile = formData.get("croppedImage") as File | null;
     const filename = (formData.get("filename") as string) || "edited_image";
@@ -29,7 +24,7 @@ export const processImage = createServerFn({ method: "POST" })
 
     const user = context.user;
     const arrayBuffer = await croppedFile.arrayBuffer();
-    const fileId = randomUUID();
+    const fileId = crypto.randomUUID();
     const fileName = `${fileId}.png`;
     const key = `assets/${fileName}`;
 
@@ -43,22 +38,16 @@ export const processImage = createServerFn({ method: "POST" })
     });
 
     const r2Url = `/${key}`;
-    const db = await getDb();
-
     if (saveMode === "update" && assetId) {
       const existing = await assetDal.findById(assetId);
       if (existing) {
-        await db
-          .update(assets)
-          .set({
-            url: r2Url,
-            size: croppedFile.size,
-            mimeType: "image/png",
-            metadata: { version: 1, r2Key: key },
-            updatedBy: user.id,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(assets.id, assetId));
+        await assetDal.updateProcessedImage(assetId, {
+          url: r2Url,
+          size: croppedFile.size,
+          mimeType: "image/png",
+          metadata: { version: 1, r2Key: key },
+          updatedBy: user.id,
+        });
 
         return {
           success: true,

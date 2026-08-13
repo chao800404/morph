@@ -21,13 +21,15 @@ import { useDebouncedCallback } from "use-debounce";
 export const DataTableSearch = ({
   placeholder = "Search",
   className,
+  scope,
 }: {
   placeholder?: string;
   className?: string;
+  scope?: "taxRate" | "orderItem" | "orderFulfillment";
 }) => {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as DashboardSearch;
-  const query = search.q ?? "";
+  const query = (scope === "taxRate" ? search.taxRateQ : search.q) ?? "";
   const [value, setValue] = useState(query);
   const [isComposing, setIsComposing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -43,15 +45,18 @@ export const DataTableSearch = ({
         to: ".",
         // Changing the term resets to the first page; staying on page 5 of a
         // narrower result set would show an empty table.
-        search: (prev: DashboardSearch) => ({
-          ...prev,
-          q: value || undefined,
-          page: undefined,
-        }),
+        search: (prev: DashboardSearch) =>
+          scope === "taxRate"
+            ? {
+                ...prev,
+                taxRateQ: value || undefined,
+                taxRatePage: undefined,
+              }
+            : { ...prev, q: value || undefined, page: undefined },
         replace: true,
       });
     },
-    [navigate],
+    [navigate, scope],
   );
 
   const debouncedSearch = useDebouncedCallback(patchQuery, 400);

@@ -7,7 +7,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { toMinorUnits } from "@/lib/currency/catalog";
-import type { ProductStatus } from "@/db/product.schema";
+import type { ProductStatus } from "@/lib/product/dto/product.dto";
 import { createProduct } from "@/server/product/create-product.serverFn";
 import { currencyQueries } from "@queries/currency.queries";
 import { productQueries } from "@queries/product.queries";

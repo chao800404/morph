@@ -1,4 +1,4 @@
-import type { PromotionDetailDTO } from "@/lib/commerce/dto";
+import type { PromotionDetailDTO } from "@/lib/promotion/dto/promotion.dto";
 import type { FormField } from "@/lib/validations/form";
 
 type PromotionCommonFieldOptions = {

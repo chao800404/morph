@@ -1,4 +1,4 @@
-import type { PromotionListDTO } from "@/lib/commerce/dto";
+import type { PromotionListDTO } from "@/lib/promotion/dto/promotion.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   CollectionCreateButton,

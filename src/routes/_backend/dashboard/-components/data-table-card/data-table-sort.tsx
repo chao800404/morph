@@ -12,6 +12,7 @@ import type {
   DashboardSearch,
   DashboardSortKey,
 } from "@/lib/validations/dashboard-search";
+import { dashboardFixedSortKeySchema } from "@/lib/validations/dashboard-search";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Dot } from "lucide-react";
 
@@ -24,15 +25,22 @@ export interface DataTableSortOption {
 
 export const useDataTableSort = (
   defaultSortBy: DataTableSortKey = "createdAt",
+  scope?: "taxRate" | "orderItem" | "orderFulfillment",
 ) => {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as DashboardSearch;
-  const routeSortBy = Array.isArray(search.sortBy)
-    ? search.sortBy[0]
-    : search.sortBy;
-  const routeSortOrder = Array.isArray(search.sortOrder)
-    ? search.sortOrder[0]
-    : search.sortOrder;
+  const routeSortBy =
+    scope === "taxRate"
+      ? search.taxRateSortBy
+      : Array.isArray(search.sortBy)
+        ? search.sortBy[0]
+        : search.sortBy;
+  const routeSortOrder =
+    scope === "taxRate"
+      ? search.taxRateSortOrder
+      : Array.isArray(search.sortOrder)
+        ? search.sortOrder[0]
+        : search.sortOrder;
   const sortBy = routeSortBy ?? defaultSortBy;
   const sortOrder = routeSortOrder ?? "desc";
 
@@ -40,14 +48,25 @@ export const useDataTableSort = (
     nextSortBy: DataTableSortKey,
     nextSortOrder: "asc" | "desc",
   ) => {
+    const scopedSortBy = dashboardFixedSortKeySchema.safeParse(nextSortBy);
     navigate({
       to: ".",
-      search: (prev: DashboardSearch) => ({
-        ...prev,
-        sortBy: nextSortBy,
-        sortOrder: nextSortOrder,
-        page: undefined,
-      }),
+      search: (prev: DashboardSearch) =>
+        scope === "taxRate"
+          ? {
+              ...prev,
+              taxRateSortBy: scopedSortBy.success
+                ? scopedSortBy.data
+                : "createdAt",
+              taxRateSortOrder: nextSortOrder,
+              taxRatePage: undefined,
+            }
+          : {
+              ...prev,
+              sortBy: nextSortBy,
+              sortOrder: nextSortOrder,
+              page: undefined,
+            },
       replace: true,
     });
   };
@@ -79,11 +98,16 @@ export const useDataTableSort = (
 export const DataTableSort = ({
   options,
   defaultSortBy = "createdAt",
+  scope,
 }: {
   options: DataTableSortOption[];
   defaultSortBy?: DataTableSortKey;
+  scope?: "taxRate" | "orderItem" | "orderFulfillment";
 }) => {
-  const { sortBy, sortOrder, toggleSort } = useDataTableSort(defaultSortBy);
+  const { sortBy, sortOrder, toggleSort } = useDataTableSort(
+    defaultSortBy,
+    scope,
+  );
 
   if (options.length === 0) return null;
 

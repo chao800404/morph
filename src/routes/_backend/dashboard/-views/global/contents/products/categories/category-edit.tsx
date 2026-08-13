@@ -5,10 +5,8 @@ import {
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
 import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
-import {
-  productCategoryQueries,
-  productTaxonomyQueries,
-} from "@queries/product.queries";
+import { productCategoryQueries } from "@queries/product.queries";
+import { remoteOptionQueries } from "@queries/remote-options.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -47,7 +45,7 @@ const CategoryEdit = () => {
 
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: productCategoryQueries.all() }),
-      queryClient.invalidateQueries({ queryKey: productTaxonomyQueries.all() }),
+      queryClient.invalidateQueries({ queryKey: remoteOptionQueries.all() }),
     ]);
     toast.success(response.message, { position: "top-center" });
     close();
@@ -62,7 +60,7 @@ const CategoryEdit = () => {
   if (!category) {
     return (
       <RouteSurfaceMessage>
-          {result?.message ?? "Category not found"}
+        {result?.message ?? "Category not found"}
       </RouteSurfaceMessage>
     );
   }

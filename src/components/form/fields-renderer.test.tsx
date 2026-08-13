@@ -6,24 +6,45 @@ vi.mock("../folder-select/folder-select", () => ({
   FolderSelectField: () => null,
 }));
 
-// Both reach a server function, whose module graph ends at `cloudflare:workers`
-// and cannot be loaded under jsdom. Neither field is what these tests assert on.
+// Upload reaches a server function whose module graph ends at
+// `cloudflare:workers` and cannot be loaded under jsdom.
 vi.mock("@/server/asset/create-items.serverFn", () => ({
   createItems: vi.fn(),
 }));
 vi.mock("./asset-library-panel", () => ({ AssetLibraryPanel: () => null }));
-vi.mock("@queries/asset.queries", () => ({
-  assetQueries: { all: () => ["assets"] },
-}));
 
 describe("FieldsRenderer switch and tip fields", () => {
   it("renders reusable choice cards and emits the selected value", () => {
     const onChange = vi.fn();
-    render(<FieldsRenderer fields={[{ type: "choice-cards", name: "status", label: "Status", value: "draft", options: [{ label: "Draft", value: "draft", description: "Keep unavailable." }, { label: "Active", value: "active", description: "Publish now." }] }]} onChange={onChange} />);
+    render(
+      <FieldsRenderer
+        fields={[
+          {
+            type: "choice-cards",
+            name: "status",
+            label: "Status",
+            value: "draft",
+            options: [
+              {
+                label: "Draft",
+                value: "draft",
+                description: "Keep unavailable.",
+              },
+              { label: "Active", value: "active", description: "Publish now." },
+            ],
+          },
+        ]}
+        onChange={onChange}
+      />,
+    );
 
     expect(screen.getByText("Status")).toBeTruthy();
-    expect(screen.getByRole("radiogroup").getAttribute("aria-labelledby")).toBe("field-status-label");
-    expect(screen.getByRole("radio", { name: /Draft/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radiogroup").getAttribute("aria-labelledby")).toBe(
+      "field-status-label",
+    );
+    expect(
+      screen.getByRole("radio", { name: /Draft/ }).getAttribute("aria-checked"),
+    ).toBe("true");
     fireEvent.click(screen.getByRole("radio", { name: /Active/ }));
     expect(onChange).toHaveBeenCalledWith("status", "active");
   });
@@ -186,8 +207,28 @@ describe("FieldsRenderer input affixes", () => {
 
     // A focusable trigger, not a bare icon — otherwise the explanation is
     // reachable only with a mouse.
-    expect(
-      screen.getByRole("button", { name: "About Handle" }),
-    ).toBeDefined();
+    expect(screen.getByRole("button", { name: "About Handle" })).toBeDefined();
+  });
+});
+
+describe("FieldsRenderer hidden fields", () => {
+  it("submits hidden values without adding a grid item", () => {
+    const { container } = render(
+      <FieldsRenderer
+        fields={[
+          { type: "hidden", name: "taxRegionId", value: "region-id" },
+          { type: "input", name: "name", label: "Name" },
+        ]}
+      />,
+    );
+
+    const grid = container.firstElementChild;
+    const hidden = container.querySelector<HTMLInputElement>(
+      'input[type="hidden"]',
+    );
+
+    expect(hidden?.value).toBe("region-id");
+    expect(hidden?.parentElement).toBe(grid);
+    expect(grid?.children).toHaveLength(2);
   });
 });

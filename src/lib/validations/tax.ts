@@ -28,6 +28,26 @@ export const listTaxRegionsInputSchema = listParamsSchema(
   ["name", "createdAt", "updatedAt"],
   { sortBy: "createdAt" },
 );
+export const listTaxProvincesInputSchema = listParamsSchema(
+  ["code", "createdAt", "updatedAt"],
+  { sortBy: "code", limit: 10 },
+).extend({
+  parentId: idSchema("tax region"),
+  hasRates: z.enum(["yes", "no"]).optional(),
+});
+export const listTaxRatesInputSchema = listParamsSchema(
+  ["name", "createdAt", "updatedAt"],
+  { sortBy: "createdAt", limit: 10 },
+).extend({
+  taxRegionId: idSchema("tax region"),
+  kind: z.enum(["default", "override"]),
+});
+export const listTaxRuleTargetsInputSchema = z.object({
+  reference: taxRateRuleReferenceSchema,
+  query: z.string().trim().max(200).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
 export const getTaxRegionInputSchema = z.object({ id: idSchema("tax region") });
 const defaultTaxRateSchema = z
   .object({

@@ -7,7 +7,10 @@ import { taxQueries } from "@queries/tax.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { taxRegionFields } from "./config/tax-form-fields";
+import {
+  formatTaxProviderLabel,
+  taxRegionEditFields,
+} from "./config/tax-form-fields";
 import { updateTaxRegionAction } from "./tax-actions";
 
 export default function TaxRegionEdit() {
@@ -23,9 +26,27 @@ export default function TaxRegionEdit() {
         {regionQuery.data?.message ?? "Tax region not found"}
       </RouteSurfaceMessage>
     );
+  if (region.parentId) {
+    return (
+      <RouteSurfaceMessage>
+        Province and state tax regions inherit their provider and cannot be
+        edited directly.
+      </RouteSurfaceMessage>
+    );
+  }
+  if (
+    optionsQuery.isError ||
+    (optionsQuery.data && !optionsQuery.data.success)
+  ) {
+    return (
+      <RouteSurfaceMessage>
+        {optionsQuery.data?.message ?? "Failed to load tax provider options"}
+      </RouteSurfaceMessage>
+    );
+  }
   const providers = optionsQuery.data?.success
     ? optionsQuery.data.data.providers.map((item) => ({
-        label: item.id.replace(/^tp_/, "").replaceAll("_", " "),
+        label: formatTaxProviderLabel(item.id),
         value: item.id,
       }))
     : [];
@@ -35,10 +56,10 @@ export default function TaxRegionEdit() {
       description="Edit the tax region details."
       submitLabel="Save"
       loadingLabel="Saving..."
-      fields={taxRegionFields(
-        [{ label: region.countryName, value: region.countryCode }],
+      fields={taxRegionEditFields(
+        { label: region.countryName, value: region.countryCode },
         providers,
-        region,
+        region.providerId,
       )}
       action={async (_, form) => {
         form.set("id", id);

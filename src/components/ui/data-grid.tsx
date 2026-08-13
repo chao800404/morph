@@ -86,7 +86,7 @@ const DataGridInput = React.forwardRef<
     autoComplete="off"
     className={cn(
       "size-full min-w-0 bg-transparent px-4 text-sm text-foreground outline-none placeholder:text-muted-foreground",
-      "focus:bg-background focus:ring-[1.5px] focus:ring-inset focus:ring-blue-500/50",
+      "focus:bg-background focus:ring-[1.5px] focus:ring-inset focus:ring-ring/50",
       "disabled:cursor-not-allowed disabled:bg-muted/30 disabled:text-muted-foreground",
       className,
     )}
@@ -114,7 +114,7 @@ const DataGridBooleanCell = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "flex size-full items-center justify-center focus-within:ring-[1.5px] focus-within:ring-inset focus-within:ring-blue-500/50",
+      "flex size-full items-center justify-center focus-within:ring-[1.5px] focus-within:ring-inset focus-within:ring-ring/50",
       className,
     )}
     {...props}

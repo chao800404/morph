@@ -1,14 +1,53 @@
-import { promotionDal } from "@/lib/commerce/marketing.dal";
+import { promotionDal } from "@/lib/promotion/dal/promotion.dal";
 import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
-import { createPromotionInputSchema, getMarketingRecordInputSchema, listPromotionsInputSchema, updateMarketingMetadataInputSchema, updatePromotionInputSchema } from "@/lib/validations/marketing";
+import {
+  createPromotionInputSchema,
+  getMarketingRecordInputSchema,
+  listPromotionsInputSchema,
+  updateMarketingMetadataInputSchema,
+  updatePromotionInputSchema,
+} from "@/lib/validations/marketing";
 import { createServerFn } from "@tanstack/react-start";
-import { commerceAdminMiddleware, commerceReadMiddleware } from "../middleware/auth.middleware";
+import { z } from "zod";
+import {
+  commerceAdminMiddleware,
+  commerceReadMiddleware,
+} from "../middleware/auth.middleware";
 
-export const listPromotionCampaigns = createServerFn({ method: "GET" })
+export const listPromotionCampaigns = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    z
+      .object({
+        query: z.string().max(200).optional(),
+        page: z.number().int().min(1),
+        limit: z.number().int().min(1).max(50),
+        selectedIds: z.array(z.uuid()).max(20).optional(),
+      })
+      .parse(data),
+  )
   .middleware([commerceReadMiddleware])
-  .handler(async () => {
-    try { return ok("Campaigns fetched successfully", { campaigns: await promotionDal.listCampaigns() }); }
-    catch (error) { return failure("List promotion campaigns error", error, "LIST_FAILED", "Failed to fetch campaigns"); }
+  .handler(async ({ data }) => {
+    try {
+      const page = await promotionDal.listCampaignPage(data);
+      return ok("Campaigns fetched successfully", {
+        items: page.campaigns.map((campaign) => ({
+          id: campaign.id,
+          label: `${campaign.name} · ${campaign.identifier}`,
+        })),
+        selectedItems: page.selected.map((campaign) => ({
+          id: campaign.id,
+          label: `${campaign.name} · ${campaign.identifier}`,
+        })),
+        pagination: paginationOf(page.total, data.page, data.limit),
+      });
+    } catch (error) {
+      return failure(
+        "List promotion campaigns error",
+        error,
+        "LIST_FAILED",
+        "Failed to fetch campaigns",
+      );
+    }
   });
 
 export const listPromotions = createServerFn({ method: "POST" })
@@ -17,8 +56,18 @@ export const listPromotions = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     try {
       const page = await promotionDal.listPage(data);
-      return ok("Promotions fetched successfully", { promotions: page.promotions, pagination: paginationOf(page.total, data.page, data.limit) });
-    } catch (error) { return failure("List promotions error", error, "LIST_FAILED", "Failed to fetch promotions"); }
+      return ok("Promotions fetched successfully", {
+        promotions: page.promotions,
+        pagination: paginationOf(page.total, data.page, data.limit),
+      });
+    } catch (error) {
+      return failure(
+        "List promotions error",
+        error,
+        "LIST_FAILED",
+        "Failed to fetch promotions",
+      );
+    }
   });
 
 export const getPromotion = createServerFn({ method: "POST" })
@@ -27,8 +76,17 @@ export const getPromotion = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     try {
       const promotion = await promotionDal.findById(data.id);
-      return promotion ? ok("Promotion fetched successfully", promotion) : fail("Promotion not found", { error: "NOT_FOUND" });
-    } catch (error) { return failure("Get promotion error", error, "GET_FAILED", "Failed to fetch promotion"); }
+      return promotion
+        ? ok("Promotion fetched successfully", promotion)
+        : fail("Promotion not found", { error: "NOT_FOUND" });
+    } catch (error) {
+      return failure(
+        "Get promotion error",
+        error,
+        "GET_FAILED",
+        "Failed to fetch promotion",
+      );
+    }
   });
 
 export const createPromotion = createServerFn({ method: "POST" })
@@ -36,11 +94,21 @@ export const createPromotion = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      if (await promotionDal.findByCode(data.code)) return fail("A promotion with this code already exists", { errors: { code: ["This code is already in use"] } });
+      if (await promotionDal.findByCode(data.code))
+        return fail("A promotion with this code already exists", {
+          errors: { code: ["This code is already in use"] },
+        });
       const id = crypto.randomUUID();
       await promotionDal.create({ id, ...data });
       return ok(`Promotion ${data.code} created`, { id });
-    } catch (error) { return failure("Create promotion error", error, "CREATE_FAILED", "Failed to create promotion"); }
+    } catch (error) {
+      return failure(
+        "Create promotion error",
+        error,
+        "CREATE_FAILED",
+        "Failed to create promotion",
+      );
+    }
   });
 
 export const updatePromotion = createServerFn({ method: "POST" })
@@ -49,11 +117,21 @@ export const updatePromotion = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     try {
       const clash = await promotionDal.findByCode(data.code);
-      if (clash && clash.id !== data.id) return fail("A promotion with this code already exists", { errors: { code: ["This code is already in use"] } });
+      if (clash && clash.id !== data.id)
+        return fail("A promotion with this code already exists", {
+          errors: { code: ["This code is already in use"] },
+        });
       const { id, ...values } = data;
       await promotionDal.update(id, values);
       return ok("Promotion updated successfully", { id });
-    } catch (error) { return failure("Update promotion error", error, "UPDATE_FAILED", "Failed to update promotion"); }
+    } catch (error) {
+      return failure(
+        "Update promotion error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to update promotion",
+      );
+    }
   });
 
 export const updatePromotionMetadata = createServerFn({ method: "POST" })
@@ -63,13 +141,29 @@ export const updatePromotionMetadata = createServerFn({ method: "POST" })
     try {
       await promotionDal.updateMetadata(data.id, data.metadata);
       return ok("Promotion metadata updated successfully", { id: data.id });
-    } catch (error) { return failure("Update promotion metadata error", error, "UPDATE_FAILED", "Failed to update promotion metadata"); }
+    } catch (error) {
+      return failure(
+        "Update promotion metadata error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to update promotion metadata",
+      );
+    }
   });
 
 export const deletePromotion = createServerFn({ method: "POST" })
   .validator((data: unknown) => getMarketingRecordInputSchema.parse(data))
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
-    try { await promotionDal.softDelete(data.id); return ok("Promotion deleted", { id: data.id }); }
-    catch (error) { return failure("Delete promotion error", error, "DELETE_FAILED", "Failed to delete promotion"); }
+    try {
+      await promotionDal.softDelete(data.id);
+      return ok("Promotion deleted", { id: data.id });
+    } catch (error) {
+      return failure(
+        "Delete promotion error",
+        error,
+        "DELETE_FAILED",
+        "Failed to delete promotion",
+      );
+    }
   });

@@ -5,7 +5,7 @@ import { VerifyForm } from "./-components/verify-form";
 
 export const Route = createFileRoute("/_backend/_auth/reset-password/verify")({
   validateSearch: z.object({
-    email: z.string().optional().default(""),
+    email: z.string().email().optional().default(""),
   }),
   beforeLoad: async ({ search }) => {
     const { email: verifiedEmail, expiresAt } =

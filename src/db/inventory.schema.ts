@@ -120,7 +120,9 @@ export const reservationItems = sqliteTable(
       .references(() => inventoryItems.id, { onDelete: "cascade" }),
     /** A `stockLocations.id`. Plain text: different module. */
     locationId: text("location_id").notNull(),
-    /** An `orderLineItems.id`. Plain text: different module. */
+    /** A `carts.id` while checkout is pending. Plain text: Cart module. */
+    cartId: text("cart_id"),
+    /** A cart line id before conversion, then the matching order line id. */
     lineItemId: text("line_item_id"),
     quantity: integer("quantity").notNull(),
     allowBackorder: integer("allow_backorder", { mode: "boolean" })
@@ -129,6 +131,7 @@ export const reservationItems = sqliteTable(
     description: text("description"),
     externalId: text("external_id"),
     createdBy: text("created_by"),
+    expiresAt: text("expires_at"),
     metadata: metadata(),
     ...timestamps,
   },
@@ -141,10 +144,17 @@ export const reservationItems = sqliteTable(
       table.locationId,
       table.deletedAt,
     ),
+    index("reservation_items_cart_active_idx").on(
+      table.cartId,
+      table.deletedAt,
+    ),
     index("reservation_items_line_item_active_idx").on(
       table.lineItemId,
       table.deletedAt,
     ),
+    uniqueIndex("reservation_items_line_item_inventory_location_unique")
+      .on(table.lineItemId, table.inventoryItemId, table.locationId)
+      .where(sql`${table.deletedAt} IS NULL AND ${table.lineItemId} IS NOT NULL`),
     check("reservation_items_quantity_check", sql`${table.quantity} > 0`),
   ],
 );

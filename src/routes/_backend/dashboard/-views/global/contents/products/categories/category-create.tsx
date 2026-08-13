@@ -3,11 +3,9 @@ import {
   useRouteModalClose,
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
-import {
-  productCategoryQueries,
-  productTaxonomyQueries,
-} from "@queries/product.queries";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { productCategoryQueries } from "@queries/product.queries";
+import { remoteOptionQueries } from "@queries/remote-options.queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { createProductCategoryAction } from "../product-actions";
 import {
@@ -19,11 +17,6 @@ import {
 const CategoryCreate = () => {
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
-
-  // The parent picker needs the whole tree — the same bounded read the product
-  // Organize step already uses, so it usually comes from cache.
-  const { data: taxonomy } = useQuery(productTaxonomyQueries.list());
-  const parents = taxonomy?.success ? (taxonomy.data?.categories ?? []) : [];
 
   const submit = async (
     _state: RouteFormState,
@@ -38,8 +31,7 @@ const CategoryCreate = () => {
 
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: productCategoryQueries.all() }),
-      // The Organize step's category picker reads the same rows.
-      queryClient.invalidateQueries({ queryKey: productTaxonomyQueries.all() }),
+      queryClient.invalidateQueries({ queryKey: remoteOptionQueries.all() }),
     ]);
     toast.success(result.message, { position: "top-center" });
     close();
@@ -51,7 +43,7 @@ const CategoryCreate = () => {
       title="Create Category"
       description="Group products into a branch of your storefront's category tree."
       action={submit}
-      fields={categoryFormFields(emptyCategoryForm(), { parents })}
+      fields={categoryFormFields(emptyCategoryForm(), { includeParent: true })}
       fieldsClassName="sm:grid-cols-2"
     />
   );

@@ -1,9 +1,14 @@
 import { Badge } from "@/components/ui/badge";
 import { CommandBar } from "@/components/ui/command-bar";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { findCollection } from "@/lib/config/navigation";
+import { viewPreloader } from "@/lib/config/lazy-view";
 import type { StoreCurrencyDTO } from "@/lib/currency/dto/currency.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
-import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
+import {
+  EditCard,
+  type EditCardField,
+} from "@/routes/_backend/dashboard/-components/edit-card/edit-card";
 import {
   DataTableCard,
   RowActionsMenu,
@@ -14,11 +19,12 @@ import {
   removeStoreCurrencies,
   updateStoreCurrency,
 } from "@/server/currency/currencies.serverFn";
+import { getConfig } from "@/server/get-config";
 import { currencyQueries } from "@queries/currency.queries";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
-import { CheckCircle2, Pencil, Plus, Trash2, XCircle } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
+import { CheckCircle2, Plus, Trash2, XCircle } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 
@@ -61,51 +67,61 @@ const StoreGeneralSection = ({
   defaultSalesChannel?: { id: string; name: string };
 }) => {
   const navigate = useNavigate();
-
-  return (
-    <CardWrapper
-      label="Store"
-      description="Manage your store's details"
-      headerButton={
-        <RowActionsMenu
-          label="Store actions"
-          actions={[
-            {
-              label: "Edit",
-              icon: <Pencil className="size-4" />,
-              onSelect: () =>
-                void navigate({
-                  to: "/dashboard/settings/$slug/edit",
-                  params: { slug: "store" },
-                }),
-            },
-          ]}
-        />
-      }
-      classNames={{ contentWrapper: "divide-y" }}
-    >
-      <div className="grid grid-cols-2 gap-4 px-6 py-4 text-sm text-muted-foreground">
-        <span className="font-medium">Name</span>
-        <span>{storeName}</span>
-      </div>
-      <div className="grid grid-cols-2 gap-4 px-6 py-4 text-sm text-muted-foreground">
-        <span className="font-medium">Default sales channel</span>
-        <span>{defaultSalesChannel?.name ?? "—"}</span>
-      </div>
-      <div className="grid grid-cols-2 gap-4 px-6 py-4 text-sm text-muted-foreground">
-        <span className="font-medium">Default currency</span>
-        {defaultCurrency ? (
+  const router = useRouter();
+  const editView = useMemo(
+    () =>
+      findCollection(getConfig().client.collections.settings, "store")?.edit
+        ?.view,
+    [],
+  );
+  const openEdit = useCallback(
+    () =>
+      void navigate({
+        to: "/dashboard/settings/$slug/edit",
+        params: { slug: "store" },
+      }),
+    [navigate],
+  );
+  const preloadEdit = useCallback(() => {
+    void viewPreloader(editView)?.();
+    void router.preloadRoute({
+      to: "/dashboard/settings/$slug/edit",
+      params: { slug: "store" },
+    });
+  }, [editView, router]);
+  const fields = useMemo<EditCardField[]>(
+    () => [
+      { key: "name", label: "Name", displayValue: storeName },
+      {
+        key: "defaultSalesChannel",
+        label: "Default sales channel",
+        displayValue: defaultSalesChannel?.name,
+      },
+      {
+        key: "defaultCurrency",
+        label: "Default currency",
+        displayValue: defaultCurrency ? (
           <span className="flex items-center gap-2">
             <Badge variant="embossed">
               {defaultCurrency.code.toUpperCase()}
             </Badge>
             {defaultCurrency.name}
           </span>
-        ) : (
-          <span>—</span>
-        )}
-      </div>
-    </CardWrapper>
+        ) : undefined,
+      },
+    ],
+    [defaultCurrency, defaultSalesChannel?.name, storeName],
+  );
+
+  return (
+    <EditCard
+      id="store-general"
+      title="Store"
+      description="Manage your store's details"
+      fields={fields}
+      onEdit={openEdit}
+      onEditPreload={preloadEdit}
+    />
   );
 };
 

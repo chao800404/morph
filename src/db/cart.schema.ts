@@ -108,6 +108,7 @@ export const cartLineItems = sqliteTable(
     productSubtitle: text("product_subtitle"),
     productType: text("product_type"),
     productTypeId: text("product_type_id"),
+    productCollectionId: text("product_collection_id"),
     productCollection: text("product_collection"),
     productHandle: text("product_handle"),
     variantSku: text("variant_sku"),

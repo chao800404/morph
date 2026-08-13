@@ -1,8 +1,11 @@
-import type { ProductMetadata, ProductStatus } from "@/db/product.schema";
+import type {
+  ProductMetadata,
+  ProductStatus as DbProductStatus,
+} from "@/db/product.schema";
 import type { ProductOptionDTO } from "./product-option.dto";
-import type { ProductVariantDTO } from "./product-variant.dto";
 import type { SalesChannelDTO } from "@/lib/sales-channel/dto/sales-channel.dto";
 
+export type ProductStatus = DbProductStatus;
 
 export interface ProductDTO {
   id: string;
@@ -41,10 +44,9 @@ export interface ProductListItemDTO extends ProductDTO {
   variantCount: number;
 }
 
-/** A product with everything the detail view needs, in one shape. */
+/** A product with the bounded relations the detail view needs. */
 export interface ProductDetailDTO extends ProductDTO {
   options: ProductOptionDTO[];
-  variants: ProductVariantDTO[];
   /** Gallery asset ids in display order. */
   assetIds: string[];
   tagIds: string[];

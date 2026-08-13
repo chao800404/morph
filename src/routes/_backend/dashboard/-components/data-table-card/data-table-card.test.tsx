@@ -3,6 +3,11 @@ import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DataTableCard } from "./data-table-card";
 
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useSearch: () => ({}),
+}));
+
 vi.mock("@/server/table-view/table-views.serverFn", () => ({
   getTableViewConfiguration: vi.fn(async () => ({
     success: true,
@@ -117,6 +122,30 @@ describe("DataTableCard selection", () => {
     expect(header?.textContent).not.toContain("Search control");
   });
 
+  it("keeps the header action as the only action in an empty card", () => {
+    render(
+      <DataTableCard
+        label="Overrides"
+        columns={[
+          {
+            key: "name",
+            header: "Name",
+            cell: (row: (typeof rows)[number]) => row.name,
+          },
+        ]}
+        rows={[]}
+        getRowId={(row) => row.id}
+        emptyTitle="No records"
+        emptyDescription="There are no records to show"
+        headerActions={<button type="button">Create</button>}
+      />,
+    );
+
+    expect(screen.getAllByRole("button", { name: "Create" })).toHaveLength(1);
+    expect(screen.getByText("No records")).toBeTruthy();
+    expect(screen.getByText("There are no records to show")).toBeTruthy();
+  });
+
   it("preloads clickable rows on pointer, focus, and touch intent", () => {
     const onRowClick = vi.fn();
     const onRowPreload = vi.fn();
@@ -168,18 +197,25 @@ describe("DataTableCard selection", () => {
       />,
     );
 
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Edit columns" }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Availability" }));
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Edit columns" }),
+      {
+        button: 0,
+        ctrlKey: false,
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("menuitemcheckbox", { name: "Availability" }),
+    );
 
     await waitFor(() => {
-      expect(localStorage.getItem("morph:data-table:currency-test:columns")).toContain(
-        '"availability"',
-      );
+      expect(
+        localStorage.getItem("morph:data-table:currency-test:columns"),
+      ).toContain('"availability"');
     });
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
     await waitFor(() =>
       expect(
         screen.queryByRole("columnheader", { name: "Availability" }),

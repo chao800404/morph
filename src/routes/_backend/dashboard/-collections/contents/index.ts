@@ -60,6 +60,13 @@ const prefetchAssetItem = async ({
   if (items.length === 0) return;
   const { assetQueries } = await import("@queries/asset.queries");
   void queryClient.prefetchQuery(assetQueries.items({ items }));
+  const { remoteOptionQueries } =
+    await import("@queries/remote-options.queries");
+  void queryClient.prefetchInfiniteQuery(
+    remoteOptionQueries.pages({
+      source: "asset-folders",
+    }),
+  );
 };
 
 export const Contents: CollectionGroup = {
@@ -94,7 +101,17 @@ export const Contents: CollectionGroup = {
               product.normalizeCollectionListParams({}),
             ),
           );
-          void queryClient.prefetchQuery(product.productTaxonomyQueries.list());
+          const { remoteOptionQueries } =
+            await import("@queries/remote-options.queries");
+          for (const source of [
+            "product-types",
+            "product-tags",
+            "product-categories",
+          ] as const) {
+            void queryClient.prefetchInfiniteQuery(
+              remoteOptionQueries.pages({ source }),
+            );
+          }
           void queryClient.prefetchQuery(
             product.productOptionQueries.list(
               product.normalizeProductOptionListParams(),
@@ -125,10 +142,23 @@ export const Contents: CollectionGroup = {
         // while its query runs, so the chunk wait and the fetch wait are one
         // continuous state.
         pendingView: ProductDetailSkeleton,
-        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+        prefetch: async ({
+          queryClient,
+          params,
+          search,
+        }: CollectionLoadContext) => {
           if (!params.id) return;
-          const { productQueries } = await import("@queries/product.queries");
+          const {
+            normalizeProductVariantListParams,
+            productQueries,
+            productVariantQueries,
+          } = await import("@queries/product.queries");
           void queryClient.prefetchQuery(productQueries.detail(params.id));
+          void queryClient.prefetchQuery(
+            productVariantQueries.list(
+              normalizeProductVariantListParams(params.id, search),
+            ),
+          );
         },
       },
       edit: {
@@ -158,7 +188,6 @@ export const Contents: CollectionGroup = {
               productQueries,
               collectionQueries,
               normalizeCollectionListParams,
-              productTaxonomyQueries,
             } = await import("@queries/product.queries");
             void queryClient.prefetchQuery(productQueries.detail(params.id));
             // The form's three pickers: collection, type/tags, categories.
@@ -168,7 +197,17 @@ export const Contents: CollectionGroup = {
                 limit: 100,
               }),
             );
-            void queryClient.prefetchQuery(productTaxonomyQueries.list());
+            const { remoteOptionQueries } =
+              await import("@queries/remote-options.queries");
+            for (const source of [
+              "product-types",
+              "product-tags",
+              "product-categories",
+            ] as const) {
+              void queryClient.prefetchInfiniteQuery(
+                remoteOptionQueries.pages({ source }),
+              );
+            }
           },
         },
         media: {
@@ -194,12 +233,16 @@ export const Contents: CollectionGroup = {
             const {
               productQueries,
               productOptionQueries,
+              productVariantQueries,
               normalizeProductOptionListParams,
             } = await import("@queries/product.queries");
             void queryClient.prefetchQuery(productQueries.detail(params.id));
             // The picker offers the whole option library.
             void queryClient.prefetchQuery(
               productOptionQueries.list(normalizeProductOptionListParams()),
+            );
+            void queryClient.prefetchQuery(
+              productVariantQueries.bulk(params.id),
             );
           },
         },
@@ -233,11 +276,19 @@ export const Contents: CollectionGroup = {
           }: CollectionLoadContext) => {
             const variantId = params.childId ?? search.variantId;
             if (!params.id || !variantId) return;
-            const { productQueries, productVariantQueries } =
-              await import("@queries/product.queries");
+            const {
+              normalizeVariantPriceHistoryListParams,
+              productQueries,
+              productVariantQueries,
+            } = await import("@queries/product.queries");
             void queryClient.prefetchQuery(productQueries.detail(params.id));
             void queryClient.prefetchQuery(
               productVariantQueries.detail(variantId),
+            );
+            void queryClient.prefetchQuery(
+              productVariantQueries.priceHistory(
+                normalizeVariantPriceHistoryListParams(variantId, search),
+              ),
             );
           },
         },
@@ -247,17 +298,27 @@ export const Contents: CollectionGroup = {
               import("@views/global/contents/products/detail/product-variant"),
           ),
           pendingView: ProductVariantEditPendingView,
-          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+          prefetch: async ({
+            queryClient,
+            params,
+            search,
+          }: CollectionLoadContext) => {
             if (!params.id) return;
-            const [{ productQueries }, { currencyQueries }] = await Promise.all(
-              [
-                import("@queries/product.queries"),
-                import("@queries/currency.queries"),
-              ],
-            );
+            const [
+              { productQueries, productVariantQueries },
+              { currencyQueries },
+            ] = await Promise.all([
+              import("@queries/product.queries"),
+              import("@queries/currency.queries"),
+            ]);
             // Both, because the form renders a price field per store currency
             // and would otherwise show its own spinner after the chunk lands.
             void queryClient.prefetchQuery(productQueries.detail(params.id));
+            if (search.variantId) {
+              void queryClient.prefetchQuery(
+                productVariantQueries.detail(search.variantId),
+              );
+            }
             void queryClient.prefetchQuery(currencyQueries.store());
           },
         },
@@ -303,13 +364,17 @@ export const Contents: CollectionGroup = {
           pendingView: ProductVariantPricesPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
-            const [{ productQueries }, { currencyQueries }] = await Promise.all(
-              [
-                import("@queries/product.queries"),
-                import("@queries/currency.queries"),
-              ],
-            );
+            const [
+              { productQueries, productVariantQueries },
+              { currencyQueries },
+            ] = await Promise.all([
+              import("@queries/product.queries"),
+              import("@queries/currency.queries"),
+            ]);
             void queryClient.prefetchQuery(productQueries.detail(params.id));
+            void queryClient.prefetchQuery(
+              productVariantQueries.bulk(params.id),
+            );
             void queryClient.prefetchQuery(currencyQueries.store());
           },
         },
@@ -321,8 +386,12 @@ export const Contents: CollectionGroup = {
           pendingView: ProductVariantInventoryPendingView,
           prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
             if (!params.id) return;
-            const { productQueries } = await import("@queries/product.queries");
+            const { productQueries, productVariantQueries } =
+              await import("@queries/product.queries");
             void queryClient.prefetchQuery(productQueries.detail(params.id));
+            void queryClient.prefetchQuery(
+              productVariantQueries.bulk(params.id),
+            );
           },
         },
         attributes: {
@@ -491,11 +560,12 @@ export const Contents: CollectionGroup = {
                 import("@views/global/contents/products/categories/category-create"),
             ),
             pendingView: CategoryCreatePendingView,
-            // The parent picker lists the whole category tree.
             prefetch: async ({ queryClient }: CollectionLoadContext) => {
-              const { productTaxonomyQueries } =
-                await import("@queries/product.queries");
-              void queryClient.prefetchQuery(productTaxonomyQueries.list());
+              const { remoteOptionQueries } =
+                await import("@queries/remote-options.queries");
+              void queryClient.prefetchInfiniteQuery(
+                remoteOptionQueries.pages({ source: "product-categories" }),
+              );
             },
           },
           detail: {
@@ -748,11 +818,12 @@ export const Contents: CollectionGroup = {
           () => import("@views/global/contents/assets/asset-create"),
         ),
         pendingView: AssetCreatePendingView,
-        // Both variants render the destination `folder-select`, which lists the
-        // whole folder tree.
         prefetch: async ({ queryClient }: CollectionLoadContext) => {
-          const { assetQueries } = await import("@queries/asset.queries");
-          void queryClient.prefetchQuery(assetQueries.folders());
+          const { remoteOptionQueries } =
+            await import("@queries/remote-options.queries");
+          void queryClient.prefetchInfiniteQuery(
+            remoteOptionQueries.pages({ source: "asset-folders" }),
+          );
         },
       },
       preview: {
@@ -789,7 +860,6 @@ export const Contents: CollectionGroup = {
           void queryClient.prefetchQuery(
             assetQueries.list(normalizeAssetListParams(search)),
           );
-          void queryClient.prefetchQuery(assetQueries.folders());
         },
       },
     },

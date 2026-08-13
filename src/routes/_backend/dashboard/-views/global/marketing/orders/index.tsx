@@ -1,4 +1,4 @@
-import type { OrderListDTO } from "@/lib/commerce/dto";
+import type { OrderListDTO } from "@/lib/order/dto/order.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   CollectionCreateButton,

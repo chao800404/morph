@@ -20,7 +20,7 @@ import {
 import type { AssetDTO, AssetInsertDTO } from "../dto/asset.dto";
 import { toAssetDTO, type AssetRow } from "../mappers/asset.mapper";
 import { containsPattern } from "@/lib/db/like-pattern";
-import type { AssetType } from "@/db/asset.schema";
+import type { AssetMetadata, AssetType } from "@/db/asset.schema";
 
 const mapFirst = (rows: AssetRow[]): AssetDTO | null =>
   rows.length > 0 ? toAssetDTO(rows[0]) : null;
@@ -102,7 +102,10 @@ export const assetDal = {
       conditions.push(lt(assets.size, 1024 * 1024));
     } else if (options.size === "1mb-10mb") {
       conditions.push(
-        and(gte(assets.size, 1024 * 1024), lt(assets.size, 10 * 1024 * 1024)) as SQL,
+        and(
+          gte(assets.size, 1024 * 1024),
+          lt(assets.size, 10 * 1024 * 1024),
+        ) as SQL,
       );
     } else if (options.size === "over-10mb") {
       conditions.push(gte(assets.size, 10 * 1024 * 1024));
@@ -271,6 +274,23 @@ export const assetDal = {
         })),
       );
     }
+  },
+
+  async updateProcessedImage(
+    id: string,
+    data: {
+      url: string;
+      size: number;
+      mimeType: string;
+      metadata: AssetMetadata;
+      updatedBy: string;
+    },
+  ): Promise<void> {
+    const db = await getDb();
+    await db
+      .update(assets)
+      .set({ ...data, updatedAt: new Date().toISOString() })
+      .where(and(eq(assets.id, id), isNull(assets.deletedAt)));
   },
 
   async delete(id: string): Promise<void> {

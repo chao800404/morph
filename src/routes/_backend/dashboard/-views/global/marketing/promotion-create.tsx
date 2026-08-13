@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import type { FormField, FormFieldValue } from "@/lib/validations/form";
 import { createPromotion } from "@/server/marketing/promotions.serverFn";
 import { promotionQueries } from "@queries/marketing.queries";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, CircleDashed, Plus, Trash2 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -226,10 +226,6 @@ const PromotionCreate = () => {
   const close = useRouteModalClose();
   const queryClient = useQueryClient();
   useCloseOnEscape(close);
-  const { data: campaignResult } = useQuery(promotionQueries.campaigns());
-  const campaigns = campaignResult?.success
-    ? campaignResult.data.campaigns
-    : [];
   const [step, setStep] = useState<StepIndex>(0);
   const [pending, setPending] = useState(false);
   const [showIssues, setShowIssues] = useState(false);
@@ -324,14 +320,13 @@ const PromotionCreate = () => {
     campaignChoice === "existing"
       ? [
           {
-            type: "select",
+            type: "remote-select",
             name: "campaignId",
             label: "Campaign",
             value: campaignId,
-            options: campaigns.map((campaign) => ({
-              label: `${campaign.name} · ${campaign.identifier}`,
-              value: campaign.id,
-            })),
+            remoteSource: "promotion-campaigns",
+            searchPlaceholder: "Search campaigns...",
+            emptyMessage: "No campaigns found.",
           },
         ]
       : campaignChoice === "new"

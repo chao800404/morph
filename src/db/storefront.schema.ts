@@ -1,11 +1,17 @@
 import { sql } from "drizzle-orm";
-import { index, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import { metadata, timestamps } from "./columns";
-import { salesChannels } from "./sales-channel.schema";
 import type { JsonValue } from "./json";
 
 export type StorefrontStatus = "draft" | "published" | "disabled";
 export type StorefrontThemeStatus = "draft" | "published" | "archived";
+export type StorefrontDomainStatus = "pending" | "active" | "failed";
 export type StorefrontTemplateType =
   | "index"
   | "product"
@@ -28,9 +34,7 @@ export const storefronts = sqliteTable(
   "storefronts",
   {
     id: text("id").primaryKey(),
-    salesChannelId: text("sales_channel_id")
-      .notNull()
-      .references(() => salesChannels.id, { onDelete: "cascade" }),
+    salesChannelId: text("sales_channel_id").notNull(),
     name: text("name").notNull(),
     domain: text("domain"),
     status: text("status").$type<StorefrontStatus>().notNull().default("draft"),
@@ -47,6 +51,41 @@ export const storefronts = sqliteTable(
     uniqueIndex("storefronts_active_domain_unique")
       .on(table.domain)
       .where(sql`${table.deletedAt} IS NULL AND ${table.domain} IS NOT NULL`),
+  ],
+);
+
+/** Merchant-owned hostnames attached to a storefront's Worker. */
+export const storefrontDomains = sqliteTable(
+  "storefront_domains",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    hostname: text("hostname").notNull(),
+    isPrimary: integer("is_primary", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    status: text("status")
+      .$type<StorefrontDomainStatus>()
+      .notNull()
+      .default("pending"),
+    cloudflareDomainId: text("cloudflare_domain_id"),
+    errorMessage: text("error_message"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_domains_active_hostname_unique")
+      .on(table.hostname)
+      .where(sql`${table.deletedAt} IS NULL`),
+    uniqueIndex("storefront_domains_primary_unique")
+      .on(table.storefrontId)
+      .where(sql`${table.deletedAt} IS NULL AND ${table.isPrimary} = 1`),
+    index("storefront_domains_storefront_status_idx").on(
+      table.storefrontId,
+      table.status,
+      table.deletedAt,
+    ),
   ],
 );
 

@@ -1,15 +1,12 @@
-import {
-  listAllFolders,
-  listItemsServerFn,
-} from "@/server/asset/list-items.serverFn";
-import { getAssetItems } from "@/server/asset/get-items.serverFn";
+import type { AssetType } from "@/db/asset.schema";
 import type { AssetEditSelectionItem } from "@/lib/asset/edit-selection";
 import { normalizeAssetSorts } from "@/lib/asset/sort";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
-import type { AssetType } from "@/db/asset.schema";
+import { getAssetItems } from "@/server/asset/get-items.serverFn";
+import { listItemsServerFn } from "@/server/asset/list-items.serverFn";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
+import { ASSET_QUERY_KEY } from "@/lib/asset/query-key";
 
-/** Params the assets list query and its server function agree on. */
 export interface AssetListParams {
   folderId: string | null;
   query?: string;
@@ -26,10 +23,6 @@ export interface AssetItemsParams {
   items: AssetEditSelectionItem[];
 }
 
-// Normalize raw route search into the exact params the assets list query uses.
-// Both the route loader (prefetch) and the component must call this so they
-// produce the same query key — otherwise the loader primes a different cache
-// entry than the component reads, causing a redundant fetch and a loading flash.
 export const normalizeAssetListParams = (
   search: DashboardSearch = {},
 ): AssetListParams => {
@@ -49,27 +42,16 @@ export const normalizeAssetListParams = (
 };
 
 export const assetQueries = {
-  all: () => ["assets"] as const,
+  all: () => ASSET_QUERY_KEY,
   list: (params: AssetListParams) =>
     queryOptions({
       queryKey: [...assetQueries.all(), "list", params],
-      queryFn: async () => {
-        const result = await listItemsServerFn({ data: params });
-        return result;
-      },
+      queryFn: () => listItemsServerFn({ data: params }),
       placeholderData: keepPreviousData,
     }),
   items: (params: AssetItemsParams) =>
     queryOptions({
       queryKey: [...assetQueries.all(), "items", params],
       queryFn: () => getAssetItems({ data: params }),
-    }),
-  folders: () =>
-    queryOptions({
-      queryKey: [...assetQueries.all(), "all-folders"],
-      queryFn: async () => {
-        const result = await listAllFolders();
-        return result;
-      },
     }),
 };

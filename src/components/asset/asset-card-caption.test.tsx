@@ -11,7 +11,9 @@ describe("AssetCardCaption", () => {
       />,
     );
 
-    expect(screen.getByText(/A very long asset/).className).toContain("truncate");
+    expect(screen.getByText(/A very long asset/).className).toContain(
+      "truncate",
+    );
     expect(screen.getByText("png").className).toContain("shrink-0");
   });
 
@@ -23,8 +25,8 @@ describe("AssetCardCaption", () => {
     expect(getByText("png").className).toContain("absolute");
     expect(getByText("png").className).toContain("bottom-2");
     expect(getByText("png").className).toContain("right-2");
-    expect(getByText("png").className).toContain("bg-blue-600");
-    expect(getByText("png").className).toContain("text-white");
+    expect(getByText("png").className).toContain("bg-primary");
+    expect(getByText("png").className).toContain("text-primary-foreground");
     expect(container.querySelector("p")).toBeNull();
   });
 });

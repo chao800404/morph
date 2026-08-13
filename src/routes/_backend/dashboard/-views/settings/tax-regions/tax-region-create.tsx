@@ -2,16 +2,27 @@ import {
   RouteFormPage,
   useRouteModalClose,
 } from "@/components/dialog/route-form-modal";
+import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
 import { taxQueries } from "@queries/tax.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { taxRegionFields } from "./config/tax-form-fields";
+import {
+  formatTaxProviderLabel,
+  taxRegionFields,
+} from "./config/tax-form-fields";
 import { createTaxRegionAction } from "./tax-actions";
 
 export default function TaxRegionCreate() {
   const client = useQueryClient();
   const close = useRouteModalClose();
   const query = useQuery(taxQueries.options());
+  if (query.isError || (query.data && !query.data.success)) {
+    return (
+      <RouteSurfaceMessage>
+        {query.data?.message ?? "Failed to load tax region options"}
+      </RouteSurfaceMessage>
+    );
+  }
   const countries = query.data?.success
     ? query.data.data.countries.map((item) => ({
         label: `${item.name} — ${item.code.toUpperCase()}`,
@@ -20,7 +31,7 @@ export default function TaxRegionCreate() {
     : [];
   const providers = query.data?.success
     ? query.data.data.providers.map((item) => ({
-        label: item.id.replace(/^tp_/, "").replaceAll("_", " "),
+        label: formatTaxProviderLabel(item.id),
         value: item.id,
       }))
     : [];

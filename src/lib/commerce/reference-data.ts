@@ -10,6 +10,7 @@ import {
   returnReasons,
 } from "@/db/schema";
 import type { Metadata } from "@/db/json";
+import { containsPattern } from "@/lib/db/like-pattern";
 import {
   and,
   asc,
@@ -72,11 +73,12 @@ export const referenceDataDal = {
     const offset = (params.page - 1) * params.limit;
     const direction = orderDirection(params.sortOrder);
     const term = params.query?.trim();
+    const pattern = term ? containsPattern(term) : undefined;
 
     if (params.kind === "product-types") {
       const where = and(
         isNull(productTypes.deletedAt),
-        term ? like(productTypes.value, `%${term}%`) : undefined,
+        pattern ? like(productTypes.value, pattern) : undefined,
       );
       const [rows, [{ total }]] = await Promise.all([
         db
@@ -134,7 +136,7 @@ export const referenceDataDal = {
     if (params.kind === "product-tags") {
       const where = and(
         isNull(productTags.deletedAt),
-        term ? like(productTags.value, `%${term}%`) : undefined,
+        pattern ? like(productTags.value, pattern) : undefined,
       );
       const [rows, [{ total }]] = await Promise.all([
         db
@@ -203,10 +205,10 @@ export const referenceDataDal = {
         );
       const where = and(
         isNull(returnReasons.deletedAt),
-        term
+        pattern
           ? or(
-              like(returnReasons.label, `%${term}%`),
-              like(returnReasons.value, `%${term}%`),
+              like(returnReasons.label, pattern),
+              like(returnReasons.value, pattern),
             )
           : undefined,
       );
@@ -267,10 +269,10 @@ export const referenceDataDal = {
 
     const where = and(
       isNull(refundReasons.deletedAt),
-      term
+      pattern
         ? or(
-            like(refundReasons.label, `%${term}%`),
-            like(refundReasons.code, `%${term}%`),
+            like(refundReasons.label, pattern),
+            like(refundReasons.code, pattern),
           )
         : undefined,
     );

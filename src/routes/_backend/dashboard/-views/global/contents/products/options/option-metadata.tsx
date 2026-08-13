@@ -5,10 +5,7 @@ import {
   type RouteFormState,
 } from "@/components/dialog/route-form-modal";
 import { RouteSurfacePending } from "@/components/dialog/route-surface-pending";
-import {
-  productOptionQueries,
-  productTaxonomyQueries,
-} from "@queries/product.queries";
+import { productOptionQueries } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -20,9 +17,7 @@ const OptionMetadata = () => {
   const { id } = useParams({ strict: false }) as { id: string };
   const queryClient = useQueryClient();
   const close = useRouteModalClose();
-  const { data: result, isPending } = useQuery(
-    productOptionQueries.detail(id),
-  );
+  const { data: result, isPending } = useQuery(productOptionQueries.detail(id));
 
   const submit = async (
     _state: RouteFormState,
@@ -38,10 +33,9 @@ const OptionMetadata = () => {
       return response;
     }
 
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: productOptionQueries.all() }),
-      queryClient.invalidateQueries({ queryKey: productTaxonomyQueries.all() }),
-    ]);
+    await queryClient.invalidateQueries({
+      queryKey: productOptionQueries.all(),
+    });
     toast.success(response.message, { position: "top-center" });
     close();
     return response;
@@ -55,7 +49,7 @@ const OptionMetadata = () => {
   if (!option) {
     return (
       <RouteSurfaceMessage>
-          {result?.message ?? "Option not found"}
+        {result?.message ?? "Option not found"}
       </RouteSurfaceMessage>
     );
   }

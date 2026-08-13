@@ -1,6 +1,6 @@
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { useNavigate } from "@tanstack/react-router";
-import { CardPagination } from "../card-pagination/card-pagination";
+import { CardPagination } from "@/components/dashboard/card-pagination";
 import type { DataTablePaginationInfo } from "./data-table-card";
 
 /**
@@ -12,8 +12,10 @@ import type { DataTablePaginationInfo } from "./data-table-card";
  */
 export const DataTablePagination = ({
   pagination,
+  scope,
 }: {
   pagination?: DataTablePaginationInfo;
+  scope?: "taxRate" | "orderItem" | "orderFulfillment";
 }) => {
   const navigate = useNavigate();
 
@@ -30,7 +32,16 @@ export const DataTablePagination = ({
 
     navigate({
       to: ".",
-      search: (prev: DashboardSearch) => ({ ...prev, page: nextPage }),
+      search: (prev: DashboardSearch) => {
+        if (scope === "taxRate") return { ...prev, taxRatePage: nextPage };
+        if (scope === "orderItem") {
+          return { ...prev, orderItemPage: nextPage };
+        }
+        if (scope === "orderFulfillment") {
+          return { ...prev, orderFulfillmentPage: nextPage };
+        }
+        return { ...prev, page: nextPage };
+      },
       replace: true,
     });
   };

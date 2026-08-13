@@ -44,6 +44,9 @@ interface OptionValuesFieldProps {
   maxSelected?: number;
   searchPlaceholder?: string;
   emptyMessage?: string;
+  onSearchChange?: (value: string) => void;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
   /**
    * Offers "Create «typed text»" when the search matches nothing.
    *
@@ -53,6 +56,8 @@ interface OptionValuesFieldProps {
    * value, so the client never needs to create the row first.
    */
   allowCreate?: boolean;
+  /** Native form serialization; relation multi-selects use JSON arrays. */
+  serialize?: "array" | "scalar";
 }
 
 export const OptionValuesField = (props: OptionValuesFieldProps) =>
@@ -67,6 +72,10 @@ export const OptionValuesField = (props: OptionValuesFieldProps) =>
       placeholder={props.placeholder}
       searchPlaceholder={props.searchPlaceholder}
       emptyMessage={props.emptyMessage}
+      onSearchChange={props.onSearchChange}
+      hasMore={props.hasMore}
+      onLoadMore={props.onLoadMore}
+      serialize={props.serialize}
       className={props.className}
     />
   ) : (
@@ -88,6 +97,10 @@ const ChoiceValues = ({
   placeholder = "Select...",
   searchPlaceholder = "Search...",
   emptyMessage = "Nothing found.",
+  onSearchChange,
+  hasMore,
+  onLoadMore,
+  serialize = "array",
   className,
 }: {
   name: string;
@@ -99,6 +112,10 @@ const ChoiceValues = ({
   placeholder?: string;
   searchPlaceholder?: string;
   emptyMessage?: string;
+  onSearchChange?: (value: string) => void;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
+  serialize?: "array" | "scalar";
   className?: string;
 }) => {
   const [open, setOpen] = useState(false);
@@ -169,7 +186,15 @@ const ChoiceValues = ({
 
   return (
     <div className={cn("w-full", className)}>
-      <input type="hidden" name={name} value={JSON.stringify(selected)} />
+      <input
+        type="hidden"
+        name={name}
+        value={
+          serialize === "scalar"
+            ? (selected[0] ?? "")
+            : JSON.stringify(selected)
+        }
+      />
 
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
@@ -231,7 +256,10 @@ const ChoiceValues = ({
             <CommandInput
               placeholder={searchPlaceholder}
               value={search}
-              onValueChange={setSearch}
+              onValueChange={(value) => {
+                setSearch(value);
+                onSearchChange?.(value);
+              }}
             />
             <CommandList>
               {!creatable && <CommandEmpty>{emptyMessage}</CommandEmpty>}
@@ -266,6 +294,14 @@ const ChoiceValues = ({
                     </CommandItem>
                   );
                 })}
+                {hasMore ? (
+                  <CommandItem
+                    value={`${search} load more`}
+                    onSelect={() => onLoadMore?.()}
+                  >
+                    Load more
+                  </CommandItem>
+                ) : null}
               </CommandGroup>
             </CommandList>
           </Command>
@@ -394,7 +430,9 @@ const FreeformValues = ({
                 className={cn(
                   "flex items-center gap-4 px-4 py-3 text-sm font-medium transition-colors select-none",
                   "cursor-grab active:cursor-grabbing hover:bg-accent/40",
-                  draggedIndex === idx ? "opacity-40 bg-accent/60" : "bg-transparent",
+                  draggedIndex === idx
+                    ? "opacity-40 bg-accent/60"
+                    : "bg-transparent",
                 )}
               >
                 <GripVertical className="size-4 text-muted-foreground/60 shrink-0" />

@@ -1,0 +1,1 @@
+ALTER TABLE `cart_line_items` ADD `product_collection_id` text;

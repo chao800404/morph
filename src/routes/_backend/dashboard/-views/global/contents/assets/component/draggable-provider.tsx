@@ -9,7 +9,6 @@ import React from "react";
 import { toast } from "sonner";
 import { useAssetsStore } from "../stores/assets.store";
 
-
 /**
  * dnd-kit does not publish standalone event types for these callbacks, so they
  * are derived from the provider's own props and stay in sync with the library.
@@ -87,7 +86,7 @@ const AssetDragPreview = ({
                       <p className="sr-only">{item.name}</p>
                     </div>
                   ))}
-                <div className="absolute -right-2.5 -top-2.5 z-20 flex h-5 w-5 items-center justify-center rounded-full bg-blue-400 text-xs text-white dark:bg-zinc-500">
+                <div className="absolute -right-2.5 -top-2.5 z-20 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-xs text-primary-foreground">
                   {selectedItems.size}
                 </div>
               </>
@@ -120,12 +119,8 @@ export const AssetDraggableProvider = ({
 
   const handleDragEnd = React.useCallback(
     async (event: DragEventOf<"onDragEnd">) => {
-      const {
-        selectedItems,
-        dragItem,
-        setDragItem,
-        clearAllSelectedItems,
-      } = useAssetsStore.getState();
+      const { selectedItems, dragItem, setDragItem, clearAllSelectedItems } =
+        useAssetsStore.getState();
       const selected = Array.from(selectedItems.values());
       const draggingItems =
         selected.length > 0 ? selected : dragItem ? [dragItem] : [];
@@ -193,47 +188,56 @@ export const AssetDraggableProvider = ({
     [queryClient],
   );
 
-  const handleBeforeDragStart = React.useCallback((event: DragEventOf<"onBeforeDragStart">) => {
-    const { source } = event.operation;
-    if (!source) return;
+  const handleBeforeDragStart = React.useCallback(
+    (event: DragEventOf<"onBeforeDragStart">) => {
+      const { source } = event.operation;
+      if (!source) return;
 
-    const sourceType = source.type as "folder" | "asset" | undefined;
-    if (!sourceType) return;
+      const sourceType = source.type as "folder" | "asset" | undefined;
+      if (!sourceType) return;
 
-    const name = source.data?.name;
-    const id = `${source.id}`;
-    const { setDragItem } = useAssetsStore.getState();
+      const name = source.data?.name;
+      const id = `${source.id}`;
+      const { setDragItem } = useAssetsStore.getState();
 
-    if (sourceType === "folder") {
-      setDragItem({ type: "folder", id, name });
-      return;
-    }
+      if (sourceType === "folder") {
+        setDragItem({ type: "folder", id, name });
+        return;
+      }
 
-    const fileType = source.data?.fileType || "file";
-    setDragItem({
-      type: "asset",
-      id,
-      name,
-      fileType,
-      src: source.data?.src,
-      extension: source.data?.extension,
-    });
-  }, []);
+      const fileType = source.data?.fileType || "file";
+      setDragItem({
+        type: "asset",
+        id,
+        name,
+        fileType,
+        src: source.data?.src,
+        extension: source.data?.extension,
+      });
+    },
+    [],
+  );
 
-  const handleDragStart = React.useCallback((event: DragEventOf<"onDragStart">) => {
-    const { position } = event.operation;
-    if (!position || !dragPreviewRef.current) return;
+  const handleDragStart = React.useCallback(
+    (event: DragEventOf<"onDragStart">) => {
+      const { position } = event.operation;
+      if (!position || !dragPreviewRef.current) return;
 
-    const { x, y } = position.current;
-    dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;
-  }, []);
-
-  const handleDragMove = React.useCallback((event: DragEventOf<"onDragMove">) => {
-    const { x, y } = event.to || { x: 50, y: 50 };
-    if (dragPreviewRef.current) {
+      const { x, y } = position.current;
       dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;
-    }
-  }, []);
+    },
+    [],
+  );
+
+  const handleDragMove = React.useCallback(
+    (event: DragEventOf<"onDragMove">) => {
+      const { x, y } = event.to || { x: 50, y: 50 };
+      if (dragPreviewRef.current) {
+        dragPreviewRef.current.style.transform = `translate(${x}px, ${y}px)`;
+      }
+    },
+    [],
+  );
 
   return (
     <DragDropProvider

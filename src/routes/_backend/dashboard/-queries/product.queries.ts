@@ -16,9 +16,19 @@ import {
   getProductCategory,
   listProductCategories,
 } from "@/server/product/categories.serverFn";
-import { listProductTaxonomy } from "@/server/product/taxonomy.serverFn";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import { getVariantDetail } from "@/server/product/variants.serverFn";
+import {
+  listProductVariants,
+  listProductVariantsForBulkEdit,
+  listVariantPriceHistory,
+} from "@/server/product/variants.serverFn";
+import type {
+  ProductVariantListParams,
+  ProductVariantPriceHistoryListParams,
+} from "@/lib/product/dto/product-variant.dto";
+import { VARIANT_PAGE_SIZE } from "@/lib/product/variant-table";
+import { dashboardOptionSortKeySchema } from "@/lib/validations/dashboard-search";
 
 /** Params the product list query and its server function agree on. */
 export interface ProductListParams {
@@ -135,11 +145,81 @@ export const productQueries = {
 
 export const productVariantQueries = {
   all: () => ["product-variants"] as const,
+  list: (params: ProductVariantListParams) =>
+    queryOptions({
+      queryKey: [...productVariantQueries.all(), "list", params],
+      queryFn: () => listProductVariants({ data: params }),
+      placeholderData: keepPreviousData,
+    }),
+  bulk: (productId: string) =>
+    queryOptions({
+      queryKey: [...productVariantQueries.all(), "bulk", productId],
+      queryFn: () => listProductVariantsForBulkEdit({ data: { productId } }),
+    }),
   detail: (id: string) =>
     queryOptions({
       queryKey: [...productVariantQueries.all(), "detail", id],
       queryFn: () => getVariantDetail({ data: { id } }),
     }),
+  priceHistory: (params: ProductVariantPriceHistoryListParams) =>
+    queryOptions({
+      queryKey: [...productVariantQueries.all(), "price-history", params],
+      queryFn: () => listVariantPriceHistory({ data: params }),
+      placeholderData: keepPreviousData,
+    }),
+};
+
+export const normalizeProductVariantListParams = (
+  productId: string,
+  search: DashboardSearch = {},
+): ProductVariantListParams => {
+  const routeSortBy = Array.isArray(search.sortBy)
+    ? search.sortBy[0]
+    : search.sortBy;
+  const routeSortOrder = Array.isArray(search.sortOrder)
+    ? search.sortOrder[0]
+    : search.sortOrder;
+  return {
+    productId,
+    query: search.q,
+    sortBy:
+      routeSortBy === "name" ||
+      routeSortBy === "createdAt" ||
+      routeSortBy === "updatedAt" ||
+      dashboardOptionSortKeySchema.safeParse(routeSortBy).success
+        ? (routeSortBy as ProductVariantListParams["sortBy"])
+        : "createdAt",
+    sortOrder: routeSortOrder ?? "desc",
+    page: Number(search.page) || 1,
+    limit: VARIANT_PAGE_SIZE,
+  };
+};
+
+export const normalizeVariantPriceHistoryListParams = (
+  variantId: string,
+  search: DashboardSearch = {},
+): ProductVariantPriceHistoryListParams => {
+  const routeSortBy = Array.isArray(search.sortBy)
+    ? search.sortBy[0]
+    : search.sortBy;
+  const routeSortOrder = Array.isArray(search.sortOrder)
+    ? search.sortOrder[0]
+    : search.sortOrder;
+  return {
+    variantId,
+    query: search.q,
+    currencies: search.priceHistoryCurrencies,
+    changes: search.priceHistoryChanges,
+    changedBy: search.priceHistoryChangedBy,
+    changedWithin: search.priceHistoryChangedWithin,
+    sortBy:
+      routeSortBy === "code" || routeSortBy === "name"
+        ? routeSortBy
+        : "updatedAt",
+    sortOrder: routeSortOrder ?? "desc",
+    page: Number(search.page) || 1,
+    limit: 5,
+  };
 };
 
 export const collectionQueries = {
@@ -178,21 +258,6 @@ export const normalizeProductOptionListParams = (
   ...normalizeProductListParams(search),
   createdWithin: search.optionCreatedWithin,
 });
-
-/**
- * Types, tags and categories in one entry.
- *
- * They are always read together by the Organize step and change rarely, so one
- * cache entry keeps the wizard to a single request.
- */
-export const productTaxonomyQueries = {
-  all: () => ["product-taxonomy"] as const,
-  list: () =>
-    queryOptions({
-      queryKey: productTaxonomyQueries.all(),
-      queryFn: () => listProductTaxonomy(),
-    }),
-};
 
 export const productCategoryQueries = {
   all: () => ["product-categories"] as const,

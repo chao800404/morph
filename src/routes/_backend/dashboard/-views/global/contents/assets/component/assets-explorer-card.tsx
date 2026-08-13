@@ -6,7 +6,7 @@ import { AssetsCardHeader } from "@/routes/_backend/dashboard/-components/assets
 import { AssetsCardToolbar } from "@/routes/_backend/dashboard/-components/assets-card/assets-card-toolbar";
 import { AssetsContent } from "@/routes/_backend/dashboard/-components/assets-card/assets-content";
 import { FoldersContent } from "@/routes/_backend/dashboard/-components/assets-card/folders-content";
-import { BreadcrumbCollapse } from "@/routes/_backend/dashboard/-components/breadcrumb/breadcrumb-collapse";
+import { BreadcrumbCollapse } from "@/components/dashboard/breadcrumb-collapse";
 import { CardWrapper } from "@/routes/_backend/dashboard/-components/card-wrapper";
 import { useShallow } from "zustand/react/shallow";
 import type { AssetsExplorerData } from "../assets.types";

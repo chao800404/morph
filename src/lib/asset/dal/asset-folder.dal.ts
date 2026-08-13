@@ -109,14 +109,53 @@ export const assetFolderDal = {
     return rows.map(toAssetFolderDTO);
   },
 
-  async listAll(): Promise<AssetFolderDTO[]> {
+  async listOptionsPage(options: {
+    query?: string;
+    page: number;
+    limit: number;
+    selectedIds?: string[];
+  }): Promise<{
+    folders: AssetFolderDTO[];
+    selected: AssetFolderDTO[];
+    total: number;
+  }> {
     const db = await getDb();
-    const rows = await db
-      .select()
-      .from(assetFolders)
-      .where(isNull(assetFolders.deletedAt))
-      .orderBy(asc(assetFolders.path));
-    return rows.map(toAssetFolderDTO);
+    const conditions = [isNull(assetFolders.deletedAt)];
+    if (options.query?.trim()) {
+      conditions.push(
+        like(assetFolders.name, containsPattern(options.query.trim())),
+      );
+    }
+    const where = and(...conditions);
+    const [totals, rows, selectedRows] = await Promise.all([
+      db
+        .select({ value: sql<number>`count(*)` })
+        .from(assetFolders)
+        .where(where),
+      db
+        .select()
+        .from(assetFolders)
+        .where(where)
+        .orderBy(asc(assetFolders.name), asc(assetFolders.id))
+        .limit(options.limit)
+        .offset((options.page - 1) * options.limit),
+      options.selectedIds?.length
+        ? db
+            .select()
+            .from(assetFolders)
+            .where(
+              and(
+                inArray(assetFolders.id, options.selectedIds),
+                isNull(assetFolders.deletedAt),
+              ),
+            )
+        : Promise.resolve([]),
+    ]);
+    return {
+      folders: rows.map(toAssetFolderDTO),
+      selected: selectedRows.map(toAssetFolderDTO),
+      total: Number(totals[0]?.value ?? 0),
+    };
   },
 
   /** Cross-tree folder search used by the dashboard's global search. */
@@ -131,7 +170,10 @@ export const assetFolderDal = {
       like(assetFolders.name, pattern),
     );
     const [totals, rows] = await Promise.all([
-      db.select({ value: sql<number>`count(*)` }).from(assetFolders).where(condition),
+      db
+        .select({ value: sql<number>`count(*)` })
+        .from(assetFolders)
+        .where(condition),
       db
         .select()
         .from(assetFolders)

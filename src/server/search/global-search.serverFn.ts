@@ -1,6 +1,7 @@
 import { assetFolderDal } from "@/lib/asset/dal/asset-folder.dal";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
-import { orderDal, promotionDal } from "@/lib/commerce/marketing.dal";
+import { orderDal } from "@/lib/order/dal/order.dal";
+import { promotionDal } from "@/lib/promotion/dal/promotion.dal";
 import { productCollectionDal } from "@/lib/product/dal/product-collection.dal";
 import { productOptionDal } from "@/lib/product/dal/product-option.dal";
 import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
@@ -122,42 +123,143 @@ export const globalSearch = createServerFn({ method: "POST" })
           })),
         ].slice(0, limit);
         const count = assetPage.total + folderPage.total;
-        return { area: "assets", title: "Assets", count, hasMore: count > items.length, items };
+        return {
+          area: "assets",
+          title: "Assets",
+          count,
+          hasMore: count > items.length,
+          items,
+        };
       });
     }
 
     if (enabled(area, "orders")) {
       tasks.push(async () => {
-        const page = await orderDal.listPage({ query: query.replace(/^#/, ""), sortBy: "updatedAt", sortOrder: "desc", page: 1, limit });
-        return { area: "orders", title: "Orders", count: page.total, hasMore: page.total > page.orders.length, items: page.orders.map((order) => ({ id: order.id, resource: "order", group: "Orders", title: `Order #${order.displayId}`, subtitle: order.email ?? undefined, href: `/dashboard/orders/${order.id}` })) };
+        const page = await orderDal.listPage({
+          query: query.replace(/^#/, ""),
+          sortBy: "updatedAt",
+          sortOrder: "desc",
+          page: 1,
+          limit,
+        });
+        return {
+          area: "orders",
+          title: "Orders",
+          count: page.total,
+          hasMore: page.total > page.orders.length,
+          items: page.orders.map((order) => ({
+            id: order.id,
+            resource: "order",
+            group: "Orders",
+            title: `Order #${order.displayId}`,
+            subtitle: order.email ?? undefined,
+            href: `/dashboard/orders/${order.id}`,
+          })),
+        };
       });
     }
 
     if (enabled(area, "promotions")) {
       tasks.push(async () => {
-        const page = await promotionDal.listPage({ query, sortBy: "updatedAt", sortOrder: "desc", page: 1, limit });
-        return { area: "promotions", title: "Promotions", count: page.total, hasMore: page.total > page.promotions.length, items: page.promotions.map((promotion) => ({ id: promotion.id, resource: "promotion", group: "Promotions", title: promotion.code, subtitle: promotion.status, href: `/dashboard/promotions/${promotion.id}` })) };
+        const page = await promotionDal.listPage({
+          query,
+          sortBy: "updatedAt",
+          sortOrder: "desc",
+          page: 1,
+          limit,
+        });
+        return {
+          area: "promotions",
+          title: "Promotions",
+          count: page.total,
+          hasMore: page.total > page.promotions.length,
+          items: page.promotions.map((promotion) => ({
+            id: promotion.id,
+            resource: "promotion",
+            group: "Promotions",
+            title: promotion.code,
+            subtitle: promotion.status,
+            href: `/dashboard/promotions/${promotion.id}`,
+          })),
+        };
       });
     }
 
     if (enabled(area, "collections")) {
       tasks.push(async () => {
-        const page = await productCollectionDal.listPage({ query, sortBy: "updatedAt", sortOrder: "desc", page: 1, limit });
-        return { area: "collections", title: "Collections", count: page.total, hasMore: page.total > page.collections.length, items: page.collections.map((collection) => ({ id: collection.id, resource: "collection", group: "Collections", title: collection.title, subtitle: collection.handle, href: `/dashboard/collections/${collection.id}` })) };
+        const page = await productCollectionDal.listPage({
+          query,
+          sortBy: "updatedAt",
+          sortOrder: "desc",
+          page: 1,
+          limit,
+        });
+        return {
+          area: "collections",
+          title: "Collections",
+          count: page.total,
+          hasMore: page.total > page.collections.length,
+          items: page.collections.map((collection) => ({
+            id: collection.id,
+            resource: "collection",
+            group: "Collections",
+            title: collection.title,
+            subtitle: collection.handle,
+            href: `/dashboard/collections/${collection.id}`,
+          })),
+        };
       });
     }
 
     if (enabled(area, "categories")) {
       tasks.push(async () => {
-        const page = await productCategoryDal.listPage({ query, sortBy: "updatedAt", sortOrder: "desc", page: 1, limit });
-        return { area: "categories", title: "Categories", count: page.total, hasMore: page.total > page.categories.length, items: page.categories.map((category) => ({ id: category.id, resource: "category", group: "Categories", title: category.name, subtitle: category.ancestorNames.join(" / "), href: `/dashboard/categories/${category.id}` })) };
+        const page = await productCategoryDal.listPage({
+          query,
+          sortBy: "updatedAt",
+          sortOrder: "desc",
+          page: 1,
+          limit,
+        });
+        return {
+          area: "categories",
+          title: "Categories",
+          count: page.total,
+          hasMore: page.total > page.categories.length,
+          items: page.categories.map((category) => ({
+            id: category.id,
+            resource: "category",
+            group: "Categories",
+            title: category.name,
+            subtitle: category.ancestorNames.join(" / "),
+            href: `/dashboard/categories/${category.id}`,
+          })),
+        };
       });
     }
 
     if (enabled(area, "options")) {
       tasks.push(async () => {
-        const page = await productOptionDal.listPage({ query, sortBy: "updatedAt", sortOrder: "desc", page: 1, limit });
-        return { area: "options", title: "Options", count: page.total, hasMore: page.total > page.options.length, items: page.options.map((option) => ({ id: option.id, resource: "option", group: "Options", title: option.title, subtitle: option.values.map((value) => value.value).join(", "), href: `/dashboard/product-options/${option.id}` })) };
+        const page = await productOptionDal.listPage({
+          query,
+          sortBy: "updatedAt",
+          sortOrder: "desc",
+          page: 1,
+          limit,
+        });
+        return {
+          area: "options",
+          title: "Options",
+          count: page.total,
+          hasMore: page.total > page.options.length,
+          items: page.options.map((option) => ({
+            id: option.id,
+            resource: "option",
+            group: "Options",
+            title: option.title,
+            subtitle: option.values.map((value) => value.value).join(", "),
+            href: `/dashboard/product-options/${option.id}`,
+          })),
+        };
       });
     }
 

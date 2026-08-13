@@ -4,11 +4,7 @@ import {
 } from "@/components/dialog/route-form-modal";
 import { RouteSurfaceMessage } from "@/components/dialog/route-surface-message";
 import { taxQueries } from "@queries/tax.queries";
-import {
-  useQuery,
-  useQueryClient,
-  useSuspenseQuery,
-} from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -27,7 +23,6 @@ export default function TaxRateEdit() {
     ...taxQueries.rate(childId ?? ""),
     enabled: Boolean(childId),
   });
-  const optionsResult = useSuspenseQuery(taxQueries.options()).data;
   const rate = query.data?.success ? query.data.data : null;
   if (!rate)
     return (
@@ -44,13 +39,7 @@ export default function TaxRateEdit() {
       fields={
         rate.isDefault
           ? taxDefaultRateFields(id, rate)
-          : taxOverrideFields(
-              id,
-              optionsResult.success
-                ? optionsResult.data.ruleTargets
-                : { products: [], productTypes: [], shippingOptions: [] },
-              rate,
-            )
+          : taxOverrideFields(id, rate)
       }
       action={async (_, form) => {
         const value = await updateTaxRateAction(form);

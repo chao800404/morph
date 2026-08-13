@@ -1,6 +1,10 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
-import { users } from "./auth.schema";
+import {
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export interface TableViewConfiguration {
   columnOrder: string[];
@@ -11,9 +15,7 @@ export const userTableViews = sqliteTable(
   "user_table_views",
   {
     id: text("id").primaryKey(),
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
     tableKey: text("table_key").notNull(),
     name: text("name").notNull().default("Default"),
     configuration: text("configuration", { mode: "json" })

@@ -100,14 +100,40 @@ export const listItemsServerFn = createServerFn({ method: "POST" })
     }
   });
 
-export const listAllFolders = createServerFn({ method: "POST" })
+export const listFolderOptions = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    z
+      .object({
+        query: z.string().max(200).optional(),
+        page: z.number().int().min(1),
+        limit: z.number().int().min(1).max(50),
+        selectedIds: z.array(z.uuid()).max(100).optional(),
+      })
+      .parse(data),
+  )
   .middleware([assetReadMiddleware])
-  .handler(async () => {
+  .handler(async ({ data }) => {
     try {
+      const page = await assetFolderDal.listOptionsPage(data);
       return {
         success: true,
-        message: "All folders fetched successfully",
-        data: await assetFolderDal.listAll(),
+        message: "Folder options fetched successfully",
+        data: {
+          items: page.folders.map((folder) => ({
+            id: folder.id,
+            label: folder.name,
+          })),
+          selectedItems: page.selected.map((folder) => ({
+            id: folder.id,
+            label: folder.name,
+          })),
+          pagination: {
+            page: data.page,
+            limit: data.limit,
+            total: page.total,
+            totalPages: Math.max(1, Math.ceil(page.total / data.limit)),
+          },
+        },
       };
     } catch (error) {
       console.error("Folder list error:", error);

@@ -6,7 +6,10 @@ import {
   generateMoveFields,
   generateMoveTitle,
 } from "../move/move-fields-utils";
-import { useAssetMoveStore, type MoveItem } from "../move/use-asset-move-store";
+import {
+  useAssetMoveStore,
+  type MoveItem,
+} from "@/lib/asset/store/use-asset-move-store";
 import {
   useInfoStore,
   type ServerAction,

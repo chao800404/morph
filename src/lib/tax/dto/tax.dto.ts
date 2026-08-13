@@ -50,8 +50,3 @@ export interface TaxRuleTargetOptionDTO {
   id: string;
   label: string;
 }
-
-export interface TaxRegionDetailDTO extends TaxRegionDTO {
-  provinces: TaxRegionSummaryDTO[];
-  taxRates: TaxRateDTO[];
-}

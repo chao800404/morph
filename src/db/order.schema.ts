@@ -204,6 +204,7 @@ export const orderLineItems = sqliteTable(
     productSubtitle: text("product_subtitle"),
     productType: text("product_type"),
     productTypeId: text("product_type_id"),
+    productCollectionId: text("product_collection_id"),
     productCollection: text("product_collection"),
     productHandle: text("product_handle"),
     variantSku: text("variant_sku"),
@@ -437,9 +438,10 @@ export const orderShippingMethodAdjustments = sqliteTable(
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("order_shipping_method_adjustments_version_method_unique")
-      .on(table.version, table.shippingMethodId)
-      .where(sql`${table.deletedAt} IS NULL`),
+    index("order_shipping_method_adjustments_version_method_idx").on(
+      table.version,
+      table.shippingMethodId,
+    ),
   ],
 );
 

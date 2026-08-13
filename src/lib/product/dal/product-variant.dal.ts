@@ -15,11 +15,14 @@ import {
   count,
   desc,
   eq,
+  gte,
   inArray,
   isNull,
   like,
+  or,
   sql,
 } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { containsPattern } from "@/lib/db/like-pattern";
 import { toGlobalSearchTerms } from "@/lib/search/global-search";
@@ -27,7 +30,10 @@ import { chunk, chunkForInsert } from "./d1-batch";
 import type {
   ProductVariantDTO,
   ProductVariantInsertDTO,
+  ProductVariantListParams,
   ProductVariantPriceHistoryDTO,
+  ProductVariantPriceHistoryFacets,
+  ProductVariantPriceHistoryListParams,
   ProductVariantSearchResultDTO,
   UpdateProductVariantDTO,
 } from "../dto/product-variant.dto";
@@ -106,10 +112,81 @@ export const productVariantDal = {
     return hydrated[0] ?? null;
   },
 
-  async findByProductId(productId: string): Promise<ProductVariantDTO[]> {
+  async listPage(options: ProductVariantListParams): Promise<{
+    variants: ProductVariantDTO[];
+    total: number;
+  }> {
+    const db = await getDb();
+    const conditions: SQL[] = [
+      eq(productVariants.productId, options.productId),
+      isNull(productVariants.deletedAt),
+    ];
+    const optionSearchText = sql<string>`coalesce((
+      select group_concat(pov.value, ' ')
+      from product_variant_option_values as pvov
+      inner join product_option_values as pov on pov.id = pvov.option_value_id
+      where pvov.variant_id = ${productVariants.id}
+        and pov.deleted_at is null
+    ), '')`;
+    if (options.query?.trim()) {
+      const pattern = containsPattern(options.query.trim());
+      conditions.push(
+        or(
+          like(productVariants.title, pattern),
+          like(productVariants.sku, pattern),
+          like(optionSearchText, pattern),
+        )!,
+      );
+    }
+
+    const optionId = options.sortBy.startsWith("option:")
+      ? options.sortBy.slice("option:".length)
+      : null;
+    const sortExpression = optionId
+      ? sql<number | null>`(
+          select pov.rank
+          from product_variant_option_values as pvov
+          inner join product_option_values as pov on pov.id = pvov.option_value_id
+          where pvov.variant_id = ${productVariants.id}
+            and pov.option_id = ${optionId}
+            and pov.deleted_at is null
+          limit 1
+        )`
+      : options.sortBy === "name"
+        ? productVariants.title
+        : options.sortBy === "updatedAt"
+          ? productVariants.updatedAt
+          : productVariants.createdAt;
+    const direction = options.sortOrder === "asc" ? asc : desc;
+    const offset = (options.page - 1) * options.limit;
+    const [totals, rows] = await Promise.all([
+      db
+        .select({ value: count() })
+        .from(productVariants)
+        .where(and(...conditions)),
+      db
+        .select()
+        .from(productVariants)
+        .where(and(...conditions))
+        .orderBy(
+          asc(sql`${sortExpression} is null`),
+          direction(sortExpression),
+          asc(productVariants.id),
+        )
+        .limit(options.limit)
+        .offset(offset),
+    ]);
+
+    return {
+      variants: await hydrate(rows),
+      total: Number(totals[0]?.value ?? 0),
+    };
+  },
+
+  async existsForProduct(productId: string): Promise<boolean> {
     const db = await getDb();
     const rows = await db
-      .select()
+      .select({ id: productVariants.id })
       .from(productVariants)
       .where(
         and(
@@ -117,30 +194,8 @@ export const productVariantDal = {
           isNull(productVariants.deletedAt),
         ),
       )
-      .orderBy(asc(productVariants.rank));
-    return hydrate(rows);
-  },
-
-  async findByProductIds(productIds: string[]): Promise<ProductVariantDTO[]> {
-    if (productIds.length === 0) return [];
-    const db = await getDb();
-    const rows: ProductVariantRow[] = [];
-
-    for (const ids of chunk(productIds, 50)) {
-      rows.push(
-        ...(await db
-          .select()
-          .from(productVariants)
-          .where(
-            and(
-              inArray(productVariants.productId, ids),
-              isNull(productVariants.deletedAt),
-            ),
-          )
-          .orderBy(asc(productVariants.rank))),
-      );
-    }
-    return hydrate(rows);
+      .limit(1);
+    return rows.length > 0;
   },
 
   /**
@@ -417,26 +472,120 @@ export const productVariantDal = {
     );
   },
 
-  async findPriceHistory(
-    variantId: string,
-    limit = 20,
-  ): Promise<ProductVariantPriceHistoryDTO[]> {
+  async listPriceHistoryPage(
+    options: ProductVariantPriceHistoryListParams,
+  ): Promise<{
+    history: ProductVariantPriceHistoryDTO[];
+    total: number;
+    facets: ProductVariantPriceHistoryFacets;
+  }> {
     const db = await getDb();
-    const rows = await db
-      .select({
-        history: productVariantPriceHistory,
-        changedByName: users.name,
-      })
-      .from(productVariantPriceHistory)
-      .leftJoin(users, eq(productVariantPriceHistory.changedBy, users.id))
-      .where(eq(productVariantPriceHistory.variantId, variantId))
-      .orderBy(desc(productVariantPriceHistory.changedAt))
-      .limit(Math.min(Math.max(limit, 1), 100));
-    return rows.map((row) => ({
-      ...row.history,
-      changedByName: row.changedByName,
-      changedAt: new Date(row.history.changedAt),
-    }));
+    const conditions: SQL[] = [
+      eq(productVariantPriceHistory.variantId, options.variantId),
+    ];
+    if (options.query?.trim()) {
+      const pattern = containsPattern(options.query.trim());
+      conditions.push(
+        or(
+          like(productVariantPriceHistory.currencyCode, pattern),
+          like(users.name, pattern),
+        )!,
+      );
+    }
+    if (options.currencies?.length) {
+      conditions.push(
+        inArray(productVariantPriceHistory.currencyCode, options.currencies),
+      );
+    }
+    if (options.changedBy?.length) {
+      conditions.push(
+        inArray(productVariantPriceHistory.changedBy, options.changedBy),
+      );
+    }
+    if (options.changedWithin) {
+      const days = { "24h": 1, "7d": 7, "30d": 30, "90d": 90 }[
+        options.changedWithin
+      ];
+      conditions.push(
+        gte(
+          productVariantPriceHistory.changedAt,
+          new Date(Date.now() - days * 86_400_000).toISOString(),
+        ),
+      );
+    }
+    if (options.changes?.length) {
+      const changeConditions = options.changes.map((change) => {
+        if (change === "created") {
+          return sql`${productVariantPriceHistory.oldAmount} is null and ${productVariantPriceHistory.newAmount} is not null`;
+        }
+        if (change === "removed") {
+          return sql`${productVariantPriceHistory.oldAmount} is not null and ${productVariantPriceHistory.newAmount} is null`;
+        }
+        if (change === "increased") {
+          return sql`${productVariantPriceHistory.newAmount} > ${productVariantPriceHistory.oldAmount}`;
+        }
+        return sql`${productVariantPriceHistory.newAmount} < ${productVariantPriceHistory.oldAmount}`;
+      });
+      conditions.push(or(...changeConditions)!);
+    }
+
+    const sortExpression =
+      options.sortBy === "code"
+        ? productVariantPriceHistory.currencyCode
+        : options.sortBy === "name"
+          ? users.name
+          : productVariantPriceHistory.changedAt;
+    const direction = options.sortOrder === "asc" ? asc : desc;
+    const offset = (options.page - 1) * options.limit;
+    const baseCondition = and(...conditions);
+    const [totals, rows, currencyRows, actorRows] = await Promise.all([
+      db
+        .select({ value: count() })
+        .from(productVariantPriceHistory)
+        .leftJoin(users, eq(productVariantPriceHistory.changedBy, users.id))
+        .where(baseCondition),
+      db
+        .select({
+          history: productVariantPriceHistory,
+          changedByName: users.name,
+        })
+        .from(productVariantPriceHistory)
+        .leftJoin(users, eq(productVariantPriceHistory.changedBy, users.id))
+        .where(baseCondition)
+        .orderBy(direction(sortExpression), asc(productVariantPriceHistory.id))
+        .limit(options.limit)
+        .offset(offset),
+      db
+        .selectDistinct({ code: productVariantPriceHistory.currencyCode })
+        .from(productVariantPriceHistory)
+        .where(eq(productVariantPriceHistory.variantId, options.variantId))
+        .orderBy(asc(productVariantPriceHistory.currencyCode)),
+      db
+        .selectDistinct({
+          id: productVariantPriceHistory.changedBy,
+          name: users.name,
+        })
+        .from(productVariantPriceHistory)
+        .leftJoin(users, eq(productVariantPriceHistory.changedBy, users.id))
+        .where(eq(productVariantPriceHistory.variantId, options.variantId))
+        .orderBy(asc(users.name), asc(productVariantPriceHistory.changedBy)),
+    ]);
+
+    return {
+      history: rows.map((row) => ({
+        ...row.history,
+        changedByName: row.changedByName,
+        changedAt: new Date(row.history.changedAt),
+      })),
+      total: Number(totals[0]?.value ?? 0),
+      facets: {
+        currencies: currencyRows.map((row) => row.code),
+        changedBy: actorRows.map((row) => ({
+          id: row.id,
+          name: row.name ?? "Unknown user",
+        })),
+      },
+    };
   },
 
   async setOptionValues(

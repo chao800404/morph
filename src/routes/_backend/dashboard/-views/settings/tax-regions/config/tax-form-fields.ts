@@ -1,5 +1,13 @@
 import type { FormField } from "@/lib/validations/form";
 
+export const formatTaxProviderLabel = (providerId: string) =>
+  providerId
+    .replace(/^tp_/, "")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
 export const taxRegionFields = (
   countries: Array<{ label: string; value: string }>,
   providers: Array<{ label: string; value: string }>,
@@ -58,6 +66,32 @@ export const taxRegionFields = (
     colSpan: 2,
   },
 ];
+
+export const taxRegionEditFields = (
+  country: { label: string; value: string },
+  providers: Array<{ label: string; value: string }>,
+  providerId: string | null,
+): FormField[] => [
+  {
+    type: "select",
+    name: "countryCode",
+    label: "Country",
+    options: [country],
+    value: country.value,
+    disabled: true,
+  },
+  {
+    type: "select",
+    name: "providerId",
+    label: "Tax provider",
+    placeholder: "Select a provider",
+    options: providers,
+    value: providerId ?? "tp_system",
+    required: true,
+    autoFocus: true,
+  },
+];
+
 export const taxProvinceFields = (parentId: string): FormField[] => [
   { type: "hidden", name: "parentId", value: parentId },
   {
@@ -101,12 +135,6 @@ export const taxProvinceFields = (parentId: string): FormField[] => [
     description: "Combine this province rate with the country tax rate.",
   },
 ];
-type TaxRuleTargets = {
-  products: Array<{ id: string; label: string }>;
-  productTypes: Array<{ id: string; label: string }>;
-  shippingOptions: Array<{ id: string; label: string }>;
-};
-
 const taxRateBaseFields = (
   taxRegionId: string,
   values?: {
@@ -178,9 +206,8 @@ export const taxDefaultRateFields = (
 
 export const taxOverrideFields = (
   taxRegionId: string,
-  targets: TaxRuleTargets,
   values?: Parameters<typeof taxRateBaseFields>[1] & {
-    rules: Array<{ reference: string; referenceId: string }>;
+    rules: Array<{ reference: string; referenceId: string; label: string }>;
   },
 ): FormField[] => [
   ...taxRateBaseFields(taxRegionId, values)
@@ -207,10 +234,11 @@ export const taxOverrideFields = (
     name: "products",
     label: "Products",
     optional: true,
-    choices: targets.products.map((item) => ({
-      id: item.id,
-      value: item.label,
-    })),
+    remoteSource: "tax-products",
+    choices:
+      values?.rules
+        .filter((rule) => rule.reference === "product")
+        .map((rule) => ({ id: rule.referenceId, value: rule.label })) ?? [],
     value:
       values?.rules
         .filter((rule) => rule.reference === "product")
@@ -223,10 +251,11 @@ export const taxOverrideFields = (
     name: "productTypes",
     label: "Product types",
     optional: true,
-    choices: targets.productTypes.map((item) => ({
-      id: item.id,
-      value: item.label,
-    })),
+    remoteSource: "tax-product-types",
+    choices:
+      values?.rules
+        .filter((rule) => rule.reference === "product_type")
+        .map((rule) => ({ id: rule.referenceId, value: rule.label })) ?? [],
     value:
       values?.rules
         .filter((rule) => rule.reference === "product_type")
@@ -239,10 +268,11 @@ export const taxOverrideFields = (
     name: "shippingOptions",
     label: "Shipping options",
     optional: true,
-    choices: targets.shippingOptions.map((item) => ({
-      id: item.id,
-      value: item.label,
-    })),
+    remoteSource: "tax-shipping-options",
+    choices:
+      values?.rules
+        .filter((rule) => rule.reference === "shipping_option")
+        .map((rule) => ({ id: rule.referenceId, value: rule.label })) ?? [],
     value:
       values?.rules
         .filter((rule) => rule.reference === "shipping_option")

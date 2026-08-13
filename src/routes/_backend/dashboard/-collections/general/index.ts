@@ -9,11 +9,14 @@ import {
   createCollectionIndexPendingView,
   SimpleDetailSkeleton,
   StoreIndexSkeleton,
+  TaxRegionDetailSkeleton,
   TableDetailSkeleton,
 } from "@/routes/_backend/dashboard/-components/loading/collection-page-skeletons";
 import { createRouteSurfacePendingView } from "@/components/dialog/route-surface-pending";
 
 const StoreEditPendingView = createRouteSurfacePendingView(4);
+const DomainsIndexPendingView = createCollectionIndexPendingView(4);
+const DomainCreatePendingView = createRouteSurfacePendingView(1);
 const UsersIndexPendingView = createCollectionIndexPendingView(5);
 const UserInvitePendingView = createRouteSurfacePendingView(2);
 const UserEditPendingView = createRouteSurfacePendingView(6);
@@ -25,9 +28,9 @@ const RegionMetadataPendingView = createRouteSurfacePendingView(3);
 const TaxRegionsIndexPendingView = createCollectionIndexPendingView(5);
 const TaxRegionCreatePendingView = createRouteSurfacePendingView(6);
 const TaxRegionEditPendingView = createRouteSurfacePendingView(2);
-const TaxProvinceCreatePendingView = createRouteSurfacePendingView(6);
-const TaxRateFormPendingView = createRouteSurfacePendingView(5);
-const TaxOverrideFormPendingView = createRouteSurfacePendingView(9);
+const TaxProvinceCreatePendingView = createRouteSurfacePendingView(5);
+const TaxDefaultRateFormPendingView = createRouteSurfacePendingView(4);
+const TaxOverrideFormPendingView = createRouteSurfacePendingView(8);
 const TaxRegionMetadataPendingView = createRouteSurfacePendingView(3);
 const SalesChannelsIndexPendingView = createCollectionIndexPendingView(4);
 const SalesChannelCreatePendingView = createRouteSurfacePendingView(3);
@@ -211,7 +214,7 @@ export const General: CollectionGroup = {
         pendingView: StoreIndexSkeleton,
         prefetch: async ({ queryClient }: CollectionLoadContext) => {
           const { currencyQueries } = await import("@queries/currency.queries");
-          await queryClient.prefetchQuery(currencyQueries.store());
+          void queryClient.prefetchQuery(currencyQueries.store());
         },
       },
       create: {
@@ -232,6 +235,32 @@ export const General: CollectionGroup = {
           const { currencyQueries } = await import("@queries/currency.queries");
           void queryClient.prefetchQuery(currencyQueries.store());
         },
+      },
+    },
+    {
+      title: "Domains",
+      slug: "domains",
+      icon: "Globe2",
+      label: "Domains",
+      index: {
+        view: lazyView(() => import("@views/settings/domains")),
+        pendingView: DomainsIndexPendingView,
+        prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
+          const {
+            storefrontDomainQueries,
+            normalizeStorefrontDomainListParams,
+          } = await import("@queries/storefront-domain.queries");
+          void queryClient.prefetchQuery(
+            storefrontDomainQueries.list(
+              normalizeStorefrontDomainListParams(search),
+            ),
+          );
+        },
+      },
+      create: {
+        label: "Connect domain",
+        view: lazyView(() => import("@views/settings/domains/domain-create")),
+        pendingView: DomainCreatePendingView,
       },
     },
     {
@@ -415,7 +444,7 @@ export const General: CollectionGroup = {
         view: lazyView(
           () => import("@views/settings/tax-regions/tax-region-detail"),
         ),
-        pendingView: TableDetailSkeleton,
+        pendingView: TaxRegionDetailSkeleton,
         breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
           if (!params.id) return null;
           const { taxQueries } = await import("@queries/tax.queries");
@@ -427,10 +456,35 @@ export const General: CollectionGroup = {
             ? `${result.data.countryName} — ${result.data.provinceCode}`
             : result.data.countryName;
         },
-        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+        prefetch: async ({
+          queryClient,
+          params,
+          search,
+        }: CollectionLoadContext) => {
           if (!params.id) return;
-          const { taxQueries } = await import("@queries/tax.queries");
-          void queryClient.prefetchQuery(taxQueries.detail(params.id));
+          const {
+            normalizeTaxProvinceListParams,
+            normalizeTaxRateListParams,
+            taxQueries,
+          } = await import("@queries/tax.queries");
+          void Promise.all([
+            queryClient.prefetchQuery(taxQueries.detail(params.id)),
+            queryClient.prefetchQuery(
+              taxQueries.provinces(
+                normalizeTaxProvinceListParams(params.id, search),
+              ),
+            ),
+            queryClient.prefetchQuery(
+              taxQueries.rates(
+                normalizeTaxRateListParams(params.id, "default", search),
+              ),
+            ),
+            queryClient.prefetchQuery(
+              taxQueries.rates(
+                normalizeTaxRateListParams(params.id, "override", search),
+              ),
+            ),
+          ]);
         },
       },
       edit: {
@@ -441,8 +495,10 @@ export const General: CollectionGroup = {
         prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
           if (!params.id) return;
           const { taxQueries } = await import("@queries/tax.queries");
-          void queryClient.prefetchQuery(taxQueries.detail(params.id));
-          void queryClient.prefetchQuery(taxQueries.options());
+          void Promise.all([
+            queryClient.prefetchQuery(taxQueries.detail(params.id)),
+            queryClient.prefetchQuery(taxQueries.options()),
+          ]);
         },
       },
       pages: {
@@ -456,23 +512,19 @@ export const General: CollectionGroup = {
           view: lazyView(
             () => import("@views/settings/tax-regions/tax-rate-create"),
           ),
-          pendingView: TaxRateFormPendingView,
+          pendingView: TaxDefaultRateFormPendingView,
         },
         "create-override": {
           view: lazyView(
             () => import("@views/settings/tax-regions/tax-override-create"),
           ),
           pendingView: TaxOverrideFormPendingView,
-          prefetch: async ({ queryClient }: CollectionLoadContext) => {
-            const { taxQueries } = await import("@queries/tax.queries");
-            void queryClient.prefetchQuery(taxQueries.options());
-          },
         },
-        "edit-rate": {
+        "edit-default-rate": {
           view: lazyView(
             () => import("@views/settings/tax-regions/tax-rate-edit"),
           ),
-          pendingView: TaxRateFormPendingView,
+          pendingView: TaxDefaultRateFormPendingView,
           breadcrumb: async ({
             queryClient,
             params,
@@ -488,7 +540,28 @@ export const General: CollectionGroup = {
             if (!params.childId) return;
             const { taxQueries } = await import("@queries/tax.queries");
             void queryClient.prefetchQuery(taxQueries.rate(params.childId));
-            void queryClient.prefetchQuery(taxQueries.options());
+          },
+        },
+        "edit-override": {
+          view: lazyView(
+            () => import("@views/settings/tax-regions/tax-rate-edit"),
+          ),
+          pendingView: TaxOverrideFormPendingView,
+          breadcrumb: async ({
+            queryClient,
+            params,
+          }: CollectionLoadContext) => {
+            if (!params.childId) return null;
+            const { taxQueries } = await import("@queries/tax.queries");
+            const result = await queryClient.ensureQueryData(
+              taxQueries.rate(params.childId),
+            );
+            return result.success ? result.data.name : null;
+          },
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.childId) return;
+            const { taxQueries } = await import("@queries/tax.queries");
+            void queryClient.prefetchQuery(taxQueries.rate(params.childId));
           },
         },
         metadata: {

@@ -1,12 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
-import { env } from "cloudflare:workers";
-import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/d1";
 import { z } from "zod";
-import * as schema from "../../db/schema";
 import { authMiddleware } from "../middleware/auth.middleware";
 import { getActionErrorMessage } from "@/lib/asset/action-result";
+import { sessionDal } from "@/lib/user/dal/session.dal";
+import { canRevokeSession } from "@/lib/user/session-authorization";
 
 export const revokeSession = createServerFn({ method: "POST" })
   .validator(
@@ -20,11 +18,8 @@ export const revokeSession = createServerFn({ method: "POST" })
     const auth = context.auth;
 
     try {
-      // Better Auth listSessions hides 'token'. Query it from DB.
-      const db = drizzle(env.DATABASE, { schema });
-      const sessionToRevoke = await db.query.sessions.findFirst({
-        where: eq(schema.sessions.id, data.id),
-      });
+      // Better Auth listSessions hides the token required by revokeSession.
+      const sessionToRevoke = await sessionDal.findRevocableById(data.id);
 
       if (!sessionToRevoke) {
         return {
@@ -33,10 +28,11 @@ export const revokeSession = createServerFn({ method: "POST" })
         };
       }
 
-      // Check ownership (security)
-      if (sessionToRevoke.userId !== context.session.user.id) {
-        // Only allow revoking own sessions unless admin (simplified checkout)
-        // return { success: false, message: "Unauthorized" };
+      if (!canRevokeSession(sessionToRevoke.userId, context.session.user.id)) {
+        return {
+          success: false,
+          message: "Unauthorized",
+        };
       }
 
       await auth.api.revokeSession({

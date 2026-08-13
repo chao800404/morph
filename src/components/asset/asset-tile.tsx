@@ -1,7 +1,4 @@
-import {
-  fieldControlVariants,
-  focusRing,
-} from "@/components/ui/field-control";
+import { fieldControlVariants, focusRing } from "@/components/ui/field-control";
 import { cn } from "@/lib/utils";
 import { Check, X } from "lucide-react";
 import type { ReactNode } from "react";
@@ -120,8 +117,7 @@ export const AssetTile = ({
         "group relative aspect-square overflow-hidden",
         "transition-[border-color,box-shadow]",
         focusRing,
-        selected &&
-          "border-blue-500/50 ring-[1.5px] ring-inset ring-blue-500/50 dark:border-blue-400/50 dark:ring-blue-400/50",
+        selected && "border-primary/50 ring-[1.5px] ring-inset ring-primary/50",
         dragging && "opacity-50",
       )}
       title={asset.name}
@@ -133,9 +129,7 @@ export const AssetTile = ({
         className="size-full object-cover"
       />
       {badge ? <span className="absolute left-2 top-2">{badge}</span> : null}
-      {selected ? (
-        <AssetTileCornerControl variant="selected" />
-      ) : null}
+      {selected ? <AssetTileCornerControl variant="selected" /> : null}
       {onRemove ? (
         // Nested inside a div, never inside the button above: the two wrappers
         // are mutually exclusive, so this never nests interactive elements.

@@ -1,6 +1,10 @@
 import { isValidElement } from "react";
 import { z } from "zod";
 import { safeDescriptionSchema, safeTitleSchema } from "./common";
+import {
+  REMOTE_OPTION_SOURCES,
+  type RemoteOptionSource,
+} from "@/lib/remote-options/source";
 
 // Sanitize string to prevent XSS
 // Note: This is also exported below for use in store
@@ -172,6 +176,15 @@ export type SelectFormField = FormFieldBase & {
   options: SelectOption[];
 };
 
+export type RemoteSelectFormField = FormFieldBase & {
+  type: "remote-select";
+  remoteSource: RemoteOptionSource;
+  choices?: OptionValueChoice[];
+  searchPlaceholder?: string;
+  emptyMessage?: string;
+  excludedIds?: string[];
+};
+
 export type ChoiceCardsFormField = FormFieldBase & {
   type: "choice-cards";
   options: Array<SelectOption & { description?: string }>;
@@ -200,6 +213,14 @@ export type OptionValuesFormField = FormFieldBase & {
    * itself does not, because that is where values are created.
    */
   choices?: OptionValueChoice[];
+  /** Remote source for large, searchable relation sets. */
+  remoteSource?:
+    | "tax-products"
+    | "tax-product-types"
+    | "tax-shipping-options"
+    | "product-types"
+    | "product-tags"
+    | "product-categories";
   /** Offers "Create «typed text»" when the search matches nothing. */
   allowCreate?: boolean;
   maxSelected?: number;
@@ -269,6 +290,7 @@ export type FormField =
   | TextareaFormField
   | PhoneFormField
   | SelectFormField
+  | RemoteSelectFormField
   | ChoiceCardsFormField
   | FolderSelectFormField
   | UploadFormField
@@ -345,10 +367,25 @@ const selectFormFieldSchema = z
     },
   );
 
+const remoteSelectFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("remote-select"),
+  remoteSource: z.enum(REMOTE_OPTION_SOURCES),
+  choices: z.array(z.object({ id: z.string(), value: z.string() })).optional(),
+  searchPlaceholder: z.string().optional(),
+  emptyMessage: z.string().optional(),
+  excludedIds: z.array(z.string()).optional(),
+});
+
 const choiceCardsFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("choice-cards"),
-  options: z.array(selectOptionSchema.safeExtend({ description: z.string().optional() })).min(1).max(20),
+  options: z
+    .array(
+      selectOptionSchema.safeExtend({ description: z.string().optional() }),
+    )
+    .min(1)
+    .max(20),
 });
 
 const folderSelectFormFieldSchema = z.object({
@@ -370,6 +407,16 @@ const optionValuesFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("option-values"),
   choices: z.array(z.object({ id: z.string(), value: z.string() })).optional(),
+  remoteSource: z
+    .enum([
+      "tax-products",
+      "tax-product-types",
+      "tax-shipping-options",
+      "product-types",
+      "product-tags",
+      "product-categories",
+    ])
+    .optional(),
   allowCreate: z.boolean().optional(),
   maxSelected: z.number().int().positive().optional(),
   searchPlaceholder: z.string().optional(),
@@ -421,6 +468,7 @@ export const formFieldSchema: z.ZodType<FormField> = z.discriminatedUnion(
     textareaFormFieldSchema,
     phoneFormFieldSchema,
     selectFormFieldSchema,
+    remoteSelectFormFieldSchema,
     choiceCardsFormFieldSchema,
     folderSelectFormFieldSchema,
     uploadFormFieldSchema,

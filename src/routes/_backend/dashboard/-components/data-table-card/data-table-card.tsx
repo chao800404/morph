@@ -108,6 +108,8 @@ export interface DataTableCardProps<TRow> {
   /** Limits row navigation when only some rows have a valid destination. */
   isRowClickable?: (row: TRow) => boolean;
   pagination?: DataTablePaginationInfo;
+  /** Namespaced URL state for a second independently paginated table. */
+  searchScope?: "taxRate" | "orderItem" | "orderFulfillment";
   /** Declarative filters rendered by the shared Add filter control. */
   filters?: DataTableFilterDefinition[];
   /** Filters and active filter chips shown on the toolbar's leading edge. */
@@ -169,6 +171,7 @@ export const DataTableCard = <TRow,>({
   rowActions,
   renderRowActions,
   pagination,
+  searchScope,
   filters,
   toolbarLeading,
   columnConfigurationKey,
@@ -262,7 +265,9 @@ export const DataTableCard = <TRow,>({
   const hasRowActions = Boolean(rowActions || renderRowActions);
   const controls = (
     <>
-      {searchPlaceholder && <DataTableSearch placeholder={searchPlaceholder} />}
+      {searchPlaceholder && (
+        <DataTableSearch placeholder={searchPlaceholder} scope={searchScope} />
+      )}
       {columnConfigurationKey ? (
         <DataTableColumnMenu
           columns={columnConfiguration.order.flatMap((key) => {
@@ -284,7 +289,11 @@ export const DataTableCard = <TRow,>({
         />
       ) : null}
       {sortOptions && (
-        <DataTableSort options={sortOptions} defaultSortBy={defaultSortBy} />
+        <DataTableSort
+          options={sortOptions}
+          defaultSortBy={defaultSortBy}
+          scope={searchScope}
+        />
       )}
     </>
   );
@@ -525,12 +534,14 @@ export const DataTableCard = <TRow,>({
         <DataTableEmptyState
           title={emptyTitle}
           description={emptyDescription}
-          action={headerActions}
+          scope={searchScope}
         />
       ) : (
         <>
           <TableViewport>{table}</TableViewport>
-          {pagination ? <DataTablePagination pagination={pagination} /> : null}
+          {pagination ? (
+            <DataTablePagination pagination={pagination} scope={searchScope} />
+          ) : null}
         </>
       )}
     </CardWrapper>

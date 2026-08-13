@@ -9,6 +9,9 @@ import {
   getTaxRateInputSchema,
   getTaxRegionInputSchema,
   listTaxRegionsInputSchema,
+  listTaxProvincesInputSchema,
+  listTaxRatesInputSchema,
+  listTaxRuleTargetsInputSchema,
   updateTaxRateInputSchema,
   updateTaxRegionInputSchema,
 } from "@/lib/validations/tax";
@@ -34,6 +37,66 @@ export const listTaxRegions = createServerFn({ method: "POST" })
         error,
         "LIST_FAILED",
         "Failed to fetch tax regions",
+      );
+    }
+  });
+
+export const listTaxProvinces = createServerFn({ method: "POST" })
+  .validator((data: unknown) => listTaxProvincesInputSchema.parse(data))
+  .middleware([commerceReadMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const page = await taxDal.listProvincePage(data);
+      return ok("Tax sub-regions fetched successfully", {
+        taxRegions: page.taxRegions,
+        pagination: paginationOf(page.total, data.page, data.limit),
+      });
+    } catch (error) {
+      return failure(
+        "List tax sub-regions error",
+        error,
+        "LIST_FAILED",
+        "Failed to fetch tax sub-regions",
+      );
+    }
+  });
+
+export const listTaxRates = createServerFn({ method: "POST" })
+  .validator((data: unknown) => listTaxRatesInputSchema.parse(data))
+  .middleware([commerceReadMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const page = await taxDal.listRatePage(data);
+      return ok("Tax rates fetched successfully", {
+        taxRates: page.taxRates,
+        pagination: paginationOf(page.total, data.page, data.limit),
+      });
+    } catch (error) {
+      return failure(
+        "List tax rates error",
+        error,
+        "LIST_FAILED",
+        "Failed to fetch tax rates",
+      );
+    }
+  });
+
+export const listTaxRuleTargets = createServerFn({ method: "POST" })
+  .validator((data: unknown) => listTaxRuleTargetsInputSchema.parse(data))
+  .middleware([commerceReadMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const page = await taxDal.listRuleTargetPage(data);
+      return ok("Tax rule targets fetched successfully", {
+        items: page.items,
+        pagination: paginationOf(page.total, data.page, data.limit),
+      });
+    } catch (error) {
+      return failure(
+        "List tax rule targets error",
+        error,
+        "LIST_FAILED",
+        "Failed to fetch tax rule targets",
       );
     }
   });
@@ -84,7 +147,6 @@ export const listTaxRegionOptions = createServerFn({ method: "GET" })
       return ok("Tax options fetched successfully", {
         countries: await taxDal.listAvailableCountries(),
         providers: await taxDal.listProviders(),
-        ruleTargets: await taxDal.listRuleTargets(),
       });
     } catch (error) {
       return failure(
@@ -143,12 +205,7 @@ export const createTaxProvince = createServerFn({ method: "POST" })
       const parent = await taxDal.findRegion(data.parentId);
       if (!parent || parent.parentId)
         return fail("Parent tax region not found", { error: "NOT_FOUND" });
-      const detail = await taxDal.findDetail(parent.id);
-      if (
-        detail?.provinces.some(
-          (province) => province.provinceCode === data.provinceCode,
-        )
-      )
+      if (await taxDal.provinceCodeExists(parent.id, data.provinceCode))
         return fail("This province tax region already exists", {
           errors: { provinceCode: ["Province code must be unique"] },
         });
@@ -178,8 +235,13 @@ export const updateTaxRegion = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      if (!(await taxDal.findRegion(data.id)))
-        return fail("Tax region not found", { error: "NOT_FOUND" });
+      const region = await taxDal.findRegion(data.id);
+      if (!region) return fail("Tax region not found", { error: "NOT_FOUND" });
+      if (region.parentId)
+        return fail(
+          "Province and state tax regions inherit their provider and cannot be edited directly",
+          { error: "INVALID_REGION_LEVEL" },
+        );
       if (data.providerId) {
         const providers = new Set(
           (await taxDal.listProviders()).map((provider) => provider.id),
@@ -232,20 +294,7 @@ export const createTaxRate = createServerFn({ method: "POST" })
     try {
       if (!(await taxDal.findRegion(data.taxRegionId)))
         return fail("Tax region not found", { error: "NOT_FOUND" });
-      const targets = await taxDal.listRuleTargets();
-      const validTargets = new Map([
-        ["product", new Set(targets.products.map((item) => item.id))],
-        ["product_type", new Set(targets.productTypes.map((item) => item.id))],
-        [
-          "shipping_option",
-          new Set(targets.shippingOptions.map((item) => item.id)),
-        ],
-      ]);
-      if (
-        data.rules.some(
-          (rule) => !validTargets.get(rule.reference)?.has(rule.referenceId),
-        )
-      )
+      if (!(await taxDal.ruleTargetsExist(data.rules)))
         return fail("One or more tax rule targets no longer exist", {
           errors: { rules: ["Refresh the page and select active targets"] },
         });
@@ -267,26 +316,11 @@ export const updateTaxRate = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      if (!(await taxDal.findRate(data.id)))
+      const existing = await taxDal.findRate(data.id);
+      if (!existing || existing.taxRegionId !== data.taxRegionId)
         return fail("Tax rate not found", { error: "NOT_FOUND" });
       if (data.rules) {
-        const targets = await taxDal.listRuleTargets();
-        const validTargets = new Map([
-          ["product", new Set(targets.products.map((item) => item.id))],
-          [
-            "product_type",
-            new Set(targets.productTypes.map((item) => item.id)),
-          ],
-          [
-            "shipping_option",
-            new Set(targets.shippingOptions.map((item) => item.id)),
-          ],
-        ]);
-        if (
-          data.rules.some(
-            (rule) => !validTargets.get(rule.reference)?.has(rule.referenceId),
-          )
-        )
+        if (!(await taxDal.ruleTargetsExist(data.rules)))
           return fail("One or more tax rule targets no longer exist", {
             errors: { rules: ["Refresh the page and select active targets"] },
           });

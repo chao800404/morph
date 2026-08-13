@@ -37,6 +37,16 @@ const FolderSelectField = lazy(() =>
     default: module.FolderSelectField,
   })),
 );
+const RemoteOptionValuesField = lazy(() =>
+  import("./remote-option-values-field").then((module) => ({
+    default: module.RemoteOptionValuesField,
+  })),
+);
+const RemoteSelectField = lazy(() =>
+  import("./remote-select-field").then((module) => ({
+    default: module.RemoteSelectField,
+  })),
+);
 
 /**
  * Every control that can be the first focusable field. The ref is shared across
@@ -79,6 +89,16 @@ export const FieldsRenderer = ({
         const isFirstField = index === firstVisibleFieldIndex;
 
         const fieldValue = resolveFieldValue(field);
+        if (field.type === "hidden") {
+          return (
+            <input
+              key={field.name}
+              type="hidden"
+              name={field.name}
+              value={typeof fieldValue === "string" ? fieldValue : ""}
+            />
+          );
+        }
         const colSpan = field.colSpan ?? 2;
         const stringValue = typeof fieldValue === "string" ? fieldValue : "";
         const arrayValue = Array.isArray(fieldValue) ? fieldValue : [];
@@ -92,7 +112,6 @@ export const FieldsRenderer = ({
             ? `${id}-description`
             : undefined;
         const rendersOwnLabel =
-          field.type === "hidden" ||
           field.type === "choice-cards" ||
           field.type === "switch" ||
           field.type === "tip";
@@ -206,6 +225,15 @@ export const FieldsRenderer = ({
                 </SelectContent>
               </Select>
             )}
+            {field.type === "remote-select" && (
+              <Suspense fallback={null}>
+                <RemoteSelectField
+                  field={field}
+                  value={stringValue}
+                  onChange={(value) => onChange?.(field.name, value)}
+                />
+              </Suspense>
+            )}
             {field.type === "choice-cards" && (
               <ChoiceCardsField
                 field={field}
@@ -213,10 +241,6 @@ export const FieldsRenderer = ({
                 onChange={(value) => onChange?.(field.name, value)}
               />
             )}
-            {field.type === "hidden" && (
-              <input type="hidden" name={field.name} value={stringValue} />
-            )}
-
             {field.type === "phone" && (
               <PhoneInput
                 id={id}
@@ -264,7 +288,15 @@ export const FieldsRenderer = ({
             )}
 
             {field.type === "option-values" &&
-              (field.choices ? (
+              (field.remoteSource ? (
+                <Suspense fallback={null}>
+                  <RemoteOptionValuesField
+                    field={{ ...field, remoteSource: field.remoteSource }}
+                    selectedIds={arrayValue}
+                    onSelectionChange={(ids) => onChange?.(field.name, ids)}
+                  />
+                </Suspense>
+              ) : field.choices ? (
                 <OptionValuesField
                   name={field.name}
                   choices={field.choices}

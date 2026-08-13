@@ -2,6 +2,12 @@ import { currencyDal } from "@/lib/currency/dal/currency.dal";
 import { productDal } from "@/lib/product/dal/product.dal";
 import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
 import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
+import type {
+  ProductVariantDTO,
+  ProductVariantListParams,
+  ProductVariantPriceHistoryListParams,
+} from "@/lib/product/dto/product-variant.dto";
+import { MAX_GENERATED_VARIANTS } from "@/lib/product/variant-limits";
 import {
   createVariantInputSchema,
   deleteVariantsInputSchema,
@@ -14,15 +20,131 @@ import { inventoryDal } from "@/lib/inventory/dal/inventory.dal";
 import { getConfig } from "@/server/get-config";
 import { z } from "zod";
 import { productReadMiddleware } from "../middleware/auth.middleware";
+import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
+import pLimit from "p-limit";
 
 const variantMediaLimit = () => getConfig().server.upload.maxAssetsPerRecord;
+const BULK_VARIANT_LIMIT = 500;
+
+const variantSortKeySchema = z.union([
+  z.enum(["name", "createdAt", "updatedAt"]),
+  z.templateLiteral(["option:", z.uuid()]),
+]);
+
+const variantListSchema = z.object({
+  productId: z.uuid("Invalid product ID"),
+  query: z.string().max(200).optional(),
+  sortBy: variantSortKeySchema,
+  sortOrder: z.enum(["asc", "desc"]),
+  page: z.number().int().min(1),
+  limit: z.number().int().min(1).max(100),
+});
+
+export const listProductVariants = createServerFn({ method: "GET" })
+  .validator((data: unknown) => variantListSchema.parse(data))
+  .middleware([productReadMiddleware])
+  .handler(async ({ data }) => {
+    const result = await productVariantDal.listPage(
+      data as ProductVariantListParams,
+    );
+    const totalPages = Math.max(1, Math.ceil(result.total / data.limit));
+    return {
+      success: true as const,
+      message: "Product variants loaded",
+      data: {
+        variants: result.variants,
+        pagination: {
+          page: Math.min(data.page, totalPages),
+          limit: data.limit,
+          total: result.total,
+          totalPages,
+        },
+      },
+    };
+  });
+
+export const listProductVariantsForBulkEdit = createServerFn({ method: "GET" })
+  .validator((data: unknown) =>
+    z.object({ productId: z.uuid("Invalid product ID") }).parse(data),
+  )
+  .middleware([productReadMiddleware])
+  .handler(async ({ data }) => {
+    const result = await productVariantDal.listPage({
+      productId: data.productId,
+      sortBy: "createdAt",
+      sortOrder: "asc",
+      page: 1,
+      limit: BULK_VARIANT_LIMIT,
+    });
+    if (result.total > BULK_VARIANT_LIMIT) {
+      return {
+        success: false as const,
+        message: `Bulk editing supports up to ${BULK_VARIANT_LIMIT} variants`,
+        data: null,
+      };
+    }
+    return {
+      success: true as const,
+      message: "Variants loaded for bulk editing",
+      data: { variants: result.variants, total: result.total },
+    };
+  });
+
+const priceHistoryListSchema = z.object({
+  variantId: z.uuid("Invalid variant ID"),
+  query: z.string().max(200).optional(),
+  currencies: z.array(z.string().min(3).max(3)).max(50).optional(),
+  changes: z
+    .array(z.enum(["created", "increased", "decreased", "removed"]))
+    .max(4)
+    .optional(),
+  changedBy: z.array(z.uuid()).max(50).optional(),
+  changedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
+  sortBy: z.enum(["updatedAt", "code", "name"]),
+  sortOrder: z.enum(["asc", "desc"]),
+  page: z.number().int().min(1),
+  limit: z.number().int().min(1).max(100),
+});
+
+export const listVariantPriceHistory = createServerFn({ method: "GET" })
+  .validator((data: unknown) => priceHistoryListSchema.parse(data))
+  .middleware([productReadMiddleware])
+  .handler(async ({ data }) => {
+    const result = await productVariantDal.listPriceHistoryPage(
+      data as ProductVariantPriceHistoryListParams,
+    );
+    const totalPages = Math.max(1, Math.ceil(result.total / data.limit));
+    return {
+      success: true as const,
+      message: "Variant price history loaded",
+      data: {
+        history: result.history,
+        facets: result.facets,
+        pagination: {
+          page: Math.min(data.page, totalPages),
+          limit: data.limit,
+          total: result.total,
+          totalPages,
+        },
+      },
+    };
+  });
 
 const bulkPriceSchema = z.object({
   productId: z.uuid(),
-  variants: z.array(z.object({
-    id: z.uuid(),
-    prices: z.array(z.object({ currencyCode: z.string().min(3).max(3), amount: z.number().int().min(0) })),
-  })).max(500),
+  variants: z
+    .array(
+      z.object({
+        id: z.uuid(),
+        prices: z.array(
+          z.object({
+            currencyCode: z.string().min(3).max(3),
+            amount: z.number().int().min(0),
+          }),
+        ),
+      }),
+    )
+    .max(500),
 });
 
 export const bulkUpdateVariantPrices = createServerFn({ method: "POST" })
@@ -30,23 +152,65 @@ export const bulkUpdateVariantPrices = createServerFn({ method: "POST" })
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const product = await productDal.findDetail(data.productId);
-      if (!product) return { success: false as const, message: "Product not found", data: null };
-      const allowed = new Set(product.variants.map((variant) => variant.id));
-      if (data.variants.some((variant) => !allowed.has(variant.id))) {
-        return { success: false as const, message: "A variant does not belong to this product", data: null };
+      const product = await productDal.findById(data.productId);
+      if (!product)
+        return {
+          success: false as const,
+          message: "Product not found",
+          data: null,
+        };
+      const variantPage = await productVariantDal.listPage({
+        productId: data.productId,
+        sortBy: "createdAt",
+        sortOrder: "asc",
+        page: 1,
+        limit: BULK_VARIANT_LIMIT,
+      });
+      if (variantPage.total > BULK_VARIANT_LIMIT) {
+        return {
+          success: false as const,
+          message: `Bulk editing supports up to ${BULK_VARIANT_LIMIT} variants`,
+          data: null,
+        };
       }
-      const currencies = [...new Set(data.variants.flatMap((variant) => variant.prices.map((price) => price.currencyCode)))];
+      const allowed = new Set(
+        variantPage.variants.map((variant) => variant.id),
+      );
+      if (data.variants.some((variant) => !allowed.has(variant.id))) {
+        return {
+          success: false as const,
+          message: "A variant does not belong to this product",
+          data: null,
+        };
+      }
+      const currencies = [
+        ...new Set(
+          data.variants.flatMap((variant) =>
+            variant.prices.map((price) => price.currencyCode),
+          ),
+        ),
+      ];
       if (!(await currencyDal.areSupported(currencies))) {
-        return { success: false as const, message: "A price uses a currency that is not enabled for this store", data: null };
+        return {
+          success: false as const,
+          message: "A price uses a currency that is not enabled for this store",
+          data: null,
+        };
       }
       for (const variant of data.variants) {
-        if (new Set(variant.prices.map((price) => price.currencyCode)).size !== variant.prices.length) {
-          return { success: false as const, message: "Each currency may only appear once per variant", data: null };
+        if (
+          new Set(variant.prices.map((price) => price.currencyCode)).size !==
+          variant.prices.length
+        ) {
+          return {
+            success: false as const,
+            message: "Each currency may only appear once per variant",
+            data: null,
+          };
         }
       }
       const previousById = new Map(
-        product.variants.map((variant) => [variant.id, variant.prices]),
+        variantPage.variants.map((variant) => [variant.id, variant.prices]),
       );
       const updated: string[] = [];
       try {
@@ -54,7 +218,10 @@ export const bulkUpdateVariantPrices = createServerFn({ method: "POST" })
           // Track the current row before updating it: price replacement uses
           // multiple D1 statements and can fail after its first mutation.
           updated.push(variant.id);
-          await productVariantDal.update(variant.id, { prices: variant.prices, updatedBy: context.user.id });
+          await productVariantDal.update(variant.id, {
+            prices: variant.prices,
+            updatedBy: context.user.id,
+          });
         }
       } catch (error) {
         // D1 has no interactive transaction. Restore every completed row so a
@@ -69,16 +236,34 @@ export const bulkUpdateVariantPrices = createServerFn({ method: "POST" })
         );
         throw error;
       }
-      return { success: true as const, message: "Variant prices updated successfully", data: { count: data.variants.length } };
+      return {
+        success: true as const,
+        message: "Variant prices updated successfully",
+        data: { count: data.variants.length },
+      };
     } catch (error) {
       console.error("Bulk update variant prices error:", error);
-      return { success: false as const, message: error instanceof Error ? error.message : "Failed to update variant prices", data: null };
+      return {
+        success: false as const,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Failed to update variant prices",
+        data: null,
+      };
     }
   });
 
 const bulkInventorySchema = z.object({
   productId: z.uuid(),
-  variants: z.array(z.object({ id: z.uuid(), quantity: z.number().int().min(0).max(1_000_000) })).max(500),
+  variants: z
+    .array(
+      z.object({
+        id: z.uuid(),
+        quantity: z.number().int().min(0).max(1_000_000),
+      }),
+    )
+    .max(500),
 });
 
 export const bulkUpdateVariantInventory = createServerFn({ method: "POST" })
@@ -86,21 +271,54 @@ export const bulkUpdateVariantInventory = createServerFn({ method: "POST" })
   .middleware([productAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const product = await productDal.findDetail(data.productId);
-      if (!product) return { success: false as const, message: "Product not found", data: null };
-      const byId = new Map(product.variants.map((variant) => [variant.id, variant]));
+      const product = await productDal.findById(data.productId);
+      if (!product)
+        return {
+          success: false as const,
+          message: "Product not found",
+          data: null,
+        };
+      const variantPage = await productVariantDal.listPage({
+        productId: data.productId,
+        sortBy: "createdAt",
+        sortOrder: "asc",
+        page: 1,
+        limit: BULK_VARIANT_LIMIT,
+      });
+      if (variantPage.total > BULK_VARIANT_LIMIT) {
+        return {
+          success: false as const,
+          message: `Bulk editing supports up to ${BULK_VARIANT_LIMIT} variants`,
+          data: null,
+        };
+      }
+      const byId = new Map(
+        variantPage.variants.map((variant) => [variant.id, variant]),
+      );
       if (data.variants.some((variant) => !byId.has(variant.id))) {
-        return { success: false as const, message: "A variant does not belong to this product", data: null };
+        return {
+          success: false as const,
+          message: "A variant does not belong to this product",
+          data: null,
+        };
       }
       const updated: string[] = [];
       try {
         for (const input of data.variants) {
           const variant = byId.get(input.id)!;
-          await inventoryDal.ensureForVariant({ variantId: input.id, sku: variant.sku, title: `${product.title} - ${variant.title}`, quantity: variant.inventoryQuantity });
+          await inventoryDal.ensureForVariant({
+            variantId: input.id,
+            sku: variant.sku,
+            title: `${product.title} - ${variant.title}`,
+            quantity: variant.inventoryQuantity,
+          });
           // Include the current row in compensation even if one of the two
           // quantity writes fails midway through.
           updated.push(input.id);
-          await productVariantDal.update(input.id, { inventoryQuantity: input.quantity, updatedBy: context.user.id });
+          await productVariantDal.update(input.id, {
+            inventoryQuantity: input.quantity,
+            updatedBy: context.user.id,
+          });
           await inventoryDal.setPrimaryLevelQuantity(input.id, input.quantity);
         }
       } catch (error) {
@@ -119,10 +337,21 @@ export const bulkUpdateVariantInventory = createServerFn({ method: "POST" })
         );
         throw error;
       }
-      return { success: true as const, message: "Variant inventory updated successfully", data: { count: data.variants.length } };
+      return {
+        success: true as const,
+        message: "Variant inventory updated successfully",
+        data: { count: data.variants.length },
+      };
     } catch (error) {
       console.error("Bulk update variant inventory error:", error);
-      return { success: false as const, message: error instanceof Error ? error.message : "Failed to update variant inventory", data: null };
+      return {
+        success: false as const,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Failed to update variant inventory",
+        data: null,
+      };
     }
   });
 
@@ -141,11 +370,10 @@ export const getVariantDetail = createServerFn({ method: "GET" })
         error: "NOT_FOUND",
       };
     }
-    const priceHistory = await productVariantDal.findPriceHistory(data.id, 100);
     return {
       success: true as const,
       message: "Variant loaded",
-      data: { variant, priceHistory },
+      data: { variant },
     };
   });
 
@@ -237,8 +465,24 @@ export const updateVariant = createServerFn({ method: "POST" })
             error: "NOT_FOUND",
           };
         }
+        const variantPage = await productVariantDal.listPage({
+          productId: existing.productId,
+          sortBy: "createdAt",
+          sortOrder: "asc",
+          page: 1,
+          limit: MAX_GENERATED_VARIANTS,
+        });
+        if (variantPage.total > MAX_GENERATED_VARIANTS) {
+          return {
+            success: false,
+            message: `A product may have at most ${MAX_GENERATED_VARIANTS} variants`,
+            data: null,
+            errors: { optionValueIds: ["Variant limit exceeded"] },
+          };
+        }
         const combination = checkCombination(
           product,
+          variantPage.variants,
           data.optionValueIds,
           data.id,
         );
@@ -331,8 +575,11 @@ export const deleteVariants = createServerFn({ method: "POST" })
     const actorId = context.user.id;
 
     try {
+      const lookup = pLimit(DB_FANOUT_CONCURRENCY);
       const targeted = (
-        await Promise.all(data.ids.map((id) => productVariantDal.findById(id)))
+        await Promise.all(
+          data.ids.map((id) => lookup(() => productVariantDal.findById(id))),
+        )
       ).filter((variant) => variant !== null);
       const affectedProductIds = [
         ...new Set(targeted.map((variant) => variant.productId)),
@@ -342,7 +589,7 @@ export const deleteVariants = createServerFn({ method: "POST" })
 
       const restoredProductIds: string[] = [];
       for (const productId of affectedProductIds) {
-        if ((await productVariantDal.findByProductId(productId)).length > 0) {
+        if (await productVariantDal.existsForProduct(productId)) {
           continue;
         }
 
@@ -419,6 +666,7 @@ export const deleteVariants = createServerFn({ method: "POST" })
  */
 const checkCombination = (
   product: ProductDetailDTO,
+  variants: ProductVariantDTO[],
   optionValueIds: string[],
   exceptVariantId?: string,
 ): { ok: true } | { ok: false; message: string; issue: string } => {
@@ -443,7 +691,7 @@ const checkCombination = (
     };
   }
 
-  const taken = product.variants.some(
+  const taken = variants.some(
     (variant) =>
       variant.id !== exceptVariantId &&
       variant.optionValueIds.length === optionValueIds.length &&
@@ -487,7 +735,26 @@ export const createVariant = createServerFn({ method: "POST" })
         };
       }
 
-      const combination = checkCombination(product, data.optionValueIds);
+      const variantPage = await productVariantDal.listPage({
+        productId: data.productId,
+        sortBy: "createdAt",
+        sortOrder: "asc",
+        page: 1,
+        limit: MAX_GENERATED_VARIANTS,
+      });
+      if (variantPage.total >= MAX_GENERATED_VARIANTS) {
+        return {
+          success: false,
+          message: `A product may have at most ${MAX_GENERATED_VARIANTS} variants`,
+          data: null,
+          errors: { optionValueIds: ["Variant limit reached"] },
+        };
+      }
+      const combination = checkCombination(
+        product,
+        variantPage.variants,
+        data.optionValueIds,
+      );
       if (!combination.ok) {
         return {
           success: false,
@@ -544,7 +811,7 @@ export const createVariant = createServerFn({ method: "POST" })
             .filter((value) => data.optionValueIds.includes(value.id))
             .map((value) => value.value),
         ),
-        index: product.variants.length,
+        index: variantPage.total,
       });
       await productVariantDal.createMany([
         {
@@ -558,7 +825,7 @@ export const createVariant = createServerFn({ method: "POST" })
           width: data.width,
           height: data.height,
           // Appended, so the existing order is untouched.
-          rank: product.variants.length,
+          rank: variantPage.total,
           manageInventory: data.manageInventory,
           allowBackorder: data.allowBackorder,
           inventoryQuantity: data.inventoryQuantity,

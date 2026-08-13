@@ -1,15 +1,14 @@
-import { EmptyFileIcon } from "@/components/ui/icons/empty-file-icon";
 import { cn } from "@/lib/utils";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { useSearch } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { CircleAlert } from "lucide-react";
 
 /**
  * What a table card shows instead of rows.
  *
  * The heights are floors, not fixed values. Medusa pins these states to an
- * exact height, but its empty icon is a ~20px glyph where ours is 87×74 — a
- * hard 150px would crush the icon, title and description together.
+ * exact height. We keep the height as a floor so longer localized copy can
+ * grow without being clipped.
  *
  * A floor still does the job it was added for: without one the state collapses
  * to whatever its copy happens to measure, and a card sitting on a detail page
@@ -32,15 +31,17 @@ export const DATA_TABLE_STATE_HEIGHT = {
 export const DataTableEmptyState = ({
   title,
   description,
-  action,
+  scope,
 }: {
   title: string;
   description: string;
-  /** Usually the Create button, so an empty resource offers the way out. */
-  action?: ReactNode;
+  scope?: "taxRate" | "orderItem" | "orderFulfillment";
 }) => {
   const search = useSearch({ strict: false }) as DashboardSearch;
-  const hasQuery = Boolean(search.q?.trim());
+  const hasQuery = Boolean(
+    (scope === "taxRate" ? search.taxRateQ : search.q)?.trim() ||
+    (scope !== "taxRate" && search.taxRegionHasRates !== undefined),
+  );
 
   return (
     <div
@@ -51,11 +52,13 @@ export const DataTableEmptyState = ({
           : DATA_TABLE_STATE_HEIGHT.noRecords,
       )}
     >
-      <div className="flex flex-col items-center gap-2 py-8 opacity-70">
-        <EmptyFileIcon />
-        <h3 className="mt-1 text-base font-medium text-foreground">{title}</h3>
+      <div className="flex flex-col items-center gap-2 py-8">
+        <CircleAlert
+          className="size-4 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <h3 className="text-sm font-medium text-foreground">{title}</h3>
         <p className="max-w-sm text-sm text-muted-foreground">{description}</p>
-        {action && <div className="mt-3">{action}</div>}
       </div>
     </div>
   );

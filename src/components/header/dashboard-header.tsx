@@ -1,7 +1,7 @@
 // import { AdminProtect } from "@/components/auth/admin-protect";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { BreadcrumbItem } from "@/lib/config/navigation";
-import { BreadcrumbCollapse } from "@/routes/_backend/dashboard/-components/breadcrumb/breadcrumb-collapse";
+import { BreadcrumbCollapse } from "@/components/dashboard/breadcrumb-collapse";
 
 interface DashboardHeaderProps {
   items?: BreadcrumbItem[];

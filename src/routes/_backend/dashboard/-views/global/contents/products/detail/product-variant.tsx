@@ -9,7 +9,10 @@ import { toMajorUnits } from "@/lib/currency/catalog";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import type { FormField } from "@/lib/validations/form";
 import { currencyQueries } from "@queries/currency.queries";
-import { productQueries } from "@queries/product.queries";
+import {
+  productQueries,
+  productVariantQueries,
+} from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -41,6 +44,12 @@ const ProductVariant = () => {
   const close = useRouteModalClose();
 
   const { data: result, isPending } = useQuery(productQueries.detail(id));
+  const { data: variantResult, isPending: variantPending } = useQuery({
+    ...productVariantQueries.detail(
+      variantId ?? "00000000-0000-0000-0000-000000000000",
+    ),
+    enabled: Boolean(variantId),
+  });
   const { data: currencyResult, isPending: currenciesPending } = useQuery(
     currencyQueries.store(),
   );
@@ -64,14 +73,17 @@ const ProductVariant = () => {
     }
 
     await queryClient.invalidateQueries({ queryKey: productQueries.all() });
+    await queryClient.invalidateQueries({
+      queryKey: productVariantQueries.all(),
+    });
     toast.success(response.message, { position: "top-center" });
     close();
     return response;
   };
 
   const product = result?.success ? result.data : null;
-  const variant = variantId
-    ? product?.variants.find((row) => row.id === variantId)
+  const variant = variantResult?.success
+    ? variantResult.data.variant
     : undefined;
   const currencies = currencyResult?.success
     ? currencyResult.data.supportedCurrencies
@@ -92,14 +104,14 @@ const ProductVariant = () => {
     return () => window.cancelAnimationFrame(frame);
   }, [currencies, currenciesPending, editSection, isPending, product]);
 
-  if (isPending || currenciesPending) {
+  if (isPending || variantPending || currenciesPending) {
     return <RouteSurfacePending />;
   }
 
   if (!product || (variantId && !variant)) {
     return (
       <RouteSurfaceMessage>
-        {result?.message ?? "Variant not found"}
+        {variantResult?.message ?? result?.message ?? "Variant not found"}
       </RouteSurfaceMessage>
     );
   }

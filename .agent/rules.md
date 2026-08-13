@@ -12,6 +12,16 @@
 
 ## 2. 專案架構與責任邊界
 
+### 產品定位與 Storefront 演進目標
+
+- Morph 的長期產品定位是：保留 **Medusa 式商務後台**的模組化資源管理與資料責任邊界，同時提供 **Shopify 式 Online Store** 的前端頁面、主題、模板、導覽與偏好設定編輯能力；兩者共用 commerce source of truth，不建立第二套商品、集合、價格、庫存或銷售管道資料。
+- Dashboard 資訊架構應區分兩個責任區域：商品、訂單、庫存、客戶、促銷等營運能力屬於 commerce admin；`Online Store` 負責 `Themes`、`Pages`、`Navigation`、`Templates` 與 `Preferences`。網域、憑證與平台級連線設定仍放在 `Settings`，不可混入頁面內容編輯器。
+- Storefront 頁面必須以版本化、schema-validated 的結構化 document／section model 保存，不把作者輸入直接存成任意 React、HTML 或可執行程式碼。Editor、preview、storefront renderer 與 AI generation 必須讀寫同一份 document schema 與 section registry。
+- 商品頁面由「商品 commerce data + 已發布的 product template」組合渲染。模板可以決定版面與 section props，但不得複製或覆蓋商品價格、庫存、選項、媒體等權威資料；商品更新後，線上頁面應自然讀到最新 commerce data。
+- AI 頁面生成屬於 authoring workflow，不是直接部署能力。AI 只能產生符合既有 section registry 與 schema 的 draft／revision，必須經過 validation、preview、人工確認與明確 publish 後才可成為線上版本；禁止 AI 直接修改 published document、直接寫入任意程式碼或繞過權限與審核流程。
+- 所有可發布內容都必須支援 draft 與 published 狀態分離、可追蹤版本、發布時間與回復上一版本。後續若加入排程發布、多人協作或 AI 更新產品頁，也必須建立在同一條 revision → validation → preview → publish pipeline 上，不新增旁路。
+- Storefront renderer 必須只讀取已發布版本；Dashboard editor 與 preview 可以讀取 draft。發布操作由具權限的 server function 協調，DAL 負責原子切換 active/published version，client 不可自行指定或竄改線上版本。
+
 ### 路由與 CMS 導航
 
 - `src/routes/` 使用 TanStack Router file-based routing；route 負責 URL 驗證、權限入口、loader/prefetch 與 view 組裝。
@@ -33,6 +43,7 @@
   - `$slug/view` —— collection 層級的瀏覽頁，由 config 的 `preview.view` 提供；目前資產 id 放在 `?assetId`。
   - `$slug/$id` —— 詳情頁，由 config 的 `detail.view` 提供。`create` 是靜態片段所以優先於 `$id`。
   - `$slug/$id/edit` —— 編輯頁，由 config 的 `edit.view` 提供；有 `detail` 時疊在詳情頁上，沒有 `detail` 時疊在列表上。
+  - Settings 的 `$slug/edit` —— 僅供沒有 record id 的單例 collection（例如 Store）使用，由同一個 `edit.view` capability 提供；它疊在該 collection 列表上。一般 record collection 仍必須使用 `$slug/$id/edit`，不可用 singleton route 省略 id。
   - `$slug/$id/$page` —— 記錄的附屬頁面，由 config 的 `pages[key]` 提供。`edit` 是靜態片段所以優先於 `$page`，因此 `edit` 是保留的 page key。
 - Global 另有 `$slug/$id/$page/$childId`，只負責讓 `pages` 中的獨立子資源（例如 Product Variant）具有可分享的 record URL；實際 view、prefetch 與 presentation 仍由父層 `pages[key]` capability 提供。不得為個別子資源再建立專屬 route。
 - child route 的行為不同，`$slug` 用 `useChildMatches` 區分：
@@ -474,7 +485,8 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - **Footer**：結果筆數與分頁由 `DataTablePagination` 提供；只要 feature 傳入 pagination，footer 與 First／Previous／Next／Last 四個切頁按鈕就必須持續顯示。位於第一頁、最後一頁或只有一頁時，對應按鈕只設為 disabled，不可隱藏整個 pagination。
 - 每列的操作一律收進尾端的 `RowActionsMenu`（`…` 按鈕），透過 `rowActions` 回傳 `RowAction[]`。不可在列上並排多顆圖示按鈕，否則資源長出第三、第四個操作時版面會崩。刪除類操作標記 `destructive: true`，會自動排到分隔線之後並套用警示色。
 - Loading、error、empty 三種狀態由 `DataTableCard` 統一處理並在卡片內置中；表格本身維持靠上。頁面只負責傳 `isPending`、`errorMessage`、`onRetry`、`emptyTitle`、`emptyDescription`，不可自己再寫一套分支。
-- **這三種狀態有高度下限，取自 `DATA_TABLE_STATE_HEIGHT`**（`noRecords` 150px、`noResults` 400px）。是下限不是固定值：Medusa 把它們釘死在那個高度，但它的空狀態圖示是約 20px 的字型圖示，我們的 `EmptyFileIcon` 是 87×74，釘死會把圖示、標題與說明擠在一起。有下限就夠達成目的 —— 沒有的話一張空的 section 會縮成文案剛好的高度，掛在詳情頁上忽高忽低。
+- `DataTableCard` 的主要操作若已放在 Header（例如右上角 Create），empty state 不得再次渲染同一顆按鈕。空內容統一採 compact 樣式：小型提示圖示、標題與說明置中；唯一操作入口保留在 Header，避免同一卡片出現兩個相同 Create。
+- **這三種狀態有高度下限，取自 `DATA_TABLE_STATE_HEIGHT`**（`noRecords` 150px、`noResults` 400px）。是下限不是固定值：compact empty state 使用約 16px 的提示圖示，較長文案或在地化內容仍可自然撐高；沒有下限則空的 section 會縮成文案剛好的高度，掛在詳情頁上忽高忽低。
 - 「資源本來就是空的」與「查詢把資料濾光了」是兩種狀態，高度不同。查詢無結果用**較高**的那個，因為它是使用者打字時出現的 —— 每按一鍵就把卡片縮到 150px 會讓頁面跳動。判斷由 `DataTableEmptyState` 自己讀 route 決定，不由頁面傳入。
 - `DataTableCard` 本身不讀 route：搜尋、排序、分頁與空狀態各自是會讀 route 的**兄弟組件**。這個界線讓卡片可以在沒有 router 的測試裡渲染，加東西時不要把 `useSearch` 放回卡片本體。
 - 搜尋詞、排序與頁碼寫入 route 的 `q`、`sortBy`／`sortOrder`、`page` search param，不放 component state；換搜尋詞或改排序時 `page` 會被清掉，避免停在超出範圍的頁數。

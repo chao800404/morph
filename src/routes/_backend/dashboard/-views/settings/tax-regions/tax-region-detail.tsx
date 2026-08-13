@@ -8,11 +8,14 @@ import {
   getTaxSublevelLabel,
 } from "@/lib/tax/country-sublevels";
 import type { TaxRateDTO, TaxRegionSummaryDTO } from "@/lib/tax/dto/tax.dto";
+import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   DataTableCard,
   deleteActionIcon,
   editActionIcon,
+  useCollectionDetailPreload,
   type DataTableColumn,
+  type DataTableFilterDefinition,
   type RowAction,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 import {
@@ -22,27 +25,51 @@ import {
 import { MetadataCard } from "@/routes/_backend/dashboard/-components/metadata-card/metadata-card";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
 import { getConfig } from "@/server/get-config";
-import { taxQueries } from "@queries/tax.queries";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import {
+  normalizeTaxProvinceListParams,
+  normalizeTaxRateListParams,
+  taxQueries,
+} from "@queries/tax.queries";
+import {
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query";
 import {
   Link,
   useNavigate,
   useParams,
   useRouter,
+  useSearch,
 } from "@tanstack/react-router";
 import { CircleAlert, Plus } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { deleteTaxRatesAction, deleteTaxRegionsAction } from "./tax-actions";
+import { formatTaxProviderLabel } from "./config/tax-form-fields";
 
 export default function TaxRegionDetail() {
   const [showSublevelRegions, setShowSublevelRegions] = useState(false);
   const [sublevelAlertDismissed, setSublevelAlertDismissed] = useState(false);
   const { id } = useParams({ strict: false }) as { id: string };
+  const search = useSearch({ strict: false }) as DashboardSearch;
   const navigate = useNavigate();
   const router = useRouter();
   const client = useQueryClient();
+  const preloadProvinceDetail = useCollectionDetailPreload(
+    "tax-regions",
+    "settings",
+  );
   const result = useSuspenseQuery(taxQueries.detail(id)).data;
+  const provinceQuery = useQuery(
+    taxQueries.provinces(normalizeTaxProvinceListParams(id, search)),
+  );
+  const defaultRateQuery = useQuery(
+    taxQueries.rates(normalizeTaxRateListParams(id, "default", search)),
+  );
+  const overrideRateQuery = useQuery(
+    taxQueries.rates(normalizeTaxRateListParams(id, "override", search)),
+  );
   const region = result.success ? result.data : null;
   const { setInfoData, setInfoOpen } = useInfoStore(
     useShallow((state) => ({
@@ -56,6 +83,16 @@ export default function TaxRegionDetail() {
         ?.edit?.view,
     [],
   );
+  const rateEditViews = useMemo(() => {
+    const pages = findCollection(
+      getConfig().client.collections.settings,
+      "tax-regions",
+    )?.pages;
+    return {
+      default: pages?.["edit-default-rate"]?.view,
+      override: pages?.["edit-override"]?.view,
+    };
+  }, []);
   const openEdit = useCallback(
     () =>
       void navigate({
@@ -71,6 +108,25 @@ export default function TaxRegionDetail() {
       params: { slug: "tax-regions", id },
     });
   }, [editView, id, router]);
+  const preloadRateEdit = useCallback(
+    (rate: TaxRateDTO) => {
+      const page = rate.isDefault ? "edit-default-rate" : "edit-override";
+      const view = rate.isDefault
+        ? rateEditViews.default
+        : rateEditViews.override;
+      void viewPreloader(view)?.();
+      void router.preloadRoute({
+        to: "/dashboard/settings/$slug/$id/$page/$childId",
+        params: {
+          slug: "tax-regions",
+          id,
+          page,
+          childId: rate.id,
+        },
+      });
+    },
+    [id, rateEditViews, router],
+  );
   if (!region)
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -78,7 +134,9 @@ export default function TaxRegionDetail() {
       </div>
     );
   const sublevelType = getCountryTaxSublevelType(region.countryCode);
-  const hasSublevelRegions = region.provinces.length > 0;
+  const hasSublevelRegions = Boolean(
+    provinceQuery.data?.success && provinceQuery.data.data.pagination.total > 0,
+  );
   const showSublevelAlert =
     !region.parentId &&
     !sublevelType &&
@@ -89,6 +147,42 @@ export default function TaxRegionDetail() {
     !region.parentId &&
     Boolean(sublevelType || showSublevelRegions || hasSublevelRegions);
   const sublevelLabel = getTaxSublevelLabel(sublevelType);
+  const provinceResult = provinceQuery.data;
+  const provinceRows = provinceResult?.success
+    ? provinceResult.data.taxRegions
+    : [];
+  const defaultRateResult = defaultRateQuery.data;
+  const defaultRateRows = defaultRateResult?.success
+    ? defaultRateResult.data.taxRates
+    : [];
+  const overrideRateResult = overrideRateQuery.data;
+  const overrideRateRows = overrideRateResult?.success
+    ? overrideRateResult.data.taxRates
+    : [];
+  const provinceFilters: DataTableFilterDefinition[] = [
+    {
+      key: "tax-rates",
+      label: "Tax rates",
+      options: [
+        { value: "yes", label: "Has tax rates" },
+        { value: "no", label: "No tax rates" },
+      ],
+      values: search.taxRegionHasRates ? [search.taxRegionHasRates] : [],
+      multiple: false,
+      onValuesChange: (values) =>
+        void navigate({
+          to: ".",
+          search: (previous: DashboardSearch) => ({
+            ...previous,
+            taxRegionHasRates: values.at(-1) as
+              | DashboardSearch["taxRegionHasRates"]
+              | undefined,
+            page: undefined,
+          }),
+          replace: true,
+        }),
+    },
+  ];
   const fields: EditCardField[] = [
     { key: "country", label: "Country", value: region.countryName },
     {
@@ -110,7 +204,9 @@ export default function TaxRegionDetail() {
       label: "Tax provider",
       value: region.parentId
         ? "Inherited from country region"
-        : (region.providerId?.replace(/^tp_/, "") ?? "—"),
+        : region.providerId
+          ? formatTaxProviderLabel(region.providerId)
+          : "—",
     },
   ];
   const provinceColumns: DataTableColumn<TaxRegionSummaryDTO>[] = [
@@ -186,7 +282,11 @@ export default function TaxRegionDetail() {
   return (
     <div className="flex flex-col gap-4">
       {showSublevelAlert ? (
-        <Alert className="border-border bg-card shadow-xs">
+        <Alert
+          role="note"
+          aria-label="Sublevel region availability"
+          className="border-border bg-card shadow-xs"
+        >
           <CircleAlert className="fill-muted-foreground text-card" />
           <AlertTitle>Sublevel regions are disabled</AlertTitle>
           <AlertDescription>
@@ -243,8 +343,26 @@ export default function TaxRegionDetail() {
             </Button>
           }
           columns={provinceColumns}
-          rows={region.provinces}
+          rows={provinceRows}
           getRowId={(item) => item.id}
+          isPending={provinceQuery.isPending}
+          errorMessage={
+            provinceResult && !provinceResult.success
+              ? provinceResult.message
+              : null
+          }
+          onRetry={() => void provinceQuery.refetch()}
+          searchPlaceholder={`Search ${sublevelLabel.toLowerCase()}`}
+          filters={provinceFilters}
+          sortOptions={[
+            { value: "code", label: "Code" },
+            { value: "createdAt", label: "Created" },
+            { value: "updatedAt", label: "Updated" },
+          ]}
+          defaultSortBy="code"
+          pagination={
+            provinceResult?.success ? provinceResult.data.pagination : undefined
+          }
           emptyTitle="No province regions yet"
           emptyDescription="Create a sub-region when part of this country uses different tax rules."
           onRowClick={(item) =>
@@ -253,6 +371,7 @@ export default function TaxRegionDetail() {
               params: { slug: "tax-regions", id: item.id },
             })
           }
+          onRowPreload={(item) => preloadProvinceDetail(item.id)}
           rowActions={(item): RowAction[] => [
             {
               label: "Delete",
@@ -272,7 +391,7 @@ export default function TaxRegionDetail() {
         label="Default Tax Rate"
         description="The fallback rate applied when no tax override matches."
         headerActions={
-          region.taxRates.some((rate) => rate.isDefault) ? null : (
+          defaultRateRows.length ? null : (
             <Button variant="form" size="xs" asChild>
               <Link
                 to="/dashboard/settings/$slug/$id/$page"
@@ -285,21 +404,29 @@ export default function TaxRegionDetail() {
           )
         }
         columns={rateColumns}
-        rows={region.taxRates.filter((rate) => rate.isDefault)}
+        rows={defaultRateRows}
         getRowId={(rate) => rate.id}
+        isPending={defaultRateQuery.isPending}
+        errorMessage={
+          defaultRateResult && !defaultRateResult.success
+            ? defaultRateResult.message
+            : null
+        }
+        onRetry={() => void defaultRateQuery.refetch()}
         emptyTitle="No default tax rate yet"
         emptyDescription="Create the fallback rate for this tax region."
         rowActions={(rate): RowAction[] => [
           {
             label: "Edit",
             icon: editActionIcon,
+            preload: () => preloadRateEdit(rate),
             onSelect: () =>
               void navigate({
                 to: "/dashboard/settings/$slug/$id/$page/$childId",
                 params: {
                   slug: "tax-regions",
                   id,
-                  page: "edit-rate",
+                  page: "edit-default-rate",
                   childId: rate.id,
                 },
               }),
@@ -327,21 +454,42 @@ export default function TaxRegionDetail() {
           </Button>
         }
         columns={rateColumns}
-        rows={region.taxRates.filter((rate) => !rate.isDefault)}
+        rows={overrideRateRows}
         getRowId={(rate) => rate.id}
+        isPending={overrideRateQuery.isPending}
+        errorMessage={
+          overrideRateResult && !overrideRateResult.success
+            ? overrideRateResult.message
+            : null
+        }
+        onRetry={() => void overrideRateQuery.refetch()}
+        searchPlaceholder="Search tax overrides"
+        sortOptions={[
+          { value: "name", label: "Name" },
+          { value: "createdAt", label: "Created" },
+          { value: "updatedAt", label: "Updated" },
+        ]}
+        defaultSortBy="createdAt"
+        searchScope="taxRate"
+        pagination={
+          overrideRateResult?.success
+            ? overrideRateResult.data.pagination
+            : undefined
+        }
         emptyTitle="No tax overrides yet"
         emptyDescription="Add an override when selected items use a different tax rate."
         rowActions={(rate): RowAction[] => [
           {
             label: "Edit",
             icon: editActionIcon,
+            preload: () => preloadRateEdit(rate),
             onSelect: () =>
               void navigate({
                 to: "/dashboard/settings/$slug/$id/$page/$childId",
                 params: {
                   slug: "tax-regions",
                   id,
-                  page: "edit-rate",
+                  page: "edit-override",
                   childId: rate.id,
                 },
               }),

@@ -1,43 +1,56 @@
+import {
+  clearResetAccessCookieHeader,
+  readResetAccessCookie,
+  resetAccessCookieHeader,
+} from "@/lib/auth/reset-access-token";
+import { resetAccessDal } from "@/lib/auth/dal/reset-access.dal";
+import { forgotPasswordSchema } from "@/lib/validations/auth";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest, setResponseHeader } from "@tanstack/react-start/server";
-import { z } from "zod";
+import { getAuthWithAdmin } from "./helpers";
 
-/**
- * Set a short-lived cookie to allow access to the /reset-password/verify page
- * Valid for 5 minutes (300 seconds)
- */
-export const setVerifyAccessCookieServerFn = createServerFn({ method: "POST" })
-  .validator(z.string())
+const requestSecurity = () => {
+  const request = getRequest();
+  return {
+    request,
+    secure: new URL(request.url).protocol === "https:",
+  };
+};
+
+export const requestPasswordResetAccessServerFn = createServerFn({
+  method: "POST",
+})
+  .validator((data: unknown) => forgotPasswordSchema.shape.email.parse(data))
   .handler(async ({ data: email }) => {
-    const expiresAt = Date.now() + 300 * 1000;
-    const value = `${encodeURIComponent(email)}|${expiresAt}`;
+    const { request, secure } = requestSecurity();
+    await getAuthWithAdmin().api.sendVerificationOTP({
+      body: { email, type: "forget-password" },
+      headers: request.headers,
+    });
+    const access = await resetAccessDal.issue(email);
     setResponseHeader(
       "Set-Cookie",
-      `verify_access=${value}; Path=/; Max-Age=300; HttpOnly; SameSite=Lax`,
+      resetAccessCookieHeader(access.token, secure),
     );
-    return { success: true };
+    return { success: true, expiresAt: access.expiresAt };
   });
 
-/**
- * Check if the user has access to the verify page
- * This can be called within beforeLoad
- */
 export const checkVerifyAccessServerFn = createServerFn({
   method: "GET",
 }).handler(async () => {
-  const request = getRequest();
-  const cookies = request.headers.get("Cookie") || "";
-  const match = cookies.match(/verify_access=([^;]+)/);
-  if (!match) return { email: null, expiresAt: null };
+  const { request } = requestSecurity();
+  const token = readResetAccessCookie(request.headers.get("Cookie"));
+  if (!token) return { email: null, expiresAt: null };
+  const access = await resetAccessDal.resolve(token);
+  return access ?? { email: null, expiresAt: null };
+});
 
-  const [encodedEmail, expiresAtStr] = match[1].split("|");
-  const email = decodeURIComponent(encodedEmail);
-  const expiresAt = parseInt(expiresAtStr, 10);
-
-  // Buffer check: if expired already
-  if (Date.now() > expiresAt) {
-    return { email: null, expiresAt: null };
-  }
-
-  return { email, expiresAt };
+export const clearVerifyAccessCookieServerFn = createServerFn({
+  method: "POST",
+}).handler(async () => {
+  const { request, secure } = requestSecurity();
+  const token = readResetAccessCookie(request.headers.get("Cookie"));
+  if (token) await resetAccessDal.revoke(token);
+  setResponseHeader("Set-Cookie", clearResetAccessCookieHeader(secure));
+  return { success: true };
 });

@@ -38,8 +38,12 @@ describe("product form field factories", () => {
       "collectionId",
       "typeValue",
       "tagValues",
-      "categories-empty",
+      "categoryIds",
       "salesChannelIds",
     ]);
+    expect(fields.find((field) => field.name === "categoryIds")).toMatchObject({
+      type: "option-values",
+      remoteSource: "product-categories",
+    });
   });
 });

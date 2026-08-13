@@ -9,7 +9,6 @@ import {
   collectionQueries,
   normalizeCollectionListParams,
   productQueries,
-  productTaxonomyQueries,
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
@@ -41,9 +40,6 @@ const ProductOrganization = () => {
       limit: 100,
     }),
   );
-  const { data: taxonomyResult, isPending: taxonomyPending } = useQuery(
-    productTaxonomyQueries.list(),
-  );
   const { data: channelResult, isPending: channelsPending } = useQuery(
     salesChannelQueries.list({
       ...normalizeSalesChannelListParams({ sortBy: "name", sortOrder: "asc" }),
@@ -69,7 +65,7 @@ const ProductOrganization = () => {
     return response;
   };
 
-  if (isPending || collectionsPending || taxonomyPending || channelsPending) {
+  if (isPending || collectionsPending || channelsPending) {
     return <RouteSurfacePending />;
   }
 
@@ -85,8 +81,6 @@ const ProductOrganization = () => {
   const collections = collectionResult?.success
     ? (collectionResult.data?.collections ?? [])
     : [];
-  const taxonomy = taxonomyResult?.success ? taxonomyResult.data : null;
-  const categories = taxonomy?.categories ?? [];
   const salesChannels = channelResult?.success
     ? (channelResult.data?.salesChannels ?? [])
     : [];
@@ -95,11 +89,14 @@ const ProductOrganization = () => {
     collectionId: product.collectionId,
     collections,
     typeValue: product.typeValue,
-    types: taxonomy?.types ?? [],
+    types: product.typeValue ? [{ value: product.typeValue }] : [],
     tagValues: product.tags.map((tag) => tag.value),
-    tags: taxonomy?.tags ?? [],
+    tags: product.tags.map((tag) => ({ value: tag.value })),
     categoryIds: product.categoryIds,
-    categories,
+    categories: product.categories.map((category) => ({
+      ...category,
+      mpath: null,
+    })),
     salesChannelIds: product.salesChannelIds,
     salesChannels,
   });

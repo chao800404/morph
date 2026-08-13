@@ -1,7 +1,6 @@
 import { handleField } from "@/components/form/handle-field";
 import type { FormField } from "@/lib/validations/form";
 import type { ProductCategoryDTO } from "@/lib/product/dto/product-taxonomy.dto";
-import { categoryDepth } from "@/lib/product/category-tree";
 
 /**
  * The fields Medusa's category form exposes, in its order.
@@ -11,8 +10,14 @@ import { categoryDepth } from "@/lib/product/category-tree";
  * descendant's materialised path and Medusa's edit form cannot do it either.
  */
 
-export const CATEGORY_STATUS = { active: "active", inactive: "inactive" } as const;
-export const CATEGORY_VISIBILITY = { public: "public", internal: "internal" } as const;
+export const CATEGORY_STATUS = {
+  active: "active",
+  inactive: "inactive",
+} as const;
+export const CATEGORY_VISIBILITY = {
+  public: "public",
+  internal: "internal",
+} as const;
 
 export type CategoryStatus =
   (typeof CATEGORY_STATUS)[keyof typeof CATEGORY_STATUS];
@@ -20,7 +25,6 @@ export type CategoryVisibility =
   (typeof CATEGORY_VISIBILITY)[keyof typeof CATEGORY_VISIBILITY];
 
 export const NO_PARENT = "__root__";
-
 
 export const toCategoryStatus = (value: string): CategoryStatus =>
   value === CATEGORY_STATUS.active
@@ -56,9 +60,7 @@ export const toCategoryForm = (
   name: category.name,
   handle: category.handle,
   description: category.description,
-  status: category.isActive
-    ? CATEGORY_STATUS.active
-    : CATEGORY_STATUS.inactive,
+  status: category.isActive ? CATEGORY_STATUS.active : CATEGORY_STATUS.inactive,
   visibility: category.isInternal
     ? CATEGORY_VISIBILITY.internal
     : CATEGORY_VISIBILITY.public,
@@ -69,7 +71,7 @@ export const categoryFormFields = (
   values: CategoryFormValues,
   options: {
     errors?: Partial<Record<keyof CategoryFormValues, string>>;
-    parents?: ProductCategoryDTO[];
+    includeParent?: boolean;
   } = {},
 ): FormField[] => [
   {
@@ -121,21 +123,19 @@ export const categoryFormFields = (
     ],
     colSpan: 1,
   },
-  ...(options.parents
+  ...(options.includeParent
     ? ([
         {
-          type: "select",
+          type: "remote-select",
           name: "parentCategoryId",
           label: "Parent category",
           optional: true,
           value: values.parentCategoryId,
-          options: [
-            { value: NO_PARENT, label: "No parent (top level)" },
-            ...options.parents.map((parent) => ({
-              value: parent.id,
-              label: `${"— ".repeat(categoryDepth(parent.mpath))}${parent.name}`,
-            })),
-          ],
+          remoteSource: "product-categories",
+          choices: [{ id: NO_PARENT, value: "No parent (top level)" }],
+          placeholder: "Select a parent category",
+          searchPlaceholder: "Search categories...",
+          emptyMessage: "No categories found",
           colSpan: 2,
         },
       ] satisfies FormField[])

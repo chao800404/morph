@@ -6,7 +6,6 @@ import type { FormFieldValue } from "@/lib/validations/form";
 import {
   collectionQueries,
   normalizeCollectionListParams,
-  productTaxonomyQueries,
 } from "@queries/product.queries";
 import { useQuery } from "@tanstack/react-query";
 import type { Dispatch } from "react";
@@ -38,9 +37,6 @@ export const StepOrganize = ({
       limit: 100,
     }),
   );
-  const { data: taxonomyResult, isPending: taxonomyPending } = useQuery(
-    productTaxonomyQueries.list(),
-  );
   const { data: channelResult, isPending: channelsPending } = useQuery(
     salesChannelQueries.list({
       ...normalizeSalesChannelListParams({ sortBy: "name", sortOrder: "asc" }),
@@ -48,7 +44,7 @@ export const StepOrganize = ({
     }),
   );
 
-  if (collectionsPending || taxonomyPending || channelsPending) {
+  if (collectionsPending || channelsPending) {
     return (
       <div className={cn(createSurface.content, "flex w-full justify-center")}>
         <Spinner className="size-4 text-muted-foreground" />
@@ -59,9 +55,6 @@ export const StepOrganize = ({
   const collections = collectionResult?.success
     ? (collectionResult.data?.collections ?? [])
     : [];
-  const taxonomy = taxonomyResult?.success ? taxonomyResult.data : null;
-
-  const categories = taxonomy?.categories ?? [];
   const salesChannels = channelResult?.success
     ? (channelResult.data?.salesChannels ?? [])
     : [];
@@ -70,11 +63,11 @@ export const StepOrganize = ({
     collectionId: draft.collectionId,
     collections,
     typeValue: draft.typeValue,
-    types: taxonomy?.types ?? [],
+    types: draft.typeValue ? [{ value: draft.typeValue }] : [],
     tagValues: draft.tagValues,
-    tags: taxonomy?.tags ?? [],
+    tags: draft.tagValues.map((value) => ({ value })),
     categoryIds: draft.categoryIds,
-    categories,
+    categories: [],
     salesChannelIds: draft.salesChannelIds,
     salesChannels,
     discountable: draft.discountable,

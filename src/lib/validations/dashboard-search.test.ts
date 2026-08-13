@@ -36,11 +36,20 @@ describe("asset filters", () => {
   });
 
   it("rejects unknown buckets", () => {
-    expect(() =>
-      dashboardSearchSchema.parse({ assetSize: "huge" }),
-    ).toThrow();
+    expect(() => dashboardSearchSchema.parse({ assetSize: "huge" })).toThrow();
     expect(() =>
       dashboardSearchSchema.parse({ assetCreatedWithin: "all-time" }),
+    ).toThrow();
+  });
+});
+
+describe("tax region filters", () => {
+  it("accepts only supported tax-rate presence values", () => {
+    expect(
+      dashboardSearchSchema.parse({ taxRegionHasRates: "yes" }),
+    ).toMatchObject({ taxRegionHasRates: "yes" });
+    expect(() =>
+      dashboardSearchSchema.parse({ taxRegionHasRates: "all" }),
     ).toThrow();
   });
 });

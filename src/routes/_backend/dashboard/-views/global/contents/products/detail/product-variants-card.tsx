@@ -5,15 +5,7 @@ import { viewPreloader } from "@/lib/config/lazy-view";
 import { findCollection } from "@/lib/config/navigation";
 import type { ProductDetailDTO } from "@/lib/product/dto/product.dto";
 import type { ProductVariantDTO } from "@/lib/product/dto/product-variant.dto";
-import {
-  filterVariants,
-  optionSortKey,
-  paginateVariants,
-  sortVariants,
-  toVariantSortKey,
-  variantOptionValue,
-  VARIANT_PAGE_SIZE,
-} from "@/lib/product/variant-table";
+import { optionSortKey, variantOptionValue } from "@/lib/product/variant-table";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
   DataTableCard,
@@ -24,10 +16,20 @@ import {
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useInfoStore } from "@views/features/global-info/use-info-store";
 import { getConfig } from "@/server/get-config";
-import { productQueries } from "@queries/product.queries";
-import { useQueryClient } from "@tanstack/react-query";
+import {
+  normalizeProductVariantListParams,
+  productQueries,
+  productVariantQueries,
+} from "@queries/product.queries";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
-import { BadgeDollarSign, ImageIcon, MoreHorizontal, Plus, Warehouse } from "lucide-react";
+import {
+  BadgeDollarSign,
+  ImageIcon,
+  MoreHorizontal,
+  Plus,
+  Warehouse,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,9 +48,9 @@ import { deleteVariantsAction } from "../product-actions";
  * inline fields — a variant carries prices per currency, and a row wide enough
  * for those stops being readable.
  *
- * Paged in the browser, not by the server: `findDetail` already returns every
- * variant with the product, so a request per page would re-fetch data that is
- * in hand. The page still lives in `?page` so it survives a refresh.
+ * Search, option-axis sorting, and pagination are applied by the DAL before
+ * hydration so a large catalogue never travels through the product detail
+ * response merely to draw one table page.
  */
 const inventoryLabel = (variant: ProductVariantDTO): string => {
   if (!variant.manageInventory) return "Not tracked";
@@ -72,6 +74,11 @@ export const ProductVariantsCard = ({
         ?.variant?.view,
     [],
   );
+  const variantParams = normalizeProductVariantListParams(product.id, search);
+  const variantQuery = useQuery(productVariantQueries.list(variantParams));
+  const variantResult = variantQuery.data?.success
+    ? variantQuery.data.data
+    : null;
 
   const columns = useMemo<DataTableColumn<ProductVariantDTO>[]>(
     () => [
@@ -153,6 +160,9 @@ export const ProductVariantsCard = ({
           void queryClient.invalidateQueries({
             queryKey: productQueries.all(),
           });
+          void queryClient.invalidateQueries({
+            queryKey: productVariantQueries.all(),
+          });
         },
       });
       setInfoOpen(true);
@@ -230,32 +240,11 @@ export const ProductVariantsCard = ({
     [product.options],
   );
 
-  // The shared sort control writes `?sortBy`/`?sortOrder`; both can be arrays
-  // once a second heading is selected, and only the first applies here.
-  const routeSortBy = Array.isArray(search.sortBy)
-    ? search.sortBy[0]
-    : search.sortBy;
-  const routeSortOrder = Array.isArray(search.sortOrder)
-    ? search.sortOrder[0]
-    : search.sortOrder;
-
-  const matching = sortVariants(
-    filterVariants(product.variants, search.q, product.options),
-    toVariantSortKey(routeSortBy, product.options),
-    routeSortOrder === "asc" ? "asc" : "desc",
-    product.options,
-  );
-  const { rows, pagination } = paginateVariants(
-    matching,
-    search.page ?? 1,
-    VARIANT_PAGE_SIZE,
-  );
-
   return (
     <DataTableCard
       label="Variants"
       columns={columns}
-      rows={rows}
+      rows={variantResult?.variants ?? []}
       getRowId={(variant) => variant.id}
       searchPlaceholder="Search"
       headerActions={
@@ -264,16 +253,24 @@ export const ProductVariantsCard = ({
         <div className="flex items-center gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="cardHeader" size="xs" aria-label="Variant actions">
+              <Button
+                variant="cardHeader"
+                size="xs"
+                aria-label="Variant actions"
+              >
                 <MoreHorizontal />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => openBulkEditor("variant-prices")}>
+              <DropdownMenuItem
+                onSelect={() => openBulkEditor("variant-prices")}
+              >
                 <BadgeDollarSign className="size-4" />
                 Edit prices
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => openBulkEditor("variant-inventory")}>
+              <DropdownMenuItem
+                onSelect={() => openBulkEditor("variant-inventory")}
+              >
                 <Warehouse className="size-4" />
                 Edit inventory
               </DropdownMenuItem>
@@ -294,6 +291,15 @@ export const ProductVariantsCard = ({
       }
       sortOptions={sortOptions}
       defaultSortBy="createdAt"
+      isPending={variantQuery.isPending}
+      errorMessage={
+        variantQuery.isError
+          ? "Failed to load variants"
+          : variantQuery.data && !variantQuery.data.success
+            ? variantQuery.data.message
+            : undefined
+      }
+      onRetry={() => void variantQuery.refetch()}
       emptyTitle="No variants yet"
       emptyDescription="Saving the product's options creates one for every combination."
       onRowClick={(variant) => openVariantDetail(variant.id)}
@@ -311,7 +317,7 @@ export const ProductVariantsCard = ({
           onSelect: () => confirmDelete(variant.id, variant.title),
         },
       ]}
-      pagination={pagination}
+      pagination={variantResult?.pagination}
     />
   );
 };

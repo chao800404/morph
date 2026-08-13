@@ -17,6 +17,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { lazy, Suspense, useMemo } from "react";
+import { DashboardAdapters } from "./dashboard/-components/dashboard-component-adapters";
 
 const EditDialog = lazy(() =>
   import("./dashboard/-views/features/global-edit/edit-dialog").then((m) => ({
@@ -123,7 +124,7 @@ function RouteComponent() {
   const items = [...breadcrumbs, ...trailingCrumbs];
 
   return (
-    <>
+    <DashboardAdapters>
       <IdleTimerProvider
         publicURL={publicURL}
         enabled={config.auth?.autoLogout?.enabled ?? true}
@@ -177,6 +178,6 @@ function RouteComponent() {
           </SidebarInset>
         </SidebarProvider>
       </IdleTimerProvider>
-    </>
+    </DashboardAdapters>
   );
 }

@@ -18,7 +18,10 @@ export type PromotionStatus = "draft" | "active" | "inactive";
 
 export type ApplicationMethodType = "fixed" | "percentage";
 
-export type ApplicationMethodTargetType = "order" | "shipping_methods" | "items";
+export type ApplicationMethodTargetType =
+  | "order"
+  | "shipping_methods"
+  | "items";
 
 /**
  * How a fixed amount is spread. `each` applies it per unit, `across` splits it
@@ -113,6 +116,10 @@ export const promotionCampaignBudgets = sqliteTable(
       "promotion_campaign_budgets_type_check",
       sql`${table.type} IN ('spend', 'usage', 'use_by_attribute', 'spend_by_attribute')`,
     ),
+    check(
+      "promotion_campaign_budgets_limit_check",
+      sql`${table.limit} IS NULL OR ${table.used} <= ${table.limit}`,
+    ),
   ],
 );
 
@@ -127,12 +134,18 @@ export const promotionCampaignBudgetUsages = sqliteTable(
     /** The value of the budget's `attribute`, e.g. a customer id or email. */
     attributeValue: text("attribute_value").notNull(),
     used: integer("used").notNull().default(0),
+    /** Snapshot of the parent budget limit for atomic per-attribute checks. */
+    limit: integer("limit"),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("promotion_campaign_budget_usages_unique")
       .on(table.attributeValue, table.budgetId)
       .where(sql`${table.deletedAt} IS NULL`),
+    check(
+      "promotion_campaign_budget_usages_limit_check",
+      sql`${table.limit} IS NULL OR ${table.used} <= ${table.limit}`,
+    ),
   ],
 );
 
@@ -180,6 +193,10 @@ export const promotions = sqliteTable(
       sql`${table.status} IN ('draft', 'active', 'inactive')`,
     ),
     check("promotions_used_check", sql`${table.used} >= 0`),
+    check(
+      "promotions_limit_check",
+      sql`${table.limit} IS NULL OR ${table.used} <= ${table.limit}`,
+    ),
   ],
 );
 

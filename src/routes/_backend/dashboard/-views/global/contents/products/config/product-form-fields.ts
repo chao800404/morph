@@ -1,5 +1,4 @@
 import { handleField } from "@/components/form/handle-field";
-import { categoryDepth } from "@/lib/product/category-tree";
 import type { FormField } from "@/lib/validations/form";
 
 export const NO_PRODUCT_COLLECTION = "__none__";
@@ -115,6 +114,7 @@ export const productOrganizationFields = ({
     label: "Type",
     optional: true,
     choices: types.map(({ value }) => ({ id: value, value })),
+    remoteSource: "product-types",
     value: typeValue ? [typeValue] : [],
     allowCreate: true,
     maxSelected: 1,
@@ -129,6 +129,7 @@ export const productOrganizationFields = ({
     label: "Tags",
     optional: true,
     choices: tags.map(({ value }) => ({ id: value, value })),
+    remoteSource: "product-tags",
     value: tagValues,
     allowCreate: true,
     placeholder: "Select or create tags...",
@@ -136,30 +137,22 @@ export const productOrganizationFields = ({
     emptyMessage: "No tag found.",
     colSpan: 1,
   },
-  categories.length > 0
-    ? {
-        type: "option-values",
-        name: "categoryIds",
-        label: "Categories",
-        optional: true,
-        choices: categories.map((category) => ({
-          id: category.id,
-          value: `${"— ".repeat(categoryDepth(category.mpath ?? ""))}${category.name}`,
-        })),
-        value: categoryIds,
-        placeholder: "Select categories...",
-        searchPlaceholder: "Search categories...",
-        emptyMessage: "No category found.",
-        colSpan: 1,
-      }
-    : {
-        type: "tip",
-        name: "categories-empty",
-        label: "Categories:",
-        description:
-          "None exist yet. A product can still be created without one.",
-        colSpan: 1,
-      },
+  {
+    type: "option-values",
+    name: "categoryIds",
+    label: "Categories",
+    optional: true,
+    choices: categories.map((category) => ({
+      id: category.id,
+      value: category.name,
+    })),
+    remoteSource: "product-categories",
+    value: categoryIds,
+    placeholder: "Select categories...",
+    searchPlaceholder: "Search categories...",
+    emptyMessage: "No category found.",
+    colSpan: 1,
+  },
   {
     type: "option-values",
     name: "salesChannelIds",

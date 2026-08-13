@@ -10,7 +10,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
-import { useAssetMoveStore } from "./use-asset-move-store";
+import { useAssetMoveStore } from "@/lib/asset/store/use-asset-move-store";
 
 export const AssetMoveDialog = () => {
   const queryClient = useQueryClient();

@@ -29,6 +29,7 @@ import {
   fieldControlDensity,
   fieldControlVariants,
 } from "@/components/ui/field-control";
+import { ASSET_QUERY_KEY } from "@/lib/asset/query-key";
 
 /**
  * Loaded on demand, for two reasons that point the same way: the Library tab is
@@ -176,10 +177,8 @@ export const AssetSelectField = ({
       // Imported here, not at the top: a static edge from a field to a server
       // function closes a cycle through `get-config`, which strands whichever
       // module is mid-evaluation — usually after an HMR reload.
-      const [{ createItems }, { assetQueries }] = await Promise.all([
-        import("@/server/asset/create-items.serverFn"),
-        import("@queries/asset.queries"),
-      ]);
+      const { createItems } =
+        await import("@/server/asset/create-items.serverFn");
       const result = await createItems({ data: formData });
 
       if (!result.success || !result.createdAssets?.length) {
@@ -190,7 +189,7 @@ export const AssetSelectField = ({
       }
 
       // The library list is now stale — the new rows belong in it.
-      void queryClient.invalidateQueries({ queryKey: assetQueries.all() });
+      void queryClient.invalidateQueries({ queryKey: ASSET_QUERY_KEY });
 
       commit([...selected, ...result.createdAssets]);
       toast.success(result.message, { position: "top-center" });

@@ -9,10 +9,6 @@ export const Route = createFileRoute("/_backend/_auth/reset-password/")({
   component: RouteComponent,
 });
 
-import { getConfig } from "@/server/get-config";
-
 function RouteComponent() {
-  const { publicURL } = Route.useRouteContext();
-  const config = getConfig().client;
-  return <ResetPasswordForm appName={config.appName} publicURL={publicURL} />;
+  return <ResetPasswordForm />;
 }

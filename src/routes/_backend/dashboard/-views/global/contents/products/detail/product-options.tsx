@@ -12,6 +12,7 @@ import {
   normalizeProductOptionListParams,
   productOptionQueries,
   productQueries,
+  productVariantQueries,
 } from "@queries/product.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
@@ -45,10 +46,14 @@ const ProductOptions = () => {
   const { data: libraryResult, isPending: libraryPending } = useQuery(
     productOptionQueries.list(normalizeProductOptionListParams()),
   );
+  const { data: variantResult, isPending: variantsPending } = useQuery(
+    productVariantQueries.bulk(id),
+  );
 
   const library = libraryResult?.success
     ? (libraryResult.data?.options ?? [])
     : [];
+  const variants = variantResult?.success ? variantResult.data.variants : [];
 
   const submit = async (
     _state: RouteFormState,
@@ -81,7 +86,7 @@ const ProductOptions = () => {
       .map((option) => option.id);
     const doomed = variantsUsingOptions(
       product?.options ?? [],
-      product?.variants ?? [],
+      variants,
       removedIds,
     );
 
@@ -112,6 +117,9 @@ const ProductOptions = () => {
           void queryClient.invalidateQueries({
             queryKey: productQueries.all(),
           });
+          void queryClient.invalidateQueries({
+            queryKey: productVariantQueries.all(),
+          });
           close();
         },
       });
@@ -126,21 +134,26 @@ const ProductOptions = () => {
       return response;
     }
 
-    await queryClient.invalidateQueries({ queryKey: productQueries.all() });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: productQueries.all() }),
+      queryClient.invalidateQueries({
+        queryKey: productVariantQueries.all(),
+      }),
+    ]);
     toast.success(response.message, { position: "top-center" });
     close();
     return response;
   };
 
-  if (isPending || libraryPending) {
+  if (isPending || libraryPending || variantsPending) {
     return <RouteSurfacePending />;
   }
 
   const product = result?.success ? result.data : null;
-  if (!product) {
+  if (!product || (variantResult && !variantResult.success)) {
     return (
       <RouteSurfaceMessage>
-          {result?.message ?? "Product not found"}
+        {variantResult?.message ?? result?.message ?? "Product not found"}
       </RouteSurfaceMessage>
     );
   }

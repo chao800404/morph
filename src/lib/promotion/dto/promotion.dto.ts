@@ -1,55 +1,13 @@
+import type { Metadata } from "@/db/json";
 import type {
   ApplicationMethodAllocation,
   ApplicationMethodTargetType,
   ApplicationMethodType,
-  OrderStatus,
-  PromotionStatus,
+  PromotionStatus as DbPromotionStatus,
   PromotionType,
 } from "@/db/schema";
-import type { Metadata } from "@/db/json";
 
-export interface OrderListDTO {
-  id: string;
-  displayId: number;
-  status: OrderStatus;
-  email: string | null;
-  currencyCode: string;
-  isDraftOrder: boolean;
-  total: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface OrderDetailDTO extends OrderListDTO {
-  metadata: Metadata;
-  customerId: string | null;
-  regionId: string | null;
-  salesChannelId: string | null;
-  items: Array<{
-    id: string;
-    title: string;
-    thumbnail: string | null;
-    sku: string | null;
-    quantity: number;
-    fulfilledQuantity: number;
-    unitPrice: number;
-  }>;
-  shippingAddress: AddressDTO | null;
-  billingAddress: AddressDTO | null;
-}
-
-export interface AddressDTO {
-  firstName: string | null;
-  lastName: string | null;
-  company: string | null;
-  address1: string | null;
-  address2: string | null;
-  city: string | null;
-  province: string | null;
-  postalCode: string | null;
-  countryCode: string | null;
-  phone: string | null;
-}
+export type PromotionStatus = DbPromotionStatus;
 
 export interface PromotionListDTO {
   id: string;

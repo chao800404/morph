@@ -23,7 +23,7 @@ export const Account = {
           // reads the namespace before it is bound, leaving `middleware` as
           // `undefined`. The sibling collections already import this way.
           const { sessionQueries } = await import("@queries/auth.queries");
-          await queryClient.ensureQueryData(sessionQueries.list());
+          void queryClient.prefetchQuery(sessionQueries.list());
         },
       },
     },

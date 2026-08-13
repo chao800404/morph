@@ -121,7 +121,7 @@ export const AssetEditSurface = ({
             className="gap-1.5 font-medium"
             onClick={onProcessImage}
           >
-            <Wand2 className="size-3.5 text-blue-400" />
+            <Wand2 className="size-3.5 text-primary" />
             Process Image
           </Button>
         ) : undefined
@@ -157,8 +157,7 @@ export const AssetEditSurface = ({
                     data-item-id={item.id}
                     className={cn(
                       "cursor-pointer rounded-lg border p-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary",
-                      item.id === activeItem?.id &&
-                        "ring-[1.5px] ring-blue-500/50",
+                      item.id === activeItem?.id && "ring-[1.5px] ring-ring/50",
                     )}
                     onClick={() => onActivate(item)}
                     onKeyDown={(event) => {

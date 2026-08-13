@@ -128,7 +128,7 @@ const PendingTableCard = ({ id = "detail-table-pending" }: { id?: string }) => (
 
 export const StoreIndexSkeleton = () => (
   <div className="mx-auto flex h-auto w-full flex-col gap-3">
-    <PendingEditCard id="store-general-pending" count={5} />
+    <PendingEditCard id="store-general-pending" count={3} />
     <CollectionIndexSkeleton />
   </div>
 );
@@ -148,11 +148,52 @@ export const SimpleDetailSkeleton = () => (
   </div>
 );
 
-export const TableDetailSkeleton = () => (
+export const createTableDetailPendingView = (tableCount: number) => {
+  const PendingView = () => (
+    <div className="flex flex-col gap-4">
+      <PendingEditCard id="detail-general-pending" />
+      {Array.from({ length: Math.max(1, tableCount) }, (_, index) => (
+        <PendingTableCard
+          id={
+            tableCount === 1
+              ? "detail-table-pending"
+              : `detail-table-${index}-pending`
+          }
+          key={index}
+        />
+      ))}
+      <PendingMetadataCard />
+    </div>
+  );
+  return PendingView;
+};
+
+export const TableDetailSkeleton = createTableDetailPendingView(1);
+
+/**
+ * Tax regions have one data-dependent slot: a sublevel table for supported
+ * countries or a compact enable notice for countries outside the catalogue.
+ * Keep that slot explicit so hydration never swaps a generic full table into
+ * the middle of an otherwise stable detail page.
+ */
+export const TaxRegionDetailSkeleton = () => (
   <div className="flex flex-col gap-4">
-    <PendingEditCard id="detail-general-pending" />
-    <PendingTableCard />
-    <PendingMetadataCard />
+    <CardWrapper
+      id="tax-sublevel-state-pending"
+      label={<Skeleton className="h-4 w-48" />}
+    >
+      <div className="flex min-h-20 items-center gap-3 border-t px-6 py-4">
+        <Skeleton className="size-4 rounded-full" />
+        <div className="space-y-2">
+          <Skeleton className="h-4 w-56" />
+          <Skeleton className="h-3 w-80 max-w-full" />
+        </div>
+      </div>
+    </CardWrapper>
+    <PendingEditCard id="tax-region-general-pending" />
+    <PendingTableCard id="tax-default-rate-pending" />
+    <PendingTableCard id="tax-overrides-pending" />
+    <PendingMetadataCard id="tax-region-metadata-pending" />
   </div>
 );
 
@@ -165,7 +206,12 @@ export const OrderDetailSkeleton = () => (
       </div>
     }
   >
-    <TableDetailSkeleton />
+    <div className="flex flex-col gap-4">
+      <PendingEditCard id="order-general-pending" />
+      <PendingTableCard id="order-items-pending" />
+      <PendingTableCard id="order-fulfillments-pending" />
+      <PendingMetadataCard id="order-metadata-pending" />
+    </div>
   </PageSplitLayout>
 );
 

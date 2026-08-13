@@ -5,7 +5,7 @@ import {
   generateMoveFields,
   generateMoveTitle,
 } from "@/routes/_backend/dashboard/-views/features/asset/move/move-fields-utils";
-import { useAssetMoveStore } from "@/routes/_backend/dashboard/-views/features/asset/move/use-asset-move-store";
+import { useAssetMoveStore } from "@/lib/asset/store/use-asset-move-store";
 import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/contents/assets/stores/assets.store";
 import { useAssetRouteActions } from "@/routes/_backend/dashboard/-views/global/contents/assets/hooks/use-asset-route-actions";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";

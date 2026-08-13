@@ -15,7 +15,7 @@ import {
   generateMoveFields,
   generateMoveTitle,
 } from "../../-views/features/asset/move/move-fields-utils";
-import { useAssetMoveStore } from "../../-views/features/asset/move/use-asset-move-store";
+import { useAssetMoveStore } from "@/lib/asset/store/use-asset-move-store";
 import { useAssetRouteActions } from "../../-views/global/contents/assets/hooks/use-asset-route-actions";
 
 type Props = {

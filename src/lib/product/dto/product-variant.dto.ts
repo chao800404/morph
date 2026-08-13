@@ -19,6 +19,45 @@ export interface ProductVariantPriceHistoryDTO {
   changedAt: Date;
 }
 
+export type ProductVariantSortKey =
+  | "name"
+  | "createdAt"
+  | "updatedAt"
+  | `option:${string}`;
+
+export interface ProductVariantListParams {
+  productId: string;
+  query?: string;
+  sortBy: ProductVariantSortKey;
+  sortOrder: "asc" | "desc";
+  page: number;
+  limit: number;
+}
+
+export type ProductVariantPriceChange =
+  | "created"
+  | "increased"
+  | "decreased"
+  | "removed";
+
+export interface ProductVariantPriceHistoryListParams {
+  variantId: string;
+  query?: string;
+  currencies?: string[];
+  changes?: ProductVariantPriceChange[];
+  changedBy?: string[];
+  changedWithin?: "24h" | "7d" | "30d" | "90d";
+  sortBy: "updatedAt" | "code" | "name";
+  sortOrder: "asc" | "desc";
+  page: number;
+  limit: number;
+}
+
+export interface ProductVariantPriceHistoryFacets {
+  currencies: string[];
+  changedBy: Array<{ id: string; name: string }>;
+}
+
 export interface CreateProductVariantPriceDTO {
   currencyCode: string;
   amount: number;

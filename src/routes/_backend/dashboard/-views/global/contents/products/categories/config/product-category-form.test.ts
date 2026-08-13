@@ -33,14 +33,16 @@ describe("category form fields", () => {
     });
   });
 
-  it("offers the parent picker only when parents are supplied", () => {
+  it("offers the parent picker only when requested", () => {
     // Edit omits it: re-parenting would have to rewrite every descendant's
     // materialised path, so the field must not appear there.
     expect(fieldNames(categoryFormFields(emptyCategoryForm()))).not.toContain(
       "parentCategoryId",
     );
     expect(
-      fieldNames(categoryFormFields(emptyCategoryForm(), { parents: [] })),
+      fieldNames(
+        categoryFormFields(emptyCategoryForm(), { includeParent: true }),
+      ),
     ).toContain("parentCategoryId");
   });
 

@@ -17,7 +17,7 @@ export const AssetCardCaption = ({
 
   if (!name) {
     return (
-      <Badge className="absolute bottom-2 right-2 shrink-0 border-blue-700 bg-blue-600 text-white shadow-sm dark:border-blue-400 dark:bg-blue-500 dark:text-white">
+      <Badge className="absolute bottom-2 right-2 shrink-0 border-primary bg-primary text-primary-foreground shadow-sm">
         {category}
       </Badge>
     );

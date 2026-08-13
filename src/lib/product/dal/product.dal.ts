@@ -46,6 +46,7 @@ import { toProductDTO, type ProductRow } from "../mappers/product.mapper";
 import { chunk, chunkForInsert } from "./d1-batch";
 import { productOptionDal } from "./product-option.dal";
 import { productVariantDal } from "./product-variant.dal";
+import { MAX_GENERATED_VARIANTS } from "../variant-limits";
 import { containsPattern } from "@/lib/db/like-pattern";
 import { productSalesChannels } from "@/db/link.schema";
 import { salesChannels } from "@/db/sales-channel.schema";
@@ -172,7 +173,6 @@ export const productDal = {
     // with the ids rather than costing another query per card.
     const [
       options,
-      variants,
       assetRows,
       tagRows,
       categoryRows,
@@ -180,7 +180,6 @@ export const productDal = {
       channelRows,
     ] = await Promise.all([
       this.findOptions(id),
-      productVariantDal.findByProductId(id),
       db
         .select({ id: assets.id, name: assets.name, url: assets.url })
         .from(productAssets)
@@ -231,7 +230,6 @@ export const productDal = {
     return {
       ...product,
       options,
-      variants,
       assets: assetRows,
       assetIds: assetRows.map((row) => row.id),
       tags: tagRows,
@@ -710,7 +708,17 @@ export const productDal = {
    */
   async variantsByOption(productId: string): Promise<Map<string, string[]>> {
     const options = await this.findOptions(productId);
-    const variants = await productVariantDal.findByProductId(productId);
+    const page = await productVariantDal.listPage({
+      productId,
+      sortBy: "createdAt",
+      sortOrder: "asc",
+      page: 1,
+      limit: MAX_GENERATED_VARIANTS,
+    });
+    if (page.total > MAX_GENERATED_VARIANTS) {
+      throw new Error("Product variant limit exceeded");
+    }
+    const variants = page.variants;
 
     const byOption = new Map<string, string[]>();
     for (const option of options) {

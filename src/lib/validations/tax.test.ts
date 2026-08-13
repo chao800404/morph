@@ -3,6 +3,7 @@ import {
   createTaxProvinceInputSchema,
   createTaxRateInputSchema,
   createTaxRegionInputSchema,
+  listTaxProvincesInputSchema,
 } from "./tax";
 
 describe("tax validation", () => {
@@ -54,6 +55,25 @@ describe("tax validation", () => {
         ...base,
         isDefault: true,
         rules: [{ reference: "product", referenceId: crypto.randomUUID() }],
+      }).success,
+    ).toBe(false);
+  });
+  it("validates paginated sub-region filters", () => {
+    const parsed = listTaxProvincesInputSchema.parse({
+      parentId: crypto.randomUUID(),
+      hasRates: "yes",
+    });
+    expect(parsed).toMatchObject({
+      hasRates: "yes",
+      sortBy: "code",
+      sortOrder: "desc",
+      page: 1,
+      limit: 10,
+    });
+    expect(
+      listTaxProvincesInputSchema.safeParse({
+        parentId: crypto.randomUUID(),
+        hasRates: "unknown",
       }).success,
     ).toBe(false);
   });

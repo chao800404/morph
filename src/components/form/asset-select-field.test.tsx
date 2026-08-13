@@ -11,9 +11,6 @@ vi.mock("@/server/asset/create-items.serverFn", () => ({
   createItems: vi.fn(),
 }));
 vi.mock("./asset-library-panel", () => ({ AssetLibraryPanel: () => null }));
-vi.mock("@queries/asset.queries", () => ({
-  assetQueries: { all: () => ["assets"] },
-}));
 // The field reads the store's ceiling straight from config.
 vi.mock("@/server/get-config", () => ({
   getConfig: () => ({ client: { upload: { maxAssetsPerRecord: 50 } } }),

@@ -10,7 +10,6 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import { assets } from "./asset.schema";
 import type { Metadata } from "./json";
 
 export type ProductStatus = "draft" | "published" | "archived";
@@ -168,9 +167,7 @@ export const products = sqliteTable(
     typeId: text("type_id").references(() => productTypes.id, {
       onDelete: "set null",
     }),
-    thumbnailAssetId: text("thumbnail_asset_id").references(() => assets.id, {
-      onDelete: "set null",
-    }),
+    thumbnailAssetId: text("thumbnail_asset_id"),
     // Shipping and customs attributes. Variants may override each of these.
     // Real, not integer: a carrier's rate table takes 12.5 mm, and Medusa
     // models them as floats too.
@@ -384,9 +381,7 @@ export const productVariants = sqliteTable(
     hsCode: text("hs_code"),
     midCode: text("mid_code"),
     material: text("material"),
-    thumbnailAssetId: text("thumbnail_asset_id").references(() => assets.id, {
-      onDelete: "set null",
-    }),
+    thumbnailAssetId: text("thumbnail_asset_id"),
     metadata: text("metadata", { mode: "json" }).$type<ProductMetadata>(),
     createdBy: text("created_by").notNull(),
     updatedBy: text("updated_by").notNull(),
@@ -509,9 +504,7 @@ export const productAssets = sqliteTable(
     productId: text("product_id")
       .notNull()
       .references(() => products.id, { onDelete: "cascade" }),
-    assetId: text("asset_id")
-      .notNull()
-      .references(() => assets.id, { onDelete: "cascade" }),
+    assetId: text("asset_id").notNull(),
     rank: integer("rank").notNull().default(0),
   },
   (table) => [
@@ -528,9 +521,7 @@ export const productVariantAssets = sqliteTable(
     variantId: text("variant_id")
       .notNull()
       .references(() => productVariants.id, { onDelete: "cascade" }),
-    assetId: text("asset_id")
-      .notNull()
-      .references(() => assets.id, { onDelete: "cascade" }),
+    assetId: text("asset_id").notNull(),
     rank: integer("rank").notNull().default(0),
   },
   (table) => [

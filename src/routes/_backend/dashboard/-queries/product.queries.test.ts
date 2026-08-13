@@ -24,9 +24,7 @@ vi.mock("@/server/product/categories.serverFn", () => ({
   listProductCategories: vi.fn(),
 }));
 
-vi.mock("@/server/product/taxonomy.serverFn", () => ({
-  listProductTaxonomy: vi.fn(),
-}));
+vi.mock("@/server/product/taxonomy.serverFn", () => ({}));
 
 vi.mock("@/server/product/variants.serverFn", () => ({
   getVariantDetail: vi.fn(),

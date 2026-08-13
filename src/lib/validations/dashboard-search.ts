@@ -83,6 +83,16 @@ export const dashboardSearchSchema = z.object({
   productUpdatedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
   /** Product Options creation-date window. */
   optionCreatedWithin: z.enum(PRODUCT_OPTION_CREATED_WITHIN_VALUES).optional(),
+  /** Tax sub-region table filter. */
+  taxRegionHasRates: z.enum(["yes", "no"]).optional(),
+  /** Independent URL state for the Tax Overrides table on region detail. */
+  taxRateQ: z.string().optional(),
+  taxRatePage: z.number().optional(),
+  taxRateSortBy: dashboardFixedSortKeySchema.optional(),
+  taxRateSortOrder: dashboardSortOrderSchema.optional(),
+  /** Independent pagination for the two growing tables on Order detail. */
+  orderItemPage: z.number().optional(),
+  orderFulfillmentPage: z.number().optional(),
   /** Price History filters are URL state so filtered audit views are shareable. */
   priceHistoryCurrencies: z.array(z.string()).max(50).optional(),
   priceHistoryChanges: z

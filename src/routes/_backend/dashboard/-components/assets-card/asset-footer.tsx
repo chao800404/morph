@@ -1,7 +1,7 @@
 "use client";
 
 import { useNavigate } from "@tanstack/react-router";
-import { CardPagination } from "../card-pagination/card-pagination";
+import { CardPagination } from "@/components/dashboard/card-pagination";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 
 type Props = {

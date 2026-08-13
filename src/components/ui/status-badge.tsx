@@ -33,7 +33,7 @@ const statusDotVariants = cva("size-1.5 rounded-[2px] shrink-0", {
       grey: "bg-zinc-400 dark:bg-zinc-500",
       amber: "bg-amber-500",
       red: "bg-rose-500",
-      blue: "bg-blue-500",
+      blue: "bg-primary",
       purple: "bg-purple-500",
     },
   },

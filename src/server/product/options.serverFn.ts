@@ -19,6 +19,22 @@ import {
 } from "../middleware/auth.middleware";
 import { resolveVariantSku } from "./product-sku";
 
+const loadProductVariants = async (productId: string) => {
+  const page = await productVariantDal.listPage({
+    productId,
+    sortBy: "createdAt",
+    sortOrder: "asc",
+    page: 1,
+    limit: MAX_GENERATED_VARIANTS,
+  });
+  if (page.total > MAX_GENERATED_VARIANTS) {
+    throw new Error(
+      `A product may have at most ${MAX_GENERATED_VARIANTS} variants`,
+    );
+  }
+  return page.variants;
+};
+
 export const listProductOptions = createServerFn({ method: "POST" })
   .validator((data: unknown) => listProductOptionsInputSchema.parse(data ?? {}))
   .middleware([productReadMiddleware])
@@ -266,13 +282,13 @@ export const setProductOptions = createServerFn({ method: "POST" })
           // The matrix collapses without this axis, and there is no right
           // answer for which of the merged variants keeps its price and stock,
           // so they go. The caller has already confirmed the count.
-          const detail = await productDal.findDetail(data.productId);
+          const variants = await loadProductVariants(data.productId);
           const owned = new Set(
-            (detail?.options ?? [])
+            existing
               .filter((option) => blocked.some((row) => row.id === option.id))
               .flatMap((option) => option.values.map((value) => value.id)),
           );
-          const doomed = (detail?.variants ?? [])
+          const doomed = variants
             .filter((variant) =>
               variant.optionValueIds.some((id) => owned.has(id)),
             )
@@ -324,20 +340,18 @@ export const setProductOptions = createServerFn({ method: "POST" })
        * cell and is left alone — the Variants table shows a dash and its editor
        * is where that is fixed.
        */
-      const detail = await productDal.findDetail(data.productId);
-      let missing = detail
-        ? missingCombinations(detail.options, detail.variants)
-        : [];
+      const variants = await loadProductVariants(data.productId);
+      let missing = missingCombinations(options, variants);
       const valueById = new Map(
-        (detail?.options ?? []).flatMap((option) =>
+        options.flatMap((option) =>
           option.values.map((value) => [value.id, value.value] as const),
         ),
       );
       const defaultVariant =
         existing.length === 0 &&
-        detail?.variants.length === 1 &&
-        detail.variants[0].optionValueIds.length === 0
-          ? detail.variants[0]
+        variants.length === 1 &&
+        variants[0].optionValueIds.length === 0
+          ? variants[0]
           : null;
       const firstCombination = defaultVariant ? missing[0] : undefined;
 
@@ -368,7 +382,7 @@ export const setProductOptions = createServerFn({ method: "POST" })
         missing = missing.slice(1);
       }
 
-      const room = MAX_GENERATED_VARIANTS - (detail?.variants.length ?? 0);
+      const room = MAX_GENERATED_VARIANTS - variants.length;
 
       if (missing.length > 0 && missing.length <= room) {
         const reservedSkus = new Set<string>();
@@ -380,7 +394,7 @@ export const setProductOptions = createServerFn({ method: "POST" })
             optionValues: combination.valueIds.map(
               (id) => valueById.get(id) ?? "",
             ),
-            index: (detail?.variants.length ?? 0) + index,
+            index: variants.length + index,
             reserved: reservedSkus,
           });
           generated.push({
@@ -388,7 +402,7 @@ export const setProductOptions = createServerFn({ method: "POST" })
             productId: data.productId,
             title: combination.title,
             sku,
-            rank: (detail?.variants.length ?? 0) + index,
+            rank: variants.length + index,
             manageInventory: true,
             allowBackorder: false,
             inventoryQuantity: 0,
@@ -410,7 +424,7 @@ export const setProductOptions = createServerFn({ method: "POST" })
       }
 
       let restoredDefault = false;
-      if (options.length === 0 && (detail?.variants.length ?? 0) === 0) {
+      if (options.length === 0 && variants.length === 0) {
         const id = crypto.randomUUID();
         const sku = await resolveVariantSku({
           productHandle: product.handle,

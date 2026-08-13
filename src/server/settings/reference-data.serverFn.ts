@@ -8,6 +8,8 @@ import {
   commerceAdminMiddleware,
   commerceReadMiddleware,
 } from "../middleware/auth.middleware";
+import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
+import pLimit from "p-limit";
 
 const kindSchema = z.enum(REFERENCE_DATA_KINDS);
 const listSchema = z.object({
@@ -245,8 +247,11 @@ export const deleteReferenceData = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
+      const lookup = pLimit(DB_FANOUT_CONCURRENCY);
       const records = await Promise.all(
-        data.ids.map((id) => referenceDataDal.find(data.kind, id)),
+        data.ids.map((id) =>
+          lookup(() => referenceDataDal.find(data.kind, id)),
+        ),
       );
       const existing = records.filter((item) => item !== null);
       if (!existing.length)

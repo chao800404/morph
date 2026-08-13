@@ -1,5 +1,5 @@
 import { StatusBadge } from "@/components/ui/status-badge";
-import type { ProductStatus } from "@/db/product.schema";
+import type { ProductStatus } from "@/lib/product/dto/product.dto";
 
 const PRODUCT_STATUS_CONFIG: Record<
   ProductStatus,

@@ -20,6 +20,7 @@ import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/
 import { MetadataCard } from "@/routes/_backend/dashboard/-components/metadata-card/metadata-card";
 import { ProductVariantDetailSkeleton } from "./product-variant-detail-skeleton";
 import {
+  normalizeVariantPriceHistoryListParams,
   productQueries,
   productVariantQueries,
 } from "@queries/product.queries";
@@ -30,8 +31,6 @@ import {
   useParams,
   useSearch,
 } from "@tanstack/react-router";
-
-const PRICE_HISTORY_PAGE_SIZE = 5;
 
 const ProductVariantDetail = () => {
   const { id: productId, childId } = useParams({ strict: false }) as {
@@ -48,11 +47,23 @@ const ProductVariantDetail = () => {
     ),
     enabled: Boolean(variantId),
   });
+  const historyQuery = useQuery({
+    ...productVariantQueries.priceHistory(
+      normalizeVariantPriceHistoryListParams(
+        variantId ?? "00000000-0000-0000-0000-000000000000",
+        search,
+      ),
+    ),
+    enabled: Boolean(variantId),
+  });
 
   const product = productQuery.data?.success ? productQuery.data.data : null;
   const detail = variantQuery.data?.success ? variantQuery.data.data : null;
   const variant = detail?.variant ?? null;
-  const priceHistory = detail?.priceHistory ?? [];
+  const historyResult = historyQuery.data?.success
+    ? historyQuery.data.data
+    : null;
+  const priceHistory = historyResult?.history ?? [];
   const historyCurrencies = search.priceHistoryCurrencies ?? [];
   const historyChanges = search.priceHistoryChanges ?? [];
   const historyChangedBy = search.priceHistoryChangedBy ?? [];
@@ -134,81 +145,6 @@ const ProductVariantDetail = () => {
       displayValue: String(variant.inventoryQuantity),
     },
   ];
-  const historySearch = search.q?.trim().toLowerCase() ?? "";
-  const historySortBy = Array.isArray(search.sortBy)
-    ? search.sortBy[0]
-    : search.sortBy;
-  const historySortOrder = Array.isArray(search.sortOrder)
-    ? search.sortOrder[0]
-    : search.sortOrder;
-  const changeType = (entry: (typeof priceHistory)[number]) => {
-    if (entry.oldAmount === null) return "created";
-    if (entry.newAmount === null) return "removed";
-    return entry.newAmount > entry.oldAmount ? "increased" : "decreased";
-  };
-  const changedAfter = historyChangedWithin
-    ? Date.now() -
-      ({ "24h": 1, "7d": 7, "30d": 30, "90d": 90 }[historyChangedWithin] *
-        24 *
-        60 *
-        60 *
-        1000)
-    : undefined;
-  const matchingPriceHistory = priceHistory
-    .filter(
-      (entry) =>
-        historyCurrencies.length === 0 ||
-        historyCurrencies.includes(entry.currencyCode),
-    )
-    .filter(
-      (entry) =>
-        historyChanges.length === 0 ||
-        historyChanges.includes(changeType(entry)),
-    )
-    .filter(
-      (entry) =>
-        historyChangedBy.length === 0 ||
-        historyChangedBy.includes(entry.changedBy),
-    )
-    .filter(
-      (entry) =>
-        changedAfter === undefined ||
-        new Date(entry.changedAt).getTime() >= changedAfter,
-    )
-    .filter((entry) =>
-      [entry.currencyCode, entry.changedByName ?? "Unknown user"].some(
-        (value) => value.toLowerCase().includes(historySearch),
-      ),
-    )
-    .sort((left, right) => {
-      const direction = historySortOrder === "asc" ? 1 : -1;
-      if (historySortBy === "code") {
-        return left.currencyCode.localeCompare(right.currencyCode) * direction;
-      }
-      if (historySortBy === "name") {
-        return (
-          (left.changedByName ?? "").localeCompare(right.changedByName ?? "") *
-          direction
-        );
-      }
-      return (
-        (new Date(left.changedAt).getTime() -
-          new Date(right.changedAt).getTime()) *
-        direction
-      );
-    });
-  const historyTotalPages = Math.max(
-    1,
-    Math.ceil(matchingPriceHistory.length / PRICE_HISTORY_PAGE_SIZE),
-  );
-  const historyPage = Math.min(
-    Math.max(search.page ?? 1, 1),
-    historyTotalPages,
-  );
-  const historyRows = matchingPriceHistory.slice(
-    (historyPage - 1) * PRICE_HISTORY_PAGE_SIZE,
-    historyPage * PRICE_HISTORY_PAGE_SIZE,
-  );
   const money = (currencyCode: string, amount: number | null) => {
     if (amount === null) return "Not set";
     const currency = findCurrency(currencyCode);
@@ -269,9 +205,7 @@ const ProductVariantDetail = () => {
     {
       key: "currency",
       label: "Currency",
-      options: Array.from(
-        new Set(priceHistory.map((entry) => entry.currencyCode)),
-      )
+      options: Array.from(historyResult?.facets.currencies ?? [])
         .sort()
         .map((currencyCode) => ({
           value: currencyCode,
@@ -320,9 +254,9 @@ const ProductVariantDetail = () => {
       label: "Changed by",
       options: Array.from(
         new Map(
-          priceHistory.map((entry) => [
-            entry.changedBy,
-            entry.changedByName ?? "Unknown user",
+          (historyResult?.facets.changedBy ?? []).map((entry) => [
+            entry.id,
+            entry.name,
           ]),
         ),
       )
@@ -444,20 +378,24 @@ const ProductVariantDetail = () => {
             label="Price history"
             description="Recent base-price changes by currency."
             columns={historyColumns}
-            rows={historyRows}
+            rows={priceHistory}
             getRowId={(entry) => entry.id}
             filters={historyFilters}
             searchPlaceholder="Search price history"
             sortOptions={historySortOptions}
             defaultSortBy="updatedAt"
+            isPending={historyQuery.isPending}
+            errorMessage={
+              historyQuery.isError
+                ? "Failed to load price history"
+                : historyQuery.data && !historyQuery.data.success
+                  ? historyQuery.data.message
+                  : undefined
+            }
+            onRetry={() => void historyQuery.refetch()}
             emptyTitle="No price changes yet"
             emptyDescription="New base-price changes are recorded automatically."
-            pagination={{
-              page: historyPage,
-              limit: PRICE_HISTORY_PAGE_SIZE,
-              total: matchingPriceHistory.length,
-              totalPages: historyTotalPages,
-            }}
+            pagination={historyResult?.pagination}
           />
         </div>
       </div>

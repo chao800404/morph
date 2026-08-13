@@ -1,4 +1,4 @@
-import type { ProductStatus } from "@/db/product.schema";
+import type { ProductStatus } from "@/lib/product/dto/product.dto";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import type {
   DataTableFilterOption,

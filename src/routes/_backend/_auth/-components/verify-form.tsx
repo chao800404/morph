@@ -11,7 +11,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { resetPasswordClientSchema } from "@/lib/validations/auth";
-import { setVerifyAccessCookieServerFn } from "@/server/auth/verify-access.serverFn";
+import {
+  clearVerifyAccessCookieServerFn,
+  requestPasswordResetAccessServerFn,
+} from "@/server/auth/verify-access.serverFn";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -61,25 +64,14 @@ export function VerifyForm({ email, publicURL, expiresAt }: VerifyFormProps) {
     setError(null);
 
     try {
-      const { data, error } = await authClient(
-        publicURL,
-      ).emailOtp.sendVerificationOtp({
-        email,
-        type: "forget-password",
+      await requestPasswordResetAccessServerFn({ data: email });
+      router.invalidate();
+      setError(null);
+      setIsExpired(false);
+      toast.success("Verification code resent successfully!", {
+        description: "The code is valid for 5 minutes",
+        position: "top-center",
       });
-
-      if (error) {
-        setError(error.message || "Failed to resend code");
-      } else if (data) {
-        await setVerifyAccessCookieServerFn({ data: email });
-        router.invalidate();
-        setError(null);
-        setIsExpired(false);
-        toast.success("Verification code resent successfully!", {
-          description: "The code is valid for 5 minutes",
-          position: "top-center",
-        });
-      }
     } catch (err) {
       setError("Failed to resend code");
     } finally {
@@ -110,8 +102,6 @@ export function VerifyForm({ email, publicURL, expiresAt }: VerifyFormProps) {
         return;
       }
 
-      // OTP verified successfully
-      console.log("[Security] OTP verified successfully for:", email);
       setOtp(otpValue);
       setPending(false);
     } catch (err) {
@@ -162,7 +152,7 @@ export function VerifyForm({ email, publicURL, expiresAt }: VerifyFormProps) {
         throw new Error(authError.message || "Password reset failed");
 
       // Success - clear sensitive data and show dialog
-      console.log("[Security] Password reset successful for:", email);
+      await clearVerifyAccessCookieServerFn();
       setOtp(null); // Clear OTP from state
       setOpenDialog(true);
       setPending(false);

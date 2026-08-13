@@ -4,17 +4,19 @@ import { DataTableSearch } from "./data-table-search";
 
 const router = vi.hoisted(() => ({
   query: "",
+  taxRateQuery: "",
   navigate: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => router.navigate,
-  useSearch: () => ({ q: router.query }),
+  useSearch: () => ({ q: router.query, taxRateQ: router.taxRateQuery }),
 }));
 
 describe("DataTableSearch", () => {
   beforeEach(() => {
     router.query = "";
+    router.taxRateQuery = "";
     router.navigate.mockReset();
   });
 
@@ -49,5 +51,14 @@ describe("DataTableSearch", () => {
     render(<DataTableSearch placeholder="Search users" />);
 
     expect(screen.getByRole("textbox", { name: "Search users" })).toBeTruthy();
+  });
+
+  it("reads the independent tax-rate search state", () => {
+    router.query = "province";
+    router.taxRateQuery = "override";
+    render(<DataTableSearch scope="taxRate" />);
+    expect(
+      (screen.getByPlaceholderText("Search") as HTMLInputElement).value,
+    ).toBe("override");
   });
 });

@@ -8,6 +8,7 @@ import { useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { SettingsResourceTable } from "../settings-resource-table";
 import { deleteTaxRegionsAction } from "./tax-actions";
+import { formatTaxProviderLabel } from "./config/tax-form-fields";
 
 export default function TaxRegions() {
   const search = useSearch({ strict: false }) as DashboardSearch;
@@ -51,7 +52,8 @@ export default function TaxRegions() {
       {
         key: "provider",
         header: "Provider",
-        cell: (region) => region.providerId?.replace(/^tp_/, "") ?? "—",
+        cell: (region) =>
+          region.providerId ? formatTaxProviderLabel(region.providerId) : "—",
       },
     ],
     [],

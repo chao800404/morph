@@ -3,7 +3,6 @@ import {
   productCategories,
   productTags,
   productTypes,
-  type ProductMetadata,
 } from "@/db/product.schema";
 import { containsPattern } from "@/lib/db/like-pattern";
 import {
@@ -28,8 +27,9 @@ import type {
   ProductTypeDTO,
   UpdateProductCategoryDTO,
 } from "../dto/product-taxonomy.dto";
-import { ancestorIdsOf, sortCategoryTree } from "../category-tree";
+import { ancestorIdsOf } from "../category-tree";
 import { chunk, chunkForInsert } from "./d1-batch";
+import { toProductCategoryDTO } from "../mappers/product-taxonomy.mapper";
 
 /**
  * Types, tags and categories.
@@ -44,41 +44,7 @@ import { chunk, chunkForInsert } from "./d1-batch";
  */
 
 const TAG_COLUMNS = 5;
-
-/**
- * Types and tags are bounded reference data read whole by the Organize step.
- * Categories have their own paginated list; `list()` here is the bounded read
- * that fills a picker.
- */
-const LIST_LIMIT = 200;
-
-const toCategoryDTO = (row: {
-  id: string;
-  name: string;
-  description: string;
-  handle: string;
-  mpath: string;
-  parentCategoryId: string | null;
-  isActive: boolean;
-  isInternal: boolean;
-  rank: number;
-  metadata: ProductMetadata | null;
-  createdAt: string;
-  updatedAt: string;
-}): ProductCategoryDTO => ({
-  id: row.id,
-  name: row.name,
-  description: row.description,
-  handle: row.handle,
-  mpath: row.mpath,
-  parentCategoryId: row.parentCategoryId ?? null,
-  isActive: row.isActive,
-  isInternal: row.isInternal,
-  rank: row.rank,
-  metadata: row.metadata ?? {},
-  createdAt: new Date(row.createdAt),
-  updatedAt: new Date(row.updatedAt),
-});
+const DETAIL_CHILD_LIMIT = 100;
 
 /**
  * Half-open range instead of `like(mpath, prefix + "%")`.
@@ -98,20 +64,54 @@ const startsWithPrefix = (prefix: string) => {
 };
 
 export const productTypeDal = {
-  async list(): Promise<ProductTypeDTO[]> {
+  async listOptions(options: {
+    query?: string;
+    page: number;
+    limit: number;
+    selectedIds?: string[];
+  }): Promise<{
+    items: ProductTypeDTO[];
+    selected: ProductTypeDTO[];
+    total: number;
+  }> {
     const db = await getDb();
-    const rows = await db
-      .select()
-      .from(productTypes)
-      .where(isNull(productTypes.deletedAt))
-      .orderBy(asc(productTypes.value))
-      .limit(LIST_LIMIT);
-
-    return rows.map((row) => ({
+    const conditions: SQL[] = [isNull(productTypes.deletedAt)];
+    if (options.query?.trim())
+      conditions.push(
+        like(productTypes.value, containsPattern(options.query.trim())),
+      );
+    const where = and(...conditions);
+    const [totals, rows, selectedRows] = await Promise.all([
+      db.select({ value: count() }).from(productTypes).where(where),
+      db
+        .select()
+        .from(productTypes)
+        .where(where)
+        .orderBy(asc(productTypes.value), asc(productTypes.id))
+        .limit(options.limit)
+        .offset((options.page - 1) * options.limit),
+      options.selectedIds?.length
+        ? db
+            .select()
+            .from(productTypes)
+            .where(
+              and(
+                inArray(productTypes.id, options.selectedIds),
+                isNull(productTypes.deletedAt),
+              ),
+            )
+        : Promise.resolve([]),
+    ]);
+    const map = (row: typeof productTypes.$inferSelect): ProductTypeDTO => ({
       id: row.id,
       value: row.value,
       metadata: row.metadata ?? null,
-    }));
+    });
+    return {
+      items: rows.map(map),
+      selected: selectedRows.map(map),
+      total: Number(totals[0]?.value ?? 0),
+    };
   },
 
   /**
@@ -146,20 +146,54 @@ export const productTypeDal = {
 };
 
 export const productTagDal = {
-  async list(): Promise<ProductTagDTO[]> {
+  async listOptions(options: {
+    query?: string;
+    page: number;
+    limit: number;
+    selectedIds?: string[];
+  }): Promise<{
+    items: ProductTagDTO[];
+    selected: ProductTagDTO[];
+    total: number;
+  }> {
     const db = await getDb();
-    const rows = await db
-      .select()
-      .from(productTags)
-      .where(isNull(productTags.deletedAt))
-      .orderBy(asc(productTags.value))
-      .limit(LIST_LIMIT);
-
-    return rows.map((row) => ({
+    const conditions: SQL[] = [isNull(productTags.deletedAt)];
+    if (options.query?.trim())
+      conditions.push(
+        like(productTags.value, containsPattern(options.query.trim())),
+      );
+    const where = and(...conditions);
+    const [totals, rows, selectedRows] = await Promise.all([
+      db.select({ value: count() }).from(productTags).where(where),
+      db
+        .select()
+        .from(productTags)
+        .where(where)
+        .orderBy(asc(productTags.value), asc(productTags.id))
+        .limit(options.limit)
+        .offset((options.page - 1) * options.limit),
+      options.selectedIds?.length
+        ? db
+            .select()
+            .from(productTags)
+            .where(
+              and(
+                inArray(productTags.id, options.selectedIds),
+                isNull(productTags.deletedAt),
+              ),
+            )
+        : Promise.resolve([]),
+    ]);
+    const map = (row: typeof productTags.$inferSelect): ProductTagDTO => ({
       id: row.id,
       value: row.value,
       metadata: row.metadata ?? null,
-    }));
+    });
+    return {
+      items: rows.map(map),
+      selected: selectedRows.map(map),
+      total: Number(totals[0]?.value ?? 0),
+    };
   },
 
   /** Ids for every value, creating the ones that do not exist yet. */
@@ -175,7 +209,9 @@ export const productTagDal = {
       const rows = await db
         .select({ id: productTags.id, value: productTags.value })
         .from(productTags)
-        .where(and(inArray(productTags.value, group), isNull(productTags.deletedAt)));
+        .where(
+          and(inArray(productTags.value, group), isNull(productTags.deletedAt)),
+        );
       for (const row of rows) found.set(row.value, row.id);
     }
 
@@ -194,7 +230,9 @@ export const productTagDal = {
     for (const row of created) found.set(row.value, row.id);
 
     // Caller order is the author's order, which the link rows preserve.
-    return wanted.map((value) => found.get(value)).filter((id): id is string => Boolean(id));
+    return wanted
+      .map((value) => found.get(value))
+      .filter((id): id is string => Boolean(id));
   },
 };
 
@@ -208,15 +246,49 @@ export const productCategoryDal = {
    * and no single `ORDER BY` can give "parents first, then siblings by name"
    * from a path built out of ids.
    */
-  async list(): Promise<ProductCategoryDTO[]> {
+  async listOptions(options: {
+    query?: string;
+    page: number;
+    limit: number;
+    selectedIds?: string[];
+  }): Promise<{
+    items: ProductCategoryDTO[];
+    selected: ProductCategoryDTO[];
+    total: number;
+  }> {
     const db = await getDb();
-    const rows = await db
-      .select()
-      .from(productCategories)
-      .where(isNull(productCategories.deletedAt))
-      .limit(LIST_LIMIT);
-
-    return sortCategoryTree(rows.map(toCategoryDTO));
+    const conditions: SQL[] = [isNull(productCategories.deletedAt)];
+    if (options.query?.trim())
+      conditions.push(
+        like(productCategories.name, containsPattern(options.query.trim())),
+      );
+    const where = and(...conditions);
+    const [totals, rows, selectedRows] = await Promise.all([
+      db.select({ value: count() }).from(productCategories).where(where),
+      db
+        .select()
+        .from(productCategories)
+        .where(where)
+        .orderBy(asc(productCategories.name), asc(productCategories.id))
+        .limit(options.limit)
+        .offset((options.page - 1) * options.limit),
+      options.selectedIds?.length
+        ? db
+            .select()
+            .from(productCategories)
+            .where(
+              and(
+                inArray(productCategories.id, options.selectedIds),
+                isNull(productCategories.deletedAt),
+              ),
+            )
+        : Promise.resolve([]),
+    ]);
+    return {
+      items: rows.map(toProductCategoryDTO),
+      selected: selectedRows.map(toProductCategoryDTO),
+      total: Number(totals[0]?.value ?? 0),
+    };
   },
 
   async findById(id: string): Promise<ProductCategoryDTO | null> {
@@ -225,13 +297,10 @@ export const productCategoryDal = {
       .select()
       .from(productCategories)
       .where(
-        and(
-          eq(productCategories.id, id),
-          isNull(productCategories.deletedAt),
-        ),
+        and(eq(productCategories.id, id), isNull(productCategories.deletedAt)),
       )
       .limit(1);
-    return rows.length > 0 ? toCategoryDTO(rows[0]) : null;
+    return rows.length > 0 ? toProductCategoryDTO(rows[0]) : null;
   },
 
   async findByHandle(handle: string): Promise<ProductCategoryDTO | null> {
@@ -246,7 +315,7 @@ export const productCategoryDal = {
         ),
       )
       .limit(1);
-    return rows.length > 0 ? toCategoryDTO(rows[0]) : null;
+    return rows.length > 0 ? toProductCategoryDTO(rows[0]) : null;
   },
 
   /**
@@ -272,7 +341,7 @@ export const productCategoryDal = {
           ),
         )
         .orderBy(asc(productCategories.name))
-        .limit(LIST_LIMIT),
+        .limit(DETAIL_CHILD_LIMIT),
     ]);
 
     return { ...withPath[0], children: childRows };
@@ -326,7 +395,7 @@ export const productCategoryDal = {
     ]);
 
     return {
-      categories: await this.withAncestorNames(rows.map(toCategoryDTO)),
+      categories: await this.withAncestorNames(rows.map(toProductCategoryDTO)),
       total: countRows[0]?.value ?? 0,
     };
   },
@@ -416,7 +485,7 @@ export const productCategoryDal = {
       updatedAt: now,
     };
     await db.insert(productCategories).values(row);
-    return toCategoryDTO(row);
+    return toProductCategoryDTO(row);
   },
 
   async update(
@@ -450,7 +519,7 @@ export const productCategoryDal = {
       .where(
         and(startsWithPrefix(`${mpath}/`), isNull(productCategories.deletedAt)),
       );
-    return rows.map(toCategoryDTO);
+    return rows.map(toProductCategoryDTO);
   },
 
   /**
