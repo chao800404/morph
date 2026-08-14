@@ -1,4 +1,13 @@
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
@@ -9,6 +18,7 @@ import {
   ArrowLeft,
   AppWindow,
   CircleCheck,
+  ChevronDown,
   Code2,
   ExternalLink,
   LoaderCircle,
@@ -179,6 +189,11 @@ export function VisualEditorShell({
     previewContentSize?.key === previewKey
       ? previewContentSize.height
       : previewDefaultHeights[search.viewport];
+  const ActiveViewportIcon =
+    viewportOptions.find((option) => option.value === search.viewport)?.icon ??
+    Monitor;
+  const pageLabel = activeTemplate?.type === "index" ? "Home" : activeTemplate?.name ?? "Page";
+  const pagePath = activeTemplate?.type === "index" ? "/" : `/${activeTemplate?.type ?? search.template}`;
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
   const previewWidthRef = useRef(previewWidth);
@@ -317,6 +332,55 @@ export function VisualEditorShell({
     return () => window.removeEventListener("message", handlePreviewMessage);
   }, [previewKey]);
 
+  useEffect(() => {
+    if (!previewKey) return;
+
+    const handlePreviewSelection = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== previewIframeRef.current?.contentWindow ||
+        typeof message !== "object" ||
+        message === null ||
+        !("type" in message) ||
+        message.type !== "morph:storefront-preview-select-section" ||
+        !("sectionId" in message) ||
+        typeof message.sectionId !== "string" ||
+        message.sectionId.length > 100
+      ) {
+        return;
+      }
+      const sectionId = message.sectionId;
+      if (
+        !activeTemplate?.document.sections.some(
+          (section) => section.id === sectionId,
+        )
+      ) {
+        return;
+      }
+
+      onSearchChange({ section: sectionId });
+    };
+
+    window.addEventListener("message", handlePreviewSelection);
+    return () => window.removeEventListener("message", handlePreviewSelection);
+  }, [activeTemplate, onSearchChange, previewKey]);
+
+  const syncPreviewSection = useCallback(() => {
+    previewIframeRef.current?.contentWindow?.postMessage(
+      {
+        type: "morph:storefront-preview-set-section",
+        sectionId: search.section ?? null,
+      },
+      window.location.origin,
+    );
+  }, [search.section]);
+
+  useEffect(() => {
+    if (!previewKey) return;
+    syncPreviewSection();
+  }, [previewKey, syncPreviewSection]);
+
   const syncPreviewViewportHeight = useCallback(() => {
     previewIframeRef.current?.contentWindow?.postMessage(
       {
@@ -402,6 +466,85 @@ export function VisualEditorShell({
     viewport.addEventListener("wheel", handleCanvasWheel, { passive: false });
     return () => viewport.removeEventListener("wheel", handleCanvasWheel);
   }, [handleCanvasWheel]);
+
+  useEffect(() => {
+    if (!previewKey) return;
+
+    const handlePreviewWheel = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== previewIframeRef.current?.contentWindow ||
+        typeof message !== "object" ||
+        message === null ||
+        !("type" in message) ||
+        message.type !== "morph:storefront-preview-wheel" ||
+        !("deltaY" in message) ||
+        typeof message.deltaY !== "number" ||
+        !Number.isFinite(message.deltaY) ||
+        !("deltaMode" in message) ||
+        typeof message.deltaMode !== "number" ||
+        !("ctrlKey" in message) ||
+        typeof message.ctrlKey !== "boolean" ||
+        !("clientX" in message) ||
+        typeof message.clientX !== "number" ||
+        !("clientY" in message) ||
+        typeof message.clientY !== "number"
+      ) {
+        return;
+      }
+
+      const viewport = canvasViewportRef.current;
+      const frame = previewIframeRef.current;
+      if (!viewport || !frame) return;
+      const viewportBounds = viewport.getBoundingClientRect();
+      const frameBounds = frame.getBoundingClientRect();
+      const deltaY = normalizeWheelDelta(
+        message.deltaY,
+        message.deltaMode,
+        viewportBounds.height,
+      );
+
+      if (!message.ctrlKey) {
+        scheduleCanvasTransform((current) => ({
+          ...current,
+          y: current.y - deltaY,
+        }));
+        return;
+      }
+
+      const pointerX =
+        frameBounds.left +
+        message.clientX * canvasTransformRef.current.scale -
+        viewportBounds.left -
+        viewportBounds.width / 2;
+      const pointerY =
+        frameBounds.top +
+        message.clientY * canvasTransformRef.current.scale -
+        viewportBounds.top -
+        viewportBounds.height / 2;
+
+      scheduleCanvasTransform((current) => {
+        const zoomFactor = Math.exp(-deltaY * 0.001);
+        const nextScale = snapCanvasScaleTowardDefault(
+          current.scale,
+          clampCanvasScale(current.scale * zoomFactor),
+        );
+        if (nextScale === current.scale) return current;
+
+        const contentX = (pointerX - current.x) / current.scale;
+        const contentY = (pointerY - current.y) / current.scale;
+        return {
+          scale: nextScale,
+          x: pointerX - contentX * nextScale,
+          y: pointerY - contentY * nextScale,
+        };
+      });
+    };
+
+    window.addEventListener("message", handlePreviewWheel);
+    return () => window.removeEventListener("message", handlePreviewWheel);
+  }, [previewKey, scheduleCanvasTransform]);
 
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -606,26 +749,53 @@ export function VisualEditorShell({
             </p>
           </div>
         </div>
-        <div
-          className="flex items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm"
-          aria-label="Storefront preview viewport"
-        >
-          {viewportOptions.map(({ value, label, icon: Icon }) => (
-            <Button
-              key={value}
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "shrink-0 shadow-none",
-                search.viewport === value && "bg-accent",
-              )}
-              aria-label={label}
-              aria-pressed={search.viewport === value}
-              onClick={() => handleViewportChange(value)}
-            >
-              <Icon />
-            </Button>
-          ))}
+        <div className="flex h-9 min-w-60 items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm">
+          <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
+            <Code2 className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate text-sm font-medium">{pageLabel}</span>
+            <span className="ml-auto truncate text-xs text-muted-foreground">
+              {pagePath}
+            </span>
+          </div>
+          <Separator orientation="vertical" className="mx-1 h-5" />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 shrink-0 gap-1.5 px-2 shadow-none"
+                aria-label={`Preview device: ${search.viewport}`}
+              >
+                <ActiveViewportIcon className="size-3.5" />
+                <ChevronDown className="size-3 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-44">
+              <DropdownMenuLabel className="text-xs text-muted-foreground">
+                Preview device
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioGroup
+                value={search.viewport}
+                onValueChange={(value) => {
+                  const viewport = viewportOptions.find(
+                    (option) => option.value === value,
+                  );
+                  if (viewport) handleViewportChange(viewport.value);
+                }}
+              >
+                {viewportOptions.map(({ value, label, icon: Icon }) => (
+                  <DropdownMenuRadioItem key={value} value={value}>
+                    <Icon />
+                    <span>{label}</span>
+                    <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+                      {previewDefaultWidths[value]} px
+                    </span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
         <div className="flex items-center gap-1 justify-self-end">
           <span className="mr-2 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
@@ -710,6 +880,7 @@ export function VisualEditorShell({
                     className="block size-full border-0 bg-stone-50"
                     onLoad={() => {
                       syncPreviewViewportHeight();
+                      syncPreviewSection();
                       previewIframeRef.current?.contentWindow?.postMessage(
                         { type: "morph:storefront-preview-request-size" },
                         window.location.origin,
@@ -727,7 +898,6 @@ export function VisualEditorShell({
                     Loading storefront preview…
                   </div>
                 ) : null}
-                <div aria-hidden="true" className="absolute inset-0 z-20" />
               </div>
             </div>
             <PreviewSizeControl
@@ -778,7 +948,6 @@ export function VisualEditorShell({
         <EditorAssistantPanel
           context={context}
           search={search}
-          onSearchChange={onSearchChange}
         />
 
         <EditorSmallScreenNotice />

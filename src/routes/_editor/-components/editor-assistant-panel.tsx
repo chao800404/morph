@@ -1,19 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { cn } from "@/lib/utils";
 import {
-  ChevronRight,
+  CircleOff,
   History,
+  Layers3,
   MoreHorizontal,
   Paperclip,
   Plus,
@@ -21,25 +15,23 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { memo, useState } from "react";
-import {
-  resolveEditorTemplate,
-  toEditorTemplateSearch,
-} from "./editor-template";
+import { resolveEditorTemplate } from "./editor-template";
 
 type EditorAssistantPanelProps = {
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
-  onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
 };
 
 export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   context,
   search,
-  onSearchChange,
 }: EditorAssistantPanelProps) {
   const [tab, setTab] = useState<"styles" | "chat">("chat");
   const activeTemplate = resolveEditorTemplate(context, search);
   const sections = activeTemplate?.document.sections ?? [];
+  const selectedSection = sections.find(
+    (section) => section.id === search.section,
+  );
 
   return (
     <aside className="m-3 ml-0 grid w-[21rem] min-h-0 grid-rows-[3.25rem_minmax(0,1fr)_auto] overflow-hidden rounded-xl border bg-component shadow-lg max-md:hidden xl:w-[25rem]">
@@ -93,57 +85,20 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         </ScrollArea>
       ) : (
         <ScrollArea className="min-h-0">
-          <div className="space-y-4 p-3">
-            <Select
-              value={activeTemplate?.id}
-              onValueChange={(templateId) => {
-                const template = context.templates.find(
-                  (candidate) => candidate.id === templateId,
-                );
-                if (template) onSearchChange(toEditorTemplateSearch(template));
-              }}
-            >
-              <SelectTrigger size="sm" aria-label="Template">
-                <SelectValue placeholder="Select template" />
-              </SelectTrigger>
-              <SelectContent align="end">
-                {context.templates.map((template) => (
-                  <SelectItem key={template.id} value={template.id}>
-                    {template.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <div className="space-y-1">
-              <p className="px-2 pb-1 text-xs font-medium text-muted-foreground">
-                Template sections
+          {selectedSection ? (
+            <SectionSettings section={selectedSection} />
+          ) : (
+            <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">
+              <div className="flex size-10 items-center justify-center rounded-lg border bg-background shadow-xs">
+                <Layers3 className="size-4 text-muted-foreground" />
+              </div>
+              <h3 className="mt-4 text-sm font-medium">Select a section</h3>
+              <p className="mt-1.5 max-w-64 text-xs leading-relaxed text-muted-foreground">
+                Choose a section from the left sidebar to inspect its current
+                settings.
               </p>
-              {sections.length > 0 ? (
-                sections.map((section) => (
-                  <button
-                    key={section.id}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      search.section === section.id && "bg-accent",
-                    )}
-                    onClick={() => onSearchChange({ section: section.id })}
-                  >
-                    <span className="size-1.5 rounded-full bg-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate">
-                      {section.type}
-                    </span>
-                    <ChevronRight className="size-3.5 text-muted-foreground" />
-                  </button>
-                ))
-              ) : (
-                <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                  This template has no sections yet.
-                </div>
-              )}
             </div>
-          </div>
+          )}
         </ScrollArea>
       )}
 
@@ -181,6 +136,85 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
     </aside>
   );
 });
+
+type EditorSection = NonNullable<
+  StorefrontThemeEditorDTO["templates"][number]
+>["document"]["sections"][number];
+
+function SectionSettings({ section }: { section: EditorSection }) {
+  const properties = Object.entries(section.props);
+
+  return (
+    <div className="space-y-4 p-3">
+      <div className="rounded-lg border bg-background p-3 shadow-xs">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">{section.type}</p>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {section.id}
+            </p>
+          </div>
+          <span
+            className={cn(
+              "rounded-full px-2 py-1 text-[11px] font-medium",
+              section.enabled
+                ? "bg-primary/10 text-primary"
+                : "bg-muted text-muted-foreground",
+            )}
+          >
+            {section.enabled ? "Enabled" : "Hidden"}
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <p className="px-1 text-xs font-medium text-muted-foreground">
+          Section properties
+        </p>
+        {properties.length > 0 ? (
+          properties.map(([name, value]) => (
+            <div
+              key={name}
+              className="rounded-lg border bg-background px-3 py-2.5 shadow-xs"
+            >
+              <p className="text-xs font-medium">{formatPropertyName(name)}</p>
+              <p className="mt-1 line-clamp-3 break-words text-xs leading-relaxed text-muted-foreground">
+                {formatPropertyValue(value)}
+              </p>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+            This section has no configurable properties.
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-2 rounded-lg border border-dashed p-3 text-xs leading-relaxed text-muted-foreground">
+        <CircleOff className="mt-0.5 size-3.5 shrink-0" />
+        Editing stays read-only until draft revisions and publish validation are
+        connected.
+      </div>
+    </div>
+  );
+}
+
+function formatPropertyName(name: string) {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .replace(/^./, (character) => character.toUpperCase());
+}
+
+function formatPropertyValue(value: unknown) {
+  if (typeof value === "string") return value || "—";
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value === null || value === undefined) return "—";
+  if (Array.isArray(value)) return `${value.length} items`;
+  return "Configured object";
+}
 
 function PanelTab({
   active,

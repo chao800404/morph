@@ -2,17 +2,27 @@ import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import LoadingBar, { LoadingBarRef } from "react-top-loading-bar";
 
-export const TopLoader = () => {
+type TopLoaderProps = {
+  ignoreSearchOnly?: boolean;
+};
+
+export const TopLoader = ({ ignoreSearchOnly = false }: TopLoaderProps) => {
   const ref = useRef<LoadingBarRef>(null);
-  const isLoading = useRouterState({ select: (s) => s.isLoading });
+  const shouldShow = useRouterState({
+    select: (state) =>
+      state.isLoading &&
+      (!ignoreSearchOnly ||
+        !state.resolvedLocation ||
+        state.location.pathname !== state.resolvedLocation.pathname),
+  });
 
   useEffect(() => {
-    if (isLoading) {
+    if (shouldShow) {
       ref.current?.start();
     } else {
       ref.current?.complete();
     }
-  }, [isLoading]);
+  }, [shouldShow]);
 
   return <LoadingBar color="#f11946" ref={ref} shadow={true} />;
 };

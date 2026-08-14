@@ -25,6 +25,7 @@ function StorefrontThemePreviewRoute() {
   );
   const viewportHeight = usePreviewViewportHeight(search.viewportHeight);
   useStorefrontPreviewSizeBridge(!query.isPending);
+  useStorefrontPreviewSelectionBridge(!query.isPending);
 
   if (query.isPending || !query.data) return <PreviewPending />;
   if (!query.data.success) {
@@ -43,6 +44,163 @@ function StorefrontThemePreviewRoute() {
       viewportHeight={viewportHeight}
     />
   );
+}
+
+function useStorefrontPreviewSelectionBridge(enabled: boolean) {
+  useEffect(() => {
+    if (!enabled || window.parent === window) return;
+
+    const style = document.createElement("style");
+    style.dataset.storefrontEditorSelection = "true";
+    style.textContent = `
+      [data-storefront-section-id] {
+        cursor: default;
+      }
+      [data-storefront-section-id][data-storefront-editor-selected="true"] {
+        outline: 2px solid hsl(217 91% 60%);
+        outline-offset: -2px;
+      }
+    `;
+    document.head.appendChild(style);
+
+    const hoverOverlay = document.createElement("div");
+    hoverOverlay.setAttribute("aria-hidden", "true");
+    Object.assign(hoverOverlay.style, {
+      position: "fixed",
+      zIndex: "2147483646",
+      display: "none",
+      pointerEvents: "none",
+      border: "2px solid hsl(217 91% 60%)",
+      background: "hsl(217 91% 60% / 0.08)",
+      boxSizing: "border-box",
+    });
+
+    const hoverLabel = document.createElement("span");
+    Object.assign(hoverLabel.style, {
+      position: "absolute",
+      left: "-2px",
+      bottom: "100%",
+      padding: "4px 7px",
+      borderRadius: "5px 5px 0 0",
+      background: "hsl(217 91% 60%)",
+      color: "white",
+      font: "500 11px/1.2 ui-sans-serif, system-ui, sans-serif",
+      letterSpacing: "0.01em",
+      whiteSpace: "nowrap",
+    });
+    hoverOverlay.appendChild(hoverLabel);
+    document.body.appendChild(hoverOverlay);
+
+    let hoveredSection: HTMLElement | null = null;
+    let selectedSection: HTMLElement | null = null;
+
+    const positionHoverOverlay = () => {
+      if (!hoveredSection) {
+        hoverOverlay.style.display = "none";
+        return;
+      }
+      const bounds = hoveredSection.getBoundingClientRect();
+      hoverOverlay.style.display = "block";
+      hoverOverlay.style.left = `${bounds.left}px`;
+      hoverOverlay.style.top = `${bounds.top}px`;
+      hoverOverlay.style.width = `${bounds.width}px`;
+      hoverOverlay.style.height = `${bounds.height}px`;
+      hoverLabel.textContent =
+        hoveredSection.dataset.storefrontSectionType ?? "Section";
+    };
+
+    const resolveSection = (target: EventTarget | null) =>
+      target instanceof Element
+        ? target.closest<HTMLElement>("[data-storefront-section-id]")
+        : null;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const nextSection = resolveSection(event.target);
+      if (nextSection === hoveredSection) return;
+      hoveredSection = nextSection;
+      positionHoverOverlay();
+    };
+    const handlePointerLeave = () => {
+      hoveredSection = null;
+      positionHoverOverlay();
+    };
+    const handleClick = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const section = resolveSection(event.target);
+      const sectionId = section?.dataset.storefrontSectionId;
+      if (!section || !sectionId) return;
+
+      selectedSection?.removeAttribute("data-storefront-editor-selected");
+      selectedSection = section;
+      selectedSection.dataset.storefrontEditorSelected = "true";
+      window.parent.postMessage(
+        { type: "morph:storefront-preview-select-section", sectionId },
+        window.location.origin,
+      );
+    };
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      window.parent.postMessage(
+        {
+          type: "morph:storefront-preview-wheel",
+          deltaY: event.deltaY,
+          deltaMode: event.deltaMode,
+          ctrlKey: event.ctrlKey,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        },
+        window.location.origin,
+      );
+    };
+    const handleSelectionMessage = (event: MessageEvent<unknown>) => {
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== window.parent ||
+        typeof event.data !== "object" ||
+        event.data === null ||
+        !("type" in event.data) ||
+        event.data.type !== "morph:storefront-preview-set-section" ||
+        !("sectionId" in event.data) ||
+        (typeof event.data.sectionId !== "string" &&
+          event.data.sectionId !== null)
+      ) {
+        return;
+      }
+
+      selectedSection?.removeAttribute("data-storefront-editor-selected");
+      selectedSection = event.data.sectionId
+        ? document.querySelector<HTMLElement>(
+            `[data-storefront-section-id="${CSS.escape(event.data.sectionId)}"]`,
+          )
+        : null;
+      selectedSection?.setAttribute("data-storefront-editor-selected", "true");
+    };
+
+    document.addEventListener("pointermove", handlePointerMove, true);
+    document.addEventListener("pointerleave", handlePointerLeave, true);
+    document.addEventListener("click", handleClick, true);
+    document.addEventListener("wheel", handleWheel, {
+      capture: true,
+      passive: false,
+    });
+    window.addEventListener("scroll", positionHoverOverlay, true);
+    window.addEventListener("resize", positionHoverOverlay);
+    window.addEventListener("message", handleSelectionMessage);
+
+    return () => {
+      document.removeEventListener("pointermove", handlePointerMove, true);
+      document.removeEventListener("pointerleave", handlePointerLeave, true);
+      document.removeEventListener("click", handleClick, true);
+      document.removeEventListener("wheel", handleWheel, true);
+      window.removeEventListener("scroll", positionHoverOverlay, true);
+      window.removeEventListener("resize", positionHoverOverlay);
+      window.removeEventListener("message", handleSelectionMessage);
+      style.remove();
+      hoverOverlay.remove();
+      selectedSection?.removeAttribute("data-storefront-editor-selected");
+    };
+  }, [enabled]);
 }
 
 function usePreviewViewportHeight(initialHeight: number) {

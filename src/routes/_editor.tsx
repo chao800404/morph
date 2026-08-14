@@ -24,7 +24,7 @@ export const Route = createFileRoute("/_editor")({
 function EditorLayout() {
   return (
     <ThemeProvider disableTransitionOnChange>
-      <TopLoader />
+      <TopLoader ignoreSearchOnly />
       <div className="min-h-svh bg-background text-foreground">
         <Outlet />
       </div>

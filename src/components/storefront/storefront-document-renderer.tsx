@@ -127,7 +127,7 @@ function renderSection(section: StorefrontSection) {
 
 function StorefrontHero({ sectionId, eyebrow, heading, description, actionLabel, actionHref, imageSrc, imageAlt }: z.infer<typeof heroSectionPropsSchema> & { sectionId: string }) {
   return (
-    <section data-storefront-section-id={sectionId} className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
+    <section data-storefront-section-id={sectionId} data-storefront-section-type="hero" className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
       <div className="flex items-center px-[clamp(1.75rem,6vw,6rem)] py-20">
         <div className="max-w-xl">
           <p className="text-xs font-medium uppercase tracking-[0.24em] text-stone-500">{eyebrow}</p>
@@ -145,7 +145,7 @@ function StorefrontHero({ sectionId, eyebrow, heading, description, actionLabel,
 
 function EditorialIntro({ sectionId, label, heading, body }: z.infer<typeof editorialIntroPropsSchema> & { sectionId: string }) {
   return (
-    <section data-storefront-section-id={sectionId} className="bg-stone-50 px-[clamp(1.75rem,7vw,7rem)] py-[clamp(6rem,12vw,11rem)]">
+    <section data-storefront-section-id={sectionId} data-storefront-section-type="editorial-intro" className="bg-stone-50 px-[clamp(1.75rem,7vw,7rem)] py-[clamp(6rem,12vw,11rem)]">
       <div className="grid gap-10 border-t border-stone-300 pt-8 lg:grid-cols-[0.55fr_1.45fr]">
         <p className="text-xs font-medium uppercase tracking-[0.22em] text-stone-500">{label}</p>
         <div>
@@ -159,7 +159,7 @@ function EditorialIntro({ sectionId, label, heading, body }: z.infer<typeof edit
 
 function CategoryShowcase({ sectionId, heading, items }: z.infer<typeof categoryShowcasePropsSchema> & { sectionId: string }) {
   return (
-    <section data-storefront-section-id={sectionId} className="bg-stone-900 px-[clamp(1.25rem,4vw,4rem)] py-[clamp(5rem,9vw,9rem)] text-stone-100">
+    <section data-storefront-section-id={sectionId} data-storefront-section-type="category-showcase" className="bg-stone-900 px-[clamp(1.25rem,4vw,4rem)] py-[clamp(5rem,9vw,9rem)] text-stone-100">
       <div className="mb-12 flex items-end justify-between border-b border-stone-700 pb-6">
         <h2 className="font-serif text-[clamp(2.5rem,5vw,5rem)] tracking-[-0.04em]">{heading}</h2>
         <span className="hidden text-xs uppercase tracking-[0.2em] text-stone-400 sm:block">The collection</span>
@@ -186,7 +186,7 @@ function CategoryShowcase({ sectionId, heading, items }: z.infer<typeof category
 
 function ImageWithText({ sectionId, eyebrow, heading, body, actionLabel, actionHref, imageSrc, imageAlt, imagePosition }: z.infer<typeof imageWithTextPropsSchema> & { sectionId: string }) {
   return (
-    <section data-storefront-section-id={sectionId} className="grid bg-[#d8d0c3] lg:grid-cols-2">
+    <section data-storefront-section-id={sectionId} data-storefront-section-type="image-with-text" className="grid bg-[#d8d0c3] lg:grid-cols-2">
       <div className="min-h-[32rem] overflow-hidden lg:min-h-[52rem]">
         <img src={imageSrc} alt={imageAlt} style={{ objectPosition: imagePosition }} className="size-full scale-110 object-cover" />
       </div>
@@ -204,7 +204,7 @@ function ImageWithText({ sectionId, eyebrow, heading, body, actionLabel, actionH
 
 function Principles({ sectionId, items }: z.infer<typeof principlesPropsSchema> & { sectionId: string }) {
   return (
-    <section data-storefront-section-id={sectionId} className="bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]">
+    <section data-storefront-section-id={sectionId} data-storefront-section-type="principles" className="bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]">
       <p className="mb-14 text-xs font-medium uppercase tracking-[0.22em] text-stone-500">Why we choose differently</p>
       <div className="grid border-t border-stone-300 lg:grid-cols-3">
         {items.map((item) => (
@@ -221,7 +221,7 @@ function Principles({ sectionId, items }: z.infer<typeof principlesPropsSchema> 
 
 function Newsletter({ sectionId, eyebrow, heading, body, placeholder, actionLabel }: z.infer<typeof newsletterPropsSchema> & { sectionId: string }) {
   return (
-    <section data-storefront-section-id={sectionId} className="bg-[#b7ad9d] px-[clamp(1.75rem,8vw,8rem)] py-[clamp(6rem,11vw,10rem)]">
+    <section data-storefront-section-id={sectionId} data-storefront-section-type="newsletter" className="bg-[#b7ad9d] px-[clamp(1.75rem,8vw,8rem)] py-[clamp(6rem,11vw,10rem)]">
       <div className="mx-auto max-w-4xl text-center">
         <p className="text-xs font-medium uppercase tracking-[0.24em] text-stone-700">{eyebrow}</p>
         <h2 className="mt-6 font-serif text-[clamp(3rem,6vw,6rem)] leading-[0.92] tracking-[-0.045em] text-stone-950">{heading}</h2>
