@@ -44,6 +44,11 @@ import {
 import { EditorAssistantPanel } from "./editor-assistant-panel";
 import { EditorSectionsPanel } from "./editor-sections-panel";
 import { resolveEditorTemplate } from "./editor-template";
+import {
+  EditorToolbar,
+  EditorToolbarGroup,
+  EditorToolbarMode,
+} from "./editor-toolbar";
 
 type EditorShellProps = {
   context: StorefrontThemeEditorDTO;
@@ -175,6 +180,7 @@ export function VisualEditorShell({
     initialCanvasTransform,
   );
   const [isPanning, setIsPanning] = useState(false);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
@@ -192,8 +198,14 @@ export function VisualEditorShell({
   const ActiveViewportIcon =
     viewportOptions.find((option) => option.value === search.viewport)?.icon ??
     Monitor;
-  const pageLabel = activeTemplate?.type === "index" ? "Home" : activeTemplate?.name ?? "Page";
-  const pagePath = activeTemplate?.type === "index" ? "/" : `/${activeTemplate?.type ?? search.template}`;
+  const pageLabel =
+    activeTemplate?.type === "index"
+      ? "Home"
+      : (activeTemplate?.name ?? "Page");
+  const pagePath =
+    activeTemplate?.type === "index"
+      ? "/"
+      : `/${activeTemplate?.type ?? search.template}`;
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
   const previewWidthRef = useRef(previewWidth);
@@ -207,6 +219,7 @@ export function VisualEditorShell({
     pointerY: number;
     canvasX: number;
     canvasY: number;
+    source: "canvas" | "preview";
   } | null>(null);
   const resizeOriginRef = useRef<{
     pointerId: number;
@@ -351,6 +364,7 @@ export function VisualEditorShell({
         return;
       }
       const sectionId = message.sectionId;
+      if (!isSelectionMode) return;
       if (
         !activeTemplate?.document.sections.some(
           (section) => section.id === sectionId,
@@ -364,7 +378,7 @@ export function VisualEditorShell({
 
     window.addEventListener("message", handlePreviewSelection);
     return () => window.removeEventListener("message", handlePreviewSelection);
-  }, [activeTemplate, onSearchChange, previewKey]);
+  }, [activeTemplate, isSelectionMode, onSearchChange, previewKey]);
 
   const syncPreviewSection = useCallback(() => {
     previewIframeRef.current?.contentWindow?.postMessage(
@@ -380,6 +394,21 @@ export function VisualEditorShell({
     if (!previewKey) return;
     syncPreviewSection();
   }, [previewKey, syncPreviewSection]);
+
+  const syncPreviewSelectionMode = useCallback(() => {
+    previewIframeRef.current?.contentWindow?.postMessage(
+      {
+        type: "morph:storefront-preview-set-selection-mode",
+        enabled: isSelectionMode,
+      },
+      window.location.origin,
+    );
+  }, [isSelectionMode]);
+
+  useEffect(() => {
+    if (!previewKey) return;
+    syncPreviewSelectionMode();
+  }, [previewKey, syncPreviewSelectionMode]);
 
   const syncPreviewViewportHeight = useCallback(() => {
     previewIframeRef.current?.contentWindow?.postMessage(
@@ -399,6 +428,68 @@ export function VisualEditorShell({
   const resetCanvas = useCallback(() => {
     scheduleCanvasTransform(initialCanvasTransform);
   }, [scheduleCanvasTransform]);
+
+  const beginCanvasPan = useCallback(
+    (
+      source: "canvas" | "preview",
+      pointerId: number,
+      pointerX: number,
+      pointerY: number,
+    ) => {
+      panOriginRef.current = {
+        pointerId,
+        pointerX,
+        pointerY,
+        canvasX: canvasTransformRef.current.x,
+        canvasY: canvasTransformRef.current.y,
+        source,
+      };
+      setIsPanning(true);
+    },
+    [],
+  );
+
+  const moveCanvasPan = useCallback(
+    (
+      source: "canvas" | "preview",
+      pointerId: number,
+      pointerX: number,
+      pointerY: number,
+    ) => {
+      const origin = panOriginRef.current;
+      if (
+        !origin ||
+        origin.source !== source ||
+        origin.pointerId !== pointerId
+      ) {
+        return;
+      }
+
+      scheduleCanvasTransform((current) => ({
+        ...current,
+        x: origin.canvasX + pointerX - origin.pointerX,
+        y: origin.canvasY + pointerY - origin.pointerY,
+      }));
+    },
+    [scheduleCanvasTransform],
+  );
+
+  const endCanvasPan = useCallback(
+    (source: "canvas" | "preview", pointerId: number) => {
+      const origin = panOriginRef.current;
+      if (
+        !origin ||
+        origin.source !== source ||
+        origin.pointerId !== pointerId
+      ) {
+        return;
+      }
+
+      panOriginRef.current = null;
+      setIsPanning(false);
+    },
+    [],
+  );
 
   const changeCanvasScale = useCallback(
     (amount: number) => {
@@ -546,6 +637,70 @@ export function VisualEditorShell({
     return () => window.removeEventListener("message", handlePreviewWheel);
   }, [previewKey, scheduleCanvasTransform]);
 
+  useEffect(() => {
+    if (!previewKey) return;
+
+    const handlePreviewCanvasGesture = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== previewIframeRef.current?.contentWindow ||
+        typeof message !== "object" ||
+        message === null ||
+        !("type" in message)
+      ) {
+        return;
+      }
+
+      if (message.type === "morph:storefront-preview-reset-canvas") {
+        resetCanvas();
+        return;
+      }
+
+      if (
+        message.type !== "morph:storefront-preview-pointer" ||
+        !("phase" in message) ||
+        (message.phase !== "down" &&
+          message.phase !== "move" &&
+          message.phase !== "up" &&
+          message.phase !== "cancel") ||
+        !("pointerId" in message) ||
+        typeof message.pointerId !== "number" ||
+        !Number.isInteger(message.pointerId) ||
+        !("screenX" in message) ||
+        typeof message.screenX !== "number" ||
+        !Number.isFinite(message.screenX) ||
+        !("screenY" in message) ||
+        typeof message.screenY !== "number" ||
+        !Number.isFinite(message.screenY)
+      ) {
+        return;
+      }
+
+      if (message.phase === "down") {
+        beginCanvasPan(
+          "preview",
+          message.pointerId,
+          message.screenX,
+          message.screenY,
+        );
+      } else if (message.phase === "move") {
+        moveCanvasPan(
+          "preview",
+          message.pointerId,
+          message.screenX,
+          message.screenY,
+        );
+      } else {
+        endCanvasPan("preview", message.pointerId);
+      }
+    };
+
+    window.addEventListener("message", handlePreviewCanvasGesture);
+    return () =>
+      window.removeEventListener("message", handlePreviewCanvasGesture);
+  }, [beginCanvasPan, endCanvasPan, moveCanvasPan, previewKey, resetCanvas]);
+
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) {
@@ -553,44 +708,23 @@ export function VisualEditorShell({
       }
 
       event.currentTarget.setPointerCapture(event.pointerId);
-      panOriginRef.current = {
-        pointerId: event.pointerId,
-        pointerX: event.clientX,
-        pointerY: event.clientY,
-        canvasX: canvasTransformRef.current.x,
-        canvasY: canvasTransformRef.current.y,
-      };
-      setIsPanning(true);
+      beginCanvasPan("canvas", event.pointerId, event.clientX, event.clientY);
     },
-    [],
+    [beginCanvasPan],
   );
 
   const handleCanvasPointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      const origin = panOriginRef.current;
-      if (!origin || origin.pointerId !== event.pointerId) {
-        return;
-      }
-
-      scheduleCanvasTransform((current) => ({
-        ...current,
-        x: origin.canvasX + event.clientX - origin.pointerX,
-        y: origin.canvasY + event.clientY - origin.pointerY,
-      }));
+      moveCanvasPan("canvas", event.pointerId, event.clientX, event.clientY);
     },
-    [scheduleCanvasTransform],
+    [moveCanvasPan],
   );
 
   const finishCanvasPan = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (panOriginRef.current?.pointerId !== event.pointerId) {
-        return;
-      }
-
-      panOriginRef.current = null;
-      setIsPanning(false);
+      endCanvasPan("canvas", event.pointerId);
     },
-    [],
+    [endCanvasPan],
   );
 
   const handleCanvasKeyDown = useCallback(
@@ -881,6 +1015,7 @@ export function VisualEditorShell({
                     onLoad={() => {
                       syncPreviewViewportHeight();
                       syncPreviewSection();
+                      syncPreviewSelectionMode();
                       previewIframeRef.current?.contentWindow?.postMessage(
                         { type: "morph:storefront-preview-request-size" },
                         window.location.origin,
@@ -935,6 +1070,8 @@ export function VisualEditorShell({
 
           <EditorControls
             search={search}
+            isSelectionMode={isSelectionMode}
+            onSelectionModeChange={setIsSelectionMode}
             onRefresh={() => {
               setPreviewRevision((revision) => revision + 1);
             }}
@@ -945,10 +1082,7 @@ export function VisualEditorShell({
           />
         </main>
 
-        <EditorAssistantPanel
-          context={context}
-          search={search}
-        />
+        <EditorAssistantPanel context={context} search={search} />
 
         <EditorSmallScreenNotice />
       </div>
@@ -1152,6 +1286,8 @@ function EditorSmallScreenNotice() {
 
 function EditorControls({
   search,
+  isSelectionMode,
+  onSelectionModeChange,
   onRefresh,
   canvasScale,
   onZoomOut,
@@ -1159,6 +1295,8 @@ function EditorControls({
   onResetCanvas,
 }: {
   search: StorefrontThemeEditorSearch;
+  isSelectionMode: boolean;
+  onSelectionModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
   canvasScale: number;
   onZoomOut: () => void;
@@ -1167,12 +1305,26 @@ function EditorControls({
 }) {
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-5 z-10 flex justify-center px-3">
-      <div className="pointer-events-auto flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border bg-popover p-1.5 text-popover-foreground shadow-lg">
+      <EditorToolbar
+        aria-label="Storefront canvas controls"
+        className="pointer-events-auto"
+      >
         <Button
-          variant="ghost"
+          variant={isSelectionMode ? "default" : "ghost"}
           size="icon"
-          className="shrink-0 bg-accent"
-          aria-label="Select elements"
+          className="shrink-0"
+          aria-label={
+            isSelectionMode
+              ? "Disable section selection"
+              : "Enable section selection"
+          }
+          aria-pressed={isSelectionMode}
+          title={
+            isSelectionMode
+              ? "Exit section selection mode"
+              : "Select sections on the page"
+          }
+          onClick={() => onSelectionModeChange(!isSelectionMode)}
         >
           <MousePointer2 />
         </Button>
@@ -1225,23 +1377,15 @@ function EditorControls({
           <Plus />
         </Button>
         <Separator orientation="vertical" className="mx-1 h-5" />
-        <div className="flex shrink-0 rounded-md bg-muted p-0.5">
-          <span className="rounded-sm bg-background px-3 py-1 text-xs font-medium shadow-xs">
-            Store
-          </span>
-          <button
-            type="button"
-            disabled
-            className="px-3 py-1 text-xs text-muted-foreground disabled:cursor-not-allowed"
-          >
-            Admin
-          </button>
-        </div>
+        <EditorToolbarGroup aria-label="Preview surface">
+          <EditorToolbarMode active>Store</EditorToolbarMode>
+          <EditorToolbarMode disabled>Admin</EditorToolbarMode>
+        </EditorToolbarGroup>
         <div className="hidden max-w-48 items-center gap-1.5 truncate px-2 text-xs text-muted-foreground xl:flex">
           <Code2 className="size-3.5 shrink-0" />
           <span className="truncate">/{search.template}</span>
         </div>
-      </div>
+      </EditorToolbar>
     </div>
   );
 }

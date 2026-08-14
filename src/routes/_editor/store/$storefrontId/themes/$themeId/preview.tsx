@@ -53,12 +53,23 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     const style = document.createElement("style");
     style.dataset.storefrontEditorSelection = "true";
     style.textContent = `
-      [data-storefront-section-id] {
+      html[data-storefront-editor-selection-enabled="true"] [data-storefront-section-id] {
         cursor: default;
       }
-      [data-storefront-section-id][data-storefront-editor-selected="true"] {
+      html[data-storefront-editor-selection-enabled="true"] [data-storefront-section-id][data-storefront-editor-selected="true"] {
         outline: 2px solid hsl(217 91% 60%);
         outline-offset: -2px;
+      }
+      html[data-storefront-editor-pan-enabled="true"],
+      html[data-storefront-editor-pan-enabled="true"] body,
+      html[data-storefront-editor-pan-enabled="true"] body * {
+        cursor: grab !important;
+        user-select: none !important;
+      }
+      html[data-storefront-editor-panning="true"],
+      html[data-storefront-editor-panning="true"] body,
+      html[data-storefront-editor-panning="true"] body * {
+        cursor: grabbing !important;
       }
     `;
     document.head.appendChild(style);
@@ -93,6 +104,16 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
     let hoveredSection: HTMLElement | null = null;
     let selectedSection: HTMLElement | null = null;
+    let selectedSectionId: string | null = null;
+    let selectionEnabled = false;
+    let panGesture: {
+      pointerId: number;
+      startScreenX: number;
+      startScreenY: number;
+      didMove: boolean;
+      captureTarget: Element;
+    } | null = null;
+    let suppressNextClick = false;
 
     const positionHoverOverlay = () => {
       if (!hoveredSection) {
@@ -115,6 +136,26 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         : null;
 
     const handlePointerMove = (event: PointerEvent) => {
+      if (!selectionEnabled && panGesture?.pointerId === event.pointerId) {
+        panGesture.didMove ||=
+          Math.hypot(
+            event.screenX - panGesture.startScreenX,
+            event.screenY - panGesture.startScreenY,
+          ) >= 3;
+        event.preventDefault();
+        window.parent.postMessage(
+          {
+            type: "morph:storefront-preview-pointer",
+            phase: "move",
+            pointerId: event.pointerId,
+            screenX: event.screenX,
+            screenY: event.screenY,
+          },
+          window.location.origin,
+        );
+        return;
+      }
+      if (!selectionEnabled) return;
       const nextSection = resolveSection(event.target);
       if (nextSection === hoveredSection) return;
       hoveredSection = nextSection;
@@ -124,7 +165,67 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       hoveredSection = null;
       positionHoverOverlay();
     };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (
+        selectionEnabled ||
+        event.button !== 0 ||
+        !(event.target instanceof Element)
+      ) {
+        return;
+      }
+      event.target.setPointerCapture(event.pointerId);
+      panGesture = {
+        pointerId: event.pointerId,
+        startScreenX: event.screenX,
+        startScreenY: event.screenY,
+        didMove: false,
+        captureTarget: event.target,
+      };
+      window.parent.postMessage(
+        {
+          type: "morph:storefront-preview-pointer",
+          phase: "down",
+          pointerId: event.pointerId,
+          screenX: event.screenX,
+          screenY: event.screenY,
+        },
+        window.location.origin,
+      );
+      document.documentElement.setAttribute(
+        "data-storefront-editor-panning",
+        "true",
+      );
+    };
+    const finishPanGesture = (event: PointerEvent) => {
+      if (panGesture?.pointerId !== event.pointerId) return;
+      suppressNextClick = panGesture.didMove;
+      window.parent.postMessage(
+        {
+          type: "morph:storefront-preview-pointer",
+          phase: event.type === "pointercancel" ? "cancel" : "up",
+          pointerId: event.pointerId,
+          screenX: event.screenX,
+          screenY: event.screenY,
+        },
+        window.location.origin,
+      );
+      if (panGesture.captureTarget.hasPointerCapture(event.pointerId)) {
+        panGesture.captureTarget.releasePointerCapture(event.pointerId);
+      }
+      panGesture = null;
+      document.documentElement.removeAttribute(
+        "data-storefront-editor-panning",
+      );
+    };
     const handleClick = (event: MouseEvent) => {
+      if (!selectionEnabled) {
+        if (suppressNextClick) {
+          event.preventDefault();
+          event.stopPropagation();
+          suppressNextClick = false;
+        }
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       const section = resolveSection(event.target);
@@ -133,11 +234,24 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
       selectedSection?.removeAttribute("data-storefront-editor-selected");
       selectedSection = section;
+      selectedSectionId = sectionId;
       selectedSection.dataset.storefrontEditorSelected = "true";
       window.parent.postMessage(
         { type: "morph:storefront-preview-select-section", sectionId },
         window.location.origin,
       );
+    };
+    const handleDoubleClick = (event: MouseEvent) => {
+      if (selectionEnabled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      window.parent.postMessage(
+        { type: "morph:storefront-preview-reset-canvas" },
+        window.location.origin,
+      );
+    };
+    const handleDragStart = (event: DragEvent) => {
+      if (!selectionEnabled) event.preventDefault();
     };
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
@@ -153,13 +267,50 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         window.location.origin,
       );
     };
-    const handleSelectionMessage = (event: MessageEvent<unknown>) => {
+    const restoreSelectedSection = () => {
+      selectedSection?.removeAttribute("data-storefront-editor-selected");
+      selectedSection =
+        selectionEnabled && selectedSectionId
+          ? document.querySelector<HTMLElement>(
+              `[data-storefront-section-id="${CSS.escape(selectedSectionId)}"]`,
+            )
+          : null;
+      selectedSection?.setAttribute("data-storefront-editor-selected", "true");
+    };
+    const handleEditorMessage = (event: MessageEvent<unknown>) => {
       if (
         event.origin !== window.location.origin ||
         event.source !== window.parent ||
         typeof event.data !== "object" ||
         event.data === null ||
-        !("type" in event.data) ||
+        !("type" in event.data)
+      ) {
+        return;
+      }
+
+      if (event.data.type === "morph:storefront-preview-set-selection-mode") {
+        if (
+          !("enabled" in event.data) ||
+          typeof event.data.enabled !== "boolean"
+        ) {
+          return;
+        }
+        selectionEnabled = event.data.enabled;
+        document.documentElement.toggleAttribute(
+          "data-storefront-editor-selection-enabled",
+          selectionEnabled,
+        );
+        document.documentElement.toggleAttribute(
+          "data-storefront-editor-pan-enabled",
+          !selectionEnabled,
+        );
+        hoveredSection = null;
+        positionHoverOverlay();
+        restoreSelectedSection();
+        return;
+      }
+
+      if (
         event.data.type !== "morph:storefront-preview-set-section" ||
         !("sectionId" in event.data) ||
         (typeof event.data.sectionId !== "string" &&
@@ -168,34 +319,48 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
-      selectedSection?.removeAttribute("data-storefront-editor-selected");
-      selectedSection = event.data.sectionId
-        ? document.querySelector<HTMLElement>(
-            `[data-storefront-section-id="${CSS.escape(event.data.sectionId)}"]`,
-          )
-        : null;
-      selectedSection?.setAttribute("data-storefront-editor-selected", "true");
+      selectedSectionId = event.data.sectionId;
+      restoreSelectedSection();
     };
 
+    document.addEventListener("pointerdown", handlePointerDown, true);
     document.addEventListener("pointermove", handlePointerMove, true);
+    document.addEventListener("pointerup", finishPanGesture, true);
+    document.addEventListener("pointercancel", finishPanGesture, true);
     document.addEventListener("pointerleave", handlePointerLeave, true);
     document.addEventListener("click", handleClick, true);
+    document.addEventListener("dblclick", handleDoubleClick, true);
+    document.addEventListener("dragstart", handleDragStart, true);
     document.addEventListener("wheel", handleWheel, {
       capture: true,
       passive: false,
     });
     window.addEventListener("scroll", positionHoverOverlay, true);
     window.addEventListener("resize", positionHoverOverlay);
-    window.addEventListener("message", handleSelectionMessage);
+    window.addEventListener("message", handleEditorMessage);
 
     return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("pointermove", handlePointerMove, true);
+      document.removeEventListener("pointerup", finishPanGesture, true);
+      document.removeEventListener("pointercancel", finishPanGesture, true);
       document.removeEventListener("pointerleave", handlePointerLeave, true);
       document.removeEventListener("click", handleClick, true);
+      document.removeEventListener("dblclick", handleDoubleClick, true);
+      document.removeEventListener("dragstart", handleDragStart, true);
       document.removeEventListener("wheel", handleWheel, true);
       window.removeEventListener("scroll", positionHoverOverlay, true);
       window.removeEventListener("resize", positionHoverOverlay);
-      window.removeEventListener("message", handleSelectionMessage);
+      window.removeEventListener("message", handleEditorMessage);
+      document.documentElement.removeAttribute(
+        "data-storefront-editor-selection-enabled",
+      );
+      document.documentElement.removeAttribute(
+        "data-storefront-editor-pan-enabled",
+      );
+      document.documentElement.removeAttribute(
+        "data-storefront-editor-panning",
+      );
       style.remove();
       hoverOverlay.remove();
       selectedSection?.removeAttribute("data-storefront-editor-selected");
