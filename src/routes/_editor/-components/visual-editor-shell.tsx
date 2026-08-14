@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
@@ -22,9 +23,9 @@ import {
   Undo2,
 } from "lucide-react";
 import {
+  type FormEvent as ReactFormEvent,
   type PointerEvent as ReactPointerEvent,
   type KeyboardEvent as ReactKeyboardEvent,
-  type WheelEvent as ReactWheelEvent,
   useCallback,
   useEffect,
   useRef,
@@ -52,12 +53,20 @@ const previewDefaultHeights = {
   mobile: 844,
 } as const;
 
-const MIN_CANVAS_SCALE = 0.5;
+const DEFAULT_PREVIEW_VIEWPORT_HEIGHT = previewDefaultHeights.desktop;
+const MIN_CANVAS_SCALE = 0.25;
 const MAX_CANVAS_SCALE = 2;
 const CANVAS_SCALE_STEP = 0.1;
+const CANVAS_DEFAULT_SCALE = 1;
+const CANVAS_DEFAULT_SCALE_SNAP_THRESHOLD = 0.02;
 const MIN_PREVIEW_WIDTH = 320;
 const MAX_PREVIEW_WIDTH = 1920;
 const PREVIEW_WIDTH_STEP = 16;
+const TABLET_PREVIEW_WIDTH = 768;
+const DESKTOP_PREVIEW_WIDTH = 1024;
+const CANVAS_TOP_INSET = 48;
+const CANVAS_BOTTOM_INSET = 80;
+const CANVAS_VERTICAL_OVERSCROLL = 200;
 
 type CanvasTransform = {
   x: number;
@@ -75,8 +84,64 @@ function clampCanvasScale(scale: number) {
   return Math.min(MAX_CANVAS_SCALE, Math.max(MIN_CANVAS_SCALE, scale));
 }
 
+function snapCanvasScaleTowardDefault(currentScale: number, nextScale: number) {
+  if (currentScale === CANVAS_DEFAULT_SCALE) return nextScale;
+
+  const isMovingTowardDefault =
+    (currentScale < CANVAS_DEFAULT_SCALE && nextScale > currentScale) ||
+    (currentScale > CANVAS_DEFAULT_SCALE && nextScale < currentScale);
+  const crossedDefault =
+    (currentScale < CANVAS_DEFAULT_SCALE &&
+      nextScale >= CANVAS_DEFAULT_SCALE) ||
+    (currentScale > CANVAS_DEFAULT_SCALE && nextScale <= CANVAS_DEFAULT_SCALE);
+  const isWithinSnapThreshold =
+    Math.abs(nextScale - CANVAS_DEFAULT_SCALE) <=
+    CANVAS_DEFAULT_SCALE_SNAP_THRESHOLD;
+
+  return isMovingTowardDefault && (crossedDefault || isWithinSnapThreshold)
+    ? CANVAS_DEFAULT_SCALE
+    : nextScale;
+}
+
 function clampPreviewWidth(width: number) {
   return Math.min(MAX_PREVIEW_WIDTH, Math.max(MIN_PREVIEW_WIDTH, width));
+}
+
+function resolvePreviewViewport(width: number) {
+  if (width >= DESKTOP_PREVIEW_WIDTH) return "desktop" as const;
+  if (width >= TABLET_PREVIEW_WIDTH) return "tablet" as const;
+  return "mobile" as const;
+}
+
+function clampCanvasTransform(
+  transform: CanvasTransform,
+  viewportHeight: number,
+  contentHeight: number,
+) {
+  const minimumY =
+    Math.min(
+      0,
+      viewportHeight -
+        CANVAS_TOP_INSET -
+        CANVAS_BOTTOM_INSET -
+        contentHeight * transform.scale,
+    ) - CANVAS_VERTICAL_OVERSCROLL;
+  const maximumY = CANVAS_VERTICAL_OVERSCROLL;
+
+  return {
+    ...transform,
+    y: Math.min(maximumY, Math.max(minimumY, transform.y)),
+  };
+}
+
+function normalizeWheelDelta(
+  deltaY: number,
+  deltaMode: number,
+  viewportHeight: number,
+) {
+  if (deltaMode === 1) return deltaY * 16;
+  if (deltaMode === 2) return deltaY * viewportHeight;
+  return deltaY;
 }
 
 const viewportOptions = [
@@ -105,7 +170,7 @@ export function VisualEditorShell({
   );
   const activeTemplate = resolveEditorTemplate(context, search);
   const previewUrl = activeTemplate
-    ? `/store/${encodeURIComponent(context.storefront.id)}/themes/${encodeURIComponent(context.theme.id)}/preview?templateId=${encodeURIComponent(activeTemplate.id)}&viewportHeight=${previewDefaultHeights[search.viewport]}`
+    ? `/store/${encodeURIComponent(context.storefront.id)}/themes/${encodeURIComponent(context.theme.id)}/preview?templateId=${encodeURIComponent(activeTemplate.id)}&viewportHeight=${DEFAULT_PREVIEW_VIEWPORT_HEIGHT}`
     : null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
   const isPreviewLoading =
@@ -115,7 +180,9 @@ export function VisualEditorShell({
       ? previewContentSize.height
       : previewDefaultHeights[search.viewport];
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
+  const canvasViewportRef = useRef<HTMLDivElement>(null);
   const previewWidthRef = useRef(previewWidth);
+  const previewFrameHeightRef = useRef(previewFrameHeight);
   const canvasTransformRef = useRef(canvasTransform);
   const canvasRenderFrameRef = useRef(0);
   const previewWidthRenderFrameRef = useRef(0);
@@ -130,6 +197,8 @@ export function VisualEditorShell({
     pointerId: number;
     pointerX: number;
     width: number;
+    canvasX: number;
+    scale: number;
   } | null>(null);
 
   const scheduleCanvasTransform = useCallback(
@@ -137,7 +206,17 @@ export function VisualEditorShell({
       action: CanvasTransform | ((current: CanvasTransform) => CanvasTransform),
     ) => {
       const current = canvasTransformRef.current;
-      const next = typeof action === "function" ? action(current) : action;
+      const requested = typeof action === "function" ? action(current) : action;
+      const viewportHeight =
+        canvasViewportRef.current?.getBoundingClientRect().height ?? 0;
+      const next =
+        viewportHeight > 0
+          ? clampCanvasTransform(
+              requested,
+              viewportHeight,
+              previewFrameHeightRef.current,
+            )
+          : requested;
       if (
         next.x === current.x &&
         next.y === current.y &&
@@ -156,6 +235,23 @@ export function VisualEditorShell({
     },
     [],
   );
+
+  useEffect(() => {
+    previewFrameHeightRef.current = previewFrameHeight;
+    scheduleCanvasTransform((current) => current);
+  }, [previewFrameHeight, scheduleCanvasTransform]);
+
+  useEffect(() => {
+    const viewport = canvasViewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      scheduleCanvasTransform((current) => current);
+    });
+    observer.observe(viewport);
+
+    return () => observer.disconnect();
+  }, [scheduleCanvasTransform]);
 
   useEffect(() => {
     if (activeTemplate && search.templateId !== activeTemplate.id) {
@@ -221,6 +317,21 @@ export function VisualEditorShell({
     return () => window.removeEventListener("message", handlePreviewMessage);
   }, [previewKey]);
 
+  const syncPreviewViewportHeight = useCallback(() => {
+    previewIframeRef.current?.contentWindow?.postMessage(
+      {
+        type: "morph:storefront-preview-set-viewport-height",
+        height: previewDefaultHeights[search.viewport],
+      },
+      window.location.origin,
+    );
+  }, [search.viewport]);
+
+  useEffect(() => {
+    if (!previewKey) return;
+    syncPreviewViewportHeight();
+  }, [previewKey, syncPreviewViewportHeight]);
+
   const resetCanvas = useCallback(() => {
     scheduleCanvasTransform(initialCanvasTransform);
   }, [scheduleCanvasTransform]);
@@ -236,16 +347,36 @@ export function VisualEditorShell({
   );
 
   const handleCanvasWheel = useCallback(
-    (event: ReactWheelEvent<HTMLDivElement>) => {
+    (event: WheelEvent) => {
       event.preventDefault();
 
-      const bounds = event.currentTarget.getBoundingClientRect();
+      const viewport = canvasViewportRef.current;
+      if (!viewport) return;
+
+      const bounds = viewport.getBoundingClientRect();
+      const deltaY = normalizeWheelDelta(
+        event.deltaY,
+        event.deltaMode,
+        bounds.height,
+      );
+
+      if (!event.ctrlKey) {
+        scheduleCanvasTransform((current) => ({
+          ...current,
+          y: current.y - deltaY,
+        }));
+        return;
+      }
+
       const pointerX = event.clientX - bounds.left - bounds.width / 2;
       const pointerY = event.clientY - bounds.top - bounds.height / 2;
 
       scheduleCanvasTransform((current) => {
-        const zoomFactor = Math.exp(-event.deltaY * 0.001);
-        const nextScale = clampCanvasScale(current.scale * zoomFactor);
+        const zoomFactor = Math.exp(-deltaY * 0.001);
+        const nextScale = snapCanvasScaleTowardDefault(
+          current.scale,
+          clampCanvasScale(current.scale * zoomFactor),
+        );
 
         if (nextScale === current.scale) {
           return current;
@@ -263,6 +394,14 @@ export function VisualEditorShell({
     },
     [scheduleCanvasTransform],
   );
+
+  useEffect(() => {
+    const viewport = canvasViewportRef.current;
+    if (!viewport) return;
+
+    viewport.addEventListener("wheel", handleCanvasWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", handleCanvasWheel);
+  }, [handleCanvasWheel]);
 
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -357,6 +496,18 @@ export function VisualEditorShell({
     });
   }, []);
 
+  const applyPreviewWidth = useCallback(
+    (width: number) => {
+      const nextWidth = clampPreviewWidth(Math.round(width));
+      updatePreviewWidth(nextWidth);
+      onSearchChange({
+        canvasWidth: nextWidth,
+        viewport: resolvePreviewViewport(nextWidth),
+      });
+    },
+    [onSearchChange, updatePreviewWidth],
+  );
+
   const handleResizePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
@@ -366,6 +517,8 @@ export function VisualEditorShell({
         pointerId: event.pointerId,
         pointerX: event.clientX,
         width: previewWidthRef.current,
+        canvasX: canvasTransformRef.current.x,
+        scale: canvasTransformRef.current.scale,
       };
     },
     [],
@@ -376,12 +529,18 @@ export function VisualEditorShell({
       const origin = resizeOriginRef.current;
       if (!origin || origin.pointerId !== event.pointerId) return;
       event.stopPropagation();
-      updatePreviewWidth(
-        origin.width +
-          (event.clientX - origin.pointerX) / canvasTransformRef.current.scale,
+      const nextWidth = clampPreviewWidth(
+        Math.round(
+          origin.width + (event.clientX - origin.pointerX) / origin.scale,
+        ),
       );
+      updatePreviewWidth(nextWidth);
+      scheduleCanvasTransform((current) => ({
+        ...current,
+        x: origin.canvasX + ((nextWidth - origin.width) * origin.scale) / 2,
+      }));
     },
-    [updatePreviewWidth],
+    [scheduleCanvasTransform, updatePreviewWidth],
   );
 
   const finishPreviewResize = useCallback(
@@ -389,7 +548,10 @@ export function VisualEditorShell({
       if (resizeOriginRef.current?.pointerId !== event.pointerId) return;
       event.stopPropagation();
       resizeOriginRef.current = null;
-      onSearchChange({ canvasWidth: previewWidthRef.current });
+      onSearchChange({
+        canvasWidth: previewWidthRef.current,
+        viewport: resolvePreviewViewport(previewWidthRef.current),
+      });
     },
     [onSearchChange],
   );
@@ -404,15 +566,27 @@ export function VisualEditorShell({
       const nextWidth = clampPreviewWidth(
         previewWidthRef.current + direction * step,
       );
-      updatePreviewWidth(nextWidth);
-      onSearchChange({ canvasWidth: nextWidth });
+      const widthDelta = nextWidth - previewWidthRef.current;
+      scheduleCanvasTransform((current) => ({
+        ...current,
+        x: current.x + (widthDelta * current.scale) / 2,
+      }));
+      applyPreviewWidth(nextWidth);
     },
-    [onSearchChange, updatePreviewWidth],
+    [applyPreviewWidth, scheduleCanvasTransform],
+  );
+
+  const handleViewportChange = useCallback(
+    (viewport: StorefrontThemeEditorSearch["viewport"]) => {
+      resetCanvas();
+      onSearchChange({ viewport, canvasWidth: undefined });
+    },
+    [onSearchChange, resetCanvas],
   );
 
   return (
     <div className="grid h-svh min-h-0 grid-rows-[3.5rem_minmax(0,1fr)] bg-background">
-      <header className="flex items-center justify-between border-b bg-component px-3 lg:px-4">
+      <header className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b bg-component px-3 lg:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="ghost" size="icon" asChild>
             <Link
@@ -432,7 +606,28 @@ export function VisualEditorShell({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div
+          className="flex items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm"
+          aria-label="Storefront preview viewport"
+        >
+          {viewportOptions.map(({ value, label, icon: Icon }) => (
+            <Button
+              key={value}
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "shrink-0 shadow-none",
+                search.viewport === value && "bg-accent",
+              )}
+              aria-label={label}
+              aria-pressed={search.viewport === value}
+              onClick={() => handleViewportChange(value)}
+            >
+              <Icon />
+            </Button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 justify-self-end">
           <span className="mr-2 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
             <CircleCheck className="size-3.5" /> Draft unchanged
           </span>
@@ -465,11 +660,11 @@ export function VisualEditorShell({
 
         <main className="relative flex min-h-0 min-w-0 flex-col overflow-hidden max-md:hidden">
           <div
+            ref={canvasViewportRef}
             className={cn(
               "relative min-h-0 flex-1 touch-none select-none overflow-hidden cursor-grab",
               isPanning && "cursor-grabbing",
             )}
-            onWheel={handleCanvasWheel}
             onPointerDown={handleCanvasPointerDown}
             onPointerMove={handleCanvasPointerMove}
             onPointerUp={finishCanvasPan}
@@ -479,11 +674,12 @@ export function VisualEditorShell({
             role="region"
             tabIndex={0}
             aria-describedby="storefront-canvas-instructions"
-            aria-label="Storefront preview canvas. Use the mouse wheel to zoom and drag to pan."
+            aria-label="Storefront preview canvas. Use the mouse wheel to scroll, Control plus wheel to zoom, and drag to pan."
           >
             <span id="storefront-canvas-instructions" className="sr-only">
-              Use the mouse wheel or plus and minus keys to zoom. Drag or use
-              the arrow keys to pan. Press zero to reset the canvas.
+              Use the mouse wheel to scroll the storefront. Hold Control while
+              using the mouse wheel, or use plus and minus keys, to zoom. Drag
+              or use the arrow keys to pan. Press zero to reset the canvas.
             </span>
             <div
               className={cn("absolute left-1/2 top-12 will-change-transform")}
@@ -493,12 +689,6 @@ export function VisualEditorShell({
                 transformOrigin: "top center",
               }}
             >
-              <div className="absolute bottom-full left-0 mb-2 flex items-center gap-2 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm">
-                <Monitor className="size-3.5 text-muted-foreground" />
-                <span className="tabular-nums">
-                  {previewWidth} × {previewFrameHeight}
-                </span>
-              </div>
               <div
                 className={cn(
                   "relative overflow-hidden border bg-background shadow-xl",
@@ -518,12 +708,13 @@ export function VisualEditorShell({
                     referrerPolicy="same-origin"
                     scrolling="no"
                     className="block size-full border-0 bg-stone-50"
-                    onLoad={() =>
+                    onLoad={() => {
+                      syncPreviewViewportHeight();
                       previewIframeRef.current?.contentWindow?.postMessage(
                         { type: "morph:storefront-preview-request-size" },
                         window.location.origin,
-                      )
-                    }
+                      );
+                    }}
                   />
                 ) : (
                   <div className="flex size-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
@@ -539,34 +730,41 @@ export function VisualEditorShell({
                 <div aria-hidden="true" className="absolute inset-0 z-20" />
               </div>
             </div>
+            <PreviewSizeControl
+              width={previewWidth}
+              height={previewFrameHeight}
+              canvasTransform={canvasTransform}
+              onWidthPreview={updatePreviewWidth}
+              onWidthChange={applyPreviewWidth}
+            />
             <div
               role="separator"
-              aria-label="Resize storefront preview width"
+              aria-label="Resize storefront preview from its right edge"
               aria-orientation="vertical"
               aria-valuemin={MIN_PREVIEW_WIDTH}
               aria-valuemax={MAX_PREVIEW_WIDTH}
               aria-valuenow={previewWidth}
               tabIndex={0}
-              className="group absolute top-1/2 z-30 flex h-40 w-6 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
+              className="group absolute z-30 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
               style={{
                 left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px + ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
+                top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
+                bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
               }}
+              title="Drag the page edge to resize the preview"
               onPointerDown={handleResizePointerDown}
               onPointerMove={handleResizePointerMove}
               onPointerUp={finishPreviewResize}
               onPointerCancel={finishPreviewResize}
               onKeyDown={handleResizeKeyDown}
             >
-              <span className="h-20 w-1 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
+              <span className="h-full w-px bg-border/70 group-hover:bg-primary group-focus-visible:bg-primary" />
+              <span className="absolute top-1/2 h-16 w-1 -translate-y-1/2 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
             </div>
           </div>
 
           <EditorControls
             search={search}
-            onSearchChange={(next) => {
-              resetCanvas();
-              onSearchChange({ ...next, canvasWidth: undefined });
-            }}
             onRefresh={() => {
               setPreviewRevision((revision) => revision + 1);
             }}
@@ -585,6 +783,181 @@ export function VisualEditorShell({
 
         <EditorSmallScreenNotice />
       </div>
+    </div>
+  );
+}
+
+function PreviewSizeControl({
+  width,
+  height,
+  canvasTransform,
+  onWidthPreview,
+  onWidthChange,
+}: {
+  width: number;
+  height: number;
+  canvasTransform: CanvasTransform;
+  onWidthPreview: (width: number) => void;
+  onWidthChange: (width: number) => void;
+}) {
+  const viewport = resolvePreviewViewport(width);
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftWidth, setDraftWidth] = useState(() => String(width));
+  const scrubOriginRef = useRef<{
+    pointerId: number;
+    pointerX: number;
+    width: number;
+    nextWidth: number;
+    moved: boolean;
+  } | null>(null);
+  const SizeIcon =
+    viewport === "desktop"
+      ? Monitor
+      : viewport === "tablet"
+        ? Tablet
+        : Smartphone;
+
+  const beginEditing = () => {
+    setDraftWidth(String(width));
+    setIsEditing(true);
+  };
+
+  const cancelEditing = () => {
+    setDraftWidth(String(width));
+    setIsEditing(false);
+  };
+
+  const commitWidth = () => {
+    const nextWidth = Number(draftWidth);
+    if (
+      Number.isInteger(nextWidth) &&
+      nextWidth >= MIN_PREVIEW_WIDTH &&
+      nextWidth <= MAX_PREVIEW_WIDTH
+    ) {
+      onWidthChange(nextWidth);
+    } else {
+      setDraftWidth(String(width));
+    }
+    setIsEditing(false);
+  };
+
+  const handleSubmit = (event: ReactFormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    commitWidth();
+  };
+
+  const handleScrubPointerDown = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    scrubOriginRef.current = {
+      pointerId: event.pointerId,
+      pointerX: event.clientX,
+      width,
+      nextWidth: width,
+      moved: false,
+    };
+  };
+
+  const handleScrubPointerMove = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const origin = scrubOriginRef.current;
+    if (!origin || origin.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+
+    const delta = (event.clientX - origin.pointerX) / canvasTransform.scale;
+    if (!origin.moved && Math.abs(delta) < 2) return;
+
+    const nextWidth = clampPreviewWidth(Math.round(origin.width + delta));
+    origin.moved = true;
+    origin.nextWidth = nextWidth;
+    onWidthPreview(nextWidth);
+  };
+
+  const handleScrubPointerUp = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const origin = scrubOriginRef.current;
+    if (!origin || origin.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    scrubOriginRef.current = null;
+    if (origin.moved) onWidthChange(origin.nextWidth);
+  };
+
+  const handleScrubPointerCancel = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const origin = scrubOriginRef.current;
+    if (!origin || origin.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    scrubOriginRef.current = null;
+    if (origin.moved) onWidthPreview(origin.width);
+  };
+
+  return (
+    <div
+      className="absolute z-30 flex h-7 -translate-y-full items-center gap-2 rounded-md border bg-popover px-2 text-xs text-popover-foreground shadow-sm outline-none focus-within:ring-2 focus-within:ring-ring hover:bg-accent"
+      style={{
+        left: `max(0.5rem, calc(50% + ${canvasTransform.x}px - ${(width * canvasTransform.scale) / 2}px))`,
+        top: `calc(3rem + ${canvasTransform.y}px - 0.5rem)`,
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <SizeIcon className="size-3.5 text-muted-foreground" />
+      {isEditing ? (
+        <form
+          className="flex items-center gap-1 tabular-nums"
+          onSubmit={handleSubmit}
+        >
+          <Input
+            autoFocus
+            inputMode="numeric"
+            type="number"
+            min={MIN_PREVIEW_WIDTH}
+            max={MAX_PREVIEW_WIDTH}
+            step={1}
+            value={draftWidth}
+            onChange={(event) => setDraftWidth(event.target.value)}
+            onBlur={commitWidth}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              cancelEditing();
+            }}
+            className="h-5 w-[4ch] appearance-none rounded-sm border-0 bg-background p-0 text-xs tabular-nums shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            aria-label="Preview width in pixels"
+          />
+          <span aria-hidden="true">×</span>
+          <span>{height}</span>
+        </form>
+      ) : (
+        <button
+          type="button"
+          className="cursor-ew-resize touch-none rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onPointerDown={handleScrubPointerDown}
+          onPointerMove={handleScrubPointerMove}
+          onPointerUp={handleScrubPointerUp}
+          onPointerCancel={handleScrubPointerCancel}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            beginEditing();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== "F2") return;
+            event.preventDefault();
+            beginEditing();
+          }}
+          aria-label={`Preview size ${width} by ${height}. Drag horizontally to resize, or double-click or press Enter to edit the width.`}
+          aria-keyshortcuts="Enter F2"
+          title="Drag to resize · Double-click to edit width"
+        >
+          <span className="tabular-nums">{width}</span> × {height}
+        </button>
+      )}
+      <span className="sr-only capitalize">{viewport} breakpoint</span>
     </div>
   );
 }
@@ -610,7 +983,6 @@ function EditorSmallScreenNotice() {
 
 function EditorControls({
   search,
-  onSearchChange,
   onRefresh,
   canvasScale,
   onZoomOut,
@@ -618,7 +990,6 @@ function EditorControls({
   onResetCanvas,
 }: {
   search: StorefrontThemeEditorSearch;
-  onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
   onRefresh: () => void;
   canvasScale: number;
   onZoomOut: () => void;
@@ -654,23 +1025,6 @@ function EditorControls({
         >
           <RefreshCw />
         </Button>
-        <Separator orientation="vertical" className="mx-1 h-5" />
-        {viewportOptions.map(({ value, label, icon: Icon }) => (
-          <Button
-            key={value}
-            variant="ghost"
-            size="icon"
-            className={cn(
-              "shrink-0 shadow-none",
-              search.viewport === value && "bg-accent",
-            )}
-            aria-label={label}
-            aria-pressed={search.viewport === value}
-            onClick={() => onSearchChange({ viewport: value })}
-          >
-            <Icon />
-          </Button>
-        ))}
         <Separator orientation="vertical" className="mx-1 h-5" />
         <Button
           variant="ghost"

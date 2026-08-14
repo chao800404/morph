@@ -2,7 +2,7 @@ import { StorefrontPreview } from "@/components/storefront/storefront-preview";
 import { storefrontThemePreviewSearchSchema } from "@/lib/validations/storefront-theme";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
 
 export const Route = createFileRoute(
@@ -23,6 +23,7 @@ function StorefrontThemePreviewRoute() {
   const query = useQuery(
     storefrontThemeQueries.detail(params.storefrontId, params.themeId),
   );
+  const viewportHeight = usePreviewViewportHeight(search.viewportHeight);
   useStorefrontPreviewSizeBridge(!query.isPending);
 
   if (query.isPending || !query.data) return <PreviewPending />;
@@ -39,9 +40,40 @@ function StorefrontThemePreviewRoute() {
     <StorefrontPreview
       context={query.data.data}
       templateId={search.templateId}
-      viewportHeight={search.viewportHeight}
+      viewportHeight={viewportHeight}
     />
   );
+}
+
+function usePreviewViewportHeight(initialHeight: number) {
+  const [viewportHeight, setViewportHeight] = useState(initialHeight);
+
+  useEffect(() => {
+    const handleViewportHeight = (event: MessageEvent<unknown>) => {
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== window.parent ||
+        typeof event.data !== "object" ||
+        event.data === null ||
+        !("type" in event.data) ||
+        event.data.type !== "morph:storefront-preview-set-viewport-height" ||
+        !("height" in event.data) ||
+        typeof event.data.height !== "number" ||
+        !Number.isFinite(event.data.height) ||
+        event.data.height < 320 ||
+        event.data.height > 2160
+      ) {
+        return;
+      }
+
+      setViewportHeight(Math.round(event.data.height));
+    };
+
+    window.addEventListener("message", handleViewportHeight);
+    return () => window.removeEventListener("message", handleViewportHeight);
+  }, []);
+
+  return viewportHeight;
 }
 
 function useStorefrontPreviewSizeBridge(enabled: boolean) {
