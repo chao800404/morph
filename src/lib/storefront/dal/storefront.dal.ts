@@ -6,6 +6,16 @@ import {
   type StorefrontPageDocument,
 } from "@/db/storefront.schema";
 import { eq, isNull, and } from "drizzle-orm";
+import type {
+  StorefrontDTO,
+  StorefrontPreferencesDTO,
+} from "../dto/storefront.dto";
+import { storefrontPreferencesSchema } from "@/lib/validations/storefront";
+import {
+  createDefaultStorefrontHomeDocument,
+  isUpgradeableStarterHomeDocument,
+  STOREFRONT_STARTER_TEMPLATE_VERSION,
+} from "../default-storefront-document";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
 export const DEFAULT_STOREFRONT_THEME_ID =
@@ -16,6 +26,66 @@ const INITIAL_SALES_CHANNEL_ID = "00000000-0000-4000-8000-000000000001";
 
 const EMPTY_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
 
+type StorefrontDb = Awaited<ReturnType<typeof getDb>>;
+
+async function ensureStarterHomeDocument(
+  db: StorefrontDb,
+  themeId: string,
+): Promise<void> {
+  const [theme] = await db
+    .select({ metadata: storefrontThemes.metadata })
+    .from(storefrontThemes)
+    .where(
+      and(eq(storefrontThemes.id, themeId), isNull(storefrontThemes.deletedAt)),
+    )
+    .limit(1);
+  if (!theme) return;
+
+  const metadata = theme.metadata ?? {};
+  if (metadata.starterTemplateVersion === STOREFRONT_STARTER_TEMPLATE_VERSION) {
+    return;
+  }
+
+  const [homeTemplate] = await db
+    .select({
+      id: storefrontThemeTemplates.id,
+      document: storefrontThemeTemplates.document,
+    })
+    .from(storefrontThemeTemplates)
+    .where(
+      and(
+        eq(storefrontThemeTemplates.themeId, themeId),
+        eq(storefrontThemeTemplates.type, "index"),
+        isNull(storefrontThemeTemplates.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  if (
+    homeTemplate &&
+    isUpgradeableStarterHomeDocument(homeTemplate.document)
+  ) {
+    await db
+      .update(storefrontThemeTemplates)
+      .set({
+        document: createDefaultStorefrontHomeDocument(),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(storefrontThemeTemplates.id, homeTemplate.id));
+  }
+
+  await db
+    .update(storefrontThemes)
+    .set({
+      metadata: {
+        ...metadata,
+        starterTemplateVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
+      },
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(storefrontThemes.id, themeId));
+}
+
 /**
  * Creates the minimum editable website graph for a storefront channel.
  *
@@ -23,6 +93,62 @@ const EMPTY_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
  * reads. Existing themes and authored documents are never overwritten.
  */
 export const storefrontDal = {
+  async findActive(id?: string): Promise<StorefrontDTO | null> {
+    const db = await getDb();
+    const conditions = [isNull(storefronts.deletedAt)];
+    if (id) conditions.push(eq(storefronts.id, id));
+    const [row] = await db
+      .select()
+      .from(storefronts)
+      .where(and(...conditions))
+      .orderBy(storefronts.createdAt)
+      .limit(1);
+    if (!row) return null;
+    const parsedPreferences = storefrontPreferencesSchema.safeParse(
+      row.preferences ?? {},
+    );
+    return {
+      id: row.id,
+      salesChannelId: row.salesChannelId,
+      name: row.name,
+      domain: row.domain,
+      status: row.status,
+      activeThemeId: row.activeThemeId,
+      preferences: parsedPreferences.success
+        ? parsedPreferences.data
+        : storefrontPreferencesSchema.parse({}),
+    };
+  },
+  async updateWebsiteInformation(data: {
+    id: string;
+    name: string;
+    preferences: StorefrontPreferencesDTO;
+  }): Promise<boolean> {
+    const db = await getDb();
+    const result = await db
+      .update(storefronts)
+      .set({
+        name: data.name,
+        preferences: data.preferences,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(eq(storefronts.id, data.id), isNull(storefronts.deletedAt)));
+    return Number(result.meta.changes ?? 0) > 0;
+  },
+  async updateAccess(data: {
+    id: string;
+    preferences: StorefrontPreferencesDTO;
+  }): Promise<boolean> {
+    const db = await getDb();
+    const result = await db
+      .update(storefronts)
+      .set({
+        preferences: data.preferences,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(eq(storefronts.id, data.id), isNull(storefronts.deletedAt)));
+    return Number(result.meta.changes ?? 0) > 0;
+  },
   async ensureDefault(salesChannelId: string): Promise<void> {
     const db = await getDb();
     const [existing] = await db
@@ -36,13 +162,16 @@ export const storefrontDal = {
       )
       .limit(1);
 
-    if (existing) return;
+    if (existing?.activeThemeId) {
+      await ensureStarterHomeDocument(db, existing.activeThemeId);
+      return;
+    }
 
     const now = new Date().toISOString();
     const isInitialStorefront = salesChannelId === INITIAL_SALES_CHANNEL_ID;
-    const storefrontId = isInitialStorefront
-      ? DEFAULT_STOREFRONT_ID
-      : crypto.randomUUID();
+    const storefrontId =
+      existing?.id ??
+      (isInitialStorefront ? DEFAULT_STOREFRONT_ID : crypto.randomUUID());
     const themeId = isInitialStorefront
       ? DEFAULT_STOREFRONT_THEME_ID
       : crypto.randomUUID();
@@ -86,7 +215,7 @@ export const storefrontDal = {
           themeId,
           type: "index",
           name: "Default",
-          document: EMPTY_DOCUMENT,
+          document: createDefaultStorefrontHomeDocument(),
           createdAt: now,
           updatedAt: now,
         },
@@ -106,5 +235,7 @@ export const storefrontDal = {
       .update(storefronts)
       .set({ activeThemeId: themeId, updatedAt: now })
       .where(eq(storefronts.id, storefrontId));
+
+    await ensureStarterHomeDocument(db, themeId);
   },
 };

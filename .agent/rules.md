@@ -39,6 +39,17 @@
 
 ### 路由與 CMS 導航
 
+#### Visual Editor route 與獨立應用外殼
+
+- Visual Editor 是獨立的 authoring surface，不是 Dashboard collection 頁面。現階段正式 route 使用 `/store/$storefrontId/themes/$themeId/editor`；未來只有在資料庫具備唯一、不可因網站名稱變更而漂移的 `storeHandle` 後，才可遷移為 `/store/$storeHandle/themes/$themeId/editor`，不可直接拿可編輯的網站名稱或 slug 代替 record identity。
+- Dashboard 的 `Customize theme` 必須以新分頁開啟 Editor，並使用 `noopener noreferrer`。Editor 不渲染 Dashboard 的 header、sidebar、breadcrumb、scroll container 或 collection shell；它由獨立 pathless layout 負責 authentication、theme provider、全螢幕 editor shell 與 editor-level pending／error boundary。
+- Editor 左側欄只承載模板、sections、app embeds 與 theme settings 等 authoring 導航；中央為隔離的 storefront preview；右側為目前選取項目的設定。Dashboard sidebar 不可複製進 Editor，Editor sidebar 也不可反向加入 Dashboard collection config。
+- URL 中的 storefront 與 theme 都是不可信輸入。Server function／DAL 必須以兩者同時查詢並驗證 `theme.storefrontId === storefront.id`，不可只憑 theme id 讀取或修改其他站點主題；Editor 讀寫使用 commerce admin 權限邊界，client token／UI 隱藏不能取代 server-side authorization。
+- Editor、preview、storefront renderer 與 AI authoring 必須共用既有 storefront document schema、section registry、theme tokens、server function、DAL 與 revision／publish pipeline，不得建立 Editor 專屬的第二套 page schema、資料庫存取或 publish 狀態。一般編輯永遠先寫 draft revision，不直接覆蓋 published document。
+- 影響目前工作狀態的 Editor state 必須可被 URL 驗證並重現；至少包含 template 與 viewport，後續 section、locale 等可分享狀態也應加入 search schema。暫時無法運作的 Save／Publish／Add section 控制項應明確 disabled，不可用假成功互動冒充已完成能力。
+- Preview renderer 後續應使用專用 preview route／iframe 隔離 storefront CSS、runtime error 與 navigation；在真正 renderer 尚未完成前，Editor 可以顯示清楚標示的 theme preview placeholder，但不得把 placeholder 宣稱為可發布的真實渲染結果。
+- 「Dashboard route 由 collection config 決定」只約束 `/dashboard/**` collection surface；頂層 Visual Editor 可以有自己的靜態 file route，但仍必須使用 TanStack file routing、validated search、loader prefetch、具名 pending UI，且不可手動修改 `src/routeTree.gen.ts`。
+
 - `src/routes/` 使用 TanStack Router file-based routing；route 負責 URL 驗證、權限入口、loader/prefetch 與 view 組裝。
 - Dashboard 的頁面來源為：
   `src/cms.config.ts` → `dashboard/-collections/**` → dynamic dashboard route → `dashboard/-views/**`。
@@ -291,6 +302,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 修改 shared UI primitive 前先檢查所有使用處；只影響單一 feature 的行為應留在該 feature 內。
 - 新 UI 必須保留 keyboard 操作、focus 狀態、可辨識 label、loading/error/empty state 與現有 responsive 行為。
 - 動畫應尊重 reduced motion，且不得用延遲或遮罩掩蓋真正的 loading、layout shift 或資料同步問題。
+- Light／Dark 主題切換時，所有 theme token 對應的顏色、背景、邊框與陰影必須直接替換，不得播放 `transition-colors` 或 `transition-all` 的漸變。Dashboard 的共用 `ThemeProvider` 必須維持 `disableTransitionOnChange`；一般 hover、focus、active 等互動 transition 可以保留，不可為修正主題切換而逐一移除元件的正常回饋動畫或在 feature 加局部補丁。
 
 ### 任何 UI 修改前必須完成 primitive／Fields preflight
 

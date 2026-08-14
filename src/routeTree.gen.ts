@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as BackendRouteImport } from './routes/_backend'
+import { Route as EditorRouteImport } from './routes/_editor'
 import { Route as BackendAuthRouteImport } from './routes/_backend/_auth'
 import { Route as BackendDashboardRouteImport } from './routes/_backend/dashboard'
 import { Route as BackendAuthCreateFirstAdminRouteImport } from './routes/_backend/_auth/create-first-admin'
@@ -38,6 +39,8 @@ import { Route as BackendDashboardSettingsSlugEditRouteImport } from './routes/_
 import { Route as BackendDashboardSlugIdPageChildIdRouteImport } from './routes/_backend/dashboard/$slug/$id/$page/$childId'
 import { Route as BackendDashboardSettingsSlugIdPageRouteImport } from './routes/_backend/dashboard/settings/$slug/$id/$page'
 import { Route as BackendDashboardSettingsSlugIdEditRouteImport } from './routes/_backend/dashboard/settings/$slug/$id/edit'
+import { Route as EditorStoreStorefrontIdThemesThemeIdEditorRouteImport } from './routes/_editor/store/$storefrontId/themes/$themeId/editor'
+import { Route as EditorStoreStorefrontIdThemesThemeIdPreviewRouteImport } from './routes/_editor/store/$storefrontId/themes/$themeId/preview'
 import { Route as BackendDashboardSettingsSlugIdPageChildIdRouteImport } from './routes/_backend/dashboard/settings/$slug/$id/$page/$childId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -47,6 +50,10 @@ const IndexRoute = IndexRouteImport.update({
 } as any)
 const BackendRoute = BackendRouteImport.update({
   id: '/_backend',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EditorRoute = EditorRouteImport.update({
+  id: '/_editor',
   getParentRoute: () => rootRouteImport,
 } as any)
 const BackendAuthRoute = BackendAuthRouteImport.update({
@@ -199,6 +206,18 @@ const BackendDashboardSettingsSlugIdEditRoute =
     path: '/edit',
     getParentRoute: () => BackendDashboardSettingsSlugIdRoute,
   } as any)
+const EditorStoreStorefrontIdThemesThemeIdEditorRoute =
+  EditorStoreStorefrontIdThemesThemeIdEditorRouteImport.update({
+    id: '/store/$storefrontId/themes/$themeId/editor',
+    path: '/store/$storefrontId/themes/$themeId/editor',
+    getParentRoute: () => EditorRoute,
+  } as any)
+const EditorStoreStorefrontIdThemesThemeIdPreviewRoute =
+  EditorStoreStorefrontIdThemesThemeIdPreviewRouteImport.update({
+    id: '/store/$storefrontId/themes/$themeId/preview',
+    path: '/store/$storefrontId/themes/$themeId/preview',
+    getParentRoute: () => EditorRoute,
+  } as any)
 const BackendDashboardSettingsSlugIdPageChildIdRoute =
   BackendDashboardSettingsSlugIdPageChildIdRouteImport.update({
     id: '/$childId',
@@ -234,6 +253,8 @@ export interface FileRoutesByFullPath {
   '/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
   '/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRouteWithChildren
   '/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
+  '/store/$storefrontId/themes/$themeId/editor': typeof EditorStoreStorefrontIdThemesThemeIdEditorRoute
+  '/store/$storefrontId/themes/$themeId/preview': typeof EditorStoreStorefrontIdThemesThemeIdPreviewRoute
   '/dashboard/settings/$slug/$id/$page/$childId': typeof BackendDashboardSettingsSlugIdPageChildIdRoute
 }
 export interface FileRoutesByTo {
@@ -262,12 +283,15 @@ export interface FileRoutesByTo {
   '/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
   '/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRouteWithChildren
   '/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
+  '/store/$storefrontId/themes/$themeId/editor': typeof EditorStoreStorefrontIdThemesThemeIdEditorRoute
+  '/store/$storefrontId/themes/$themeId/preview': typeof EditorStoreStorefrontIdThemesThemeIdPreviewRoute
   '/dashboard/settings/$slug/$id/$page/$childId': typeof BackendDashboardSettingsSlugIdPageChildIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_backend': typeof BackendRouteWithChildren
+  '/_editor': typeof EditorRouteWithChildren
   '/_backend/_auth': typeof BackendAuthRouteWithChildren
   '/_backend/dashboard': typeof BackendDashboardRouteWithChildren
   '/_backend/_auth/create-first-admin': typeof BackendAuthCreateFirstAdminRoute
@@ -295,6 +319,8 @@ export interface FileRoutesById {
   '/_backend/dashboard/$slug/$id/$page/$childId': typeof BackendDashboardSlugIdPageChildIdRoute
   '/_backend/dashboard/settings/$slug/$id/$page': typeof BackendDashboardSettingsSlugIdPageRouteWithChildren
   '/_backend/dashboard/settings/$slug/$id/edit': typeof BackendDashboardSettingsSlugIdEditRoute
+  '/_editor/store/$storefrontId/themes/$themeId/editor': typeof EditorStoreStorefrontIdThemesThemeIdEditorRoute
+  '/_editor/store/$storefrontId/themes/$themeId/preview': typeof EditorStoreStorefrontIdThemesThemeIdPreviewRoute
   '/_backend/dashboard/settings/$slug/$id/$page/$childId': typeof BackendDashboardSettingsSlugIdPageChildIdRoute
 }
 export interface FileRouteTypes {
@@ -327,6 +353,8 @@ export interface FileRouteTypes {
     | '/dashboard/$slug/$id/$page/$childId'
     | '/dashboard/settings/$slug/$id/$page'
     | '/dashboard/settings/$slug/$id/edit'
+    | '/store/$storefrontId/themes/$themeId/editor'
+    | '/store/$storefrontId/themes/$themeId/preview'
     | '/dashboard/settings/$slug/$id/$page/$childId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -355,11 +383,14 @@ export interface FileRouteTypes {
     | '/dashboard/$slug/$id/$page/$childId'
     | '/dashboard/settings/$slug/$id/$page'
     | '/dashboard/settings/$slug/$id/edit'
+    | '/store/$storefrontId/themes/$themeId/editor'
+    | '/store/$storefrontId/themes/$themeId/preview'
     | '/dashboard/settings/$slug/$id/$page/$childId'
   id:
     | '__root__'
     | '/'
     | '/_backend'
+    | '/_editor'
     | '/_backend/_auth'
     | '/_backend/dashboard'
     | '/_backend/_auth/create-first-admin'
@@ -387,12 +418,15 @@ export interface FileRouteTypes {
     | '/_backend/dashboard/$slug/$id/$page/$childId'
     | '/_backend/dashboard/settings/$slug/$id/$page'
     | '/_backend/dashboard/settings/$slug/$id/edit'
+    | '/_editor/store/$storefrontId/themes/$themeId/editor'
+    | '/_editor/store/$storefrontId/themes/$themeId/preview'
     | '/_backend/dashboard/settings/$slug/$id/$page/$childId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BackendRoute: typeof BackendRouteWithChildren
+  EditorRoute: typeof EditorRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -409,6 +443,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof BackendRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_editor': {
+      id: '/_editor'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof EditorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_backend/_auth': {
@@ -600,6 +641,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendDashboardSettingsSlugIdEditRouteImport
       parentRoute: typeof BackendDashboardSettingsSlugIdRoute
     }
+    '/_editor/store/$storefrontId/themes/$themeId/editor': {
+      id: '/_editor/store/$storefrontId/themes/$themeId/editor'
+      path: '/store/$storefrontId/themes/$themeId/editor'
+      fullPath: '/store/$storefrontId/themes/$themeId/editor'
+      preLoaderRoute: typeof EditorStoreStorefrontIdThemesThemeIdEditorRouteImport
+      parentRoute: typeof EditorRoute
+    }
+    '/_editor/store/$storefrontId/themes/$themeId/preview': {
+      id: '/_editor/store/$storefrontId/themes/$themeId/preview'
+      path: '/store/$storefrontId/themes/$themeId/preview'
+      fullPath: '/store/$storefrontId/themes/$themeId/preview'
+      preLoaderRoute: typeof EditorStoreStorefrontIdThemesThemeIdPreviewRouteImport
+      parentRoute: typeof EditorRoute
+    }
     '/_backend/dashboard/settings/$slug/$id/$page/$childId': {
       id: '/_backend/dashboard/settings/$slug/$id/$page/$childId'
       path: '/$childId'
@@ -784,9 +839,25 @@ const BackendRouteChildren: BackendRouteChildren = {
 const BackendRouteWithChildren =
   BackendRoute._addFileChildren(BackendRouteChildren)
 
+interface EditorRouteChildren {
+  EditorStoreStorefrontIdThemesThemeIdEditorRoute: typeof EditorStoreStorefrontIdThemesThemeIdEditorRoute
+  EditorStoreStorefrontIdThemesThemeIdPreviewRoute: typeof EditorStoreStorefrontIdThemesThemeIdPreviewRoute
+}
+
+const EditorRouteChildren: EditorRouteChildren = {
+  EditorStoreStorefrontIdThemesThemeIdEditorRoute:
+    EditorStoreStorefrontIdThemesThemeIdEditorRoute,
+  EditorStoreStorefrontIdThemesThemeIdPreviewRoute:
+    EditorStoreStorefrontIdThemesThemeIdPreviewRoute,
+}
+
+const EditorRouteWithChildren =
+  EditorRoute._addFileChildren(EditorRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BackendRoute: BackendRouteWithChildren,
+  EditorRoute: EditorRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -11,6 +11,8 @@ import StorefrontPageDetailPending from "@views/global/online-store/pages/page-d
 const PagesIndexPendingView = createCollectionIndexPendingView(4);
 const PageCreatePendingView = createRouteSurfacePendingView(3);
 const PageEditPendingView = createRouteSurfacePendingView(3);
+const StorefrontEditPendingView = createRouteSurfacePendingView(4);
+const StorefrontAccessPendingView = createRouteSurfacePendingView(2);
 
 export const OnlineStore: CollectionGroup = {
   slug: "/",
@@ -24,6 +26,40 @@ export const OnlineStore: CollectionGroup = {
       index: {
         view: lazyView(() => import("@views/global/online-store")),
         pendingView: OnlineStoreOverviewPendingView,
+        prefetch: async ({ queryClient }: CollectionLoadContext) => {
+          const { storefrontQueries } =
+            await import("@queries/storefront.queries");
+          void queryClient.prefetchQuery(storefrontQueries.detail());
+        },
+      },
+      edit: {
+        view: lazyView(
+          () => import("@views/global/online-store/storefront-edit"),
+        ),
+        pendingView: StorefrontEditPendingView,
+        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+          if (!params.id) return;
+          const { storefrontQueries } =
+            await import("@queries/storefront.queries");
+          void queryClient.prefetchQuery(storefrontQueries.detail(params.id));
+        },
+      },
+      pages: {
+        access: {
+          view: lazyView(
+            () => import("@views/global/online-store/storefront-access"),
+          ),
+          pendingView: StorefrontAccessPendingView,
+          breadcrumb: () => "Storefront access",
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.id) return;
+            const { storefrontQueries } =
+              await import("@queries/storefront.queries");
+            void queryClient.prefetchQuery(
+              storefrontQueries.detail(params.id),
+            );
+          },
+        },
       },
       items: [
         {

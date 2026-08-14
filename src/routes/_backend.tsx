@@ -9,7 +9,7 @@ export const Route = createFileRoute("/_backend")({
 
 function RouteComponent() {
   return (
-    <ThemeProvider>
+    <ThemeProvider disableTransitionOnChange>
       <TopLoader />
       <Outlet />
     </ThemeProvider>

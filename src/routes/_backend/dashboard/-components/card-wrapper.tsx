@@ -13,6 +13,7 @@ import React from "react";
 interface BaseCardWrapperProps {
   children?: React.ReactNode;
   classNames?: {
+    cardHeader?: string;
     headerWrapper?: string;
     contentWrapper?: string;
     cardWrapper?: string;
@@ -54,7 +55,10 @@ export const CardWrapper = (props: CardWrapperProps) => {
       )}
     >
       {!hideHeader ? (
-        <CardHeader className="py-4 [.border-b]:pb-4" data-type="card-header">
+        <CardHeader
+          className={cn("py-4 [.border-b]:pb-4", classNames?.cardHeader)}
+          data-type="card-header"
+        >
           {"customHeader" in props && props.customHeader ? (
             props.customHeader
           ) : (
@@ -94,8 +98,8 @@ export const CardWrapper = (props: CardWrapperProps) => {
       {children && (
         <CardContent
           className={cn(
-            classNames?.contentWrapper,
             "text-muted-foreground flex-1 px-0",
+            classNames?.contentWrapper,
           )}
         >
           {children}
