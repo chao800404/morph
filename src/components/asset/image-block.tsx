@@ -81,7 +81,7 @@ export const ImagePropertyBlock = ({
       className={cn("relative z-10 w-full h-full", className)}
     >
       <img className="size-full object-contain" alt={alt} src={src} />
-      <div className="absolute h-[44px] bottom-0 right-0 pr-2 flex items-center">
+      <div className="absolute h-11 bottom-0 right-0 pr-2 flex items-center">
         <MaximizeButton onMaximize={onMaximize} />
       </div>
     </div>
@@ -102,7 +102,7 @@ export const ImageSmBlock = ({
       <TooltipTrigger asChild>
         <div
           className={cn(
-            "border w-6 h-8 rounded-[4px] relative bg-component overflow-hidden",
+            "border w-6 h-8 rounded-lg relative bg-component overflow-hidden",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
             className,
           )}
