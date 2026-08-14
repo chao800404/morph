@@ -303,6 +303,7 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 新 UI 必須保留 keyboard 操作、focus 狀態、可辨識 label、loading/error/empty state 與現有 responsive 行為。
 - 動畫應尊重 reduced motion，且不得用延遲或遮罩掩蓋真正的 loading、layout shift 或資料同步問題。
 - Light／Dark 主題切換時，所有 theme token 對應的顏色、背景、邊框與陰影必須直接替換，不得播放 `transition-colors` 或 `transition-all` 的漸變。Dashboard 的共用 `ThemeProvider` 必須維持 `disableTransitionOnChange`；一般 hover、focus、active 等互動 transition 可以保留，不可為修正主題切換而逐一移除元件的正常回饋動畫或在 feature 加局部補丁。
+- 尺寸、比例、角度、間距與其他可連續調整的視覺數值 control，必須同時支援直接鍵盤輸入與按住數值左右拖曳（scrub）調整；單擊需可進入輸入狀態，拖曳需使用明確的 `cursor-ew-resize`、合理 step、min／max 邊界、Pointer Capture，並保留 Enter commit、Escape cancel 與可辨識的 accessible label。這類 control 一律沿用 `ScrubbableNumberInput` 或其後續共用替代，不得在 feature 內重寫 pointer delta。價格、庫存、稅率等商務數字不因本規則自動套用 scrub，除非其產品互動另有明確需求。
 
 ### 任何 UI 修改前必須完成 primitive／Fields preflight
 

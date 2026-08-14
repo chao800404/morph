@@ -8,7 +8,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
+import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Separator } from "@/components/ui/separator";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
@@ -19,13 +19,10 @@ import {
   AppWindow,
   CircleCheck,
   ChevronDown,
-  Code2,
   ExternalLink,
   LoaderCircle,
-  Minus,
   Monitor,
   MousePointer2,
-  Plus,
   Redo2,
   RefreshCw,
   Smartphone,
@@ -33,7 +30,6 @@ import {
   Undo2,
 } from "lucide-react";
 import {
-  type FormEvent as ReactFormEvent,
   type PointerEvent as ReactPointerEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
@@ -43,7 +39,10 @@ import {
 } from "react";
 import { EditorAssistantPanel } from "./editor-assistant-panel";
 import { EditorSectionsPanel } from "./editor-sections-panel";
-import { resolveEditorTemplate } from "./editor-template";
+import {
+  resolveEditorTemplate,
+  resolveEditorTemplateDescriptor,
+} from "./editor-template";
 import {
   EditorToolbar,
   EditorToolbarGroup,
@@ -198,14 +197,6 @@ export function VisualEditorShell({
   const ActiveViewportIcon =
     viewportOptions.find((option) => option.value === search.viewport)?.icon ??
     Monitor;
-  const pageLabel =
-    activeTemplate?.type === "index"
-      ? "Home"
-      : (activeTemplate?.name ?? "Page");
-  const pagePath =
-    activeTemplate?.type === "index"
-      ? "/"
-      : `/${activeTemplate?.type ?? search.template}`;
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
   const previewWidthRef = useRef(previewWidth);
@@ -489,16 +480,6 @@ export function VisualEditorShell({
       setIsPanning(false);
     },
     [],
-  );
-
-  const changeCanvasScale = useCallback(
-    (amount: number) => {
-      scheduleCanvasTransform((current) => ({
-        ...current,
-        scale: clampCanvasScale(current.scale + amount),
-      }));
-    },
-    [scheduleCanvasTransform],
   );
 
   const handleCanvasWheel = useCallback(
@@ -883,53 +864,95 @@ export function VisualEditorShell({
             </p>
           </div>
         </div>
-        <div className="flex h-9 min-w-60 items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm">
-          <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
-            <Code2 className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="truncate text-sm font-medium">{pageLabel}</span>
-            <span className="ml-auto truncate text-xs text-muted-foreground">
-              {pagePath}
+        <div className="flex h-9 items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm">
+          <div
+            role="group"
+            aria-label="Canvas zoom"
+            className="flex shrink-0 items-center"
+          >
+            <span className="pl-2 pr-1 text-xs font-medium text-muted-foreground">
+              Zoom
             </span>
+            <ScrubbableNumberInput
+              value={Math.round(canvasTransform.scale * 100)}
+              min={MIN_CANVAS_SCALE * 100}
+              max={MAX_CANVAS_SCALE * 100}
+              step={1}
+              scrubPixelsPerStep={2}
+              suffix="%"
+              ariaLabel="Canvas zoom percentage"
+              onValueChange={(value) =>
+                scheduleCanvasTransform((current) => ({
+                  ...current,
+                  scale: clampCanvasScale(value / 100),
+                }))
+              }
+              className="h-7 shrink-0"
+              inputClassName="h-7 w-[4ch] rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0"
+            />
           </div>
           <Separator orientation="vertical" className="mx-1 h-5" />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          <div
+            role="group"
+            aria-label="Preview device"
+            className="hidden items-center gap-0.5 lg:flex"
+          >
+            {viewportOptions.map(({ value, label, icon: Icon }) => (
               <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 shrink-0 gap-1.5 px-2 shadow-none"
-                aria-label={`Preview device: ${search.viewport}`}
+                key={value}
+                type="button"
+                variant={search.viewport === value ? "secondary" : "ghost"}
+                size="icon"
+                className="size-7 shadow-none"
+                aria-label={`${label} preview, ${previewDefaultWidths[value]} pixels`}
+                aria-pressed={search.viewport === value}
+                title={`${label} · ${previewDefaultWidths[value]} px`}
+                onClick={() => handleViewportChange(value)}
               >
-                <ActiveViewportIcon className="size-3.5" />
-                <ChevronDown className="size-3 text-muted-foreground" />
+                <Icon className="size-3.5" />
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-44">
-              <DropdownMenuLabel className="text-xs text-muted-foreground">
-                Preview device
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuRadioGroup
-                value={search.viewport}
-                onValueChange={(value) => {
-                  const viewport = viewportOptions.find(
-                    (option) => option.value === value,
-                  );
-                  if (viewport) handleViewportChange(viewport.value);
-                }}
-              >
-                {viewportOptions.map(({ value, label, icon: Icon }) => (
-                  <DropdownMenuRadioItem key={value} value={value}>
-                    <Icon />
-                    <span>{label}</span>
-                    <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
-                      {previewDefaultWidths[value]} px
-                    </span>
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            ))}
+          </div>
+          <div className="lg:hidden">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 shrink-0 gap-1.5 px-2 shadow-none"
+                  aria-label={`Preview device: ${search.viewport}`}
+                >
+                  <ActiveViewportIcon className="size-3.5" />
+                  <ChevronDown className="size-3 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44">
+                <DropdownMenuLabel className="text-xs text-muted-foreground">
+                  Preview device
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuRadioGroup
+                  value={search.viewport}
+                  onValueChange={(value) => {
+                    const viewport = viewportOptions.find(
+                      (option) => option.value === value,
+                    );
+                    if (viewport) handleViewportChange(viewport.value);
+                  }}
+                >
+                  {viewportOptions.map(({ value, label, icon: Icon }) => (
+                    <DropdownMenuRadioItem key={value} value={value}>
+                      <Icon />
+                      <span>{label}</span>
+                      <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+                        {previewDefaultWidths[value]} px
+                      </span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
         <div className="flex items-center gap-1 justify-self-end">
           <span className="mr-2 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
@@ -1069,16 +1092,12 @@ export function VisualEditorShell({
           </div>
 
           <EditorControls
-            search={search}
+            template={activeTemplate}
             isSelectionMode={isSelectionMode}
             onSelectionModeChange={setIsSelectionMode}
             onRefresh={() => {
               setPreviewRevision((revision) => revision + 1);
             }}
-            canvasScale={canvasTransform.scale}
-            onZoomOut={() => changeCanvasScale(-CANVAS_SCALE_STEP)}
-            onZoomIn={() => changeCanvasScale(CANVAS_SCALE_STEP)}
-            onResetCanvas={resetCanvas}
           />
         </main>
 
@@ -1104,101 +1123,12 @@ function PreviewSizeControl({
   onWidthChange: (width: number) => void;
 }) {
   const viewport = resolvePreviewViewport(width);
-  const [isEditing, setIsEditing] = useState(false);
-  const [draftWidth, setDraftWidth] = useState(() => String(width));
-  const scrubOriginRef = useRef<{
-    pointerId: number;
-    pointerX: number;
-    width: number;
-    nextWidth: number;
-    moved: boolean;
-  } | null>(null);
   const SizeIcon =
     viewport === "desktop"
       ? Monitor
       : viewport === "tablet"
         ? Tablet
         : Smartphone;
-
-  const beginEditing = () => {
-    setDraftWidth(String(width));
-    setIsEditing(true);
-  };
-
-  const cancelEditing = () => {
-    setDraftWidth(String(width));
-    setIsEditing(false);
-  };
-
-  const commitWidth = () => {
-    const nextWidth = Number(draftWidth);
-    if (
-      Number.isInteger(nextWidth) &&
-      nextWidth >= MIN_PREVIEW_WIDTH &&
-      nextWidth <= MAX_PREVIEW_WIDTH
-    ) {
-      onWidthChange(nextWidth);
-    } else {
-      setDraftWidth(String(width));
-    }
-    setIsEditing(false);
-  };
-
-  const handleSubmit = (event: ReactFormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    commitWidth();
-  };
-
-  const handleScrubPointerDown = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    if (event.button !== 0) return;
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    scrubOriginRef.current = {
-      pointerId: event.pointerId,
-      pointerX: event.clientX,
-      width,
-      nextWidth: width,
-      moved: false,
-    };
-  };
-
-  const handleScrubPointerMove = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    const origin = scrubOriginRef.current;
-    if (!origin || origin.pointerId !== event.pointerId) return;
-    event.stopPropagation();
-
-    const delta = (event.clientX - origin.pointerX) / canvasTransform.scale;
-    if (!origin.moved && Math.abs(delta) < 2) return;
-
-    const nextWidth = clampPreviewWidth(Math.round(origin.width + delta));
-    origin.moved = true;
-    origin.nextWidth = nextWidth;
-    onWidthPreview(nextWidth);
-  };
-
-  const handleScrubPointerUp = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    const origin = scrubOriginRef.current;
-    if (!origin || origin.pointerId !== event.pointerId) return;
-    event.stopPropagation();
-    scrubOriginRef.current = null;
-    if (origin.moved) onWidthChange(origin.nextWidth);
-  };
-
-  const handleScrubPointerCancel = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    const origin = scrubOriginRef.current;
-    if (!origin || origin.pointerId !== event.pointerId) return;
-    event.stopPropagation();
-    scrubOriginRef.current = null;
-    if (origin.moved) onWidthPreview(origin.width);
-  };
 
   return (
     <div
@@ -1210,56 +1140,18 @@ function PreviewSizeControl({
       onPointerDown={(event) => event.stopPropagation()}
     >
       <SizeIcon className="size-3.5 text-muted-foreground" />
-      {isEditing ? (
-        <form
-          className="flex items-center gap-1 tabular-nums"
-          onSubmit={handleSubmit}
-        >
-          <Input
-            autoFocus
-            inputMode="numeric"
-            type="number"
-            min={MIN_PREVIEW_WIDTH}
-            max={MAX_PREVIEW_WIDTH}
-            step={1}
-            value={draftWidth}
-            onChange={(event) => setDraftWidth(event.target.value)}
-            onBlur={commitWidth}
-            onKeyDown={(event) => {
-              if (event.key !== "Escape") return;
-              event.preventDefault();
-              cancelEditing();
-            }}
-            className="h-5 w-[4ch] appearance-none rounded-sm border-0 bg-background p-0 text-xs tabular-nums shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-            aria-label="Preview width in pixels"
-          />
-          <span aria-hidden="true">×</span>
-          <span>{height}</span>
-        </form>
-      ) : (
-        <button
-          type="button"
-          className="cursor-ew-resize touch-none rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onPointerDown={handleScrubPointerDown}
-          onPointerMove={handleScrubPointerMove}
-          onPointerUp={handleScrubPointerUp}
-          onPointerCancel={handleScrubPointerCancel}
-          onDoubleClick={(event) => {
-            event.stopPropagation();
-            beginEditing();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" && event.key !== "F2") return;
-            event.preventDefault();
-            beginEditing();
-          }}
-          aria-label={`Preview size ${width} by ${height}. Drag horizontally to resize, or double-click or press Enter to edit the width.`}
-          aria-keyshortcuts="Enter F2"
-          title="Drag to resize · Double-click to edit width"
-        >
-          <span className="tabular-nums">{width}</span> × {height}
-        </button>
-      )}
+      <ScrubbableNumberInput
+        value={width}
+        min={MIN_PREVIEW_WIDTH}
+        max={MAX_PREVIEW_WIDTH}
+        step={1}
+        scrubPixelsPerStep={canvasTransform.scale}
+        suffix={` × ${height}`}
+        ariaLabel="Preview width in pixels"
+        onValuePreview={(value) => onWidthPreview(clampPreviewWidth(value))}
+        onValueChange={(value) => onWidthChange(clampPreviewWidth(value))}
+        inputClassName="h-5 w-[4ch] rounded-sm border-0 bg-transparent p-0 text-xs shadow-none focus-visible:ring-1"
+      />
       <span className="sr-only capitalize">{viewport} breakpoint</span>
     </div>
   );
@@ -1285,24 +1177,18 @@ function EditorSmallScreenNotice() {
 }
 
 function EditorControls({
-  search,
+  template,
   isSelectionMode,
   onSelectionModeChange,
   onRefresh,
-  canvasScale,
-  onZoomOut,
-  onZoomIn,
-  onResetCanvas,
 }: {
-  search: StorefrontThemeEditorSearch;
+  template: StorefrontThemeEditorDTO["templates"][number] | undefined;
   isSelectionMode: boolean;
   onSelectionModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
-  canvasScale: number;
-  onZoomOut: () => void;
-  onZoomIn: () => void;
-  onResetCanvas: () => void;
 }) {
+  const templateDescriptor = resolveEditorTemplateDescriptor(template);
+
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-5 z-10 flex justify-center px-3">
       <EditorToolbar
@@ -1312,7 +1198,10 @@ function EditorControls({
         <Button
           variant={isSelectionMode ? "default" : "ghost"}
           size="icon"
-          className="shrink-0"
+          className={cn(
+            "size-7 shrink-0 shadow-none",
+            isSelectionMode && "hover:!bg-primary hover:!text-primary-foreground",
+          )}
           aria-label={
             isSelectionMode
               ? "Disable section selection"
@@ -1331,60 +1220,41 @@ function EditorControls({
         <Button
           variant="ghost"
           size="icon"
-          className="shrink-0"
+          className="size-7 shrink-0 shadow-none"
           disabled
           aria-label="Open preview in new tab"
+          title="Open preview is not available yet"
         >
           <ExternalLink />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="shrink-0"
-          aria-label="Refresh preview"
-          onClick={onRefresh}
-        >
-          <RefreshCw />
-        </Button>
-        <Separator orientation="vertical" className="mx-1 h-5" />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="shrink-0"
-          aria-label="Zoom out"
-          disabled={canvasScale <= MIN_CANVAS_SCALE}
-          onClick={onZoomOut}
-        >
-          <Minus />
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          className="min-w-14 shrink-0 tabular-nums"
-          aria-label="Reset canvas zoom and position"
-          onClick={onResetCanvas}
-        >
-          {Math.round(canvasScale * 100)}%
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="shrink-0"
-          aria-label="Zoom in"
-          disabled={canvasScale >= MAX_CANVAS_SCALE}
-          onClick={onZoomIn}
-        >
-          <Plus />
         </Button>
         <Separator orientation="vertical" className="mx-1 h-5" />
         <EditorToolbarGroup aria-label="Preview surface">
           <EditorToolbarMode active>Store</EditorToolbarMode>
-          <EditorToolbarMode disabled>Admin</EditorToolbarMode>
+          <EditorToolbarMode
+            disabled
+            title="Admin preview is not available yet"
+          >
+            Admin
+          </EditorToolbarMode>
         </EditorToolbarGroup>
-        <div className="hidden max-w-48 items-center gap-1.5 truncate px-2 text-xs text-muted-foreground xl:flex">
-          <Code2 className="size-3.5 shrink-0" />
-          <span className="truncate">/{search.template}</span>
-        </div>
+        <Separator orientation="vertical" className="mx-1 h-5" />
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-7 min-w-0 max-w-56 items-center gap-1.5 px-2 text-xs leading-none shadow-none xl:flex"
+          aria-label={`Refresh ${templateDescriptor.name} preview at ${templateDescriptor.path}`}
+          title="Refresh preview"
+          onClick={onRefresh}
+        >
+          <RefreshCw className="size-3.5 shrink-0" />
+          <span className="truncate font-medium">
+            {templateDescriptor.name}
+          </span>
+          <span aria-hidden="true" className="opacity-50">
+            ·
+          </span>
+          <span className="truncate">{templateDescriptor.path}</span>
+        </Button>
       </EditorToolbar>
     </div>
   );

@@ -34,7 +34,14 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   );
 
   return (
-    <aside className="m-3 ml-0 grid w-[21rem] min-h-0 grid-rows-[3.25rem_minmax(0,1fr)_auto] overflow-hidden rounded-xl border bg-component shadow-lg max-md:hidden xl:w-[25rem]">
+    <aside
+      className={cn(
+        "m-3 ml-0 grid w-[21rem] min-h-0 overflow-hidden rounded-xl border bg-component shadow-lg max-md:hidden xl:w-[25rem]",
+        tab === "chat"
+          ? "grid-rows-[3.25rem_minmax(0,1fr)_auto]"
+          : "grid-rows-[3.25rem_minmax(0,1fr)]",
+      )}
+    >
       <header className="flex items-center justify-between border-b px-2.5">
         <div className="flex items-center gap-1">
           <PanelTab active={tab === "styles"} onClick={() => setTab("styles")}>
@@ -102,37 +109,39 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         </ScrollArea>
       )}
 
-      <div className="space-y-2 p-3 pt-0">
-        <div className="rounded-lg border bg-background p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/40">
-          <Textarea
-            rows={2}
-            disabled
-            placeholder="Add a follow-up..."
-            className="min-h-14 resize-none border-0 bg-transparent px-1 py-1 shadow-none focus-visible:ring-0"
-          />
-          <div className="mt-1 flex items-center justify-between">
-            <Button
-              variant="ghost"
-              size="icon"
+      {tab === "chat" ? (
+        <div className="space-y-2 p-3 pt-0">
+          <div className="rounded-lg border bg-background p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/40">
+            <Textarea
+              rows={2}
               disabled
-              aria-label="Attach file"
-            >
-              <Paperclip />
-            </Button>
-            <Button
-              size="icon"
-              disabled
-              aria-label="Send prompt"
-              rounded="full"
-            >
-              <SendHorizontal />
-            </Button>
+              placeholder="Add a follow-up..."
+              className="min-h-14 resize-none border-0 bg-transparent px-1 py-1 shadow-none focus-visible:ring-0"
+            />
+            <div className="mt-1 flex items-center justify-between">
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled
+                aria-label="Attach file"
+              >
+                <Paperclip />
+              </Button>
+              <Button
+                size="icon"
+                disabled
+                aria-label="Send prompt"
+                rounded="full"
+              >
+                <SendHorizontal />
+              </Button>
+            </div>
           </div>
+          <p className="text-center text-[11px] text-muted-foreground">
+            AI authoring will use validated draft revisions.
+          </p>
         </div>
-        <p className="text-center text-[11px] text-muted-foreground">
-          AI authoring will use validated draft revisions.
-        </p>
-      </div>
+      ) : null}
     </aside>
   );
 });
