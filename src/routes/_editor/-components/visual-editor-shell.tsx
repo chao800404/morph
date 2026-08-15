@@ -21,7 +21,9 @@ import {
   CircleCheck,
   CircleAlert,
   ChevronDown,
+  Code2,
   ExternalLink,
+  Layout,
   LoaderCircle,
   Lock,
   MessageCircle,
@@ -56,8 +58,10 @@ import {
 } from "@/server/storefront/storefront-comments.serverFn";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
+import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { EditorAssistantPanel } from "./editor-assistant-panel";
 import { EditorCanvasComments } from "./editor-canvas-comments";
+import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { EditorPathNavigator } from "./editor-path-navigator";
 import { EditorSectionsPanel } from "./editor-sections-panel";
 import { resolveEditorTemplate } from "./editor-template";
@@ -541,6 +545,15 @@ export function VisualEditorShell({
   const ActiveViewportIcon =
     viewportOptions.find((option) => option.value === search.viewport)?.icon ??
     Monitor;
+
+  const [editorMode, setEditorMode] = useState<"design" | "code">("design");
+
+  const themeFilesQuery = useQuery(
+    storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
+  );
+  const themeFiles = themeFilesQuery.data?.files ?? [];
+  const themeTree = themeFilesQuery.data?.tree ?? [];
+
   const normalWidthSessionKey = activeTemplate
     ? `morph:editor-normal-width:${context.storefront.id}:${context.theme.id}:${activeTemplate.id}`
     : null;
@@ -1463,140 +1476,166 @@ export function VisualEditorShell({
             </p>
           </div>
         </div>
-        <div className="flex h-9 items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm">
-          <div
-            role="group"
-            aria-label="Canvas zoom"
-            className="flex shrink-0 items-center"
-          >
-            <span className="pl-2 pr-1 text-xs font-medium text-muted-foreground">
-              Zoom
-            </span>
-            <ScrubbableNumberInput
-              value={Math.round(canvasTransform.scale * 100)}
-              min={MIN_CANVAS_SCALE * 100}
-              max={MAX_CANVAS_SCALE * 100}
-              step={1}
-              scrubPixelsPerStep={2}
-              suffix="%"
-              ariaLabel="Canvas zoom percentage"
-              onValueChange={(value) =>
-                scheduleCanvasTransform((current) => ({
-                  ...current,
-                  scale: clampCanvasScale(value / 100),
-                }))
-              }
-              className="h-7 shrink-0"
-              inputClassName="h-7 w-[4ch] rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0"
-            />
-          </div>
-          <Separator orientation="vertical" className="mx-1 h-5" />
-          <div
-            role="group"
-            aria-label="Preview device"
-            className="hidden items-center gap-0.5 lg:flex"
-          >
-            {viewportOptions.map(({ value, label, icon: Icon }) => (
-              <Button
-                key={value}
-                type="button"
-                variant={search.viewport === value ? "toolbarActive" : "ghost"}
-                size="icon"
-                disabled={isWidthLocked}
-                className="size-7"
-                aria-label={`${label} preview, ${previewDefaultWidths[value]} pixels`}
-                aria-pressed={search.viewport === value}
-                title={
-                  isWidthLocked
-                    ? "Width is locked to current comment group (Click lock icon to unlock)"
-                    : `${label} · ${previewDefaultWidths[value]} px`
-                }
-                onClick={() => handleViewportChange(value)}
-              >
-                <Icon className="size-3.5" />
-              </Button>
-            ))}
-            <Separator orientation="vertical" className="mx-0.5 h-4" />
-            <Button
-              type="button"
-              variant={isWidthLocked ? "toolbarActive" : "ghost"}
-              size="icon"
-              className="size-7"
-              aria-label={isWidthLocked ? "Width locked (click to unlock)" : "Width unlocked (click to lock)"}
-              aria-pressed={isWidthLocked}
-              title={
-                isWidthLocked
-                  ? "Width is locked (Click to unlock device & width controls)"
-                  : "Width is unlocked (Click to lock width to current size)"
-              }
-              onClick={() => setIsWidthLocked((prev) => !prev)}
+        <div className="flex items-center gap-2">
+          <div className="flex h-9 items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm">
+            <div
+              role="group"
+              aria-label="Canvas zoom"
+              className="flex shrink-0 items-center"
             >
-              {isWidthLocked ? (
-                <Lock className="size-3.5 text-primary" />
-              ) : (
-                <Unlock className="size-3.5 text-muted-foreground" />
-              )}
-            </Button>
-          </div>
-          <div className="flex items-center gap-0.5 lg:hidden">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+              <span className="pl-2 pr-1 text-xs font-medium text-muted-foreground">
+                Zoom
+              </span>
+              <ScrubbableNumberInput
+                value={Math.round(canvasTransform.scale * 100)}
+                min={MIN_CANVAS_SCALE * 100}
+                max={MAX_CANVAS_SCALE * 100}
+                step={1}
+                scrubPixelsPerStep={2}
+                suffix="%"
+                ariaLabel="Canvas zoom percentage"
+                onValueChange={(value) =>
+                  scheduleCanvasTransform((current) => ({
+                    ...current,
+                    scale: clampCanvasScale(value / 100),
+                  }))
+                }
+                className="h-7 shrink-0"
+                inputClassName="h-7 w-[4ch] rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0"
+              />
+            </div>
+            <Separator orientation="vertical" className="mx-1 h-5" />
+            <div
+              role="group"
+              aria-label="Preview device"
+              className="hidden items-center gap-0.5 lg:flex"
+            >
+              {viewportOptions.map(({ value, label, icon: Icon }) => (
                 <Button
-                  variant="ghost"
-                  size="sm"
+                  key={value}
+                  type="button"
+                  variant={search.viewport === value ? "toolbarActive" : "ghost"}
+                  size="icon"
                   disabled={isWidthLocked}
-                  className="h-7 shrink-0 gap-1.5 px-2 shadow-none"
-                  aria-label={`Preview device: ${search.viewport}`}
+                  className="size-7"
+                  aria-label={`${label} preview, ${previewDefaultWidths[value]} pixels`}
+                  aria-pressed={search.viewport === value}
                   title={
                     isWidthLocked
-                      ? "Width is locked to current comment group"
-                      : undefined
+                      ? "Width is locked to current comment group (Click lock icon to unlock)"
+                      : `${label} · ${previewDefaultWidths[value]} px`
                   }
+                  onClick={() => handleViewportChange(value)}
                 >
-                  <ActiveViewportIcon className="size-3.5" />
-                  <ChevronDown className="size-3 text-muted-foreground" />
+                  <Icon className="size-3.5" />
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-44">
-                <DropdownMenuLabel className="text-xs text-muted-foreground">
-                  Preview device
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuRadioGroup
-                  value={search.viewport}
-                  onValueChange={(value) => {
-                    const viewport = viewportOptions.find(
-                      (option) => option.value === value,
-                    );
-                    if (viewport) handleViewportChange(viewport.value);
-                  }}
-                >
-                  {viewportOptions.map(({ value, label, icon: Icon }) => (
-                    <DropdownMenuRadioItem key={value} value={value}>
-                      <Icon />
-                      <span>{label}</span>
-                      <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
-                        {previewDefaultWidths[value]} px
-                      </span>
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
+              ))}
+              <Separator orientation="vertical" className="mx-0.5 h-4" />
+              <Button
+                type="button"
+                variant={isWidthLocked ? "toolbarActive" : "ghost"}
+                size="icon"
+                className="size-7"
+                aria-label={isWidthLocked ? "Width locked (click to unlock)" : "Width unlocked (click to lock)"}
+                aria-pressed={isWidthLocked}
+                title={
+                  isWidthLocked
+                    ? "Width is locked (Click to unlock device & width controls)"
+                    : "Width is unlocked (Click to lock width to current size)"
+                }
+                onClick={() => setIsWidthLocked((prev) => !prev)}
+              >
+                {isWidthLocked ? (
+                  <Lock className="size-3.5 text-primary" />
+                ) : (
+                  <Unlock className="size-3.5 text-muted-foreground" />
+                )}
+              </Button>
+            </div>
+            <div className="flex items-center gap-0.5 lg:hidden">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={isWidthLocked}
+                    className="h-7 shrink-0 gap-1.5 px-2 shadow-none"
+                    aria-label={`Preview device: ${search.viewport}`}
+                    title={
+                      isWidthLocked
+                        ? "Width is locked to current comment group"
+                        : undefined
+                    }
+                  >
+                    <ActiveViewportIcon className="size-3.5" />
+                    <ChevronDown className="size-3 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-44">
+                  <DropdownMenuLabel className="text-xs text-muted-foreground">
+                    Preview device
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuRadioGroup
+                    value={search.viewport}
+                    onValueChange={(value) => {
+                      const viewport = viewportOptions.find(
+                        (option) => option.value === value,
+                      );
+                      if (viewport) handleViewportChange(viewport.value);
+                    }}
+                  >
+                    {viewportOptions.map(({ value, label, icon: Icon }) => (
+                      <DropdownMenuRadioItem key={value} value={value}>
+                        <Icon />
+                        <span>{label}</span>
+                        <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+                          {previewDefaultWidths[value]} px
+                        </span>
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button
+                type="button"
+                variant={isWidthLocked ? "toolbarActive" : "ghost"}
+                size="icon"
+                className="size-7 shrink-0"
+                aria-label={isWidthLocked ? "Width locked" : "Width unlocked"}
+                title={isWidthLocked ? "Click to unlock width" : "Click to lock width"}
+                onClick={() => setIsWidthLocked((prev) => !prev)}
+              >
+                {isWidthLocked ? (
+                  <Lock className="size-3.5 text-primary" />
+                ) : (
+                  <Unlock className="size-3.5 text-muted-foreground" />
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {/* Design | Code Mode Segment Switcher */}
+          <div className="flex h-9 items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm max-md:hidden">
             <Button
               type="button"
-              variant={isWidthLocked ? "toolbarActive" : "ghost"}
-              size="icon"
-              className="size-7 shrink-0"
-              aria-label={isWidthLocked ? "Width locked" : "Width unlocked"}
-              title={isWidthLocked ? "Click to unlock width" : "Click to lock width"}
-              onClick={() => setIsWidthLocked((prev) => !prev)}
+              variant={editorMode === "design" ? "toolbarActive" : "ghost"}
+              size="sm"
+              className="h-7 gap-1.5 px-3 text-xs font-medium"
+              onClick={() => setEditorMode("design")}
             >
-              {isWidthLocked ? (
-                <Lock className="size-3.5 text-primary" />
-              ) : (
-                <Unlock className="size-3.5 text-muted-foreground" />
-              )}
+              <Layout className="size-3.5" />
+              <span>Design</span>
+            </Button>
+            <Button
+              type="button"
+              variant={editorMode === "code" ? "toolbarActive" : "ghost"}
+              size="sm"
+              className="h-7 gap-1.5 px-3 text-xs font-medium"
+              onClick={() => setEditorMode("code")}
+            >
+              <Code2 className="size-3.5" />
+              <span>Code</span>
             </Button>
           </div>
         </div>
@@ -1653,13 +1692,22 @@ export function VisualEditorShell({
         </div>
       </header>
 
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/40 max-md:flex-col">
-        <EditorSectionsPanel
-          style={{ width: `${leftPanelWidth}px` }}
-          context={context}
-          search={search}
-          onSearchChange={onSearchChange}
-          onSectionOrderChange={syncPreviewSectionOrder}
+      {editorMode === "code" ? (
+        <EditorCodeWorkspace
+          storefrontId={context.storefront.id}
+          themeId={context.theme.id}
+          files={themeFiles}
+          tree={themeTree}
+          onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
+        />
+      ) : (
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/40 max-md:flex-col">
+          <EditorSectionsPanel
+            style={{ width: `${leftPanelWidth}px` }}
+            context={context}
+            search={search}
+            onSearchChange={onSearchChange}
+            onSectionOrderChange={syncPreviewSectionOrder}
           onSaveStateChange={setDraftSaveState}
         />
 
@@ -2003,6 +2051,7 @@ export function VisualEditorShell({
 
         <EditorSmallScreenNotice />
       </div>
+      )}
     </div>
   );
 }

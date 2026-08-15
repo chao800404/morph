@@ -341,3 +341,32 @@ export const storefrontComments = sqliteTable(
     ),
   ],
 );
+
+/** Individual code/style/config file within a theme's virtual workspace. */
+export const storefrontThemeFiles = sqliteTable(
+  "storefront_theme_files",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    path: text("path").notNull(), // e.g. "src/components/Hero.tsx", "src/styles/global.css"
+    content: text("content").notNull(),
+    mimeType: text("mime_type").default("text/plain"),
+    isEntry: integer("is_entry", { mode: "boolean" }).default(false),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_theme_files_theme_path_unique")
+      .on(table.themeId, table.path)
+      .where(sql`${table.deletedAt} IS NULL`),
+    index("storefront_theme_files_theme_idx").on(
+      table.themeId,
+      table.deletedAt,
+    ),
+  ],
+);
+
