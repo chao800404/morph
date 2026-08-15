@@ -16,6 +16,7 @@ type ScrubbableNumberInputProps = {
   step?: number;
   scrubPixelsPerStep?: number;
   suffix?: string;
+  disabled?: boolean;
   ariaLabel: string;
   className?: string;
   inputClassName?: string;
@@ -38,6 +39,7 @@ export function ScrubbableNumberInput({
   step = 1,
   scrubPixelsPerStep = 4,
   suffix,
+  disabled = false,
   ariaLabel,
   className,
   inputClassName,
@@ -82,7 +84,7 @@ export function ScrubbableNumberInput({
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLInputElement>) => {
-    if (event.button !== 0) return;
+    if (disabled || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -154,6 +156,7 @@ export function ScrubbableNumberInput({
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
         value={draftValue}
         onChange={(event) => setDraftValue(event.target.value)}
         onBlur={commitDraft}
@@ -163,9 +166,12 @@ export function ScrubbableNumberInput({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
         aria-label={ariaLabel}
-        title="Drag horizontally to adjust, or click to type"
+        title={disabled ? undefined : "Drag horizontally to adjust, or click to type"}
         className={cn(
-          "cursor-ew-resize touch-none appearance-none text-center tabular-nums [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+          "appearance-none text-center tabular-nums [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden",
+          disabled
+            ? "cursor-not-allowed text-foreground opacity-100"
+            : "cursor-ew-resize touch-none",
           inputClassName,
         )}
       />

@@ -230,12 +230,20 @@ Cannot access 'xxxServerFn' before initialization
 - 不可在 URL、TanStack Query、Zustand 與 local state 同時保存同一份可推導資料。衍生值以 selector、`useMemo` 或純函式計算。
 - 表單依需求選擇 controlled 或 uncontrolled；優先考量驗證、可讀性與局部更新成本，不採用一律禁止 state 的規則。
 
-### 高頻互動與效能
+### Visual Editor 與 React 渲染效能規範（避免無謂 Re-render 與畫面閃爍）
 
-- Pointer move、drag、resize、canvas 或逐幀動畫等高頻路徑，不應每個 event 都觸發大型 React subtree 更新。
-- 高頻純視覺值可使用 `useRef`、pointer capture、CSS variables、transform 與 `requestAnimationFrame`；語意結果在互動結束或必要節點才提交到 React/store/URL。
-- 純 hover、focus、展開視覺與簡單 transition 優先使用 CSS；但可存取性狀態與業務狀態仍由 React 管理。
-- 不預先加入 `memo`、大量 `useMemo`、直接 DOM 操作或快取。先確認實際 render/paint/query 熱點，再做最小且可量測的優化。
+- **禁止「用 `useEffect` 同步狀態」的反模式（State Synchronization Anti-pattern）**：
+  - 禁止在 `useEffect` 中讀取 Prop、Query 或 State A 來呼叫 State B 的 `setState`；這會導致不必要的二次渲染（Render 1 → Effect → Render 2）並極易造成狀態連鎖反應、死循環或畫面閃爍。
+  - 可從現有 State／Query／Search 推導出的值，一律在 render 流程中透過純運算或 `useMemo` 計算，不可建立第二個 `useState` + `useEffect` 去同步。
+  - 使用者主動操作帶來的連鎖狀態更新，應直接在**事件處理常式（Event Handler / Action Callback）** 內一次性完成，不要透過 `useEffect` 監聽狀態變化做被動轉發。
+- **`useEffect` 僅用於真正的外部副作用（External Side Effects Only）**：
+  - `useEffect` 僅能用於：`window.addEventListener`、DOM ResizeObserver、Iframe `postMessage` 橋接、全域快捷鍵與清理計時器。
+  - 若需在特定模式切換時做單次校準，必須配合 `useRef` 做精準的轉變守衛（例如 `!prevModeRef.current && isMode`），禁止在日常 render 或依賴更新時無防護地反覆呼叫 `setState`。
+- **Query 快取更新優先採用精準樂觀更新（Targeted Cache Updates）**：
+  - 局部單筆變更（如 Viewport 寬度同步、名稱修改、單筆狀態變更）優先使用 `queryClient.setQueryData` 直接更新快取，避免無差別呼叫 `invalidateQueries({ queryKey: [...all()] })` 導致畫面上所有無關組件集體重抓重繪與閃爍。
+- **高頻畫布操作（Pan／Zoom／Resize）維持 Ref + RAF 架構**：
+  - Pointer move、drag、canvas 縮放與寬度拉伸等高頻事件，即時數值一律記錄於 `useRef`，透過 `requestAnimationFrame` 直接驅動 transform 或局部 style。
+  - 僅在互動結束（`PointerUp` / `commit`）時將最終語意值提交至 React State 或 URL Search，避免在 60fps 互動中觸發大型 React subtree 重算。
 
 ## 4. Database、D1 與資產一致性
 

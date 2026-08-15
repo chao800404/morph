@@ -29,6 +29,7 @@ const buttonVariants = cva(
                 ),
                 toolbarActive:
                     "border border-toolbar-active-border bg-toolbar-active text-toolbar-active-foreground shadow-toolbar-active hover:bg-toolbar-active hover:text-toolbar-active-foreground",
+                blue: "bg-blue-600 text-white shadow-xs hover:bg-blue-500 active:bg-blue-700 focus-visible:ring-blue-500/30 dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white inset-shadow-xs inset-shadow-white/20",
                 none: "bg-transparent shadow-none hover:bg-zinc-800 text-muted-foreground hover:bg-transparent",
             },
             size: {

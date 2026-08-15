@@ -14,7 +14,7 @@ import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-t
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   AppWindow,
@@ -23,12 +23,15 @@ import {
   ChevronDown,
   ExternalLink,
   LoaderCircle,
+  Lock,
+  MessageCircle,
   Monitor,
   MousePointer2,
   Redo2,
   Smartphone,
   Tablet,
   Undo2,
+  Unlock,
 } from "lucide-react";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -39,12 +42,22 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import type {
+  StorefrontCommentGroupDTO,
+  StorefrontCommentThreadDTO,
+} from "@/lib/storefront/dto/storefront-comment.dto";
 import {
   publishStorefrontThemeTemplate,
   updateStorefrontThemeSectionProps,
 } from "@/server/storefront/storefront-themes.serverFn";
+import {
+  createStorefrontCommentGroup,
+  updateStorefrontCommentGroup,
+} from "@/server/storefront/storefront-comments.serverFn";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
+import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { EditorAssistantPanel } from "./editor-assistant-panel";
+import { EditorCanvasComments } from "./editor-canvas-comments";
 import { EditorPathNavigator } from "./editor-path-navigator";
 import { EditorSectionsPanel } from "./editor-sections-panel";
 import { resolveEditorTemplate } from "./editor-template";
@@ -58,6 +71,12 @@ type EditorShellProps = {
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
+  currentUser?: {
+    id?: string;
+    name?: string;
+    email?: string;
+    image?: string | null;
+  };
 };
 
 const previewDefaultWidths = {
@@ -181,6 +200,7 @@ export function VisualEditorShell({
   context,
   search,
   onSearchChange,
+  currentUser,
 }: EditorShellProps) {
   const [leftPanelWidth, setLeftPanelWidth] = useState(
     () => context.panelWidths?.left ?? DEFAULT_LEFT_PANEL_WIDTH,
@@ -301,8 +321,133 @@ export function VisualEditorShell({
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
+  const [isCommentMode, setIsCommentMode] = useState(false);
+  const [commentFilter, setCommentFilter] = useState<"open" | "resolved">("open");
+  const [activeCommentThreadId, setActiveCommentThreadId] = useState<
+    string | null
+  >(null);
+  const [draftCommentPin, setDraftCommentPin] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  const [isWidthLocked, setIsWidthLocked] = useState(true);
+
   const activeTemplate = resolveEditorTemplate(context, search);
   const queryClient = useQueryClient();
+
+  const commentGroupsQuery = useQuery({
+    ...storefrontCommentQueries.groups(
+      context.storefront.id,
+      context.theme.id,
+      activeTemplate?.id ?? "",
+    ),
+    enabled: Boolean(activeTemplate?.id),
+  });
+  const commentGroups = (commentGroupsQuery.data?.success
+    ? commentGroupsQuery.data.data
+    : []) as StorefrontCommentGroupDTO[];
+
+  useEffect(() => {
+    if (commentGroups.length === 0) {
+      setActiveGroupId(null);
+      return;
+    }
+    setActiveGroupId((prev) => {
+      if (!prev) return commentGroups[0].id;
+      if (commentGroups.some((g) => g.id === prev)) return prev;
+      return commentGroups[0].id;
+    });
+  }, [commentGroups]);
+
+  const createGroupMutation = useMutation({
+    mutationFn: async () => {
+      const res = await createStorefrontCommentGroup({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          templateId: activeTemplate?.id ?? "",
+          name: `Group ${commentGroups.length + 1}`,
+          viewportWidth: previewWidth,
+        },
+      });
+      if (!res.success) throw new Error(res.message);
+      return res.data;
+    },
+    onSuccess: (newGroup) => {
+      if (newGroup?.id) {
+        setActiveGroupId(newGroup.id);
+        if (newGroup.viewportWidth > 0) {
+          applyPreviewWidth(newGroup.viewportWidth, true);
+        }
+      }
+      setCommentFilter("open");
+      queryClient.invalidateQueries({
+        queryKey: storefrontCommentQueries.all(),
+      });
+      setActiveCommentThreadId(null);
+      setDraftCommentPin(null);
+      setIsWidthLocked(true);
+      toast.success("Comment group created");
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to create group");
+    },
+  });
+
+  const syncGroupWidthMutation = useMutation({
+    mutationFn: async ({
+      groupId,
+      viewportWidth,
+    }: {
+      groupId: string;
+      viewportWidth: number;
+    }) => {
+      const res = await updateStorefrontCommentGroup({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          groupId,
+          viewportWidth,
+        },
+      });
+      if (!res.success) throw new Error(res.message);
+      return res.data;
+    },
+    onSuccess: (updatedGroup) => {
+      if (updatedGroup?.id) {
+        queryClient.setQueryData(
+          storefrontCommentQueries.groups(
+            context.storefront.id,
+            context.theme.id,
+            activeTemplate?.id ?? "",
+          ).queryKey,
+          (old: any) => {
+            if (!old || !old.success || !Array.isArray(old.data)) return old;
+            return {
+              ...old,
+              data: old.data.map((g: StorefrontCommentGroupDTO) =>
+                g.id === updatedGroup.id
+                  ? { ...g, viewportWidth: updatedGroup.viewportWidth }
+                  : g,
+              ),
+            };
+          },
+        );
+      }
+    },
+  });
+
+  const commentsQuery = useQuery({
+    ...storefrontCommentQueries.list(
+      context.storefront.id,
+      context.theme.id,
+      activeTemplate?.id ?? "",
+      "all",
+    ),
+    enabled: Boolean(activeTemplate?.id),
+  });
+  const commentThreads = commentsQuery.data?.data ?? [];
   const hasUnpublishedChanges = Boolean(
     activeTemplate?.draftRevisionId &&
     activeTemplate.draftRevisionId !== activeTemplate.publishedRevisionId,
@@ -396,6 +541,25 @@ export function VisualEditorShell({
   const ActiveViewportIcon =
     viewportOptions.find((option) => option.value === search.viewport)?.icon ??
     Monitor;
+  const normalWidthSessionKey = activeTemplate
+    ? `morph:editor-normal-width:${context.storefront.id}:${context.theme.id}:${activeTemplate.id}`
+    : null;
+  const lastNormalWidthRef = useRef<number>(previewDefaultWidths.desktop);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && normalWidthSessionKey) {
+      try {
+        const saved = sessionStorage.getItem(normalWidthSessionKey);
+        if (saved) {
+          const parsed = parseInt(saved, 10);
+          if (parsed > 0) {
+            lastNormalWidthRef.current = parsed;
+          }
+        }
+      } catch {}
+    }
+  }, [normalWidthSessionKey]);
+
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
   const previewWidthRef = useRef(previewWidth);
@@ -454,10 +618,44 @@ export function VisualEditorShell({
     [],
   );
 
+  const centerCanvasOnThread = useCallback(
+    (thread: StorefrontCommentThreadDTO, frameHeight: number) => {
+      if (typeof thread.positionY !== "number") return;
+      scheduleCanvasTransform((current) => {
+        const viewportHeight =
+          canvasViewportRef.current?.getBoundingClientRect().height ?? 800;
+        const pinYInFrame = (thread.positionY / 100) * frameHeight;
+        const centeredY =
+          viewportHeight / 2 - CANVAS_TOP_INSET - pinYInFrame * current.scale - 40;
+
+        return {
+          ...current,
+          y: centeredY,
+        };
+      });
+    },
+    [scheduleCanvasTransform],
+  );
+
   useEffect(() => {
     previewFrameHeightRef.current = previewFrameHeight;
+    if (activeCommentThreadId) {
+      const activeThread = commentThreads.find(
+        (t) => t.id === activeCommentThreadId,
+      );
+      if (activeThread) {
+        centerCanvasOnThread(activeThread, previewFrameHeight);
+        return;
+      }
+    }
     scheduleCanvasTransform((current) => current);
-  }, [previewFrameHeight, scheduleCanvasTransform]);
+  }, [
+    previewFrameHeight,
+    activeCommentThreadId,
+    commentThreads,
+    centerCanvasOnThread,
+    scheduleCanvasTransform,
+  ]);
 
   useEffect(() => {
     const viewport = canvasViewportRef.current;
@@ -496,6 +694,26 @@ export function VisualEditorShell({
     },
     [],
   );
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (draftCommentPin) {
+          e.preventDefault();
+          e.stopPropagation();
+          setDraftCommentPin(null);
+        } else if (activeCommentThreadId) {
+          e.preventDefault();
+          e.stopPropagation();
+          setActiveCommentThreadId(null);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown, true);
+    return () =>
+      window.removeEventListener("keydown", handleGlobalKeyDown, true);
+  }, [draftCommentPin, activeCommentThreadId]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -693,6 +911,19 @@ export function VisualEditorShell({
 
   const handleCanvasWheel = useCallback(
     (event: WheelEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest?.("[data-thread-card]") ||
+        target?.closest?.("[data-comment-popover]") ||
+        target?.closest?.("[data-scroll-container]") ||
+        target?.closest?.("[data-slot='scroll-area-viewport']") ||
+        target?.closest?.("[data-slot='scroll-area']") ||
+        target?.closest?.("[data-radix-scroll-area-viewport]") ||
+        target?.closest?.(".overscroll-contain")
+      ) {
+        return;
+      }
+
       event.preventDefault();
 
       const viewport = canvasViewportRef.current;
@@ -893,14 +1124,29 @@ export function VisualEditorShell({
 
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) {
-        return;
+      if (isCommentMode && (activeCommentThreadId || draftCommentPin)) {
+        setActiveCommentThreadId(null);
+        setDraftCommentPin(null);
       }
 
-      event.currentTarget.setPointerCapture(event.pointerId);
-      beginCanvasPan("canvas", event.pointerId, event.clientX, event.clientY);
+      // Middle click (button 1) always pans; left click (button 0) pans when not in comment mode
+      if (event.button === 1 || (event.button === 0 && !isCommentMode)) {
+        if (event.button === 1) {
+          event.preventDefault();
+        }
+        event.currentTarget.setPointerCapture(event.pointerId);
+        beginCanvasPan("canvas", event.pointerId, event.clientX, event.clientY);
+        return;
+      }
     },
-    [beginCanvasPan],
+    [
+      beginCanvasPan,
+      isCommentMode,
+      activeCommentThreadId,
+      draftCommentPin,
+      setActiveCommentThreadId,
+      setDraftCommentPin,
+    ],
   );
 
   const handleCanvasPointerMove = useCallback(
@@ -964,16 +1210,71 @@ export function VisualEditorShell({
   }, []);
 
   const applyPreviewWidth = useCallback(
-    (width: number) => {
+    (width: number, skipGroupSync = false) => {
       const nextWidth = clampPreviewWidth(Math.round(width));
       updatePreviewWidth(nextWidth);
       onSearchChange({
         canvasWidth: nextWidth,
         viewport: resolvePreviewViewport(nextWidth),
       });
+      if (!isCommentMode) {
+        lastNormalWidthRef.current = nextWidth;
+        if (typeof window !== "undefined" && normalWidthSessionKey) {
+          try {
+            sessionStorage.setItem(normalWidthSessionKey, String(nextWidth));
+          } catch {}
+        }
+      }
+      if (!skipGroupSync && isCommentMode && activeGroupId) {
+        syncGroupWidthMutation.mutate({
+          groupId: activeGroupId,
+          viewportWidth: nextWidth,
+        });
+      }
     },
-    [onSearchChange, updatePreviewWidth],
+    [
+      activeGroupId,
+      isCommentMode,
+      normalWidthSessionKey,
+      onSearchChange,
+      syncGroupWidthMutation,
+      updatePreviewWidth,
+    ],
   );
+
+  // When entering Comment Mode (or when comment groups load while in Comment Mode),
+  // automatically synchronize the preview width to match the active comment group
+  const prevCommentModeRef = useRef(isCommentMode);
+  useEffect(() => {
+    const justEnteredCommentMode = !prevCommentModeRef.current && isCommentMode;
+    prevCommentModeRef.current = isCommentMode;
+
+    if (!isCommentMode || commentGroups.length === 0) return;
+
+    if (justEnteredCommentMode) {
+      const targetGroupId = activeGroupId ?? commentGroups[0].id;
+      const targetGroup =
+        commentGroups.find((g) => g.id === targetGroupId) ?? commentGroups[0];
+      if (
+        targetGroup &&
+        targetGroup.viewportWidth > 0 &&
+        targetGroup.viewportWidth !== previewWidthRef.current
+      ) {
+        applyPreviewWidth(targetGroup.viewportWidth, true);
+        setIsWidthLocked(true);
+      }
+    }
+  }, [isCommentMode, activeGroupId, commentGroups, applyPreviewWidth]);
+
+  const handleExitCommentMode = useCallback(() => {
+    setIsCommentMode(false);
+    setDraftCommentPin(null);
+    setActiveCommentThreadId(null);
+    const restoredWidth =
+      lastNormalWidthRef.current || previewDefaultWidths.desktop;
+    applyPreviewWidth(restoredWidth, true);
+    setIsWidthLocked(false);
+  }, [applyPreviewWidth]);
 
   const handleResizePointerDown = useCallback(
     (edge: "left" | "right") =>
@@ -1014,12 +1315,33 @@ export function VisualEditorShell({
       if (resizeOriginRef.current?.pointerId !== event.pointerId) return;
       event.stopPropagation();
       resizeOriginRef.current = null;
+      const finalWidth = previewWidthRef.current;
       onSearchChange({
-        canvasWidth: previewWidthRef.current,
-        viewport: resolvePreviewViewport(previewWidthRef.current),
+        canvasWidth: finalWidth,
+        viewport: resolvePreviewViewport(finalWidth),
       });
+      if (!isCommentMode) {
+        lastNormalWidthRef.current = finalWidth;
+        if (typeof window !== "undefined" && normalWidthSessionKey) {
+          try {
+            sessionStorage.setItem(normalWidthSessionKey, String(finalWidth));
+          } catch {}
+        }
+      }
+      if (isCommentMode && activeGroupId) {
+        syncGroupWidthMutation.mutate({
+          groupId: activeGroupId,
+          viewportWidth: finalWidth,
+        });
+      }
     },
-    [onSearchChange],
+    [
+      activeGroupId,
+      isCommentMode,
+      normalWidthSessionKey,
+      onSearchChange,
+      syncGroupWidthMutation,
+    ],
   );
 
   const handleResizeKeyDown = useCallback(
@@ -1039,10 +1361,84 @@ export function VisualEditorShell({
 
   const handleViewportChange = useCallback(
     (viewport: StorefrontThemeEditorSearch["viewport"]) => {
-      resetCanvas();
+      const nextWidth = previewDefaultWidths[viewport];
+      updatePreviewWidth(nextWidth);
       onSearchChange({ viewport, canvasWidth: undefined });
+      if (!isCommentMode) {
+        lastNormalWidthRef.current = nextWidth;
+        if (typeof window !== "undefined" && normalWidthSessionKey) {
+          try {
+            sessionStorage.setItem(normalWidthSessionKey, String(nextWidth));
+          } catch {}
+        }
+      }
+      if (isCommentMode && activeGroupId) {
+        syncGroupWidthMutation.mutate({
+          groupId: activeGroupId,
+          viewportWidth: nextWidth,
+        });
+      }
     },
-    [onSearchChange, resetCanvas],
+    [
+      activeGroupId,
+      isCommentMode,
+      normalWidthSessionKey,
+      onSearchChange,
+      syncGroupWidthMutation,
+      updatePreviewWidth,
+    ],
+  );
+
+  const handleSelectGroup = useCallback(
+    (groupId: string) => {
+      setActiveGroupId(groupId);
+      setActiveCommentThreadId(null);
+      setDraftCommentPin(null);
+      const targetGroup = commentGroups.find((g) => g.id === groupId);
+      if (targetGroup && targetGroup.viewportWidth > 0) {
+        applyPreviewWidth(targetGroup.viewportWidth, true);
+        setIsWidthLocked(true);
+      }
+    },
+    [commentGroups, applyPreviewWidth],
+  );
+
+  const handleSelectCommentThread = useCallback(
+    (threadId: string | null) => {
+      setActiveCommentThreadId(threadId);
+      if (!threadId) return;
+      const targetThread = commentThreads.find((t) => t.id === threadId);
+      if (!targetThread) return;
+
+      // 1. Group is the single source of truth for viewport width
+      if (targetThread.groupId) {
+        setActiveGroupId(targetThread.groupId);
+        const parentGroup = commentGroups.find((g) => g.id === targetThread.groupId);
+        if (
+          parentGroup &&
+          parentGroup.viewportWidth > 0 &&
+          parentGroup.viewportWidth !== previewWidthRef.current
+        ) {
+          applyPreviewWidth(parentGroup.viewportWidth, true);
+          setIsWidthLocked(true);
+        }
+      }
+
+      // 2. Smoothly center the canvas vertically on the selected comment pin & popover
+      centerCanvasOnThread(targetThread, previewFrameHeightRef.current);
+
+      // 3. Select and highlight section if thread is anchored to a specific section
+      if (targetThread.sectionId) {
+        previewIframeRef.current?.contentWindow?.postMessage(
+          {
+            type: "morph:storefront-preview-select-section",
+            sectionId: targetThread.sectionId,
+          },
+          window.location.origin,
+        );
+      }
+    },
+    [commentThreads, commentGroups, applyPreviewWidth, centerCanvasOnThread],
   );
 
   return (
@@ -1106,24 +1502,56 @@ export function VisualEditorShell({
                 type="button"
                 variant={search.viewport === value ? "toolbarActive" : "ghost"}
                 size="icon"
+                disabled={isWidthLocked}
                 className="size-7"
                 aria-label={`${label} preview, ${previewDefaultWidths[value]} pixels`}
                 aria-pressed={search.viewport === value}
-                title={`${label} · ${previewDefaultWidths[value]} px`}
+                title={
+                  isWidthLocked
+                    ? "Width is locked to current comment group (Click lock icon to unlock)"
+                    : `${label} · ${previewDefaultWidths[value]} px`
+                }
                 onClick={() => handleViewportChange(value)}
               >
                 <Icon className="size-3.5" />
               </Button>
             ))}
+            <Separator orientation="vertical" className="mx-0.5 h-4" />
+            <Button
+              type="button"
+              variant={isWidthLocked ? "toolbarActive" : "ghost"}
+              size="icon"
+              className="size-7"
+              aria-label={isWidthLocked ? "Width locked (click to unlock)" : "Width unlocked (click to lock)"}
+              aria-pressed={isWidthLocked}
+              title={
+                isWidthLocked
+                  ? "Width is locked (Click to unlock device & width controls)"
+                  : "Width is unlocked (Click to lock width to current size)"
+              }
+              onClick={() => setIsWidthLocked((prev) => !prev)}
+            >
+              {isWidthLocked ? (
+                <Lock className="size-3.5 text-primary" />
+              ) : (
+                <Unlock className="size-3.5 text-muted-foreground" />
+              )}
+            </Button>
           </div>
-          <div className="lg:hidden">
+          <div className="flex items-center gap-0.5 lg:hidden">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
                   size="sm"
+                  disabled={isWidthLocked}
                   className="h-7 shrink-0 gap-1.5 px-2 shadow-none"
                   aria-label={`Preview device: ${search.viewport}`}
+                  title={
+                    isWidthLocked
+                      ? "Width is locked to current comment group"
+                      : undefined
+                  }
                 >
                   <ActiveViewportIcon className="size-3.5" />
                   <ChevronDown className="size-3 text-muted-foreground" />
@@ -1155,6 +1583,21 @@ export function VisualEditorShell({
                 </DropdownMenuRadioGroup>
               </DropdownMenuContent>
             </DropdownMenu>
+            <Button
+              type="button"
+              variant={isWidthLocked ? "toolbarActive" : "ghost"}
+              size="icon"
+              className="size-7 shrink-0"
+              aria-label={isWidthLocked ? "Width locked" : "Width unlocked"}
+              title={isWidthLocked ? "Click to unlock width" : "Click to lock width"}
+              onClick={() => setIsWidthLocked((prev) => !prev)}
+            >
+              {isWidthLocked ? (
+                <Lock className="size-3.5 text-primary" />
+              ) : (
+                <Unlock className="size-3.5 text-muted-foreground" />
+              )}
+            </Button>
           </div>
         </div>
         <div className="flex items-center gap-1 justify-self-end">
@@ -1274,7 +1717,7 @@ export function VisualEditorShell({
             </span>
             <div
               className={cn(
-                "absolute left-1/2 top-12 will-change-transform transition-opacity duration-200",
+                "absolute left-1/2 top-12 will-change-transform transition-opacity duration-200 z-30",
                 isPreviewLoading && previewUrl
                   ? "pointer-events-none opacity-0"
                   : "opacity-100",
@@ -1319,7 +1762,88 @@ export function VisualEditorShell({
                     No template is available for preview.
                   </div>
                 )}
+
+                {/* Comment Click Overlay when in Comment Mode & Open tab (disabled in Resolved tab) */}
+                {isCommentMode && commentFilter === "open" ? (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Click to place comment pin"
+                    className="absolute inset-0 z-20 cursor-crosshair select-none"
+                    onPointerDown={(e) => {
+                      if (e.button === 1) {
+                        e.preventDefault();
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                        beginCanvasPan("canvas", e.pointerId, e.clientX, e.clientY);
+                        return;
+                      }
+                      e.stopPropagation();
+                    }}
+                    onPointerMove={(e) => {
+                      moveCanvasPan("canvas", e.pointerId, e.clientX, e.clientY);
+                    }}
+                    onPointerUp={(e) => {
+                      if (e.button === 1) {
+                        endCanvasPan("canvas", e.pointerId);
+                        return;
+                      }
+                      e.stopPropagation();
+                    }}
+                    onPointerCancel={(e) => {
+                      if (e.button === 1) {
+                        endCanvasPan("canvas", e.pointerId);
+                        return;
+                      }
+                      e.stopPropagation();
+                    }}
+                    onClick={(e) => {
+                      if (e.button !== 0) return;
+                      e.stopPropagation();
+                      // If an existing thread or draft pin is open, clicking outside closes it first
+                      if (activeCommentThreadId || draftCommentPin) {
+                        setActiveCommentThreadId(null);
+                        setDraftCommentPin(null);
+                        return;
+                      }
+
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      if (rect.width <= 0 || rect.height <= 0) return;
+                      const x = ((e.clientX - rect.left) / rect.width) * 100;
+                      const y = ((e.clientY - rect.top) / rect.height) * 100;
+                      setDraftCommentPin({
+                        x: Math.max(2, Math.min(98, Math.round(x * 10) / 10)),
+                        y: Math.max(2, Math.min(98, Math.round(y * 10) / 10)),
+                      });
+                    }}
+                  />
+                ) : null}
               </div>
+
+              {/* Canvas Comments Pins & Floating Thread Popovers (unclipped layer) */}
+              {activeTemplate && isCommentMode ? (
+                <div
+                  className="pointer-events-none absolute inset-0 z-30"
+                  style={{ height: previewFrameHeight }}
+                >
+                  <EditorCanvasComments
+                    storefrontId={context.storefront.id}
+                    themeId={context.theme.id}
+                    templateId={activeTemplate.id}
+                    activeGroupId={activeGroupId}
+                    onActiveGroupChange={handleSelectGroup}
+                    filter={commentFilter}
+                    threads={commentThreads}
+                    isCommentMode={isCommentMode}
+                    activeThreadId={activeCommentThreadId}
+                    onActiveThreadChange={handleSelectCommentThread}
+                    draftPin={draftCommentPin}
+                    onDraftPinChange={setDraftCommentPin}
+                    previewWidth={previewWidth}
+                    currentUser={currentUser}
+                    canvasScale={canvasTransform.scale}
+                  />
+                </div>
+              ) : null}
             </div>
 
             {isPreviewLoading && previewUrl ? (
@@ -1334,55 +1858,61 @@ export function VisualEditorShell({
                   canvasTransform={canvasTransform}
                   onWidthPreview={updatePreviewWidth}
                   onWidthChange={applyPreviewWidth}
+                  isWidthLocked={isWidthLocked}
+                  onToggleLock={() => setIsWidthLocked((prev) => !prev)}
                 />
-                <div
-                  role="separator"
-                  aria-label="Resize storefront preview from its left edge"
-                  aria-orientation="vertical"
-                  aria-valuemin={MIN_PREVIEW_WIDTH}
-                  aria-valuemax={MAX_PREVIEW_WIDTH}
-                  aria-valuenow={previewWidth}
-                  tabIndex={0}
-                  className="group absolute z-30 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
-                  style={{
-                    left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px - ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
-                    top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
-                    bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
-                  }}
-                  title="Drag the page edge to resize the preview symmetrically"
-                  onPointerDown={handleResizePointerDown("left")}
-                  onPointerMove={handleResizePointerMove}
-                  onPointerUp={finishPreviewResize}
-                  onPointerCancel={finishPreviewResize}
-                  onKeyDown={handleResizeKeyDown}
-                >
-                  <span className="h-full w-px bg-border/70 group-hover:bg-primary group-focus-visible:bg-primary" />
-                  <span className="absolute top-1/2 h-16 w-1 -translate-y-1/2 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
-                </div>
-                <div
-                  role="separator"
-                  aria-label="Resize storefront preview from its right edge"
-                  aria-orientation="vertical"
-                  aria-valuemin={MIN_PREVIEW_WIDTH}
-                  aria-valuemax={MAX_PREVIEW_WIDTH}
-                  aria-valuenow={previewWidth}
-                  tabIndex={0}
-                  className="group absolute z-30 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
-                  style={{
-                    left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px + ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
-                    top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
-                    bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
-                  }}
-                  title="Drag the page edge to resize the preview symmetrically"
-                  onPointerDown={handleResizePointerDown("right")}
-                  onPointerMove={handleResizePointerMove}
-                  onPointerUp={finishPreviewResize}
-                  onPointerCancel={finishPreviewResize}
-                  onKeyDown={handleResizeKeyDown}
-                >
-                  <span className="h-full w-px bg-border/70 group-hover:bg-primary group-focus-visible:bg-primary" />
-                  <span className="absolute top-1/2 h-16 w-1 -translate-y-1/2 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
-                </div>
+                {!isWidthLocked ? (
+                  <>
+                    <div
+                      role="separator"
+                      aria-label="Resize storefront preview from its left edge"
+                      aria-orientation="vertical"
+                      aria-valuemin={MIN_PREVIEW_WIDTH}
+                      aria-valuemax={MAX_PREVIEW_WIDTH}
+                      aria-valuenow={previewWidth}
+                      tabIndex={0}
+                      className="group absolute z-20 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
+                      style={{
+                        left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px - ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
+                        top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
+                        bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
+                      }}
+                      title="Drag the page edge to resize the preview symmetrically"
+                      onPointerDown={handleResizePointerDown("left")}
+                      onPointerMove={handleResizePointerMove}
+                      onPointerUp={finishPreviewResize}
+                      onPointerCancel={finishPreviewResize}
+                      onKeyDown={handleResizeKeyDown}
+                    >
+                      <span className="h-full w-px bg-border/70 group-hover:bg-primary group-focus-visible:bg-primary" />
+                      <span className="absolute top-1/2 h-16 w-1 -translate-y-1/2 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
+                    </div>
+                    <div
+                      role="separator"
+                      aria-label="Resize storefront preview from its right edge"
+                      aria-orientation="vertical"
+                      aria-valuemin={MIN_PREVIEW_WIDTH}
+                      aria-valuemax={MAX_PREVIEW_WIDTH}
+                      aria-valuenow={previewWidth}
+                      tabIndex={0}
+                      className="group absolute z-20 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
+                      style={{
+                        left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px + ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
+                        top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
+                        bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
+                      }}
+                      title="Drag the page edge to resize the preview symmetrically"
+                      onPointerDown={handleResizePointerDown("right")}
+                      onPointerMove={handleResizePointerMove}
+                      onPointerUp={finishPreviewResize}
+                      onPointerCancel={finishPreviewResize}
+                      onKeyDown={handleResizeKeyDown}
+                    >
+                      <span className="h-full w-px bg-border/70 group-hover:bg-primary group-focus-visible:bg-primary" />
+                      <span className="absolute top-1/2 h-16 w-1 -translate-y-1/2 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
+                    </div>
+                  </>
+                ) : null}
               </>
             )}
           </div>
@@ -1392,7 +1922,31 @@ export function VisualEditorShell({
             search={search}
             onSearchChange={onSearchChange}
             isSelectionMode={isSelectionMode}
-            onSelectionModeChange={setIsSelectionMode}
+            onSelectionModeChange={(enabled) => {
+              setIsSelectionMode(enabled);
+              if (enabled && isCommentMode) {
+                handleExitCommentMode();
+              }
+            }}
+            isCommentMode={isCommentMode}
+            onCommentModeChange={(enabled) => {
+              if (enabled) {
+                setIsCommentMode(true);
+                setIsSelectionMode(false);
+                if (commentGroups.length > 0) {
+                  const targetGroupId = activeGroupId ?? commentGroups[0].id;
+                  const targetGroup =
+                    commentGroups.find((g) => g.id === targetGroupId) ??
+                    commentGroups[0];
+                  if (targetGroup && targetGroup.viewportWidth > 0) {
+                    applyPreviewWidth(targetGroup.viewportWidth, true);
+                    setIsWidthLocked(true);
+                  }
+                }
+              } else {
+                handleExitCommentMode();
+              }
+            }}
             onRefresh={() => {
               setPreviewRevision((revision) => revision + 1);
             }}
@@ -1432,6 +1986,17 @@ export function VisualEditorShell({
           style={{ width: `${rightPanelWidth}px` }}
           context={context}
           search={search}
+          isCommentMode={isCommentMode}
+          commentFilter={commentFilter}
+          onCommentFilterChange={setCommentFilter}
+          commentGroups={commentGroups}
+          activeCommentGroupId={activeGroupId}
+          onSelectCommentGroup={handleSelectGroup}
+          onCreateCommentGroup={() => createGroupMutation.mutate()}
+          commentThreads={commentThreads}
+          activeCommentThreadId={activeCommentThreadId}
+          onSelectCommentThread={handleSelectCommentThread}
+          previewWidth={previewWidth}
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}
         />
@@ -1448,12 +2013,16 @@ function PreviewSizeControl({
   canvasTransform,
   onWidthPreview,
   onWidthChange,
+  isWidthLocked = false,
+  onToggleLock,
 }: {
   width: number;
   height: number;
   canvasTransform: CanvasTransform;
   onWidthPreview: (width: number) => void;
   onWidthChange: (width: number) => void;
+  isWidthLocked?: boolean;
+  onToggleLock?: () => void;
 }) {
   const viewport = resolvePreviewViewport(width);
   const SizeIcon =
@@ -1465,7 +2034,7 @@ function PreviewSizeControl({
 
   return (
     <div
-      className="absolute z-30 flex h-7 -translate-y-full items-center gap-2 rounded-md border bg-popover px-2 text-xs text-popover-foreground shadow-sm outline-none focus-within:ring-2 focus-within:ring-ring hover:bg-accent"
+      className="absolute z-20 flex h-7 -translate-y-full items-center gap-2 rounded-md border bg-popover px-2 text-xs text-popover-foreground shadow-sm outline-none focus-within:ring-2 focus-within:ring-ring hover:bg-accent"
       style={{
         left: `max(0.5rem, calc(50% + ${canvasTransform.x}px - ${(width * canvasTransform.scale) / 2}px))`,
         top: `calc(3rem + ${canvasTransform.y}px - 0.5rem)`,
@@ -1478,14 +2047,40 @@ function PreviewSizeControl({
         min={MIN_PREVIEW_WIDTH}
         max={MAX_PREVIEW_WIDTH}
         step={1}
+        disabled={isWidthLocked}
         scrubPixelsPerStep={canvasTransform.scale}
         suffix={` × ${height}`}
         ariaLabel="Preview width in pixels"
         onValuePreview={(value) => onWidthPreview(clampPreviewWidth(value))}
         onValueChange={(value) => onWidthChange(clampPreviewWidth(value))}
-        inputClassName="h-5 w-[4ch] rounded-sm border-0 bg-transparent p-0 text-xs shadow-none focus-visible:ring-1"
+        inputClassName="h-5 w-9 min-w-8 rounded-sm border-0 bg-transparent p-0 text-xs shadow-none focus-visible:ring-1"
       />
       <span className="sr-only capitalize">{viewport} breakpoint</span>
+
+      {onToggleLock ? (
+        <button
+          type="button"
+          onClick={onToggleLock}
+          className={cn(
+            "ml-0.5 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors select-none",
+            isWidthLocked
+              ? "bg-primary/15 text-primary hover:bg-primary/25 font-semibold"
+              : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground",
+          )}
+          title={
+            isWidthLocked
+              ? "Width is locked (Click to unlock)"
+              : "Width is unlocked (Click to lock)"
+          }
+        >
+          {isWidthLocked ? (
+            <Lock className="size-2.5" />
+          ) : (
+            <Unlock className="size-2.5" />
+          )}
+          <span>{isWidthLocked ? "Locked" : "Unlocked"}</span>
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -1515,6 +2110,8 @@ function EditorControls({
   onSearchChange,
   isSelectionMode,
   onSelectionModeChange,
+  isCommentMode,
+  onCommentModeChange,
   onRefresh,
 }: {
   context: StorefrontThemeEditorDTO;
@@ -1522,10 +2119,12 @@ function EditorControls({
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
   isSelectionMode: boolean;
   onSelectionModeChange: (enabled: boolean) => void;
+  isCommentMode: boolean;
+  onCommentModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-5 z-10 flex justify-center px-3">
+    <div className="pointer-events-none absolute inset-x-0 bottom-5 z-40 flex justify-center px-3">
       <EditorToolbar
         aria-label="Storefront canvas controls"
         className="pointer-events-auto"
@@ -1548,6 +2147,17 @@ function EditorControls({
           onClick={() => onSelectionModeChange(!isSelectionMode)}
         >
           <MousePointer2 />
+        </Button>
+        <Button
+          variant={isCommentMode ? "toolbarActive" : "ghost"}
+          size="icon"
+          className="size-7 shrink-0"
+          aria-label={isCommentMode ? "Disable comment mode" : "Enable comment mode"}
+          aria-pressed={isCommentMode}
+          title={isCommentMode ? "Exit comment mode" : "Click to place comments on the canvas"}
+          onClick={() => onCommentModeChange(!isCommentMode)}
+        >
+          <MessageCircle />
         </Button>
         <Button
           variant="ghost"

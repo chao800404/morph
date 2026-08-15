@@ -1,6 +1,10 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import type {
+  StorefrontCommentGroupDTO,
+  StorefrontCommentThreadDTO,
+} from "@/lib/storefront/dto/storefront-comment.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { cn } from "@/lib/utils";
@@ -13,7 +17,8 @@ import {
   SendHorizontal,
   WandSparkles,
 } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
+import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { EditorStyleInspector } from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
 
@@ -22,6 +27,17 @@ type EditorAssistantPanelProps = {
   search: StorefrontThemeEditorSearch;
   style?: React.CSSProperties;
   className?: string;
+  isCommentMode?: boolean;
+  commentFilter?: "open" | "resolved";
+  onCommentFilterChange?: (filter: "open" | "resolved") => void;
+  commentGroups?: StorefrontCommentGroupDTO[];
+  activeCommentGroupId?: string | null;
+  onSelectCommentGroup?: (groupId: string) => void;
+  onCreateCommentGroup?: () => void;
+  commentThreads?: StorefrontCommentThreadDTO[];
+  activeCommentThreadId?: string | null;
+  onSelectCommentThread?: (threadId: string | null) => void;
+  previewWidth?: number;
   onSectionPropsChange?: (
     sectionId: string,
     nextProps: Record<string, unknown>,
@@ -34,21 +50,48 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   search,
   style,
   className,
+  isCommentMode = false,
+  commentFilter = "open",
+  onCommentFilterChange,
+  commentGroups = [],
+  activeCommentGroupId = null,
+  onSelectCommentGroup,
+  onCreateCommentGroup,
+  commentThreads = [],
+  activeCommentThreadId = null,
+  onSelectCommentThread,
+  previewWidth,
   onSectionPropsChange,
   onSectionToggleEnabled,
 }: EditorAssistantPanelProps) {
-  const [tab, setTab] = useState<"chat" | "styles">("chat");
+  const [tab, setTab] = useState<"chat" | "styles" | "comments">("chat");
   const activeTemplate = resolveEditorTemplate(context, search);
   const sections = activeTemplate?.document.sections ?? [];
   const selectedSection = sections.find(
     (section) => section.id === search.section,
   );
+  const initialSectionRef = useRef(search.section);
+
+  // Auto-switch to comments tab when switching to Comment Mode
+  useEffect(() => {
+    if (isCommentMode) {
+      setTab("comments");
+    } else {
+      setTab((prev) => (prev === "comments" ? "styles" : prev));
+    }
+  }, [isCommentMode]);
 
   useEffect(() => {
-    if (search.section) {
+    // Only switch to styles when the user actively selects/changes a section during their session
+    if (
+      !isCommentMode &&
+      search.section &&
+      search.section !== initialSectionRef.current
+    ) {
       setTab("styles");
     }
-  }, [search.section]);
+    initialSectionRef.current = search.section;
+  }, [search.section, isCommentMode]);
 
   return (
     <aside
@@ -66,12 +109,36 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           <PanelTab active={tab === "chat"} onClick={() => setTab("chat")}>
             Agent
           </PanelTab>
-          <PanelTab active={tab === "styles"} onClick={() => setTab("styles")}>
-            Styles
-          </PanelTab>
+
+          {isCommentMode ? (
+            <PanelTab
+              active={tab === "comments"}
+              onClick={() => setTab("comments")}
+            >
+              Comments
+            </PanelTab>
+          ) : (
+            <PanelTab
+              active={tab === "styles"}
+              onClick={() => setTab("styles")}
+            >
+              Styles
+            </PanelTab>
+          )}
         </div>
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon" disabled aria-label="New agent session">
+          <Button
+            variant="ghost"
+            size="icon"
+            disabled={tab !== "comments" && !onCreateCommentGroup}
+            aria-label={
+              tab === "comments" ? "Create comment group" : "New agent session"
+            }
+            title={
+              tab === "comments" ? "Create comment group (+)" : "New agent session"
+            }
+            onClick={tab === "comments" ? onCreateCommentGroup : undefined}
+          >
             <Plus />
           </Button>
           <Button
@@ -109,6 +176,28 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
             </p>
           </div>
         </ScrollArea>
+      ) : tab === "comments" ? (
+        activeTemplate ? (
+          <EditorCommentsSidebar
+            storefrontId={context.storefront.id}
+            themeId={context.theme.id}
+            templateId={activeTemplate.id}
+            filter={commentFilter}
+            onFilterChange={onCommentFilterChange}
+            groups={commentGroups}
+            activeGroupId={activeCommentGroupId}
+            onSelectGroup={(groupId) => onSelectCommentGroup?.(groupId)}
+            threads={commentThreads}
+            activeThreadId={activeCommentThreadId}
+            onSelectThread={(threadId) => onSelectCommentThread?.(threadId)}
+            previewWidth={previewWidth}
+            onCreateGroup={onCreateCommentGroup}
+          />
+        ) : (
+          <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center text-muted-foreground">
+            <p className="text-xs">No active template</p>
+          </div>
+        )
       ) : (
         <ScrollArea className="min-h-0">
           {selectedSection ? (
@@ -183,16 +272,20 @@ function PanelTab({
   onClick: () => void;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant={active ? "toolbarActive" : "ghost"}
+      size="xs"
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        active && "bg-muted font-medium text-foreground shadow-xs",
+        "h-7 px-2.5 text-xs font-medium transition-colors",
+        active
+          ? "cursor-default"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}
-    </button>
+    </Button>
   );
 }

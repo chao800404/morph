@@ -53,11 +53,14 @@ function VisualEditorRoute() {
     );
   }
 
+  const routeContext = Route.useRouteContext();
+
   return (
     <VisualEditorShell
       context={result.data}
       search={search}
       onSearchChange={handleSearchChange}
+      currentUser={routeContext?.session?.user}
     />
   );
 }

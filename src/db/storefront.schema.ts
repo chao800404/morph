@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   index,
   integer,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -13,6 +14,7 @@ export type StorefrontStatus = "draft" | "published" | "disabled";
 export type StorefrontThemeStatus = "draft" | "published" | "archived";
 export type StorefrontPageStatus = "draft" | "published" | "archived";
 export type StorefrontDomainStatus = "pending" | "active" | "failed";
+export type StorefrontCommentThreadStatus = "open" | "resolved" | "archived";
 export type StorefrontTemplateType =
   | "index"
   | "product"
@@ -230,6 +232,112 @@ export const storefrontPageRevisions = sqliteTable(
     index("storefront_page_revisions_page_created_idx").on(
       table.pageId,
       table.createdAt,
+    ),
+  ],
+);
+
+/** Collaborative comment group scoped to a template and viewport width. */
+export const storefrontCommentGroups = sqliteTable(
+  "storefront_comment_groups",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    templateId: text("template_id")
+      .notNull()
+      .references(() => storefrontThemeTemplates.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    viewportWidth: integer("viewport_width").notNull().default(1440),
+    createdBy: text("created_by").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("storefront_comment_groups_template_idx").on(
+      table.templateId,
+      table.deletedAt,
+    ),
+    index("storefront_comment_groups_created_by_idx").on(
+      table.createdBy,
+      table.deletedAt,
+    ),
+  ],
+);
+
+/** Collaborative annotation thread anchored to a template section / canvas position. */
+export const storefrontCommentThreads = sqliteTable(
+  "storefront_comment_threads",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    templateId: text("template_id")
+      .notNull()
+      .references(() => storefrontThemeTemplates.id, { onDelete: "cascade" }),
+    groupId: text("group_id").references(() => storefrontCommentGroups.id, {
+      onDelete: "cascade",
+    }),
+    sectionId: text("section_id"),
+    elementKey: text("element_key"),
+    viewportWidth: integer("viewport_width").default(1440),
+    viewport: text("viewport").default("desktop"),
+    positionX: real("position_x").notNull().default(50.0),
+    positionY: real("position_y").notNull().default(50.0),
+    status: text("status")
+      .$type<StorefrontCommentThreadStatus>()
+      .notNull()
+      .default("open"),
+    resolvedAt: text("resolved_at"),
+    resolvedBy: text("resolved_by"),
+    createdBy: text("created_by").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("storefront_comment_threads_template_status_idx").on(
+      table.templateId,
+      table.status,
+      table.deletedAt,
+    ),
+    index("storefront_comment_threads_group_idx").on(
+      table.groupId,
+      table.deletedAt,
+    ),
+    index("storefront_comment_threads_created_by_idx").on(
+      table.createdBy,
+      table.deletedAt,
+    ),
+  ],
+);
+
+/** Individual message or reply in a collaborative comment thread. */
+export const storefrontComments = sqliteTable(
+  "storefront_comments",
+  {
+    id: text("id").primaryKey(),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => storefrontCommentThreads.id, { onDelete: "cascade" }),
+    createdBy: text("created_by").notNull(),
+    content: text("content").notNull(),
+    metadata: metadata(),
+    ...timestamps,
+  },
+  (table) => [
+    index("storefront_comments_thread_created_idx").on(
+      table.threadId,
+      table.createdAt,
+      table.deletedAt,
+    ),
+    index("storefront_comments_created_by_idx").on(
+      table.createdBy,
+      table.deletedAt,
     ),
   ],
 );

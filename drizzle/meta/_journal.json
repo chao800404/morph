@@ -246,6 +246,27 @@
       "when": 1786698858916,
       "tag": "0034_sleepy_silver_samurai",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1786766137212,
+      "tag": "0035_amused_eddie_brock",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1786770709795,
+      "tag": "0036_bizarre_power_pack",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1786776134897,
+      "tag": "0037_eager_hitman",
+      "breakpoints": true
     }
   ]
 }
