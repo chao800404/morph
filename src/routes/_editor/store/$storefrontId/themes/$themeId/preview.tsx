@@ -80,47 +80,79 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
   }, [document]);
 
   useEffect(() => {
-    const handleSectionOrder = (event: MessageEvent<unknown>) => {
+    const handlePreviewMessages = (event: MessageEvent<unknown>) => {
       const message = event.data;
       if (
         event.origin !== window.location.origin ||
         event.source !== window.parent ||
         typeof message !== "object" ||
         message === null ||
-        !("type" in message) ||
-        message.type !== "morph:storefront-preview-set-section-order" ||
-        !("sectionIds" in message) ||
-        !Array.isArray(message.sectionIds) ||
-        !message.sectionIds.every(
-          (sectionId) => typeof sectionId === "string",
-        ) ||
-        new Set(message.sectionIds).size !== message.sectionIds.length
+        !("type" in message)
       ) {
         return;
       }
 
-      const sectionIds = message.sectionIds;
-      setPreviewDocument((current) => {
-        if (!current || sectionIds.length !== current.sections.length) {
-          return current;
-        }
+      if (
+        message.type === "morph:storefront-preview-set-section-order" &&
+        "sectionIds" in message &&
+        Array.isArray(message.sectionIds) &&
+        message.sectionIds.every((id) => typeof id === "string")
+      ) {
+        const sectionIds = message.sectionIds as string[];
+        setPreviewDocument((current) => {
+          if (!current || sectionIds.length !== current.sections.length) {
+            return current;
+          }
 
-        const sectionsById = new Map(
-          current.sections.map((section) => [section.id, section]),
-        );
-        const reorderedSections = sectionIds.flatMap((sectionId) => {
-          const section = sectionsById.get(sectionId);
-          return section ? [section] : [];
+          const sectionsById = new Map(
+            current.sections.map((section) => [section.id, section]),
+          );
+          const reorderedSections = sectionIds.flatMap((sectionId) => {
+            const section = sectionsById.get(sectionId);
+            return section ? [section] : [];
+          });
+          if (reorderedSections.length !== current.sections.length) {
+            return current;
+          }
+
+          return { ...current, sections: reorderedSections };
         });
-        if (reorderedSections.length !== current.sections.length)
-          return current;
+      }
 
-        return { ...current, sections: reorderedSections };
-      });
+      if (
+        message.type === "morph:storefront-preview-update-section-props" &&
+        "sectionId" in message &&
+        typeof message.sectionId === "string"
+      ) {
+        const { sectionId, props, enabled } = message as {
+          sectionId: string;
+          props?: Record<string, unknown>;
+          enabled?: boolean;
+        };
+
+        setPreviewDocument((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            sections: current.sections.map((section) => {
+              if (section.id !== sectionId) return section;
+              return {
+                ...section,
+                enabled:
+                  typeof enabled === "boolean" ? enabled : section.enabled,
+                props: {
+                  ...section.props,
+                  ...(props ?? {}),
+                } as Record<string, any>,
+              };
+            }),
+          };
+        });
+      }
     };
 
-    window.addEventListener("message", handleSectionOrder);
-    return () => window.removeEventListener("message", handleSectionOrder);
+    window.addEventListener("message", handlePreviewMessages);
+    return () => window.removeEventListener("message", handlePreviewMessages);
   }, []);
 
   return previewDocument;

@@ -187,6 +187,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleCloseTab = (path: string, event: React.MouseEvent) => {
     event.stopPropagation();
+    if (dirtyFiles[path]) {
+      const confirmDiscard = window.confirm(
+        `"${path}" has unsaved changes. Are you sure you want to close it?`,
+      );
+      if (!confirmDiscard) return;
+      setDirtyFiles((prev) => ({ ...prev, [path]: false }));
+    }
     const nextTabs = openTabs.filter((t) => t !== path);
     setOpenTabs(nextTabs);
     if (activeFilePath === path) {

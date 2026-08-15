@@ -204,6 +204,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         <ScrollArea className="min-h-0">
           {selectedSection ? (
             <EditorStyleInspector
+              key={selectedSection.id}
               section={selectedSection}
               onPropsChange={(nextProps) =>
                 onSectionPropsChange?.(selectedSection.id, nextProps)

@@ -1,13 +1,20 @@
 import { getDb } from "@/db";
-import { storefrontThemeFiles } from "@/db/storefront.schema";
+import {
+  storefrontThemeFiles,
+  storefrontThemeRevisions,
+  storefrontThemes,
+} from "@/db/storefront.schema";
 import type {
   StorefrontThemeFileDTO,
   StorefrontThemeFileTreeNode,
+  StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, max } from "drizzle-orm";
 
-export function buildFileTree(files: StorefrontThemeFileDTO[]): StorefrontThemeFileTreeNode[] {
+export function buildFileTree(
+  files: StorefrontThemeFileDTO[],
+): StorefrontThemeFileTreeNode[] {
   const root: StorefrontThemeFileTreeNode[] = [];
 
   for (const file of files) {
@@ -58,14 +65,81 @@ export function buildFileTree(files: StorefrontThemeFileDTO[]): StorefrontThemeF
 }
 
 export const storefrontThemeFileDal = {
+  /**
+   * Strictly verify that the theme belongs to the given storefront.
+   */
+  async verifyOwnership(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<boolean> {
+    const db = await getDb();
+    const [theme] = await db
+      .select({ id: storefrontThemes.id })
+      .from(storefrontThemes)
+      .where(
+        and(
+          eq(storefrontThemes.id, themeId),
+          eq(storefrontThemes.storefrontId, storefrontId),
+          isNull(storefrontThemes.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    return Boolean(theme);
+  },
+
+  /**
+   * Explicitly initialize starter theme workspace files.
+   */
+  async initStarterTheme(
+    storefrontId: string,
+    themeId: string,
+    createdBy?: string,
+  ): Promise<StorefrontThemeFileDTO[]> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+
+    const db = await getDb();
+    const now = new Date().toISOString();
+
+    const insertValues = STARTER_THEME_FILES.map((f) => ({
+      id: crypto.randomUUID(),
+      storefrontId,
+      themeId,
+      path: f.path,
+      content: f.content,
+      mimeType: f.mimeType,
+      isEntry: f.isEntry ?? false,
+      createdAt: now,
+      updatedAt: now,
+    }));
+
+    for (const val of insertValues) {
+      await db.insert(storefrontThemeFiles).values(val).onConflictDoNothing();
+    }
+
+    // Create initial revision #1
+    await this.createRevision(storefrontId, themeId, {
+      message: "Initialize starter theme files",
+      source: "manual",
+      createdBy,
+    });
+
+    return this.listFiles(storefrontId, themeId);
+  },
+
+  /**
+   * List files without any auto-seed side effects.
+   */
   async listFiles(
     storefrontId: string,
     themeId: string,
   ): Promise<StorefrontThemeFileDTO[]> {
-    const db = await getDb();
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return [];
 
-    // 1. Check if files exist. If none, auto-seed with STARTER_THEME_FILES
-    const existing = await db
+    const db = await getDb();
+    const rows = await db
       .select()
       .from(storefrontThemeFiles)
       .where(
@@ -77,51 +151,7 @@ export const storefrontThemeFileDal = {
       )
       .orderBy(asc(storefrontThemeFiles.path));
 
-    if (existing.length === 0) {
-      // Auto-initialize theme files
-      const now = new Date().toISOString();
-      const insertValues = STARTER_THEME_FILES.map((f) => ({
-        id: crypto.randomUUID(),
-        storefrontId,
-        themeId,
-        path: f.path,
-        content: f.content,
-        mimeType: f.mimeType,
-        isEntry: f.isEntry ?? false,
-        createdAt: now,
-        updatedAt: now,
-      }));
-
-      for (const val of insertValues) {
-        await db.insert(storefrontThemeFiles).values(val).onConflictDoNothing();
-      }
-
-      const freshlyInserted = await db
-        .select()
-        .from(storefrontThemeFiles)
-        .where(
-          and(
-            eq(storefrontThemeFiles.storefrontId, storefrontId),
-            eq(storefrontThemeFiles.themeId, themeId),
-            isNull(storefrontThemeFiles.deletedAt),
-          ),
-        )
-        .orderBy(asc(storefrontThemeFiles.path));
-
-      return freshlyInserted.map((row) => ({
-        id: row.id,
-        storefrontId: row.storefrontId,
-        themeId: row.themeId,
-        path: row.path,
-        content: row.content,
-        mimeType: row.mimeType ?? "text/plain",
-        isEntry: Boolean(row.isEntry),
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      }));
-    }
-
-    return existing.map((row) => ({
+    return rows.map((row) => ({
       id: row.id,
       storefrontId: row.storefrontId,
       themeId: row.themeId,
@@ -139,6 +169,9 @@ export const storefrontThemeFileDal = {
     themeId: string,
     path: string,
   ): Promise<StorefrontThemeFileDTO | null> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return null;
+
     const db = await getDb();
     const [row] = await db
       .select()
@@ -174,7 +207,15 @@ export const storefrontThemeFileDal = {
     path: string,
     content: string,
     mimeType?: string,
+    options?: {
+      createRevision?: boolean;
+      revisionMessage?: string;
+      createdBy?: string;
+    },
   ): Promise<StorefrontThemeFileDTO> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+
     const db = await getDb();
     const now = new Date().toISOString();
 
@@ -191,6 +232,8 @@ export const storefrontThemeFileDal = {
       )
       .limit(1);
 
+    let savedFile: StorefrontThemeFileDTO;
+
     if (existing) {
       await db
         .update(storefrontThemeFiles)
@@ -201,7 +244,7 @@ export const storefrontThemeFileDal = {
         })
         .where(eq(storefrontThemeFiles.id, existing.id));
 
-      return {
+      savedFile = {
         id: existing.id,
         storefrontId,
         themeId,
@@ -212,43 +255,53 @@ export const storefrontThemeFileDal = {
         createdAt: existing.createdAt,
         updatedAt: now,
       };
+    } else {
+      const newId = crypto.randomUUID();
+      const isEntry = path === "src/pages/index.tsx";
+      const detectedMime =
+        mimeType ??
+        (path.endsWith(".tsx") || path.endsWith(".ts")
+          ? "text/typescript"
+          : path.endsWith(".css")
+            ? "text/css"
+            : path.endsWith(".json")
+              ? "application/json"
+              : "text/plain");
+
+      await db.insert(storefrontThemeFiles).values({
+        id: newId,
+        storefrontId,
+        themeId,
+        path,
+        content,
+        mimeType: detectedMime,
+        isEntry,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      savedFile = {
+        id: newId,
+        storefrontId,
+        themeId,
+        path,
+        content,
+        mimeType: detectedMime,
+        isEntry,
+        createdAt: now,
+        updatedAt: now,
+      };
     }
 
-    const newId = crypto.randomUUID();
-    const isEntry = path === "src/pages/index.tsx";
-    const detectedMime =
-      mimeType ??
-      (path.endsWith(".tsx") || path.endsWith(".ts")
-        ? "text/typescript"
-        : path.endsWith(".css")
-          ? "text/css"
-          : path.endsWith(".json")
-            ? "application/json"
-            : "text/plain");
+    if (options?.createRevision) {
+      await this.createRevision(storefrontId, themeId, {
+        message: options.revisionMessage ?? `Update ${path}`,
+        source: "manual",
+        createdBy: options.createdBy,
+      });
+    }
 
-    await db.insert(storefrontThemeFiles).values({
-      id: newId,
-      storefrontId,
-      themeId,
-      path,
-      content,
-      mimeType: detectedMime,
-      isEntry,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    return {
-      id: newId,
-      storefrontId,
-      themeId,
-      path,
-      content,
-      mimeType: detectedMime,
-      isEntry,
-      createdAt: now,
-      updatedAt: now,
-    };
+    return savedFile;
   },
 
   async deleteFile(
@@ -256,6 +309,9 @@ export const storefrontThemeFileDal = {
     themeId: string,
     path: string,
   ): Promise<boolean> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return false;
+
     const db = await getDb();
     const now = new Date().toISOString();
 
@@ -275,5 +331,185 @@ export const storefrontThemeFileDal = {
       );
 
     return (result.meta?.changes ?? 1) > 0;
+  },
+
+  /**
+   * Create an immutable snapshot revision of the theme's source code.
+   */
+  async createRevision(
+    storefrontId: string,
+    themeId: string,
+    options: {
+      message?: string;
+      source?: "manual" | "ai" | "publish" | "rollback";
+      createdBy?: string;
+    } = {},
+  ): Promise<StorefrontThemeRevisionDTO> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+
+    const db = await getDb();
+    const now = new Date().toISOString();
+
+    // 1. Get current active files
+    const currentFiles = await this.listFiles(storefrontId, themeId);
+
+    // 2. Find next revision number
+    const [latestRev] = await db
+      .select({ maxRev: max(storefrontThemeRevisions.revisionNumber) })
+      .from(storefrontThemeRevisions)
+      .where(
+        and(
+          eq(storefrontThemeRevisions.storefrontId, storefrontId),
+          eq(storefrontThemeRevisions.themeId, themeId),
+        ),
+      );
+
+    const nextRevNumber = (latestRev?.maxRev ?? 0) + 1;
+    const newId = crypto.randomUUID();
+
+    const snapshot = currentFiles.map((f) => ({
+      path: f.path,
+      content: f.content,
+      mimeType: f.mimeType,
+    }));
+
+    await db.insert(storefrontThemeRevisions).values({
+      id: newId,
+      storefrontId,
+      themeId,
+      revisionNumber: nextRevNumber,
+      message: options.message ?? `Revision ${nextRevNumber}`,
+      source: options.source ?? "manual",
+      snapshot,
+      createdBy: options.createdBy ?? null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return {
+      id: newId,
+      storefrontId,
+      themeId,
+      revisionNumber: nextRevNumber,
+      message: options.message ?? `Revision ${nextRevNumber}`,
+      source: options.source ?? "manual",
+      snapshot,
+      createdBy: options.createdBy ?? null,
+      createdAt: now,
+    };
+  },
+
+  /**
+   * List historical revisions for a theme.
+   */
+  async listRevisions(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<StorefrontThemeRevisionDTO[]> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return [];
+
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(storefrontThemeRevisions)
+      .where(
+        and(
+          eq(storefrontThemeRevisions.storefrontId, storefrontId),
+          eq(storefrontThemeRevisions.themeId, themeId),
+          isNull(storefrontThemeRevisions.deletedAt),
+        ),
+      )
+      .orderBy(desc(storefrontThemeRevisions.revisionNumber));
+
+    return rows.map((row) => ({
+      id: row.id,
+      storefrontId: row.storefrontId,
+      themeId: row.themeId,
+      revisionNumber: row.revisionNumber,
+      message: row.message,
+      source: row.source as "manual" | "ai" | "publish" | "rollback",
+      snapshot: (row.snapshot ?? []) as Array<{
+        path: string;
+        content: string;
+        mimeType: string;
+      }>,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt,
+    }));
+  },
+
+  /**
+   * Rollback workspace files to a specific historical revision.
+   */
+  async rollbackToRevision(
+    storefrontId: string,
+    themeId: string,
+    revisionNumber: number,
+    createdBy?: string,
+  ): Promise<StorefrontThemeFileDTO[]> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+
+    const db = await getDb();
+    const [rev] = await db
+      .select()
+      .from(storefrontThemeRevisions)
+      .where(
+        and(
+          eq(storefrontThemeRevisions.storefrontId, storefrontId),
+          eq(storefrontThemeRevisions.themeId, themeId),
+          eq(storefrontThemeRevisions.revisionNumber, revisionNumber),
+          isNull(storefrontThemeRevisions.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!rev) throw new Error(`Revision #${revisionNumber} not found`);
+
+    const snapshot = rev.snapshot as Array<{
+      path: string;
+      content: string;
+      mimeType: string;
+    }>;
+
+    const now = new Date().toISOString();
+
+    // Soft delete all existing files
+    await db
+      .update(storefrontThemeFiles)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(storefrontThemeFiles.storefrontId, storefrontId),
+          eq(storefrontThemeFiles.themeId, themeId),
+          isNull(storefrontThemeFiles.deletedAt),
+        ),
+      );
+
+    // Restore snapshot files
+    for (const f of snapshot) {
+      await db.insert(storefrontThemeFiles).values({
+        id: crypto.randomUUID(),
+        storefrontId,
+        themeId,
+        path: f.path,
+        content: f.content,
+        mimeType: f.mimeType,
+        isEntry: f.path === "src/pages/index.tsx",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // Record rollback revision
+    await this.createRevision(storefrontId, themeId, {
+      message: `Rollback to revision #${revisionNumber}`,
+      source: "rollback",
+      createdBy,
+    });
+
+    return this.listFiles(storefrontId, themeId);
   },
 };

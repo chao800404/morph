@@ -15,7 +15,7 @@ export const storefrontPageDocumentSchema = z.object({
       z.object({
         id: z.string().trim().min(1).max(100),
         type: z.string().trim().min(1).max(100),
-        enabled: z.boolean(),
+        enabled: z.boolean().default(true),
         props: z.record(z.string(), z.json()),
       }),
     )

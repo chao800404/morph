@@ -18,3 +18,15 @@ export type StorefrontThemeFileTreeNode = {
   size?: number;
   mimeType?: string;
 };
+
+export type StorefrontThemeRevisionDTO = {
+  id: string;
+  storefrontId: string;
+  themeId: string;
+  revisionNumber: number;
+  message: string | null;
+  source: "manual" | "ai" | "publish" | "rollback";
+  snapshot: Array<{ path: string; content: string; mimeType: string }>;
+  createdBy: string | null;
+  createdAt: string;
+};

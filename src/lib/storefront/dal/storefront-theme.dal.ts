@@ -142,14 +142,58 @@ export const storefrontThemeDal = {
       ...template.document,
       sections: data.sectionIds.map((id) => sectionById.get(id)),
     });
+    const now = new Date().toISOString();
     const db = await getDb();
+
+    // If an uncommitted draft revision is currently active, update it in place
+    if (
+      template.draftRevisionId &&
+      template.draftRevisionId !== template.publishedRevisionId
+    ) {
+      const [activeDraft] = await db
+        .select({
+          id: storefrontThemeTemplateRevisions.id,
+          version: storefrontThemeTemplateRevisions.version,
+        })
+        .from(storefrontThemeTemplateRevisions)
+        .where(
+          and(
+            eq(storefrontThemeTemplateRevisions.id, template.draftRevisionId),
+            eq(storefrontThemeTemplateRevisions.templateId, data.templateId),
+          ),
+        )
+        .limit(1);
+
+      if (activeDraft) {
+        await db.batch([
+          db
+            .update(storefrontThemeTemplateRevisions)
+            .set({ document })
+            .where(
+              eq(storefrontThemeTemplateRevisions.id, activeDraft.id),
+            ),
+          db
+            .update(storefrontThemeTemplates)
+            .set({ updatedAt: now })
+            .where(
+              and(
+                eq(storefrontThemeTemplates.id, data.templateId),
+                eq(storefrontThemeTemplates.themeId, data.themeId),
+              ),
+            ),
+        ]);
+        return { document, version: activeDraft.version };
+      }
+    }
+
+    // Branch a new draft revision
     const [versionRow] = await db
       .select({ value: max(storefrontThemeTemplateRevisions.version) })
       .from(storefrontThemeTemplateRevisions)
       .where(eq(storefrontThemeTemplateRevisions.templateId, data.templateId));
     const revisionId = crypto.randomUUID();
     const version = Number(versionRow?.value ?? 0) + 1;
-    const now = new Date().toISOString();
+
     await db.batch([
       db.insert(storefrontThemeTemplateRevisions).values({
         id: revisionId,
@@ -194,29 +238,79 @@ export const storefrontThemeDal = {
     );
     if (!targetSection) return null;
 
+    const { enabled: propEnabled, ...restProps } = data.props;
+
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,
       sections: template.document.sections.map((section) =>
         section.id === data.sectionId
           ? {
               ...section,
+              enabled:
+                typeof propEnabled === "boolean"
+                  ? propEnabled
+                  : section.enabled !== false,
               props: {
                 ...section.props,
-                ...data.props,
+                ...restProps,
               },
             }
           : section,
       ),
     });
 
+    const now = new Date().toISOString();
     const db = await getDb();
+
+    // If an uncommitted draft revision is currently active, update it in place
+    if (
+      template.draftRevisionId &&
+      template.draftRevisionId !== template.publishedRevisionId
+    ) {
+      const [activeDraft] = await db
+        .select({
+          id: storefrontThemeTemplateRevisions.id,
+          version: storefrontThemeTemplateRevisions.version,
+        })
+        .from(storefrontThemeTemplateRevisions)
+        .where(
+          and(
+            eq(storefrontThemeTemplateRevisions.id, template.draftRevisionId),
+            eq(storefrontThemeTemplateRevisions.templateId, data.templateId),
+          ),
+        )
+        .limit(1);
+
+      if (activeDraft) {
+        await db.batch([
+          db
+            .update(storefrontThemeTemplateRevisions)
+            .set({ document })
+            .where(
+              eq(storefrontThemeTemplateRevisions.id, activeDraft.id),
+            ),
+          db
+            .update(storefrontThemeTemplates)
+            .set({ updatedAt: now })
+            .where(
+              and(
+                eq(storefrontThemeTemplates.id, data.templateId),
+                eq(storefrontThemeTemplates.themeId, data.themeId),
+              ),
+            ),
+        ]);
+        return { document, version: activeDraft.version };
+      }
+    }
+
+    // Branch a new draft revision
     const [versionRow] = await db
       .select({ value: max(storefrontThemeTemplateRevisions.version) })
       .from(storefrontThemeTemplateRevisions)
       .where(eq(storefrontThemeTemplateRevisions.templateId, data.templateId));
     const revisionId = crypto.randomUUID();
     const version = Number(versionRow?.value ?? 0) + 1;
-    const now = new Date().toISOString();
+
     await db.batch([
       db.insert(storefrontThemeTemplateRevisions).values({
         id: revisionId,

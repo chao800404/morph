@@ -29,7 +29,7 @@ import {
   Type,
   Unlink,
 } from "lucide-react";
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 
 type EditorSection =
   StorefrontThemeEditorDTO["templates"][number]["document"]["sections"][number];
@@ -92,17 +92,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setSectionsExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const props = section.props as Record<string, any>;
+  const [localProps, setLocalProps] = useState<Record<string, any>>(
+    () => (section.props as Record<string, any>) ?? {},
+  );
+
+  useEffect(() => {
+    setLocalProps((section.props as Record<string, any>) ?? {});
+  }, [section.id]);
 
   const handleFieldChange = useCallback(
     (key: string, value: unknown) => {
-      onPropsChange({
-        ...props,
+      const next = {
+        ...localProps,
         [key]: value,
-      });
+      };
+      setLocalProps(next);
+      onPropsChange(next);
     },
-    [onPropsChange, props],
+    [localProps, onPropsChange],
   );
+
+  const props = localProps;
 
   const componentPath = getComponentFilePath(section.type);
 
@@ -126,13 +136,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-muted-foreground">
-              {section.enabled ? "Visible" : "Hidden"}
+              {section.enabled !== false ? "Visible" : "Hidden"}
             </span>
             <Switch
-              checked={section.enabled}
+              checked={section.enabled !== false}
               onCheckedChange={(checked) => {
                 onToggleEnabled?.(checked);
-                handleFieldChange("enabled", checked);
               }}
               disabled={disabled}
               aria-label="Toggle section visibility"

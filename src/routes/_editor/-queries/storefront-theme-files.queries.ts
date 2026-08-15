@@ -1,6 +1,7 @@
 import {
   getStorefrontThemeFile,
   listStorefrontThemeFiles,
+  listStorefrontThemeRevisions,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import { queryOptions } from "@tanstack/react-query";
 
@@ -25,6 +26,18 @@ export const storefrontThemeFileQueries = {
       queryFn: async () => {
         const result = await getStorefrontThemeFile({
           data: { storefrontId, themeId, path },
+        });
+        if (!result.success) throw new Error(result.message);
+        return result.data;
+      },
+    }),
+
+  revisions: (storefrontId: string, themeId: string) =>
+    queryOptions({
+      queryKey: ["storefront-theme-files", storefrontId, themeId, "revisions"] as const,
+      queryFn: async () => {
+        const result = await listStorefrontThemeRevisions({
+          data: { storefrontId, themeId },
         });
         if (!result.success) throw new Error(result.message);
         return result.data;

@@ -370,3 +370,36 @@ export const storefrontThemeFiles = sqliteTable(
   ],
 );
 
+/** Snapshot revision of a theme workspace (supporting rollback, AI history, and publishing). */
+export const storefrontThemeRevisions = sqliteTable(
+  "storefront_theme_revisions",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    revisionNumber: integer("revision_number").notNull(),
+    message: text("message"),
+    source: text("source").notNull().default("manual"), // "manual" | "ai" | "publish" | "rollback"
+    snapshot: text("snapshot", { mode: "json" })
+      .$type<Array<{ path: string; content: string; mimeType: string }>>()
+      .notNull(),
+    createdBy: text("created_by"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_theme_revisions_theme_rev_unique").on(
+      table.themeId,
+      table.revisionNumber,
+    ),
+    index("storefront_theme_revisions_theme_idx").on(
+      table.themeId,
+      table.deletedAt,
+    ),
+  ],
+);
+
+

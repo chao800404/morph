@@ -519,19 +519,6 @@ export function VisualEditorShell({
     },
   });
 
-  const handleSectionPropsChange = useCallback(
-    (sectionId: string, nextProps: Record<string, unknown>) => {
-      updatePropsMutation.mutate({ sectionId, props: nextProps });
-    },
-    [updatePropsMutation],
-  );
-
-  const handleSectionToggleEnabled = useCallback(
-    (sectionId: string, enabled: boolean) => {
-      updatePropsMutation.mutate({ sectionId, props: { enabled } });
-    },
-    [updatePropsMutation],
-  );
   const previewUrl = activeTemplate
     ? `/store/${encodeURIComponent(context.storefront.id)}/themes/${encodeURIComponent(context.theme.id)}/preview?templateId=${encodeURIComponent(activeTemplate.id)}&viewportHeight=${DEFAULT_PREVIEW_VIEWPORT_HEIGHT}`
     : null;
@@ -558,9 +545,10 @@ export function VisualEditorShell({
     setEditorMode("code");
   }, []);
 
-  const themeFilesQuery = useQuery(
-    storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
-  );
+  const themeFilesQuery = useQuery({
+    ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
+    enabled: editorMode === "code",
+  });
   const themeFiles = themeFilesQuery.data?.files ?? [];
   const themeTree = themeFilesQuery.data?.tree ?? [];
 
@@ -830,6 +818,56 @@ export function VisualEditorShell({
       window.location.origin,
     );
   }, []);
+
+  const syncPreviewSectionProps = useCallback(
+    (
+      sectionId: string,
+      props?: Record<string, unknown>,
+      enabled?: boolean,
+    ) => {
+      previewIframeRef.current?.contentWindow?.postMessage(
+        {
+          type: "morph:storefront-preview-update-section-props",
+          sectionId,
+          props,
+          enabled,
+        },
+        window.location.origin,
+      );
+    },
+    [],
+  );
+
+  const debouncedSavePropsTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+
+  const handleSectionPropsChange = useCallback(
+    (sectionId: string, nextProps: Record<string, unknown>) => {
+      // 1. Instant 0ms visual sync to iframe canvas
+      syncPreviewSectionProps(sectionId, nextProps);
+
+      // 2. Debounced 300ms persistence to backend
+      if (debouncedSavePropsTimeoutRef.current) {
+        clearTimeout(debouncedSavePropsTimeoutRef.current);
+      }
+      debouncedSavePropsTimeoutRef.current = setTimeout(() => {
+        updatePropsMutation.mutate({ sectionId, props: nextProps });
+      }, 300);
+    },
+    [syncPreviewSectionProps, updatePropsMutation],
+  );
+
+  const handleSectionToggleEnabled = useCallback(
+    (sectionId: string, enabled: boolean) => {
+      // 1. Instant 0ms visual toggle on canvas
+      syncPreviewSectionProps(sectionId, undefined, enabled);
+
+      // 2. Immediate persistence
+      updatePropsMutation.mutate({ sectionId, props: { enabled } });
+    },
+    [syncPreviewSectionProps, updatePropsMutation],
+  );
 
   useEffect(() => {
     if (!previewKey) return;
@@ -1702,7 +1740,12 @@ export function VisualEditorShell({
         </div>
       </header>
 
-      {editorMode === "code" ? (
+      <div
+        className={cn(
+          "min-h-0 min-w-0 flex-1",
+          editorMode === "code" ? "flex" : "hidden",
+        )}
+      >
         <EditorCodeWorkspace
           storefrontId={context.storefront.id}
           themeId={context.theme.id}
@@ -1711,8 +1754,14 @@ export function VisualEditorShell({
           initialActiveFilePath={activeCodeFilePath}
           onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
         />
-      ) : (
-        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/40 max-md:flex-col">
+      </div>
+
+      <div
+        className={cn(
+          "min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/40 max-md:flex-col",
+          editorMode === "design" ? "flex" : "hidden",
+        )}
+      >
           <EditorSectionsPanel
             style={{ width: `${leftPanelWidth}px` }}
             context={context}
@@ -2063,7 +2112,6 @@ export function VisualEditorShell({
 
         <EditorSmallScreenNotice />
       </div>
-      )}
     </div>
   );
 }
