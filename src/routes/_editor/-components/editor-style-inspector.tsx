@@ -18,6 +18,7 @@ import {
   AlignRight,
   ChevronDown,
   ChevronUp,
+  Code2,
   Image as ImageIcon,
   Layers,
   LayoutGrid,
@@ -37,8 +38,27 @@ type EditorStyleInspectorProps = {
   section: EditorSection;
   onPropsChange: (next: Record<string, unknown>) => void;
   onToggleEnabled?: (enabled: boolean) => void;
+  onJumpToCode?: (filePath: string) => void;
   disabled?: boolean;
 };
+
+export function getComponentFilePath(type: string): string {
+  switch (type) {
+    case "hero":
+      return "src/components/Hero.tsx";
+    case "editorial-intro":
+      return "src/components/EditorialIntro.tsx";
+    case "category-showcase":
+      return "src/components/CategoryShowcase.tsx";
+    case "image-with-text":
+      return "src/components/Hero.tsx";
+    case "principles":
+    case "newsletter":
+      return "src/pages/index.tsx";
+    default:
+      return "src/pages/index.tsx";
+  }
+}
 
 const THEME_PALETTE_COLORS = [
   { label: "Stone 50", value: "#fafaf9", preview: "bg-[#fafaf9] border-stone-200" },
@@ -55,6 +75,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   onPropsChange,
   onToggleEnabled,
+  onJumpToCode,
   disabled = false,
 }: EditorStyleInspectorProps) {
   const [paddingLinked, setPaddingLinked] = useState(true);
@@ -64,6 +85,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     typography: true,
     fills: true,
     borders: false,
+    tailwind: true,
   });
 
   const toggleSection = (key: keyof typeof sectionsExpanded) => {
@@ -82,10 +104,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     [onPropsChange, props],
   );
 
+  const componentPath = getComponentFilePath(section.type);
+
   return (
     <div className="space-y-3 p-3">
       {/* Identity Header */}
-      <div className="rounded-xl border bg-background p-3 shadow-xs">
+      <div className="rounded-xl border bg-background p-3 shadow-xs space-y-2.5">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <div className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -114,6 +138,24 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               aria-label="Toggle section visibility"
             />
           </div>
+        </div>
+
+        {/* Jump to Source Code Bridge */}
+        <div className="pt-2 border-t flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            className="h-7 w-full gap-1.5 text-xs font-medium justify-start"
+            onClick={() => onJumpToCode?.(componentPath)}
+            title={`Open ${componentPath} in Monaco Code Editor`}
+          >
+            <Code2 className="size-3.5 text-primary shrink-0" />
+            <span className="truncate">Edit in Code</span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground truncate max-w-28">
+              {componentPath.split("/").pop()}
+            </span>
+          </Button>
         </div>
       </div>
 
@@ -579,6 +621,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               inputClassName="h-6 text-xs text-right font-mono"
             />
           </div>
+        </div>
+      </InspectorGroup>
+
+      {/* 6. Tailwind CSS Classes */}
+      <InspectorGroup
+        title="Tailwind CSS Classes"
+        icon={<Code2 className="size-3.5" />}
+        expanded={sectionsExpanded.tailwind}
+        onToggle={() => toggleSection("tailwind")}
+      >
+        <div className="space-y-2">
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            Direct Tailwind utility classes applied to this section container.
+          </p>
+          <Textarea
+            value={props.className ?? props.customClass ?? ""}
+            onChange={(e) => handleFieldChange("className", e.target.value)}
+            placeholder="e.g. py-24 bg-stone-900 text-white rounded-2xl shadow-xl"
+            rows={2}
+            className="font-mono text-xs resize-none"
+          />
         </div>
       </InspectorGroup>
     </div>

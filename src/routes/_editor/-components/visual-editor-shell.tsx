@@ -547,6 +547,16 @@ export function VisualEditorShell({
     Monitor;
 
   const [editorMode, setEditorMode] = useState<"design" | "code">("design");
+  const [activeCodeFilePath, setActiveCodeFilePath] = useState<
+    string | undefined
+  >();
+
+  const handleJumpToCode = useCallback((filePath?: string) => {
+    if (filePath) {
+      setActiveCodeFilePath(filePath);
+    }
+    setEditorMode("code");
+  }, []);
 
   const themeFilesQuery = useQuery(
     storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -1698,6 +1708,7 @@ export function VisualEditorShell({
           themeId={context.theme.id}
           files={themeFiles}
           tree={themeTree}
+          initialActiveFilePath={activeCodeFilePath}
           onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
         />
       ) : (
@@ -2047,6 +2058,7 @@ export function VisualEditorShell({
           previewWidth={previewWidth}
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}
+          onJumpToCode={handleJumpToCode}
         />
 
         <EditorSmallScreenNotice />

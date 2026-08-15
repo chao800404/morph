@@ -43,6 +43,7 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
   ) => void;
   onSectionToggleEnabled?: (sectionId: string, enabled: boolean) => void;
+  onJumpToCode?: (filePath: string) => void;
 };
 
 export const EditorAssistantPanel = memo(function EditorAssistantPanel({
@@ -63,6 +64,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   previewWidth,
   onSectionPropsChange,
   onSectionToggleEnabled,
+  onJumpToCode,
 }: EditorAssistantPanelProps) {
   const [tab, setTab] = useState<"chat" | "styles" | "comments">("chat");
   const activeTemplate = resolveEditorTemplate(context, search);
@@ -209,6 +211,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onToggleEnabled={(enabled) =>
                 onSectionToggleEnabled?.(selectedSection.id, enabled)
               }
+              onJumpToCode={onJumpToCode}
             />
           ) : (
             <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">

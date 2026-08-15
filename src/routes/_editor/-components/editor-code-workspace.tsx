@@ -31,6 +31,7 @@ type EditorCodeWorkspaceProps = {
   themeId: string;
   files: StorefrontThemeFileDTO[];
   tree: StorefrontThemeFileTreeNode[];
+  initialActiveFilePath?: string;
   onRefreshPreview?: () => void;
 };
 
@@ -60,18 +61,23 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   themeId,
   files,
   tree,
+  initialActiveFilePath,
   onRefreshPreview,
 }: EditorCodeWorkspaceProps) {
   const queryClient = useQueryClient();
 
   // Find initial active file (default to Hero.tsx or index.tsx)
   const defaultFile = useMemo(() => {
+    if (initialActiveFilePath) {
+      const match = files.find((f) => f.path === initialActiveFilePath);
+      if (match) return match;
+    }
     return (
       files.find((f) => f.path.includes("Hero.tsx")) ??
       files.find((f) => f.path.includes("index.tsx")) ??
       files[0]
     );
-  }, [files]);
+  }, [files, initialActiveFilePath]);
 
   const [activeFilePath, setActiveFilePath] = useState<string>(
     defaultFile?.path ?? "src/components/Hero.tsx",
@@ -84,6 +90,17 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
+
+  useEffect(() => {
+    if (initialActiveFilePath) {
+      setActiveFilePath(initialActiveFilePath);
+      setOpenTabs((prev) =>
+        prev.includes(initialActiveFilePath)
+          ? prev
+          : [...prev, initialActiveFilePath],
+      );
+    }
+  }, [initialActiveFilePath]);
 
   // Initialize file contents map from incoming files
   useEffect(() => {

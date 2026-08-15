@@ -1,4 +1,5 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { cn } from "@/lib/utils";
 import { z } from "zod";
 
 type StorefrontSection = StorefrontPageDocument["sections"][number];
@@ -6,6 +7,31 @@ type StorefrontSection = StorefrontPageDocument["sections"][number];
 type StorefrontDocumentRendererProps = {
   document: StorefrontPageDocument;
 };
+
+function resolveSectionStyle(props: Record<string, any>): React.CSSProperties {
+  const style: React.CSSProperties = {};
+  if (props.backgroundColor) style.backgroundColor = props.backgroundColor;
+  if (props.textColor) style.color = props.textColor;
+  if (props.borderRadius !== undefined && props.borderRadius !== null && props.borderRadius !== 0) {
+    style.borderRadius = typeof props.borderRadius === "number" ? `${props.borderRadius}px` : props.borderRadius;
+  }
+  if (props.padding !== undefined && props.padding !== null) {
+    style.padding = typeof props.padding === "number" ? `${props.padding}px` : props.padding;
+  }
+  if (props.paddingTop !== undefined && props.paddingTop !== null) {
+    style.paddingTop = typeof props.paddingTop === "number" ? `${props.paddingTop}px` : props.paddingTop;
+  }
+  if (props.paddingBottom !== undefined && props.paddingBottom !== null) {
+    style.paddingBottom = typeof props.paddingBottom === "number" ? `${props.paddingBottom}px` : props.paddingBottom;
+  }
+  if (props.paddingLeft !== undefined && props.paddingLeft !== null) {
+    style.paddingLeft = typeof props.paddingLeft === "number" ? `${props.paddingLeft}px` : props.paddingLeft;
+  }
+  if (props.paddingRight !== undefined && props.paddingRight !== null) {
+    style.paddingRight = typeof props.paddingRight === "number" ? `${props.paddingRight}px` : props.paddingRight;
+  }
+  return style;
+}
 
 const linkSchema = z.object({
   actionLabel: z.string().max(100),
@@ -115,29 +141,42 @@ function renderSection(section: StorefrontSection) {
   const parsed = schema.safeParse(section.props);
   if (!parsed.success) return <UnsupportedSection key={section.id} section={section} />;
 
-  // The registry schemas differ by section, while the selected renderer is
-  // narrowed by the same runtime key. The explicit branches preserve that link.
+  const rawProps = (section.props ?? {}) as Record<string, any>;
+
   switch (section.type) {
     case "hero":
-      return <StorefrontHero key={section.id} sectionId={section.id} {...heroSectionPropsSchema.parse(section.props)} />;
+      return <StorefrontHero key={section.id} sectionId={section.id} rawProps={rawProps} {...heroSectionPropsSchema.parse(section.props)} />;
     case "editorial-intro":
-      return <EditorialIntro key={section.id} sectionId={section.id} {...editorialIntroPropsSchema.parse(section.props)} />;
+      return <EditorialIntro key={section.id} sectionId={section.id} rawProps={rawProps} {...editorialIntroPropsSchema.parse(section.props)} />;
     case "category-showcase":
-      return <CategoryShowcase key={section.id} sectionId={section.id} {...categoryShowcasePropsSchema.parse(section.props)} />;
+      return <CategoryShowcase key={section.id} sectionId={section.id} rawProps={rawProps} {...categoryShowcasePropsSchema.parse(section.props)} />;
     case "image-with-text":
-      return <ImageWithText key={section.id} sectionId={section.id} {...imageWithTextPropsSchema.parse(section.props)} />;
+      return <ImageWithText key={section.id} sectionId={section.id} rawProps={rawProps} {...imageWithTextPropsSchema.parse(section.props)} />;
     case "principles":
-      return <Principles key={section.id} sectionId={section.id} {...principlesPropsSchema.parse(section.props)} />;
+      return <Principles key={section.id} sectionId={section.id} rawProps={rawProps} {...principlesPropsSchema.parse(section.props)} />;
     case "newsletter":
-      return <Newsletter key={section.id} sectionId={section.id} {...newsletterPropsSchema.parse(section.props)} />;
+      return <Newsletter key={section.id} sectionId={section.id} rawProps={rawProps} {...newsletterPropsSchema.parse(section.props)} />;
     default:
       return <UnsupportedSection key={section.id} section={section} />;
   }
 }
 
-function StorefrontHero({ sectionId, eyebrow, heading, description, actionLabel, actionHref, imageSrc, imageAlt }: z.infer<typeof heroSectionPropsSchema> & { sectionId: string }) {
+function StorefrontHero({ sectionId, rawProps, eyebrow, heading, description, actionLabel, actionHref, imageSrc, imageAlt }: z.infer<typeof heroSectionPropsSchema> & { sectionId: string; rawProps?: Record<string, any> }) {
+  const customStyle = resolveSectionStyle(rawProps ?? {});
+  const customClass = rawProps?.className ?? rawProps?.customClass;
+
   return (
-    <section data-storefront-section-id={sectionId} data-storefront-section-type="hero" className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
+    <section
+      data-storefront-section-id={sectionId}
+      data-storefront-section-type="hero"
+      data-morph-source-file="src/components/Hero.tsx"
+      data-morph-component="Hero"
+      style={customStyle}
+      className={cn(
+        "grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]",
+        customClass,
+      )}
+    >
       <div className="flex items-center px-[clamp(1.75rem,6vw,6rem)] py-20">
         <div className="max-w-xl">
           <p data-storefront-component="eyebrow" data-storefront-field="eyebrow" className="text-xs font-medium uppercase tracking-[0.24em] text-stone-500">{eyebrow}</p>
@@ -153,9 +192,22 @@ function StorefrontHero({ sectionId, eyebrow, heading, description, actionLabel,
   );
 }
 
-function EditorialIntro({ sectionId, label, heading, body }: z.infer<typeof editorialIntroPropsSchema> & { sectionId: string }) {
+function EditorialIntro({ sectionId, rawProps, label, heading, body }: z.infer<typeof editorialIntroPropsSchema> & { sectionId: string; rawProps?: Record<string, any> }) {
+  const customStyle = resolveSectionStyle(rawProps ?? {});
+  const customClass = rawProps?.className ?? rawProps?.customClass;
+
   return (
-    <section data-storefront-section-id={sectionId} data-storefront-section-type="editorial-intro" className="bg-stone-50 px-[clamp(1.75rem,7vw,7rem)] py-[clamp(6rem,12vw,11rem)]">
+    <section
+      data-storefront-section-id={sectionId}
+      data-storefront-section-type="editorial-intro"
+      data-morph-source-file="src/components/EditorialIntro.tsx"
+      data-morph-component="EditorialIntro"
+      style={customStyle}
+      className={cn(
+        "bg-stone-50 px-[clamp(1.75rem,7vw,7rem)] py-[clamp(6rem,12vw,11rem)]",
+        customClass,
+      )}
+    >
       <div className="grid gap-10 border-t border-stone-300 pt-8 lg:grid-cols-[0.55fr_1.45fr]">
         <p data-storefront-component="label" data-storefront-field="label" className="text-xs font-medium uppercase tracking-[0.22em] text-stone-500">{label}</p>
         <div>
@@ -167,9 +219,22 @@ function EditorialIntro({ sectionId, label, heading, body }: z.infer<typeof edit
   );
 }
 
-function CategoryShowcase({ sectionId, heading, items }: z.infer<typeof categoryShowcasePropsSchema> & { sectionId: string }) {
+function CategoryShowcase({ sectionId, rawProps, heading, items }: z.infer<typeof categoryShowcasePropsSchema> & { sectionId: string; rawProps?: Record<string, any> }) {
+  const customStyle = resolveSectionStyle(rawProps ?? {});
+  const customClass = rawProps?.className ?? rawProps?.customClass;
+
   return (
-    <section data-storefront-section-id={sectionId} data-storefront-section-type="category-showcase" className="bg-stone-900 px-[clamp(1.25rem,4vw,4rem)] py-[clamp(5rem,9vw,9rem)] text-stone-100">
+    <section
+      data-storefront-section-id={sectionId}
+      data-storefront-section-type="category-showcase"
+      data-morph-source-file="src/components/CategoryShowcase.tsx"
+      data-morph-component="CategoryShowcase"
+      style={customStyle}
+      className={cn(
+        "bg-stone-900 px-[clamp(1.25rem,4vw,4rem)] py-[clamp(5rem,9vw,9rem)] text-stone-100",
+        customClass,
+      )}
+    >
       <div className="mb-12 flex items-end justify-between border-b border-stone-700 pb-6">
         <h2 data-storefront-component="heading" data-storefront-field="heading" className="font-serif text-[clamp(2.5rem,5vw,5rem)] tracking-[-0.04em]">{heading}</h2>
         <span data-storefront-component="badge" className="hidden text-xs uppercase tracking-[0.2em] text-stone-400 sm:block">The collection</span>
@@ -194,9 +259,22 @@ function CategoryShowcase({ sectionId, heading, items }: z.infer<typeof category
   );
 }
 
-function ImageWithText({ sectionId, eyebrow, heading, body, actionLabel, actionHref, imageSrc, imageAlt, imagePosition }: z.infer<typeof imageWithTextPropsSchema> & { sectionId: string }) {
+function ImageWithText({ sectionId, rawProps, eyebrow, heading, body, actionLabel, actionHref, imageSrc, imageAlt, imagePosition }: z.infer<typeof imageWithTextPropsSchema> & { sectionId: string; rawProps?: Record<string, any> }) {
+  const customStyle = resolveSectionStyle(rawProps ?? {});
+  const customClass = rawProps?.className ?? rawProps?.customClass;
+
   return (
-    <section data-storefront-section-id={sectionId} data-storefront-section-type="image-with-text" className="grid bg-[#d8d0c3] lg:grid-cols-2">
+    <section
+      data-storefront-section-id={sectionId}
+      data-storefront-section-type="image-with-text"
+      data-morph-source-file="src/components/Hero.tsx"
+      data-morph-component="ImageWithText"
+      style={customStyle}
+      className={cn(
+        "grid bg-[#d8d0c3] lg:grid-cols-2",
+        customClass,
+      )}
+    >
       <div data-storefront-component="image" data-storefront-field="imageSrc" className="min-h-[32rem] overflow-hidden lg:min-h-[52rem]">
         <img src={imageSrc} alt={imageAlt} style={{ objectPosition: imagePosition }} className="size-full scale-110 object-cover" />
       </div>
@@ -212,9 +290,22 @@ function ImageWithText({ sectionId, eyebrow, heading, body, actionLabel, actionH
   );
 }
 
-function Principles({ sectionId, items }: z.infer<typeof principlesPropsSchema> & { sectionId: string }) {
+function Principles({ sectionId, rawProps, items }: z.infer<typeof principlesPropsSchema> & { sectionId: string; rawProps?: Record<string, any> }) {
+  const customStyle = resolveSectionStyle(rawProps ?? {});
+  const customClass = rawProps?.className ?? rawProps?.customClass;
+
   return (
-    <section data-storefront-section-id={sectionId} data-storefront-section-type="principles" className="bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]">
+    <section
+      data-storefront-section-id={sectionId}
+      data-storefront-section-type="principles"
+      data-morph-source-file="src/pages/index.tsx"
+      data-morph-component="Principles"
+      style={customStyle}
+      className={cn(
+        "bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]",
+        customClass,
+      )}
+    >
       <p data-storefront-component="label" className="mb-14 text-xs font-medium uppercase tracking-[0.22em] text-stone-500">Why we choose differently</p>
       <div className="grid border-t border-stone-300 lg:grid-cols-3">
         {items.map((item) => (
@@ -229,9 +320,22 @@ function Principles({ sectionId, items }: z.infer<typeof principlesPropsSchema> 
   );
 }
 
-function Newsletter({ sectionId, eyebrow, heading, body, placeholder, actionLabel }: z.infer<typeof newsletterPropsSchema> & { sectionId: string }) {
+function Newsletter({ sectionId, rawProps, eyebrow, heading, body, placeholder, actionLabel }: z.infer<typeof newsletterPropsSchema> & { sectionId: string; rawProps?: Record<string, any> }) {
+  const customStyle = resolveSectionStyle(rawProps ?? {});
+  const customClass = rawProps?.className ?? rawProps?.customClass;
+
   return (
-    <section data-storefront-section-id={sectionId} data-storefront-section-type="newsletter" className="bg-[#b7ad9d] px-[clamp(1.75rem,8vw,8rem)] py-[clamp(6rem,11vw,10rem)]">
+    <section
+      data-storefront-section-id={sectionId}
+      data-storefront-section-type="newsletter"
+      data-morph-source-file="src/pages/index.tsx"
+      data-morph-component="Newsletter"
+      style={customStyle}
+      className={cn(
+        "bg-[#b7ad9d] px-[clamp(1.75rem,8vw,8rem)] py-[clamp(6rem,11vw,10rem)]",
+        customClass,
+      )}
+    >
       <div className="mx-auto max-w-4xl text-center">
         <p data-storefront-component="eyebrow" data-storefront-field="eyebrow" className="text-xs font-medium uppercase tracking-[0.24em] text-stone-700">{eyebrow}</p>
         <h2 data-storefront-component="heading" data-storefront-field="heading" className="mt-6 font-serif text-[clamp(3rem,6vw,6rem)] leading-[0.92] tracking-[-0.045em] text-stone-950">{heading}</h2>
