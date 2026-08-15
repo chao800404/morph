@@ -26,7 +26,12 @@ export type StorefrontThemeRevisionDTO = {
   revisionNumber: number;
   message: string | null;
   source: "manual" | "ai" | "publish" | "rollback";
-  snapshot: Array<{ path: string; content: string; mimeType: string }>;
+  snapshot: Array<{
+    path: string;
+    content: string;
+    mimeType: string;
+    isEntry: boolean;
+  }>;
   createdBy: string | null;
   createdAt: string;
 };

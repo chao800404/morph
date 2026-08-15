@@ -537,13 +537,20 @@ export function VisualEditorShell({
   const [activeCodeFilePath, setActiveCodeFilePath] = useState<
     string | undefined
   >();
+  const [jumpLocation, setJumpLocation] = useState<
+    { filePath: string; line?: number; column?: number } | undefined
+  >();
 
-  const handleJumpToCode = useCallback((filePath?: string) => {
-    if (filePath) {
-      setActiveCodeFilePath(filePath);
-    }
-    setEditorMode("code");
-  }, []);
+  const handleJumpToCode = useCallback(
+    (filePath?: string, line?: number, column?: number) => {
+      if (filePath) {
+        setActiveCodeFilePath(filePath);
+        setJumpLocation({ filePath, line, column });
+      }
+      setEditorMode("code");
+    },
+    [],
+  );
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -1752,6 +1759,7 @@ export function VisualEditorShell({
           files={themeFiles}
           tree={themeTree}
           initialActiveFilePath={activeCodeFilePath}
+          jumpLocation={jumpLocation}
           onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
         />
       </div>

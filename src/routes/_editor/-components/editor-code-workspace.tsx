@@ -5,7 +5,10 @@ import type {
   StorefrontThemeFileDTO,
   StorefrontThemeFileTreeNode,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
-import { saveStorefrontThemeFile } from "@/server/storefront/storefront-theme-files.serverFn";
+import {
+  initStorefrontStarterTheme,
+  saveStorefrontThemeFile,
+} from "@/server/storefront/storefront-theme-files.serverFn";
 import Editor from "@monaco-editor/react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -22,7 +25,7 @@ import {
   Save,
   X,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 
@@ -32,6 +35,7 @@ type EditorCodeWorkspaceProps = {
   files: StorefrontThemeFileDTO[];
   tree: StorefrontThemeFileTreeNode[];
   initialActiveFilePath?: string;
+  jumpLocation?: { filePath: string; line?: number; column?: number };
   onRefreshPreview?: () => void;
 };
 
@@ -62,12 +66,18 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   files,
   tree,
   initialActiveFilePath,
+  jumpLocation,
   onRefreshPreview,
 }: EditorCodeWorkspaceProps) {
   const queryClient = useQueryClient();
+  const editorRef = useRef<any>(null);
 
   // Find initial active file (default to Hero.tsx or index.tsx)
   const defaultFile = useMemo(() => {
+    if (jumpLocation?.filePath) {
+      const match = files.find((f) => f.path === jumpLocation.filePath);
+      if (match) return match;
+    }
     if (initialActiveFilePath) {
       const match = files.find((f) => f.path === initialActiveFilePath);
       if (match) return match;
@@ -77,13 +87,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       files.find((f) => f.path.includes("index.tsx")) ??
       files[0]
     );
-  }, [files, initialActiveFilePath]);
+  }, [files, initialActiveFilePath, jumpLocation]);
 
   const [activeFilePath, setActiveFilePath] = useState<string>(
-    defaultFile?.path ?? "src/components/Hero.tsx",
+    jumpLocation?.filePath ?? defaultFile?.path ?? "src/components/Hero.tsx",
   );
   const [openTabs, setOpenTabs] = useState<string[]>([
-    defaultFile?.path ?? "src/components/Hero.tsx",
+    jumpLocation?.filePath ?? defaultFile?.path ?? "src/components/Hero.tsx",
   ]);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({});
@@ -101,6 +111,31 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       );
     }
   }, [initialActiveFilePath]);
+
+  useEffect(() => {
+    if (jumpLocation?.filePath) {
+      setActiveFilePath(jumpLocation.filePath);
+      setOpenTabs((prev) =>
+        prev.includes(jumpLocation.filePath)
+          ? prev
+          : [...prev, jumpLocation.filePath],
+      );
+
+      if (editorRef.current && jumpLocation.line) {
+        setTimeout(() => {
+          editorRef.current?.revealPositionInCenter({
+            lineNumber: jumpLocation.line,
+            column: jumpLocation.column ?? 1,
+          });
+          editorRef.current?.setPosition({
+            lineNumber: jumpLocation.line,
+            column: jumpLocation.column ?? 1,
+          });
+          editorRef.current?.focus();
+        }, 50);
+      }
+    }
+  }, [jumpLocation]);
 
   // Initialize file contents map from incoming files
   useEffect(() => {
@@ -154,6 +189,31 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     },
   });
 
+  const initMutation = useMutation({
+    mutationFn: async () => {
+      const res = await initStorefrontStarterTheme({
+        data: {
+          storefrontId,
+          themeId,
+        },
+      });
+      if (!res.success) {
+        throw new Error(res.message);
+      }
+      return res.data;
+    },
+    onSuccess: async () => {
+      toast.success("Starter theme workspace initialized");
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId).queryKey,
+      });
+      onRefreshPreview?.();
+    },
+    onError: (err: any) => {
+      toast.error(err.message || "Failed to initialize starter theme");
+    },
+  });
+
   const handleContentChange = (value?: string) => {
     if (value === undefined) return;
     setFileContents((prev) => ({ ...prev, [activeFilePath]: value }));
@@ -188,14 +248,19 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const handleCloseTab = (path: string, event: React.MouseEvent) => {
     event.stopPropagation();
     if (dirtyFiles[path]) {
-      const confirmDiscard = window.confirm(
-        `"${path}" has unsaved changes. Are you sure you want to close it?`,
+      const confirmed = window.confirm(
+        `File "${path}" has unsaved changes. Discard changes and close tab?`,
       );
-      if (!confirmDiscard) return;
-      setDirtyFiles((prev) => ({ ...prev, [path]: false }));
+      if (!confirmed) return;
     }
-    const nextTabs = openTabs.filter((t) => t !== path);
+    const nextTabs = openTabs.filter((p) => p !== path);
     setOpenTabs(nextTabs);
+    setDirtyFiles((prev) => {
+      const next = { ...prev };
+      delete next[path];
+      return next;
+    });
+
     if (activeFilePath === path) {
       setActiveFilePath(nextTabs[nextTabs.length - 1] ?? "");
     }
@@ -264,6 +329,37 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       </div>
     );
   };
+
+  if (files.length === 0) {
+    return (
+      <div className="flex h-full w-full min-h-0 flex-col items-center justify-center p-8 text-center bg-background text-foreground">
+        <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-4 shadow-xs">
+          <Code2 className="size-7" />
+        </div>
+        <h3 className="text-base font-semibold">
+          Theme Virtual Workspace is Empty
+        </h3>
+        <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-muted-foreground">
+          This theme does not have editable component source files in its virtual workspace yet. Initialize the starter theme files to edit React & Tailwind code.
+        </p>
+        <Button
+          type="button"
+          variant="default"
+          size="sm"
+          className="mt-5 gap-2 font-medium"
+          disabled={initMutation.isPending}
+          onClick={() => initMutation.mutate()}
+        >
+          {initMutation.isPending ? (
+            <LoaderCircle className="size-3.5 animate-spin" />
+          ) : (
+            <FolderOpen className="size-3.5" />
+          )}
+          <span>Initialize Starter Theme</span>
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full w-full min-h-0 bg-background text-foreground overflow-hidden">
@@ -352,6 +448,20 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               language={getLanguage(activeFilePath)}
               value={currentEditorContent}
               onChange={handleContentChange}
+              onMount={(editor) => {
+                editorRef.current = editor;
+                if (jumpLocation?.line && jumpLocation.filePath === activeFilePath) {
+                  editor.revealPositionInCenter({
+                    lineNumber: jumpLocation.line,
+                    column: jumpLocation.column ?? 1,
+                  });
+                  editor.setPosition({
+                    lineNumber: jumpLocation.line,
+                    column: jumpLocation.column ?? 1,
+                  });
+                  editor.focus();
+                }
+              }}
               theme="vs-dark"
               options={{
                 fontSize: 13,

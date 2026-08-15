@@ -38,7 +38,7 @@ type EditorStyleInspectorProps = {
   section: EditorSection;
   onPropsChange: (next: Record<string, unknown>) => void;
   onToggleEnabled?: (enabled: boolean) => void;
-  onJumpToCode?: (filePath: string) => void;
+  onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   disabled?: boolean;
 };
 
@@ -156,7 +156,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             variant="outline"
             size="xs"
             className="h-7 w-full gap-1.5 text-xs font-medium justify-start"
-            onClick={() => onJumpToCode?.(componentPath)}
+            onClick={() => {
+              if (section.type === "hero") {
+                onJumpToCode?.(componentPath, 19, 11);
+              } else {
+                onJumpToCode?.(componentPath);
+              }
+            }}
             title={`Open ${componentPath} in Monaco Code Editor`}
           >
             <Code2 className="size-3.5 text-primary shrink-0" />

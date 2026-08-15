@@ -43,7 +43,7 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
   ) => void;
   onSectionToggleEnabled?: (sectionId: string, enabled: boolean) => void;
-  onJumpToCode?: (filePath: string) => void;
+  onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
 };
 
 export const EditorAssistantPanel = memo(function EditorAssistantPanel({

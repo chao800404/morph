@@ -372,6 +372,7 @@ export const storefrontThemeFileDal = {
       path: f.path,
       content: f.content,
       mimeType: f.mimeType,
+      isEntry: Boolean(f.isEntry),
     }));
 
     await db.insert(storefrontThemeRevisions).values({
@@ -434,6 +435,7 @@ export const storefrontThemeFileDal = {
         path: string;
         content: string;
         mimeType: string;
+        isEntry: boolean;
       }>,
       createdBy: row.createdBy,
       createdAt: row.createdAt,
@@ -472,6 +474,7 @@ export const storefrontThemeFileDal = {
       path: string;
       content: string;
       mimeType: string;
+      isEntry?: boolean;
     }>;
 
     const now = new Date().toISOString();
@@ -497,7 +500,10 @@ export const storefrontThemeFileDal = {
         path: f.path,
         content: f.content,
         mimeType: f.mimeType,
-        isEntry: f.path === "src/pages/index.tsx",
+        isEntry:
+          typeof f.isEntry === "boolean"
+            ? f.isEntry
+            : f.path === "src/pages/index.tsx",
         createdAt: now,
         updatedAt: now,
       });
