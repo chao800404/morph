@@ -42,10 +42,6 @@ async function ensureStarterHomeDocument(
   if (!theme) return;
 
   const metadata = theme.metadata ?? {};
-  if (metadata.starterTemplateVersion === STOREFRONT_STARTER_TEMPLATE_VERSION) {
-    return;
-  }
-
   const [homeTemplate] = await db
     .select({
       id: storefrontThemeTemplates.id,
@@ -61,6 +57,48 @@ async function ensureStarterHomeDocument(
     )
     .limit(1);
 
+  const [productTemplate] = await db
+    .select({ id: storefrontThemeTemplates.id })
+    .from(storefrontThemeTemplates)
+    .where(
+      and(
+        eq(storefrontThemeTemplates.themeId, themeId),
+        eq(storefrontThemeTemplates.type, "product"),
+        isNull(storefrontThemeTemplates.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  const now = new Date().toISOString();
+
+  if (!homeTemplate) {
+    await db.insert(storefrontThemeTemplates).values({
+      id: crypto.randomUUID(),
+      themeId,
+      type: "index",
+      name: "Default",
+      document: createDefaultStorefrontHomeDocument(),
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  if (!productTemplate) {
+    await db.insert(storefrontThemeTemplates).values({
+      id: crypto.randomUUID(),
+      themeId,
+      type: "product",
+      name: "Default product",
+      document: EMPTY_DOCUMENT,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  if (metadata.starterTemplateVersion === STOREFRONT_STARTER_TEMPLATE_VERSION) {
+    return;
+  }
+
   if (
     homeTemplate &&
     isUpgradeableStarterHomeDocument(homeTemplate.document)
@@ -69,7 +107,7 @@ async function ensureStarterHomeDocument(
       .update(storefrontThemeTemplates)
       .set({
         document: createDefaultStorefrontHomeDocument(),
-        updatedAt: new Date().toISOString(),
+        updatedAt: now,
       })
       .where(eq(storefrontThemeTemplates.id, homeTemplate.id));
   }
@@ -81,7 +119,7 @@ async function ensureStarterHomeDocument(
         ...metadata,
         starterTemplateVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
       },
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     })
     .where(eq(storefrontThemes.id, themeId));
 }

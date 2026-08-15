@@ -70,6 +70,7 @@ const QUICK_LINKS = [
 ];
 
 const GENERAL_LINKS = [
+  { label: "Online Store", scope: "global" as const, slug: "online-store" },
   { label: "Products", scope: "global" as const, slug: "products" },
   { label: "Orders", scope: "global" as const, slug: "orders" },
   { label: "Promotions", scope: "global" as const, slug: "promotions" },
@@ -99,14 +100,14 @@ const EmptyProductPreview = () => (
   </div>
 );
 
-const getThemePreviewCard = (trigger: HTMLButtonElement) =>
+const getThemePreviewCard = (trigger: HTMLElement) =>
   trigger.querySelector<HTMLElement>("[data-theme-preview-card]");
 
 const prefersReducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const handleThemePreviewPointerMove = (
-  event: ReactPointerEvent<HTMLButtonElement>,
+  event: ReactPointerEvent<HTMLElement>,
 ) => {
   if (prefersReducedMotion()) return;
 
@@ -123,17 +124,13 @@ const handleThemePreviewPointerMove = (
 };
 
 const resetThemePreviewTransform = (
-  event:
-    | ReactPointerEvent<HTMLButtonElement>
-    | ReactFocusEvent<HTMLButtonElement>,
+  event: ReactPointerEvent<HTMLElement> | ReactFocusEvent<HTMLElement>,
 ) => {
   const card = getThemePreviewCard(event.currentTarget);
   card?.style.removeProperty("transform");
 };
 
-const handleThemePreviewFocus = (
-  event: ReactFocusEvent<HTMLButtonElement>,
-) => {
+const handleThemePreviewFocus = (event: ReactFocusEvent<HTMLElement>) => {
   if (prefersReducedMotion()) return;
 
   const card = getThemePreviewCard(event.currentTarget);
@@ -168,9 +165,10 @@ export default function DashboardHome() {
       >
         <Tooltip>
           <TooltipTrigger asChild>
-            <button
-              type="button"
-              className="group/theme-preview w-full rounded-lg outline-none [perspective:900px] [transform-style:preserve-3d]"
+            <Link
+              to="/dashboard/$slug"
+              params={{ slug: "online-store" }}
+              className="group/theme-preview block w-full rounded-lg outline-none [perspective:900px] [transform-style:preserve-3d] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background"
               aria-label="Customize theme"
               onPointerMove={handleThemePreviewPointerMove}
               onPointerLeave={resetThemePreviewTransform}
@@ -190,9 +188,9 @@ export default function DashboardHome() {
                     Storefront preview
                   </div>
                 </div>
-              <EmptyStorefrontPreview />
+                <EmptyStorefrontPreview />
               </Card>
-            </button>
+            </Link>
           </TooltipTrigger>
           <TooltipContent side="top" sideOffset={10}>
             Customize theme

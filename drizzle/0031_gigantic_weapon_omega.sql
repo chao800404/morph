@@ -1,6 +1,19 @@
-PRAGMA foreign_keys=OFF;--> statement-breakpoint
-CREATE TEMP TABLE `__backup_product_assets` AS SELECT * FROM `product_assets`;--> statement-breakpoint
-CREATE TEMP TABLE `__backup_product_variant_assets` AS SELECT * FROM `product_variant_assets`;--> statement-breakpoint
+-- Cloudflare D1 executes migrations inside an implicit transaction and does
+-- not authorize changing `foreign_keys` there. Defer constraint validation
+-- while Drizzle rebuilds the affected tables instead.
+PRAGMA defer_foreign_keys=ON;--> statement-breakpoint
+CREATE TABLE `__migration_0031_storefront_domains` AS SELECT * FROM `storefront_domains`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_storefront_themes` AS SELECT * FROM `storefront_themes`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_storefront_theme_templates` AS SELECT * FROM `storefront_theme_templates`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_assets` AS SELECT * FROM `product_assets`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_category_links` AS SELECT * FROM `product_category_links`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_product_options` AS SELECT * FROM `product_product_options`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_tag_links` AS SELECT * FROM `product_tag_links`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_variants` AS SELECT * FROM `product_variants`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_variant_assets` AS SELECT * FROM `product_variant_assets`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_variant_option_values` AS SELECT * FROM `product_variant_option_values`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_variant_price_history` AS SELECT * FROM `product_variant_price_history`;--> statement-breakpoint
+CREATE TABLE `__migration_0031_product_variant_prices` AS SELECT * FROM `product_variant_prices`;--> statement-breakpoint
 CREATE TABLE `__new_user_table_views` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
@@ -140,8 +153,28 @@ CREATE INDEX `products_status_active_idx` ON `products` (`status`,`deleted_at`);
 CREATE INDEX `products_collection_active_idx` ON `products` (`collection_id`,`deleted_at`);--> statement-breakpoint
 CREATE INDEX `products_type_active_idx` ON `products` (`type_id`,`deleted_at`);
 --> statement-breakpoint
-INSERT OR IGNORE INTO `product_assets`(`product_id`, `asset_id`, `rank`) SELECT `product_id`, `asset_id`, `rank` FROM `__backup_product_assets`;--> statement-breakpoint
-INSERT OR IGNORE INTO `product_variant_assets`(`variant_id`, `asset_id`, `rank`) SELECT `variant_id`, `asset_id`, `rank` FROM `__backup_product_variant_assets`;--> statement-breakpoint
-DROP TABLE `__backup_product_assets`;--> statement-breakpoint
-DROP TABLE `__backup_product_variant_assets`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;
+INSERT OR IGNORE INTO `storefront_domains` SELECT * FROM `__migration_0031_storefront_domains`;--> statement-breakpoint
+INSERT OR IGNORE INTO `storefront_themes` SELECT * FROM `__migration_0031_storefront_themes`;--> statement-breakpoint
+INSERT OR IGNORE INTO `storefront_theme_templates` SELECT * FROM `__migration_0031_storefront_theme_templates`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_variants` SELECT * FROM `__migration_0031_product_variants`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_assets` SELECT * FROM `__migration_0031_product_assets`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_category_links` SELECT * FROM `__migration_0031_product_category_links`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_product_options` SELECT * FROM `__migration_0031_product_product_options`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_tag_links` SELECT * FROM `__migration_0031_product_tag_links`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_variant_assets` SELECT * FROM `__migration_0031_product_variant_assets`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_variant_option_values` SELECT * FROM `__migration_0031_product_variant_option_values`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_variant_price_history` SELECT * FROM `__migration_0031_product_variant_price_history`;--> statement-breakpoint
+INSERT OR IGNORE INTO `product_variant_prices` SELECT * FROM `__migration_0031_product_variant_prices`;--> statement-breakpoint
+DROP TABLE `__migration_0031_storefront_domains`;--> statement-breakpoint
+DROP TABLE `__migration_0031_storefront_themes`;--> statement-breakpoint
+DROP TABLE `__migration_0031_storefront_theme_templates`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_assets`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_category_links`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_product_options`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_tag_links`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_variants`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_variant_assets`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_variant_option_values`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_variant_price_history`;--> statement-breakpoint
+DROP TABLE `__migration_0031_product_variant_prices`;--> statement-breakpoint
+PRAGMA foreign_key_check;

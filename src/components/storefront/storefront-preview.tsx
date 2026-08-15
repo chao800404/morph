@@ -1,4 +1,5 @@
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import type { CSSProperties } from "react";
 import { StorefrontDocumentRenderer } from "./storefront-document-renderer";
 
@@ -6,6 +7,7 @@ type StorefrontPreviewProps = {
   context: StorefrontThemeEditorDTO;
   templateId: string;
   viewportHeight: number;
+  document?: StorefrontPageDocument;
 };
 
 type StorefrontPreviewStyle = CSSProperties & {
@@ -16,6 +18,7 @@ export function StorefrontPreview({
   context,
   templateId,
   viewportHeight,
+  document,
 }: StorefrontPreviewProps) {
   const template = context.templates.find(
     (candidate) => candidate.id === templateId,
@@ -56,7 +59,7 @@ export function StorefrontPreview({
           Cart (0)
         </a>
       </header>
-      <StorefrontDocumentRenderer document={template.document} />
+      <StorefrontDocumentRenderer document={document ?? template.document} />
       <footer className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]">
         <div>
           <p className="font-serif text-3xl text-stone-100">

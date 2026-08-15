@@ -6,6 +6,24 @@ export const storefrontThemeEditorInputSchema = z.object({
   themeId: idSchema("storefront theme"),
 });
 
+export const reorderStorefrontThemeSectionsInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    templateId: idSchema("storefront theme template"),
+    sectionIds: z.array(z.string().trim().min(1).max(100)).min(1).max(100),
+  });
+
+export const publishStorefrontThemeTemplateInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    templateId: idSchema("storefront theme template"),
+  });
+
+export const updateStorefrontThemeSectionPropsInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    templateId: idSchema("storefront theme template"),
+    sectionId: z.string().trim().min(1).max(100),
+    props: z.record(z.string(), z.any()),
+  });
+
 export const storefrontThemeEditorSearchSchema = z.object({
   template: z
     .enum(["index", "product", "collection", "page", "blog"])

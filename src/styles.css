@@ -45,7 +45,11 @@
   --color-form-button: var(--form-buttons);
   --color-component: var(--bg-component);
   --color-component-secondary: var(--bg-component-secondary);
+  --color-toolbar-active: var(--toolbar-active);
+  --color-toolbar-active-foreground: var(--toolbar-active-foreground);
+  --color-toolbar-active-border: var(--toolbar-active-border);
   --shadow-buttons-inverted: var(--buttons-inverted);
+  --shadow-toolbar-active: var(--toolbar-active-shadow);
   --shadow-elevation-modal: var(--elevation-modal);
   --shadow-elevation-modal-header: var(--elevation-modal-header);
   --shadow-resource-link: var(--resource-link-shadow);
@@ -131,6 +135,13 @@
   --sidebar-border: oklch(0.92 0.004 286.32);
   --sidebar-ring: oklch(0.705 0.015 286.067);
   --form-buttons: oklch(0.141 0.005 285.823);
+  --toolbar-active: oklch(0.955 0.002 286.3);
+  --toolbar-active-foreground: oklch(0.21 0.006 285.885);
+  --toolbar-active-border: oklch(0.86 0.005 286.3);
+  --toolbar-active-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 1px 2px rgba(24, 24, 27, 0.16),
+    0 2px 5px rgba(24, 24, 27, 0.1);
   /*
    * Image tiles sit on top of a card rather than beside a field, so they carry
    * a heavier edge than --border and a soft drop shadow. Named here rather than
@@ -211,6 +222,14 @@
   --border-menu-top: rgba(33, 33, 36, 1);
   --border-menu-bot: rgba(255, 255, 255, 0.08);
   --form-buttons: rgba(82, 82, 91, 1);
+  --toolbar-active: oklch(0.39 0.009 286.1);
+  --toolbar-active-foreground: oklch(0.96 0.003 286.32);
+  --toolbar-active-border: oklch(1 0 0 / 20%);
+  --toolbar-active-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.13) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.28) inset,
+    0 1px 2px rgba(0, 0, 0, 0.42),
+    0 2px 5px rgba(0, 0, 0, 0.22);
   --gradient-checker-board: repeating-conic-gradient(
       rgba(255, 255, 255, 0.08) 0% 25%,
       oklch(0.21 0.006 285.885) 0% 50%

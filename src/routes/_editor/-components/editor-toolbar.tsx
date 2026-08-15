@@ -41,13 +41,13 @@ export function EditorToolbarMode({
 }: ComponentProps<typeof Button> & { active?: boolean }) {
   return (
     <Button
-      variant="ghost"
+      variant={active ? "toolbarActive" : "ghost"}
       size="xs"
       className={cn(
-        "h-7 px-2.5 text-xs leading-none transition-colors",
+        "h-7 px-2.5 text-xs leading-none",
         active
-          ? "bg-background text-foreground shadow-xs ring-1 ring-border hover:bg-background hover:text-foreground cursor-default"
-          : "text-muted-foreground hover:bg-background/80 hover:text-foreground dark:hover:bg-white/10 dark:hover:text-foreground",
+          ? "cursor-default"
+          : "text-muted-foreground",
         className,
       )}
       aria-pressed={active}
@@ -55,6 +55,5 @@ export function EditorToolbarMode({
     />
   );
 }
-
 
 

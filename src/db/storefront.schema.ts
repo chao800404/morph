@@ -130,6 +130,8 @@ export const storefrontThemeTemplates = sqliteTable(
     document: text("document", { mode: "json" })
       .$type<StorefrontPageDocument>()
       .notNull(),
+    draftRevisionId: text("draft_revision_id"),
+    publishedRevisionId: text("published_revision_id"),
     ...timestamps,
   },
   (table) => [
@@ -140,6 +142,34 @@ export const storefrontThemeTemplates = sqliteTable(
       table.themeId,
       table.type,
       table.deletedAt,
+    ),
+  ],
+);
+
+/** Immutable theme-template snapshots used by editor preview and publishing. */
+export const storefrontThemeTemplateRevisions = sqliteTable(
+  "storefront_theme_template_revisions",
+  {
+    id: text("id").primaryKey(),
+    templateId: text("template_id")
+      .notNull()
+      .references(() => storefrontThemeTemplates.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    document: text("document", { mode: "json" })
+      .$type<StorefrontPageDocument>()
+      .notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: text("created_at").notNull(),
+    publishedAt: text("published_at"),
+  },
+  (table) => [
+    uniqueIndex("storefront_theme_template_revisions_version_unique").on(
+      table.templateId,
+      table.version,
+    ),
+    index("storefront_theme_template_revisions_created_idx").on(
+      table.templateId,
+      table.createdAt,
     ),
   ],
 );

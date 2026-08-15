@@ -239,6 +239,13 @@
       "when": 1786624645956,
       "tag": "0033_blushing_landau",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1786698858916,
+      "tag": "0034_sleepy_silver_samurai",
+      "breakpoints": true
     }
   ]
 }

@@ -22,5 +22,11 @@ export interface StorefrontThemeEditorDTO {
     type: StorefrontTemplateType;
     name: string;
     document: StorefrontPageDocument;
+    draftRevisionId: string | null;
+    publishedRevisionId: string | null;
   }>;
+  panelWidths?: {
+    left: number;
+    right: number;
+  };
 }

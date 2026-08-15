@@ -14,17 +14,18 @@ import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-t
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   AppWindow,
   CircleCheck,
+  CircleAlert,
   ChevronDown,
   ExternalLink,
   LoaderCircle,
   Monitor,
   MousePointer2,
   Redo2,
-  RefreshCw,
   Smartphone,
   Tablet,
   Undo2,
@@ -37,12 +38,16 @@ import {
   useRef,
   useState,
 } from "react";
-import { EditorAssistantPanel } from "./editor-assistant-panel";
-import { EditorSectionsPanel } from "./editor-sections-panel";
+import { toast } from "sonner";
 import {
-  resolveEditorTemplate,
-  resolveEditorTemplateDescriptor,
-} from "./editor-template";
+  publishStorefrontThemeTemplate,
+  updateStorefrontThemeSectionProps,
+} from "@/server/storefront/storefront-themes.serverFn";
+import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
+import { EditorAssistantPanel } from "./editor-assistant-panel";
+import { EditorPathNavigator } from "./editor-path-navigator";
+import { EditorSectionsPanel } from "./editor-sections-panel";
+import { resolveEditorTemplate } from "./editor-template";
 import {
   EditorToolbar,
   EditorToolbarGroup,
@@ -158,6 +163,14 @@ function normalizeWheelDelta(
   return deltaY;
 }
 
+const DEFAULT_LEFT_PANEL_WIDTH = 260;
+const MIN_LEFT_PANEL_WIDTH = 220;
+const MAX_LEFT_PANEL_WIDTH = 460;
+
+const DEFAULT_RIGHT_PANEL_WIDTH = 380;
+const MIN_RIGHT_PANEL_WIDTH = 280;
+const MAX_RIGHT_PANEL_WIDTH = 640;
+
 const viewportOptions = [
   { value: "desktop", label: "Desktop", icon: Monitor },
   { value: "tablet", label: "Tablet", icon: Tablet },
@@ -169,6 +182,108 @@ export function VisualEditorShell({
   search,
   onSearchChange,
 }: EditorShellProps) {
+  const [leftPanelWidth, setLeftPanelWidth] = useState(
+    () => context.panelWidths?.left ?? DEFAULT_LEFT_PANEL_WIDTH,
+  );
+
+  const [rightPanelWidth, setRightPanelWidth] = useState(
+    () => context.panelWidths?.right ?? DEFAULT_RIGHT_PANEL_WIDTH,
+  );
+
+  const leftResizeStateRef = useRef<{
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+
+  const rightResizeStateRef = useRef<{
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+
+  const handleLeftPanelResizePointerDown = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    leftResizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: leftPanelWidth,
+    };
+  };
+
+  const handleLeftPanelResizePointerMove = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!leftResizeStateRef.current) return;
+    const delta = event.clientX - leftResizeStateRef.current.startX;
+    const nextWidth = Math.min(
+      MAX_LEFT_PANEL_WIDTH,
+      Math.max(
+        MIN_LEFT_PANEL_WIDTH,
+        Math.round(leftResizeStateRef.current.startWidth + delta),
+      ),
+    );
+    setLeftPanelWidth(nextWidth);
+  };
+
+  const finishLeftPanelResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!leftResizeStateRef.current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    leftResizeStateRef.current = null;
+    try {
+      document.cookie = `morph:editor-left-panel-width=${leftPanelWidth}; path=/; max-age=31536000; SameSite=Lax`;
+      localStorage.setItem(
+        "morph:editor-left-panel-width",
+        String(leftPanelWidth),
+      );
+    } catch {}
+  };
+
+  const handleRightPanelResizePointerDown = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    rightResizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: rightPanelWidth,
+    };
+  };
+
+  const handleRightPanelResizePointerMove = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!rightResizeStateRef.current) return;
+    const delta = rightResizeStateRef.current.startX - event.clientX;
+    const nextWidth = Math.min(
+      MAX_RIGHT_PANEL_WIDTH,
+      Math.max(
+        MIN_RIGHT_PANEL_WIDTH,
+        Math.round(rightResizeStateRef.current.startWidth + delta),
+      ),
+    );
+    setRightPanelWidth(nextWidth);
+  };
+
+  const finishRightPanelResize = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!rightResizeStateRef.current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    rightResizeStateRef.current = null;
+    try {
+      document.cookie = `morph:editor-right-panel-width=${rightPanelWidth}; path=/; max-age=31536000; SameSite=Lax`;
+      localStorage.setItem(
+        "morph:editor-right-panel-width",
+        String(rightPanelWidth),
+      );
+    } catch {}
+  };
+
   const [previewRevision, setPreviewRevision] = useState(0);
   const [loadedPreviewKey, setLoadedPreviewKey] = useState<string | null>(null);
   const [previewContentSize, setPreviewContentSize] = useState<{
@@ -180,10 +295,94 @@ export function VisualEditorShell({
   );
   const [isPanning, setIsPanning] = useState(false);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [draftSaveState, setDraftSaveState] = useState<
+    "idle" | "saving" | "error"
+  >("idle");
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
   const activeTemplate = resolveEditorTemplate(context, search);
+  const queryClient = useQueryClient();
+  const hasUnpublishedChanges = Boolean(
+    activeTemplate?.draftRevisionId &&
+    activeTemplate.draftRevisionId !== activeTemplate.publishedRevisionId,
+  );
+  const publishMutation = useMutation({
+    mutationFn: () => {
+      if (!activeTemplate) throw new Error("No active template");
+      return publishStorefrontThemeTemplate({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          templateId: activeTemplate.id,
+        },
+      });
+    },
+    onSuccess: async (result) => {
+      if (!result.success) {
+        toast.error(result.message);
+        return;
+      }
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ).queryKey,
+      });
+      toast.success(result.message);
+    },
+    onError: () => toast.error("Failed to publish theme"),
+  });
+  const updatePropsMutation = useMutation({
+    mutationFn: (variables: {
+      sectionId: string;
+      props: Record<string, unknown>;
+    }) => {
+      if (!activeTemplate) throw new Error("No active template");
+      return updateStorefrontThemeSectionProps({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          templateId: activeTemplate.id,
+          sectionId: variables.sectionId,
+          props: variables.props,
+        },
+      });
+    },
+    onMutate: () => setDraftSaveState("saving"),
+    onSuccess: async (result) => {
+      if (!result.success) {
+        setDraftSaveState("error");
+        toast.error(result.message);
+        return;
+      }
+      setDraftSaveState("idle");
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ).queryKey,
+      });
+    },
+    onError: () => {
+      setDraftSaveState("error");
+      toast.error("Failed to update section properties");
+    },
+  });
+
+  const handleSectionPropsChange = useCallback(
+    (sectionId: string, nextProps: Record<string, unknown>) => {
+      updatePropsMutation.mutate({ sectionId, props: nextProps });
+    },
+    [updatePropsMutation],
+  );
+
+  const handleSectionToggleEnabled = useCallback(
+    (sectionId: string, enabled: boolean) => {
+      updatePropsMutation.mutate({ sectionId, props: { enabled } });
+    },
+    [updatePropsMutation],
+  );
   const previewUrl = activeTemplate
     ? `/store/${encodeURIComponent(context.storefront.id)}/themes/${encodeURIComponent(context.theme.id)}/preview?templateId=${encodeURIComponent(activeTemplate.id)}&viewportHeight=${DEFAULT_PREVIEW_VIEWPORT_HEIGHT}`
     : null;
@@ -216,7 +415,7 @@ export function VisualEditorShell({
     pointerId: number;
     pointerX: number;
     width: number;
-    canvasX: number;
+    edge: "left" | "right";
     scale: number;
   } | null>(null);
 
@@ -380,6 +579,16 @@ export function VisualEditorShell({
       window.location.origin,
     );
   }, [search.section]);
+
+  const syncPreviewSectionOrder = useCallback((sectionIds: string[]) => {
+    previewIframeRef.current?.contentWindow?.postMessage(
+      {
+        type: "morph:storefront-preview-set-section-order",
+        sectionIds,
+      },
+      window.location.origin,
+    );
+  }, []);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -767,18 +976,19 @@ export function VisualEditorShell({
   );
 
   const handleResizePointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return;
-      event.stopPropagation();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      resizeOriginRef.current = {
-        pointerId: event.pointerId,
-        pointerX: event.clientX,
-        width: previewWidthRef.current,
-        canvasX: canvasTransformRef.current.x,
-        scale: canvasTransformRef.current.scale,
-      };
-    },
+    (edge: "left" | "right") =>
+      (event: ReactPointerEvent<HTMLDivElement>) => {
+        if (event.button !== 0) return;
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        resizeOriginRef.current = {
+          pointerId: event.pointerId,
+          pointerX: event.clientX,
+          width: previewWidthRef.current,
+          edge,
+          scale: canvasTransformRef.current.scale,
+        };
+      },
     [],
   );
 
@@ -787,18 +997,16 @@ export function VisualEditorShell({
       const origin = resizeOriginRef.current;
       if (!origin || origin.pointerId !== event.pointerId) return;
       event.stopPropagation();
+      const deltaX =
+        origin.edge === "right"
+          ? event.clientX - origin.pointerX
+          : origin.pointerX - event.clientX;
       const nextWidth = clampPreviewWidth(
-        Math.round(
-          origin.width + (event.clientX - origin.pointerX) / origin.scale,
-        ),
+        Math.round(origin.width + (2 * deltaX) / origin.scale),
       );
       updatePreviewWidth(nextWidth);
-      scheduleCanvasTransform((current) => ({
-        ...current,
-        x: origin.canvasX + ((nextWidth - origin.width) * origin.scale) / 2,
-      }));
     },
-    [scheduleCanvasTransform, updatePreviewWidth],
+    [updatePreviewWidth],
   );
 
   const finishPreviewResize = useCallback(
@@ -822,16 +1030,11 @@ export function VisualEditorShell({
       const direction = event.key === "ArrowLeft" ? -1 : 1;
       const step = event.shiftKey ? PREVIEW_WIDTH_STEP * 4 : PREVIEW_WIDTH_STEP;
       const nextWidth = clampPreviewWidth(
-        previewWidthRef.current + direction * step,
+        previewWidthRef.current + direction * step * 2,
       );
-      const widthDelta = nextWidth - previewWidthRef.current;
-      scheduleCanvasTransform((current) => ({
-        ...current,
-        x: current.x + (widthDelta * current.scale) / 2,
-      }));
       applyPreviewWidth(nextWidth);
     },
-    [applyPreviewWidth, scheduleCanvasTransform],
+    [applyPreviewWidth],
   );
 
   const handleViewportChange = useCallback(
@@ -901,9 +1104,9 @@ export function VisualEditorShell({
               <Button
                 key={value}
                 type="button"
-                variant={search.viewport === value ? "secondary" : "ghost"}
+                variant={search.viewport === value ? "toolbarActive" : "ghost"}
                 size="icon"
-                className="size-7 shadow-none"
+                className="size-7"
                 aria-label={`${label} preview, ${previewDefaultWidths[value]} pixels`}
                 aria-pressed={search.viewport === value}
                 title={`${label} · ${previewDefaultWidths[value]} px`}
@@ -955,8 +1158,28 @@ export function VisualEditorShell({
           </div>
         </div>
         <div className="flex items-center gap-1 justify-self-end">
-          <span className="mr-2 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
-            <CircleCheck className="size-3.5" /> Draft unchanged
+          <span
+            className={cn(
+              "mr-2 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex",
+              draftSaveState === "error" && "text-destructive",
+            )}
+          >
+            {draftSaveState === "saving" || publishMutation.isPending ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : draftSaveState === "error" ? (
+              <CircleAlert className="size-3.5" />
+            ) : (
+              <CircleCheck className="size-3.5" />
+            )}
+            {publishMutation.isPending
+              ? "Publishing…"
+              : draftSaveState === "saving"
+                ? "Saving…"
+                : draftSaveState === "error"
+                  ? "Save failed"
+                  : hasUnpublishedChanges
+                    ? "Unpublished changes"
+                    : "No changes"}
           </span>
           <Button variant="ghost" size="icon" disabled aria-label="Undo">
             <Undo2 />
@@ -972,20 +1195,61 @@ export function VisualEditorShell({
           >
             Preview
           </Button>
-          <Button size="xs" disabled>
+          <Button
+            type="button"
+            size="xs"
+            disabled={
+              !hasUnpublishedChanges ||
+              draftSaveState !== "idle" ||
+              publishMutation.isPending
+            }
+            onClick={() => publishMutation.mutate()}
+          >
             Publish
           </Button>
         </div>
       </header>
 
-      <div className="grid min-h-0 grid-cols-[auto_minmax(0,1fr)_auto] bg-muted/40 max-md:grid-cols-1">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/40 max-md:flex-col">
         <EditorSectionsPanel
+          style={{ width: `${leftPanelWidth}px` }}
           context={context}
           search={search}
           onSearchChange={onSearchChange}
+          onSectionOrderChange={syncPreviewSectionOrder}
+          onSaveStateChange={setDraftSaveState}
         />
 
-        <main className="relative flex min-h-0 min-w-0 flex-col overflow-hidden max-md:hidden">
+        {/* Left Panel Resizer */}
+        <div
+          role="separator"
+          aria-label="Resize sections panel"
+          aria-orientation="vertical"
+          aria-valuemin={MIN_LEFT_PANEL_WIDTH}
+          aria-valuemax={MAX_LEFT_PANEL_WIDTH}
+          aria-valuenow={leftPanelWidth}
+          tabIndex={0}
+          onPointerDown={handleLeftPanelResizePointerDown}
+          onPointerMove={handleLeftPanelResizePointerMove}
+          onPointerUp={finishLeftPanelResize}
+          onPointerCancel={finishLeftPanelResize}
+          onDoubleClick={() => {
+            setLeftPanelWidth(DEFAULT_LEFT_PANEL_WIDTH);
+            try {
+              document.cookie = `morph:editor-left-panel-width=${DEFAULT_LEFT_PANEL_WIDTH}; path=/; max-age=31536000; SameSite=Lax`;
+              localStorage.setItem(
+                "morph:editor-left-panel-width",
+                String(DEFAULT_LEFT_PANEL_WIDTH),
+              );
+            } catch {}
+          }}
+          className="group relative z-30 flex w-2 -ml-1 cursor-col-resize touch-none select-none items-center justify-center outline-none transition-colors hover:bg-primary/10 active:bg-primary/20 max-md:hidden"
+          title="Drag to resize sections panel (Double-click to reset)"
+        >
+          <div className="h-8 w-1 rounded-full bg-border group-hover:bg-primary group-active:bg-primary transition-colors" />
+        </div>
+
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden max-md:hidden">
           <div
             ref={canvasViewportRef}
             className={cn(
@@ -1009,7 +1273,12 @@ export function VisualEditorShell({
               or use the arrow keys to pan. Press zero to reset the canvas.
             </span>
             <div
-              className={cn("absolute left-1/2 top-12 will-change-transform")}
+              className={cn(
+                "absolute left-1/2 top-12 will-change-transform transition-opacity duration-200",
+                isPreviewLoading && previewUrl
+                  ? "pointer-events-none opacity-0"
+                  : "opacity-100",
+              )}
               style={{
                 width: previewWidth,
                 transform: `translate3d(calc(-50% + ${canvasTransform.x}px), ${canvasTransform.y}px, 0) scale(${canvasTransform.scale})`,
@@ -1050,49 +1319,78 @@ export function VisualEditorShell({
                     No template is available for preview.
                   </div>
                 )}
-                {isPreviewLoading && previewUrl ? (
-                  <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-background/90 text-sm text-muted-foreground">
-                    <LoaderCircle className="mr-2 size-4 animate-spin" />
-                    Loading storefront preview…
-                  </div>
-                ) : null}
               </div>
             </div>
-            <PreviewSizeControl
-              width={previewWidth}
-              height={previewFrameHeight}
-              canvasTransform={canvasTransform}
-              onWidthPreview={updatePreviewWidth}
-              onWidthChange={applyPreviewWidth}
-            />
-            <div
-              role="separator"
-              aria-label="Resize storefront preview from its right edge"
-              aria-orientation="vertical"
-              aria-valuemin={MIN_PREVIEW_WIDTH}
-              aria-valuemax={MAX_PREVIEW_WIDTH}
-              aria-valuenow={previewWidth}
-              tabIndex={0}
-              className="group absolute z-30 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
-              style={{
-                left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px + ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
-                top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
-                bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
-              }}
-              title="Drag the page edge to resize the preview"
-              onPointerDown={handleResizePointerDown}
-              onPointerMove={handleResizePointerMove}
-              onPointerUp={finishPreviewResize}
-              onPointerCancel={finishPreviewResize}
-              onKeyDown={handleResizeKeyDown}
-            >
-              <span className="h-full w-px bg-border/70 group-hover:bg-primary group-focus-visible:bg-primary" />
-              <span className="absolute top-1/2 h-16 w-1 -translate-y-1/2 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
-            </div>
+
+            {isPreviewLoading && previewUrl ? (
+              <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center">
+                <LoaderCircle className="size-7 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <>
+                <PreviewSizeControl
+                  width={previewWidth}
+                  height={previewFrameHeight}
+                  canvasTransform={canvasTransform}
+                  onWidthPreview={updatePreviewWidth}
+                  onWidthChange={applyPreviewWidth}
+                />
+                <div
+                  role="separator"
+                  aria-label="Resize storefront preview from its left edge"
+                  aria-orientation="vertical"
+                  aria-valuemin={MIN_PREVIEW_WIDTH}
+                  aria-valuemax={MAX_PREVIEW_WIDTH}
+                  aria-valuenow={previewWidth}
+                  tabIndex={0}
+                  className="group absolute z-30 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
+                  style={{
+                    left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px - ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
+                    top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
+                    bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
+                  }}
+                  title="Drag the page edge to resize the preview symmetrically"
+                  onPointerDown={handleResizePointerDown("left")}
+                  onPointerMove={handleResizePointerMove}
+                  onPointerUp={finishPreviewResize}
+                  onPointerCancel={finishPreviewResize}
+                  onKeyDown={handleResizeKeyDown}
+                >
+                  <span className="h-full w-px bg-border/70 group-hover:bg-primary group-focus-visible:bg-primary" />
+                  <span className="absolute top-1/2 h-16 w-1 -translate-y-1/2 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
+                </div>
+                <div
+                  role="separator"
+                  aria-label="Resize storefront preview from its right edge"
+                  aria-orientation="vertical"
+                  aria-valuemin={MIN_PREVIEW_WIDTH}
+                  aria-valuemax={MAX_PREVIEW_WIDTH}
+                  aria-valuenow={previewWidth}
+                  tabIndex={0}
+                  className="group absolute z-30 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
+                  style={{
+                    left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px + ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
+                    top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
+                    bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
+                  }}
+                  title="Drag the page edge to resize the preview symmetrically"
+                  onPointerDown={handleResizePointerDown("right")}
+                  onPointerMove={handleResizePointerMove}
+                  onPointerUp={finishPreviewResize}
+                  onPointerCancel={finishPreviewResize}
+                  onKeyDown={handleResizeKeyDown}
+                >
+                  <span className="h-full w-px bg-border/70 group-hover:bg-primary group-focus-visible:bg-primary" />
+                  <span className="absolute top-1/2 h-16 w-1 -translate-y-1/2 rounded-full bg-border shadow-sm group-hover:bg-primary group-focus-visible:bg-primary" />
+                </div>
+              </>
+            )}
           </div>
 
           <EditorControls
-            template={activeTemplate}
+            context={context}
+            search={search}
+            onSearchChange={onSearchChange}
             isSelectionMode={isSelectionMode}
             onSelectionModeChange={setIsSelectionMode}
             onRefresh={() => {
@@ -1101,7 +1399,42 @@ export function VisualEditorShell({
           />
         </main>
 
-        <EditorAssistantPanel context={context} search={search} />
+        {/* Right Panel Resizer */}
+        <div
+          role="separator"
+          aria-label="Resize assistant and styles panel"
+          aria-orientation="vertical"
+          aria-valuemin={MIN_RIGHT_PANEL_WIDTH}
+          aria-valuemax={MAX_RIGHT_PANEL_WIDTH}
+          aria-valuenow={rightPanelWidth}
+          tabIndex={0}
+          onPointerDown={handleRightPanelResizePointerDown}
+          onPointerMove={handleRightPanelResizePointerMove}
+          onPointerUp={finishRightPanelResize}
+          onPointerCancel={finishRightPanelResize}
+          onDoubleClick={() => {
+            setRightPanelWidth(DEFAULT_RIGHT_PANEL_WIDTH);
+            try {
+              document.cookie = `morph:editor-right-panel-width=${DEFAULT_RIGHT_PANEL_WIDTH}; path=/; max-age=31536000; SameSite=Lax`;
+              localStorage.setItem(
+                "morph:editor-right-panel-width",
+                String(DEFAULT_RIGHT_PANEL_WIDTH),
+              );
+            } catch {}
+          }}
+          className="group relative z-30 flex w-2 -mr-1 cursor-col-resize touch-none select-none items-center justify-center outline-none transition-colors hover:bg-primary/10 active:bg-primary/20 max-md:hidden"
+          title="Drag to resize assistant panel (Double-click to reset)"
+        >
+          <div className="h-8 w-1 rounded-full bg-border group-hover:bg-primary group-active:bg-primary transition-colors" />
+        </div>
+
+        <EditorAssistantPanel
+          style={{ width: `${rightPanelWidth}px` }}
+          context={context}
+          search={search}
+          onSectionPropsChange={handleSectionPropsChange}
+          onSectionToggleEnabled={handleSectionToggleEnabled}
+        />
 
         <EditorSmallScreenNotice />
       </div>
@@ -1177,18 +1510,20 @@ function EditorSmallScreenNotice() {
 }
 
 function EditorControls({
-  template,
+  context,
+  search,
+  onSearchChange,
   isSelectionMode,
   onSelectionModeChange,
   onRefresh,
 }: {
-  template: StorefrontThemeEditorDTO["templates"][number] | undefined;
+  context: StorefrontThemeEditorDTO;
+  search: StorefrontThemeEditorSearch;
+  onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
   isSelectionMode: boolean;
   onSelectionModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
 }) {
-  const templateDescriptor = resolveEditorTemplateDescriptor(template);
-
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-5 z-10 flex justify-center px-3">
       <EditorToolbar
@@ -1196,12 +1531,9 @@ function EditorControls({
         className="pointer-events-auto"
       >
         <Button
-          variant={isSelectionMode ? "default" : "ghost"}
+          variant={isSelectionMode ? "toolbarActive" : "ghost"}
           size="icon"
-          className={cn(
-            "size-7 shrink-0 shadow-none",
-            isSelectionMode && "hover:!bg-primary hover:!text-primary-foreground",
-          )}
+          className="size-7 shrink-0"
           aria-label={
             isSelectionMode
               ? "Disable section selection"
@@ -1238,23 +1570,12 @@ function EditorControls({
           </EditorToolbarMode>
         </EditorToolbarGroup>
         <Separator orientation="vertical" className="mx-1 h-5" />
-        <Button
-          variant="ghost"
-          size="xs"
-          className="hidden h-7 min-w-0 max-w-56 items-center gap-1.5 px-2 text-xs leading-none shadow-none xl:flex"
-          aria-label={`Refresh ${templateDescriptor.name} preview at ${templateDescriptor.path}`}
-          title="Refresh preview"
-          onClick={onRefresh}
-        >
-          <RefreshCw className="size-3.5 shrink-0" />
-          <span className="truncate font-medium">
-            {templateDescriptor.name}
-          </span>
-          <span aria-hidden="true" className="opacity-50">
-            ·
-          </span>
-          <span className="truncate">{templateDescriptor.path}</span>
-        </Button>
+        <EditorPathNavigator
+          context={context}
+          search={search}
+          onSearchChange={onSearchChange}
+          onRefresh={onRefresh}
+        />
       </EditorToolbar>
     </div>
   );

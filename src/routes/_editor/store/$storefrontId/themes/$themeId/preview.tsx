@@ -1,7 +1,9 @@
 import { StorefrontPreview } from "@/components/storefront/storefront-preview";
+import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontThemePreviewSearchSchema } from "@/lib/validations/storefront-theme";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
+import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
 
@@ -38,12 +40,90 @@ function StorefrontThemePreviewRoute() {
   }
 
   return (
-    <StorefrontPreview
+    <ReadyStorefrontPreview
       context={query.data.data}
       templateId={search.templateId}
       viewportHeight={viewportHeight}
     />
   );
+}
+
+function ReadyStorefrontPreview({
+  context,
+  templateId,
+  viewportHeight,
+}: {
+  context: Parameters<typeof StorefrontPreview>[0]["context"];
+  templateId: string;
+  viewportHeight: number;
+}) {
+  const template = context.templates.find(
+    (candidate) => candidate.id === templateId,
+  );
+  const previewDocument = usePreviewDocument(template?.document);
+
+  return (
+    <StorefrontPreview
+      context={context}
+      templateId={templateId}
+      viewportHeight={viewportHeight}
+      document={previewDocument}
+    />
+  );
+}
+
+function usePreviewDocument(document: StorefrontPageDocument | undefined) {
+  const [previewDocument, setPreviewDocument] = useState(document);
+
+  useEffect(() => {
+    setPreviewDocument(document);
+  }, [document]);
+
+  useEffect(() => {
+    const handleSectionOrder = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== window.parent ||
+        typeof message !== "object" ||
+        message === null ||
+        !("type" in message) ||
+        message.type !== "morph:storefront-preview-set-section-order" ||
+        !("sectionIds" in message) ||
+        !Array.isArray(message.sectionIds) ||
+        !message.sectionIds.every(
+          (sectionId) => typeof sectionId === "string",
+        ) ||
+        new Set(message.sectionIds).size !== message.sectionIds.length
+      ) {
+        return;
+      }
+
+      const sectionIds = message.sectionIds;
+      setPreviewDocument((current) => {
+        if (!current || sectionIds.length !== current.sections.length) {
+          return current;
+        }
+
+        const sectionsById = new Map(
+          current.sections.map((section) => [section.id, section]),
+        );
+        const reorderedSections = sectionIds.flatMap((sectionId) => {
+          const section = sectionsById.get(sectionId);
+          return section ? [section] : [];
+        });
+        if (reorderedSections.length !== current.sections.length)
+          return current;
+
+        return { ...current, sections: reorderedSections };
+      });
+    };
+
+    window.addEventListener("message", handleSectionOrder);
+    return () => window.removeEventListener("message", handleSectionOrder);
+  }, []);
+
+  return previewDocument;
 }
 
 function useStorefrontPreviewSelectionBridge(enabled: boolean) {
@@ -53,12 +133,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     const style = document.createElement("style");
     style.dataset.storefrontEditorSelection = "true";
     style.textContent = `
-      html[data-storefront-editor-selection-enabled="true"] [data-storefront-section-id] {
-        cursor: default;
-      }
-      html[data-storefront-editor-selection-enabled="true"] [data-storefront-section-id][data-storefront-editor-selected="true"] {
-        outline: 2px solid hsl(217 91% 60%);
-        outline-offset: -2px;
+      html[data-storefront-editor-selection-enabled="true"] [data-storefront-section-id],
+      html[data-storefront-editor-selection-enabled="true"] [data-storefront-component] {
+        cursor: pointer !important;
       }
       html[data-storefront-editor-pan-enabled="true"],
       html[data-storefront-editor-pan-enabled="true"] body,
@@ -74,36 +151,80 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     `;
     document.head.appendChild(style);
 
-    const hoverOverlay = document.createElement("div");
-    hoverOverlay.setAttribute("aria-hidden", "true");
-    Object.assign(hoverOverlay.style, {
+    // 1. Persistent Selected Overlay (Solid 2px border, Glow ring, Bold badge)
+    const selectedOverlay = document.createElement("div");
+    selectedOverlay.setAttribute("aria-hidden", "true");
+    Object.assign(selectedOverlay.style, {
       position: "fixed",
       zIndex: "2147483646",
       display: "none",
       pointerEvents: "none",
       border: "2px solid hsl(217 91% 60%)",
+      boxShadow: "0 0 0 3px hsl(217 91% 60% / 0.18)",
+      boxSizing: "border-box",
+      borderRadius: "3px",
+      transition: "all 0.04s ease-out",
+    });
+
+    const selectedLabel = document.createElement("span");
+    Object.assign(selectedLabel.style, {
+      position: "absolute",
+      left: "-2px",
+      bottom: "100%",
+      padding: "3px 7px",
+      borderRadius: "4px 4px 0 0",
+      background: "hsl(217 91% 60%)",
+      color: "white",
+      font: "600 11px/1.2 ui-sans-serif, system-ui, sans-serif",
+      letterSpacing: "0.01em",
+      whiteSpace: "nowrap",
+    });
+    selectedOverlay.appendChild(selectedLabel);
+    document.body.appendChild(selectedOverlay);
+
+    // 2. Hover Overlay (1.5px dashed border, Light blue transparent mask, Subtle badge)
+    const hoverOverlay = document.createElement("div");
+    hoverOverlay.setAttribute("aria-hidden", "true");
+    Object.assign(hoverOverlay.style, {
+      position: "fixed",
+      zIndex: "2147483645",
+      display: "none",
+      pointerEvents: "none",
+      border: "1.5px dashed hsl(217 91% 60% / 0.85)",
       background: "hsl(217 91% 60% / 0.08)",
       boxSizing: "border-box",
+      borderRadius: "3px",
+      transition: "all 0.04s ease-out",
     });
 
     const hoverLabel = document.createElement("span");
     Object.assign(hoverLabel.style, {
       position: "absolute",
-      left: "-2px",
+      left: "-1.5px",
       bottom: "100%",
-      padding: "4px 7px",
-      borderRadius: "5px 5px 0 0",
-      background: "hsl(217 91% 60%)",
+      padding: "2px 6px",
+      borderRadius: "3px 3px 0 0",
+      background: "hsl(217 91% 60% / 0.85)",
       color: "white",
-      font: "500 11px/1.2 ui-sans-serif, system-ui, sans-serif",
+      font: "500 10px/1.2 ui-sans-serif, system-ui, sans-serif",
       letterSpacing: "0.01em",
       whiteSpace: "nowrap",
     });
     hoverOverlay.appendChild(hoverLabel);
     document.body.appendChild(hoverOverlay);
 
-    let hoveredSection: HTMLElement | null = null;
-    let selectedSection: HTMLElement | null = null;
+    type SelectableInfo = {
+      element: HTMLElement;
+      section: HTMLElement | null;
+      sectionId: string | null;
+      type: string;
+      label: string;
+      field: string | null;
+    };
+
+    let hoveredItem: SelectableInfo | null = null;
+    let selectedItem: SelectableInfo | null = null;
+    let selectedElement: HTMLElement | null = null;
     let selectedSectionId: string | null = null;
     let selectionEnabled = false;
     let panGesture: {
@@ -115,25 +236,162 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     } | null = null;
     let suppressNextClick = false;
 
-    const positionHoverOverlay = () => {
-      if (!hoveredSection) {
-        hoverOverlay.style.display = "none";
-        return;
+    const getComponentDisplayName = (type: string): string => {
+      switch (type.toLowerCase()) {
+        case "hero":
+          return "Hero Section";
+        case "editorial-intro":
+          return "Editorial Intro";
+        case "category-showcase":
+          return "Category Showcase";
+        case "image-with-text":
+          return "Image With Text";
+        case "principles":
+          return "Principles Section";
+        case "newsletter":
+          return "Newsletter Section";
+        case "heading":
+          return "Heading";
+        case "eyebrow":
+          return "Eyebrow";
+        case "description":
+        case "body":
+          return "Body Text";
+        case "button":
+          return "Button";
+        case "image":
+          return "Image";
+        case "input":
+          return "Input Field";
+        case "collection-item":
+          return "Collection Item";
+        case "principle-item":
+          return "Principle Card";
+        case "title":
+          return "Title";
+        case "caption":
+          return "Caption";
+        case "label":
+        case "badge":
+          return "Label";
+        default:
+          return type.charAt(0).toUpperCase() + type.slice(1);
       }
-      const bounds = hoveredSection.getBoundingClientRect();
-      hoverOverlay.style.display = "block";
-      hoverOverlay.style.left = `${bounds.left}px`;
-      hoverOverlay.style.top = `${bounds.top}px`;
-      hoverOverlay.style.width = `${bounds.width}px`;
-      hoverOverlay.style.height = `${bounds.height}px`;
-      hoverLabel.textContent =
-        hoveredSection.dataset.storefrontSectionType ?? "Section";
     };
 
-    const resolveSection = (target: EventTarget | null) =>
-      target instanceof Element
-        ? target.closest<HTMLElement>("[data-storefront-section-id]")
-        : null;
+    const resolveSelectable = (
+      target: EventTarget | null,
+    ): SelectableInfo | null => {
+      if (!(target instanceof HTMLElement)) return null;
+
+      // 1. Prioritize explicit component/field annotation
+      const componentEl = target.closest<HTMLElement>(
+        "[data-storefront-component]",
+      );
+      if (componentEl) {
+        const sectionEl = componentEl.closest<HTMLElement>(
+          "[data-storefront-section-id]",
+        );
+        const compType =
+          componentEl.dataset.storefrontComponent ??
+          componentEl.tagName.toLowerCase();
+        return {
+          element: componentEl,
+          section: sectionEl,
+          sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
+          type: compType,
+          label: getComponentDisplayName(compType),
+          field: componentEl.dataset.storefrontField ?? null,
+        };
+      }
+
+      // 2. Standard interactive & typography sub-elements
+      const elementEl = target.closest<HTMLElement>(
+        "h1, h2, h3, h4, p, img, a, button, input, article",
+      );
+      if (elementEl) {
+        const sectionEl = elementEl.closest<HTMLElement>(
+          "[data-storefront-section-id]",
+        );
+        const tag = elementEl.tagName.toLowerCase();
+        const compType = tag.startsWith("h")
+          ? "heading"
+          : tag === "img"
+            ? "image"
+            : tag === "a" || tag === "button"
+              ? "button"
+              : tag === "p"
+                ? "body"
+                : tag === "article"
+                  ? "card"
+                  : tag;
+
+        return {
+          element: elementEl,
+          section: sectionEl,
+          sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
+          type: compType,
+          label: getComponentDisplayName(compType),
+          field: elementEl.dataset.storefrontField ?? null,
+        };
+      }
+
+      // 3. Fallback to outer Section
+      const section = target.closest<HTMLElement>(
+        "[data-storefront-section-id]",
+      );
+      if (section) {
+        const secType = section.dataset.storefrontSectionType ?? "section";
+        return {
+          element: section,
+          section,
+          sectionId: section.dataset.storefrontSectionId ?? null,
+          type: secType,
+          label: getComponentDisplayName(secType),
+          field: null,
+        };
+      }
+
+      return null;
+    };
+
+    const positionOverlays = () => {
+      if (!selectionEnabled) {
+        hoverOverlay.style.display = "none";
+        selectedOverlay.style.display = "none";
+        return;
+      }
+
+      // 1. Position Persistent Selected Overlay
+      if (selectedItem?.element && document.body.contains(selectedItem.element)) {
+        const sBounds = selectedItem.element.getBoundingClientRect();
+        selectedOverlay.style.display = "block";
+        selectedOverlay.style.left = `${sBounds.left}px`;
+        selectedOverlay.style.top = `${sBounds.top}px`;
+        selectedOverlay.style.width = `${sBounds.width}px`;
+        selectedOverlay.style.height = `${sBounds.height}px`;
+        selectedLabel.textContent = selectedItem.label;
+      } else {
+        selectedOverlay.style.display = "none";
+      }
+
+      // 2. Position Hover Overlay (dashed + mask, hidden if hovering over selected item)
+      if (
+        hoveredItem?.element &&
+        document.body.contains(hoveredItem.element) &&
+        hoveredItem.element !== selectedItem?.element
+      ) {
+        const hBounds = hoveredItem.element.getBoundingClientRect();
+        hoverOverlay.style.display = "block";
+        hoverOverlay.style.left = `${hBounds.left}px`;
+        hoverOverlay.style.top = `${hBounds.top}px`;
+        hoverOverlay.style.width = `${hBounds.width}px`;
+        hoverOverlay.style.height = `${hBounds.height}px`;
+        hoverLabel.textContent = hoveredItem.label;
+      } else {
+        hoverOverlay.style.display = "none";
+      }
+    };
 
     const handlePointerMove = (event: PointerEvent) => {
       if (!selectionEnabled && panGesture?.pointerId === event.pointerId) {
@@ -156,15 +414,17 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
       if (!selectionEnabled) return;
-      const nextSection = resolveSection(event.target);
-      if (nextSection === hoveredSection) return;
-      hoveredSection = nextSection;
-      positionHoverOverlay();
+      const nextItem = resolveSelectable(event.target);
+      if (nextItem?.element === hoveredItem?.element) return;
+      hoveredItem = nextItem;
+      positionOverlays();
     };
+
     const handlePointerLeave = () => {
-      hoveredSection = null;
-      positionHoverOverlay();
+      hoveredItem = null;
+      positionOverlays();
     };
+
     const handlePointerDown = (event: PointerEvent) => {
       if (
         selectionEnabled ||
@@ -196,6 +456,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         "true",
       );
     };
+
     const finishPanGesture = (event: PointerEvent) => {
       if (panGesture?.pointerId !== event.pointerId) return;
       suppressNextClick = panGesture.didMove;
@@ -217,6 +478,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         "data-storefront-editor-panning",
       );
     };
+
     const handleClick = (event: MouseEvent) => {
       if (!selectionEnabled) {
         if (suppressNextClick) {
@@ -228,19 +490,30 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       }
       event.preventDefault();
       event.stopPropagation();
-      const section = resolveSection(event.target);
-      const sectionId = section?.dataset.storefrontSectionId;
-      if (!section || !sectionId) return;
+      const selectable = resolveSelectable(event.target);
+      if (!selectable) return;
 
-      selectedSection?.removeAttribute("data-storefront-editor-selected");
-      selectedSection = section;
-      selectedSectionId = sectionId;
-      selectedSection.dataset.storefrontEditorSelected = "true";
-      window.parent.postMessage(
-        { type: "morph:storefront-preview-select-section", sectionId },
-        window.location.origin,
-      );
+      selectedElement?.removeAttribute("data-storefront-editor-selected");
+      selectedElement = selectable.element;
+      selectedElement.dataset.storefrontEditorSelected = "true";
+      selectedItem = selectable;
+      selectedSectionId = selectable.sectionId;
+
+      positionOverlays();
+
+      if (selectable.sectionId) {
+        window.parent.postMessage(
+          {
+            type: "morph:storefront-preview-select-section",
+            sectionId: selectable.sectionId,
+            componentType: selectable.type,
+            field: selectable.field,
+          },
+          window.location.origin,
+        );
+      }
     };
+
     const handleDoubleClick = (event: MouseEvent) => {
       if (selectionEnabled) return;
       event.preventDefault();
@@ -250,9 +523,11 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         window.location.origin,
       );
     };
+
     const handleDragStart = (event: DragEvent) => {
       if (!selectionEnabled) event.preventDefault();
     };
+
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
       window.parent.postMessage(
@@ -267,16 +542,26 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         window.location.origin,
       );
     };
+
     const restoreSelectedSection = () => {
-      selectedSection?.removeAttribute("data-storefront-editor-selected");
-      selectedSection =
-        selectionEnabled && selectedSectionId
-          ? document.querySelector<HTMLElement>(
-              `[data-storefront-section-id="${CSS.escape(selectedSectionId)}"]`,
-            )
-          : null;
-      selectedSection?.setAttribute("data-storefront-editor-selected", "true");
+      selectedElement?.removeAttribute("data-storefront-editor-selected");
+      if (selectionEnabled && selectedSectionId) {
+        const sectionEl = document.querySelector<HTMLElement>(
+          `[data-storefront-section-id="${CSS.escape(selectedSectionId)}"]`,
+        );
+        if (sectionEl) {
+          selectedElement = sectionEl;
+          selectedElement.setAttribute("data-storefront-editor-selected", "true");
+          selectedItem = resolveSelectable(sectionEl);
+        } else {
+          selectedItem = null;
+        }
+      } else {
+        selectedItem = null;
+      }
+      positionOverlays();
     };
+
     const handleEditorMessage = (event: MessageEvent<unknown>) => {
       if (
         event.origin !== window.location.origin ||
@@ -304,8 +589,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           "data-storefront-editor-pan-enabled",
           !selectionEnabled,
         );
-        hoveredSection = null;
-        positionHoverOverlay();
+        hoveredItem = null;
+        positionOverlays();
         restoreSelectedSection();
         return;
       }
@@ -335,8 +620,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       capture: true,
       passive: false,
     });
-    window.addEventListener("scroll", positionHoverOverlay, true);
-    window.addEventListener("resize", positionHoverOverlay);
+    window.addEventListener("scroll", positionOverlays, true);
+    window.addEventListener("resize", positionOverlays);
     window.addEventListener("message", handleEditorMessage);
 
     return () => {
@@ -349,8 +634,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       document.removeEventListener("dblclick", handleDoubleClick, true);
       document.removeEventListener("dragstart", handleDragStart, true);
       document.removeEventListener("wheel", handleWheel, true);
-      window.removeEventListener("scroll", positionHoverOverlay, true);
-      window.removeEventListener("resize", positionHoverOverlay);
+      window.removeEventListener("scroll", positionOverlays, true);
+      window.removeEventListener("resize", positionOverlays);
       window.removeEventListener("message", handleEditorMessage);
       document.documentElement.removeAttribute(
         "data-storefront-editor-selection-enabled",
@@ -363,7 +648,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       );
       style.remove();
       hoverOverlay.remove();
-      selectedSection?.removeAttribute("data-storefront-editor-selected");
+      selectedOverlay.remove();
+      selectedElement?.removeAttribute("data-storefront-editor-selected");
     };
   }, [enabled]);
 }
@@ -499,7 +785,7 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
 function PreviewPending() {
   return (
     <main className="flex min-h-svh items-center justify-center bg-stone-50 p-6 text-neutral-950">
-      <p className="text-sm text-neutral-500">Loading storefront preview…</p>
+      <LoaderCircle className="size-6 animate-spin text-neutral-400" />
     </main>
   );
 }

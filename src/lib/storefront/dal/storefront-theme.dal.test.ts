@@ -40,9 +40,20 @@ beforeEach(() => {
       type text NOT NULL,
       name text NOT NULL,
       document text NOT NULL,
+      draft_revision_id text,
+      published_revision_id text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       deleted_at text
+    );
+    CREATE TABLE storefront_theme_template_revisions (
+      id text PRIMARY KEY NOT NULL,
+      template_id text NOT NULL,
+      version integer NOT NULL,
+      document text NOT NULL,
+      created_by text,
+      created_at text NOT NULL,
+      published_at text
     );
     INSERT INTO storefronts
       (id, sales_channel_id, name, status, created_at, updated_at)
@@ -61,8 +72,12 @@ beforeEach(() => {
   `);
 
   const db = drizzle(sqlite, { schema: storefrontSchema });
+  const testDb = Object.assign(db, {
+    batch: async (queries: Array<{ execute: () => Promise<unknown> }>) =>
+      Promise.all(queries.map((query) => query.execute())),
+  });
   vi.mocked(getDb).mockResolvedValue(
-    db as unknown as Awaited<ReturnType<typeof getDb>>,
+    testDb as unknown as Awaited<ReturnType<typeof getDb>>,
   );
 });
 
@@ -93,5 +108,48 @@ describe("storefront theme DAL", () => {
     await expect(
       storefrontThemeDal.findEditorContext("storefront-a", "theme-a"),
     ).rejects.toThrow();
+  });
+
+  it("publishes the current draft revision without exposing older drafts", async () => {
+    const draftDocument = JSON.stringify({
+      version: 1,
+      sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
+    });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+         '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '${draftDocument.replaceAll("'", "''")}', 'now');
+    `);
+
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+      }),
+    ).resolves.toEqual({
+      revisionId: "11111111-1111-4111-8111-111111111111",
+      unchanged: false,
+    });
+
+    const published = sqlite
+      .prepare(
+        "SELECT document, published_revision_id FROM storefront_theme_templates WHERE id = ?",
+      )
+      .get("template-a") as {
+      document: string;
+      published_revision_id: string | null;
+    };
+    expect(JSON.parse(published.document)).toEqual(JSON.parse(draftDocument));
+    expect(published.published_revision_id).toBe(
+      "11111111-1111-4111-8111-111111111111",
+    );
   });
 });

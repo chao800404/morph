@@ -303,7 +303,15 @@ Medusa 的每個模組是可以各自部署的服務，所以模組之間**不�
 - 新 UI 必須保留 keyboard 操作、focus 狀態、可辨識 label、loading/error/empty state 與現有 responsive 行為。
 - 動畫應尊重 reduced motion，且不得用延遲或遮罩掩蓋真正的 loading、layout shift 或資料同步問題。
 - Light／Dark 主題切換時，所有 theme token 對應的顏色、背景、邊框與陰影必須直接替換，不得播放 `transition-colors` 或 `transition-all` 的漸變。Dashboard 的共用 `ThemeProvider` 必須維持 `disableTransitionOnChange`；一般 hover、focus、active 等互動 transition 可以保留，不可為修正主題切換而逐一移除元件的正常回饋動畫或在 feature 加局部補丁。
+- Toolbar、segmented control 與其他深色 control surface 的 active／selected 狀態，必須使用 shared semantic token 與具名 primitive variant，不可在 feature 內硬編碼 zinc、灰色或白色。深色主題的 active 底色應比父層 surface **明顯亮一階但仍維持中深灰**，搭配高對比前景、細緻亮邊、頂部內側高光、底部暗邊與短距離陰影，形成可辨識的立體選取感；不得亮成接近白色的孤立色塊，也不得與 toolbar 同色而失去選取辨識度。Light theme 必須提供相應的淺灰 token，並維持相同的層級關係、keyboard focus 與 disabled 語意。現有基準為 `toolbarActive` variant 與 `--toolbar-active-*` tokens，後續同類控制應直接沿用或集中調整它們。
 - 尺寸、比例、角度、間距與其他可連續調整的視覺數值 control，必須同時支援直接鍵盤輸入與按住數值左右拖曳（scrub）調整；單擊需可進入輸入狀態，拖曳需使用明確的 `cursor-ew-resize`、合理 step、min／max 邊界、Pointer Capture，並保留 Enter commit、Escape cancel 與可辨識的 accessible label。這類 control 一律沿用 `ScrubbableNumberInput` 或其後續共用替代，不得在 feature 內重寫 pointer delta。價格、庫存、稅率等商務數字不因本規則自動套用 scrub，除非其產品互動另有明確需求。
+- **Sidebar 與可調整寬度面板的持久化與防跳版（Zero Layout Shift / Anti-CLS）**：
+  - 可調整寬度的 Sidebar / Panel 必須使用 **Cookie + SSR Loader** 傳遞初始寬度，嚴禁僅在 Client `useEffect` 或 `useState(() => localStorage.getItem(...))` 中非同步或在 hydration 後讀取並更新寬度，這會導致頁面初次載入或重新整理時產生視覺跳動（Layout Shift / CLS）。
+  - **持久化寫入規範（On Resize Finish）**：當使用者拖曳結束或雙擊重置寬度時，必須**同步寫入 Cookie**（`SameSite=Lax; max-age=31536000; path=/`）與 **localStorage**，確保後續 SSR 請求能第一時間從 Request Headers 取得寬度。
+  - **SSR 渲染規範（Zero CLS Hydration）**：
+    1. Server Loader / ServerFn 透過 `getRequest().headers.get("cookie")` 解析 Cookie 中的寬度值（並經過 min/max 邊界驗證與 fallback 處理），作為 context / loader data 回傳。
+    2. Server 渲染的初始 HTML 必須直接帶有該寬度（例如 `style={{ width: `${leftPanelWidth}px` }}`）。
+    3. Client 端以傳入的 initial width 初始化 React state，確保 **初始 HTML 與 Hydration 狀態 100% 吻合，達到「進頁面前即決定寬度、零 UI 閃爍跳動」** 的流暢體驗。
 
 ### 任何 UI 修改前必須完成 primitive／Fields preflight
 
