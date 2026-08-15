@@ -385,7 +385,14 @@ export const storefrontThemeRevisions = sqliteTable(
     message: text("message"),
     source: text("source").notNull().default("manual"), // "manual" | "ai" | "publish" | "rollback"
     snapshot: text("snapshot", { mode: "json" })
-      .$type<Array<{ path: string; content: string; mimeType: string }>>()
+      .$type<
+        Array<{
+          path: string;
+          content: string;
+          mimeType: string;
+          isEntry: boolean;
+        }>
+      >()
       .notNull(),
     createdBy: text("created_by"),
     ...timestamps,

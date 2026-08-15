@@ -34,40 +34,42 @@ export default function Hero({
 }
 `;
 
-describe("theme-ast-transformer", () => {
+describe("theme-ast-transformer (TSX AST)", () => {
   it("parses default props from component source code", () => {
     const meta = parseComponentSource(SAMPLE_HERO_CODE);
     expect(meta.defaultProps.eyebrow).toBe("New collection");
     expect(meta.defaultProps.heading).toBe("Objects for everyday rituals.");
   });
 
-  it("locates data-morph-elements in source code", () => {
+  it("extracts exact tag name, className, and location across multi-line JSX", () => {
     const meta = parseComponentSource(SAMPLE_HERO_CODE);
     expect(meta.elements.heading).toBeDefined();
     expect(meta.elements.heading.elementName).toBe("heading");
-    expect(meta.elements.heading.location.line).toBeGreaterThan(0);
+    expect(meta.elements.heading.tag).toBe("h1");
+    expect(meta.elements.heading.className).toBe("mt-6 font-serif text-6xl text-stone-950");
+    expect(meta.elements.heading.location.line).toBe(18);
   });
 
-  it("patches default prop values cleanly", () => {
+  it("patches default prop values using AST offsets without breaking quotes", () => {
     const updated = patchComponentDefaultProp(
       SAMPLE_HERO_CODE,
       "heading",
-      "Handcrafted ceramics for your home.",
+      'Special "Summer" Collection',
     );
-    expect(updated).toContain('heading = "Handcrafted ceramics for your home."');
+    expect(updated).toContain('heading = "Special \\"Summer\\" Collection"');
     expect(updated).not.toContain('heading = "Objects for everyday rituals."');
   });
 
-  it("patches element className cleanly", () => {
+  it("patches element className using AST offsets cleanly", () => {
     const updated = patchElementClassName(SAMPLE_HERO_CODE, "heading", (prev) =>
       prev.replace("text-6xl", "text-8xl"),
     );
     expect(updated).toContain('className="mt-6 font-serif text-8xl text-stone-950"');
   });
 
-  it("finds source location for Monaco jump", () => {
+  it("finds source location dynamically for Monaco jump", () => {
     const loc = findSourceLocation(SAMPLE_HERO_CODE, "heading");
     expect(loc).not.toBeNull();
-    expect(loc?.line).toBe(19);
+    expect(loc?.line).toBe(18);
   });
 });

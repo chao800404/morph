@@ -554,7 +554,6 @@ export function VisualEditorShell({
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
-    enabled: editorMode === "code",
   });
   const themeFiles = themeFilesQuery.data?.files ?? [];
   const themeTree = themeFilesQuery.data?.tree ?? [];
@@ -2113,6 +2112,7 @@ export function VisualEditorShell({
           activeCommentThreadId={activeCommentThreadId}
           onSelectCommentThread={handleSelectCommentThread}
           previewWidth={previewWidth}
+          themeFiles={themeFiles}
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}
           onJumpToCode={handleJumpToCode}

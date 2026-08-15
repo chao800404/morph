@@ -1,8 +1,10 @@
+import { parse } from "@babel/parser";
+
 /**
  * Morph Theme Component AST Transformer & Parser
  *
- * Provides bidirectional parsing and patching for React component source code
- * in the theme virtual workspace (Code as SSOT).
+ * Built with universal @babel/parser (100% compatible with Cloudflare Workers,
+ * Browser, and SSR runtimes without Node.js globals).
  */
 
 export type SourceLocation = {
@@ -15,6 +17,13 @@ export type ComponentElementMeta = {
   tag: string;
   className: string;
   location: SourceLocation;
+  startOffset: number;
+  endOffset: number;
+  classNameOffsets?: {
+    start: number;
+    end: number;
+    isExpression: boolean;
+  };
 };
 
 export type ParsedComponentMeta = {
@@ -23,55 +32,155 @@ export type ParsedComponentMeta = {
 };
 
 /**
- * Parses component source code to extract default prop values and morph element locations.
+ * Resolves standard component file path from section type.
+ */
+export function getComponentFilePath(type: string): string {
+  switch (type) {
+    case "hero":
+      return "src/components/Hero.tsx";
+    case "editorial-intro":
+      return "src/components/EditorialIntro.tsx";
+    case "category-showcase":
+      return "src/components/CategoryShowcase.tsx";
+    case "image-with-text":
+      return "src/components/Hero.tsx";
+    case "principles":
+    case "newsletter":
+      return "src/pages/index.tsx";
+    default:
+      return "src/pages/index.tsx";
+  }
+}
+
+function parseAst(sourceCode: string) {
+  return parse(sourceCode, {
+    sourceType: "module",
+    plugins: ["jsx", "typescript"],
+    errorRecovery: true,
+  });
+}
+
+/**
+ * Recursively visits all AST nodes.
+ */
+function walk(node: any, callback: (node: any) => void) {
+  if (!node || typeof node !== "object") return;
+  callback(node);
+
+  for (const key of Object.keys(node)) {
+    if (key === "parent" || key === "loc") continue;
+    const child = node[key];
+    if (Array.isArray(child)) {
+      for (const item of child) {
+        walk(item, callback);
+      }
+    } else if (child && typeof child === "object") {
+      walk(child, callback);
+    }
+  }
+}
+
+/**
+ * Parses TSX component source code via Babel AST to extract
+ * default prop values, morph element locations, tags, and classNames.
  */
 export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
   const defaultProps: Record<string, string> = {};
   const elements: Record<string, ComponentElementMeta> = {};
 
-  // 1. Extract default props from destructuring (e.g. heading = "Objects for everyday rituals.")
-  const propPattern = /(\w+)\s*=\s*(["'`])((?:\\.|[^\\])*?)\2/g;
-  let propMatch: RegExpExecArray | null;
-  while ((propMatch = propPattern.exec(sourceCode)) !== null) {
-    const key = propMatch[1];
-    const value = propMatch[3];
-    if (key && value !== undefined) {
-      defaultProps[key] = value;
-    }
-  }
+  try {
+    const ast = parseAst(sourceCode);
 
-  // 2. Extract data-morph-element metadata & line locations
-  const lines = sourceCode.split(/\r?\n/);
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-    const line = lines[lineIndex];
-    const elementMatch = /data-morph-element=["']([\w-]+)["']/.exec(line);
-    if (elementMatch) {
-      const elementName = elementMatch[1];
-      // Check for tag name in previous or current line
-      let tag = "div";
-      const tagMatch = /<([a-zA-Z0-9]+)/.exec(line);
-      if (tagMatch) {
-        tag = tagMatch[1];
+    walk(ast, (node) => {
+      // 1. Extract default props from parameter destructuring (AssignmentPattern)
+      if (node.type === "AssignmentPattern" && node.left?.type === "Identifier") {
+        const propName = node.left.name;
+        if (node.right?.type === "StringLiteral") {
+          defaultProps[propName] = node.right.value;
+        } else if (
+          node.right?.type === "TemplateLiteral" &&
+          node.right.quasis?.length === 1 &&
+          node.right.expressions?.length === 0
+        ) {
+          defaultProps[propName] = node.right.quasis[0].value.raw;
+        }
       }
 
-      // Check for className in current or nearby lines
-      let className = "";
-      const classMatch = /className=["']([^"']*)["']/.exec(line);
-      if (classMatch) {
-        className = classMatch[1];
+      // 2. Extract JSX element with data-morph-element
+      let openingElement: any = null;
+      if (node.type === "JSXElement") {
+        openingElement = node.openingElement;
+      } else if (node.type === "JSXOpeningElement") {
+        openingElement = node;
       }
 
-      elements[elementName] = {
-        elementName,
-        tag,
-        className,
-        location: {
-          line: lineIndex + 1,
-          column: elementMatch.index + 1,
-        },
-      };
-    }
-  }
+      if (openingElement && openingElement.attributes) {
+        let morphElementName: string | null = null;
+        let className = "";
+        let classNameOffsets:
+          | { start: number; end: number; isExpression: boolean }
+          | undefined;
+
+        for (const attr of openingElement.attributes) {
+          if (attr.type === "JSXAttribute" && attr.name?.type === "JSXIdentifier") {
+            const attrName = attr.name.name;
+
+            if (attrName === "data-morph-element" && attr.value) {
+              if (attr.value.type === "StringLiteral") {
+                morphElementName = attr.value.value;
+              } else if (
+                attr.value.type === "JSXExpressionContainer" &&
+                attr.value.expression?.type === "StringLiteral"
+              ) {
+                morphElementName = attr.value.expression.value;
+              }
+            }
+
+            if (attrName === "className" && attr.value) {
+              if (attr.value.type === "StringLiteral") {
+                className = attr.value.value;
+                classNameOffsets = {
+                  start: attr.value.start,
+                  end: attr.value.end,
+                  isExpression: false,
+                };
+              } else if (attr.value.type === "JSXExpressionContainer") {
+                className = sourceCode.slice(attr.value.start, attr.value.end);
+                classNameOffsets = {
+                  start: attr.value.start,
+                  end: attr.value.end,
+                  isExpression: true,
+                };
+              }
+            }
+          }
+        }
+
+        if (morphElementName) {
+          let tagName = "div";
+          if (openingElement.name?.type === "JSXIdentifier") {
+            tagName = openingElement.name.name;
+          }
+
+          const line = openingElement.loc?.start?.line ?? 1;
+          const column = (openingElement.loc?.start?.column ?? 0) + 1;
+
+          elements[morphElementName] = {
+            elementName: morphElementName,
+            tag: tagName,
+            className,
+            location: {
+              line,
+              column,
+            },
+            startOffset: openingElement.start ?? 0,
+            endOffset: node.end ?? 0,
+            classNameOffsets,
+          };
+        }
+      }
+    });
+  } catch {}
 
   return {
     defaultProps,
@@ -80,49 +189,54 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
 }
 
 /**
- * Patches a default prop string literal inside component source code.
+ * Patches a default prop string literal inside component source code using precise AST node offsets.
  */
 export function patchComponentDefaultProp(
   sourceCode: string,
   propName: string,
   newValue: string,
 ): string {
-  const regex = new RegExp(`(${propName}\\s*=\\s*)(["'\`])(?:\\\\.|[^\\\\])*?\\2`, "g");
-  if (!regex.test(sourceCode)) {
-    return sourceCode;
-  }
-  // Escape quotes in newValue if necessary
-  const escaped = newValue.replace(/"/g, '\\"').replace(/\n/g, "\\n");
-  return sourceCode.replace(regex, `$1"${escaped}"`);
+  try {
+    const ast = parseAst(sourceCode);
+    let targetNode: any = null;
+
+    walk(ast, (node) => {
+      if (
+        node.type === "AssignmentPattern" &&
+        node.left?.type === "Identifier" &&
+        node.left.name === propName &&
+        node.right
+      ) {
+        targetNode = node.right;
+      }
+    });
+
+    if (targetNode && typeof targetNode.start === "number" && typeof targetNode.end === "number") {
+      const replacement = JSON.stringify(newValue);
+      return sourceCode.slice(0, targetNode.start) + replacement + sourceCode.slice(targetNode.end);
+    }
+  } catch {}
+
+  return sourceCode;
 }
 
 /**
- * Patches the className of a specific morph element in component source code.
+ * Patches the className of a specific morph element in component source code using exact AST node offsets.
  */
 export function patchElementClassName(
   sourceCode: string,
   elementName: string,
   updater: (prevClasses: string) => string,
 ): string {
-  const lines = sourceCode.split(/\r?\n/);
-  const elementPattern = new RegExp(`data-morph-element=["']${elementName}["']`);
+  const parsed = parseComponentSource(sourceCode);
+  const element = parsed.elements[elementName];
+  if (!element) return sourceCode;
 
-  for (let i = 0; i < lines.length; i++) {
-    if (elementPattern.test(lines[i])) {
-      // Find className in this line or subsequent lines before next tag
-      for (let j = Math.max(0, i - 1); j <= Math.min(lines.length - 1, i + 3); j++) {
-        const classMatch = /className=["']([^"']*)["']/.exec(lines[j]);
-        if (classMatch) {
-          const currentClass = classMatch[1];
-          const nextClass = updater(currentClass);
-          lines[j] = lines[j].replace(
-            `className="${currentClass}"`,
-            `className="${nextClass}"`,
-          );
-          return lines.join("\n");
-        }
-      }
-    }
+  if (element.classNameOffsets && !element.classNameOffsets.isExpression) {
+    const { start, end } = element.classNameOffsets;
+    const nextClasses = updater(element.className);
+    const replacement = JSON.stringify(nextClasses);
+    return sourceCode.slice(0, start) + replacement + sourceCode.slice(end);
   }
 
   return sourceCode;

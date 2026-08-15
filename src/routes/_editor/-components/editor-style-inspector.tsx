@@ -10,6 +10,11 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  findSourceLocation,
+  getComponentFilePath,
+} from "@/lib/storefront/ast/theme-ast-transformer";
+import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { cn } from "@/lib/utils";
 import {
@@ -36,29 +41,12 @@ type EditorSection =
 
 type EditorStyleInspectorProps = {
   section: EditorSection;
+  themeFiles?: StorefrontThemeFileDTO[];
   onPropsChange: (next: Record<string, unknown>) => void;
   onToggleEnabled?: (enabled: boolean) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   disabled?: boolean;
 };
-
-export function getComponentFilePath(type: string): string {
-  switch (type) {
-    case "hero":
-      return "src/components/Hero.tsx";
-    case "editorial-intro":
-      return "src/components/EditorialIntro.tsx";
-    case "category-showcase":
-      return "src/components/CategoryShowcase.tsx";
-    case "image-with-text":
-      return "src/components/Hero.tsx";
-    case "principles":
-    case "newsletter":
-      return "src/pages/index.tsx";
-    default:
-      return "src/pages/index.tsx";
-  }
-}
 
 const THEME_PALETTE_COLORS = [
   { label: "Stone 50", value: "#fafaf9", preview: "bg-[#fafaf9] border-stone-200" },
@@ -73,6 +61,7 @@ const THEME_PALETTE_COLORS = [
 
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
+  themeFiles,
   onPropsChange,
   onToggleEnabled,
   onJumpToCode,
@@ -157,11 +146,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             size="xs"
             className="h-7 w-full gap-1.5 text-xs font-medium justify-start"
             onClick={() => {
-              if (section.type === "hero") {
-                onJumpToCode?.(componentPath, 19, 11);
-              } else {
-                onJumpToCode?.(componentPath);
-              }
+              const file = themeFiles?.find((f) => f.path === componentPath);
+              const loc = file?.content
+                ? findSourceLocation(file.content, "heading")
+                : null;
+              onJumpToCode?.(componentPath, loc?.line, loc?.column);
             }}
             title={`Open ${componentPath} in Monaco Code Editor`}
           >

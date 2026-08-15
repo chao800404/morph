@@ -5,6 +5,7 @@ import type {
   StorefrontCommentGroupDTO,
   StorefrontCommentThreadDTO,
 } from "@/lib/storefront/dto/storefront-comment.dto";
+import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { cn } from "@/lib/utils";
@@ -28,6 +29,7 @@ type EditorAssistantPanelProps = {
   style?: React.CSSProperties;
   className?: string;
   isCommentMode?: boolean;
+  themeFiles?: StorefrontThemeFileDTO[];
   commentFilter?: "open" | "resolved";
   onCommentFilterChange?: (filter: "open" | "resolved") => void;
   commentGroups?: StorefrontCommentGroupDTO[];
@@ -62,6 +64,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   activeCommentThreadId = null,
   onSelectCommentThread,
   previewWidth,
+  themeFiles,
   onSectionPropsChange,
   onSectionToggleEnabled,
   onJumpToCode,
@@ -206,6 +209,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
             <EditorStyleInspector
               key={selectedSection.id}
               section={selectedSection}
+              themeFiles={themeFiles}
               onPropsChange={(nextProps) =>
                 onSectionPropsChange?.(selectedSection.id, nextProps)
               }
