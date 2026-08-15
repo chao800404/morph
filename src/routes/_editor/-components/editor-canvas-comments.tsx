@@ -1,28 +1,17 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { StorefrontCommentThreadDTO } from "@/lib/storefront/dto/storefront-comment.dto";
 import {
   createStorefrontCommentThread,
-  deleteStorefrontCommentThread,
-  replyStorefrontComment,
-  resolveStorefrontCommentThread,
   updateStorefrontCommentThreadPosition,
 } from "@/server/storefront/storefront-comments.serverFn";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Check,
-  CornerDownLeft,
-  LoaderCircle,
-  SendHorizontal,
-  Trash2,
-  Undo2,
-  X,
-} from "lucide-react";
+import { CornerDownLeft, LoaderCircle, X } from "lucide-react";
 import {
   memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -31,54 +20,9 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
-
-const AUTHOR_PALETTES = [
-  { bg: "bg-blue-600", text: "text-white" },
-  { bg: "bg-violet-600", text: "text-white" },
-  { bg: "bg-emerald-600", text: "text-white" },
-  { bg: "bg-amber-600", text: "text-white" },
-  { bg: "bg-rose-600", text: "text-white" },
-  { bg: "bg-indigo-600", text: "text-white" },
-  { bg: "bg-teal-600", text: "text-white" },
-  { bg: "bg-cyan-600", text: "text-white" },
-];
-
-function getAuthorPalette(idOrName?: string | null) {
-  if (!idOrName) return AUTHOR_PALETTES[0];
-  let hash = 0;
-  for (let i = 0; i < idOrName.length; i++) {
-    hash = (hash << 5) - hash + idOrName.charCodeAt(i);
-    hash |= 0;
-  }
-  const index = Math.abs(hash) % AUTHOR_PALETTES.length;
-  return AUTHOR_PALETTES[index];
-}
-
-function getInitials(name?: string | null): string {
-  if (!name) return "U";
-  const trimmed = name.trim();
-  const parts = trimmed.split(/\s+/);
-  if (parts.length >= 2) {
-    return (parts[0][0] + parts[1][0]).toUpperCase();
-  }
-  return trimmed.slice(0, 2).toUpperCase();
-}
-
-function formatRelativeTime(dateStr: string): string {
-  try {
-    const diff = Date.now() - new Date(dateStr).getTime();
-    const seconds = Math.floor(diff / 1000);
-    if (seconds < 60) return "just now";
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
-  } catch {
-    return "";
-  }
-}
+import { CommentPin } from "./comments/comment-pin";
+import { CommentThreadCard } from "./comments/comment-thread-card";
+import { getAuthorPalette, getInitials } from "./comments/comment-utils";
 
 type EditorCanvasCommentsProps = {
   storefrontId: string;
@@ -151,11 +95,11 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
     }
   }, [draftPin, isDraggingPin]);
 
-  const invalidate = () => {
+  const invalidate = useCallback(() => {
     queryClient.invalidateQueries({
       queryKey: storefrontCommentQueries.all(),
     });
-  };
+  }, [queryClient]);
 
   const createThreadMutation = useMutation({
     mutationFn: async ({
@@ -249,99 +193,122 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
     });
   };
 
-  const handlePinPointerDown = (
-    e: ReactPointerEvent<HTMLButtonElement>,
-    threadId: string,
-    initialX: number,
-    initialY: number,
-  ) => {
-    if (e.button !== 0) return;
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
+  const handlePinPointerDown = useCallback(
+    (
+      event: ReactPointerEvent<HTMLButtonElement>,
+      threadId: string,
+      currentX: number,
+      currentY: number,
+    ) => {
+      if (event.button !== 0) return;
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
 
-    const wasActive = activeThreadId === threadId;
-    dragRef.current = {
-      threadId,
-      isDraft: false,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      initialX,
-      initialY,
-      hasMoved: false,
-      wasActiveBeforeDrag: wasActive,
-    };
-  };
-
-  const handleDraftPinPointerDown = (
-    e: ReactPointerEvent<HTMLDivElement>,
-    initialX: number,
-    initialY: number,
-  ) => {
-    if (e.button !== 0) return;
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
-
-    dragRef.current = {
-      threadId: null,
-      isDraft: true,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      initialX,
-      initialY,
-      hasMoved: false,
-      wasActiveBeforeDrag: true,
-    };
-  };
-
-  const handlePinPointerMove = (e: ReactPointerEvent<HTMLElement>) => {
-    const drag = dragRef.current;
-    if (!drag || !containerRef.current) return;
-
-    const deltaX = Math.abs(e.clientX - drag.startClientX);
-    const deltaY = Math.abs(e.clientY - drag.startClientY);
-
-    if (deltaX > 3 || deltaY > 3) {
-      drag.hasMoved = true;
+      const isActive = activeThreadId === threadId;
+      dragRef.current = {
+        threadId,
+        isDraft: false,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        initialX: currentX,
+        initialY: currentY,
+        hasMoved: false,
+        wasActiveBeforeDrag: isActive,
+      };
       setIsDraggingPin(true);
-    }
+    },
+    [activeThreadId],
+  );
 
-    if (!drag.hasMoved) return;
+  const handleDraftPinPointerDown = useCallback(
+    (
+      event: ReactPointerEvent<HTMLDivElement>,
+      currentX: number,
+      currentY: number,
+    ) => {
+      if (event.button !== 0) return;
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
 
-    const rect = containerRef.current.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
+      dragRef.current = {
+        threadId: null,
+        isDraft: true,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        initialX: currentX,
+        initialY: currentY,
+        hasMoved: false,
+        wasActiveBeforeDrag: true,
+      };
+      setIsDraggingPin(true);
+    },
+    [],
+  );
 
-    const rawX = ((e.clientX - rect.left) / rect.width) * 100;
-    const rawY = ((e.clientY - rect.top) / rect.height) * 100;
-    const clampedX = Math.max(2, Math.min(98, Math.round(rawX * 10) / 10));
-    const clampedY = Math.max(2, Math.min(98, Math.round(rawY * 10) / 10));
+  const handlePinPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const drag = dragRef.current;
+      if (!drag || !containerRef.current) return;
+      event.stopPropagation();
 
-    if (drag.isDraft) {
-      onDraftPinChange({ x: clampedX, y: clampedY });
-    } else if (drag.threadId) {
-      setOptimisticPositions((prev) => ({
-        ...prev,
-        [drag.threadId!]: { x: clampedX, y: clampedY },
-      }));
-    }
-  };
+      const deltaX = event.clientX - drag.startClientX;
+      const deltaY = event.clientY - drag.startClientY;
 
-  const handlePinPointerUp = (
-    e: ReactPointerEvent<HTMLElement>,
-    threadId: string | null,
-    isDraft: boolean,
-  ) => {
-    e.stopPropagation();
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
+      if (!drag.hasMoved && Math.hypot(deltaX, deltaY) > 3) {
+        drag.hasMoved = true;
+      }
 
-    const drag = dragRef.current;
-    dragRef.current = null;
-    setIsDraggingPin(false);
+      if (!drag.hasMoved) return;
 
-    if (!drag) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const currentScale = canvasScale || 1;
+      const unscaledWidth = rect.width / currentScale;
+      const unscaledHeight = rect.height / currentScale;
 
-    if (drag.hasMoved) {
+      const deltaXPercent = (deltaX / currentScale / unscaledWidth) * 100;
+      const deltaYPercent = (deltaY / currentScale / unscaledHeight) * 100;
+
+      const nextX = Math.max(0.5, Math.min(99.5, drag.initialX + deltaXPercent));
+      const nextY = Math.max(0.5, Math.min(99.5, drag.initialY + deltaYPercent));
+
+      if (drag.isDraft) {
+        onDraftPinChange({ x: nextX, y: nextY });
+      } else if (drag.threadId) {
+        setOptimisticPositions((prev) => ({
+          ...prev,
+          [drag.threadId!]: { x: nextX, y: nextY },
+        }));
+      }
+    },
+    [canvasScale, onDraftPinChange],
+  );
+
+  const handlePinPointerUp = useCallback(
+    (
+      event: ReactPointerEvent<HTMLElement>,
+      threadId: string | null,
+      isDraft = false,
+    ) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      event.stopPropagation();
+
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {}
+
+      const didMove = drag.hasMoved;
+      const wasActive = drag.wasActiveBeforeDrag;
+      dragRef.current = null;
+      setIsDraggingPin(false);
+
+      if (!didMove) {
+        if (!isDraft && threadId) {
+          onActiveThreadChange(wasActive ? null : threadId);
+        }
+        return;
+      }
+
       if (!isDraft && threadId) {
         const finalPos = optimisticPositions[threadId];
         if (finalPos) {
@@ -351,28 +318,19 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
             positionY: finalPos.y,
           });
         }
-        if (drag.wasActiveBeforeDrag) {
-          onActiveThreadChange(threadId);
-        }
       }
-    } else {
-      if (!isDraft && threadId) {
-        onDraftPinChange(null);
-        onActiveThreadChange(activeThreadId === threadId ? null : threadId);
-      } else if (isDraft) {
-        onDraftPinChange(null);
-      }
-    }
-  };
+    },
+    [onActiveThreadChange, optimisticPositions, updatePositionMutation],
+  );
 
   const currentInitials = getInitials(currentUser?.name);
-  const scaleFactor = canvasScale > 0 ? 1 / canvasScale : 1;
+  const scaleFactor = 1 / Math.max(0.2, canvasScale);
 
   if (!isCommentMode) {
     return null;
   }
 
-  // Filter pins to ONLY show those matching the currently active group and current status (open / resolved)
+  // Filter pins to ONLY show those matching the currently active group and current status
   const visibleThreads = useMemo(() => {
     return threads.filter((thread) => {
       if (activeThreadId && thread.id === activeThreadId) return true;
@@ -387,7 +345,7 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
       ref={containerRef}
       className="pointer-events-none absolute inset-0 z-30"
     >
-      {/* Existing Threads Pins for Current Viewport */}
+      {/* Existing Threads Pins */}
       {visibleThreads.map((thread) => {
         const isActive = thread.id === activeThreadId;
         const isCurrentlyDragging =
@@ -398,8 +356,6 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
         };
         const leftPercent = pos.x;
         const topPercent = pos.y;
-        const initials = getInitials(thread.author.name);
-        const palette = getAuthorPalette(thread.author.id || thread.author.name);
 
         return (
           <div
@@ -415,60 +371,18 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
               isCurrentlyDragging && "z-50",
             )}
           >
-            {/* Draggable & Toggleable Teardrop Pin Marker Button */}
-            <button
-              type="button"
-              onPointerDown={(e) =>
-                handlePinPointerDown(e, thread.id, leftPercent, topPercent)
-              }
+            <CommentPin
+              thread={thread}
+              isActive={isActive}
+              isDragging={isCurrentlyDragging}
+              currentX={leftPercent}
+              currentY={topPercent}
+              onPointerDown={handlePinPointerDown}
               onPointerMove={handlePinPointerMove}
-              onPointerUp={(e) => handlePinPointerUp(e, thread.id, false)}
-              onPointerCancel={(e) => handlePinPointerUp(e, thread.id, false)}
+              onPointerUp={handlePinPointerUp}
+              onPointerCancel={handlePinPointerUp}
               onClick={(e) => e.stopPropagation()}
-              className={cn(
-                "group relative flex size-8 cursor-grab items-center justify-center rounded-[16px_16px_16px_3px] bg-background border border-border p-[2px] shadow-md transition-transform duration-150 active:cursor-grabbing hover:scale-110 focus-visible:outline-none touch-none",
-                isActive &&
-                  "scale-110 ring-2 ring-primary ring-offset-2 ring-offset-background shadow-lg",
-                thread.status === "resolved" &&
-                  "opacity-50 grayscale-[0.7]",
-                isCurrentlyDragging &&
-                  "scale-115 cursor-grabbing shadow-xl ring-2 ring-primary",
-              )}
-            >
-              {/* Inner Avatar Circle */}
-              <Avatar className="size-full rounded-full pointer-events-none">
-                {thread.author.image ? (
-                  <AvatarImage
-                    src={thread.author.image}
-                    alt={thread.author.name}
-                    className="size-full object-cover rounded-full"
-                  />
-                ) : null}
-                <AvatarFallback
-                  className={cn(
-                    "size-full rounded-full font-semibold text-[10px] text-white flex items-center justify-center shadow-inner",
-                    palette.bg,
-                  )}
-                >
-                  {initials}
-                </AvatarFallback>
-              </Avatar>
-
-              {/* Reply count badge */}
-              {thread.comments.length > 1 ? (
-                <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full border border-background bg-foreground text-[9px] font-semibold text-background shadow-xs pointer-events-none">
-                  {thread.comments.length}
-                </span>
-              ) : null}
-
-              {/* Hover / Drag Tooltip Pill */}
-              <div className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap rounded-md border bg-popover px-2 py-0.5 text-[11px] font-medium text-popover-foreground shadow-md backdrop-blur-xs">
-                <span>{thread.author.name}</span>
-                <span className="ml-1 text-[9px] text-muted-foreground font-normal">
-                  (Drag to move)
-                </span>
-              </div>
-            </button>
+            />
 
             {/* Active Thread Popover Card */}
             {isActive && !isDraggingPin ? (
@@ -483,7 +397,7 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
                 onClick={(e) => e.stopPropagation()}
                 onWheel={(e) => e.stopPropagation()}
               >
-                <ThreadCard
+                <CommentThreadCard
                   thread={thread}
                   storefrontId={storefrontId}
                   themeId={themeId}
@@ -634,233 +548,3 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
     </div>
   );
 });
-
-function ThreadCard({
-  thread,
-  storefrontId,
-  themeId,
-  onClose,
-  onInvalidate,
-}: {
-  thread: StorefrontCommentThreadDTO;
-  storefrontId: string;
-  themeId: string;
-  onClose: () => void;
-  onInvalidate: () => void;
-}) {
-  const [replyText, setReplyText] = useState("");
-  const replyInputRef = useRef<HTMLTextAreaElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({
-        behavior: "instant",
-        block: "end",
-      });
-    }, 20);
-    return () => clearTimeout(timer);
-  }, [thread.id, thread.comments.length]);
-
-  const replyMutation = useMutation({
-    mutationFn: async (content: string) => {
-      const res = await replyStorefrontComment({
-        data: {
-          storefrontId,
-          themeId,
-          threadId: thread.id,
-          content,
-        },
-      });
-      if (!res.success) throw new Error(res.message);
-      return res.data;
-    },
-    onSuccess: () => {
-      setReplyText("");
-      onInvalidate();
-    },
-    onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "Failed to add reply");
-    },
-  });
-
-  const resolveMutation = useMutation({
-    mutationFn: async (resolved: boolean) => {
-      const res = await resolveStorefrontCommentThread({
-        data: {
-          storefrontId,
-          themeId,
-          threadId: thread.id,
-          resolved,
-        },
-      });
-      if (!res.success) throw new Error(res.message);
-      return res.data;
-    },
-    onSuccess: () => {
-      onInvalidate();
-      onClose();
-      toast.success(
-        thread.status === "open" ? "Thread resolved" : "Thread reopened",
-      );
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: async () => {
-      const res = await deleteStorefrontCommentThread({
-        data: {
-          storefrontId,
-          themeId,
-          threadId: thread.id,
-        },
-      });
-      if (!res.success) throw new Error(res.message);
-      return res.data;
-    },
-    onSuccess: () => {
-      onInvalidate();
-      onClose();
-      toast.success("Thread deleted");
-    },
-  });
-
-  const handleReplySubmit = () => {
-    if (!replyText.trim() || replyMutation.isPending) return;
-    replyMutation.mutate(replyText.trim());
-  };
-
-  return (
-    <div
-      data-thread-card
-      onWheel={(e) => e.stopPropagation()}
-      className="flex flex-col rounded-lg border bg-popover text-popover-foreground shadow-lg animate-in fade-in-50 zoom-in-95 duration-150 cursor-default select-text touch-auto overflow-hidden"
-    >
-      {/* Header with Actions */}
-      <div className="flex shrink-0 items-center justify-between border-b px-3 py-2.5">
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant={thread.status === "open" ? "form" : "ghost"}
-            size="xs"
-            onClick={() => resolveMutation.mutate(thread.status === "open")}
-            disabled={resolveMutation.isPending}
-            className="h-6 gap-1 rounded-md px-2.5 text-[11px] font-medium"
-          >
-            {thread.status === "resolved" ? (
-              <>
-                <Undo2 className="size-3" />
-                <span>Reopen</span>
-              </>
-            ) : (
-              <>
-                <Check className="size-3" />
-                <span>Resolve</span>
-              </>
-            )}
-          </Button>
-        </div>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => deleteMutation.mutate()}
-            disabled={deleteMutation.isPending}
-            className="size-6 text-muted-foreground hover:text-destructive"
-            title="Delete thread"
-          >
-            <Trash2 className="size-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onClose}
-            className="size-6 text-muted-foreground hover:text-foreground"
-          >
-            <X className="size-3.5" />
-          </Button>
-        </div>
-      </div>
-
-      {/* Messages List - shadcn ScrollArea flush against the right outer edge */}
-      <ScrollArea
-        data-scroll-container
-        className="max-h-52 w-full touch-auto [&>[data-slot=scroll-area-viewport]]:max-h-52"
-      >
-        <div className="space-y-3 px-3 py-2.5 divide-y divide-border/60">
-          {thread.comments.map((comment) => {
-            const initials = getInitials(comment.author.name);
-            return (
-              <div key={comment.id} className="space-y-1 text-xs pt-2 first:pt-0">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Avatar className="size-5.5 rounded-full border border-border">
-                      {comment.author.image ? (
-                        <AvatarImage
-                          src={comment.author.image}
-                          alt={comment.author.name}
-                          className="size-full object-cover"
-                        />
-                      ) : null}
-                      <AvatarFallback className="size-full rounded-full bg-muted font-bold text-[10px] text-foreground">
-                        {initials}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="font-semibold text-foreground">
-                      {comment.author.name}
-                    </span>
-                  </div>
-                  <span className="text-[10px] text-muted-foreground tabular-nums">
-                    {formatRelativeTime(comment.createdAt)}
-                  </span>
-                </div>
-                <p className="pl-7.5 text-muted-foreground leading-relaxed break-words">
-                  {comment.content}
-                </p>
-              </div>
-            );
-          })}
-          <div ref={messagesEndRef} />
-        </div>
-      </ScrollArea>
-
-      {/* Reply Input Box */}
-      <div className="shrink-0 border-t p-3 pt-2.5">
-        <div className="relative flex items-center">
-          <Textarea
-            ref={replyInputRef}
-            rows={1}
-            value={replyText}
-            onChange={(e) => setReplyText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                onClose();
-                return;
-              }
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleReplySubmit();
-              }
-            }}
-            placeholder="Reply... (Esc to close)"
-            className="min-h-8 resize-none bg-background py-1.5 pr-8 text-xs text-foreground placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
-          />
-          <Button
-            variant="form"
-            size="icon"
-            disabled={!replyText.trim() || replyMutation.isPending}
-            onClick={handleReplySubmit}
-            className="absolute right-1 size-6 rounded-md"
-          >
-            {replyMutation.isPending ? (
-              <LoaderCircle className="size-3 animate-spin" />
-            ) : (
-              <SendHorizontal className="size-3" />
-            )}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
