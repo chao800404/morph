@@ -24,6 +24,7 @@ export interface StorefrontThemeEditorDTO {
     document: StorefrontPageDocument;
     draftRevisionId: string | null;
     publishedRevisionId: string | null;
+    draftGeneration: number;
   }>;
   panelWidths?: {
     left: number;

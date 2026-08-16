@@ -139,6 +139,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           themeId: context.theme.id,
           templateId: activeTemplate.id,
           sectionIds,
+          expectedDraftGeneration: activeTemplate.draftGeneration,
         },
       });
     },

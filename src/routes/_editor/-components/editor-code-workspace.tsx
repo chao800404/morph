@@ -116,6 +116,14 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   >({});
   const prevDirtyPathsRef = useRef<string[]>([]);
 
+  const workspaceScope = useMemo(
+    () => ({
+      storefrontId,
+      themeId,
+    }),
+    [storefrontId, themeId],
+  );
+
   useEffect(() => {
     if (initialActiveFilePath) {
       setActiveFilePath(initialActiveFilePath);
@@ -179,10 +187,15 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       path: string;
       content: string;
     }) => {
-      markWorkspaceSaving(path);
+      markWorkspaceSaving(path, workspaceScope);
       if (onSaveFile) return onSaveFile(path, content);
 
-      const state = useThemeWorkspaceStore.getState().files[path];
+      const state = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        )[path];
       const res = await saveStorefrontThemeFile({
         data: {
           storefrontId,
@@ -202,7 +215,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       return res.data;
     },
     onSuccess: (saved) => {
-      markWorkspaceSaved(saved);
+      markWorkspaceSaved(saved, workspaceScope);
       queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
       });
@@ -211,7 +224,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     },
     onError: (err, variables) => {
       const message = err instanceof Error ? err.message : "Failed to save file";
-      markWorkspaceError(variables.path, message);
+      markWorkspaceError(variables.path, message, workspaceScope);
       toast.error(message);
     },
   });
@@ -243,7 +256,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleContentChange = (value?: string) => {
     if (value === undefined) return;
-    updateWorkspaceLocal(activeFilePath, value);
+    updateWorkspaceLocal(activeFilePath, value, workspaceScope);
   };
 
   useEffect(() => {
@@ -296,7 +309,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
     const nextTabs = openTabs.filter((p) => p !== path);
     setOpenTabs(nextTabs);
-    discardWorkspaceLocal(path);
+    discardWorkspaceLocal(path, workspaceScope);
 
     if (activeFilePath === path) {
       setActiveFilePath(nextTabs[nextTabs.length - 1] ?? "");

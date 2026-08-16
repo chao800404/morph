@@ -137,6 +137,7 @@ export const storefrontThemeTemplates = sqliteTable(
       .notNull(),
     draftRevisionId: text("draft_revision_id"),
     publishedRevisionId: text("published_revision_id"),
+    draftGeneration: integer("draft_generation").notNull().default(1),
     ...timestamps,
   },
   (table) => [

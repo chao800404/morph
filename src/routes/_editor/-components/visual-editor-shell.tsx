@@ -471,6 +471,7 @@ export function VisualEditorShell({
     mutationFn: (variables: {
       sourceRevisionId: string;
       expectedDraftRevisionId: string;
+      expectedDraftGeneration: number;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return publishStorefrontThemeTemplate({
@@ -480,6 +481,7 @@ export function VisualEditorShell({
           templateId: activeTemplate.id,
           sourceRevisionId: variables.sourceRevisionId,
           expectedDraftRevisionId: variables.expectedDraftRevisionId,
+          expectedDraftGeneration: variables.expectedDraftGeneration,
         },
       });
     },
@@ -510,6 +512,7 @@ export function VisualEditorShell({
     mutationFn: (variables: {
       sectionId: string;
       props: Record<string, unknown>;
+      expectedDraftGeneration?: number;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return updateStorefrontThemeSectionProps({
@@ -519,6 +522,8 @@ export function VisualEditorShell({
           templateId: activeTemplate.id,
           sectionId: variables.sectionId,
           props: variables.props,
+          expectedDraftGeneration:
+            variables.expectedDraftGeneration ?? activeTemplate.draftGeneration,
         },
       });
     },
@@ -622,12 +627,14 @@ export function VisualEditorShell({
         context.storefront.id,
         context.theme.id,
         themeFilesQuery.data.files,
+        themeFilesQuery.data.sourceGeneration,
       );
     }
   }, [
     context.storefront.id,
     context.theme.id,
     themeFilesQuery.data?.files,
+    themeFilesQuery.data?.sourceGeneration,
     hydrateWorkspace,
   ]);
 
@@ -644,18 +651,28 @@ export function VisualEditorShell({
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const fileRevisionRef = useRef<Map<string, number>>(new Map());
 
+  const getScopedOpKey = useCallback(
+    (filePath: string) =>
+      `${workspaceScope.storefrontId}:${workspaceScope.themeId}:${filePath}`,
+    [workspaceScope],
+  );
+
   const themeFileSaveStatus = useMemo(
     () =>
       Object.fromEntries(
         Object.values(workspaceFiles).map((file) => [
           file.path,
-          file.saveState === "saving" || file.saveState === "debouncing"
-            ? "saving"
-            : file.saveState === "error" || file.saveState === "conflict"
-              ? "error"
-              : "idle",
+          file.saveState === "dirty"
+            ? "dirty"
+            : file.saveState === "debouncing" || file.saveState === "saving"
+              ? "saving"
+              : file.saveState === "error"
+                ? "error"
+                : file.saveState === "conflict"
+                  ? "conflict"
+                  : "saved",
         ]),
-      ) as Record<string, "idle" | "saving" | "error">,
+      ) as Record<string, "saved" | "dirty" | "saving" | "error" | "conflict">,
     [workspaceFiles],
   );
 
@@ -669,8 +686,7 @@ export function VisualEditorShell({
     [workspaceFiles],
   );
 
-  const latestPublishedRevision = (themeFilesQuery.data as any)
-    ?.latestPublishedRevision;
+  const latestPublishedRevision = themeFilesQuery.data?.latestPublishedRevision;
 
   const publishedSnapshotMap = useMemo(() => {
     if (!latestPublishedRevision?.snapshot) return null;
@@ -704,14 +720,15 @@ export function VisualEditorShell({
 
   const saveThemeFileSequentially = useCallback(
     async (filePath: string, contentToSave: string, targetRevision: number) => {
+      const opKey = getScopedOpKey(filePath);
       const previousPromise =
-        saveQueueRef.current.get(filePath) ?? Promise.resolve();
+        saveQueueRef.current.get(opKey) ?? Promise.resolve();
 
       const nextPromise = previousPromise
         .catch(() => {})
         .then(async () => {
           const latestQueuedRevision =
-            fileRevisionRef.current.get(filePath) ?? 0;
+            fileRevisionRef.current.get(opKey) ?? 0;
           if (targetRevision < latestQueuedRevision) return null;
 
           const current = useThemeWorkspaceStore
@@ -792,6 +809,7 @@ export function VisualEditorShell({
                 const exists = old.files.some((file: any) => file.path === filePath);
                 return {
                   ...old,
+                  sourceGeneration: res.data.sourceGeneration ?? old.sourceGeneration,
                   files: exists
                     ? old.files.map((file: any) =>
                         file.path === filePath ? { ...file, ...res.data } : file,
@@ -820,12 +838,13 @@ export function VisualEditorShell({
           }
         });
 
-      saveQueueRef.current.set(filePath, nextPromise);
+      saveQueueRef.current.set(opKey, nextPromise);
       return nextPromise;
     },
     [
       context.storefront.id,
       context.theme.id,
+      getScopedOpKey,
       markWorkspaceConflict,
       markWorkspaceError,
       markWorkspaceSaved,
@@ -837,10 +856,11 @@ export function VisualEditorShell({
 
   const handleUnifiedSaveFile = useCallback(
     async (filePath: string, content: string) => {
-      const existingTimer = pendingSaveTimersRef.current.get(filePath);
+      const opKey = getScopedOpKey(filePath);
+      const existingTimer = pendingSaveTimersRef.current.get(opKey);
       if (existingTimer) {
         clearTimeout(existingTimer);
-        pendingSaveTimersRef.current.delete(filePath);
+        pendingSaveTimersRef.current.delete(opKey);
       }
 
       updateWorkspaceLocal(filePath, content, workspaceScope);
@@ -862,8 +882,8 @@ export function VisualEditorShell({
         window.location.origin,
       );
 
-      const nextRevision = (fileRevisionRef.current.get(filePath) ?? 0) + 1;
-      fileRevisionRef.current.set(filePath, nextRevision);
+      const nextRevision = (fileRevisionRef.current.get(opKey) ?? 0) + 1;
+      fileRevisionRef.current.set(opKey, nextRevision);
 
       const result = await saveThemeFileSequentially(
         filePath,
@@ -881,6 +901,7 @@ export function VisualEditorShell({
       return result;
     },
     [
+      getScopedOpKey,
       saveThemeFileSequentially,
       themeFiles,
       updateWorkspaceLocal,
@@ -964,6 +985,7 @@ export function VisualEditorShell({
     }
 
     let publishDraftRevisionId = activeTemplate?.draftRevisionId ?? null;
+    let publishDraftGeneration = activeTemplate?.draftGeneration ?? 1;
 
     if (debouncedSavePropsTimeoutRef.current) {
       clearTimeout(debouncedSavePropsTimeoutRef.current);
@@ -972,7 +994,10 @@ export function VisualEditorShell({
     if (pendingPropsSaveRef.current) {
       const pending = pendingPropsSaveRef.current;
       pendingPropsSaveRef.current = null;
-      const result = await updatePropsMutation.mutateAsync(pending);
+      const result = await updatePropsMutation.mutateAsync({
+        ...pending,
+        expectedDraftGeneration: publishDraftGeneration,
+      });
       if (!result.success) {
         toast.error(result.message);
         return;
@@ -980,36 +1005,41 @@ export function VisualEditorShell({
       if (result.data?.draftRevisionId) {
         publishDraftRevisionId = result.data.draftRevisionId;
       }
+      if (result.data?.draftGeneration) {
+        publishDraftGeneration = result.data.draftGeneration;
+      }
     }
 
-    const pendingFiles = Array.from(pendingSaveTimersRef.current.keys());
-    for (const filePath of pendingFiles) {
-      const timer = pendingSaveTimersRef.current.get(filePath);
-      if (timer) clearTimeout(timer);
-      pendingSaveTimersRef.current.delete(filePath);
-      const content = useThemeWorkspaceStore
-        .getState()
-        .getWorkspaceFiles(
-          workspaceScope.storefrontId,
-          workspaceScope.themeId,
-        )[filePath]?.localContent;
-      if (content !== undefined) {
-        try {
-          await handleUnifiedSaveFile(filePath, content);
-        } catch (error) {
-          toast.error(
-            `Failed to save ${filePath}: ${
-              error instanceof Error ? error.message : "Save failed"
-            }`,
-          );
-          return;
+    const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
+    for (const [opKey, timer] of Array.from(pendingSaveTimersRef.current.entries())) {
+      if (opKey.startsWith(scopedPrefix)) {
+        clearTimeout(timer);
+        pendingSaveTimersRef.current.delete(opKey);
+        const filePath = opKey.slice(scopedPrefix.length);
+        const content = useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath]?.localContent;
+        if (content !== undefined) {
+          try {
+            await handleUnifiedSaveFile(filePath, content);
+          } catch (error) {
+            toast.error(
+              `Failed to save ${filePath}: ${
+                error instanceof Error ? error.message : "Save failed"
+              }`,
+            );
+            return;
+          }
         }
       }
     }
 
     await Promise.all(
-      Array.from(saveQueueRef.current.values()).map((promise) =>
-        promise.catch(() => null),
+      Array.from(saveQueueRef.current.entries()).map(([opKey, promise]) =>
+        opKey.startsWith(scopedPrefix) ? promise.catch(() => null) : Promise.resolve(),
       ),
     );
 
@@ -1029,11 +1059,17 @@ export function VisualEditorShell({
       return;
     }
 
-    // Always refetch latest server theme files state to get exact sourceGeneration
+    const currentGeneration = useThemeWorkspaceStore
+      .getState()
+      .getBaseSourceGeneration(workspaceScope);
+
+    // Verify with server that no remote changes occurred behind user's back
     const refreshed = await themeFilesQuery.refetch();
-    const expectedSourceGeneration = refreshed.data?.sourceGeneration;
-    if (typeof expectedSourceGeneration !== "number") {
-      toast.error("Unable to resolve source generation before publish");
+    const serverGeneration = refreshed.data?.sourceGeneration;
+    if (typeof serverGeneration === "number" && serverGeneration !== currentGeneration) {
+      toast.error(
+        "Cannot publish: remote source changes detected. Please reload/review files before publishing.",
+      );
       return;
     }
 
@@ -1042,7 +1078,7 @@ export function VisualEditorShell({
       data: {
         storefrontId: context.storefront.id,
         themeId: context.theme.id,
-        expectedSourceGeneration,
+        expectedSourceGeneration: currentGeneration,
         message: "Published Theme Source",
       },
     });
@@ -1057,6 +1093,7 @@ export function VisualEditorShell({
     await publishMutation.mutateAsync({
       sourceRevisionId: freezeResult.data.id,
       expectedDraftRevisionId: publishDraftRevisionId,
+      expectedDraftGeneration: publishDraftGeneration,
     });
   }, [
     activeTemplate,
@@ -1136,16 +1173,17 @@ export function VisualEditorShell({
         });
 
         // Debounce save to database (300ms)
-        const existingTimer = pendingSaveTimersRef.current.get(filePath);
+        const opKey = getScopedOpKey(filePath);
+        const existingTimer = pendingSaveTimersRef.current.get(opKey);
         if (existingTimer) {
           clearTimeout(existingTimer);
         }
 
-        const nextRevision = (fileRevisionRef.current.get(filePath) ?? 0) + 1;
-        fileRevisionRef.current.set(filePath, nextRevision);
+        const nextRevision = (fileRevisionRef.current.get(opKey) ?? 0) + 1;
+        fileRevisionRef.current.set(opKey, nextRevision);
 
         const newTimer = setTimeout(() => {
-          pendingSaveTimersRef.current.delete(filePath);
+          pendingSaveTimersRef.current.delete(opKey);
           saveThemeFileSequentially(filePath, updatedContent, nextRevision).catch(
             (err) => {
               toast.error(
@@ -1155,13 +1193,12 @@ export function VisualEditorShell({
           );
         }, 300);
 
-        pendingSaveTimersRef.current.set(filePath, newTimer);
+        pendingSaveTimersRef.current.set(opKey, newTimer);
         markWorkspaceDebouncing(filePath, workspaceScope);
       }
     },
     [
-      context.storefront.id,
-      context.theme.id,
+      getScopedOpKey,
       markWorkspaceDebouncing,
       saveThemeFileSequentially,
       themeFiles,
@@ -2400,8 +2437,8 @@ export function VisualEditorShell({
               Object.values(themeFileSaveStatus).some((s) => s === "saving") ||
               Object.values(themeFileSaveErrors).length > 0 ||
               monacoDirtyFiles.length > 0 ||
-              useThemeWorkspaceStore.getState().hasUnsavedEdits() ||
-              useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors() ||
+              useThemeWorkspaceStore.getState().hasUnsavedEdits(workspaceScope) ||
+              useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors(workspaceScope) ||
               publishMutation.isPending
             }
             onClick={handlePublish}

@@ -10,6 +10,7 @@ export const reorderStorefrontThemeSectionsInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
     sectionIds: z.array(z.string().trim().min(1).max(100)).min(1).max(100),
+    expectedDraftGeneration: z.number().int().min(1).optional(),
   });
 
 export const publishStorefrontThemeTemplateInputSchema =
@@ -17,6 +18,7 @@ export const publishStorefrontThemeTemplateInputSchema =
     templateId: idSchema("storefront theme template"),
     sourceRevisionId: z.string().uuid(),
     expectedDraftRevisionId: z.string().uuid(),
+    expectedDraftGeneration: z.number().int().min(1),
   });
 
 export const updateStorefrontThemeSectionPropsInputSchema =
@@ -24,6 +26,7 @@ export const updateStorefrontThemeSectionPropsInputSchema =
     templateId: idSchema("storefront theme template"),
     sectionId: z.string().trim().min(1).max(100),
     props: z.record(z.string(), z.any()),
+    expectedDraftGeneration: z.number().int().min(1).optional(),
   });
 
 export const storefrontThemeEditorSearchSchema = z.object({

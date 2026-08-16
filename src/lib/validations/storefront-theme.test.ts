@@ -72,13 +72,14 @@ describe("storefront theme preview search", () => {
 });
 
 describe("publish storefront theme template input schema", () => {
-  it("requires valid UUIDs for all IDs", () => {
+  it("requires valid UUIDs for all IDs and valid expectedDraftGeneration", () => {
     const valid = {
       storefrontId: "11111111-1111-4111-8111-111111111111",
       themeId: "22222222-2222-4222-8222-222222222222",
       templateId: "33333333-3333-4333-8333-333333333333",
       sourceRevisionId: "44444444-4444-4444-8444-444444444444",
       expectedDraftRevisionId: "55555555-5555-4555-8555-555555555555",
+      expectedDraftGeneration: 1,
     };
 
     expect(publishStorefrontThemeTemplateInputSchema.parse(valid)).toEqual(valid);
@@ -90,6 +91,7 @@ describe("publish storefront theme template input schema", () => {
         themeId: "22222222-2222-4222-8222-222222222222",
         templateId: "33333333-3333-4333-8333-333333333333",
         expectedDraftRevisionId: "55555555-5555-4555-8555-555555555555",
+        expectedDraftGeneration: 1,
       }),
     ).toThrow();
 
@@ -100,6 +102,18 @@ describe("publish storefront theme template input schema", () => {
         themeId: "22222222-2222-4222-8222-222222222222",
         templateId: "33333333-3333-4333-8333-333333333333",
         sourceRevisionId: "44444444-4444-4444-8444-444444444444",
+        expectedDraftGeneration: 1,
+      }),
+    ).toThrow();
+
+    // Missing expectedDraftGeneration
+    expect(() =>
+      publishStorefrontThemeTemplateInputSchema.parse({
+        storefrontId: "11111111-1111-4111-8111-111111111111",
+        themeId: "22222222-2222-4222-8222-222222222222",
+        templateId: "33333333-3333-4333-8333-333333333333",
+        sourceRevisionId: "44444444-4444-4444-8444-444444444444",
+        expectedDraftRevisionId: "55555555-5555-4555-8555-555555555555",
       }),
     ).toThrow();
   });

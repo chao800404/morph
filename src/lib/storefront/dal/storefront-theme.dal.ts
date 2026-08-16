@@ -65,6 +65,7 @@ export const storefrontThemeDal = {
         document: storefrontThemeTemplates.document,
         draftRevisionId: storefrontThemeTemplates.draftRevisionId,
         publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+        draftGeneration: storefrontThemeTemplates.draftGeneration,
       })
       .from(storefrontThemeTemplates)
       .where(
@@ -107,6 +108,7 @@ export const storefrontThemeDal = {
           document: storefrontPageDocumentSchema.parse(document),
           draftRevisionId: template.draftRevisionId,
           publishedRevisionId: template.publishedRevisionId,
+          draftGeneration: template.draftGeneration ?? 1,
         };
       }),
     );
@@ -131,6 +133,7 @@ export const storefrontThemeDal = {
     themeId: string;
     templateId: string;
     sectionIds: string[];
+    expectedDraftGeneration?: number;
     createdBy: string;
   }) {
     const context = await this.findEditorContext(
@@ -141,6 +144,13 @@ export const storefrontThemeDal = {
       (item) => item.id === data.templateId,
     );
     if (!template) return null;
+
+    if (
+      data.expectedDraftGeneration !== undefined &&
+      template.draftGeneration !== data.expectedDraftGeneration
+    ) {
+      return null;
+    }
 
     const currentIds = template.document.sections.map((section) => section.id);
     if (
@@ -159,6 +169,7 @@ export const storefrontThemeDal = {
     });
     const now = new Date().toISOString();
     const db = await getDb();
+    const nextGeneration = (template.draftGeneration ?? 1) + 1;
 
     // If an uncommitted draft revision is currently active, update it in place
     if (
@@ -189,7 +200,7 @@ export const storefrontThemeDal = {
             ),
           db
             .update(storefrontThemeTemplates)
-            .set({ updatedAt: now })
+            .set({ draftGeneration: nextGeneration, updatedAt: now })
             .where(
               and(
                 eq(storefrontThemeTemplates.id, data.templateId),
@@ -201,6 +212,7 @@ export const storefrontThemeDal = {
           document,
           version: activeDraft.version,
           draftRevisionId: activeDraft.id,
+          draftGeneration: nextGeneration,
         };
       }
     }
@@ -224,7 +236,11 @@ export const storefrontThemeDal = {
       }),
       db
         .update(storefrontThemeTemplates)
-        .set({ draftRevisionId: revisionId, updatedAt: now })
+        .set({
+          draftRevisionId: revisionId,
+          draftGeneration: nextGeneration,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(storefrontThemeTemplates.id, data.templateId),
@@ -233,7 +249,12 @@ export const storefrontThemeDal = {
           ),
         ),
     ]);
-    return { document, version, draftRevisionId: revisionId };
+    return {
+      document,
+      version,
+      draftRevisionId: revisionId,
+      draftGeneration: nextGeneration,
+    };
   },
   async updateSectionProps(data: {
     storefrontId: string;
@@ -241,6 +262,7 @@ export const storefrontThemeDal = {
     templateId: string;
     sectionId: string;
     props: Record<string, unknown>;
+    expectedDraftGeneration?: number;
     createdBy: string;
   }) {
     const context = await this.findEditorContext(
@@ -251,6 +273,13 @@ export const storefrontThemeDal = {
       (item) => item.id === data.templateId,
     );
     if (!template) return null;
+
+    if (
+      data.expectedDraftGeneration !== undefined &&
+      template.draftGeneration !== data.expectedDraftGeneration
+    ) {
+      return null;
+    }
 
     const targetSection = template.document.sections.find(
       (section) => section.id === data.sectionId,
@@ -289,6 +318,7 @@ export const storefrontThemeDal = {
 
     const now = new Date().toISOString();
     const db = await getDb();
+    const nextGeneration = (template.draftGeneration ?? 1) + 1;
 
     // If an uncommitted draft revision is currently active, update it in place
     if (
@@ -319,7 +349,7 @@ export const storefrontThemeDal = {
             ),
           db
             .update(storefrontThemeTemplates)
-            .set({ updatedAt: now })
+            .set({ draftGeneration: nextGeneration, updatedAt: now })
             .where(
               and(
                 eq(storefrontThemeTemplates.id, data.templateId),
@@ -331,6 +361,7 @@ export const storefrontThemeDal = {
           document,
           version: activeDraft.version,
           draftRevisionId: activeDraft.id,
+          draftGeneration: nextGeneration,
         };
       }
     }
@@ -354,7 +385,11 @@ export const storefrontThemeDal = {
       }),
       db
         .update(storefrontThemeTemplates)
-        .set({ draftRevisionId: revisionId, updatedAt: now })
+        .set({
+          draftRevisionId: revisionId,
+          draftGeneration: nextGeneration,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(storefrontThemeTemplates.id, data.templateId),
@@ -363,7 +398,12 @@ export const storefrontThemeDal = {
           ),
         ),
     ]);
-    return { document, version, draftRevisionId: revisionId };
+    return {
+      document,
+      version,
+      draftRevisionId: revisionId,
+      draftGeneration: nextGeneration,
+    };
   },
   async publishTemplate(data: {
     storefrontId: string;
@@ -371,6 +411,7 @@ export const storefrontThemeDal = {
     templateId: string;
     sourceRevisionId: string;
     expectedDraftRevisionId: string;
+    expectedDraftGeneration: number;
     createdBy?: string;
   }) {
     const db = await getDb();
@@ -378,6 +419,7 @@ export const storefrontThemeDal = {
       .select({
         draftRevisionId: storefrontThemeTemplates.draftRevisionId,
         publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+        draftGeneration: storefrontThemeTemplates.draftGeneration,
       })
       .from(storefrontThemeTemplates)
       .innerJoin(
@@ -398,7 +440,10 @@ export const storefrontThemeDal = {
       .limit(1);
 
     if (!template?.draftRevisionId) return null;
-    if (data.expectedDraftRevisionId !== template.draftRevisionId) {
+    if (
+      data.expectedDraftRevisionId !== template.draftRevisionId ||
+      data.expectedDraftGeneration !== (template.draftGeneration ?? 1)
+    ) {
       return null;
     }
 
@@ -430,13 +475,14 @@ export const storefrontThemeDal = {
             AND th.id = ?2
             AND t.id = ?3
             AND t.draft_revision_id = ?4
+            AND t.draft_generation = ?5
             AND s.deleted_at IS NULL
             AND th.deleted_at IS NULL
             AND t.deleted_at IS NULL
         ) AND EXISTS (
           SELECT 1
           FROM storefront_theme_revisions r
-          WHERE r.id = ?5
+          WHERE r.id = ?6
             AND r.theme_id = ?2
             AND r.storefront_id = ?1
             AND r.deleted_at IS NULL
@@ -446,6 +492,7 @@ export const storefrontThemeDal = {
         data.themeId,
         data.templateId,
         data.expectedDraftRevisionId,
+        data.expectedDraftGeneration,
         data.sourceRevisionId,
       ),
     ];
@@ -454,10 +501,11 @@ export const storefrontThemeDal = {
       statements.push(
         env.DATABASE.prepare(`
           UPDATE storefront_theme_templates
-          SET document = ?1, published_revision_id = ?2, updated_at = ?3
+          SET document = ?1, published_revision_id = ?2, draft_generation = draft_generation + 1, updated_at = ?3
           WHERE id = ?4
             AND theme_id = ?5
             AND draft_revision_id = ?2
+            AND draft_generation = ?6
             AND deleted_at IS NULL
         `).bind(
           JSON.stringify(document),
@@ -465,6 +513,7 @@ export const storefrontThemeDal = {
           now,
           data.templateId,
           data.themeId,
+          data.expectedDraftGeneration,
         ),
       );
       statements.push(
@@ -488,6 +537,7 @@ export const storefrontThemeDal = {
     return {
       revisionId: data.expectedDraftRevisionId,
       sourceRevisionId: data.sourceRevisionId,
+      draftGeneration: (template.draftGeneration ?? 1) + 1,
       unchanged,
     };
   },

@@ -53,6 +53,7 @@ export interface WorkspaceScope {
 export interface ThemeWorkspaceStore {
   activeWorkspaceKey: string | null;
   workspaces: Record<string, Record<string, ThemeWorkspaceFileState>>;
+  generations: Record<string, number>;
   files: Record<string, ThemeWorkspaceFileState>;
 
   setActiveWorkspace: (storefrontId: string, themeId: string) => void;
@@ -60,6 +61,12 @@ export interface ThemeWorkspaceStore {
     storefrontId: string,
     themeId: string,
     themeFiles: StorefrontThemeFileDTO[],
+    sourceGeneration?: number,
+  ) => void;
+  getBaseSourceGeneration: (scope?: WorkspaceScope) => number;
+  setBaseSourceGeneration: (
+    generation: number,
+    scope?: WorkspaceScope,
   ) => void;
   getWorkspaceFiles: (
     storefrontId?: string,
@@ -72,7 +79,11 @@ export interface ThemeWorkspaceStore {
   ) => void;
   markDebouncing: (path: string, scope?: WorkspaceScope) => void;
   markSaving: (path: string, scope?: WorkspaceScope) => void;
-  markSaved: (saved: StorefrontThemeFileDTO, scope?: WorkspaceScope) => void;
+  markSaved: (
+    saved: StorefrontThemeFileDTO & { sourceGeneration?: number },
+    scope?: WorkspaceScope,
+    sourceGeneration?: number,
+  ) => void;
   markError: (path: string, message: string, scope?: WorkspaceScope) => void;
   markConflict: (
     path: string,
@@ -126,6 +137,7 @@ function getTargetWorkspace(
 export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => ({
   activeWorkspaceKey: null,
   workspaces: {},
+  generations: {},
   files: {},
 
   setActiveWorkspace: (storefrontId: string, themeId: string) => {
@@ -140,6 +152,21 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
     });
   },
 
+  getBaseSourceGeneration: (scope?: WorkspaceScope) => {
+    const state = get();
+    const { key } = getTargetWorkspace(state, scope);
+    return state.generations[key] ?? 1;
+  },
+
+  setBaseSourceGeneration: (generation: number, scope?: WorkspaceScope) => {
+    set((state) => {
+      const { key } = getTargetWorkspace(state, scope);
+      return {
+        generations: { ...state.generations, [key]: generation },
+      };
+    });
+  },
+
   getWorkspaceFiles: (storefrontId?: string, themeId?: string) => {
     const state = get();
     if (storefrontId && themeId) {
@@ -149,7 +176,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
     return state.files;
   },
 
-  hydrateFromQuery: (storefrontId, themeId, themeFiles) => {
+  hydrateFromQuery: (storefrontId, themeId, themeFiles, sourceGeneration) => {
     const targetKey = toWorkspaceKey(storefrontId, themeId);
     set((state) => {
       const currentWorkspaceFiles = state.workspaces[targetKey] ?? {};
@@ -258,7 +285,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         }
       }
 
-      if (!hasChanges && state.activeWorkspaceKey === targetKey) {
+      if (!hasChanges && state.generations[targetKey] === sourceGeneration) {
         return state;
       }
 
@@ -267,9 +294,14 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         [targetKey]: next,
       };
 
+      const nextGenerations = typeof sourceGeneration === "number"
+        ? { ...state.generations, [targetKey]: sourceGeneration }
+        : state.generations;
+
       const isActive = state.activeWorkspaceKey === targetKey;
       return {
         workspaces: nextWorkspaces,
+        generations: nextGenerations,
         activeWorkspaceKey: state.activeWorkspaceKey ?? targetKey,
         files: isActive || state.activeWorkspaceKey === null ? next : state.files,
       };
@@ -380,7 +412,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
     });
   },
 
-  markSaved: (saved, scope) => {
+  markSaved: (saved, scope, sourceGeneration) => {
     set((state) => {
       const resolvedScope = scope ?? {
         storefrontId: saved.storefrontId,
@@ -405,9 +437,15 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         },
       };
       const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const gen = sourceGeneration ?? (saved as any).sourceGeneration;
+      const nextGenerations = typeof gen === "number"
+        ? { ...state.generations, [key]: gen }
+        : state.generations;
+
       const isActive = state.activeWorkspaceKey === key;
       return {
         workspaces: nextWorkspaces,
+        generations: nextGenerations,
         files: isActive ? next : state.files,
       };
     });
@@ -520,7 +558,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         ...current,
         serverExists: conflict.remoteExists,
         serverFileId: conflict.remoteExists ? conflict.remoteFileId : null,
-        serverContent: conflict.remoteExists ? conflict.remoteContent : "",
+        serverContent: conflict.remoteContent ?? "",
         serverVersion: conflict.remoteVersion ?? null,
         dirty: true,
         saveState: "dirty" as const,

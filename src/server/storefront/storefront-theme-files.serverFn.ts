@@ -116,7 +116,14 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
           createdBy: context.user?.id,
         },
       );
-      return ok("Theme file saved", saved);
+      const sourceGeneration = await storefrontThemeFileDal.getSourceGeneration(
+        data.storefrontId,
+        data.themeId,
+      );
+      return ok("Theme file saved", {
+        ...saved,
+        sourceGeneration: sourceGeneration ?? 1,
+      });
     } catch (error) {
       if (
         error instanceof Error &&
@@ -152,7 +159,14 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
           createdBy: context.user?.id,
         },
       );
-      return ok("Theme files batch saved", { files: saved });
+      const sourceGeneration = await storefrontThemeFileDal.getSourceGeneration(
+        data.storefrontId,
+        data.themeId,
+      );
+      return ok("Theme files batch saved", {
+        files: saved,
+        sourceGeneration: sourceGeneration ?? 1,
+      });
     } catch (error) {
       if (
         error instanceof Error &&
@@ -236,7 +250,10 @@ export const rollbackStorefrontThemeRevision = createServerFn({ method: "POST" }
         data.storefrontId,
         data.themeId,
         data.revisionNumber,
-        context.user?.id,
+        {
+          expectedSourceGeneration: data.expectedSourceGeneration,
+          createdBy: context.user?.id,
+        },
       );
       const tree = buildFileTree(files);
       return ok("Theme rolled back to revision", { files, tree });

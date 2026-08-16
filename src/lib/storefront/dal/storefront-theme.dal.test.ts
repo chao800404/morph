@@ -111,6 +111,7 @@ beforeEach(() => {
       document text NOT NULL,
       draft_revision_id text,
       published_revision_id text,
+      draft_generation integer DEFAULT 1 NOT NULL,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       deleted_at text
@@ -209,10 +210,12 @@ describe("storefront theme DAL", () => {
         templateId: "template-a",
         sourceRevisionId: "22222222-2222-4222-8222-222222222222",
         expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+        expectedDraftGeneration: 1,
       }),
     ).resolves.toEqual({
       revisionId: "11111111-1111-4111-8111-111111111111",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      draftGeneration: 2,
       unchanged: false,
     });
 
@@ -259,11 +262,13 @@ describe("storefront theme DAL", () => {
       templateId: "template-a",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+      expectedDraftGeneration: 1,
     });
 
     expect(res).toEqual({
       revisionId: "11111111-1111-4111-8111-111111111111",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      draftGeneration: 2,
       unchanged: false,
     });
 
@@ -303,6 +308,7 @@ describe("storefront theme DAL", () => {
         templateId: "template-a",
         sourceRevisionId: "99999999-9999-4999-8999-999999999999",
         expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+        expectedDraftGeneration: 1,
       }),
     ).rejects.toThrow();
   });
@@ -337,6 +343,7 @@ describe("storefront theme DAL", () => {
         templateId: "template-a",
         sourceRevisionId: "22222222-2222-4222-8222-222222222222",
         expectedDraftRevisionId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftGeneration: 1,
       }),
     ).resolves.toBeNull();
   });

@@ -195,31 +195,60 @@ export const storefrontThemeFileDal = {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
     if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
 
-    const db = await getDb();
     const now = new Date().toISOString();
+    const revisionId = crypto.randomUUID();
 
-    const insertValues = STARTER_THEME_FILES.map((f) => ({
-      id: crypto.randomUUID(),
-      storefrontId,
-      themeId,
-      path: f.path,
-      content: f.content,
-      mimeType: f.mimeType,
-      isEntry: f.isEntry ?? false,
-      createdAt: now,
-      updatedAt: now,
-    }));
+    const statements = [
+      prepareThemeOwnershipGuard(storefrontId, themeId),
+    ];
 
-    for (const val of insertValues) {
-      await db.insert(storefrontThemeFiles).values(val).onConflictDoNothing();
+    for (const f of STARTER_THEME_FILES) {
+      statements.push(
+        env.DATABASE.prepare(`
+          INSERT INTO storefront_theme_files (
+            id, storefront_id, theme_id, path, content, mime_type,
+            is_entry, version, created_at, updated_at
+          )
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
+          ON CONFLICT(storefront_id, theme_id, path) WHERE deleted_at IS NULL DO NOTHING
+        `).bind(
+          crypto.randomUUID(),
+          storefrontId,
+          themeId,
+          f.path,
+          f.content,
+          f.mimeType,
+          f.isEntry ? 1 : 0,
+          now,
+        ),
+      );
     }
 
-    // Create initial revision #1
-    await this.createRevision(storefrontId, themeId, {
-      message: "Initialize starter theme files",
-      source: "manual",
-      createdBy,
-    });
+    statements.push(
+      prepareRevisionInsert({
+        storefrontId,
+        themeId,
+        revisionId,
+        message: "Initialize starter theme files",
+        source: "manual",
+        createdBy,
+        now,
+      }),
+    );
+
+    statements.push(
+      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
+    );
+
+    try {
+      await env.DATABASE.batch(statements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("malformed JSON") || message.includes("constraint")) {
+        throw new Error("CONFLICT_OWNERSHIP_MISMATCH: Theme does not exist or was deleted.");
+      }
+      throw error;
+    }
 
     return this.listFiles(storefrontId, themeId);
   },
@@ -688,7 +717,10 @@ export const storefrontThemeFileDal = {
     storefrontId: string,
     themeId: string,
     revisionNumber: number,
-    createdBy?: string,
+    options?: {
+      expectedSourceGeneration?: number;
+      createdBy?: string;
+    },
   ): Promise<StorefrontThemeFileDTO[]> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
     if (!isOwner) {
@@ -714,7 +746,11 @@ export const storefrontThemeFileDal = {
       (rev.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"];
     const now = new Date().toISOString();
     const statements = [
-      prepareThemeOwnershipGuard(storefrontId, themeId),
+      prepareThemeOwnershipGuard(
+        storefrontId,
+        themeId,
+        options?.expectedSourceGeneration,
+      ),
       env.DATABASE.prepare(`
         UPDATE storefront_theme_files
         SET deleted_at = ?1, updated_at = ?1
@@ -750,7 +786,7 @@ export const storefrontThemeFileDal = {
         revisionId: crypto.randomUUID(),
         message: `Rollback to revision #${revisionNumber}`,
         source: "rollback",
-        createdBy,
+        createdBy: options?.createdBy,
         now,
       }),
     );
@@ -759,7 +795,20 @@ export const storefrontThemeFileDal = {
       prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
     );
 
-    await env.DATABASE.batch(statements);
+    try {
+      await env.DATABASE.batch(statements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("malformed JSON") || message.includes("constraint")) {
+        throw new Error(
+          options?.expectedSourceGeneration !== undefined
+            ? "CONFLICT_SOURCE_GENERATION_MISMATCH: Theme files changed concurrently before rollback."
+            : "CONFLICT_OWNERSHIP_MISMATCH: Theme not found or was modified.",
+        );
+      }
+      throw error;
+    }
+
     return this.listFiles(storefrontId, themeId);
   },
 

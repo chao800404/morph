@@ -1,0 +1,1 @@
+ALTER TABLE `storefront_theme_templates` ADD `draft_generation` integer DEFAULT 1 NOT NULL;
