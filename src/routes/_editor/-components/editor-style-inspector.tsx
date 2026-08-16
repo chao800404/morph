@@ -22,8 +22,8 @@ import {
   parseTailwindLineHeight,
   parseTailwindPadding,
   parseTailwindTextAlign,
-  updateTailwindClass,
 } from "@/lib/storefront/ast/theme-ast-transformer";
+import { patchTailwindClasses } from "@/lib/storefront/ast/tailwind-token-engine";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { cn } from "@/lib/utils";
@@ -52,8 +52,10 @@ type EditorSection =
 type EditorStyleInspectorProps = {
   section: EditorSection;
   themeFiles?: StorefrontThemeFileDTO[];
+  activeNodeId?: string | null;
   activeElementKey?: string | null;
   activeFieldKey?: string | null;
+  activeComputedStyle?: Record<string, string> | null;
   onUpdateThemeFileStyle?: (
     filePath: string,
     elementName: string,
@@ -79,8 +81,10 @@ const THEME_PALETTE_COLORS = [
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   themeFiles,
+  activeNodeId,
   activeElementKey,
   activeFieldKey,
+  activeComputedStyle,
   onUpdateThemeFileStyle,
   onPropsChange,
   onToggleEnabled,
@@ -109,15 +113,22 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setLocalProps((section.props as Record<string, any>) ?? {});
   }, [section.id]);
 
-  const componentPath = getComponentFilePath(section.type, themeFiles);
-  const targetElement = activeElementKey || "heading";
+  const componentPath = getComponentFilePath(
+    section.type,
+    themeFiles,
+    (section as any).componentRef,
+  );
+  const targetElement = activeNodeId || activeElementKey || "heading";
   const props = localProps;
 
   const componentFile = themeFiles?.find((f) => f.path === componentPath);
   const parsedMeta = componentFile?.content
     ? parseComponentSource(componentFile.content)
     : null;
-  const targetElementMeta = parsedMeta?.elements[targetElement];
+  const targetElementMeta =
+    (activeNodeId ? parsedMeta?.nodeMap[activeNodeId] : undefined) ??
+    parsedMeta?.elements[targetElement] ??
+    parsedMeta?.elements["heading"];
   const sectionElementMeta =
     parsedMeta?.elements["section"] ?? parsedMeta?.elements["root"];
 
@@ -135,19 +146,35 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const isComplexFontSize = fontSizeDetailed.type === "complex";
   const complexFontSizeRaw =
     fontSizeDetailed.type === "complex" ? fontSizeDetailed.raw : null;
+
+  const computedFontSizeNum = activeComputedStyle?.fontSize
+    ? parseFloat(activeComputedStyle.fontSize)
+    : null;
+
   const effectiveFontSize =
     fontSizeDetailed.type === "exact"
       ? fontSizeDetailed.value
-      : (typeof props.fontSize === "number" ? props.fontSize : 48);
+      : computedFontSizeNum && !isNaN(computedFontSizeNum)
+        ? Math.round(computedFontSizeNum)
+        : (typeof props.fontSize === "number" ? props.fontSize : 48);
 
   const effectiveFontFamily =
-    parseTailwindFontFamily(targetClassName) ?? props.fontFamily ?? "serif";
+    parseTailwindFontFamily(targetClassName) ??
+    activeComputedStyle?.fontFamily ??
+    props.fontFamily ??
+    "serif";
 
   const effectiveFontWeight =
-    parseTailwindFontWeight(targetClassName) ?? props.fontWeight ?? "normal";
+    parseTailwindFontWeight(targetClassName) ??
+    activeComputedStyle?.fontWeight ??
+    props.fontWeight ??
+    "normal";
 
   const effectiveTextAlign =
-    parseTailwindTextAlign(targetClassName) ?? props.textAlign ?? "left";
+    parseTailwindTextAlign(targetClassName) ??
+    (activeComputedStyle?.textAlign as any) ??
+    props.textAlign ??
+    "left";
 
   const effectiveLineHeight =
     parseTailwindLineHeight(targetClassName) ??
@@ -544,26 +571,21 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     if (sourceStyleLocked) return;
                     if (!componentPath) handleFieldChange("padding", val);
                     patchContainerStyle((prev) =>
-                      updateTailwindClass(
-                        updateTailwindClass(
-                          updateTailwindClass(
-                            updateTailwindClass(
-                              updateTailwindClass(
-                                prev,
-                                /\bp-\[.*?\]|\bp-\d+\b/,
-                                `p-[${val}px]`,
-                              ),
-                              /\bpt-\[.*?\]|\bpt-\d+\b/,
-                              "",
+                      patchTailwindClasses(
+                        patchTailwindClasses(
+                          patchTailwindClasses(
+                            patchTailwindClasses(
+                              patchTailwindClasses(prev, {
+                                property: "padding",
+                                value: `p-[${val}px]`,
+                              }),
+                              { property: "padding-top", value: "" },
                             ),
-                            /\bpb-\[.*?\]|\bpb-\d+\b/,
-                            "",
+                            { property: "padding-bottom", value: "" },
                           ),
-                          /\bpl-\[.*?\]|\bpl-\d+\b/,
-                          "",
+                          { property: "padding-left", value: "" },
                         ),
-                        /\bpr-\[.*?\]|\bpr-\d+\b/,
-                        "",
+                        { property: "padding-right", value: "" },
                       ),
                     );
                   }}
@@ -587,11 +609,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       if (sourceStyleLocked) return;
                       if (!componentPath) handleFieldChange("paddingTop", val);
                       patchContainerStyle((prev) =>
-                        updateTailwindClass(
-                          prev,
-                          /\bpt-\[.*?\]|\bpt-\d+\b/,
-                          `pt-[${val}px]`,
-                        ),
+                        patchTailwindClasses(prev, {
+                          property: "padding-top",
+                          value: `pt-[${val}px]`,
+                        }),
                       );
                     }}
                     className="h-5 flex-1"
@@ -613,11 +634,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       if (!componentPath)
                         handleFieldChange("paddingBottom", val);
                       patchContainerStyle((prev) =>
-                        updateTailwindClass(
-                          prev,
-                          /\bpb-\[.*?\]|\bpb-\d+\b/,
-                          `pb-[${val}px]`,
-                        ),
+                        patchTailwindClasses(prev, {
+                          property: "padding-bottom",
+                          value: `pb-[${val}px]`,
+                        }),
                       );
                     }}
                     className="h-5 flex-1"
@@ -639,11 +659,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       if (!componentPath)
                         handleFieldChange("paddingLeft", val);
                       patchContainerStyle((prev) =>
-                        updateTailwindClass(
-                          prev,
-                          /\bpl-\[.*?\]|\bpl-\d+\b/,
-                          `pl-[${val}px]`,
-                        ),
+                        patchTailwindClasses(prev, {
+                          property: "padding-left",
+                          value: `pl-[${val}px]`,
+                        }),
                       );
                     }}
                     className="h-5 flex-1"
@@ -665,11 +684,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       if (!componentPath)
                         handleFieldChange("paddingRight", val);
                       patchContainerStyle((prev) =>
-                        updateTailwindClass(
-                          prev,
-                          /\bpr-\[.*?\]|\bpr-\d+\b/,
-                          `pr-[${val}px]`,
-                        ),
+                        patchTailwindClasses(prev, {
+                          property: "padding-right",
+                          value: `pr-[${val}px]`,
+                        }),
                       );
                     }}
                     className="h-5 flex-1"
@@ -694,7 +712,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   if (sourceStyleLocked) return;
                   if (!componentPath) handleFieldChange("textAlign", "left");
                   patchStyle((prev) =>
-                    updateTailwindClass(prev, /text-(left|center|right)/, "text-left"),
+                    patchTailwindClasses(prev, {
+                      property: "text-align",
+                      value: "text-left",
+                    }),
                   );
                 }}
               >
@@ -710,7 +731,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   if (sourceStyleLocked) return;
                   if (!componentPath) handleFieldChange("textAlign", "center");
                   patchStyle((prev) =>
-                    updateTailwindClass(prev, /text-(left|center|right)/, "text-center"),
+                    patchTailwindClasses(prev, {
+                      property: "text-align",
+                      value: "text-center",
+                    }),
                   );
                 }}
               >
@@ -726,7 +750,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   if (sourceStyleLocked) return;
                   if (!componentPath) handleFieldChange("textAlign", "right");
                   patchStyle((prev) =>
-                    updateTailwindClass(prev, /text-(left|center|right)/, "text-right"),
+                    patchTailwindClasses(prev, {
+                      property: "text-align",
+                      value: "text-right",
+                    }),
                   );
                 }}
               >
@@ -754,7 +781,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   if (sourceStyleLocked) return;
                   if (!componentPath) handleFieldChange("fontFamily", val);
                   patchStyle((prev) =>
-                    updateTailwindClass(prev, /font-(serif|sans|mono)/, `font-${val}`),
+                    patchTailwindClasses(prev, {
+                      property: "font-family",
+                      value: `font-${val}`,
+                    }),
                   );
                 }}
                 disabled={disabled || sourceStyleLocked}
@@ -785,11 +815,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                           ? "font-medium"
                           : "font-bold";
                   patchStyle((prev) =>
-                    updateTailwindClass(
-                      prev,
-                      /font-(light|normal|medium|semibold|bold)/,
-                      weightClass,
-                    ),
+                    patchTailwindClasses(prev, {
+                      property: "font-weight",
+                      value: weightClass,
+                    }),
                   );
                 }}
                 disabled={disabled || sourceStyleLocked}
@@ -830,11 +859,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     if (sourceStyleLocked) return;
                     if (!componentPath) handleFieldChange("fontSize", val);
                     patchStyle((prev) =>
-                      updateTailwindClass(
-                        prev,
-                        /text-\[.*\]|text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl)/,
-                        `text-[${val}px]`,
-                      ),
+                      patchTailwindClasses(prev, {
+                        property: "font-size",
+                        value: `text-[${val}px]`,
+                      }),
                     );
                   }}
                   className="h-6 w-16"
@@ -855,11 +883,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   if (sourceStyleLocked) return;
                   if (!componentPath) handleFieldChange("lineHeight", val);
                   patchStyle((prev) =>
-                    updateTailwindClass(
-                      prev,
-                      /\bleading-\[.*?\]|\bleading-(none|tight|snug|normal|relaxed|loose)\b/,
-                      `leading-[${val}]`,
-                    ),
+                    patchTailwindClasses(prev, {
+                      property: "line-height",
+                      value: `leading-[${val}]`,
+                    }),
                   );
                 }}
                 className="h-6 w-16"
@@ -893,11 +920,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     if (!componentPath)
                       handleFieldChange("backgroundColor", item.value);
                     patchContainerStyle((prev) =>
-                      updateTailwindClass(
-                        prev,
-                        /\bbg-\[.*?\]|\bbg-(white|black|stone|slate|zinc|gray)(-\d+)?\b/,
-                        `bg-[${item.value}]`,
-                      ),
+                      patchTailwindClasses(prev, {
+                        property: "background",
+                        value: `bg-[${item.value}]`,
+                      }),
                     );
                   }}
                   className={cn(
@@ -921,11 +947,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 const val = e.target.value;
                 if (!componentPath) handleFieldChange("backgroundColor", val);
                 patchContainerStyle((prev) =>
-                  updateTailwindClass(
-                    prev,
-                    /\bbg-\[.*?\]|\bbg-(white|black|stone|slate|zinc|gray)(-\d+)?\b/,
-                    `bg-[${val}]`,
-                  ),
+                  patchTailwindClasses(prev, {
+                    property: "background",
+                    value: `bg-[${val}]`,
+                  }),
                 );
               }}
               disabled={disabled || sourceStyleLocked}
@@ -942,11 +967,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 const val = e.target.value;
                 if (!componentPath) handleFieldChange("backgroundColor", val);
                 patchContainerStyle((prev) =>
-                  updateTailwindClass(
-                    prev,
-                    /\bbg-\[.*?\]|\bbg-(white|black|stone|slate|zinc|gray)(-\d+)?\b/,
-                    `bg-[${val}]`,
-                  ),
+                  patchTailwindClasses(prev, {
+                    property: "background",
+                    value: `bg-[${val}]`,
+                  }),
                 );
               }}
               disabled={disabled || sourceStyleLocked}
@@ -978,11 +1002,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 if (sourceStyleLocked) return;
                 if (!componentPath) handleFieldChange("borderRadius", val);
                 patchContainerStyle((prev) =>
-                  updateTailwindClass(
-                    prev,
-                    /\brounded-\[.*?\]|\brounded-(none|sm|md|lg|xl|2xl|3xl|full)\b/,
-                    `rounded-[${val}px]`,
-                  ),
+                  patchTailwindClasses(prev, {
+                    property: "border-radius",
+                    value: `rounded-[${val}px]`,
+                  }),
                 );
               }}
               className="h-6 w-20"

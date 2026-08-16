@@ -132,16 +132,14 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
     try {
       const result = await storefrontThemeDal.publishTemplate(data);
       if (result) {
-        try {
-          await storefrontThemeFileDal.createRevision(
-            data.storefrontId,
-            data.themeId,
-            {
-              message: "Published Theme Source",
-              source: "publish",
-            },
-          );
-        } catch {}
+        await storefrontThemeFileDal.createRevision(
+          data.storefrontId,
+          data.themeId,
+          {
+            message: "Published Theme Source",
+            source: "publish",
+          },
+        );
       }
       return result
         ? ok(

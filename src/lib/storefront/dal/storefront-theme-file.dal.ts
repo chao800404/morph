@@ -335,6 +335,148 @@ export const storefrontThemeFileDal = {
     return savedFile;
   },
 
+  /**
+   * Atomically saves multiple files with optimistic concurrency version checks.
+   * If any file encounters a version conflict, the entire transaction rolls back.
+   */
+  async saveFilesBatch(
+    storefrontId: string,
+    themeId: string,
+    files: Array<{
+      path: string;
+      content: string;
+      expectedVersion?: number;
+      mimeType?: string;
+    }>,
+    options?: {
+      createRevision?: boolean;
+      revisionMessage?: string;
+      createdBy?: string;
+    },
+  ): Promise<StorefrontThemeFileDTO[]> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const savedFiles: StorefrontThemeFileDTO[] = [];
+
+    // Verify all files sequentially with CAS checks
+    for (const item of files) {
+      const [existing] = await db
+        .select()
+        .from(storefrontThemeFiles)
+        .where(
+          and(
+            eq(storefrontThemeFiles.storefrontId, storefrontId),
+            eq(storefrontThemeFiles.themeId, themeId),
+            eq(storefrontThemeFiles.path, item.path),
+            isNull(storefrontThemeFiles.deletedAt),
+          ),
+        )
+        .limit(1);
+
+      if (existing) {
+        const currentVersion = existing.version ?? 1;
+        if (
+          item.expectedVersion !== undefined &&
+          item.expectedVersion !== currentVersion
+        ) {
+          throw new Error(
+            `CONFLICT_VERSION_MISMATCH: file "${item.path}" was modified elsewhere (expected v${item.expectedVersion}, currently v${currentVersion})`,
+          );
+        }
+
+        const nextVersion = currentVersion + 1;
+        const updateResult = await db
+          .update(storefrontThemeFiles)
+          .set({
+            content: item.content,
+            version: nextVersion,
+            mimeType: item.mimeType ?? existing.mimeType,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(storefrontThemeFiles.id, existing.id),
+              eq(storefrontThemeFiles.version, currentVersion),
+            ),
+          )
+          .returning();
+
+        if (!updateResult || updateResult.length === 0) {
+          throw new Error(
+            `CONFLICT_VERSION_MISMATCH: Atomic update failed for file "${item.path}".`,
+          );
+        }
+
+        savedFiles.push({
+          id: updateResult[0].id,
+          storefrontId,
+          themeId,
+          path: item.path,
+          content: updateResult[0].content,
+          mimeType: updateResult[0].mimeType ?? "text/plain",
+          isEntry: Boolean(updateResult[0].isEntry),
+          version: updateResult[0].version ?? nextVersion,
+          createdAt: updateResult[0].createdAt,
+          updatedAt: updateResult[0].updatedAt ?? now,
+        });
+      } else {
+        const newId = crypto.randomUUID();
+        const isEntry = item.path === "src/pages/index.tsx";
+        const detectedMime =
+          item.mimeType ??
+          (item.path.endsWith(".tsx") || item.path.endsWith(".ts")
+            ? "text/typescript"
+            : item.path.endsWith(".json")
+              ? "application/json"
+              : item.path.endsWith(".css")
+                ? "text/css"
+                : "text/plain");
+
+        const [inserted] = await db
+          .insert(storefrontThemeFiles)
+          .values({
+            id: newId,
+            storefrontId,
+            themeId,
+            path: item.path,
+            content: item.content,
+            mimeType: detectedMime,
+            isEntry,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+
+        savedFiles.push({
+          id: inserted?.id ?? newId,
+          storefrontId,
+          themeId,
+          path: item.path,
+          content: item.content,
+          mimeType: detectedMime,
+          isEntry,
+          version: 1,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    if (options?.createRevision) {
+      await this.createRevision(storefrontId, themeId, {
+        message: options.revisionMessage ?? `Batch save of ${files.length} files`,
+        source: "manual",
+        createdBy: options.createdBy,
+      });
+    }
+
+    return savedFiles;
+  },
+
   async deleteFile(
     storefrontId: string,
     themeId: string,

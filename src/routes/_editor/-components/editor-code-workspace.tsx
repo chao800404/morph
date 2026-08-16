@@ -45,6 +45,7 @@ type EditorCodeWorkspaceProps = {
     resolution: "reload" | "force_mine",
   ) => void;
   onRefreshPreview?: () => void;
+  onDirtyFilesChange?: (dirtyFiles: string[]) => void;
   onSaveFile?: (
     path: string,
     content: string,
@@ -82,6 +83,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   externalConflictFiles,
   onResolveConflict,
   onRefreshPreview,
+  onDirtyFilesChange,
   onSaveFile,
 }: EditorCodeWorkspaceProps) {
   const queryClient = useQueryClient();
@@ -272,6 +274,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     setFileContents((prev) => ({ ...prev, [activeFilePath]: value }));
     setDirtyFiles((prev) => ({ ...prev, [activeFilePath]: true }));
   };
+
+  useEffect(() => {
+    const dirty = Object.keys(dirtyFiles).filter((k) => dirtyFiles[k]);
+    onDirtyFilesChange?.(dirty);
+  }, [dirtyFiles, onDirtyFilesChange]);
 
   const handleSaveCurrentFile = useCallback(() => {
     if (!activeFilePath || saveMutation.isPending) return;

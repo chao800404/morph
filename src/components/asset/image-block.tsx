@@ -102,7 +102,7 @@ export const ImageSmBlock = ({
       <TooltipTrigger asChild>
         <div
           className={cn(
-            "border w-6 h-8 rounded-lg relative bg-component overflow-hidden",
+            "border w-6 h-8 rounded-[4px] relative bg-component overflow-hidden",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
             className,
           )}

@@ -564,6 +564,11 @@ export function VisualEditorShell({
 
   const [activeElementKey, setActiveElementKey] = useState<string | null>(null);
   const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
+  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
+  const [activeComputedStyle, setActiveComputedStyle] = useState<
+    Record<string, string> | null
+  >(null);
+  const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -879,6 +884,49 @@ export function VisualEditorShell({
       handleUnifiedSaveFile,
     ],
   );
+
+  const handlePublish = useCallback(async () => {
+    // 1. Block if Monaco has unsaved edits
+    if (monacoDirtyFiles.length > 0) {
+      toast.error(
+        `Cannot publish: You have unsaved changes in Code Editor (${monacoDirtyFiles.join(", ")}). Please save them first.`,
+      );
+      return;
+    }
+
+    // 2. Block if any file is in conflict
+    if (Object.keys(activeConflicts).length > 0) {
+      toast.error(
+        "Cannot publish: You have unresolved file conflicts. Please resolve them first.",
+      );
+      return;
+    }
+
+    // 3. Flush any pending debounced saves
+    const pendingFiles = Array.from(pendingSaveTimersRef.current.keys());
+    for (const filePath of pendingFiles) {
+      const timer = pendingSaveTimersRef.current.get(filePath);
+      if (timer) clearTimeout(timer);
+      pendingSaveTimersRef.current.delete(filePath);
+      const pendingContent = sourceCodeBufferRef.current.get(filePath);
+      if (pendingContent !== undefined) {
+        try {
+          await handleUnifiedSaveFile(filePath, pendingContent);
+        } catch (err: any) {
+          toast.error(`Failed to save ${filePath}: ${err.message}`);
+          return;
+        }
+      }
+    }
+
+    // 4. Trigger publish mutation
+    publishMutation.mutate();
+  }, [
+    monacoDirtyFiles,
+    activeConflicts,
+    handleUnifiedSaveFile,
+    publishMutation,
+  ]);
 
   const handleUpdateThemeFileStyle = useCallback(
     (
@@ -1210,6 +1258,10 @@ export function VisualEditorShell({
         return;
       }
       const sectionId = message.sectionId;
+      const nodeId =
+        "nodeId" in message && typeof message.nodeId === "string"
+          ? message.nodeId
+          : null;
       const elementKey =
         "elementKey" in message && typeof message.elementKey === "string"
           ? message.elementKey
@@ -1220,8 +1272,17 @@ export function VisualEditorShell({
           : "field" in message && typeof message.field === "string"
             ? message.field
             : null;
+      const computedStyle =
+        "computedStyle" in message &&
+        typeof message.computedStyle === "object" &&
+        message.computedStyle !== null
+          ? (message.computedStyle as Record<string, string>)
+          : null;
+
+      setActiveNodeId(nodeId);
       setActiveElementKey(elementKey);
       setActiveFieldKey(fieldKey);
+      setActiveComputedStyle(computedStyle);
 
       onSearchChange({ section: sectionId });
     };
@@ -2183,7 +2244,7 @@ export function VisualEditorShell({
               Object.values(themeFileSaveErrors).length > 0 ||
               publishMutation.isPending
             }
-            onClick={() => publishMutation.mutate()}
+            onClick={handlePublish}
           >
             Publish
           </Button>
@@ -2206,6 +2267,7 @@ export function VisualEditorShell({
           externalConflictFiles={activeConflicts}
           onResolveConflict={handleResolveConflict}
           onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
+          onDirtyFilesChange={setMonacoDirtyFiles}
           onSaveFile={handleUnifiedSaveFile}
         />
       </div>
@@ -2560,8 +2622,10 @@ export function VisualEditorShell({
           onSelectCommentThread={handleSelectCommentThread}
           previewWidth={previewWidth}
           themeFiles={themeFiles}
+          activeNodeId={activeNodeId}
           activeElementKey={activeElementKey}
           activeFieldKey={activeFieldKey}
+          activeComputedStyle={activeComputedStyle}
           onUpdateThemeFileStyle={handleUpdateThemeFileStyle}
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}

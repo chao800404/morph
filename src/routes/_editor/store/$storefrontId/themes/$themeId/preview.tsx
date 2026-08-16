@@ -718,14 +718,36 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       positionOverlays();
 
       if (selectable.sectionId) {
+        const computed = window.getComputedStyle(selectable.element);
+        const computedStyle = {
+          fontSize: computed.fontSize,
+          lineHeight: computed.lineHeight,
+          fontFamily: computed.fontFamily,
+          fontWeight: computed.fontWeight,
+          textAlign: computed.textAlign,
+          paddingTop: computed.paddingTop,
+          paddingBottom: computed.paddingBottom,
+          paddingLeft: computed.paddingLeft,
+          paddingRight: computed.paddingRight,
+          backgroundColor: computed.backgroundColor,
+          borderRadius: computed.borderRadius,
+        };
+
+        const morphNodeId =
+          selectable.element.getAttribute("data-morph-node") ||
+          selectable.element.dataset.morphNode ||
+          undefined;
+
         window.parent.postMessage(
           {
             type: "morph:storefront-preview-select-section",
             sectionId: selectable.sectionId,
             componentType: selectable.type,
+            nodeId: morphNodeId,
             elementKey: selectable.elementKey,
             fieldKey: selectable.fieldKey,
             field: selectable.fieldKey ?? selectable.elementKey,
+            computedStyle,
           },
           window.location.origin,
         );

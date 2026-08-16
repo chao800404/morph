@@ -13,6 +13,7 @@ export type SourceLocation = {
 };
 
 export type ComponentElementMeta = {
+  nodeId?: string;
   elementName: string;
   tag: string;
   className: string;
@@ -32,18 +33,20 @@ export type ComponentElementMeta = {
 export type ParsedComponentMeta = {
   defaultProps: Record<string, string>;
   elements: Record<string, ComponentElementMeta>;
+  nodeMap: Record<string, ComponentElementMeta>;
   parseOk: boolean;
   diagnostics: string[];
 };
 
 /**
- * Resolves actual component file path from section type using morph.theme.json manifest
- * or convention-based verification against existing workspace files.
+ * Resolves actual component file path from section type and optional componentRef
+ * using morph.theme.json manifest or convention-based verification against existing workspace files.
  * Returns null if the section has no dedicated source file (CMS-only).
  */
 export function getComponentFilePath(
   type: string,
   themeFiles?: Array<{ path: string; content?: string }>,
+  componentRef?: string,
 ): string | null {
   const normalizedType = type.toLowerCase().trim();
   const strippedType = normalizedType.replace(/-/g, "");
@@ -55,7 +58,19 @@ export function getComponentFilePath(
       try {
         const manifest = JSON.parse(manifestFile.content);
 
-        // A. Check structured `manifest.sections` object mapping
+        // A. If componentRef is specified e.g. "hero.editorial", check manifest.components[componentRef]
+        if (componentRef && manifest.components && typeof manifest.components === "object") {
+          const compConfig = manifest.components[componentRef];
+          const sourcePath =
+            typeof compConfig === "string"
+              ? compConfig
+              : compConfig?.source ?? compConfig?.path;
+          if (sourcePath && themeFiles.some((f) => f.path === sourcePath)) {
+            return sourcePath;
+          }
+        }
+
+        // B. Check structured `manifest.sections` object mapping
         if (manifest.sections && typeof manifest.sections === "object") {
           const sectionConfig =
             manifest.sections[normalizedType] ?? manifest.sections[strippedType];
@@ -68,10 +83,13 @@ export function getComponentFilePath(
           }
         }
 
-        // B. Check `manifest.components` array
+        // C. Check `manifest.components` array
         if (Array.isArray(manifest.components)) {
           const match = manifest.components.find(
-            (c: { name: string; path?: string; source?: string }) => {
+            (c: { name: string; path?: string; source?: string; id?: string }) => {
+              if (componentRef && (c.id === componentRef || c.name === componentRef)) {
+                return true;
+              }
               const name = (c.name || "").toLowerCase().replace(/-/g, "");
               return name === strippedType || name === normalizedType;
             },
@@ -150,6 +168,7 @@ function walk(node: any, visitor: (node: any) => void) {
 export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
   const defaultProps: Record<string, string> = {};
   const elements: Record<string, ComponentElementMeta> = {};
+  const nodeMap: Record<string, ComponentElementMeta> = {};
   let parseOk = true;
   const diagnostics: string[] = [];
 
@@ -171,7 +190,7 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
         }
       }
 
-      // 2. Extract JSX element with data-morph-element (strictly JSXElement or JSXSelfClosingElement)
+      // 2. Extract JSX element with data-morph-element or data-morph-node
       let openingElement: any = null;
       let elementStart = 0;
       let elementEnd = 0;
@@ -193,6 +212,7 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
       }
 
       if (openingElement && openingElement.attributes) {
+        let morphNodeId: string | null = null;
         let morphElementName: string | null = null;
         let className = "";
         let classNameOffsets:
@@ -203,7 +223,16 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
           if (attr.type === "JSXAttribute" && attr.name?.type === "JSXIdentifier") {
             const attrName = attr.name.name;
 
-            if (attrName === "data-morph-element" && attr.value) {
+            if (attrName === "data-morph-node" && attr.value) {
+              if (attr.value.type === "StringLiteral") {
+                morphNodeId = attr.value.value;
+              } else if (
+                attr.value.type === "JSXExpressionContainer" &&
+                attr.value.expression?.type === "StringLiteral"
+              ) {
+                morphNodeId = attr.value.expression.value;
+              }
+            } else if (attrName === "data-morph-element" && attr.value) {
               if (attr.value.type === "StringLiteral") {
                 morphElementName = attr.value.value;
               } else if (
@@ -246,7 +275,9 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
             node.type === "JSXSelfClosingElement",
         );
 
-        if (morphElementName) {
+        const primaryKey = morphNodeId || morphElementName;
+
+        if (primaryKey) {
           let tagName = "div";
           if (openingElement.name?.type === "JSXIdentifier") {
             tagName = openingElement.name.name;
@@ -255,8 +286,9 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
           const line = openingElement.loc?.start?.line ?? 1;
           const column = (openingElement.loc?.start?.column ?? 0) + 1;
 
-          elements[morphElementName] = {
-            elementName: morphElementName,
+          const meta: ComponentElementMeta = {
+            nodeId: morphNodeId ?? undefined,
+            elementName: morphElementName ?? primaryKey,
             tag: tagName,
             className,
             isSelfClosing,
@@ -270,6 +302,14 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
             openingEndOffset: openingEnd,
             classNameOffsets,
           };
+
+          if (morphElementName) {
+            elements[morphElementName] = meta;
+          }
+          if (morphNodeId) {
+            elements[morphNodeId] = meta;
+            nodeMap[morphNodeId] = meta;
+          }
         }
       }
     });
@@ -283,6 +323,7 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
   return {
     defaultProps,
     elements,
+    nodeMap,
     parseOk,
     diagnostics,
   };

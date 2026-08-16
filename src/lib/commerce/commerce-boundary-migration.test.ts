@@ -76,6 +76,15 @@ describe("commerce module boundary migration", () => {
         ON storefronts(sales_channel_id) WHERE deleted_at IS NULL;
       CREATE UNIQUE INDEX storefronts_active_domain_unique
         ON storefronts(domain) WHERE deleted_at IS NULL AND domain IS NOT NULL;
+      CREATE TABLE storefront_domains (id text PRIMARY KEY NOT NULL);
+      CREATE TABLE storefront_themes (id text PRIMARY KEY NOT NULL);
+      CREATE TABLE storefront_theme_templates (id text PRIMARY KEY NOT NULL);
+      CREATE TABLE product_category_links (product_id text NOT NULL, category_id text NOT NULL);
+      CREATE TABLE product_product_options (id text PRIMARY KEY NOT NULL);
+      CREATE TABLE product_tag_links (product_id text NOT NULL, tag_id text NOT NULL);
+      CREATE TABLE product_variant_option_values (id text PRIMARY KEY NOT NULL);
+      CREATE TABLE product_variant_price_history (id text PRIMARY KEY NOT NULL);
+      CREATE TABLE product_variant_prices (id text PRIMARY KEY NOT NULL);
       INSERT INTO users VALUES ('user-1');
       INSERT INTO sales_channels VALUES ('channel-1');
       INSERT INTO assets VALUES ('asset-1');

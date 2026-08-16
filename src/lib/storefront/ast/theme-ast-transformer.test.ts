@@ -244,4 +244,53 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(parseTailwindBorderRadius("rounded-2xl shadow-lg")).toBe(16);
     expect(parseTailwindBorderRadius("rounded-full")).toBe(9999);
   });
+
+  it("extracts stable data-morph-node IDs and enables precise multi-node patching", async () => {
+    const { parseComponentSource, patchElementClassNameResult, getComponentFilePath } =
+      await import("./theme-ast-transformer");
+
+    const multiNodeSource = `
+export function MultiCard() {
+  return (
+    <div>
+      <h2 data-morph-node="card-title-1" data-morph-element="heading" className="text-xl">Title 1</h2>
+      <h2 data-morph-node="card-title-2" data-morph-element="heading" className="text-2xl">Title 2</h2>
+    </div>
+  );
+}
+`;
+
+    const parsed = parseComponentSource(multiNodeSource);
+    expect(parsed.parseOk).toBe(true);
+    expect(parsed.nodeMap["card-title-1"]?.className).toBe("text-xl");
+    expect(parsed.nodeMap["card-title-2"]?.className).toBe("text-2xl");
+
+    // Patch specific node by stable nodeId
+    const patchRes = patchElementClassNameResult(
+      multiNodeSource,
+      "card-title-2",
+      () => "text-3xl font-bold",
+    );
+    expect(patchRes.editable).toBe(true);
+    expect(patchRes.code).toContain('data-morph-node="card-title-2" data-morph-element="heading" className="text-3xl font-bold"');
+    expect(patchRes.code).toContain('data-morph-node="card-title-1" data-morph-element="heading" className="text-xl"');
+
+    // Test componentRef manifest resolution
+    const files = [
+      {
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          components: {
+            "hero.editorial": { source: "src/components/HeroEditorial.tsx" },
+            "hero.video": { source: "src/components/HeroVideo.tsx" },
+          },
+        }),
+      },
+      { path: "src/components/HeroEditorial.tsx", content: "" },
+      { path: "src/components/HeroVideo.tsx", content: "" },
+    ];
+
+    expect(getComponentFilePath("hero", files, "hero.editorial")).toBe("src/components/HeroEditorial.tsx");
+    expect(getComponentFilePath("hero", files, "hero.video")).toBe("src/components/HeroVideo.tsx");
+  });
 });

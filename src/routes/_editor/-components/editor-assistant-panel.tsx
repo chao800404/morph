@@ -30,8 +30,10 @@ type EditorAssistantPanelProps = {
   className?: string;
   isCommentMode?: boolean;
   themeFiles?: StorefrontThemeFileDTO[];
+  activeNodeId?: string | null;
   activeElementKey?: string | null;
   activeFieldKey?: string | null;
+  activeComputedStyle?: Record<string, string> | null;
   onUpdateThemeFileStyle?: (
     filePath: string,
     elementName: string,
@@ -72,8 +74,10 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onSelectCommentThread,
   previewWidth,
   themeFiles,
+  activeNodeId,
   activeElementKey,
   activeFieldKey,
+  activeComputedStyle,
   onUpdateThemeFileStyle,
   onSectionPropsChange,
   onSectionToggleEnabled,
@@ -220,8 +224,10 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               key={selectedSection.id}
               section={selectedSection}
               themeFiles={themeFiles}
+              activeNodeId={activeNodeId}
               activeElementKey={activeElementKey}
               activeFieldKey={activeFieldKey}
+              activeComputedStyle={activeComputedStyle}
               onUpdateThemeFileStyle={onUpdateThemeFileStyle}
               onPropsChange={(nextProps) =>
                 onSectionPropsChange?.(selectedSection.id, nextProps)

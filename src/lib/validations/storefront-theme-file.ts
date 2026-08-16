@@ -41,6 +41,23 @@ export const saveThemeFileInputSchema = z.object({
   revisionMessage: z.string().max(200).optional(),
 });
 
+export const saveThemeFilesBatchInputSchema = z.object({
+  storefrontId: z.string().min(1),
+  themeId: z.string().min(1),
+  files: z
+    .array(
+      z.object({
+        path: safeThemeFilePathSchema,
+        content: z.string(),
+        mimeType: z.string().optional(),
+        expectedVersion: z.number().int().min(1).optional(),
+      }),
+    )
+    .min(1, "Batch must contain at least one file"),
+  createRevision: z.boolean().optional().default(false),
+  revisionMessage: z.string().max(200).optional(),
+});
+
 export const deleteThemeFileInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),

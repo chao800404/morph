@@ -11,6 +11,7 @@ import {
   listThemeRevisionsInputSchema,
   rollbackThemeRevisionInputSchema,
   saveThemeFileInputSchema,
+  saveThemeFilesBatchInputSchema,
 } from "@/lib/validations/storefront-theme-file";
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
@@ -125,6 +126,42 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
         error,
         "SAVE_FAILED",
         "Failed to save theme file",
+      );
+    }
+  });
+
+export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
+  .validator((data: unknown) => saveThemeFilesBatchInputSchema.parse(data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data, context }) => {
+    try {
+      const saved = await storefrontThemeFileDal.saveFilesBatch(
+        data.storefrontId,
+        data.themeId,
+        data.files,
+        {
+          createRevision: data.createRevision,
+          revisionMessage: data.revisionMessage,
+          createdBy: context.user?.id,
+        },
+      );
+      return ok("Theme files batch saved", { files: saved });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("CONFLICT_VERSION_MISMATCH")
+      ) {
+        return fail(
+          "Version conflict detected in batch: one or more files were modified concurrently.",
+          { error: "VERSION_CONFLICT" },
+        );
+      }
+
+      return failure(
+        "Save theme files batch error",
+        error,
+        "SAVE_FAILED",
+        "Failed to save theme files batch",
       );
     }
   });

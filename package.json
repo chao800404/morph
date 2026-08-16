@@ -13,6 +13,7 @@
     "check:bundle": "node scripts/check-client-bundle.mjs",
     "serve": "vite preview",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "deploy": "pnpm run build && wrangler deploy",
     "preview": "pnpm run build && vite preview",
     "setup:cloudflare": "./scripts/setup-cloudflare.sh",
