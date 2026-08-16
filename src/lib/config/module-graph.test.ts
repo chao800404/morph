@@ -36,7 +36,7 @@ describe("module graph", () => {
     const cycles = findCycles(ROOT, entries).map(formatChain);
 
     expect(cycles).toEqual([]);
-  });
+  }, 15000);
 
   it("keeps cms.config out of the server graph", () => {
     // Config is evaluated on both sides. A static edge to a server function

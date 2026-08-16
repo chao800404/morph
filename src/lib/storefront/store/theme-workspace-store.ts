@@ -45,23 +45,53 @@ export interface ThemeConflictResolution {
   serverVersion: number | null;
 }
 
+export interface WorkspaceScope {
+  storefrontId: string;
+  themeId: string;
+}
+
 export interface ThemeWorkspaceStore {
+  activeWorkspaceKey: string | null;
+  workspaces: Record<string, Record<string, ThemeWorkspaceFileState>>;
   files: Record<string, ThemeWorkspaceFileState>;
-  hydrateFromQuery: (themeFiles: StorefrontThemeFileDTO[]) => void;
-  updateLocalContent: (path: string, content: string) => void;
-  markDebouncing: (path: string) => void;
-  markSaving: (path: string) => void;
-  markSaved: (saved: StorefrontThemeFileDTO) => void;
-  markError: (path: string, message: string) => void;
-  markConflict: (path: string, conflict: ThemeFileConflict) => void;
+
+  setActiveWorkspace: (storefrontId: string, themeId: string) => void;
+  hydrateFromQuery: (
+    storefrontId: string,
+    themeId: string,
+    themeFiles: StorefrontThemeFileDTO[],
+  ) => void;
+  getWorkspaceFiles: (
+    storefrontId?: string,
+    themeId?: string,
+  ) => Record<string, ThemeWorkspaceFileState>;
+  updateLocalContent: (
+    path: string,
+    content: string,
+    scope?: WorkspaceScope,
+  ) => void;
+  markDebouncing: (path: string, scope?: WorkspaceScope) => void;
+  markSaving: (path: string, scope?: WorkspaceScope) => void;
+  markSaved: (saved: StorefrontThemeFileDTO, scope?: WorkspaceScope) => void;
+  markError: (path: string, message: string, scope?: WorkspaceScope) => void;
+  markConflict: (
+    path: string,
+    conflict: ThemeFileConflict,
+    scope?: WorkspaceScope,
+  ) => void;
   resolveConflict: (
     path: string,
     resolution: "reload" | "force_mine",
+    scope?: WorkspaceScope,
   ) => ThemeConflictResolution | null;
-  discardLocalChanges: (path: string) => void;
-  getDirtyFiles: () => string[];
-  hasUnsavedEdits: () => boolean;
-  hasActiveConflictsOrErrors: () => boolean;
+  discardLocalChanges: (path: string, scope?: WorkspaceScope) => void;
+  getDirtyFiles: (scope?: WorkspaceScope) => string[];
+  hasUnsavedEdits: (scope?: WorkspaceScope) => boolean;
+  hasActiveConflictsOrErrors: (scope?: WorkspaceScope) => boolean;
+}
+
+export function toWorkspaceKey(storefrontId: string, themeId: string): string {
+  return `${storefrontId}:${themeId}`;
 }
 
 function fromServerFile(file: StorefrontThemeFileDTO): ThemeWorkspaceFileState {
@@ -77,17 +107,52 @@ function fromServerFile(file: StorefrontThemeFileDTO): ThemeWorkspaceFileState {
   };
 }
 
+function resolveScopeKey(
+  state: { activeWorkspaceKey: string | null },
+  scope?: WorkspaceScope,
+): string {
+  if (scope) {
+    return toWorkspaceKey(scope.storefrontId, scope.themeId);
+  }
+  return state.activeWorkspaceKey ?? "default";
+}
+
 export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => ({
+  activeWorkspaceKey: null,
+  workspaces: {},
   files: {},
 
-  hydrateFromQuery: (themeFiles) => {
+  setActiveWorkspace: (storefrontId: string, themeId: string) => {
+    const key = toWorkspaceKey(storefrontId, themeId);
     set((state) => {
+      if (state.activeWorkspaceKey === key) return state;
+      const workspaceFiles = state.workspaces[key] ?? {};
+      return {
+        activeWorkspaceKey: key,
+        files: workspaceFiles,
+      };
+    });
+  },
+
+  getWorkspaceFiles: (storefrontId?: string, themeId?: string) => {
+    const state = get();
+    if (storefrontId && themeId) {
+      const key = toWorkspaceKey(storefrontId, themeId);
+      return state.workspaces[key] ?? {};
+    }
+    return state.files;
+  },
+
+  hydrateFromQuery: (storefrontId, themeId, themeFiles) => {
+    const targetKey = toWorkspaceKey(storefrontId, themeId);
+    set((state) => {
+      const currentWorkspaceFiles = state.workspaces[targetKey] ?? {};
       const incoming = new Map(themeFiles.map((file) => [file.path, file]));
       let hasChanges = false;
-      const next = { ...state.files };
+      const next = { ...currentWorkspaceFiles };
 
       for (const file of themeFiles) {
-        const current = state.files[file.path];
+        const current = currentWorkspaceFiles[file.path];
         if (!current) {
           next[file.path] = fromServerFile(file);
           hasChanges = true;
@@ -158,7 +223,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         }
       }
 
-      for (const [path, current] of Object.entries(state.files)) {
+      for (const [path, current] of Object.entries(currentWorkspaceFiles)) {
         if (incoming.has(path) || !current.serverExists) continue;
         if (current.saveState === "saving") continue;
 
@@ -187,29 +252,49 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         }
       }
 
-      if (!hasChanges) return state;
-      return { files: next };
+      if (!hasChanges && state.activeWorkspaceKey === targetKey) {
+        return state;
+      }
+
+      const nextWorkspaces = {
+        ...state.workspaces,
+        [targetKey]: next,
+      };
+
+      const isActive = state.activeWorkspaceKey === targetKey;
+      return {
+        workspaces: nextWorkspaces,
+        activeWorkspaceKey: state.activeWorkspaceKey ?? targetKey,
+        files: isActive || state.activeWorkspaceKey === null ? next : state.files,
+      };
     });
   },
 
-  updateLocalContent: (path, content) => {
+  updateLocalContent: (path, content, scope) => {
     set((state) => {
-      const current = state.files[path];
+      const key = resolveScopeKey(state, scope);
+      const workspaceFiles = state.workspaces[key] ?? state.files;
+      const current = workspaceFiles[path];
+
       if (!current) {
-        return {
-          files: {
-            ...state.files,
-            [path]: {
-              path,
-              serverExists: false,
-              serverFileId: null,
-              serverContent: "",
-              localContent: content,
-              serverVersion: null,
-              dirty: true,
-              saveState: "dirty",
-            },
+        const next = {
+          ...workspaceFiles,
+          [path]: {
+            path,
+            serverExists: false,
+            serverFileId: null,
+            serverContent: "",
+            localContent: content,
+            serverVersion: null,
+            dirty: true,
+            saveState: "dirty" as const,
           },
+        };
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
         };
       }
 
@@ -224,116 +309,174 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         ? content !== current.serverContent
         : true;
 
-      return {
-        files: {
-          ...state.files,
-          [path]: {
-            ...current,
-            localContent: content,
-            dirty,
-            saveState: current.conflict
-              ? "conflict"
-              : dirty
-                ? "dirty"
-                : "clean",
-            errorMessage: undefined,
-          },
+      const next = {
+        ...workspaceFiles,
+        [path]: {
+          ...current,
+          localContent: content,
+          dirty,
+          saveState: current.conflict
+            ? ("conflict" as const)
+            : dirty
+              ? ("dirty" as const)
+              : ("clean" as const),
+          errorMessage: undefined,
         },
+      };
+
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+      return {
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
       };
     });
   },
 
-  markDebouncing: (path) => {
+  markDebouncing: (path, scope) => {
     set((state) => {
-      const current = state.files[path];
+      const key = resolveScopeKey(state, scope);
+      const workspaceFiles = state.workspaces[key] ?? state.files;
+      const current = workspaceFiles[path];
       if (!current || current.conflict) return state;
+
+      const next = {
+        ...workspaceFiles,
+        [path]: { ...current, saveState: "debouncing" as const },
+      };
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
       return {
-        files: {
-          ...state.files,
-          [path]: { ...current, saveState: "debouncing" },
-        },
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
       };
     });
   },
 
-  markSaving: (path) => {
+  markSaving: (path, scope) => {
     set((state) => {
-      const current = state.files[path];
+      const key = resolveScopeKey(state, scope);
+      const workspaceFiles = state.workspaces[key] ?? state.files;
+      const current = workspaceFiles[path];
       if (!current || current.conflict) return state;
-      return {
-        files: {
-          ...state.files,
-          [path]: { ...current, saveState: "saving", errorMessage: undefined },
+
+      const next = {
+        ...workspaceFiles,
+        [path]: {
+          ...current,
+          saveState: "saving" as const,
+          errorMessage: undefined,
         },
+      };
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+      return {
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
       };
     });
   },
 
-  markSaved: (saved) => {
+  markSaved: (saved, scope) => {
     set((state) => {
-      const current = state.files[saved.path] ?? fromServerFile(saved);
+      const key = resolveScopeKey(state, scope ?? {
+        storefrontId: saved.storefrontId,
+        themeId: saved.themeId,
+      });
+      const workspaceFiles = state.workspaces[key] ?? state.files;
+      const current = workspaceFiles[saved.path] ?? fromServerFile(saved);
       const stillDirty = current.localContent !== saved.content;
-      return {
-        files: {
-          ...state.files,
-          [saved.path]: {
-            ...current,
-            serverExists: true,
-            serverFileId: saved.id,
-            serverContent: saved.content,
-            serverVersion: saved.version,
-            dirty: stillDirty,
-            saveState: stillDirty ? "dirty" : "clean",
-            conflict: undefined,
-            errorMessage: undefined,
-          },
+
+      const next = {
+        ...workspaceFiles,
+        [saved.path]: {
+          ...current,
+          serverExists: true,
+          serverFileId: saved.id,
+          serverContent: saved.content,
+          serverVersion: saved.version,
+          dirty: stillDirty,
+          saveState: stillDirty ? ("dirty" as const) : ("clean" as const),
+          conflict: undefined,
+          errorMessage: undefined,
         },
+      };
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+      return {
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
       };
     });
   },
 
-  markError: (path, message) => {
+  markError: (path, message, scope) => {
     set((state) => {
-      const current = state.files[path];
+      const key = resolveScopeKey(state, scope);
+      const workspaceFiles = state.workspaces[key] ?? state.files;
+      const current = workspaceFiles[path];
       if (!current) return state;
-      return {
-        files: {
-          ...state.files,
-          [path]: { ...current, saveState: "error", errorMessage: message },
+
+      const next = {
+        ...workspaceFiles,
+        [path]: {
+          ...current,
+          saveState: "error" as const,
+          errorMessage: message,
         },
+      };
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+      return {
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
       };
     });
   },
 
-  markConflict: (path, conflict) => {
+  markConflict: (path, conflict, scope) => {
     set((state) => {
-      const current = state.files[path];
+      const key = resolveScopeKey(state, scope);
+      const workspaceFiles = state.workspaces[key] ?? state.files;
+      const current = workspaceFiles[path];
       if (!current) return state;
-      return {
-        files: {
-          ...state.files,
-          [path]: {
-            ...current,
-            saveState: "conflict",
-            conflict,
-            errorMessage: undefined,
-          },
+
+      const next = {
+        ...workspaceFiles,
+        [path]: {
+          ...current,
+          saveState: "conflict" as const,
+          conflict,
+          errorMessage: undefined,
         },
+      };
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+      return {
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
       };
     });
   },
 
-  resolveConflict: (path, resolution) => {
+  resolveConflict: (path, resolution, scope) => {
     const state = get();
-    const current = state.files[path];
+    const key = resolveScopeKey(state, scope);
+    const workspaceFiles = state.workspaces[key] ?? state.files;
+    const current = workspaceFiles[path];
     if (!current?.conflict) return null;
     const conflict = current.conflict;
 
     if (resolution === "reload") {
       if (!conflict.remoteExists) {
-        const next = { ...state.files };
+        const next = { ...workspaceFiles };
         delete next[path];
-        set({ files: next });
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+        set({
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        });
         return {
           content: null,
           serverExists: false,
@@ -342,22 +485,26 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         };
       }
 
-      set({
-        files: {
-          ...state.files,
-          [path]: {
-            ...current,
-            serverExists: true,
-            serverFileId: conflict.remoteFileId,
-            serverContent: conflict.remoteContent,
-            localContent: conflict.remoteContent,
-            serverVersion: conflict.remoteVersion,
-            dirty: false,
-            saveState: "clean",
-            conflict: undefined,
-            errorMessage: undefined,
-          },
+      const next = {
+        ...workspaceFiles,
+        [path]: {
+          ...current,
+          serverExists: true,
+          serverFileId: conflict.remoteFileId,
+          serverContent: conflict.remoteContent,
+          localContent: conflict.remoteContent,
+          serverVersion: conflict.remoteVersion,
+          dirty: false,
+          saveState: "clean" as const,
+          conflict: undefined,
+          errorMessage: undefined,
         },
+      };
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+      set({
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
       });
       return {
         content: conflict.remoteContent,
@@ -367,21 +514,25 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
       };
     }
 
-    set({
-      files: {
-        ...state.files,
-        [path]: {
-          ...current,
-          serverExists: conflict.remoteExists,
-          serverFileId: conflict.remoteExists ? conflict.remoteFileId : null,
-          serverContent: conflict.remoteExists ? conflict.remoteContent : "",
-          serverVersion: conflict.remoteExists ? conflict.remoteVersion : null,
-          dirty: true,
-          saveState: "dirty",
-          conflict: undefined,
-          errorMessage: undefined,
-        },
+    const next = {
+      ...workspaceFiles,
+      [path]: {
+        ...current,
+        serverExists: conflict.remoteExists,
+        serverFileId: conflict.remoteExists ? conflict.remoteFileId : null,
+        serverContent: conflict.remoteExists ? conflict.remoteContent : "",
+        serverVersion: conflict.remoteExists ? conflict.remoteVersion : null,
+        dirty: true,
+        saveState: "dirty" as const,
+        conflict: undefined,
+        errorMessage: undefined,
       },
+    };
+    const nextWorkspaces = { ...state.workspaces, [key]: next };
+    const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+    set({
+      workspaces: nextWorkspaces,
+      files: isActive ? next : state.files,
     });
 
     return {
@@ -392,46 +543,71 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
     };
   },
 
-  discardLocalChanges: (path) => {
+  discardLocalChanges: (path, scope) => {
     set((state) => {
-      const current = state.files[path];
+      const key = resolveScopeKey(state, scope);
+      const workspaceFiles = state.workspaces[key] ?? state.files;
+      const current = workspaceFiles[path];
       if (!current) return state;
+
       if (!current.serverExists) {
-        const next = { ...state.files };
+        const next = { ...workspaceFiles };
         delete next[path];
-        return { files: next };
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        };
       }
-      return {
-        files: {
-          ...state.files,
-          [path]: {
-            ...current,
-            localContent: current.serverContent,
-            dirty: false,
-            saveState: "clean",
-            conflict: undefined,
-            errorMessage: undefined,
-          },
+
+      const next = {
+        ...workspaceFiles,
+        [path]: {
+          ...current,
+          localContent: current.serverContent,
+          dirty: false,
+          saveState: "clean" as const,
+          conflict: undefined,
+          errorMessage: undefined,
         },
+      };
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key || state.activeWorkspaceKey === null;
+      return {
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
       };
     });
   },
 
-  getDirtyFiles: () =>
-    Object.values(get().files)
+  getDirtyFiles: (scope) => {
+    const state = get();
+    const key = resolveScopeKey(state, scope);
+    const workspaceFiles = state.workspaces[key] ?? state.files;
+    return Object.values(workspaceFiles)
       .filter((file) => file.dirty)
-      .map((file) => file.path),
+      .map((file) => file.path);
+  },
 
-  hasUnsavedEdits: () =>
-    Object.values(get().files).some(
+  hasUnsavedEdits: (scope) => {
+    const state = get();
+    const key = resolveScopeKey(state, scope);
+    const workspaceFiles = state.workspaces[key] ?? state.files;
+    return Object.values(workspaceFiles).some(
       (file) =>
         file.dirty ||
         file.saveState === "debouncing" ||
         file.saveState === "saving",
-    ),
+    );
+  },
 
-  hasActiveConflictsOrErrors: () =>
-    Object.values(get().files).some(
+  hasActiveConflictsOrErrors: (scope) => {
+    const state = get();
+    const key = resolveScopeKey(state, scope);
+    const workspaceFiles = state.workspaces[key] ?? state.files;
+    return Object.values(workspaceFiles).some(
       (file) => file.saveState === "conflict" || file.saveState === "error",
-    ),
+    );
+  },
 }));

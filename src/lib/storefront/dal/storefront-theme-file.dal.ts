@@ -21,13 +21,41 @@ function detectThemeMimeType(path: string, mimeType?: string | null) {
   return "text/plain";
 }
 
-function prepareThemeOwnershipGuard(storefrontId: string, themeId: string) {
+function prepareThemeOwnershipGuard(
+  storefrontId: string,
+  themeId: string,
+  expectedSourceGeneration?: number,
+) {
+  if (expectedSourceGeneration !== undefined) {
+    return env.DATABASE.prepare(`
+      SELECT CASE WHEN EXISTS (
+        SELECT 1 FROM storefront_themes
+        WHERE id = ?1
+          AND storefront_id = ?2
+          AND source_generation = ?3
+          AND deleted_at IS NULL
+      ) THEN 1 ELSE json('') END AS ok
+    `).bind(themeId, storefrontId, expectedSourceGeneration);
+  }
+
   return env.DATABASE.prepare(`
     SELECT CASE WHEN EXISTS (
       SELECT 1 FROM storefront_themes
       WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL
     ) THEN 1 ELSE json('') END AS ok
   `).bind(themeId, storefrontId);
+}
+
+function prepareIncrementThemeSourceGeneration(
+  storefrontId: string,
+  themeId: string,
+  now: string,
+) {
+  return env.DATABASE.prepare(`
+    UPDATE storefront_themes
+    SET source_generation = source_generation + 1, updated_at = ?1
+    WHERE id = ?2 AND storefront_id = ?3 AND deleted_at IS NULL
+  `).bind(now, themeId, storefrontId);
 }
 
 function prepareRevisionInsert(args: {
@@ -432,6 +460,10 @@ export const storefrontThemeFileDal = {
       );
     }
 
+    statements.push(
+      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
+    );
+
     try {
       await env.DATABASE.batch(statements);
     } catch (error) {
@@ -469,27 +501,48 @@ export const storefrontThemeFileDal = {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
     if (!isOwner) return false;
 
-    const db = await getDb();
     const now = new Date().toISOString();
-    const result = await db
-      .update(storefrontThemeFiles)
-      .set({ deletedAt: now, updatedAt: now })
-      .where(
-        and(
-          eq(storefrontThemeFiles.storefrontId, storefrontId),
-          eq(storefrontThemeFiles.themeId, themeId),
-          eq(storefrontThemeFiles.path, path),
-          eq(storefrontThemeFiles.id, expectedFileId),
-          eq(storefrontThemeFiles.version, expectedVersion),
-          isNull(storefrontThemeFiles.deletedAt),
-        ),
-      );
+    const statements = [
+      prepareThemeOwnershipGuard(storefrontId, themeId),
+      env.DATABASE.prepare(`
+        SELECT CASE WHEN EXISTS (
+          SELECT 1 FROM storefront_theme_files
+          WHERE storefront_id = ?1
+            AND theme_id = ?2
+            AND path = ?3
+            AND id = ?4
+            AND version = ?5
+            AND deleted_at IS NULL
+        ) THEN 1 ELSE json('') END AS ok
+      `).bind(storefrontId, themeId, path, expectedFileId, expectedVersion),
+      env.DATABASE.prepare(`
+        UPDATE storefront_theme_files
+        SET deleted_at = ?1, updated_at = ?1
+        WHERE storefront_id = ?2
+          AND theme_id = ?3
+          AND path = ?4
+          AND id = ?5
+          AND version = ?6
+          AND deleted_at IS NULL
+      `).bind(now, storefrontId, themeId, path, expectedFileId, expectedVersion),
+      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
+    ];
 
-    if (Number(result.meta?.changes ?? 0) === 0) {
-      throw new Error(
-        `CONFLICT_VERSION_MISMATCH: "${path}" changed, was deleted, or was replaced.`,
-      );
+    try {
+      await env.DATABASE.batch(statements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
+        throw new Error(
+          `CONFLICT_VERSION_MISMATCH: "${path}" changed, was deleted, or was replaced.`,
+        );
+      }
+      throw error;
     }
+
     return true;
   },
 
@@ -502,6 +555,7 @@ export const storefrontThemeFileDal = {
     options: {
       message?: string;
       source?: "manual" | "ai" | "publish" | "rollback";
+      expectedSourceGeneration?: number;
       createdBy?: string;
     } = {},
   ): Promise<StorefrontThemeRevisionDTO> {
@@ -513,8 +567,12 @@ export const storefrontThemeFileDal = {
     const now = new Date().toISOString();
     const revisionId = crypto.randomUUID();
 
-    await env.DATABASE.batch([
-      prepareThemeOwnershipGuard(storefrontId, themeId),
+    const statements = [
+      prepareThemeOwnershipGuard(
+        storefrontId,
+        themeId,
+        options.expectedSourceGeneration,
+      ),
       prepareRevisionInsert({
         storefrontId,
         themeId,
@@ -524,7 +582,22 @@ export const storefrontThemeFileDal = {
         createdBy: options.createdBy,
         now,
       }),
-    ]);
+    ];
+
+    try {
+      await env.DATABASE.batch(statements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
+        throw new Error(
+          `CONFLICT_SOURCE_GENERATION_MISMATCH: theme source generation mismatch (expected ${options.expectedSourceGeneration}).`,
+        );
+      }
+      throw error;
+    }
 
     const db = await getDb();
     const [row] = await db
@@ -545,6 +618,26 @@ export const storefrontThemeFileDal = {
       createdBy: row.createdBy,
       createdAt: row.createdAt,
     };
+  },
+
+  async getSourceGeneration(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<number | null> {
+    const db = await getDb();
+    const [theme] = await db
+      .select({ sourceGeneration: storefrontThemes.sourceGeneration })
+      .from(storefrontThemes)
+      .where(
+        and(
+          eq(storefrontThemes.id, themeId),
+          eq(storefrontThemes.storefrontId, storefrontId),
+          isNull(storefrontThemes.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    return theme?.sourceGeneration ?? null;
   },
 
   /**
@@ -660,6 +753,10 @@ export const storefrontThemeFileDal = {
         createdBy,
         now,
       }),
+    );
+
+    statements.push(
+      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
     );
 
     await env.DATABASE.batch(statements);

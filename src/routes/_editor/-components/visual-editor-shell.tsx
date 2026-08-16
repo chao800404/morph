@@ -468,9 +468,9 @@ export function VisualEditorShell({
   });
   const commentThreads = commentsQuery.data?.data ?? [];
   const publishMutation = useMutation({
-    mutationFn: (variables?: {
-      sourceRevisionId?: string;
-      expectedDraftRevisionId?: string;
+    mutationFn: (variables: {
+      sourceRevisionId: string;
+      expectedDraftRevisionId: string;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return publishStorefrontThemeTemplate({
@@ -478,8 +478,8 @@ export function VisualEditorShell({
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
           templateId: activeTemplate.id,
-          sourceRevisionId: variables?.sourceRevisionId,
-          expectedDraftRevisionId: variables?.expectedDraftRevisionId,
+          sourceRevisionId: variables.sourceRevisionId,
+          expectedDraftRevisionId: variables.expectedDraftRevisionId,
         },
       });
     },
@@ -594,6 +594,7 @@ export function VisualEditorShell({
   const themeTree = themeFilesQuery.data?.tree ?? EMPTY_THEME_TREE;
 
   const workspaceFiles = useThemeWorkspaceStore((state) => state.files);
+  const setActiveWorkspace = useThemeWorkspaceStore((state) => state.setActiveWorkspace);
   const hydrateWorkspace = useThemeWorkspaceStore((state) => state.hydrateFromQuery);
   const updateWorkspaceLocal = useThemeWorkspaceStore((state) => state.updateLocalContent);
   const markWorkspaceDebouncing = useThemeWorkspaceStore((state) => state.markDebouncing);
@@ -604,10 +605,23 @@ export function VisualEditorShell({
   const resolveWorkspaceConflict = useThemeWorkspaceStore((state) => state.resolveConflict);
 
   useEffect(() => {
+    setActiveWorkspace(context.storefront.id, context.theme.id);
+  }, [context.storefront.id, context.theme.id, setActiveWorkspace]);
+
+  useEffect(() => {
     if (themeFilesQuery.data?.files) {
-      hydrateWorkspace(themeFilesQuery.data.files);
+      hydrateWorkspace(
+        context.storefront.id,
+        context.theme.id,
+        themeFilesQuery.data.files,
+      );
     }
-  }, [themeFilesQuery.data?.files, hydrateWorkspace]);
+  }, [
+    context.storefront.id,
+    context.theme.id,
+    themeFilesQuery.data?.files,
+    hydrateWorkspace,
+  ]);
 
   const effectiveThemeFiles = useMemo(
     () =>
@@ -893,6 +907,8 @@ export function VisualEditorShell({
       return;
     }
 
+    let publishDraftRevisionId = activeTemplate?.draftRevisionId ?? null;
+
     if (debouncedSavePropsTimeoutRef.current) {
       clearTimeout(debouncedSavePropsTimeoutRef.current);
       debouncedSavePropsTimeoutRef.current = null;
@@ -904,6 +920,9 @@ export function VisualEditorShell({
       if (!result.success) {
         toast.error(result.message);
         return;
+      }
+      if (result.data?.draftRevisionId) {
+        publishDraftRevisionId = result.data.draftRevisionId;
       }
     }
 
@@ -942,13 +961,19 @@ export function VisualEditorShell({
       return;
     }
 
-    if (!activeTemplate) return;
+    if (!activeTemplate || !publishDraftRevisionId) {
+      toast.error("Cannot publish: template draft revision is missing.");
+      return;
+    }
 
-    // Freeze current working files into a distinct Source Revision
+    const expectedSourceGeneration = themeFilesQuery.data?.sourceGeneration;
+
+    // Freeze current working files into a distinct Source Revision with OCC
     const freezeResult = await createStorefrontThemeRevision({
       data: {
         storefrontId: context.storefront.id,
         themeId: context.theme.id,
+        expectedSourceGeneration,
         message: "Published Theme Source",
       },
     });
@@ -962,7 +987,7 @@ export function VisualEditorShell({
 
     await publishMutation.mutateAsync({
       sourceRevisionId: freezeResult.data.id,
-      expectedDraftRevisionId: activeTemplate.draftRevisionId ?? undefined,
+      expectedDraftRevisionId: publishDraftRevisionId,
     });
   }, [
     activeTemplate,
@@ -971,6 +996,7 @@ export function VisualEditorShell({
     handleUnifiedSaveFile,
     monacoDirtyFiles,
     publishMutation,
+    themeFilesQuery.data?.sourceGeneration,
     updatePropsMutation,
   ]);
 

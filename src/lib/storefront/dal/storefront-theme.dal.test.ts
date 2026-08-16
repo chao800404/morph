@@ -71,6 +71,7 @@ beforeEach(() => {
       name text NOT NULL,
       status text NOT NULL,
       published_source_revision_id text,
+      source_generation integer DEFAULT 1 NOT NULL,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -194,6 +195,11 @@ describe("storefront theme DAL", () => {
       VALUES
         ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
          '${draftDocument.replaceAll("'", "''")}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1,
+         'Frozen checkpoint', 'publish', '[]', 'now', 'now');
     `);
 
     await expect(
@@ -201,10 +207,12 @@ describe("storefront theme DAL", () => {
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-a",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
       }),
     ).resolves.toEqual({
       revisionId: "11111111-1111-4111-8111-111111111111",
-      sourceRevisionId: expect.any(String),
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       unchanged: false,
     });
 
@@ -250,6 +258,7 @@ describe("storefront theme DAL", () => {
       themeId: "theme-a",
       templateId: "template-a",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
     });
 
     expect(res).toEqual({
@@ -293,7 +302,72 @@ describe("storefront theme DAL", () => {
         themeId: "theme-a",
         templateId: "template-a",
         sourceRevisionId: "99999999-9999-4999-8999-999999999999",
+        expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
       }),
     ).rejects.toThrow();
+  });
+
+  it("returns null when expectedDraftRevisionId does not match template", async () => {
+    const draftDocument = JSON.stringify({
+      version: 1,
+      sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
+    });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+         '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '${draftDocument.replaceAll("'", "''")}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1,
+         'Frozen checkpoint', 'publish', '[]', 'now', 'now');
+    `);
+
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        expectedDraftRevisionId: "33333333-3333-4333-8333-333333333333",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("updateSectionProps returns draftRevisionId along with version and document", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[{"id":"hero","type":"hero","enabled":true,"props":{"title":"Original"}}]}',
+         '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '{"version":1,"sections":[{"id":"hero","type":"hero","enabled":true,"props":{"title":"Original"}}]}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+      sectionId: "hero",
+      props: { title: "Updated Title" },
+      createdBy: "user-1",
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.draftRevisionId).toBeDefined();
+    expect(typeof result?.draftRevisionId).toBe("string");
+    expect(result?.version).toBe(2);
+    expect(result?.document.sections[0].props.title).toBe("Updated Title");
   });
 });

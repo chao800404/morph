@@ -15,8 +15,8 @@ export const reorderStorefrontThemeSectionsInputSchema =
 export const publishStorefrontThemeTemplateInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
-    sourceRevisionId: z.string().uuid().optional(),
-    expectedDraftRevisionId: z.string().uuid().optional(),
+    sourceRevisionId: z.string().uuid(),
+    expectedDraftRevisionId: z.string().uuid(),
   });
 
 export const updateStorefrontThemeSectionPropsInputSchema =

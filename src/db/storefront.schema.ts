@@ -106,6 +106,7 @@ export const storefrontThemes = sqliteTable(
       .notNull()
       .default("draft"),
     publishedSourceRevisionId: text("published_source_revision_id"),
+    sourceGeneration: integer("source_generation").notNull().default(1),
     metadata: metadata(),
     ...timestamps,
   },

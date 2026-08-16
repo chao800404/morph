@@ -197,7 +197,11 @@ export const storefrontThemeDal = {
               ),
             ),
         ]);
-        return { document, version: activeDraft.version };
+        return {
+          document,
+          version: activeDraft.version,
+          draftRevisionId: activeDraft.id,
+        };
       }
     }
 
@@ -229,7 +233,7 @@ export const storefrontThemeDal = {
           ),
         ),
     ]);
-    return { document, version };
+    return { document, version, draftRevisionId: revisionId };
   },
   async updateSectionProps(data: {
     storefrontId: string;
@@ -323,7 +327,11 @@ export const storefrontThemeDal = {
               ),
             ),
         ]);
-        return { document, version: activeDraft.version };
+        return {
+          document,
+          version: activeDraft.version,
+          draftRevisionId: activeDraft.id,
+        };
       }
     }
 
@@ -355,14 +363,14 @@ export const storefrontThemeDal = {
           ),
         ),
     ]);
-    return { document, version };
+    return { document, version, draftRevisionId: revisionId };
   },
   async publishTemplate(data: {
     storefrontId: string;
     themeId: string;
     templateId: string;
-    sourceRevisionId?: string;
-    expectedDraftRevisionId?: string;
+    sourceRevisionId: string;
+    expectedDraftRevisionId: string;
     createdBy?: string;
   }) {
     const db = await getDb();
@@ -390,10 +398,7 @@ export const storefrontThemeDal = {
       .limit(1);
 
     if (!template?.draftRevisionId) return null;
-    if (
-      data.expectedDraftRevisionId &&
-      data.expectedDraftRevisionId !== template.draftRevisionId
-    ) {
+    if (data.expectedDraftRevisionId !== template.draftRevisionId) {
       return null;
     }
 
@@ -414,12 +419,8 @@ export const storefrontThemeDal = {
     const unchanged =
       template.draftRevisionId === template.publishedRevisionId;
 
-    const effectiveSourceRevisionId =
-      data.sourceRevisionId ?? crypto.randomUUID();
-    const isExplicitSourceRevision = Boolean(data.sourceRevisionId);
-
-    const guardSql = isExplicitSourceRevision
-      ? `
+    const statements = [
+      env.DATABASE.prepare(`
         SELECT CASE WHEN EXISTS (
           SELECT 1
           FROM storefront_theme_templates t
@@ -440,40 +441,13 @@ export const storefrontThemeDal = {
             AND r.storefront_id = ?1
             AND r.deleted_at IS NULL
         ) THEN 1 ELSE json('') END AS ok
-      `
-      : `
-        SELECT CASE WHEN EXISTS (
-          SELECT 1
-          FROM storefront_theme_templates t
-          INNER JOIN storefront_themes th ON th.id = t.theme_id
-          INNER JOIN storefronts s ON s.id = th.storefront_id
-          WHERE s.id = ?1
-            AND th.id = ?2
-            AND t.id = ?3
-            AND t.draft_revision_id = ?4
-            AND s.deleted_at IS NULL
-            AND th.deleted_at IS NULL
-            AND t.deleted_at IS NULL
-        ) THEN 1 ELSE json('') END AS ok
-      `;
-
-    const guardParams = isExplicitSourceRevision
-      ? [
-          data.storefrontId,
-          data.themeId,
-          data.templateId,
-          template.draftRevisionId,
-          effectiveSourceRevisionId,
-        ]
-      : [
-          data.storefrontId,
-          data.themeId,
-          data.templateId,
-          template.draftRevisionId,
-        ];
-
-    const statements = [
-      env.DATABASE.prepare(guardSql).bind(...guardParams),
+      `).bind(
+        data.storefrontId,
+        data.themeId,
+        data.templateId,
+        data.expectedDraftRevisionId,
+        data.sourceRevisionId,
+      ),
     ];
 
     if (!unchanged) {
@@ -487,7 +461,7 @@ export const storefrontThemeDal = {
             AND deleted_at IS NULL
         `).bind(
           JSON.stringify(document),
-          template.draftRevisionId,
+          data.expectedDraftRevisionId,
           now,
           data.templateId,
           data.themeId,
@@ -498,50 +472,7 @@ export const storefrontThemeDal = {
           UPDATE storefront_theme_template_revisions
           SET published_at = ?1
           WHERE id = ?2 AND template_id = ?3
-        `).bind(now, template.draftRevisionId, data.templateId),
-      );
-    }
-
-    if (!isExplicitSourceRevision) {
-      statements.push(
-        env.DATABASE.prepare(`
-          INSERT INTO storefront_theme_revisions (
-            id, storefront_id, theme_id, revision_number, message, source,
-            snapshot, created_by, created_at, updated_at
-          )
-          SELECT
-            ?1, ?2, ?3,
-            COALESCE((
-              SELECT MAX(revision_number) + 1
-              FROM storefront_theme_revisions
-              WHERE theme_id = ?3 AND deleted_at IS NULL
-            ), 1),
-            'Published Theme Source',
-            'publish',
-            COALESCE((
-              SELECT json_group_array(
-                json_object(
-                  'path', path,
-                  'content', content,
-                  'mimeType', COALESCE(mime_type, 'text/plain'),
-                  'isEntry', json(CASE WHEN is_entry = 1 THEN 'true' ELSE 'false' END)
-                )
-              )
-              FROM (
-                SELECT path, content, mime_type, is_entry
-                FROM storefront_theme_files
-                WHERE storefront_id = ?2 AND theme_id = ?3 AND deleted_at IS NULL
-                ORDER BY path
-              )
-            ), json('[]')),
-            ?4, ?5, ?5
-        `).bind(
-          effectiveSourceRevisionId,
-          data.storefrontId,
-          data.themeId,
-          data.createdBy ?? null,
-          now,
-        ),
+        `).bind(now, data.expectedDraftRevisionId, data.templateId),
       );
     }
 
@@ -550,13 +481,13 @@ export const storefrontThemeDal = {
         UPDATE storefront_themes
         SET published_source_revision_id = ?1, updated_at = ?2
         WHERE id = ?3 AND storefront_id = ?4 AND deleted_at IS NULL
-      `).bind(effectiveSourceRevisionId, now, data.themeId, data.storefrontId),
+      `).bind(data.sourceRevisionId, now, data.themeId, data.storefrontId),
     );
 
     await env.DATABASE.batch(statements);
     return {
-      revisionId: template.draftRevisionId,
-      sourceRevisionId: effectiveSourceRevisionId,
+      revisionId: data.expectedDraftRevisionId,
+      sourceRevisionId: data.sourceRevisionId,
       unchanged,
     };
   },

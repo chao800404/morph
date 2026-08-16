@@ -1,0 +1,1 @@
+ALTER TABLE `storefront_themes` ADD `source_generation` integer DEFAULT 1 NOT NULL;

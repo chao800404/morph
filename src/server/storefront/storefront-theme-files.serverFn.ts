@@ -22,19 +22,23 @@ export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const files = await storefrontThemeFileDal.listFiles(
-        data.storefrontId,
-        data.themeId,
-      );
-      const tree = buildFileTree(files);
-      const latestPublishedRevision =
-        await storefrontThemeFileDal.getLatestPublishedRevision(
-          data.storefrontId,
-          data.themeId,
-        );
+      const [treeFiles, sourceGeneration, latestPublishedRevision] =
+        await Promise.all([
+          storefrontThemeFileDal.listFiles(data.storefrontId, data.themeId),
+          storefrontThemeFileDal.getSourceGeneration(
+            data.storefrontId,
+            data.themeId,
+          ),
+          storefrontThemeFileDal.getLatestPublishedRevision(
+            data.storefrontId,
+            data.themeId,
+          ),
+        ]);
+      const tree = buildFileTree(treeFiles);
       return ok("Theme files listed", {
-        files,
+        files: treeFiles,
         tree,
+        sourceGeneration: sourceGeneration ?? 1,
         latestPublishedRevision,
       });
     } catch (error) {
@@ -257,6 +261,7 @@ export const createStorefrontThemeRevision = createServerFn({ method: "POST" })
         {
           message: data.message ?? "Published Theme Source",
           source: "publish",
+          expectedSourceGeneration: data.expectedSourceGeneration,
           createdBy: context.user?.id,
         },
       );
