@@ -1,8 +1,5 @@
 import { materializeThemeBuildInput } from "@/lib/storefront/compiler/theme-build-materializer";
-import {
-  FakeThemeBuildRunner,
-  type ThemeBuildRunner,
-} from "@/lib/storefront/compiler/theme-build-runner.types";
+import type { ThemeBuildRunner } from "@/lib/storefront/compiler/theme-build-runner.types";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import type {
   StorefrontThemeBuildDTO,
@@ -25,37 +22,81 @@ export type RequestPreviewBuildOptions = {
 export class ThemeBuildService {
   constructor(
     private readonly dal: typeof storefrontThemeBuildDal = storefrontThemeBuildDal,
-    private readonly defaultRunner: ThemeBuildRunner = new FakeThemeBuildRunner(),
+    private readonly defaultRunner?: ThemeBuildRunner,
     private readonly materializer: typeof materializeThemeBuildInput = materializeThemeBuildInput,
   ) {}
 
   /**
    * High-level entry point: requests or orchestrates a theme preview build.
    *
-   * Idempotency & Reuse Strategy:
-   * 1. If reuseExisting === true (default), checks if a successful build already exists for this exact revision.
-   *    If found, returns the existing successful build directly (0 duplicate builds).
-   * 2. Otherwise creates a new Build in "queued" status and orchestrates it through the materializer and runner.
+   * Idempotency & Reuse Policy:
+   * 1. Default: reuseExisting = false (conservative, prevents stale identity reuse).
+   * 2. If reuseExisting === true, performs full 4-tuple identity match:
+   *    (sourceRevisionId + inputHash + compilerId + compilerVersion).
+   * 3. If a runner is configured or provided, orchestrates the build.
+   *    If no runner is configured (e.g. production before Sandbox runner), creates and returns the queued build record.
    */
   async requestPreviewBuild(
     options: RequestPreviewBuildOptions,
   ): Promise<StorefrontThemeBuildDTO> {
-    const reuseExisting = options.reuseExisting ?? true;
+    const reuseExisting = options.reuseExisting ?? false;
 
+    // 1. Identity-based reuse check
     if (reuseExisting) {
-      const existingSuccess = await this.dal.findLatestBuildByRevision(
-        options.storefrontId,
-        options.themeId,
-        options.sourceRevisionId,
-        { status: "succeeded" },
-      );
+      try {
+        const dummyBuild: StorefrontThemeBuildDTO = {
+          id: "temp",
+          storefrontId: options.storefrontId,
+          themeId: options.themeId,
+          sourceRevisionId: options.sourceRevisionId,
+          status: "queued",
+          inputHash: null,
+          compilerId: options.compilerIdentity?.compilerId ?? null,
+          compilerVersion: options.compilerIdentity?.compilerVersion ?? null,
+          artifactPrefix: null,
+          manifestJson: null,
+          diagnosticsJson: null,
+          errorMessage: null,
+          startedAt: null,
+          completedAt: null,
+          createdBy: options.createdBy ?? null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
 
-      if (existingSuccess) {
-        return existingSuccess;
+        const revision = await this.dal.getRevision(
+          options.storefrontId,
+          options.themeId,
+          options.sourceRevisionId,
+        );
+
+        if (revision) {
+          const computed = this.materializer({
+            build: dummyBuild,
+            revision,
+            compilerIdentity: options.compilerIdentity,
+          });
+
+          const existingSuccess = await this.dal.findSucceededBuildByIdentity({
+            storefrontId: options.storefrontId,
+            themeId: options.themeId,
+            sourceRevisionId: options.sourceRevisionId,
+            inputHash: computed.inputHash,
+            compilerId: computed.compilerId,
+            compilerVersion: computed.compilerVersion,
+          });
+
+          if (existingSuccess) {
+            return existingSuccess;
+          }
+        }
+
+      } catch {
+        // If materialization or query fails during reuse check, continue to standard creation
       }
     }
 
-    // 1. Create a queued build permanently bound to the immutable sourceRevisionId
+    // 2. Create a queued build permanently bound to the immutable sourceRevisionId
     const build = await this.dal.createBuild(
       options.storefrontId,
       options.themeId,
@@ -65,30 +106,41 @@ export class ThemeBuildService {
       },
     );
 
-    // 2. Orchestrate execution
+    const runner = options.runner ?? this.defaultRunner;
+
+    // 3. If no runner is provided (e.g. production pre-Sandbox), return queued record without fake build
+    if (!runner) {
+      return build;
+    }
+
+    // 4. Orchestrate execution with runner
     return this.executeBuildOrchestration({
       storefrontId: options.storefrontId,
       themeId: options.themeId,
       buildId: build.id,
       compilerIdentity: options.compilerIdentity,
-      runner: options.runner,
+      runner,
     });
   }
 
   /**
-   * Orchestrates the complete build lifecycle:
-   * DAL source fetch -> pure materializer -> atomic CAS start -> runner -> mark succeeded/failed
+   * Orchestrates the complete build lifecycle with stage-specific error handling:
+   * 1. Retrieve source from DAL
+   * 2. Pure Materialization
+   * 3. Atomic CAS Start Transition (Start loser does NOT fail winner)
+   * 4. Runner execution
+   * 5. Finalize state
    */
   async executeBuildOrchestration(params: {
     storefrontId: string;
     themeId: string;
     buildId: string;
     compilerIdentity?: { compilerId?: string; compilerVersion?: string };
-    runner?: ThemeBuildRunner;
+    runner: ThemeBuildRunner;
   }): Promise<StorefrontThemeBuildDTO> {
-    const runner = params.runner ?? this.defaultRunner;
+    const { runner } = params;
 
-    // 1. Retrieve Build and Revision records strictly via DAL
+    // Stage 1: Retrieve Build and Revision records strictly via DAL
     let source: {
       build: StorefrontThemeBuildDTO;
       revision: any;
@@ -113,7 +165,7 @@ export class ThemeBuildService {
       }
     }
 
-    // 2. Pure Materialization
+    // Stage 2: Pure Materialization
     let buildInput: StorefrontThemeBuildInput;
     try {
       buildInput = this.materializer({
@@ -141,7 +193,7 @@ export class ThemeBuildService {
       );
     }
 
-    // 3. Transition: queued -> building with atomic identity freeze
+    // Stage 3: Transition queued -> building with atomic identity freeze
     try {
       await this.dal.markBuildStarted(
         params.storefrontId,
@@ -154,50 +206,34 @@ export class ThemeBuildService {
         },
       );
     } catch (startError) {
-      const errMessage =
-        startError instanceof Error ? startError.message : String(startError);
-      try {
-        return await this.dal.markBuildFailed(
-          params.storefrontId,
-          params.themeId,
-          params.buildId,
-          {
-            errorMessage: `Failed to transition build to building: ${errMessage}`,
-          },
-        );
-      } catch {
-        throw startError;
-      }
-    }
-
-    // 4. Run Build via Runner
-    try {
-      const runnerResult = await runner.run(buildInput);
-
-      if (!runnerResult.success) {
-        return await this.dal.markBuildFailed(
-          params.storefrontId,
-          params.themeId,
-          params.buildId,
-          {
-            errorMessage:
-              runnerResult.errorMessage ??
-              "Theme build failed during runner execution",
-            diagnosticsJson: runnerResult.diagnosticsJson,
-          },
-        );
-      }
-
-      return await this.dal.markBuildSucceeded(
+      // Start CAS loser: another worker took lifecycle ownership of this build.
+      // DO NOT markBuildFailed! Re-read current build state.
+      const current = await this.dal.getBuild(
         params.storefrontId,
         params.themeId,
         params.buildId,
-        {
-          artifactPrefix: runnerResult.artifactPrefix,
-          manifestJson: runnerResult.manifestJson,
-          diagnosticsJson: runnerResult.diagnosticsJson,
-        },
       );
+      if (
+        current &&
+        (current.status === "building" ||
+          current.status === "succeeded" ||
+          current.status === "failed")
+      ) {
+        return current;
+      }
+      throw startError;
+    }
+
+    // Stage 4: Run Build via Runner
+    let runnerResult: {
+      success: boolean;
+      artifactPrefix?: string;
+      manifestJson?: any;
+      diagnosticsJson?: any;
+      errorMessage?: string;
+    };
+    try {
+      runnerResult = await runner.run(buildInput);
     } catch (runnerException) {
       const exceptionMessage =
         runnerException instanceof Error
@@ -217,6 +253,32 @@ export class ThemeBuildService {
         },
       );
     }
+
+    if (!runnerResult.success) {
+      return await this.dal.markBuildFailed(
+        params.storefrontId,
+        params.themeId,
+        params.buildId,
+        {
+          errorMessage:
+            runnerResult.errorMessage ??
+            "Theme build failed during runner execution",
+          diagnosticsJson: runnerResult.diagnosticsJson,
+        },
+      );
+    }
+
+    // Stage 5: Finalize state
+    return await this.dal.markBuildSucceeded(
+      params.storefrontId,
+      params.themeId,
+      params.buildId,
+      {
+        artifactPrefix: runnerResult.artifactPrefix,
+        manifestJson: runnerResult.manifestJson,
+        diagnosticsJson: runnerResult.diagnosticsJson,
+      },
+    );
   }
 
   async getThemeBuild(params: {

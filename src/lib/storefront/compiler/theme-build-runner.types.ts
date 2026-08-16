@@ -27,14 +27,15 @@ export class FakeThemeBuildRunner implements ThemeBuildRunner {
       artifactPrefix?: string;
       manifest?: any;
       diagnostics?: any;
-      onRun?: (input: StorefrontThemeBuildInput) => void;
+      onRun?: (input: StorefrontThemeBuildInput) => void | Promise<void>;
     } = {},
   ) {}
 
   async run(input: StorefrontThemeBuildInput): Promise<ThemeBuildRunnerResult> {
     if (this.behavior.onRun) {
-      this.behavior.onRun(input);
+      await this.behavior.onRun(input);
     }
+
 
     if (this.behavior.shouldThrow) {
       throw new Error(

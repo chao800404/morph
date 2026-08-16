@@ -80,9 +80,25 @@ export const storefrontThemeBuildDal = {
     themeId: string,
     sourceRevisionId: string,
   ): Promise<boolean> {
+    const revision = await this.getRevision(
+      storefrontId,
+      themeId,
+      sourceRevisionId,
+    );
+    return Boolean(revision);
+  },
+
+  /**
+   * Retrieves a single revision record by ID.
+   */
+  async getRevision(
+    storefrontId: string,
+    themeId: string,
+    sourceRevisionId: string,
+  ): Promise<StorefrontThemeRevisionDTO | null> {
     const db = await getDb();
-    const [revision] = await db
-      .select({ id: storefrontThemeRevisions.id })
+    const [row] = await db
+      .select()
       .from(storefrontThemeRevisions)
       .where(
         and(
@@ -93,11 +109,12 @@ export const storefrontThemeBuildDal = {
         ),
       )
       .limit(1);
-    return Boolean(revision);
+    return row ? mapRevisionRowToDTO(row) : null;
   },
 
   /**
    * Creates a new Theme Build record permanently bound to an immutable sourceRevisionId.
+
    * Initial status is "queued".
    */
   async createBuild(
@@ -292,6 +309,47 @@ export const storefrontThemeBuildDal = {
 
     return row ? mapBuildRowToDTO(row) : null;
   },
+
+  /**
+   * Finds the latest succeeded build that strictly matches the complete 4-tuple identity:
+   * sourceRevisionId + inputHash + compilerId + compilerVersion.
+   */
+  async findSucceededBuildByIdentity(params: {
+    storefrontId: string;
+    themeId: string;
+    sourceRevisionId: string;
+    inputHash: string;
+    compilerId: string;
+    compilerVersion: string;
+  }): Promise<StorefrontThemeBuildDTO | null> {
+    const isOwner = await this.verifyThemeOwnership(
+      params.storefrontId,
+      params.themeId,
+    );
+    if (!isOwner) return null;
+
+    const db = await getDb();
+    const [row] = await db
+      .select()
+      .from(storefrontThemeBuilds)
+      .where(
+        and(
+          eq(storefrontThemeBuilds.storefrontId, params.storefrontId),
+          eq(storefrontThemeBuilds.themeId, params.themeId),
+          eq(storefrontThemeBuilds.sourceRevisionId, params.sourceRevisionId),
+          eq(storefrontThemeBuilds.inputHash, params.inputHash),
+          eq(storefrontThemeBuilds.compilerId, params.compilerId),
+          eq(storefrontThemeBuilds.compilerVersion, params.compilerVersion),
+          eq(storefrontThemeBuilds.status, "succeeded"),
+          isNull(storefrontThemeBuilds.deletedAt),
+        ),
+      )
+      .orderBy(desc(storefrontThemeBuilds.createdAt))
+      .limit(1);
+
+    return row ? mapBuildRowToDTO(row) : null;
+  },
+
 
   /**
    * State Transition: queued -> building with atomic compiler/input identity freeze.

@@ -178,7 +178,27 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       );
   };
 
-  it("orchestrates valid build lifecycle: queued -> building -> succeeded", async () => {
+  it("creates queued build record without fake execution when no runner is injected", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-queued", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Queued</h1>;" },
+    ]);
+
+    // Service called without runner (production pre-Sandbox behavior)
+    const build = await service.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-queued",
+    });
+
+    expect(build.status).toBe("queued");
+    expect(build.startedAt).toBeNull();
+    expect(build.completedAt).toBeNull();
+    expect(build.artifactPrefix).toBeNull();
+  });
+
+  it("orchestrates valid build lifecycle: queued -> building -> succeeded with injected runner", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-1", 1, [
@@ -296,6 +316,7 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       storefrontId: "storefront-1",
       themeId: "theme-1",
       sourceRevisionId: "rev-corrupt",
+      runner: new FakeThemeBuildRunner(),
     });
 
     expect(build.status).toBe("failed");
@@ -416,7 +437,7 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(runnerReceivedHeroContent).not.toContain("80px");
   });
 
-  it("idempotency: reuses existing successful build for same revision when reuseExisting=true", async () => {
+  it("idempotency: reuses existing successful build only when full identity matches and reuseExisting=true", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-reuse", 1, [
@@ -430,64 +451,117 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       },
     });
 
-    // 1. Initial build request
+    // 1. Initial build request with compiler 4.1.17
     const build1 = await service.requestPreviewBuild({
       storefrontId: "storefront-1",
       themeId: "theme-1",
       sourceRevisionId: "rev-reuse",
+      compilerIdentity: { compilerId: "tailwind-v4", compilerVersion: "4.1.17" },
       runner: countingRunner,
-      reuseExisting: true,
+      reuseExisting: false,
     });
 
     expect(build1.status).toBe("succeeded");
     expect(runnerRunCount).toBe(1);
 
-    // 2. Second build request for the same revision with reuseExisting=true
+    // 2. Second build request for the same revision with SAME compiler version and reuseExisting=true
     const build2 = await service.requestPreviewBuild({
       storefrontId: "storefront-1",
       themeId: "theme-1",
       sourceRevisionId: "rev-reuse",
+      compilerIdentity: { compilerId: "tailwind-v4", compilerVersion: "4.1.17" },
       runner: countingRunner,
       reuseExisting: true,
     });
 
-    // Expect exact same build ID and 0 additional runner invocations!
+    // Same build reused (0 extra runner invocations)
     expect(build2.id).toBe(build1.id);
-    expect(build2.inputHash).toBe(build1.inputHash);
     expect(runnerRunCount).toBe(1);
+
+    // 3. Third build request for SAME revision but DIFFERENT compiler version (4.2.0)
+    const build3 = await service.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-reuse",
+      compilerIdentity: { compilerId: "tailwind-v4", compilerVersion: "4.2.0" },
+      runner: countingRunner,
+      reuseExisting: true,
+    });
+
+    // Must NOT reuse build1 because identity differs
+    expect(build3.id).not.toBe(build1.id);
+    expect(build3.compilerVersion).toBe("4.2.0");
+    expect(runnerRunCount).toBe(2);
   });
 
-  it("forces a new build when reuseExisting=false", async () => {
+
+  it("competing concurrent orchestrations: Start CAS loser does NOT fail active winner build", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
-    seedRevision("storefront-1", "theme-1", "rev-force", 1, [
-      { path: "src/index.tsx", content: "export default () => <h1>Force</h1>;" },
+    seedRevision("storefront-1", "theme-1", "rev-concurrent", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Concurrent</h1>;" },
     ]);
 
+    // Create single queued build
+    const build = await storefrontThemeBuildDal.createBuild(
+      "storefront-1",
+      "theme-1",
+      { sourceRevisionId: "rev-concurrent" },
+    );
+
     let runnerRunCount = 0;
-    const countingRunner = new FakeThemeBuildRunner({
+    const delayedWinnerRunner = new FakeThemeBuildRunner({
+      onRun: async () => {
+        runnerRunCount++;
+        // Simulate in-flight build time
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      },
+      shouldSucceed: true,
+      artifactPrefix: "r2://winner-build",
+    });
+
+    const secondWorkerRunner = new FakeThemeBuildRunner({
       onRun: () => {
         runnerRunCount++;
       },
     });
 
-    const build1 = await service.requestPreviewBuild({
+    // Worker A starts and takes ownership
+    const promiseA = service.executeBuildOrchestration({
       storefrontId: "storefront-1",
       themeId: "theme-1",
-      sourceRevisionId: "rev-force",
-      runner: countingRunner,
+      buildId: build.id,
+      runner: delayedWinnerRunner,
     });
 
-    const build2 = await service.requestPreviewBuild({
+    // Small tick to ensure Worker A transitions queued -> building
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Worker B attempts to orchestrate the same build while Worker A is still running
+    const resultB = await service.executeBuildOrchestration({
       storefrontId: "storefront-1",
       themeId: "theme-1",
-      sourceRevisionId: "rev-force",
-      runner: countingRunner,
-      reuseExisting: false,
+      buildId: build.id,
+      runner: secondWorkerRunner,
     });
 
-    expect(build2.id).not.toBe(build1.id);
-    expect(build2.inputHash).toBe(build1.inputHash);
-    expect(runnerRunCount).toBe(2);
+    // Worker B must see in-flight building status and MUST NOT mark the build failed!
+    expect(resultB.status).toBe("building");
+
+    // Worker A finishes
+    const resultA = await promiseA;
+    expect(resultA.status).toBe("succeeded");
+    expect(resultA.artifactPrefix).toBe("r2://winner-build");
+
+    // Total runner invocations was exactly 1 (Worker B did not duplicate execution)
+    expect(runnerRunCount).toBe(1);
+
+    // Final state in DB is succeeded
+    const finalInDb = await storefrontThemeBuildDal.getBuild(
+      "storefront-1",
+      "theme-1",
+      build.id,
+    );
+    expect(finalInDb?.status).toBe("succeeded");
   });
 });
