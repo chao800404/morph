@@ -1,4 +1,5 @@
 import type { StorefrontThemeBuildStatus } from "@/db/storefront.schema";
+import type { ThemeCompilerFile } from "@/lib/storefront/compiler/theme-compiler.types";
 
 export type StorefrontThemeBuildDTO = {
   id: string;
@@ -18,4 +19,17 @@ export type StorefrontThemeBuildDTO = {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type StorefrontThemeBuildInput = {
+  buildId: string;
+  storefrontId: string;
+  themeId: string;
+  sourceRevisionId: string;
+  revisionNumber: number;
+  files: ThemeCompilerFile[];
+  entry: string;
+  inputHash: string;
+  compilerId: string;
+  compilerVersion: string;
 };

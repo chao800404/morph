@@ -354,4 +354,28 @@ export const storefrontThemeBuildDal = {
 
     return mapBuildRowToDTO(updated);
   },
+
+  /**
+   * Materializes the immutable virtual filesystem and compiler input strictly from the Build's bound sourceRevisionId.
+   */
+  async materializeBuildInput(
+    storefrontId: string,
+    themeId: string,
+    buildId: string,
+    options?: {
+      compilerId?: string;
+      compilerVersion?: string;
+    },
+  ) {
+    const { themeBuildMaterializer } = await import(
+      "@/lib/storefront/compiler/theme-build-materializer"
+    );
+    return themeBuildMaterializer.materializeThemeBuildInput(
+      storefrontId,
+      themeId,
+      buildId,
+      options,
+    );
+  },
 };
+
