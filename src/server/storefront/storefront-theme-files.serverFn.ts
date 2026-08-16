@@ -25,7 +25,16 @@ export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
         data.themeId,
       );
       const tree = buildFileTree(files);
-      return ok("Theme files listed", { files, tree });
+      const latestPublishedRevision =
+        await storefrontThemeFileDal.getLatestPublishedRevision(
+          data.storefrontId,
+          data.themeId,
+        );
+      return ok("Theme files listed", {
+        files,
+        tree,
+        latestPublishedRevision,
+      });
     } catch (error) {
       return failure(
         "List theme files error",

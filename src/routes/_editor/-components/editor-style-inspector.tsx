@@ -14,9 +14,13 @@ import {
   findSourceLocation,
   getComponentFilePath,
   parseComponentSource,
+  parseTailwindBackgroundColor,
+  parseTailwindBorderRadius,
   parseTailwindFontFamily,
-  parseTailwindFontSize,
+  parseTailwindFontSizeDetailed,
   parseTailwindFontWeight,
+  parseTailwindLineHeight,
+  parseTailwindPadding,
   parseTailwindTextAlign,
   updateTailwindClass,
 } from "@/lib/storefront/ast/theme-ast-transformer";
@@ -127,9 +131,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const targetClassName = targetElementMeta?.className || "";
   const sectionClassName = sectionElementMeta?.className || "";
 
+  const fontSizeDetailed = parseTailwindFontSizeDetailed(targetClassName);
+  const isComplexFontSize = fontSizeDetailed.type === "complex";
+  const complexFontSizeRaw =
+    fontSizeDetailed.type === "complex" ? fontSizeDetailed.raw : null;
   const effectiveFontSize =
-    parseTailwindFontSize(targetClassName) ??
-    (typeof props.fontSize === "number" ? props.fontSize : 48);
+    fontSizeDetailed.type === "exact"
+      ? fontSizeDetailed.value
+      : (typeof props.fontSize === "number" ? props.fontSize : 48);
 
   const effectiveFontFamily =
     parseTailwindFontFamily(targetClassName) ?? props.fontFamily ?? "serif";
@@ -140,6 +149,35 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const effectiveTextAlign =
     parseTailwindTextAlign(targetClassName) ?? props.textAlign ?? "left";
 
+  const effectiveLineHeight =
+    parseTailwindLineHeight(targetClassName) ??
+    (typeof props.lineHeight === "number" ? props.lineHeight : 1.1);
+
+  const effectivePadding = parseTailwindPadding(sectionClassName);
+  const effectivePaddingAll =
+    effectivePadding.all ?? (typeof props.padding === "number" ? props.padding : 48);
+  const effectivePaddingTop =
+    effectivePadding.top ?? effectivePadding.y ?? effectivePaddingAll;
+  const effectivePaddingBottom =
+    effectivePadding.bottom ?? effectivePadding.y ?? effectivePaddingAll;
+  const effectivePaddingLeft =
+    effectivePadding.left ??
+    effectivePadding.x ??
+    (typeof props.paddingLeft === "number" ? props.paddingLeft : 24);
+  const effectivePaddingRight =
+    effectivePadding.right ??
+    effectivePadding.x ??
+    (typeof props.paddingRight === "number" ? props.paddingRight : 24);
+
+  const effectiveBgColor =
+    parseTailwindBackgroundColor(sectionClassName) ??
+    props.backgroundColor ??
+    "#fafaf9";
+
+  const effectiveBorderRadius =
+    parseTailwindBorderRadius(sectionClassName) ??
+    (typeof props.borderRadius === "number" ? props.borderRadius : 0);
+
   const effectiveRawClassName =
     targetClassName || sectionClassName || props.className || props.customClass || "";
 
@@ -149,6 +187,23 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       onUpdateThemeFileStyle?.(componentPath, targetElement, updater);
     },
     [componentPath, targetElement, onUpdateThemeFileStyle, sourceStyleLocked],
+  );
+
+  const patchContainerStyle = useCallback(
+    (updater: (prevClasses: string) => string) => {
+      if (!componentPath || sourceStyleLocked) return;
+      const targetKey = parsedMeta?.elements["section"]
+        ? "section"
+        : (parsedMeta?.elements["root"] ? "root" : targetElement);
+      onUpdateThemeFileStyle?.(componentPath, targetKey, updater);
+    },
+    [
+      componentPath,
+      parsedMeta,
+      targetElement,
+      onUpdateThemeFileStyle,
+      sourceStyleLocked,
+    ],
   );
 
   const handleFieldChange = useCallback(
@@ -478,13 +533,40 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               <div className="flex items-center gap-2 rounded-lg border bg-background px-2.5 py-1.5">
                 <span className="text-[11px] text-muted-foreground">All</span>
                 <ScrubbableNumberInput
-                  value={Number(props.padding ?? 48)}
+                  value={effectivePaddingAll}
                   min={0}
                   max={160}
                   step={4}
                   suffix="px"
+                  disabled={disabled || sourceStyleLocked}
                   ariaLabel="Section padding in pixels"
-                  onValueChange={(val) => handleFieldChange("padding", val)}
+                  onValueChange={(val) => {
+                    if (sourceStyleLocked) return;
+                    if (!componentPath) handleFieldChange("padding", val);
+                    patchContainerStyle((prev) =>
+                      updateTailwindClass(
+                        updateTailwindClass(
+                          updateTailwindClass(
+                            updateTailwindClass(
+                              updateTailwindClass(
+                                prev,
+                                /\bp-\[.*?\]|\bp-\d+\b/,
+                                `p-[${val}px]`,
+                              ),
+                              /\bpt-\[.*?\]|\bpt-\d+\b/,
+                              "",
+                            ),
+                            /\bpb-\[.*?\]|\bpb-\d+\b/,
+                            "",
+                          ),
+                          /\bpl-\[.*?\]|\bpl-\d+\b/,
+                          "",
+                        ),
+                        /\bpr-\[.*?\]|\bpr-\d+\b/,
+                        "",
+                      ),
+                    );
+                  }}
                   className="h-6 flex-1"
                   inputClassName="h-6 text-xs text-right font-mono"
                 />
@@ -494,13 +576,24 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 <div className="flex items-center gap-1.5 rounded-lg border bg-background px-2 py-1">
                   <span className="text-[10px] text-muted-foreground">T</span>
                   <ScrubbableNumberInput
-                    value={Number(props.paddingTop ?? props.padding ?? 48)}
+                    value={effectivePaddingTop}
                     min={0}
                     max={160}
                     step={4}
                     suffix="px"
+                    disabled={disabled || sourceStyleLocked}
                     ariaLabel="Top padding"
-                    onValueChange={(val) => handleFieldChange("paddingTop", val)}
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath) handleFieldChange("paddingTop", val);
+                      patchContainerStyle((prev) =>
+                        updateTailwindClass(
+                          prev,
+                          /\bpt-\[.*?\]|\bpt-\d+\b/,
+                          `pt-[${val}px]`,
+                        ),
+                      );
+                    }}
                     className="h-5 flex-1"
                     inputClassName="h-5 text-xs text-right font-mono"
                   />
@@ -508,15 +601,25 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 <div className="flex items-center gap-1.5 rounded-lg border bg-background px-2 py-1">
                   <span className="text-[10px] text-muted-foreground">B</span>
                   <ScrubbableNumberInput
-                    value={Number(props.paddingBottom ?? props.padding ?? 48)}
+                    value={effectivePaddingBottom}
                     min={0}
                     max={160}
                     step={4}
                     suffix="px"
+                    disabled={disabled || sourceStyleLocked}
                     ariaLabel="Bottom padding"
-                    onValueChange={(val) =>
-                      handleFieldChange("paddingBottom", val)
-                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath)
+                        handleFieldChange("paddingBottom", val);
+                      patchContainerStyle((prev) =>
+                        updateTailwindClass(
+                          prev,
+                          /\bpb-\[.*?\]|\bpb-\d+\b/,
+                          `pb-[${val}px]`,
+                        ),
+                      );
+                    }}
                     className="h-5 flex-1"
                     inputClassName="h-5 text-xs text-right font-mono"
                   />
@@ -524,15 +627,25 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 <div className="flex items-center gap-1.5 rounded-lg border bg-background px-2 py-1">
                   <span className="text-[10px] text-muted-foreground">L</span>
                   <ScrubbableNumberInput
-                    value={Number(props.paddingLeft ?? props.padding ?? 24)}
+                    value={effectivePaddingLeft}
                     min={0}
                     max={160}
                     step={4}
                     suffix="px"
+                    disabled={disabled || sourceStyleLocked}
                     ariaLabel="Left padding"
-                    onValueChange={(val) =>
-                      handleFieldChange("paddingLeft", val)
-                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath)
+                        handleFieldChange("paddingLeft", val);
+                      patchContainerStyle((prev) =>
+                        updateTailwindClass(
+                          prev,
+                          /\bpl-\[.*?\]|\bpl-\d+\b/,
+                          `pl-[${val}px]`,
+                        ),
+                      );
+                    }}
                     className="h-5 flex-1"
                     inputClassName="h-5 text-xs text-right font-mono"
                   />
@@ -540,15 +653,25 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 <div className="flex items-center gap-1.5 rounded-lg border bg-background px-2 py-1">
                   <span className="text-[10px] text-muted-foreground">R</span>
                   <ScrubbableNumberInput
-                    value={Number(props.paddingRight ?? props.padding ?? 24)}
+                    value={effectivePaddingRight}
                     min={0}
                     max={160}
                     step={4}
                     suffix="px"
+                    disabled={disabled || sourceStyleLocked}
                     ariaLabel="Right padding"
-                    onValueChange={(val) =>
-                      handleFieldChange("paddingRight", val)
-                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath)
+                        handleFieldChange("paddingRight", val);
+                      patchContainerStyle((prev) =>
+                        updateTailwindClass(
+                          prev,
+                          /\bpr-\[.*?\]|\bpr-\d+\b/,
+                          `pr-[${val}px]`,
+                        ),
+                      );
+                    }}
                     className="h-5 flex-1"
                     inputClassName="h-5 text-xs text-right font-mono"
                   />
@@ -687,33 +810,42 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           <div className="grid grid-cols-2 gap-2">
             <div className="flex items-center justify-between rounded-lg border bg-background px-2.5 py-1">
               <span className="text-[11px] text-muted-foreground">Size</span>
-              <ScrubbableNumberInput
-                value={effectiveFontSize}
-                min={12}
-                max={120}
-                step={2}
-                suffix="px"
-                disabled={disabled || sourceStyleLocked}
-                ariaLabel="Heading font size"
-                onValueChange={(val) => {
-                  if (sourceStyleLocked) return;
-                  if (!componentPath) handleFieldChange("fontSize", val);
-                  patchStyle((prev) =>
-                    updateTailwindClass(
-                      prev,
-                      /text-\[.*\]|text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl)/,
-                      `text-[${val}px]`,
-                    ),
-                  );
-                }}
-                className="h-6 w-16"
-                inputClassName="h-6 text-xs text-right font-mono"
-              />
+              {isComplexFontSize ? (
+                <span
+                  className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground truncate max-w-[80px]"
+                  title={`Controlled in code: ${complexFontSizeRaw}`}
+                >
+                  Custom
+                </span>
+              ) : (
+                <ScrubbableNumberInput
+                  value={effectiveFontSize}
+                  min={12}
+                  max={120}
+                  step={2}
+                  suffix="px"
+                  disabled={disabled || sourceStyleLocked}
+                  ariaLabel="Heading font size"
+                  onValueChange={(val) => {
+                    if (sourceStyleLocked) return;
+                    if (!componentPath) handleFieldChange("fontSize", val);
+                    patchStyle((prev) =>
+                      updateTailwindClass(
+                        prev,
+                        /text-\[.*\]|text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl)/,
+                        `text-[${val}px]`,
+                      ),
+                    );
+                  }}
+                  className="h-6 w-16"
+                  inputClassName="h-6 text-xs text-right font-mono"
+                />
+              )}
             </div>
             <div className="flex items-center justify-between rounded-lg border bg-background px-2.5 py-1">
               <span className="text-[11px] text-muted-foreground">Line H</span>
               <ScrubbableNumberInput
-                value={Number(props.lineHeight ?? 1.1)}
+                value={effectiveLineHeight}
                 min={0.8}
                 max={2.5}
                 step={0.05}
@@ -721,7 +853,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 ariaLabel="Line height multiplier"
                 onValueChange={(val) => {
                   if (sourceStyleLocked) return;
-                  handleFieldChange("lineHeight", val);
+                  if (!componentPath) handleFieldChange("lineHeight", val);
+                  patchStyle((prev) =>
+                    updateTailwindClass(
+                      prev,
+                      /\bleading-\[.*?\]|\bleading-(none|tight|snug|normal|relaxed|loose)\b/,
+                      `leading-[${val}]`,
+                    ),
+                  );
                 }}
                 className="h-6 w-16"
                 inputClassName="h-6 text-xs text-right font-mono"
@@ -749,11 +888,22 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 <button
                   key={item.value}
                   type="button"
-                  onClick={() => handleFieldChange("backgroundColor", item.value)}
+                  onClick={() => {
+                    if (sourceStyleLocked) return;
+                    if (!componentPath)
+                      handleFieldChange("backgroundColor", item.value);
+                    patchContainerStyle((prev) =>
+                      updateTailwindClass(
+                        prev,
+                        /\bbg-\[.*?\]|\bbg-(white|black|stone|slate|zinc|gray)(-\d+)?\b/,
+                        `bg-[${item.value}]`,
+                      ),
+                    );
+                  }}
                   className={cn(
                     "size-6 rounded-md border shadow-xs transition-transform hover:scale-110",
                     item.preview,
-                    props.backgroundColor === item.value &&
+                    effectiveBgColor === item.value &&
                       "ring-2 ring-primary ring-offset-1",
                   )}
                   title={item.label}
@@ -765,20 +915,41 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
             <Input
               type="text"
-              value={props.backgroundColor ?? "#fafaf9"}
-              onChange={(e) =>
-                handleFieldChange("backgroundColor", e.target.value)
-              }
-              disabled={disabled}
+              value={effectiveBgColor}
+              onChange={(e) => {
+                if (sourceStyleLocked) return;
+                const val = e.target.value;
+                if (!componentPath) handleFieldChange("backgroundColor", val);
+                patchContainerStyle((prev) =>
+                  updateTailwindClass(
+                    prev,
+                    /\bbg-\[.*?\]|\bbg-(white|black|stone|slate|zinc|gray)(-\d+)?\b/,
+                    `bg-[${val}]`,
+                  ),
+                );
+              }}
+              disabled={disabled || sourceStyleLocked}
               placeholder="#ffffff"
               className="h-7 text-xs font-mono"
             />
             <input
               type="color"
-              value={props.backgroundColor?.startsWith("#") ? props.backgroundColor : "#fafaf9"}
-              onChange={(e) =>
-                handleFieldChange("backgroundColor", e.target.value)
+              value={
+                effectiveBgColor.startsWith("#") ? effectiveBgColor : "#fafaf9"
               }
+              onChange={(e) => {
+                if (sourceStyleLocked) return;
+                const val = e.target.value;
+                if (!componentPath) handleFieldChange("backgroundColor", val);
+                patchContainerStyle((prev) =>
+                  updateTailwindClass(
+                    prev,
+                    /\bbg-\[.*?\]|\bbg-(white|black|stone|slate|zinc|gray)(-\d+)?\b/,
+                    `bg-[${val}]`,
+                  ),
+                );
+              }}
+              disabled={disabled || sourceStyleLocked}
               className="size-7 cursor-pointer rounded border p-0.5 bg-transparent"
             />
           </div>
@@ -796,13 +967,24 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           <div className="flex items-center justify-between rounded-lg border bg-background px-2.5 py-1">
             <span className="text-[11px] text-muted-foreground">Radius</span>
             <ScrubbableNumberInput
-              value={Number(props.borderRadius ?? 0)}
+              value={effectiveBorderRadius}
               min={0}
               max={48}
               step={2}
               suffix="px"
+              disabled={disabled || sourceStyleLocked}
               ariaLabel="Corner radius"
-              onValueChange={(val) => handleFieldChange("borderRadius", val)}
+              onValueChange={(val) => {
+                if (sourceStyleLocked) return;
+                if (!componentPath) handleFieldChange("borderRadius", val);
+                patchContainerStyle((prev) =>
+                  updateTailwindClass(
+                    prev,
+                    /\brounded-\[.*?\]|\brounded-(none|sm|md|lg|xl|2xl|3xl|full)\b/,
+                    `rounded-[${val}px]`,
+                  ),
+                );
+              }}
               className="h-6 w-20"
               inputClassName="h-6 text-xs text-right font-mono"
             />

@@ -194,4 +194,54 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(parseTailwindTextAlign("text-right text-stone-600")).toBe("right");
     expect(parseTailwindTextAlign("text-left")).toBe("left");
   });
+
+  it("handles complex clamp/calc font size, line height, padding, background, and radius correctly", async () => {
+    const {
+      parseTailwindFontSizeDetailed,
+      parseTailwindLineHeight,
+      parseTailwindPadding,
+      parseTailwindBackgroundColor,
+      parseTailwindBorderRadius,
+    } = await import("./theme-ast-transformer");
+
+    // Complex clamp font size
+    const complexRes = parseTailwindFontSizeDetailed(
+      "mt-6 text-[clamp(3.25rem,7vw,7rem)] font-serif",
+    );
+    expect(complexRes.type).toBe("complex");
+    if (complexRes.type === "complex") {
+      expect(complexRes.raw).toBe("clamp(3.25rem,7vw,7rem)");
+    }
+
+    const exactRes = parseTailwindFontSizeDetailed("text-[100px] font-sans");
+    expect(exactRes.type).toBe("exact");
+    if (exactRes.type === "exact") {
+      expect(exactRes.value).toBe(100);
+    }
+
+    // Line height
+    expect(parseTailwindLineHeight("leading-[0.88] text-6xl")).toBe(0.88);
+    expect(parseTailwindLineHeight("leading-[1.2] font-sans")).toBe(1.2);
+    expect(parseTailwindLineHeight("leading-tight")).toBe(1.25);
+    expect(parseTailwindLineHeight("no-leading")).toBeNull();
+
+    // Padding
+    expect(parseTailwindPadding("p-[80px] bg-black")).toEqual({ all: 80 });
+    expect(parseTailwindPadding("py-20 px-6")).toEqual({ y: 80, x: 24 });
+    expect(parseTailwindPadding("pt-[40px] pb-[60px] pl-[20px] pr-[30px]")).toEqual({
+      top: 40,
+      bottom: 60,
+      left: 20,
+      right: 30,
+    });
+
+    // Background
+    expect(parseTailwindBackgroundColor("bg-[#123456] text-white")).toBe("#123456");
+    expect(parseTailwindBackgroundColor("bg-stone-100 text-stone-900")).toBe("#f5f5f4");
+
+    // Border radius
+    expect(parseTailwindBorderRadius("rounded-[16px] overflow-hidden")).toBe(16);
+    expect(parseTailwindBorderRadius("rounded-2xl shadow-lg")).toBe(16);
+    expect(parseTailwindBorderRadius("rounded-full")).toBe(9999);
+  });
 });

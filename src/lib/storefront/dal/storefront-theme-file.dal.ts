@@ -549,4 +549,49 @@ export const storefrontThemeFileDal = {
 
     return this.listFiles(storefrontId, themeId);
   },
+
+  /**
+   * Get the latest published revision for a theme.
+   */
+  async getLatestPublishedRevision(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<StorefrontThemeRevisionDTO | null> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return null;
+
+    const db = await getDb();
+    const [row] = await db
+      .select()
+      .from(storefrontThemeRevisions)
+      .where(
+        and(
+          eq(storefrontThemeRevisions.storefrontId, storefrontId),
+          eq(storefrontThemeRevisions.themeId, themeId),
+          eq(storefrontThemeRevisions.source, "publish"),
+          isNull(storefrontThemeRevisions.deletedAt),
+        ),
+      )
+      .orderBy(desc(storefrontThemeRevisions.revisionNumber))
+      .limit(1);
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      storefrontId: row.storefrontId,
+      themeId: row.themeId,
+      revisionNumber: row.revisionNumber,
+      message: row.message,
+      source: row.source as "manual" | "ai" | "publish" | "rollback",
+      snapshot: (row.snapshot ?? []) as Array<{
+        path: string;
+        content: string;
+        mimeType: string;
+        isEntry: boolean;
+      }>,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt,
+    };
+  },
 };

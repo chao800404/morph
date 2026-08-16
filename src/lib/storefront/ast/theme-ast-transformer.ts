@@ -491,22 +491,50 @@ const TAILWIND_FONT_SIZE_MAP: Record<string, number> = {
   "9xl": 128,
 };
 
+export type TailwindFontSizeResult =
+  | { type: "exact"; value: number }
+  | { type: "complex"; raw: string }
+  | { type: "none" };
+
 /**
- * Parses font size in pixels from Tailwind className string.
+ * Detailed parser for font size from Tailwind className string, supporting complex clamp()/calc() expressions.
  */
-export function parseTailwindFontSize(className?: string): number | null {
-  if (!className) return null;
+export function parseTailwindFontSizeDetailed(
+  className?: string,
+): TailwindFontSizeResult {
+  if (!className) return { type: "none" };
+
+  // Check complex arbitrary expressions first e.g. text-[clamp(3.25rem,7vw,7rem)]
+  const complexMatch = className.match(
+    /\btext-\[(clamp\(.+?\)|calc\(.+?\)|min\(.+?\)|max\(.+?\))\]/,
+  );
+  if (complexMatch) {
+    return { type: "complex", raw: complexMatch[1] };
+  }
+
+  // Check exact pixel values e.g. text-[100px] or text-[64]
   const arbitraryMatch = className.match(/\btext-\[(\d+)(?:px)?\]/);
   if (arbitraryMatch) {
-    return parseInt(arbitraryMatch[1], 10);
+    return { type: "exact", value: parseInt(arbitraryMatch[1], 10) };
   }
+
+  // Check standard token scale e.g. text-6xl
   const tokenMatch = className.match(
     /\btext-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl)\b/,
   );
   if (tokenMatch && TAILWIND_FONT_SIZE_MAP[tokenMatch[1]]) {
-    return TAILWIND_FONT_SIZE_MAP[tokenMatch[1]];
+    return { type: "exact", value: TAILWIND_FONT_SIZE_MAP[tokenMatch[1]] };
   }
-  return null;
+
+  return { type: "none" };
+}
+
+/**
+ * Parses font size in pixels from Tailwind className string. Returns null if missing or complex.
+ */
+export function parseTailwindFontSize(className?: string): number | null {
+  const res = parseTailwindFontSizeDetailed(className);
+  return res.type === "exact" ? res.value : null;
 }
 
 /**
@@ -549,4 +577,183 @@ export function parseTailwindTextAlign(
   if (!className) return null;
   const match = className.match(/\btext-(left|center|right)\b/);
   return match ? (match[1] as "left" | "center" | "right") : null;
+}
+
+/**
+ * Parses line height multiplier from Tailwind className string.
+ */
+export function parseTailwindLineHeight(className?: string): number | null {
+  if (!className) return null;
+  const arbitraryMatch = className.match(/\bleading-\[(\d+(?:\.\d+)?)\]/);
+  if (arbitraryMatch) {
+    return parseFloat(arbitraryMatch[1]);
+  }
+  const tokenMatch = className.match(
+    /\bleading-(none|tight|snug|normal|relaxed|loose)\b/,
+  );
+  if (tokenMatch) {
+    switch (tokenMatch[1]) {
+      case "none":
+        return 1;
+      case "tight":
+        return 1.25;
+      case "snug":
+        return 1.375;
+      case "normal":
+        return 1.5;
+      case "relaxed":
+        return 1.625;
+      case "loose":
+        return 2;
+    }
+  }
+  return null;
+}
+
+const TAILWIND_SPACING_SCALE: Record<string, number> = {
+  "0": 0,
+  "1": 4,
+  "2": 8,
+  "3": 12,
+  "4": 16,
+  "5": 20,
+  "6": 24,
+  "8": 32,
+  "10": 40,
+  "12": 48,
+  "16": 64,
+  "20": 80,
+  "24": 96,
+  "32": 128,
+};
+
+/**
+ * Parses padding values in pixels from Tailwind className string.
+ */
+export function parseTailwindPadding(className?: string): {
+  all?: number;
+  top?: number;
+  bottom?: number;
+  left?: number;
+  right?: number;
+  x?: number;
+  y?: number;
+} {
+  if (!className) return {};
+  const res: {
+    all?: number;
+    top?: number;
+    bottom?: number;
+    left?: number;
+    right?: number;
+    x?: number;
+    y?: number;
+  } = {};
+
+  const allMatch = className.match(/\bp-\[(\d+)(?:px)?\]/);
+  if (allMatch) res.all = parseInt(allMatch[1], 10);
+  else {
+    const token = className.match(/\bp-(\d+)\b/);
+    if (token && TAILWIND_SPACING_SCALE[token[1]] !== undefined) {
+      res.all = TAILWIND_SPACING_SCALE[token[1]];
+    }
+  }
+
+  const yMatch = className.match(/\bpy-\[(\d+)(?:px)?\]/);
+  if (yMatch) res.y = parseInt(yMatch[1], 10);
+  else {
+    const token = className.match(/\bpy-(\d+)\b/);
+    if (token && TAILWIND_SPACING_SCALE[token[1]] !== undefined) {
+      res.y = TAILWIND_SPACING_SCALE[token[1]];
+    }
+  }
+
+  const xMatch = className.match(/\bpx-\[(\d+)(?:px)?\]/);
+  if (xMatch) res.x = parseInt(xMatch[1], 10);
+  else {
+    const token = className.match(/\bpx-(\d+)\b/);
+    if (token && TAILWIND_SPACING_SCALE[token[1]] !== undefined) {
+      res.x = TAILWIND_SPACING_SCALE[token[1]];
+    }
+  }
+
+  const topMatch = className.match(/\bpt-\[(\d+)(?:px)?\]/);
+  if (topMatch) res.top = parseInt(topMatch[1], 10);
+
+  const bottomMatch = className.match(/\bpb-\[(\d+)(?:px)?\]/);
+  if (bottomMatch) res.bottom = parseInt(bottomMatch[1], 10);
+
+  const leftMatch = className.match(/\bpl-\[(\d+)(?:px)?\]/);
+  if (leftMatch) res.left = parseInt(leftMatch[1], 10);
+
+  const rightMatch = className.match(/\bpr-\[(\d+)(?:px)?\]/);
+  if (rightMatch) res.right = parseInt(rightMatch[1], 10);
+
+  return res;
+}
+
+const TAILWIND_COLOR_MAP: Record<string, string> = {
+  "bg-white": "#ffffff",
+  "bg-black": "#000000",
+  "bg-stone-50": "#fafaf9",
+  "bg-stone-100": "#f5f5f4",
+  "bg-stone-200": "#e7e5e4",
+  "bg-stone-900": "#1c1917",
+  "bg-stone-950": "#0c0a09",
+  "bg-slate-50": "#f8fafc",
+  "bg-slate-100": "#f1f5f9",
+  "bg-slate-900": "#0f172a",
+  "bg-zinc-50": "#fafafa",
+  "bg-zinc-100": "#f4f4f5",
+  "bg-zinc-900": "#18181b",
+};
+
+/**
+ * Parses background color hex from Tailwind className string.
+ */
+export function parseTailwindBackgroundColor(className?: string): string | null {
+  if (!className) return null;
+  const arbitraryMatch = className.match(/\bbg-\[(#\w{3,8}|rgba?\(.+?\))\]/);
+  if (arbitraryMatch) {
+    return arbitraryMatch[1];
+  }
+  for (const [token, hex] of Object.entries(TAILWIND_COLOR_MAP)) {
+    if (new RegExp(`\\b${token}\\b`).test(className)) {
+      return hex;
+    }
+  }
+  return null;
+}
+
+const TAILWIND_RADIUS_MAP: Record<string, number> = {
+  none: 0,
+  sm: 2,
+  DEFAULT: 4,
+  md: 6,
+  lg: 8,
+  xl: 12,
+  "2xl": 16,
+  "3xl": 24,
+  full: 9999,
+};
+
+/**
+ * Parses border radius in pixels from Tailwind className string.
+ */
+export function parseTailwindBorderRadius(className?: string): number | null {
+  if (!className) return null;
+  const arbitraryMatch = className.match(/\brounded-\[(\d+)(?:px)?\]/);
+  if (arbitraryMatch) {
+    return parseInt(arbitraryMatch[1], 10);
+  }
+  const tokenMatch = className.match(
+    /\brounded-(none|sm|md|lg|xl|2xl|3xl|full)\b/,
+  );
+  if (tokenMatch && TAILWIND_RADIUS_MAP[tokenMatch[1]] !== undefined) {
+    return TAILWIND_RADIUS_MAP[tokenMatch[1]];
+  }
+  if (/\brounded\b/.test(className)) {
+    return TAILWIND_RADIUS_MAP.DEFAULT;
+  }
+  return null;
 }

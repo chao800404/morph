@@ -488,11 +488,6 @@ export function VisualEditorShell({
           ).queryKey,
         }),
       ]);
-      const map: Record<string, number> = {};
-      for (const f of themeFiles) {
-        map[f.path] = f.version ?? 1;
-      }
-      setPublishedSourceBaselines(map);
       toast.success(result.message);
     },
     onError: () => toast.error("Failed to publish theme"),
@@ -609,29 +604,32 @@ export function VisualEditorShell({
     Record<string, { remoteVersion: number; remoteContent: string }>
   >({});
 
-  const [publishedSourceBaselines, setPublishedSourceBaselines] = useState<
-    Record<string, number>
-  >({});
-  const [hasInitializedSourceBaselines, setHasInitializedSourceBaselines] =
-    useState(false);
+  const latestPublishedRevision = (themeFilesQuery.data as any)
+    ?.latestPublishedRevision;
 
-  useEffect(() => {
-    if (!hasInitializedSourceBaselines && themeFiles.length > 0) {
-      const map: Record<string, number> = {};
-      for (const f of themeFiles) {
-        map[f.path] = f.version ?? 1;
-      }
-      setPublishedSourceBaselines(map);
-      setHasInitializedSourceBaselines(true);
+  const publishedSnapshotMap = useMemo(() => {
+    if (!latestPublishedRevision?.snapshot) return null;
+    const map = new Map<string, string>();
+    for (const item of latestPublishedRevision.snapshot) {
+      map.set(item.path, item.content);
     }
-  }, [themeFiles, hasInitializedSourceBaselines]);
+    return map;
+  }, [latestPublishedRevision]);
 
   const hasThemeSourceChanges = useMemo(() => {
-    if (!hasInitializedSourceBaselines) return false;
-    return themeFiles.some(
-      (f) => (f.version ?? 1) > (publishedSourceBaselines[f.path] ?? 1),
-    );
-  }, [themeFiles, publishedSourceBaselines, hasInitializedSourceBaselines]);
+    // True server-backed published state diffing
+    if (publishedSnapshotMap) {
+      if (themeFiles.length !== publishedSnapshotMap.size) return true;
+      for (const f of themeFiles) {
+        const publishedContent = publishedSnapshotMap.get(f.path);
+        if (publishedContent === undefined) return true; // new file
+        if (f.content !== publishedContent) return true; // modified file
+      }
+      return false;
+    }
+    // Fallback if theme has never been published yet
+    return themeFiles.some((f) => (f.version ?? 1) > 1);
+  }, [themeFiles, publishedSnapshotMap]);
 
   const hasTemplateChanges = Boolean(
     activeTemplate?.draftRevisionId &&
@@ -833,6 +831,30 @@ export function VisualEditorShell({
             };
           },
         );
+        // Clear save error status on reload
+        setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "idle" }));
+        setThemeFileSaveErrors((prev) => {
+          if (!prev[filePath]) return prev;
+          const next = { ...prev };
+          delete next[filePath];
+          return next;
+        });
+
+        // Broadcast reloaded remote file to preview iframe
+        previewIframeRef.current?.contentWindow?.postMessage(
+          {
+            type: "morph:storefront-preview-update-theme-files",
+            files: themeFiles.map((f) => ({
+              path: f.path,
+              content:
+                f.path === filePath
+                  ? conflict.remoteContent
+                  : (sourceCodeBufferRef.current.get(f.path) ?? f.content),
+            })),
+          },
+          window.location.origin,
+        );
+
         toast.info(`Reloaded remote version of ${filePath}`);
       } else if (resolution === "force_mine") {
         const localContent = sourceCodeBufferRef.current.get(filePath);
