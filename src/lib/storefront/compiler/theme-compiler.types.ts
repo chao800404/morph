@@ -16,6 +16,7 @@ export type ThemeCompilerInput = {
   files: ThemeCompilerFile[];
   entry?: string;
   sourceGeneration?: number;
+  compilerId?: string;
   compilerVersion?: string;
   themeId?: string;
   storefrontId?: string;
@@ -41,7 +42,12 @@ export type ThemeCompilerResult = {
 };
 
 export interface ThemeCompiler {
-  compile(input: ThemeCompilerInput): Promise<ThemeCompilerResult>;
+  readonly id: string;
+  readonly version: string;
+  compile(
+    input: ThemeCompilerInput,
+    options?: { inputHash?: string },
+  ): Promise<ThemeCompilerResult>;
 }
 
 export type ThemeCompilerCacheEntry = {

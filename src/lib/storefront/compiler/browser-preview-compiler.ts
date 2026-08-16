@@ -1,3 +1,5 @@
+import { compile as tailwindCompile } from "tailwindcss";
+import { BUILTIN_STYLESHEETS, TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
 import { computeThemeInputHash } from "./theme-compiler-hasher";
 import { scanThemeVirtualFilesystem } from "./theme-compiler-scanner";
 import type {
@@ -10,64 +12,113 @@ import type {
 /**
  * BrowserPreviewThemeCompiler
  *
- * Implements the ThemeCompiler contract for Preview / in-browser authoring.
- * Ingests the complete Theme virtual filesystem, validates syntax,
- * scans Tailwind class tokens across all files (including TSX, CSS, JSON),
- * and generates compiled stylesheet artifacts with full Tailwind CSS v4 support.
+ * Implements the unified ThemeCompiler contract for Preview and in-memory compilation.
+ * Compiles virtual theme CSS and source files with the official Tailwind CSS v4 compiler engine,
+ * generating fully-built static CSS stylesheets with preflight, layers, variants, and arbitrary values.
  */
 export class BrowserPreviewThemeCompiler implements ThemeCompiler {
-  private readonly compilerVersion = "4.0.0-preview";
+  readonly id = "tailwind-v4-preview";
+  readonly version = TAILWIND_VERSION;
 
-  async compile(input: ThemeCompilerInput): Promise<ThemeCompilerResult> {
-    const inputHash = computeThemeInputHash({
-      ...input,
-      compilerVersion: this.compilerVersion,
-    });
+  async compile(
+    input: ThemeCompilerInput,
+    options?: { inputHash?: string },
+  ): Promise<ThemeCompilerResult> {
+    const inputHash =
+      options?.inputHash ??
+      computeThemeInputHash(input, { id: this.id, version: this.version });
     const now = new Date().toISOString();
-
     const diagnostics: ThemeCompilerDiagnostic[] = [];
 
-    // 1. Scan complete virtual filesystem
+    // 1. Scan complete virtual filesystem for diagnostics and candidate tokens
     const scanResult = scanThemeVirtualFilesystem(input.files);
     diagnostics.push(...scanResult.diagnostics);
 
     const hasFatalErrors = diagnostics.some((d) => d.level === "error");
 
-    // 2. Assemble theme stylesheet from virtual CSS files
-    const cssBlocks: string[] = [];
-
+    // 2. Prepare virtual CSS map
+    const virtualCssMap = new Map<string, string>();
     for (const cssFile of scanResult.cssFiles) {
-      cssBlocks.push(`/* ${cssFile.path} */\n${cssFile.content}`);
+      virtualCssMap.set(cssFile.path, cssFile.content);
+      // Also map basename without path e.g. "global.css"
+      const basename = cssFile.path.split("/").pop();
+      if (basename) {
+        virtualCssMap.set(basename, cssFile.content);
+      }
     }
 
-    // 3. In the browser runtime, ensure Tailwind v4 compiler is initialized
-    if (typeof window !== "undefined" && typeof document !== "undefined") {
-      this.ensureTailwindBrowserRuntime();
+    // Determine root CSS
+    let rootCss = virtualCssMap.get("src/styles/global.css");
+    if (!rootCss && scanResult.cssFiles.length > 0) {
+      rootCss = scanResult.cssFiles.map((f) => f.content).join("\n\n");
+    }
+    if (!rootCss) {
+      rootCss = `@import "tailwindcss";`;
     }
 
-    const compiledCss = cssBlocks.join("\n\n");
+    // 3. Compile with official Tailwind CSS v4 compiler engine (only if no fatal syntax errors)
+    let compiledCss: string | undefined = undefined;
+
+    if (!hasFatalErrors) {
+      try {
+        const compiler = await tailwindCompile(rootCss, {
+          base: "/",
+          loadStylesheet: async (id: string, base: string) => {
+            // A. Check built-in Tailwind core stylesheets
+            if (BUILTIN_STYLESHEETS[id]) {
+              return {
+                path: id,
+                base: base || "/",
+                content: BUILTIN_STYLESHEETS[id],
+              };
+            }
+
+            // B. Check virtual stylesheets from theme
+            const normalizedId = id.startsWith("./") ? id.slice(2) : id;
+            if (virtualCssMap.has(id)) {
+              return {
+                path: id,
+                base: base || "/",
+                content: virtualCssMap.get(id)!,
+              };
+            }
+            if (virtualCssMap.has(normalizedId)) {
+              return {
+                path: normalizedId,
+                base: base || "/",
+                content: virtualCssMap.get(normalizedId)!,
+              };
+            }
+            if (virtualCssMap.has(`src/styles/${normalizedId}`)) {
+              return {
+                path: `src/styles/${normalizedId}`,
+                base: base || "/",
+                content: virtualCssMap.get(`src/styles/${normalizedId}`)!,
+              };
+            }
+
+            throw new Error(`Unable to resolve stylesheet import: "${id}"`);
+          },
+        });
+
+        // Build CSS for all extracted candidate tokens
+        compiledCss = compiler.build(scanResult.candidates);
+      } catch (err: any) {
+        diagnostics.push({
+          level: "error",
+          message: err.message || "Failed to compile theme stylesheet",
+        });
+      }
+    }
 
     return {
-      success: !hasFatalErrors,
+      success: !hasFatalErrors && compiledCss !== undefined,
       inputHash,
       css: compiledCss,
       diagnostics,
       sourceGeneration: input.sourceGeneration,
-      tokensCount: scanResult.classes.size,
+      tokensCount: scanResult.candidates.length,
       compiledAt: now,
     };
-  }
-
-  private ensureTailwindBrowserRuntime() {
-    if (typeof document === "undefined") return;
-
-    let script = document.getElementById("morph-tailwind-cdn") as HTMLScriptElement | null;
-    if (!script) {
-      script = document.createElement("script");
-      script.id = "morph-tailwind-cdn";
-      script.src = "https://unpkg.com/@tailwindcss/browser@4";
-      script.async = true;
-      document.head.appendChild(script);
-    }
   }
 }

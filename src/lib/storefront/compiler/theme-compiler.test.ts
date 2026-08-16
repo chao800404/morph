@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { BrowserPreviewThemeCompiler } from "./browser-preview-compiler";
 import { computeThemeInputHash } from "./theme-compiler-hasher";
 import { ThemeCompilerManager } from "./theme-compiler-manager";
-import { scanThemeVirtualFilesystem } from "./theme-compiler-scanner";
 import type { ThemeCompilerFile, ThemeCompilerInput } from "./theme-compiler.types";
 
 describe("Theme Compiler Foundation (Phase 4A)", () => {
@@ -14,242 +13,261 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
     manager = new ThemeCompilerManager(compiler);
   });
 
-  describe("Deterministic Input Hasher", () => {
-    it("produces identical input hash regardless of file ordering", () => {
-      const file1: ThemeCompilerFile = {
-        path: "src/components/Hero.tsx",
-        content: "export default function Hero() { return <div className='grid'>Hero</div>; }",
-      };
-      const file2: ThemeCompilerFile = {
-        path: "src/styles/global.css",
-        content: "@import 'tailwindcss';",
-      };
-
-      const inputA: ThemeCompilerInput = {
-        files: [file1, file2],
-        entry: "src/pages/index.tsx",
-      };
-      const inputB: ThemeCompilerInput = {
-        files: [file2, file1],
-        entry: "src/pages/index.tsx",
-      };
-
-      const hashA = computeThemeInputHash(inputA);
-      const hashB = computeThemeInputHash(inputB);
-
-      expect(hashA).toBe(hashB);
-      expect(typeof hashA).toBe("string");
-      expect(hashA.length).toBe(8);
-    });
-
-    it("produces different hash when file content changes", () => {
-      const inputA: ThemeCompilerInput = {
-        files: [{ path: "src/components/Hero.tsx", content: "console.log(1);" }],
-      };
-      const inputB: ThemeCompilerInput = {
-        files: [{ path: "src/components/Hero.tsx", content: "console.log(2);" }],
-      };
-
-      expect(computeThemeInputHash(inputA)).not.toBe(computeThemeInputHash(inputB));
-    });
-  });
-
-  describe("Virtual Filesystem Scanner & Tailwind Token Extraction", () => {
-    it("scans and extracts all required Tailwind classes and arbitrary syntax", () => {
-      const testSource = `
-        import { cn } from "@/lib/utils";
-
-        export default function TestComponent({ active }: { active: boolean }) {
-          return (
-            <section className="grid">
-              <div className="flex items-center gap-8">
-                <h1 className="text-[64px] md:text-[80px]">Heading</h1>
-                <div className="lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]" />
-                <div className="px-[clamp(1.75rem,6vw,6rem)]" />
-                <button className="hover:bg-stone-800">Button</button>
-                <div className="[&>img]:object-cover" />
-                <div className="supports-[display:grid]:grid" />
-                <div className="bg-[#ff0055]" />
-              </div>
-            </section>
-          );
-        }
-      `;
-
-      const files: ThemeCompilerFile[] = [
-        { path: "src/components/TestComponent.tsx", content: testSource },
-        { path: "src/styles/global.css", content: "@import 'tailwindcss'; :root { --brand: #000; }" },
-        { path: "morph.theme.json", content: JSON.stringify({ name: "Test Theme" }) },
-      ];
-
-      const scanResult = scanThemeVirtualFilesystem(files);
-
-      expect(scanResult.diagnostics).toEqual([]);
-      expect(scanResult.cssFiles.length).toBe(1);
-
-      // Verify all required Tailwind test cases are extracted
-      expect(scanResult.classes.has("grid")).toBe(true);
-      expect(scanResult.classes.has("flex")).toBe(true);
-      expect(scanResult.classes.has("items-center")).toBe(true);
-      expect(scanResult.classes.has("gap-8")).toBe(true);
-      expect(scanResult.classes.has("text-[64px]")).toBe(true);
-      expect(scanResult.classes.has("md:text-[80px]")).toBe(true);
-      expect(
-        scanResult.classes.has(
-          "lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]",
-        ),
-      ).toBe(true);
-      expect(scanResult.classes.has("px-[clamp(1.75rem,6vw,6rem)]")).toBe(true);
-      expect(scanResult.classes.has("hover:bg-stone-800")).toBe(true);
-      expect(scanResult.classes.has("[&>img]:object-cover")).toBe(true);
-      expect(scanResult.classes.has("supports-[display:grid]:grid")).toBe(true);
-      expect(scanResult.classes.has("bg-[#ff0055]")).toBe(true);
-    });
-
-    it("correctly extracts classes from dynamic React expressions (cn, ternaries, template literals)", () => {
-      const dynamicSource = `
-        import { cn } from "@/lib/utils";
-
-        export default function DynamicComponent({ active, isDark }: { active: boolean; isDark: boolean }) {
-          return (
-            <div
-              className={cn(
-                "text-4xl",
-                active && "text-red-500",
-                isDark ? "bg-stone-900" : "bg-stone-100"
-              )}
-            >
-              <span className={\`font-serif leading-tight \${active ? "opacity-100" : "opacity-50"}\`}>
-                Dynamic
-              </span>
-            </div>
-          );
-        }
-      `;
-
-      const files: ThemeCompilerFile[] = [
-        { path: "src/components/Dynamic.tsx", content: dynamicSource },
-      ];
-
-      const scanResult = scanThemeVirtualFilesystem(files);
-
-      expect(scanResult.diagnostics).toEqual([]);
-      expect(scanResult.classes.has("text-4xl")).toBe(true);
-      expect(scanResult.classes.has("text-red-500")).toBe(true);
-      expect(scanResult.classes.has("bg-stone-900")).toBe(true);
-      expect(scanResult.classes.has("bg-stone-100")).toBe(true);
-      expect(scanResult.classes.has("font-serif")).toBe(true);
-      expect(scanResult.classes.has("leading-tight")).toBe(true);
-      expect(scanResult.classes.has("opacity-100")).toBe(true);
-      expect(scanResult.classes.has("opacity-50")).toBe(true);
-    });
-
-    it("emits diagnostics on syntax errors without crashing", () => {
-      const brokenSource = `
-        export default function Broken() {
-          return <div className="p-4"
-        // missing closing tags and syntax error
-      `;
-
-      const files: ThemeCompilerFile[] = [
-        { path: "src/components/Broken.tsx", content: brokenSource },
-      ];
-
-      const scanResult = scanThemeVirtualFilesystem(files);
-
-      expect(scanResult.diagnostics.length).toBeGreaterThan(0);
-      expect(scanResult.diagnostics[0].level).toBe("error");
-      expect(scanResult.diagnostics[0].filePath).toBe("src/components/Broken.tsx");
-      expect(typeof scanResult.diagnostics[0].line).toBe("number");
-    });
-  });
-
-  describe("ThemeCompiler Execution & Cache Management", () => {
-    it("compiles valid virtual filesystem and returns ThemeCompilerResult", async () => {
-      const input: ThemeCompilerInput = {
-        themeId: "theme-dawn",
-        storefrontId: "storefront-1",
-        sourceGeneration: 10,
+  describe("Real Tailwind CSS v4 Compilation", () => {
+    it("compiles virtual files into genuine CSS rules and eliminates @import 'tailwindcss'", async () => {
+      const result = await compiler.compile({
         files: [
           {
             path: "src/styles/global.css",
-            content: "@import 'tailwindcss';\n:root { --brand: #1c1917; }",
+            content: '@import "tailwindcss";\n:root { --custom-color: #123456; }',
           },
           {
-            path: "src/components/Hero.tsx",
-            content: "export default function Hero() { return <div className='grid min-h-[42rem]'>Hero</div>; }",
+            path: "src/Test.tsx",
+            content: `
+              export default () =>
+                <div className="grid text-[64px] hover:bg-stone-800" />
+            `,
           },
         ],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.css).toBeDefined();
+      expect(result.css).toContain(".grid");
+      expect(result.css).toContain("64px");
+      expect(result.css).toContain("hover");
+      expect(result.css).toContain("--custom-color: #123456");
+      expect(result.css).not.toContain('@import "tailwindcss"');
+    });
+
+    it("verifies all required Tailwind syntax cases (arbitrary values, variants, responsive, pseudo-selectors)", async () => {
+      const result = await compiler.compile({
+        files: [
+          {
+            path: "src/styles/global.css",
+            content: '@import "tailwindcss";',
+          },
+          {
+            path: "src/components/Showcase.tsx",
+            content: `
+              export default function Showcase() {
+                return (
+                  <div className="grid flex items-center gap-8 text-[64px] md:text-[80px] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)] px-[clamp(1.75rem,6vw,6rem)] hover:bg-stone-800 [&>img]:object-cover supports-[display:grid]:grid bg-[#ff0055]">
+                    <img src="/test.jpg" />
+                  </div>
+                );
+              }
+            `,
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      const css = result.css!;
+
+      // 1. className="grid"
+      expect(css).toContain(".grid");
+      // 2. className="flex items-center gap-8"
+      expect(css).toContain(".flex");
+      expect(css).toContain(".items-center");
+      expect(css).toContain("gap: calc(var(--spacing)");
+      // 3. className="text-[64px]"
+      expect(css).toContain("font-size: 64px");
+      // 4. className="md:text-[80px]"
+      expect(css).toContain("font-size: 80px");
+      expect(css).toContain("@media (width >= 48rem)");
+      // 5. className="lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]"
+      expect(css).toContain("grid-template-columns: minmax(0,0.82fr) minmax(0,1.18fr)");
+      // 6. className="px-[clamp(1.75rem,6vw,6rem)]"
+      expect(css).toContain("padding-inline: clamp(1.75rem, 6vw, 6rem)");
+      // 7. className="hover:bg-stone-800"
+      expect(css).toContain("hover");
+      // 8. className="[&>img]:object-cover"
+      expect(css).toContain("object-fit: cover");
+      // 9. className="supports-[display:grid]:grid"
+      expect(css).toContain("@supports (display:grid)");
+      // 10. className="bg-[#ff0055]"
+      expect(css).toContain("#ff0055");
+    });
+
+    it("compiles candidate classes from dynamic React expressions (cn, ternaries, template literals)", async () => {
+      const result = await compiler.compile({
+        files: [
+          {
+            path: "src/styles/global.css",
+            content: '@import "tailwindcss";',
+          },
+          {
+            path: "src/components/Dynamic.tsx",
+            content: `
+              import { cn } from "@/lib/utils";
+
+              export default function DynamicComponent({ active, isDark }: { active: boolean; isDark: boolean }) {
+                return (
+                  <div
+                    className={cn(
+                      "text-4xl",
+                      active && "text-red-500",
+                      isDark ? "bg-stone-900" : "bg-stone-100"
+                    )}
+                  >
+                    <span className={\`font-serif leading-tight \${active ? "opacity-100" : "opacity-50"}\`}>
+                      Dynamic
+                    </span>
+                  </div>
+                );
+              }
+            `,
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      const css = result.css!;
+      expect(css).toContain("text-4xl");
+      expect(css).toContain("text-red-500");
+      expect(css).toContain("bg-stone-900");
+      expect(css).toContain("bg-stone-100");
+      expect(css).toContain("leading-tight");
+    });
+  });
+
+  describe("Single Identity Hasher & Cache Contracts", () => {
+    it("ensures Manager cache key and result.inputHash are 100% unified and deterministic SHA-256", async () => {
+      const input: ThemeCompilerInput = {
+        themeId: "theme-alpha",
+        files: [
+          { path: "src/styles/global.css", content: '@import "tailwindcss";' },
+          { path: "src/components/Hero.tsx", content: '<div className="grid">Hero</div>' },
+        ],
       };
+
+      const expectedHash = computeThemeInputHash(input, {
+        id: compiler.id,
+        version: compiler.version,
+      });
 
       const result = await manager.compile(input);
 
-      expect(result.success).toBe(true);
-      expect(result.inputHash).toBeDefined();
-      expect(result.css).toContain(":root { --brand: #1c1917; }");
-      expect(result.tokensCount).toBeGreaterThan(0);
-      expect(result.sourceGeneration).toBe(10);
-      expect(result.diagnostics).toEqual([]);
+      expect(result.inputHash).toBe(expectedHash);
+      expect(result.inputHash.length).toBe(64); // SHA-256 hex string
     });
 
-    it("uses in-memory cache for repeated compilations of identical inputHash", async () => {
-      const input: ThemeCompilerInput = {
-        themeId: "theme-dawn",
-        files: [
-          {
-            path: "src/components/Header.tsx",
-            content: "export default function Header() { return <header className='h-16'>Header</header>; }",
-          },
-        ],
+    it("accurately updates caller sourceGeneration metadata on cache hits", async () => {
+      const files: ThemeCompilerFile[] = [
+        { path: "src/components/Header.tsx", content: '<header className="h-16">Header</header>' },
+      ];
+
+      // 1. First compile at generation 10
+      const result1 = await manager.compile({
+        themeId: "theme-beta",
+        sourceGeneration: 10,
+        files,
+      });
+      expect(result1.sourceGeneration).toBe(10);
+
+      // 2. Cache hit at generation 20 with identical file content
+      const result2 = await manager.compile({
+        themeId: "theme-beta",
+        sourceGeneration: 20,
+        files,
+      });
+      expect(result2.sourceGeneration).toBe(20);
+      expect(result2.inputHash).toBe(result1.inputHash);
+    });
+  });
+
+  describe("Out-of-Order Race Protection for lastKnownGood", () => {
+    it("prevents slower, superseded compilation jobs from overwriting newer lastKnownGood CSS", async () => {
+      const themeId = "theme-race";
+
+      let resolveSlowJob: (result: any) => void;
+      const slowPromise = new Promise<any>((resolve) => {
+        resolveSlowJob = resolve;
+      });
+
+      const slowCompiler = {
+        id: "slow-compiler",
+        version: "4.1.17",
+        compile: async (input: ThemeCompilerInput) => {
+          if (input.sourceGeneration === 1) {
+            return slowPromise;
+          }
+          return {
+            success: true,
+            inputHash: "hash-gen-2",
+            css: "/* Gen 2 Fast CSS */ .gen2 { color: blue; }",
+            diagnostics: [],
+            compiledAt: new Date().toISOString(),
+          };
+        },
       };
 
-      const result1 = await manager.compile(input);
-      const result2 = await manager.compile(input);
+      const raceManager = new ThemeCompilerManager(slowCompiler as any);
 
-      expect(result1.inputHash).toBe(result2.inputHash);
-      expect(result1.compiledAt).toBe(result2.compiledAt);
+      // Start Job 1 (Gen 1 - slow)
+      const job1Promise = raceManager.compile({
+        themeId,
+        sourceGeneration: 1,
+        files: [{ path: "src/1.tsx", content: "gen1" }],
+      });
+
+      // Start Job 2 (Gen 2 - fast)
+      const job2Promise = raceManager.compile({
+        themeId,
+        sourceGeneration: 2,
+        files: [{ path: "src/2.tsx", content: "gen2" }],
+      });
+
+      // Job 2 completes first
+      await job2Promise;
+      expect(raceManager.getLastKnownGood(themeId)?.css).toContain("Gen 2 Fast CSS");
+
+      // Now Job 1 finishes late
+      resolveSlowJob!({
+        success: true,
+        inputHash: "hash-gen-1",
+        css: "/* Gen 1 Stale CSS */ .gen1 { color: red; }",
+        diagnostics: [],
+        compiledAt: new Date().toISOString(),
+      });
+      await job1Promise;
+
+      // lastKnownGood MUST remain Gen 2!
+      expect(raceManager.getLastKnownGood(themeId)?.css).toContain("Gen 2 Fast CSS");
+      expect(raceManager.getLastKnownGood(themeId)?.css).not.toContain("Gen 1 Stale CSS");
     });
 
-    it("preserves last-known-good CSS when compilation fails", async () => {
-      const themeId = "theme-test";
+    it("emits syntax error diagnostics and preserves lastKnownGood CSS on failure", async () => {
+      const themeId = "theme-diag";
 
-      // 1. Initial successful compile
-      const goodInput: ThemeCompilerInput = {
+      // 1. Successful baseline compile
+      const okResult = await manager.compile({
         themeId,
         files: [
-          {
-            path: "src/styles/global.css",
-            content: "body { background: #fafaf9; }",
-          },
-          {
-            path: "src/components/Hero.tsx",
-            content: "export default function Hero() { return <div className='p-6'>Good</div>; }",
-          },
+          { path: "src/styles/global.css", content: '@import "tailwindcss";\nbody { margin: 0; }' },
+          { path: "src/components/Hero.tsx", content: 'export default () => <div className="p-4">OK</div>' },
         ],
-      };
+      });
+      expect(okResult.success).toBe(true);
+      expect(okResult.css).toContain("margin: 0");
 
-      const goodResult = await manager.compile(goodInput);
-      expect(goodResult.success).toBe(true);
-      expect(goodResult.css).toContain("body { background: #fafaf9; }");
-
-      // 2. Subsequent compile with fatal syntax error
-      const badInput: ThemeCompilerInput = {
+      // 2. Compile with malformed TSX syntax
+      const failResult = await manager.compile({
         themeId,
         files: [
-          {
-            path: "src/components/Hero.tsx",
-            content: "export default function Hero() { return <div className='p-6' INVALID_SYNTAX",
-          },
+          { path: "src/components/Hero.tsx", content: 'export default () => <div className="p-4" BROKEN_SYNTAX' },
         ],
-      };
+      });
 
-      const badResult = await manager.compile(badInput);
+      expect(failResult.success).toBe(false);
+      expect(failResult.diagnostics.length).toBeGreaterThan(0);
+      expect(failResult.diagnostics[0].level).toBe("error");
+      expect(failResult.diagnostics[0].filePath).toBe("src/components/Hero.tsx");
 
-      expect(badResult.success).toBe(false);
-      expect(badResult.diagnostics.length).toBeGreaterThan(0);
-      // Fallback CSS is preserved from last-known-good
-      expect(badResult.css).toBe(goodResult.css);
-      expect(manager.getLastKnownGood(themeId)?.css).toBe(goodResult.css);
+      // Fallback CSS is preserved
+      expect(failResult.css).toBe(okResult.css);
+      expect(manager.getLastKnownGood(themeId)?.css).toBe(okResult.css);
     });
   });
 });

@@ -10,13 +10,15 @@ import type {
 /**
  * ThemeCompilerManager
  *
- * Coordinates theme compilation jobs, memory caching by inputHash / sourceGeneration,
- * in-flight request deduplication, job superseding, and last-known-good result retention.
+ * Coordinates theme compilation jobs, memory caching by inputHash,
+ * in-flight request deduplication, sequence-guarded job superseding,
+ * and last-known-good result retention against out-of-order race conditions.
  */
 export class ThemeCompilerManager {
   private cache = new Map<string, ThemeCompilerCacheEntry>();
   private inFlight = new Map<string, Promise<ThemeCompilerResult>>();
   private lastKnownGood = new Map<string, ThemeCompilerResult>();
+  private themeSequences = new Map<string, number>();
   private defaultCompiler: ThemeCompiler;
 
   constructor(compiler?: ThemeCompiler) {
@@ -28,25 +30,41 @@ export class ThemeCompilerManager {
     compiler?: ThemeCompiler,
   ): Promise<ThemeCompilerResult> {
     const targetCompiler = compiler ?? this.defaultCompiler;
-    const inputHash = computeThemeInputHash(input);
     const themeKey = input.themeId ?? "default";
 
-    // 1. Cache hit check
+    // 1. Unified, single identity inputHash based on compiler id & version
+    const inputHash = computeThemeInputHash(input, {
+      id: targetCompiler.id,
+      version: targetCompiler.version,
+    });
+
+    // 2. Cache hit check (content-addressed, updates caller's sourceGeneration metadata)
     const cached = this.cache.get(inputHash);
     if (cached) {
-      return cached.result;
+      return {
+        ...cached.result,
+        sourceGeneration: input.sourceGeneration,
+      };
     }
 
-    // 2. In-flight deduplication
+    // 3. In-flight deduplication
     const existingFlight = this.inFlight.get(inputHash);
     if (existingFlight) {
-      return existingFlight;
+      const flightResult = await existingFlight;
+      return {
+        ...flightResult,
+        sourceGeneration: input.sourceGeneration,
+      };
     }
 
-    // 3. Launch compilation
+    // 4. Sequence guard: record latest request sequence for this theme to prevent out-of-order race
+    const currentSeq = (this.themeSequences.get(themeKey) ?? 0) + 1;
+    this.themeSequences.set(themeKey, currentSeq);
+
+    // 5. Launch compilation
     const compilePromise = (async () => {
       try {
-        const result = await targetCompiler.compile(input);
+        const result = await targetCompiler.compile(input, { inputHash });
 
         // Store in cache
         this.cache.set(inputHash, {
@@ -55,13 +73,17 @@ export class ThemeCompilerManager {
           sourceGeneration: input.sourceGeneration,
         });
 
-        // If compile succeeded, update last-known-good
-        if (result.success) {
-          this.lastKnownGood.set(themeKey, result);
-        } else {
-          // If compile failed, attach last known good CSS if available so preview remains usable
+        // Sequence guard: only update last-known-good if this is still the newest compile job
+        if (currentSeq === this.themeSequences.get(themeKey)) {
+          if (result.success && result.css) {
+            this.lastKnownGood.set(themeKey, result);
+          }
+        }
+
+        // If compile failed, attach last known good CSS if available so preview remains visual
+        if (!result.success) {
           const fallback = this.lastKnownGood.get(themeKey);
-          if (fallback?.css && !result.css) {
+          if (fallback?.css) {
             result.css = fallback.css;
           }
         }
@@ -84,6 +106,7 @@ export class ThemeCompilerManager {
     this.cache.clear();
     this.inFlight.clear();
     this.lastKnownGood.clear();
+    this.themeSequences.clear();
   }
 }
 
