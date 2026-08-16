@@ -118,4 +118,59 @@ describe("ThemeWorkspaceStore", () => {
       "concurrent server update",
     );
   });
+
+  it("never falls back to active workspace when explicit scope is given", () => {
+    const store = useThemeWorkspaceStore.getState();
+
+    const fileA: StorefrontThemeFileDTO = {
+      id: "file-1",
+      storefrontId: "store-a",
+      themeId: "theme-a",
+      path: "src/components/Hero.tsx",
+      content: "Theme A original",
+      mimeType: "text/plain",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+
+    const fileB: StorefrontThemeFileDTO = {
+      id: "file-2",
+      storefrontId: "store-a",
+      themeId: "theme-b",
+      path: "src/components/Hero.tsx",
+      content: "Theme B original",
+      mimeType: "text/plain",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+
+    store.hydrateFromQuery("store-a", "theme-a", [fileA]);
+    store.hydrateFromQuery("store-a", "theme-b", [fileB]);
+
+    // Active workspace is Theme B
+    store.setActiveWorkspace("store-a", "theme-b");
+
+    // Async action completes for Theme A with explicit scope
+    store.updateLocalContent("src/components/Hero.tsx", "Theme A async save", {
+      storefrontId: "store-a",
+      themeId: "theme-a",
+    });
+
+    // Active workspace (Theme B) must remain unchanged
+    expect(useThemeWorkspaceStore.getState().files["src/components/Hero.tsx"].localContent).toBe(
+      "Theme B original",
+    );
+
+    // Theme A workspace received the change
+    const themeAFiles = useThemeWorkspaceStore
+      .getState()
+      .getWorkspaceFiles("store-a", "theme-a");
+    expect(themeAFiles["src/components/Hero.tsx"].localContent).toBe(
+      "Theme A async save",
+    );
+  });
 });

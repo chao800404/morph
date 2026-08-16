@@ -4,6 +4,7 @@ import {
   storefrontThemeEditorSearchSchema,
   storefrontThemePreviewSearchSchema,
 } from "./storefront-theme";
+import { createThemeRevisionInputSchema } from "./storefront-theme-file";
 
 describe("storefront theme editor search", () => {
   it("keeps legacy template type links compatible", () => {
@@ -99,6 +100,37 @@ describe("publish storefront theme template input schema", () => {
         themeId: "22222222-2222-4222-8222-222222222222",
         templateId: "33333333-3333-4333-8333-333333333333",
         sourceRevisionId: "44444444-4444-4444-8444-444444444444",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("create theme revision input schema", () => {
+  it("requires expectedSourceGeneration integer >= 1", () => {
+    const valid = {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      expectedSourceGeneration: 5,
+      message: "Checkpoint",
+    };
+
+    expect(createThemeRevisionInputSchema.parse(valid)).toEqual(valid);
+
+    // Missing expectedSourceGeneration
+    expect(() =>
+      createThemeRevisionInputSchema.parse({
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        message: "Checkpoint",
+      }),
+    ).toThrow();
+
+    // Invalid generation (< 1)
+    expect(() =>
+      createThemeRevisionInputSchema.parse({
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        expectedSourceGeneration: 0,
       }),
     ).toThrow();
   });

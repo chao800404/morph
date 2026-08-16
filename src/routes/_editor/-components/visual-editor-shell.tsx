@@ -604,6 +604,14 @@ export function VisualEditorShell({
   const markWorkspaceConflict = useThemeWorkspaceStore((state) => state.markConflict);
   const resolveWorkspaceConflict = useThemeWorkspaceStore((state) => state.resolveConflict);
 
+  const workspaceScope = useMemo(
+    () => ({
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    }),
+    [context.storefront.id, context.theme.id],
+  );
+
   useEffect(() => {
     setActiveWorkspace(context.storefront.id, context.theme.id);
   }, [context.storefront.id, context.theme.id, setActiveWorkspace]);
@@ -706,11 +714,16 @@ export function VisualEditorShell({
             fileRevisionRef.current.get(filePath) ?? 0;
           if (targetRevision < latestQueuedRevision) return null;
 
-          const current = useThemeWorkspaceStore.getState().files[filePath];
+          const current = useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            )[filePath];
           if (!current) throw new Error(`Workspace file "${filePath}" is missing`);
           if (current.conflict) throw new Error("File has an unresolved conflict.");
 
-          markWorkspaceSaving(filePath);
+          markWorkspaceSaving(filePath, workspaceScope);
 
           try {
             const res = await saveStorefrontThemeFile({
@@ -740,27 +753,35 @@ export function VisualEditorShell({
                 }).catch(() => null);
 
                 if (latestRes?.success && latestRes.data) {
-                  markWorkspaceConflict(filePath, {
-                    kind: current.serverExists ? "modified" : "created",
-                    remoteExists: true,
-                    remoteFileId: latestRes.data.id,
-                    remoteVersion: latestRes.data.version,
-                    remoteContent: latestRes.data.content,
-                  });
+                  markWorkspaceConflict(
+                    filePath,
+                    {
+                      kind: current.serverExists ? "modified" : "created",
+                      remoteExists: true,
+                      remoteFileId: latestRes.data.id,
+                      remoteVersion: latestRes.data.version,
+                      remoteContent: latestRes.data.content,
+                    },
+                    workspaceScope,
+                  );
                 } else {
-                  markWorkspaceConflict(filePath, {
-                    kind: "deleted",
-                    remoteExists: false,
-                    remoteFileId: null,
-                    remoteVersion: null,
-                    remoteContent: null,
-                  });
+                  markWorkspaceConflict(
+                    filePath,
+                    {
+                      kind: "deleted",
+                      remoteExists: false,
+                      remoteFileId: null,
+                      remoteVersion: null,
+                      remoteContent: null,
+                    },
+                    workspaceScope,
+                  );
                 }
               }
               throw new Error(res.message);
             }
 
-            markWorkspaceSaved(res.data);
+            markWorkspaceSaved(res.data, workspaceScope);
             queryClient.setQueryData(
               storefrontThemeFileQueries.tree(
                 context.storefront.id,
@@ -782,11 +803,17 @@ export function VisualEditorShell({
 
             return res.data;
           } catch (error) {
-            const afterError = useThemeWorkspaceStore.getState().files[filePath];
+            const afterError = useThemeWorkspaceStore
+              .getState()
+              .getWorkspaceFiles(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              )[filePath];
             if (afterError?.saveState !== "conflict") {
               markWorkspaceError(
                 filePath,
                 error instanceof Error ? error.message : "Save failed",
+                workspaceScope,
               );
             }
             throw error;
@@ -804,6 +831,7 @@ export function VisualEditorShell({
       markWorkspaceSaved,
       markWorkspaceSaving,
       queryClient,
+      workspaceScope,
     ],
   );
 
@@ -815,7 +843,7 @@ export function VisualEditorShell({
         pendingSaveTimersRef.current.delete(filePath);
       }
 
-      updateWorkspaceLocal(filePath, content);
+      updateWorkspaceLocal(filePath, content, workspaceScope);
 
       previewIframeRef.current?.contentWindow?.postMessage(
         {
@@ -823,8 +851,12 @@ export function VisualEditorShell({
           files: themeFiles.map((file) => ({
             path: file.path,
             content:
-              useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
-              file.content,
+              useThemeWorkspaceStore
+                .getState()
+                .getWorkspaceFiles(
+                  workspaceScope.storefrontId,
+                  workspaceScope.themeId,
+                )[file.path]?.localContent ?? file.content,
           })),
         },
         window.location.origin,
@@ -848,12 +880,21 @@ export function VisualEditorShell({
       });
       return result;
     },
-    [saveThemeFileSequentially, themeFiles, updateWorkspaceLocal],
+    [
+      saveThemeFileSequentially,
+      themeFiles,
+      updateWorkspaceLocal,
+      workspaceScope,
+    ],
   );
 
   const handleResolveConflict = useCallback(
     async (filePath: string, resolution: "reload" | "force_mine") => {
-      const resolved = resolveWorkspaceConflict(filePath, resolution);
+      const resolved = resolveWorkspaceConflict(
+        filePath,
+        resolution,
+        workspaceScope,
+      );
       if (!resolved) return;
 
       if (resolution === "reload") {
@@ -867,7 +908,12 @@ export function VisualEditorShell({
           {
             type: "morph:storefront-preview-update-theme-files",
             files: themeFiles.flatMap((file) => {
-              const current = useThemeWorkspaceStore.getState().files[file.path];
+              const current = useThemeWorkspaceStore
+                .getState()
+                .getWorkspaceFiles(
+                  workspaceScope.storefrontId,
+                  workspaceScope.themeId,
+                )[file.path];
               return current
                 ? [{ path: file.path, content: current.localContent }]
                 : [];
@@ -879,7 +925,12 @@ export function VisualEditorShell({
         return;
       }
 
-      const local = useThemeWorkspaceStore.getState().files[filePath]?.localContent;
+      const local = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        )[filePath]?.localContent;
       if (local === undefined) return;
       toast.info(`Applying local version of ${filePath}...`);
       await handleUnifiedSaveFile(filePath, local);
@@ -891,6 +942,7 @@ export function VisualEditorShell({
       queryClient,
       resolveWorkspaceConflict,
       themeFiles,
+      workspaceScope,
     ],
   );
 
@@ -902,7 +954,11 @@ export function VisualEditorShell({
       return;
     }
 
-    if (useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors()) {
+    if (
+      useThemeWorkspaceStore
+        .getState()
+        .hasActiveConflictsOrErrors(workspaceScope)
+    ) {
       toast.error("Cannot publish: resolve source conflicts/save errors first.");
       return;
     }
@@ -931,8 +987,12 @@ export function VisualEditorShell({
       const timer = pendingSaveTimersRef.current.get(filePath);
       if (timer) clearTimeout(timer);
       pendingSaveTimersRef.current.delete(filePath);
-      const content =
-        useThemeWorkspaceStore.getState().files[filePath]?.localContent;
+      const content = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        )[filePath]?.localContent;
       if (content !== undefined) {
         try {
           await handleUnifiedSaveFile(filePath, content);
@@ -954,7 +1014,10 @@ export function VisualEditorShell({
     );
 
     const workspace = useThemeWorkspaceStore.getState();
-    if (workspace.hasActiveConflictsOrErrors() || workspace.hasUnsavedEdits()) {
+    if (
+      workspace.hasActiveConflictsOrErrors(workspaceScope) ||
+      workspace.hasUnsavedEdits(workspaceScope)
+    ) {
       toast.error(
         "Cannot publish: source workspace is not fully saved and conflict-free.",
       );
@@ -966,7 +1029,13 @@ export function VisualEditorShell({
       return;
     }
 
-    const expectedSourceGeneration = themeFilesQuery.data?.sourceGeneration;
+    // Always refetch latest server theme files state to get exact sourceGeneration
+    const refreshed = await themeFilesQuery.refetch();
+    const expectedSourceGeneration = refreshed.data?.sourceGeneration;
+    if (typeof expectedSourceGeneration !== "number") {
+      toast.error("Unable to resolve source generation before publish");
+      return;
+    }
 
     // Freeze current working files into a distinct Source Revision with OCC
     const freezeResult = await createStorefrontThemeRevision({
@@ -996,8 +1065,9 @@ export function VisualEditorShell({
     handleUnifiedSaveFile,
     monacoDirtyFiles,
     publishMutation,
-    themeFilesQuery.data?.sourceGeneration,
+    themeFilesQuery,
     updatePropsMutation,
+    workspaceScope,
   ]);
 
   const handleUpdateThemeFileStyle = useCallback(
@@ -1007,7 +1077,12 @@ export function VisualEditorShell({
       updater: (prevClasses: string) => string,
     ) => {
       const currentSource =
-        useThemeWorkspaceStore.getState().files[filePath]?.localContent ??
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath]?.localContent ??
         themeFiles.find((f) => f.path === filePath)?.content;
       if (!currentSource) return;
 
@@ -1032,7 +1107,7 @@ export function VisualEditorShell({
 
       const updatedContent = patchResult.code;
       if (updatedContent !== currentSource) {
-        updateWorkspaceLocal(filePath, updatedContent);
+        updateWorkspaceLocal(filePath, updatedContent, workspaceScope);
 
         previewIframeRef.current?.contentWindow?.postMessage(
           {
@@ -1042,8 +1117,12 @@ export function VisualEditorShell({
               content:
                 file.path === filePath
                   ? updatedContent
-                  : useThemeWorkspaceStore.getState().files[file.path]
-                      ?.localContent ?? file.content,
+                  : useThemeWorkspaceStore
+                      .getState()
+                      .getWorkspaceFiles(
+                        workspaceScope.storefrontId,
+                        workspaceScope.themeId,
+                      )[file.path]?.localContent ?? file.content,
             })),
           },
           window.location.origin,
@@ -1077,15 +1156,17 @@ export function VisualEditorShell({
         }, 300);
 
         pendingSaveTimersRef.current.set(filePath, newTimer);
-        markWorkspaceDebouncing(filePath);
+        markWorkspaceDebouncing(filePath, workspaceScope);
       }
     },
     [
-      themeFiles,
-      queryClient,
       context.storefront.id,
       context.theme.id,
+      markWorkspaceDebouncing,
       saveThemeFileSequentially,
+      themeFiles,
+      updateWorkspaceLocal,
+      workspaceScope,
     ],
   );
 
