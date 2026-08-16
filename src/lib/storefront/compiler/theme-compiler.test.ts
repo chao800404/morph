@@ -13,7 +13,7 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
     manager = new ThemeCompilerManager(compiler);
   });
 
-  describe("Real Tailwind CSS v4 Compilation", () => {
+  describe("Real Tailwind CSS v4 Compilation & Candidate Parity", () => {
     it("compiles virtual files into genuine CSS rules and eliminates @import 'tailwindcss'", async () => {
       const result = await compiler.compile({
         files: [
@@ -40,19 +40,19 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
       expect(result.css).not.toContain('@import "tailwindcss"');
     });
 
-    it("verifies all required Tailwind syntax cases (arbitrary values, variants, responsive, pseudo-selectors)", async () => {
+    it("verifies all required Tailwind syntax cases including bg-(--var) and arbitrary values", async () => {
       const result = await compiler.compile({
         files: [
           {
             path: "src/styles/global.css",
-            content: '@import "tailwindcss";',
+            content: '@import "tailwindcss";\n:root { --brand-color: #ff0055; --hero-h: 42rem; }',
           },
           {
             path: "src/components/Showcase.tsx",
             content: `
               export default function Showcase() {
                 return (
-                  <div className="grid flex items-center gap-8 text-[64px] md:text-[80px] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)] px-[clamp(1.75rem,6vw,6rem)] hover:bg-stone-800 [&>img]:object-cover supports-[display:grid]:grid bg-[#ff0055]">
+                  <div className="grid flex items-center gap-8 text-[64px] md:text-[80px] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)] px-[clamp(1.75rem,6vw,6rem)] hover:bg-stone-800 [&>img]:object-cover supports-[display:grid]:grid bg-[#ff0055] bg-(--brand-color) min-h-(--hero-h) aria-checked:bg-stone-900 data-[state=active]:opacity-100">
                     <img src="/test.jpg" />
                   </div>
                 );
@@ -88,6 +88,12 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
       expect(css).toContain("@supports (display:grid)");
       // 10. className="bg-[#ff0055]"
       expect(css).toContain("#ff0055");
+      // 11. Tailwind v4 theme variable syntax: bg-(--brand-color) and min-h-(--hero-h)
+      expect(css).toContain("background-color: var(--brand-color)");
+      expect(css).toContain("min-height: var(--hero-h)");
+      // 12. Aria and data attribute variants
+      expect(css).toContain("aria-checked");
+      expect(css).toContain('data-state="active"');
     });
 
     it("compiles candidate classes from dynamic React expressions (cn, ternaries, template literals)", async () => {
@@ -132,6 +138,59 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
     });
   });
 
+  describe("Nested Virtual CSS Relative Imports", () => {
+    it("resolves multi-level nested relative stylesheet imports across virtual theme filesystem", async () => {
+      const result = await compiler.compile({
+        files: [
+          {
+            path: "src/styles/global.css",
+            content: `
+              @import "tailwindcss";
+              @import "./components/hero.css";
+            `,
+          },
+          {
+            path: "src/styles/components/hero.css",
+            content: `
+              @import "../tokens/nested/deep-vars.css";
+              .hero-card {
+                background: var(--hero-bg);
+                border: 1px solid var(--hero-border);
+              }
+            `,
+          },
+          {
+            path: "src/styles/tokens/nested/deep-vars.css",
+            content: `
+              :root {
+                --hero-bg: #f5f5f4;
+                --hero-border: #e7e5e4;
+              }
+            `,
+          },
+          {
+            path: "src/components/Hero.tsx",
+            content: `
+              export default function Hero() {
+                return <div className="grid hero-card text-[40px]">Hero</div>;
+              }
+            `,
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.diagnostics).toEqual([]);
+      const css = result.css!;
+      expect(css).toContain("--hero-bg: #f5f5f4");
+      expect(css).toContain("--hero-border: #e7e5e4");
+      expect(css).toContain(".hero-card");
+      expect(css).toContain("font-size: 40px");
+      expect(css).not.toContain('@import "./components/hero.css"');
+      expect(css).not.toContain('@import "../tokens/nested/deep-vars.css"');
+    });
+  });
+
   describe("Single Identity Hasher & Cache Contracts", () => {
     it("ensures Manager cache key and result.inputHash are 100% unified and deterministic SHA-256", async () => {
       const input: ThemeCompilerInput = {
@@ -153,7 +212,7 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
       expect(result.inputHash.length).toBe(64); // SHA-256 hex string
     });
 
-    it("accurately updates caller sourceGeneration metadata on cache hits", async () => {
+    it("accurately updates caller sourceGeneration metadata and updates per-theme lastKnownGood on cache hits", async () => {
       const files: ThemeCompilerFile[] = [
         { path: "src/components/Header.tsx", content: '<header className="h-16">Header</header>' },
       ];
@@ -165,6 +224,7 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
         files,
       });
       expect(result1.sourceGeneration).toBe(10);
+      expect(manager.getLastKnownGood("theme-beta")?.css).toBe(result1.css);
 
       // 2. Cache hit at generation 20 with identical file content
       const result2 = await manager.compile({
@@ -174,6 +234,7 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
       });
       expect(result2.sourceGeneration).toBe(20);
       expect(result2.inputHash).toBe(result1.inputHash);
+      expect(manager.getLastKnownGood("theme-beta")?.css).toBe(result2.css);
     });
   });
 

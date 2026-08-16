@@ -10,6 +10,43 @@ import type {
 } from "./theme-compiler.types";
 
 /**
+ * Normalizes a virtual file path, resolving '.' and '..' relative segments.
+ */
+export function normalizeVirtualPath(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/");
+  const stack: string[] = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      stack.pop();
+    } else {
+      stack.push(part);
+    }
+  }
+  return stack.join("/");
+}
+
+/**
+ * Resolves a virtual stylesheet import path relative to a base directory.
+ */
+export function resolveVirtualCssPath(baseDir: string, importPath: string): string {
+  if (importPath.startsWith("./") || importPath.startsWith("../")) {
+    const combined = baseDir ? `${baseDir}/${importPath}` : importPath;
+    return normalizeVirtualPath(combined);
+  }
+  return normalizeVirtualPath(importPath);
+}
+
+/**
+ * Returns the base directory of a virtual file path.
+ */
+export function getVirtualBaseDir(filePath: string): string {
+  const normalized = normalizeVirtualPath(filePath);
+  const idx = normalized.lastIndexOf("/");
+  return idx !== -1 ? normalized.slice(0, idx) : "";
+}
+
+/**
  * BrowserPreviewThemeCompiler
  *
  * Implements the unified ThemeCompiler contract for Preview and in-memory compilation.
@@ -36,25 +73,28 @@ export class BrowserPreviewThemeCompiler implements ThemeCompiler {
 
     const hasFatalErrors = diagnostics.some((d) => d.level === "error");
 
-    // 2. Prepare virtual CSS map
+    // 2. Prepare virtual CSS map with normalized paths
     const virtualCssMap = new Map<string, string>();
     for (const cssFile of scanResult.cssFiles) {
-      virtualCssMap.set(cssFile.path, cssFile.content);
-      // Also map basename without path e.g. "global.css"
-      const basename = cssFile.path.split("/").pop();
-      if (basename) {
-        virtualCssMap.set(basename, cssFile.content);
-      }
+      const normalizedPath = normalizeVirtualPath(cssFile.path);
+      virtualCssMap.set(normalizedPath, cssFile.content);
     }
 
-    // Determine root CSS
-    let rootCss = virtualCssMap.get("src/styles/global.css");
+    // Determine root CSS and its base directory
+    let rootPath = "src/styles/global.css";
+    let rootCss = virtualCssMap.get(rootPath);
+
     if (!rootCss && scanResult.cssFiles.length > 0) {
-      rootCss = scanResult.cssFiles.map((f) => f.content).join("\n\n");
+      rootPath = normalizeVirtualPath(scanResult.cssFiles[0].path);
+      rootCss = virtualCssMap.get(rootPath);
     }
+
     if (!rootCss) {
+      rootPath = "src/styles/global.css";
       rootCss = `@import "tailwindcss";`;
     }
+
+    const initialBaseDir = getVirtualBaseDir(rootPath);
 
     // 3. Compile with official Tailwind CSS v4 compiler engine (only if no fatal syntax errors)
     let compiledCss: string | undefined = undefined;
@@ -62,42 +102,38 @@ export class BrowserPreviewThemeCompiler implements ThemeCompiler {
     if (!hasFatalErrors) {
       try {
         const compiler = await tailwindCompile(rootCss, {
-          base: "/",
+          base: initialBaseDir,
           loadStylesheet: async (id: string, base: string) => {
             // A. Check built-in Tailwind core stylesheets
             if (BUILTIN_STYLESHEETS[id]) {
               return {
                 path: id,
-                base: base || "/",
+                base: base || "",
                 content: BUILTIN_STYLESHEETS[id],
               };
             }
 
-            // B. Check virtual stylesheets from theme
-            const normalizedId = id.startsWith("./") ? id.slice(2) : id;
-            if (virtualCssMap.has(id)) {
-              return {
-                path: id,
-                base: base || "/",
-                content: virtualCssMap.get(id)!,
-              };
-            }
-            if (virtualCssMap.has(normalizedId)) {
-              return {
-                path: normalizedId,
-                base: base || "/",
-                content: virtualCssMap.get(normalizedId)!,
-              };
-            }
-            if (virtualCssMap.has(`src/styles/${normalizedId}`)) {
-              return {
-                path: `src/styles/${normalizedId}`,
-                base: base || "/",
-                content: virtualCssMap.get(`src/styles/${normalizedId}`)!,
-              };
+            // B. Resolve relative or absolute path against virtual filesystem
+            const candidatePaths = [
+              resolveVirtualCssPath(base, id),
+              resolveVirtualCssPath(initialBaseDir, id),
+              normalizeVirtualPath(id),
+              resolveVirtualCssPath("src/styles", id),
+            ];
+
+            for (const candidate of candidatePaths) {
+              if (virtualCssMap.has(candidate)) {
+                return {
+                  path: candidate,
+                  base: getVirtualBaseDir(candidate),
+                  content: virtualCssMap.get(candidate)!,
+                };
+              }
             }
 
-            throw new Error(`Unable to resolve stylesheet import: "${id}"`);
+            throw new Error(
+              `Unable to resolve virtual stylesheet import: "${id}" from base "${base}"`,
+            );
           },
         });
 

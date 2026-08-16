@@ -11,9 +11,37 @@ export type ScannedThemeFilesystem = {
 };
 
 /**
- * Extracts candidate tokens from source text using standard Tailwind whitespace/delimiter tokenization,
+ * Cleans extracted candidate token while preserving valid Tailwind syntax
+ * including bracketed values text-[64px] and theme variables bg-(--brand-color).
+ */
+export function cleanCandidateToken(token: string): string {
+  let cleaned = token.replace(/^[\s"'`<>=;,{}]+|[\s"'`<>=;,{}]+$/g, "");
+
+  // If wrapped entirely in parens e.g. "(active)" or "(isDark)"
+  while (cleaned.startsWith("(") && cleaned.endsWith(")")) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  // Strip stray leading paren e.g. "(text-4xl" -> "text-4xl"
+  if (cleaned.startsWith("(") && !cleaned.includes(")")) {
+    cleaned = cleaned.slice(1);
+  }
+  // Strip stray trailing paren e.g. "text-4xl)" -> "text-4xl"
+  if (cleaned.endsWith(")") && !cleaned.includes("(")) {
+    cleaned = cleaned.slice(0, -1);
+  }
+
+  // Strip leading/trailing colons or dots if outside brackets
+  if (!cleaned.includes("[")) {
+    cleaned = cleaned.replace(/^[:./]+|[:./]+$/g, "");
+  }
+
+  return cleaned;
+}
+
+/**
+ * Extracts candidate tokens from source text using Tailwind candidate tokenization,
  * preserving bracketed arbitrary values e.g. text-[64px], lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)],
- * [&>img]:object-cover, supports-[display:grid]:grid, bg-[#ff0055].
+ * [&>img]:object-cover, supports-[display:grid]:grid, bg-[#ff0055], bg-(--brand-color).
  */
 export function extractCandidateTokens(text: string, out: Set<string>) {
   if (!text) return;
@@ -40,11 +68,11 @@ export function extractCandidateTokens(text: string, out: Set<string>) {
       continue;
     }
 
-    // Delimiters outside brackets: whitespace, quotes, backticks, <, >, =, ;, ,, (, ), {, }
-    if (/[\s"'`<=;,(){}]/.test(ch)) {
+    // Delimiters outside brackets: whitespace, quotes, backticks, <, >, =, ;, ,, {, }
+    if (/[\s"'`<=;,{}]/.test(ch)) {
       const trimmed = current.trim();
       if (trimmed && trimmed.length <= 256) {
-        const cleaned = trimmed.replace(/^[:./]|[:./]$/g, "");
+        const cleaned = cleanCandidateToken(trimmed);
         if (
           cleaned &&
           !/^(true|false|null|undefined|return|function|const|let|var|import|export|default|from|className|class)$/.test(
@@ -61,15 +89,17 @@ export function extractCandidateTokens(text: string, out: Set<string>) {
     current += ch;
   }
 
-  const finalTrimmed = current.trim().replace(/^[:./]|[:./]$/g, "");
-  if (
-    finalTrimmed &&
-    finalTrimmed.length <= 256 &&
-    !/^(true|false|null|undefined|return|function|const|let|var|import|export|default|from|className|class)$/.test(
-      finalTrimmed,
-    )
-  ) {
-    out.add(finalTrimmed);
+  const finalTrimmed = current.trim();
+  if (finalTrimmed && finalTrimmed.length <= 256) {
+    const cleaned = cleanCandidateToken(finalTrimmed);
+    if (
+      cleaned &&
+      !/^(true|false|null|undefined|return|function|const|let|var|import|export|default|from|className|class)$/.test(
+        cleaned,
+      )
+    ) {
+      out.add(cleaned);
+    }
   }
 }
 

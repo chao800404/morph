@@ -10,12 +10,15 @@ import type {
 /**
  * ThemeCompilerManager
  *
- * Coordinates theme compilation jobs, memory caching by inputHash,
- * in-flight request deduplication, sequence-guarded job superseding,
- * and last-known-good result retention against out-of-order race conditions.
+ * Coordinates theme compilation jobs with clean separation between:
+ * 1. Raw content-addressed compiler cache (`rawCache` keyed by inputHash)
+ * 2. Per-theme last-known-good fallback (`lastKnownGood` keyed by themeKey)
+ *
+ * Every compile request (cache hit, in-flight deduplicated, or new compile)
+ * advances the per-theme request sequence and maintains lastKnownGood accurately.
  */
 export class ThemeCompilerManager {
-  private cache = new Map<string, ThemeCompilerCacheEntry>();
+  private rawCache = new Map<string, ThemeCompilerCacheEntry>();
   private inFlight = new Map<string, Promise<ThemeCompilerResult>>();
   private lastKnownGood = new Map<string, ThemeCompilerResult>();
   private themeSequences = new Map<string, number>();
@@ -32,55 +35,62 @@ export class ThemeCompilerManager {
     const targetCompiler = compiler ?? this.defaultCompiler;
     const themeKey = input.themeId ?? "default";
 
-    // 1. Unified, single identity inputHash based on compiler id & version
+    // 1. Unified single identity inputHash based on compiler id & version
     const inputHash = computeThemeInputHash(input, {
       id: targetCompiler.id,
       version: targetCompiler.version,
     });
 
-    // 2. Cache hit check (content-addressed, updates caller's sourceGeneration metadata)
-    const cached = this.cache.get(inputHash);
+    // 2. Advance per-theme request sequence for every incoming request
+    const currentSeq = (this.themeSequences.get(themeKey) ?? 0) + 1;
+    this.themeSequences.set(themeKey, currentSeq);
+
+    // 3. Cache hit check (content-addressed raw cache)
+    const cached = this.rawCache.get(inputHash);
     if (cached) {
+      // Update per-theme lastKnownGood if this is still the newest request and compile was successful
+      if (currentSeq === this.themeSequences.get(themeKey) && cached.result.success && cached.result.css) {
+        this.lastKnownGood.set(themeKey, cached.result);
+      }
       return {
         ...cached.result,
         sourceGeneration: input.sourceGeneration,
       };
     }
 
-    // 3. In-flight deduplication
+    // 4. In-flight deduplication
     const existingFlight = this.inFlight.get(inputHash);
     if (existingFlight) {
       const flightResult = await existingFlight;
+      if (currentSeq === this.themeSequences.get(themeKey) && flightResult.success && flightResult.css) {
+        this.lastKnownGood.set(themeKey, flightResult);
+      }
       return {
         ...flightResult,
         sourceGeneration: input.sourceGeneration,
       };
     }
 
-    // 4. Sequence guard: record latest request sequence for this theme to prevent out-of-order race
-    const currentSeq = (this.themeSequences.get(themeKey) ?? 0) + 1;
-    this.themeSequences.set(themeKey, currentSeq);
-
     // 5. Launch compilation
     const compilePromise = (async () => {
       try {
         const result = await targetCompiler.compile(input, { inputHash });
 
-        // Store in cache
-        this.cache.set(inputHash, {
+        // Store immutable result into raw compiler cache
+        this.rawCache.set(inputHash, {
           result,
           timestamp: Date.now(),
           sourceGeneration: input.sourceGeneration,
         });
 
-        // Sequence guard: only update last-known-good if this is still the newest compile job
+        // Sequence guard: only update lastKnownGood if this is still the newest request for the theme
         if (currentSeq === this.themeSequences.get(themeKey)) {
           if (result.success && result.css) {
             this.lastKnownGood.set(themeKey, result);
           }
         }
 
-        // If compile failed, attach last known good CSS if available so preview remains visual
+        // If compile failed, attach lastKnownGood CSS if available for visual stability in preview
         if (!result.success) {
           const fallback = this.lastKnownGood.get(themeKey);
           if (fallback?.css) {
@@ -103,7 +113,7 @@ export class ThemeCompilerManager {
   }
 
   clearCache() {
-    this.cache.clear();
+    this.rawCache.clear();
     this.inFlight.clear();
     this.lastKnownGood.clear();
     this.themeSequences.clear();
