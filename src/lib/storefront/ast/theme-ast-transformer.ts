@@ -19,6 +19,8 @@ export type ComponentElementMeta = {
   location: SourceLocation;
   startOffset: number;
   endOffset: number;
+  openingStartOffset: number;
+  openingEndOffset: number;
   classNameOffsets?: {
     start: number;
     end: number;
@@ -106,12 +108,25 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
         }
       }
 
-      // 2. Extract JSX element with data-morph-element
+      // 2. Extract JSX element with data-morph-element (strictly JSXElement or JSXSelfClosingElement)
       let openingElement: any = null;
+      let elementStart = 0;
+      let elementEnd = 0;
+      let openingStart = 0;
+      let openingEnd = 0;
+
       if (node.type === "JSXElement") {
         openingElement = node.openingElement;
-      } else if (node.type === "JSXOpeningElement") {
+        elementStart = node.start ?? 0;
+        elementEnd = node.end ?? 0;
+        openingStart = node.openingElement?.start ?? 0;
+        openingEnd = node.openingElement?.end ?? 0;
+      } else if (node.type === "JSXSelfClosingElement") {
         openingElement = node;
+        elementStart = node.start ?? 0;
+        elementEnd = node.end ?? 0;
+        openingStart = node.start ?? 0;
+        openingEnd = node.end ?? 0;
       }
 
       if (openingElement && openingElement.attributes) {
@@ -173,8 +188,10 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
               line,
               column,
             },
-            startOffset: openingElement.start ?? 0,
-            endOffset: node.end ?? 0,
+            startOffset: elementStart,
+            endOffset: elementEnd,
+            openingStartOffset: openingStart,
+            openingEndOffset: openingEnd,
             classNameOffsets,
           };
         }
@@ -195,13 +212,52 @@ export function patchComponentDefaultProp(
   sourceCode: string,
   propName: string,
   newValue: string,
+  componentName?: string,
 ): string {
   try {
     const ast = parseAst(sourceCode);
     let targetNode: any = null;
 
     walk(ast, (node) => {
+      if (targetNode) return;
+
+      let isMatchingComponent = true;
+      if (componentName) {
+        if (node.type === "FunctionDeclaration" && node.id?.name !== componentName) {
+          isMatchingComponent = false;
+        }
+      }
+
       if (
+        (node.type === "FunctionDeclaration" ||
+          node.type === "ExportDefaultDeclaration" ||
+          node.type === "ArrowFunctionExpression" ||
+          node.type === "FunctionExpression") &&
+        isMatchingComponent
+      ) {
+        const fn = node.type === "ExportDefaultDeclaration" ? node.declaration : node;
+        if (fn && Array.isArray(fn.params)) {
+          for (const param of fn.params) {
+            if (param.type === "ObjectPattern" && Array.isArray(param.properties)) {
+              for (const prop of param.properties) {
+                if (
+                  prop.type === "ObjectProperty" &&
+                  prop.value?.type === "AssignmentPattern" &&
+                  prop.value.left?.type === "Identifier" &&
+                  prop.value.left.name === propName &&
+                  prop.value.right
+                ) {
+                  targetNode = prop.value.right;
+                  return;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (
+        !targetNode &&
         node.type === "AssignmentPattern" &&
         node.left?.type === "Identifier" &&
         node.left.name === propName &&
@@ -240,6 +296,27 @@ export function patchElementClassName(
   }
 
   return sourceCode;
+}
+
+/**
+ * Replaces or adds a Tailwind class matching a specific prefix or regex.
+ */
+export function updateTailwindClass(
+  currentClasses: string,
+  matcher: string | RegExp,
+  newClass: string,
+): string {
+  const tokens = currentClasses.split(/\s+/).filter(Boolean);
+  const filtered = tokens.filter((t) => {
+    if (typeof matcher === "string") {
+      return !t.startsWith(matcher);
+    }
+    return !matcher.test(t);
+  });
+  if (newClass) {
+    filtered.push(newClass);
+  }
+  return filtered.join(" ");
 }
 
 /**

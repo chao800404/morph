@@ -4,6 +4,7 @@ import {
   parseComponentSource,
   patchComponentDefaultProp,
   patchElementClassName,
+  updateTailwindClass,
 } from "./theme-ast-transformer";
 
 const SAMPLE_HERO_CODE = `export type HeroProps = {
@@ -48,6 +49,9 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(meta.elements.heading.tag).toBe("h1");
     expect(meta.elements.heading.className).toBe("mt-6 font-serif text-6xl text-stone-950");
     expect(meta.elements.heading.location.line).toBe(18);
+    expect(meta.elements.heading.startOffset).toBeLessThan(meta.elements.heading.endOffset);
+    expect(meta.elements.heading.openingStartOffset).toBeLessThan(meta.elements.heading.openingEndOffset);
+    expect(meta.elements.heading.openingEndOffset).toBeLessThan(meta.elements.heading.endOffset);
   });
 
   it("patches default prop values using AST offsets without breaking quotes", () => {
@@ -65,6 +69,17 @@ describe("theme-ast-transformer (TSX AST)", () => {
       prev.replace("text-6xl", "text-8xl"),
     );
     expect(updated).toContain('className="mt-6 font-serif text-8xl text-stone-950"');
+  });
+
+  it("replaces Tailwind utility classes accurately", () => {
+    const updated = updateTailwindClass(
+      "mt-6 font-serif text-6xl text-stone-950",
+      /text-\[.*\]|text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl)/,
+      "text-[64px]",
+    );
+    expect(updated).toContain("text-[64px]");
+    expect(updated).not.toContain("text-6xl");
+    expect(updated).toContain("font-serif");
   });
 
   it("finds source location dynamically for Monaco jump", () => {

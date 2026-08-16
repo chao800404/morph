@@ -316,6 +316,23 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     ): SelectableInfo | null => {
       if (!(target instanceof HTMLElement)) return null;
 
+      // 0. Prioritize Morph element identity annotations (data-morph-element)
+      const morphEl = target.closest<HTMLElement>("[data-morph-element]");
+      if (morphEl) {
+        const sectionEl = morphEl.closest<HTMLElement>(
+          "[data-storefront-section-id], [data-morph-section]",
+        );
+        const morphField = morphEl.dataset.morphElement!;
+        return {
+          element: morphEl,
+          section: sectionEl,
+          sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
+          type: morphField,
+          label: morphField.charAt(0).toUpperCase() + morphField.slice(1),
+          field: morphField,
+        };
+      }
+
       // 1. Prioritize explicit component/field annotation
       const componentEl = target.closest<HTMLElement>(
         "[data-storefront-component]",

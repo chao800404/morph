@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   findSourceLocation,
   getComponentFilePath,
+  updateTailwindClass,
 } from "@/lib/storefront/ast/theme-ast-transformer";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
@@ -25,7 +26,6 @@ import {
   ChevronUp,
   Code2,
   Image as ImageIcon,
-  Layers,
   LayoutGrid,
   Link,
   Paintbrush,
@@ -42,6 +42,12 @@ type EditorSection =
 type EditorStyleInspectorProps = {
   section: EditorSection;
   themeFiles?: StorefrontThemeFileDTO[];
+  activeSelectedField?: string | null;
+  onUpdateThemeFileStyle?: (
+    filePath: string,
+    elementName: string,
+    updater: (prevClasses: string) => string,
+  ) => void;
   onPropsChange: (next: Record<string, unknown>) => void;
   onToggleEnabled?: (enabled: boolean) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
@@ -62,6 +68,8 @@ const THEME_PALETTE_COLORS = [
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   themeFiles,
+  activeSelectedField,
+  onUpdateThemeFileStyle,
   onPropsChange,
   onToggleEnabled,
   onJumpToCode,
@@ -89,49 +97,44 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setLocalProps((section.props as Record<string, any>) ?? {});
   }, [section.id]);
 
+  const componentPath = getComponentFilePath(section.type);
+  const targetElement = activeSelectedField || "heading";
+  const props = localProps;
+
   const handleFieldChange = useCallback(
-    (key: string, value: unknown) => {
+    (field: string, value: unknown) => {
       const next = {
-        ...localProps,
-        [key]: value,
+        ...props,
+        [field]: value,
       };
       setLocalProps(next);
       onPropsChange(next);
     },
-    [localProps, onPropsChange],
+    [props, onPropsChange],
   );
 
-  const props = localProps;
-
-  const componentPath = getComponentFilePath(section.type);
-
   return (
-    <div className="space-y-3 p-3">
-      {/* Identity Header */}
-      <div className="rounded-xl border bg-background p-3 shadow-xs space-y-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Layers className="size-3.5" />
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-semibold uppercase tracking-wider text-foreground">
-                {section.type}
-              </p>
-              <p className="truncate font-mono text-[10px] text-muted-foreground">
-                {section.id}
+    <div className="space-y-3 p-3 text-xs">
+      {/* Component Header & Code Bridge */}
+      <div className="space-y-2 rounded-xl border bg-muted/40 p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Paintbrush className="size-3.5" />
+            </span>
+            <div>
+              <h4 className="font-semibold text-foreground text-xs leading-none capitalize">
+                {section.type.replace(/-/g, " ")}
+              </h4>
+              <p className="text-[10px] text-muted-foreground mt-0.5 font-mono">
+                {section.id.slice(0, 16)}...
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-muted-foreground">
-              {section.enabled !== false ? "Visible" : "Hidden"}
-            </span>
+          <div className="flex items-center gap-1.5">
             <Switch
               checked={section.enabled !== false}
-              onCheckedChange={(checked) => {
-                onToggleEnabled?.(checked);
-              }}
+              onCheckedChange={onToggleEnabled}
               disabled={disabled}
               aria-label="Toggle section visibility"
             />
@@ -148,14 +151,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             onClick={() => {
               const file = themeFiles?.find((f) => f.path === componentPath);
               const loc = file?.content
-                ? findSourceLocation(file.content, "heading")
+                ? (findSourceLocation(file.content, targetElement) ??
+                  findSourceLocation(file.content, "heading"))
                 : null;
               onJumpToCode?.(componentPath, loc?.line, loc?.column);
             }}
             title={`Open ${componentPath} in Monaco Code Editor`}
           >
             <Code2 className="size-3.5 text-primary shrink-0" />
-            <span className="truncate">Edit in Code</span>
+            <span className="truncate">
+              Edit in Code ({targetElement})
+            </span>
             <span className="ml-auto font-mono text-[10px] text-muted-foreground truncate max-w-28">
               {componentPath.split("/").pop()}
             </span>
@@ -444,7 +450,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 variant={props.textAlign === "left" || !props.textAlign ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
-                onClick={() => handleFieldChange("textAlign", "left")}
+                onClick={() => {
+                  handleFieldChange("textAlign", "left");
+                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                    updateTailwindClass(prev, /text-(left|center|right)/, "text-left"),
+                  );
+                }}
               >
                 <AlignLeft className="size-3" />
               </Button>
@@ -453,7 +464,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 variant={props.textAlign === "center" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
-                onClick={() => handleFieldChange("textAlign", "center")}
+                onClick={() => {
+                  handleFieldChange("textAlign", "center");
+                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                    updateTailwindClass(prev, /text-(left|center|right)/, "text-center"),
+                  );
+                }}
               >
                 <AlignCenter className="size-3" />
               </Button>
@@ -462,7 +478,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 variant={props.textAlign === "right" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
-                onClick={() => handleFieldChange("textAlign", "right")}
+                onClick={() => {
+                  handleFieldChange("textAlign", "right");
+                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                    updateTailwindClass(prev, /text-(left|center|right)/, "text-right"),
+                  );
+                }}
               >
                 <AlignRight className="size-3" />
               </Button>
@@ -484,7 +505,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               <label className="text-[10px] text-muted-foreground">Font</label>
               <Select
                 value={props.fontFamily ?? "serif"}
-                onValueChange={(val) => handleFieldChange("fontFamily", val)}
+                onValueChange={(val) => {
+                  handleFieldChange("fontFamily", val);
+                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                    updateTailwindClass(prev, /font-(serif|sans|mono)/, `font-${val}`),
+                  );
+                }}
                 disabled={disabled}
               >
                 <SelectTrigger className="h-7 text-xs">
@@ -501,7 +527,24 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               <label className="text-[10px] text-muted-foreground">Weight</label>
               <Select
                 value={props.fontWeight ?? "normal"}
-                onValueChange={(val) => handleFieldChange("fontWeight", val)}
+                onValueChange={(val) => {
+                  handleFieldChange("fontWeight", val);
+                  const weightClass =
+                    val === "300"
+                      ? "font-light"
+                      : val === "normal"
+                        ? "font-normal"
+                        : val === "medium"
+                          ? "font-medium"
+                          : "font-bold";
+                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                    updateTailwindClass(
+                      prev,
+                      /font-(light|normal|medium|semibold|bold)/,
+                      weightClass,
+                    ),
+                  );
+                }}
                 disabled={disabled}
               >
                 <SelectTrigger className="h-7 text-xs">
@@ -527,7 +570,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 step={2}
                 suffix="px"
                 ariaLabel="Heading font size"
-                onValueChange={(val) => handleFieldChange("fontSize", val)}
+                onValueChange={(val) => {
+                  handleFieldChange("fontSize", val);
+                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                    updateTailwindClass(
+                      prev,
+                      /text-\[.*\]|text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl)/,
+                      `text-[${val}px]`,
+                    ),
+                  );
+                }}
                 className="h-6 w-16"
                 inputClassName="h-6 text-xs text-right font-mono"
               />
@@ -641,7 +693,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           </p>
           <Textarea
             value={props.className ?? props.customClass ?? ""}
-            onChange={(e) => handleFieldChange("className", e.target.value)}
+            onChange={(e) => {
+              handleFieldChange("className", e.target.value);
+              onUpdateThemeFileStyle?.(
+                componentPath,
+                targetElement,
+                () => e.target.value,
+              );
+            }}
             placeholder="e.g. py-24 bg-stone-900 text-white rounded-2xl shadow-xl"
             rows={2}
             className="font-mono text-xs resize-none"

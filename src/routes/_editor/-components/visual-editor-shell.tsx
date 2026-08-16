@@ -56,6 +56,8 @@ import {
   createStorefrontCommentGroup,
   updateStorefrontCommentGroup,
 } from "@/server/storefront/storefront-comments.serverFn";
+import { saveStorefrontThemeFile } from "@/server/storefront/storefront-theme-files.serverFn";
+import { patchElementClassName } from "@/lib/storefront/ast/theme-ast-transformer";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
@@ -552,11 +554,75 @@ export function VisualEditorShell({
     [],
   );
 
+  const [activeSelectedField, setActiveSelectedField] = useState<
+    string | null
+  >(null);
+
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
   });
   const themeFiles = themeFilesQuery.data?.files ?? [];
   const themeTree = themeFilesQuery.data?.tree ?? [];
+
+  const saveThemeFileMutation = useMutation({
+    mutationFn: async ({ path, content }: { path: string; content: string }) => {
+      const res = await saveStorefrontThemeFile({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          path,
+          content,
+        },
+      });
+      if (!res.success) throw new Error(res.message);
+      return res.data;
+    },
+    onSuccess: async (_data, variables) => {
+      queryClient.setQueryData(
+        storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id).queryKey,
+        (old: any) => {
+          if (!old?.files) return old;
+          return {
+            ...old,
+            files: old.files.map((f: any) =>
+              f.path === variables.path ? { ...f, content: variables.content } : f,
+            ),
+          };
+        },
+      );
+    },
+  });
+
+  const handleUpdateThemeFileStyle = useCallback(
+    (
+      filePath: string,
+      elementName: string,
+      updater: (prevClasses: string) => string,
+    ) => {
+      const file = themeFiles.find((f) => f.path === filePath);
+      if (!file) return;
+
+      const updatedContent = patchElementClassName(file.content, elementName, updater);
+      if (updatedContent !== file.content) {
+        // Optimistic query cache update
+        queryClient.setQueryData(
+          storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id).queryKey,
+          (old: any) => {
+            if (!old?.files) return old;
+            return {
+              ...old,
+              files: old.files.map((f: any) =>
+                f.path === filePath ? { ...f, content: updatedContent } : f,
+              ),
+            };
+          },
+        );
+
+        saveThemeFileMutation.mutate({ path: filePath, content: updatedContent });
+      }
+    },
+    [themeFiles, saveThemeFileMutation, context.storefront.id, context.theme.id, queryClient],
+  );
 
   const normalWidthSessionKey = activeTemplate
     ? `morph:editor-normal-width:${context.storefront.id}:${context.theme.id}:${activeTemplate.id}`
@@ -789,14 +855,11 @@ export function VisualEditorShell({
         return;
       }
       const sectionId = message.sectionId;
-      if (!isSelectionMode) return;
-      if (
-        !activeTemplate?.document.sections.some(
-          (section) => section.id === sectionId,
-        )
-      ) {
-        return;
-      }
+      const field =
+        "field" in message && typeof message.field === "string"
+          ? message.field
+          : null;
+      setActiveSelectedField(field);
 
       onSearchChange({ section: sectionId });
     };
@@ -2113,6 +2176,8 @@ export function VisualEditorShell({
           onSelectCommentThread={handleSelectCommentThread}
           previewWidth={previewWidth}
           themeFiles={themeFiles}
+          activeSelectedField={activeSelectedField}
+          onUpdateThemeFileStyle={handleUpdateThemeFileStyle}
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}
           onJumpToCode={handleJumpToCode}
