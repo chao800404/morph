@@ -4,6 +4,7 @@ import {
   parseComponentSource,
   patchComponentDefaultProp,
   patchElementClassName,
+  patchElementClassNameResult,
   updateTailwindClass,
 } from "./theme-ast-transformer";
 
@@ -86,5 +87,32 @@ describe("theme-ast-transformer (TSX AST)", () => {
     const loc = findSourceLocation(SAMPLE_HERO_CODE, "heading");
     expect(loc).not.toBeNull();
     expect(loc?.line).toBe(18);
+  });
+
+  it("handles syntax errors gracefully with parseOk=false and diagnostics", () => {
+    const brokenCode = `export default function Broken() { return <div className={; }`;
+    const parsed = parseComponentSource(brokenCode);
+    expect(parsed.parseOk).toBe(false);
+    expect(parsed.diagnostics.length).toBeGreaterThan(0);
+  });
+
+  it("detects dynamic className expressions and returns editable=false", () => {
+    const dynamicCode = `
+      export default function DynamicHero() {
+        return (
+          <h1
+            data-morph-element="heading"
+            className={cn("text-6xl", isBig && "text-8xl")}
+          >
+            Hello
+          </h1>
+        );
+      }
+    `;
+    const res = patchElementClassNameResult(dynamicCode, "heading", (prev) =>
+      prev.replace("text-6xl", "text-9xl"),
+    );
+    expect(res.editable).toBe(false);
+    expect(res.reason).toBe("dynamic-classname");
   });
 });

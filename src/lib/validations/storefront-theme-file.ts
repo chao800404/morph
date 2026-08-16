@@ -36,6 +36,7 @@ export const saveThemeFileInputSchema = z.object({
   path: safeThemeFilePathSchema,
   content: z.string(),
   mimeType: z.string().optional(),
+  expectedVersion: z.number().int().min(1).optional(),
   createRevision: z.boolean().optional().default(false),
   revisionMessage: z.string().max(200).optional(),
 });

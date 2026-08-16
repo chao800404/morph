@@ -99,9 +99,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setLocalProps((section.props as Record<string, any>) ?? {});
   }, [section.id]);
 
-  const componentPath = getComponentFilePath(section.type);
+  const componentPath = getComponentFilePath(section.type, themeFiles);
   const targetElement = activeElementKey || "heading";
   const props = localProps;
+
+  const patchStyle = useCallback(
+    (updater: (prevClasses: string) => string) => {
+      if (!componentPath) return;
+      onUpdateThemeFileStyle?.(componentPath, targetElement, updater);
+    },
+    [componentPath, targetElement, onUpdateThemeFileStyle],
+  );
 
   const handleFieldChange = useCallback(
     (field: string, value: unknown) => {
@@ -145,29 +153,36 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
         {/* Jump to Source Code Bridge */}
         <div className="pt-2 border-t flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            className="h-7 w-full gap-1.5 text-xs font-medium justify-start"
-            onClick={() => {
-              const file = themeFiles?.find((f) => f.path === componentPath);
-              const loc = file?.content
-                ? (findSourceLocation(file.content, targetElement) ??
-                  findSourceLocation(file.content, "heading"))
-                : null;
-              onJumpToCode?.(componentPath, loc?.line, loc?.column);
-            }}
-            title={`Open ${componentPath} in Monaco Code Editor`}
-          >
-            <Code2 className="size-3.5 text-primary shrink-0" />
-            <span className="truncate">
-              Edit in Code ({targetElement})
-            </span>
-            <span className="ml-auto font-mono text-[10px] text-muted-foreground truncate max-w-28">
-              {componentPath.split("/").pop()}
-            </span>
-          </Button>
+          {componentPath ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              className="h-7 w-full gap-1.5 text-xs font-medium justify-start"
+              onClick={() => {
+                const file = themeFiles?.find((f) => f.path === componentPath);
+                const loc = file?.content
+                  ? (findSourceLocation(file.content, targetElement) ??
+                    findSourceLocation(file.content, "heading"))
+                  : null;
+                onJumpToCode?.(componentPath, loc?.line, loc?.column);
+              }}
+              title={`Open ${componentPath} in Monaco Code Editor`}
+            >
+              <Code2 className="size-3.5 text-primary shrink-0" />
+              <span className="truncate">
+                Edit in Code ({targetElement})
+              </span>
+              <span className="ml-auto font-mono text-[10px] text-muted-foreground truncate max-w-28">
+                {componentPath.split("/").pop()}
+              </span>
+            </Button>
+          ) : (
+            <div className="w-full flex items-center justify-between rounded-md border border-dashed px-2 py-1 text-[11px] text-muted-foreground">
+              <span>Section has no source file</span>
+              <span className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded">CMS-only</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -487,7 +502,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 className="size-6 shadow-none"
                 onClick={() => {
                   handleFieldChange("textAlign", "left");
-                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                  patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-left"),
                   );
                 }}
@@ -501,7 +516,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 className="size-6 shadow-none"
                 onClick={() => {
                   handleFieldChange("textAlign", "center");
-                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                  patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-center"),
                   );
                 }}
@@ -515,7 +530,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 className="size-6 shadow-none"
                 onClick={() => {
                   handleFieldChange("textAlign", "right");
-                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                  patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-right"),
                   );
                 }}
@@ -542,7 +557,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 value={props.fontFamily ?? "serif"}
                 onValueChange={(val) => {
                   handleFieldChange("fontFamily", val);
-                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                  patchStyle((prev) =>
                     updateTailwindClass(prev, /font-(serif|sans|mono)/, `font-${val}`),
                   );
                 }}
@@ -572,7 +587,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         : val === "medium"
                           ? "font-medium"
                           : "font-bold";
-                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                  patchStyle((prev) =>
                     updateTailwindClass(
                       prev,
                       /font-(light|normal|medium|semibold|bold)/,
@@ -607,7 +622,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 ariaLabel="Heading font size"
                 onValueChange={(val) => {
                   handleFieldChange("fontSize", val);
-                  onUpdateThemeFileStyle?.(componentPath, targetElement, (prev) =>
+                  patchStyle((prev) =>
                     updateTailwindClass(
                       prev,
                       /text-\[.*\]|text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl)/,
@@ -730,11 +745,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             value={props.className ?? props.customClass ?? ""}
             onChange={(e) => {
               handleFieldChange("className", e.target.value);
-              onUpdateThemeFileStyle?.(
-                componentPath,
-                targetElement,
-                () => e.target.value,
-              );
+              patchStyle(() => e.target.value);
             }}
             placeholder="e.g. py-24 bg-stone-900 text-white rounded-2xl shadow-xl"
             rows={2}

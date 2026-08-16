@@ -581,6 +581,13 @@ export function VisualEditorShell({
     }
   }, [themeFiles]);
 
+  const [themeFileSaveStatus, setThemeFileSaveStatus] = useState<
+    Record<string, "idle" | "saving" | "error">
+  >({});
+  const [themeFileSaveErrors, setThemeFileSaveErrors] = useState<
+    Record<string, string>
+  >({});
+
   const saveThemeFileSequentially = useCallback(
     async (filePath: string, contentToSave: string, targetRevision: number) => {
       const previousPromise =
@@ -597,19 +604,30 @@ export function VisualEditorShell({
           }
 
           inFlightSavesRef.current.add(filePath);
+          setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "saving" }));
+
           try {
+            const currentFile = themeFiles.find((f) => f.path === filePath);
             const res = await saveStorefrontThemeFile({
               data: {
                 storefrontId: context.storefront.id,
                 themeId: context.theme.id,
                 path: filePath,
                 content: contentToSave,
+                expectedVersion: currentFile?.version,
               },
             });
 
             if (!res.success) {
               throw new Error(res.message);
             }
+
+            setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "idle" }));
+            setThemeFileSaveErrors((prev) => {
+              const next = { ...prev };
+              delete next[filePath];
+              return next;
+            });
 
             // Invalidate/update query cache on successful serialized save
             queryClient.setQueryData(
@@ -622,13 +640,20 @@ export function VisualEditorShell({
                 return {
                   ...old,
                   files: old.files.map((f: any) =>
-                    f.path === filePath ? { ...f, content: contentToSave } : f,
+                    f.path === filePath ? { ...f, ...res.data } : f,
                   ),
                 };
               },
             );
 
             return res.data;
+          } catch (err) {
+            setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "error" }));
+            setThemeFileSaveErrors((prev) => ({
+              ...prev,
+              [filePath]: err instanceof Error ? err.message : "Save failed",
+            }));
+            throw err;
           } finally {
             inFlightSavesRef.current.delete(filePath);
           }
@@ -637,7 +662,7 @@ export function VisualEditorShell({
       saveQueueRef.current.set(filePath, nextPromise);
       return nextPromise;
     },
-    [context.storefront.id, context.theme.id, queryClient],
+    [context.storefront.id, context.theme.id, themeFiles, queryClient],
   );
 
   const handleUnifiedSaveFile = useCallback(
@@ -649,6 +674,21 @@ export function VisualEditorShell({
       }
 
       sourceCodeBufferRef.current.set(filePath, content);
+
+      previewIframeRef.current?.contentWindow?.postMessage(
+        {
+          type: "morph:storefront-preview-update-theme-files",
+          files: themeFiles.map((f) => ({
+            path: f.path,
+            content:
+              f.path === filePath
+                ? content
+                : (sourceCodeBufferRef.current.get(f.path) ?? f.content),
+          })),
+        },
+        window.location.origin,
+      );
+
       const nextRevision = (fileRevisionRef.current.get(filePath) ?? 0) + 1;
       fileRevisionRef.current.set(filePath, nextRevision);
 
@@ -662,7 +702,7 @@ export function VisualEditorShell({
       }
       return result;
     },
-    [saveThemeFileSequentially],
+    [saveThemeFileSequentially, themeFiles],
   );
 
   const handleUpdateThemeFileStyle = useCallback(
@@ -685,7 +725,22 @@ export function VisualEditorShell({
         // 1. Immediately update in-memory buffer
         sourceCodeBufferRef.current.set(filePath, updatedContent);
 
-        // 2. Optimistically update TanStack Query cache for instant Monaco/UI sync
+        // 2. Real-time 0ms sync to preview iframe
+        previewIframeRef.current?.contentWindow?.postMessage(
+          {
+            type: "morph:storefront-preview-update-theme-files",
+            files: themeFiles.map((f) => ({
+              path: f.path,
+              content:
+                f.path === filePath
+                  ? updatedContent
+                  : (sourceCodeBufferRef.current.get(f.path) ?? f.content),
+            })),
+          },
+          window.location.origin,
+        );
+
+        // 3. Optimistically update TanStack Query cache for instant Monaco/UI sync
         queryClient.setQueryData(
           storefrontThemeFileQueries.tree(
             context.storefront.id,
@@ -702,7 +757,7 @@ export function VisualEditorShell({
           },
         );
 
-        // 3. Debounce & serialize persistence to D1
+        // 4. Debounce save to database (300ms)
         const existingTimer = pendingSaveTimersRef.current.get(filePath);
         if (existingTimer) {
           clearTimeout(existingTimer);
@@ -711,30 +766,26 @@ export function VisualEditorShell({
         const nextRevision = (fileRevisionRef.current.get(filePath) ?? 0) + 1;
         fileRevisionRef.current.set(filePath, nextRevision);
 
-        const timer = setTimeout(() => {
-          const latestContent =
-            sourceCodeBufferRef.current.get(filePath) ?? updatedContent;
-          saveThemeFileSequentially(
-            filePath,
-            latestContent,
-            nextRevision,
-          ).catch((err) => {
-            toast.error(
-              `Failed to persist ${filePath}: ${err instanceof Error ? err.message : "Error"}`,
-            );
-          });
+        const newTimer = setTimeout(() => {
           pendingSaveTimersRef.current.delete(filePath);
-        }, 350);
+          saveThemeFileSequentially(filePath, updatedContent, nextRevision).catch(
+            (err) => {
+              toast.error(
+                `Failed to save source file ${filePath}: ${err.message}`,
+              );
+            },
+          );
+        }, 300);
 
-        pendingSaveTimersRef.current.set(filePath, timer);
+        pendingSaveTimersRef.current.set(filePath, newTimer);
       }
     },
     [
       themeFiles,
-      saveThemeFileSequentially,
+      queryClient,
       context.storefront.id,
       context.theme.id,
-      queryClient,
+      saveThemeFileSequentially,
     ],
   );
 
@@ -1878,29 +1929,46 @@ export function VisualEditorShell({
           </div>
         </div>
         <div className="flex items-center gap-1 justify-self-end">
-          <span
-            className={cn(
-              "mr-2 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex",
-              draftSaveState === "error" && "text-destructive",
-            )}
-          >
-            {draftSaveState === "saving" || publishMutation.isPending ? (
-              <LoaderCircle className="size-3.5 animate-spin" />
-            ) : draftSaveState === "error" ? (
-              <CircleAlert className="size-3.5" />
-            ) : (
-              <CircleCheck className="size-3.5" />
-            )}
-            {publishMutation.isPending
-              ? "Publishing…"
-              : draftSaveState === "saving"
-                ? "Saving…"
-                : draftSaveState === "error"
-                  ? "Save failed"
-                  : hasUnpublishedChanges
-                    ? "Unpublished changes"
-                    : "No changes"}
-          </span>
+          {(() => {
+            const isThemeSaving = Object.values(themeFileSaveStatus).some(
+              (s) => s === "saving",
+            );
+            const firstThemeError = Object.values(themeFileSaveErrors)[0];
+            const hasError = draftSaveState === "error" || Boolean(firstThemeError);
+            const isSaving =
+              draftSaveState === "saving" ||
+              isThemeSaving ||
+              publishMutation.isPending;
+
+            return (
+              <span
+                className={cn(
+                  "mr-2 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex",
+                  hasError && "text-destructive font-medium",
+                )}
+                title={firstThemeError}
+              >
+                {isSaving ? (
+                  <LoaderCircle className="size-3.5 animate-spin text-primary" />
+                ) : hasError ? (
+                  <CircleAlert className="size-3.5 text-destructive" />
+                ) : (
+                  <CircleCheck className="size-3.5" />
+                )}
+                {publishMutation.isPending
+                  ? "Publishing…"
+                  : isSaving
+                    ? "Saving…"
+                    : hasError
+                      ? firstThemeError
+                        ? `Save failed: ${firstThemeError.slice(0, 30)}…`
+                        : "Save failed"
+                      : hasUnpublishedChanges
+                        ? "Unpublished changes"
+                        : "All changes saved"}
+              </span>
+            );
+          })()}
           <Button variant="ghost" size="icon" disabled aria-label="Undo">
             <Undo2 />
           </Button>

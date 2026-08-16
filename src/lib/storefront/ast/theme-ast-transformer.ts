@@ -31,64 +31,99 @@ export type ComponentElementMeta = {
 export type ParsedComponentMeta = {
   defaultProps: Record<string, string>;
   elements: Record<string, ComponentElementMeta>;
+  parseOk: boolean;
+  diagnostics: string[];
 };
 
 /**
- * Resolves standard component file path from section type.
+ * Resolves actual component file path from section type using morph.theme.json manifest
+ * or convention-based verification against existing workspace files.
  */
-export function getComponentFilePath(type: string): string {
-  switch (type) {
-    case "hero":
-      return "src/components/Hero.tsx";
-    case "editorial-intro":
-      return "src/components/EditorialIntro.tsx";
-    case "category-showcase":
-      return "src/components/CategoryShowcase.tsx";
-    case "image-with-text":
-      return "src/components/Hero.tsx";
-    case "principles":
-    case "newsletter":
-      return "src/pages/index.tsx";
-    default:
-      return "src/pages/index.tsx";
+export function getComponentFilePath(
+  type: string,
+  themeFiles?: Array<{ path: string; content?: string }>,
+): string | null {
+  // 1. Check morph.theme.json manifest if available
+  if (themeFiles) {
+    const manifestFile = themeFiles.find((f) => f.path === "morph.theme.json");
+    if (manifestFile && manifestFile.content) {
+      try {
+        const manifest = JSON.parse(manifestFile.content);
+        if (Array.isArray(manifest.components)) {
+          const match = manifest.components.find(
+            (c: { name: string; path: string }) =>
+              c.name.toLowerCase() === type.toLowerCase().replace(/-/g, ""),
+          );
+          if (match && themeFiles.some((f) => f.path === match.path)) {
+            return match.path;
+          }
+        }
+      } catch {}
+    }
   }
+
+  // 2. Standard convention check against existing theme files
+  const normalized = type.toLowerCase().replace(/-/g, "");
+  if (normalized === "hero") {
+    const candidate = "src/components/Hero.tsx";
+    if (!themeFiles || themeFiles.some((f) => f.path === candidate)) {
+      return candidate;
+    }
+  }
+  if (normalized === "header") {
+    const candidate = "src/components/Header.tsx";
+    if (!themeFiles || themeFiles.some((f) => f.path === candidate)) {
+      return candidate;
+    }
+  }
+  if (normalized === "footer") {
+    const candidate = "src/components/Footer.tsx";
+    if (!themeFiles || themeFiles.some((f) => f.path === candidate)) {
+      return candidate;
+    }
+  }
+
+  // 3. Fallback to entry page if present in files
+  const entryFile = "src/pages/index.tsx";
+  if (themeFiles && themeFiles.some((f) => f.path === entryFile)) {
+    return entryFile;
+  }
+
+  return null;
 }
 
 function parseAst(sourceCode: string) {
   return parse(sourceCode, {
     sourceType: "module",
     plugins: ["jsx", "typescript"],
-    errorRecovery: true,
   });
 }
 
-/**
- * Recursively visits all AST nodes.
- */
-function walk(node: any, callback: (node: any) => void) {
+function walk(node: any, visitor: (node: any) => void) {
   if (!node || typeof node !== "object") return;
-  callback(node);
+  visitor(node);
 
   for (const key of Object.keys(node)) {
-    if (key === "parent" || key === "loc") continue;
-    const child = node[key];
-    if (Array.isArray(child)) {
-      for (const item of child) {
-        walk(item, callback);
+    if (key === "loc" || key === "comments" || key === "openingElement") continue;
+    const value = node[key];
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        walk(child, visitor);
       }
-    } else if (child && typeof child === "object") {
-      walk(child, callback);
+    } else if (value && typeof value === "object") {
+      walk(value, visitor);
     }
   }
 }
 
 /**
- * Parses TSX component source code via Babel AST to extract
- * default prop values, morph element locations, tags, and classNames.
+ * Parses a TSX component source and extracts default props, morph elements, and diagnostics.
  */
 export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
   const defaultProps: Record<string, string> = {};
   const elements: Record<string, ComponentElementMeta> = {};
+  let parseOk = true;
+  const diagnostics: string[] = [];
 
   try {
     const ast = parseAst(sourceCode);
@@ -149,6 +184,12 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
               ) {
                 morphElementName = attr.value.expression.value;
               }
+            } else if (
+              attrName === "data-morph-section" &&
+              !morphElementName &&
+              attr.value
+            ) {
+              morphElementName = "section";
             }
 
             if (attrName === "className" && attr.value) {
@@ -197,11 +238,18 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
         }
       }
     });
-  } catch {}
+  } catch (err) {
+    parseOk = false;
+    diagnostics.push(
+      err instanceof Error ? err.message : "Syntax error parsing TSX",
+    );
+  }
 
   return {
     defaultProps,
     elements,
+    parseOk,
+    diagnostics,
   };
 }
 
@@ -276,26 +324,82 @@ export function patchComponentDefaultProp(
   return sourceCode;
 }
 
+export type PatchClassNameResult = {
+  code: string;
+  editable: boolean;
+  reason?: "not-found" | "dynamic-classname" | "parse-error";
+};
+
 /**
  * Patches the className of a specific morph element in component source code using exact AST node offsets.
  */
-export function patchElementClassName(
+export function patchElementClassNameResult(
   sourceCode: string,
   elementName: string,
   updater: (prevClasses: string) => string,
-): string {
+): PatchClassNameResult {
   const parsed = parseComponentSource(sourceCode);
+  if (!parsed.parseOk) {
+    return { code: sourceCode, editable: false, reason: "parse-error" };
+  }
+
   const element = parsed.elements[elementName];
-  if (!element) return sourceCode;
+  if (!element) {
+    return { code: sourceCode, editable: false, reason: "not-found" };
+  }
+
+  if (element.classNameOffsets?.isExpression) {
+    return { code: sourceCode, editable: false, reason: "dynamic-classname" };
+  }
 
   if (element.classNameOffsets && !element.classNameOffsets.isExpression) {
     const { start, end } = element.classNameOffsets;
     const nextClasses = updater(element.className);
     const replacement = JSON.stringify(nextClasses);
-    return sourceCode.slice(0, start) + replacement + sourceCode.slice(end);
+    return {
+      code: sourceCode.slice(0, start) + replacement + sourceCode.slice(end),
+      editable: true,
+    };
   }
 
-  return sourceCode;
+  // If element has no className attribute yet, insert one before tag close
+  const insertPos =
+    element.openingEndOffset > 0 ? element.openingEndOffset - 1 : 0;
+  if (insertPos > 0) {
+    const nextClasses = updater("");
+    return {
+      code:
+        sourceCode.slice(0, insertPos) +
+        ` className=${JSON.stringify(nextClasses)}` +
+        sourceCode.slice(insertPos),
+      editable: true,
+    };
+  }
+
+  return { code: sourceCode, editable: true };
+}
+
+export function patchElementClassName(
+  sourceCode: string,
+  elementName: string,
+  updater: (prevClasses: string) => string,
+): string {
+  return patchElementClassNameResult(sourceCode, elementName, updater).code;
+}
+
+/**
+ * Finds the exact line and column of a morph element in component source code.
+ */
+export function findSourceLocation(
+  sourceCode: string,
+  elementName: string,
+): { line: number; column: number } | null {
+  const parsed = parseComponentSource(sourceCode);
+  const element = parsed.elements[elementName];
+  if (element) {
+    return element.location;
+  }
+  return null;
 }
 
 /**
@@ -317,15 +421,4 @@ export function updateTailwindClass(
     filtered.push(newClass);
   }
   return filtered.join(" ");
-}
-
-/**
- * Find exact line and column location of an element for Monaco editor positioning.
- */
-export function findSourceLocation(
-  sourceCode: string,
-  elementName: string,
-): SourceLocation | null {
-  const parsed = parseComponentSource(sourceCode);
-  return parsed.elements[elementName]?.location ?? null;
 }

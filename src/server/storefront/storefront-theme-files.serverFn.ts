@@ -93,6 +93,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
         data.content,
         data.mimeType,
         {
+          expectedVersion: data.expectedVersion,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,

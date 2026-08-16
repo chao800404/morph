@@ -135,6 +135,17 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
   }, [jumpLocation]);
 
+  // Auto-fallback if current activeFilePath does not exist in loaded workspace files
+  useEffect(() => {
+    if (files.length > 0 && !files.some((f) => f.path === activeFilePath)) {
+      const fallback = defaultFile?.path ?? files[0].path;
+      setActiveFilePath(fallback);
+      setOpenTabs((prev) =>
+        prev.includes(fallback) ? prev : [...prev, fallback],
+      );
+    }
+  }, [files, activeFilePath, defaultFile]);
+
   const externalBaselineRef = useRef<Record<string, string>>({});
 
   // Synchronize external file updates (Design Inspector AST patches, server queries, AI)

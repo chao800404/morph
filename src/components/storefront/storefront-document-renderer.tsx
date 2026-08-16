@@ -1,4 +1,5 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { parseComponentSource } from "@/lib/storefront/ast/theme-ast-transformer";
 import { cn } from "@/lib/utils";
 import { z } from "zod";
 
@@ -6,6 +7,7 @@ type StorefrontSection = StorefrontPageDocument["sections"][number];
 
 type StorefrontDocumentRendererProps = {
   document: StorefrontPageDocument;
+  themeFiles?: Array<{ path: string; content: string }>;
 };
 
 function resolveSectionStyle(props: Record<string, any>): React.CSSProperties {
@@ -153,6 +155,7 @@ const newsletterPropsSchema = z
 
 export function StorefrontDocumentRenderer({
   document,
+  themeFiles,
 }: StorefrontDocumentRendererProps) {
   const enabledSections = (document.sections ?? []).filter(
     (section) => section.enabled !== false,
@@ -160,10 +163,17 @@ export function StorefrontDocumentRenderer({
 
   if (enabledSections.length === 0) return <EmptyStorefront />;
 
-  return <main>{enabledSections.map(renderSection)}</main>;
+  return (
+    <main>
+      {enabledSections.map((section) => renderSection(section, themeFiles))}
+    </main>
+  );
 }
 
-function renderSection(section: StorefrontSection) {
+function renderSection(
+  section: StorefrontSection,
+  themeFiles?: Array<{ path: string; content: string }>,
+) {
   const sectionSchemas = {
     hero: heroSectionPropsSchema,
     "editorial-intro": editorialIntroPropsSchema,
@@ -185,6 +195,7 @@ function renderSection(section: StorefrontSection) {
           key={section.id}
           sectionId={section.id}
           rawProps={rawProps}
+          themeFiles={themeFiles}
           {...(parsedData as any)}
         />
       );
@@ -241,6 +252,7 @@ function renderSection(section: StorefrontSection) {
 function StorefrontHero({
   sectionId,
   rawProps,
+  themeFiles,
   eyebrow,
   heading,
   description,
@@ -251,6 +263,7 @@ function StorefrontHero({
 }: {
   sectionId: string;
   rawProps?: Record<string, any>;
+  themeFiles?: Array<{ path: string; content: string }>;
   eyebrow?: string | null;
   heading?: string | null;
   description?: string | null;
@@ -262,17 +275,54 @@ function StorefrontHero({
   const customStyle = resolveSectionStyle(rawProps ?? {});
   const customClass = rawProps?.className ?? rawProps?.customClass;
 
-  const displayEyebrow = eyebrow ?? "New collection";
-  const displayHeading = heading ?? "Objects for everyday rituals.";
+  const heroFile = themeFiles?.find((f) => f.path === "src/components/Hero.tsx");
+  const heroAst = heroFile?.content ? parseComponentSource(heroFile.content) : null;
+
+  const sectionClassName =
+    heroAst?.elements["section"]?.className ||
+    heroAst?.elements["root"]?.className ||
+    "grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]";
+
+  const eyebrowClassName =
+    heroAst?.elements["eyebrow"]?.className ||
+    "text-xs font-medium uppercase tracking-[0.24em] text-stone-500";
+
+  const headingClassName =
+    heroAst?.elements["heading"]?.className ||
+    "mt-6 font-serif text-[clamp(3.25rem,7vw,7rem)] leading-[0.88] tracking-[-0.055em] text-stone-950";
+
+  const descriptionClassName =
+    heroAst?.elements["description"]?.className ||
+    "mt-7 max-w-md text-base leading-7 text-stone-600";
+
+  const actionClassName =
+    heroAst?.elements["action"]?.className ||
+    "inline-flex items-center justify-center rounded-md bg-stone-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-stone-800";
+
+  const imageContainerClassName =
+    heroAst?.elements["image"]?.className ||
+    "min-h-[30rem] overflow-hidden lg:min-h-0";
+
+  const displayEyebrow =
+    eyebrow ?? heroAst?.defaultProps.eyebrow ?? "New collection";
+  const displayHeading =
+    heading ?? heroAst?.defaultProps.heading ?? "Objects for everyday rituals.";
   const displayDescription =
     description ??
+    heroAst?.defaultProps.description ??
     "Quiet essentials, thoughtfully made for the spaces you call home.";
-  const displayActionLabel = actionLabel ?? "Explore the collection";
-  const displayActionHref = actionHref ?? "/collections/new";
+  const displayActionLabel =
+    actionLabel ?? heroAst?.defaultProps.actionLabel ?? "Explore the collection";
+  const displayActionHref =
+    actionHref ?? heroAst?.defaultProps.actionHref ?? "/collections/new";
   const displayImageSrc =
-    imageSrc || "/static/storefront/theme-preview-default.png";
+    imageSrc ||
+    heroAst?.defaultProps.imageSrc ||
+    "/static/storefront/theme-preview-default.png";
   const displayImageAlt =
-    imageAlt || "A neutral collection of ceramic objects";
+    imageAlt ||
+    heroAst?.defaultProps.imageAlt ||
+    "A neutral collection of ceramic objects";
 
   return (
     <section
@@ -281,43 +331,52 @@ function StorefrontHero({
       data-morph-source-file="src/components/Hero.tsx"
       data-morph-component="Hero"
       style={customStyle}
-      className={cn(
-        "grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]",
-        customClass,
-      )}
+      className={cn(sectionClassName, customClass)}
     >
       <div className="flex items-center px-[clamp(1.75rem,6vw,6rem)] py-20">
         <div className="max-w-xl">
           <p
             data-storefront-component="eyebrow"
             data-storefront-field="eyebrow"
-            className="text-xs font-medium uppercase tracking-[0.24em] text-stone-500"
+            data-morph-element="eyebrow"
+            className={eyebrowClassName}
           >
             {displayEyebrow}
           </p>
           <h1
             data-storefront-component="heading"
             data-storefront-field="heading"
-            className="mt-6 font-serif text-[clamp(3.25rem,7vw,7rem)] leading-[0.88] tracking-[-0.055em] text-stone-950"
+            data-morph-element="heading"
+            className={headingClassName}
           >
             {displayHeading}
           </h1>
           <p
             data-storefront-component="description"
             data-storefront-field="description"
-            className="mt-7 max-w-md text-base leading-7 text-stone-600"
+            data-morph-element="description"
+            className={descriptionClassName}
           >
             {displayDescription}
           </p>
-          <StorefrontLink href={displayActionHref} field="actionLabel">
-            {displayActionLabel}
-          </StorefrontLink>
+          <div className="mt-8">
+            <a
+              href={displayActionHref}
+              data-storefront-component="button"
+              data-storefront-field="actionLabel"
+              data-morph-element="action"
+              className={actionClassName}
+            >
+              {displayActionLabel}
+            </a>
+          </div>
         </div>
       </div>
       <div
         data-storefront-component="image"
         data-storefront-field="imageSrc"
-        className="min-h-[30rem] overflow-hidden lg:min-h-0"
+        data-morph-element="image"
+        className={imageContainerClassName}
       >
         <img
           src={displayImageSrc}

@@ -159,6 +159,7 @@ export const storefrontThemeFileDal = {
       content: row.content,
       mimeType: row.mimeType ?? "text/plain",
       isEntry: Boolean(row.isEntry),
+      version: row.version ?? 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
@@ -196,6 +197,7 @@ export const storefrontThemeFileDal = {
       content: row.content,
       mimeType: row.mimeType ?? "text/plain",
       isEntry: Boolean(row.isEntry),
+      version: row.version ?? 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -208,6 +210,7 @@ export const storefrontThemeFileDal = {
     content: string,
     mimeType?: string,
     options?: {
+      expectedVersion?: number;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
@@ -235,14 +238,31 @@ export const storefrontThemeFileDal = {
     let savedFile: StorefrontThemeFileDTO;
 
     if (existing) {
+      const currentVersion = existing.version ?? 1;
+      if (
+        options?.expectedVersion !== undefined &&
+        options.expectedVersion !== currentVersion
+      ) {
+        throw new Error(
+          `CONFLICT_VERSION_MISMATCH: file "${path}" was modified elsewhere (expected v${options.expectedVersion}, currently v${currentVersion})`,
+        );
+      }
+
+      const nextVersion = currentVersion + 1;
       await db
         .update(storefrontThemeFiles)
         .set({
           content,
+          version: nextVersion,
           mimeType: mimeType ?? existing.mimeType,
           updatedAt: now,
         })
-        .where(eq(storefrontThemeFiles.id, existing.id));
+        .where(
+          and(
+            eq(storefrontThemeFiles.id, existing.id),
+            eq(storefrontThemeFiles.version, currentVersion),
+          ),
+        );
 
       savedFile = {
         id: existing.id,
@@ -252,6 +272,7 @@ export const storefrontThemeFileDal = {
         content,
         mimeType: mimeType ?? existing.mimeType ?? "text/plain",
         isEntry: Boolean(existing.isEntry),
+        version: nextVersion,
         createdAt: existing.createdAt,
         updatedAt: now,
       };
@@ -276,6 +297,7 @@ export const storefrontThemeFileDal = {
         content,
         mimeType: detectedMime,
         isEntry,
+        version: 1,
         createdAt: now,
         updatedAt: now,
       });
@@ -288,6 +310,7 @@ export const storefrontThemeFileDal = {
         content,
         mimeType: detectedMime,
         isEntry,
+        version: 1,
         createdAt: now,
         updatedAt: now,
       };

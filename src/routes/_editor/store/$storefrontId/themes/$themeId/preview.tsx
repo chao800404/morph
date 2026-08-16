@@ -7,6 +7,8 @@ import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
 
+import { storefrontThemeFileQueries } from "../../../../-queries/storefront-theme-files.queries";
+
 export const Route = createFileRoute(
   "/_editor/store/$storefrontId/themes/$themeId/preview",
 )({
@@ -61,6 +63,10 @@ function ReadyStorefrontPreview({
     (candidate) => candidate.id === templateId,
   );
   const previewDocument = usePreviewDocument(template?.document);
+  const previewThemeFiles = usePreviewThemeFiles(
+    context.storefront.id,
+    context.theme.id,
+  );
 
   return (
     <StorefrontPreview
@@ -68,8 +74,54 @@ function ReadyStorefrontPreview({
       templateId={templateId}
       viewportHeight={viewportHeight}
       document={previewDocument}
+      themeFiles={previewThemeFiles}
     />
   );
+}
+
+function usePreviewThemeFiles(storefrontId: string, themeId: string) {
+  const fileQuery = useQuery(
+    storefrontThemeFileQueries.tree(storefrontId, themeId),
+  );
+  const [themeFiles, setThemeFiles] = useState<
+    Array<{ path: string; content: string }>
+  >([]);
+
+  useEffect(() => {
+    if (fileQuery.data?.files) {
+      setThemeFiles(fileQuery.data.files);
+    }
+  }, [fileQuery.data]);
+
+  useEffect(() => {
+    const handleThemeFileMessage = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== window.parent ||
+        typeof message !== "object" ||
+        message === null ||
+        !("type" in message)
+      ) {
+        return;
+      }
+
+      if (
+        message.type === "morph:storefront-preview-update-theme-files" &&
+        "files" in message &&
+        Array.isArray(message.files)
+      ) {
+        setThemeFiles(
+          message.files as Array<{ path: string; content: string }>,
+        );
+      }
+    };
+
+    window.addEventListener("message", handleThemeFileMessage);
+    return () => window.removeEventListener("message", handleThemeFileMessage);
+  }, []);
+
+  return themeFiles;
 }
 
 function usePreviewDocument(document: StorefrontPageDocument | undefined) {

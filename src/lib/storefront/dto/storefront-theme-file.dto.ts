@@ -6,6 +6,7 @@ export type StorefrontThemeFileDTO = {
   content: string;
   mimeType: string;
   isEntry: boolean;
+  version: number;
   createdAt: string;
   updatedAt: string;
 };

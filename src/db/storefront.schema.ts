@@ -357,6 +357,7 @@ export const storefrontThemeFiles = sqliteTable(
     content: text("content").notNull(),
     mimeType: text("mime_type").default("text/plain"),
     isEntry: integer("is_entry", { mode: "boolean" }).default(false),
+    version: integer("version").notNull().default(1),
     ...timestamps,
   },
   (table) => [

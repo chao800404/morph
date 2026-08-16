@@ -8,6 +8,7 @@ type StorefrontPreviewProps = {
   templateId: string;
   viewportHeight: number;
   document?: StorefrontPageDocument;
+  themeFiles?: Array<{ path: string; content: string }>;
 };
 
 type StorefrontPreviewStyle = CSSProperties & {
@@ -19,6 +20,7 @@ export function StorefrontPreview({
   templateId,
   viewportHeight,
   document,
+  themeFiles,
 }: StorefrontPreviewProps) {
   const template = context.templates.find(
     (candidate) => candidate.id === templateId,
@@ -59,7 +61,10 @@ export function StorefrontPreview({
           Cart (0)
         </a>
       </header>
-      <StorefrontDocumentRenderer document={document ?? template.document} />
+      <StorefrontDocumentRenderer
+        document={document ?? template.document}
+        themeFiles={themeFiles}
+      />
       <footer className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]">
         <div>
           <p className="font-serif text-3xl text-stone-100">
