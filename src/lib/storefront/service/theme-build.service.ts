@@ -165,6 +165,12 @@ export class ThemeBuildService {
       }
     }
 
+    // Lifecycle ownership gate: Only "queued" builds are eligible for materialization and runner start.
+    // If the build is already "building", "succeeded", or "failed", another worker/orchestrator has taken ownership.
+    if (source.build.status !== "queued") {
+      return source.build;
+    }
+
     // Stage 2: Pure Materialization
     let buildInput: StorefrontThemeBuildInput;
     try {
@@ -179,6 +185,16 @@ export class ThemeBuildService {
           ? materializerError.message
           : String(materializerError);
 
+      // Guard: If another worker started the build concurrently, return current state without failing winner
+      const current = await this.dal.getBuild(
+        params.storefrontId,
+        params.themeId,
+        params.buildId,
+      );
+      if (current && current.status !== "queued") {
+        return current;
+      }
+
       return await this.dal.markBuildFailed(
         params.storefrontId,
         params.themeId,
@@ -192,6 +208,7 @@ export class ThemeBuildService {
         },
       );
     }
+
 
     // Stage 3: Transition queued -> building with atomic identity freeze
     try {

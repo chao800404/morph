@@ -495,7 +495,7 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
   });
 
 
-  it("competing concurrent orchestrations: Start CAS loser does NOT fail active winner build", async () => {
+  it("competing concurrent orchestrations: Start CAS loser with conflicting compiler version does NOT fail active winner build", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-concurrent", 1, [
@@ -526,42 +526,49 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       },
     });
 
-    // Worker A starts and takes ownership
+    // Worker A starts with compilerVersion 4.1.17 and takes ownership
     const promiseA = service.executeBuildOrchestration({
       storefrontId: "storefront-1",
       themeId: "theme-1",
       buildId: build.id,
+      compilerIdentity: { compilerId: "tailwind-v4", compilerVersion: "4.1.17" },
       runner: delayedWinnerRunner,
     });
 
     // Small tick to ensure Worker A transitions queued -> building
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    // Worker B attempts to orchestrate the same build while Worker A is still running
+    // Worker B attempts to orchestrate the same build with CONFLICTING compilerVersion 4.2.0 while Worker A is still running
     const resultB = await service.executeBuildOrchestration({
       storefrontId: "storefront-1",
       themeId: "theme-1",
       buildId: build.id,
+      compilerIdentity: { compilerId: "tailwind-v4", compilerVersion: "4.2.0" },
       runner: secondWorkerRunner,
     });
 
     // Worker B must see in-flight building status and MUST NOT mark the build failed!
     expect(resultB.status).toBe("building");
+    expect(resultB.compilerVersion).toBe("4.1.17");
 
     // Worker A finishes
     const resultA = await promiseA;
     expect(resultA.status).toBe("succeeded");
+    expect(resultA.compilerVersion).toBe("4.1.17");
     expect(resultA.artifactPrefix).toBe("r2://winner-build");
 
     // Total runner invocations was exactly 1 (Worker B did not duplicate execution)
     expect(runnerRunCount).toBe(1);
 
-    // Final state in DB is succeeded
+    // Final state in DB is succeeded with Winner's version 4.1.17
     const finalInDb = await storefrontThemeBuildDal.getBuild(
       "storefront-1",
       "theme-1",
       build.id,
     );
     expect(finalInDb?.status).toBe("succeeded");
+    expect(finalInDb?.compilerVersion).toBe("4.1.17");
+    expect(finalInDb?.errorMessage).toBeNull();
   });
 });
+
