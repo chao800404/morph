@@ -313,7 +313,7 @@ export function patchComponentDefaultProp(
           if (decl && typeof decl === "object" && "id" in decl && decl.id) {
             isMatchingComponent = (decl.id as any).name === componentName;
           } else {
-            isMatchingComponent = componentName === "default" || componentName === "Hero";
+            isMatchingComponent = componentName === "default" || !componentName;
           }
         } else {
           isMatchingComponent = false;

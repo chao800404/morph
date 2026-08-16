@@ -56,7 +56,10 @@ import {
   createStorefrontCommentGroup,
   updateStorefrontCommentGroup,
 } from "@/server/storefront/storefront-comments.serverFn";
-import { saveStorefrontThemeFile } from "@/server/storefront/storefront-theme-files.serverFn";
+import {
+  getStorefrontThemeFile,
+  saveStorefrontThemeFile,
+} from "@/server/storefront/storefront-theme-files.serverFn";
 import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
@@ -474,12 +477,20 @@ export function VisualEditorShell({
         toast.error(result.message);
         return;
       }
-      await queryClient.invalidateQueries({
-        queryKey: storefrontThemeQueries.detail(
-          context.storefront.id,
-          context.theme.id,
-        ).queryKey,
-      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: storefrontThemeQueries.detail(
+            context.storefront.id,
+            context.theme.id,
+          ).queryKey,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: storefrontThemeFileQueries.tree(
+            context.storefront.id,
+            context.theme.id,
+          ).queryKey,
+        }),
+      ]);
       toast.success(result.message);
     },
     onError: () => toast.error("Failed to publish theme"),
@@ -628,6 +639,41 @@ export function VisualEditorShell({
             });
 
             if (!res.success) {
+              if (res.error === "VERSION_CONFLICT") {
+                getStorefrontThemeFile({
+                  data: {
+                    storefrontId: context.storefront.id,
+                    themeId: context.theme.id,
+                    path: filePath,
+                  },
+                })
+                  .then((latestRes) => {
+                    if (latestRes.success && latestRes.data) {
+                      fileVersionRef.current.set(
+                        filePath,
+                        latestRes.data.version,
+                      );
+                      queryClient.setQueryData(
+                        storefrontThemeFileQueries.tree(
+                          context.storefront.id,
+                          context.theme.id,
+                        ).queryKey,
+                        (old: any) => {
+                          if (!old?.files) return old;
+                          return {
+                            ...old,
+                            files: old.files.map((f: any) =>
+                              f.path === filePath
+                                ? { ...f, ...latestRes.data }
+                                : f,
+                            ),
+                          };
+                        },
+                      );
+                    }
+                  })
+                  .catch(() => {});
+              }
               throw new Error(res.message);
             }
 
@@ -2018,6 +2064,8 @@ export function VisualEditorShell({
             disabled={
               !hasUnpublishedChanges ||
               draftSaveState !== "idle" ||
+              Object.values(themeFileSaveStatus).some((s) => s === "saving") ||
+              Object.values(themeFileSaveErrors).length > 0 ||
               publishMutation.isPending
             }
             onClick={() => publishMutation.mutate()}

@@ -101,6 +101,16 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
       );
       return ok("Theme file saved", saved);
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("CONFLICT_VERSION_MISMATCH")
+      ) {
+        return fail(
+          "Version conflict detected: file was modified by another operation.",
+          { error: "VERSION_CONFLICT" },
+        );
+      }
+
       return failure(
         "Save theme file error",
         error,

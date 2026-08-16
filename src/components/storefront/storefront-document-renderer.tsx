@@ -1,5 +1,8 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
-import { parseComponentSource } from "@/lib/storefront/ast/theme-ast-transformer";
+import {
+  getComponentFilePath,
+  parseComponentSource,
+} from "@/lib/storefront/ast/theme-ast-transformer";
 import { cn } from "@/lib/utils";
 import { z } from "zod";
 
@@ -275,7 +278,9 @@ function StorefrontHero({
   const customStyle = resolveSectionStyle(rawProps ?? {});
   const customClass = rawProps?.className ?? rawProps?.customClass;
 
-  const heroFile = themeFiles?.find((f) => f.path === "src/components/Hero.tsx");
+  const componentPath =
+    getComponentFilePath("hero", themeFiles) ?? "src/components/Hero.tsx";
+  const heroFile = themeFiles?.find((f) => f.path === componentPath);
   const heroAst = heroFile?.content ? parseComponentSource(heroFile.content) : null;
 
   const sectionClassName =
@@ -328,7 +333,7 @@ function StorefrontHero({
     <section
       data-storefront-section-id={sectionId}
       data-storefront-section-type="hero"
-      data-morph-source-file="src/components/Hero.tsx"
+      data-morph-source-file={componentPath}
       data-morph-component="Hero"
       style={customStyle}
       className={cn(sectionClassName, customClass)}

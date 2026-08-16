@@ -114,13 +114,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     targetElementMeta?.classNameOffsets?.isExpression,
   );
   const hasSyntaxError = parsedMeta ? !parsedMeta.parseOk : false;
+  const sourceStyleLocked = hasSyntaxError || isDynamicClassName;
 
   const patchStyle = useCallback(
     (updater: (prevClasses: string) => string) => {
-      if (!componentPath) return;
+      if (!componentPath || sourceStyleLocked) return;
       onUpdateThemeFileStyle?.(componentPath, targetElement, updater);
     },
-    [componentPath, targetElement, onUpdateThemeFileStyle],
+    [componentPath, targetElement, onUpdateThemeFileStyle, sourceStyleLocked],
   );
 
   const handleFieldChange = useCallback(
@@ -538,7 +539,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 variant={props.textAlign === "left" || !props.textAlign ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
+                disabled={disabled || sourceStyleLocked}
                 onClick={() => {
+                  if (sourceStyleLocked) return;
                   handleFieldChange("textAlign", "left");
                   patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-left"),
@@ -552,7 +555,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 variant={props.textAlign === "center" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
+                disabled={disabled || sourceStyleLocked}
                 onClick={() => {
+                  if (sourceStyleLocked) return;
                   handleFieldChange("textAlign", "center");
                   patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-center"),
@@ -566,7 +571,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 variant={props.textAlign === "right" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
+                disabled={disabled || sourceStyleLocked}
                 onClick={() => {
+                  if (sourceStyleLocked) return;
                   handleFieldChange("textAlign", "right");
                   patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-right"),
@@ -594,12 +601,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               <Select
                 value={props.fontFamily ?? "serif"}
                 onValueChange={(val) => {
+                  if (sourceStyleLocked) return;
                   handleFieldChange("fontFamily", val);
                   patchStyle((prev) =>
                     updateTailwindClass(prev, /font-(serif|sans|mono)/, `font-${val}`),
                   );
                 }}
-                disabled={disabled}
+                disabled={disabled || sourceStyleLocked}
               >
                 <SelectTrigger className="h-7 text-xs">
                   <SelectValue placeholder="Font family" />
@@ -616,6 +624,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               <Select
                 value={props.fontWeight ?? "normal"}
                 onValueChange={(val) => {
+                  if (sourceStyleLocked) return;
                   handleFieldChange("fontWeight", val);
                   const weightClass =
                     val === "300"
@@ -633,7 +642,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     ),
                   );
                 }}
-                disabled={disabled}
+                disabled={disabled || sourceStyleLocked}
               >
                 <SelectTrigger className="h-7 text-xs">
                   <SelectValue placeholder="Weight" />
@@ -657,8 +666,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 max={120}
                 step={2}
                 suffix="px"
+                disabled={disabled || sourceStyleLocked}
                 ariaLabel="Heading font size"
                 onValueChange={(val) => {
+                  if (sourceStyleLocked) return;
                   handleFieldChange("fontSize", val);
                   patchStyle((prev) =>
                     updateTailwindClass(
@@ -679,8 +690,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 min={0.8}
                 max={2.5}
                 step={0.05}
+                disabled={disabled || sourceStyleLocked}
                 ariaLabel="Line height multiplier"
-                onValueChange={(val) => handleFieldChange("lineHeight", val)}
+                onValueChange={(val) => {
+                  if (sourceStyleLocked) return;
+                  handleFieldChange("lineHeight", val);
+                }}
                 className="h-6 w-16"
                 inputClassName="h-6 text-xs text-right font-mono"
               />
