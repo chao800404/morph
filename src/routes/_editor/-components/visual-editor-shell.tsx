@@ -55,6 +55,7 @@ import type {
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import {
   publishStorefrontThemeTemplate,
+  reorderStorefrontThemeSections,
   updateStorefrontThemeSectionProps,
 } from "@/server/storefront/storefront-themes.serverFn";
 import {
@@ -508,11 +509,23 @@ export function VisualEditorShell({
     },
     onError: () => toast.error("Failed to publish theme"),
   });
+  const pendingPropsTimersRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+  const pendingPropsMapRef = useRef<
+    Map<string, { sectionId: string; props: Record<string, unknown> }>
+  >(new Map());
+  const templateMutationQueueRef = useRef<Map<string, Promise<unknown>>>(
+    new Map(),
+  );
+  const templateDraftGenerationRef = useRef<Map<string, number>>(new Map());
+  const templateDraftRevisionIdRef = useRef<Map<string, string>>(new Map());
+
   const updatePropsMutation = useMutation({
     mutationFn: (variables: {
       sectionId: string;
       props: Record<string, unknown>;
-      expectedDraftGeneration?: number;
+      expectedDraftGeneration: number;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return updateStorefrontThemeSectionProps({
@@ -522,8 +535,7 @@ export function VisualEditorShell({
           templateId: activeTemplate.id,
           sectionId: variables.sectionId,
           props: variables.props,
-          expectedDraftGeneration:
-            variables.expectedDraftGeneration ?? activeTemplate.draftGeneration,
+          expectedDraftGeneration: variables.expectedDraftGeneration,
         },
       });
     },
@@ -547,6 +559,75 @@ export function VisualEditorShell({
       toast.error("Failed to update section properties");
     },
   });
+
+  const enqueueTemplateMutation = useCallback(
+    (templateId: string, op: (generation: number) => Promise<any>) => {
+      const currentQueue =
+        templateMutationQueueRef.current.get(templateId) ?? Promise.resolve();
+      const nextPromise = currentQueue
+        .catch(() => {})
+        .then(async () => {
+          const expectedDraftGeneration =
+            templateDraftGenerationRef.current.get(templateId) ??
+            activeTemplate?.draftGeneration ??
+            1;
+          const result = await op(expectedDraftGeneration);
+          if (result?.success && result.data) {
+            if (typeof result.data.draftGeneration === "number") {
+              templateDraftGenerationRef.current.set(
+                templateId,
+                result.data.draftGeneration,
+              );
+            }
+            if (result.data.draftRevisionId) {
+              templateDraftRevisionIdRef.current.set(
+                templateId,
+                result.data.draftRevisionId,
+              );
+            }
+          }
+          return result;
+        });
+      templateMutationQueueRef.current.set(templateId, nextPromise);
+      return nextPromise;
+    },
+    [activeTemplate?.draftGeneration],
+  );
+
+  const flushTemplatePendingProps = useCallback(
+    async (targetTemplateId?: string) => {
+      const tid = targetTemplateId ?? activeTemplate?.id;
+      if (!tid) return;
+      const prefix = `${tid}:`;
+      const flushPromises: Promise<unknown>[] = [];
+
+      for (const [key, timer] of Array.from(
+        pendingPropsTimersRef.current.entries(),
+      )) {
+        if (key.startsWith(prefix)) {
+          clearTimeout(timer);
+          pendingPropsTimersRef.current.delete(key);
+          const pending = pendingPropsMapRef.current.get(key);
+          pendingPropsMapRef.current.delete(key);
+          if (pending) {
+            flushPromises.push(
+              enqueueTemplateMutation(tid, (gen) =>
+                updatePropsMutation.mutateAsync({
+                  sectionId: pending.sectionId,
+                  props: pending.props,
+                  expectedDraftGeneration: gen,
+                }),
+              ),
+            );
+          }
+        }
+      }
+
+      await Promise.all(flushPromises);
+      await templateMutationQueueRef.current.get(tid);
+    },
+    [activeTemplate?.id, enqueueTemplateMutation, updatePropsMutation],
+  );
 
   const previewUrl = activeTemplate
     ? `/store/${encodeURIComponent(context.storefront.id)}/themes/${encodeURIComponent(context.theme.id)}/preview?templateId=${encodeURIComponent(activeTemplate.id)}&viewportHeight=${DEFAULT_PREVIEW_VIEWPORT_HEIGHT}`
@@ -984,31 +1065,21 @@ export function VisualEditorShell({
       return;
     }
 
-    let publishDraftRevisionId = activeTemplate?.draftRevisionId ?? null;
-    let publishDraftGeneration = activeTemplate?.draftGeneration ?? 1;
+    if (!activeTemplate) {
+      toast.error("Cannot publish: template is missing.");
+      return;
+    }
 
-    if (debouncedSavePropsTimeoutRef.current) {
-      clearTimeout(debouncedSavePropsTimeoutRef.current);
-      debouncedSavePropsTimeoutRef.current = null;
-    }
-    if (pendingPropsSaveRef.current) {
-      const pending = pendingPropsSaveRef.current;
-      pendingPropsSaveRef.current = null;
-      const result = await updatePropsMutation.mutateAsync({
-        ...pending,
-        expectedDraftGeneration: publishDraftGeneration,
-      });
-      if (!result.success) {
-        toast.error(result.message);
-        return;
-      }
-      if (result.data?.draftRevisionId) {
-        publishDraftRevisionId = result.data.draftRevisionId;
-      }
-      if (result.data?.draftGeneration) {
-        publishDraftGeneration = result.data.draftGeneration;
-      }
-    }
+    // 1. Flush any pending debounced props saves and await queued template mutations
+    await flushTemplatePendingProps(activeTemplate.id);
+
+    const publishDraftRevisionId =
+      templateDraftRevisionIdRef.current.get(activeTemplate.id) ??
+      activeTemplate.draftRevisionId;
+    const publishDraftGeneration =
+      templateDraftGenerationRef.current.get(activeTemplate.id) ??
+      activeTemplate.draftGeneration ??
+      1;
 
     const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
     for (const [opKey, timer] of Array.from(pendingSaveTimersRef.current.entries())) {
@@ -1518,41 +1589,112 @@ export function VisualEditorShell({
     [],
   );
 
-  const debouncedSavePropsTimeoutRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
-  const pendingPropsSaveRef = useRef<{
-    sectionId: string;
-    props: Record<string, unknown>;
-  } | null>(null);
-
   const handleSectionPropsChange = useCallback(
     (sectionId: string, nextProps: Record<string, unknown>) => {
       // 1. Instant 0ms visual sync to iframe canvas
       syncPreviewSectionProps(sectionId, nextProps);
 
-      // 2. Debounced 300ms persistence to backend
-      if (debouncedSavePropsTimeoutRef.current) {
-        clearTimeout(debouncedSavePropsTimeoutRef.current);
+      if (!activeTemplate) return;
+      const templateId = activeTemplate.id;
+      const key = `${templateId}:${sectionId}`;
+
+      // 2. Debounced per-section timer (does NOT cancel edits on other sections)
+      const existingTimer = pendingPropsTimersRef.current.get(key);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
       }
-      pendingPropsSaveRef.current = { sectionId, props: nextProps };
-      debouncedSavePropsTimeoutRef.current = setTimeout(() => {
-        pendingPropsSaveRef.current = null;
-        updatePropsMutation.mutate({ sectionId, props: nextProps });
+
+      const existingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
+      const mergedProps = { ...existingProps, ...nextProps };
+      pendingPropsMapRef.current.set(key, { sectionId, props: mergedProps });
+
+      const timer = setTimeout(async () => {
+        pendingPropsTimersRef.current.delete(key);
+        const pending = pendingPropsMapRef.current.get(key);
+        pendingPropsMapRef.current.delete(key);
+        if (!pending) return;
+
+        await enqueueTemplateMutation(templateId, (gen) =>
+          updatePropsMutation.mutateAsync({
+            sectionId: pending.sectionId,
+            props: pending.props,
+            expectedDraftGeneration: gen,
+          }),
+        );
       }, 300);
+
+      pendingPropsTimersRef.current.set(key, timer);
     },
-    [syncPreviewSectionProps, updatePropsMutation],
+    [
+      activeTemplate,
+      enqueueTemplateMutation,
+      syncPreviewSectionProps,
+      updatePropsMutation,
+    ],
   );
 
   const handleSectionToggleEnabled = useCallback(
-    (sectionId: string, enabled: boolean) => {
+    async (sectionId: string, enabled: boolean) => {
       // 1. Instant 0ms visual toggle on canvas
       syncPreviewSectionProps(sectionId, undefined, enabled);
 
-      // 2. Immediate persistence
-      updatePropsMutation.mutate({ sectionId, props: { enabled } });
+      if (!activeTemplate) return;
+      const templateId = activeTemplate.id;
+      const key = `${templateId}:${sectionId}`;
+
+      const existingTimer = pendingPropsTimersRef.current.get(key);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        pendingPropsTimersRef.current.delete(key);
+      }
+
+      const existingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
+      pendingPropsMapRef.current.delete(key);
+      const mergedProps = { ...existingProps, enabled };
+
+      await enqueueTemplateMutation(templateId, (gen) =>
+        updatePropsMutation.mutateAsync({
+          sectionId,
+          props: mergedProps,
+          expectedDraftGeneration: gen,
+        }),
+      );
     },
-    [syncPreviewSectionProps, updatePropsMutation],
+    [
+      activeTemplate,
+      enqueueTemplateMutation,
+      syncPreviewSectionProps,
+      updatePropsMutation,
+    ],
+  );
+
+  const handleReorderSections = useCallback(
+    async (sectionIds: string[]) => {
+      if (!activeTemplate) return;
+      const templateId = activeTemplate.id;
+      // 1. Flush any pending props before reordering
+      await flushTemplatePendingProps(templateId);
+
+      // 2. Queue reorder mutation with atomic generation CAS
+      return enqueueTemplateMutation(templateId, async (gen) => {
+        return reorderStorefrontThemeSections({
+          data: {
+            storefrontId: context.storefront.id,
+            themeId: context.theme.id,
+            templateId,
+            sectionIds,
+            expectedDraftGeneration: gen,
+          },
+        });
+      });
+    },
+    [
+      activeTemplate,
+      context.storefront.id,
+      context.theme.id,
+      enqueueTemplateMutation,
+      flushTemplatePendingProps,
+    ],
   );
 
   useEffect(() => {
@@ -2480,8 +2622,9 @@ export function VisualEditorShell({
             search={search}
             onSearchChange={onSearchChange}
             onSectionOrderChange={syncPreviewSectionOrder}
-          onSaveStateChange={setDraftSaveState}
-        />
+            onSaveStateChange={setDraftSaveState}
+            onReorderSections={handleReorderSections}
+          />
 
         {/* Left Panel Resizer */}
         <div

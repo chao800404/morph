@@ -116,14 +116,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
           createdBy: context.user?.id,
         },
       );
-      const sourceGeneration = await storefrontThemeFileDal.getSourceGeneration(
-        data.storefrontId,
-        data.themeId,
-      );
-      return ok("Theme file saved", {
-        ...saved,
-        sourceGeneration: sourceGeneration ?? 1,
-      });
+      return ok("Theme file saved", saved);
     } catch (error) {
       if (
         error instanceof Error &&
@@ -159,13 +152,9 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
           createdBy: context.user?.id,
         },
       );
-      const sourceGeneration = await storefrontThemeFileDal.getSourceGeneration(
-        data.storefrontId,
-        data.themeId,
-      );
       return ok("Theme files batch saved", {
         files: saved,
-        sourceGeneration: sourceGeneration ?? 1,
+        sourceGeneration: saved.sourceGeneration ?? 1,
       });
     } catch (error) {
       if (
@@ -277,7 +266,6 @@ export const createStorefrontThemeRevision = createServerFn({ method: "POST" })
         data.themeId,
         {
           message: data.message ?? "Published Theme Source",
-          source: "publish",
           expectedSourceGeneration: data.expectedSourceGeneration,
           createdBy: context.user?.id,
         },

@@ -216,6 +216,8 @@ describe("storefront theme DAL", () => {
       revisionId: "11111111-1111-4111-8111-111111111111",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       draftGeneration: 2,
+      templateUnchanged: false,
+      sourceUnchanged: false,
       unchanged: false,
     });
 
@@ -269,6 +271,8 @@ describe("storefront theme DAL", () => {
       revisionId: "11111111-1111-4111-8111-111111111111",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       draftGeneration: 2,
+      templateUnchanged: false,
+      sourceUnchanged: false,
       unchanged: false,
     });
 
@@ -368,6 +372,7 @@ describe("storefront theme DAL", () => {
       templateId: "template-a",
       sectionId: "hero",
       props: { title: "Updated Title" },
+      expectedDraftGeneration: 1,
       createdBy: "user-1",
     });
 

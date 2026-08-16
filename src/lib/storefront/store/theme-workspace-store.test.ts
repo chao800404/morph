@@ -8,6 +8,9 @@ describe("ThemeWorkspaceStore", () => {
       activeWorkspaceKey: null,
       workspaces: {},
       files: {},
+      acceptedGenerations: {},
+      observedGenerations: {},
+      generations: {},
     });
   });
 
@@ -172,5 +175,44 @@ describe("ThemeWorkspaceStore", () => {
     expect(themeAFiles["src/components/Hero.tsx"].localContent).toBe(
       "Theme A async save",
     );
+  });
+
+  it("distinguishes acceptedSourceGeneration and observedServerGeneration", () => {
+    const scope = { storefrontId: "store-a", themeId: "theme-a" };
+
+    // Initial hydrate sets both accepted and observed to 10
+    useThemeWorkspaceStore.getState().hydrateFromQuery("store-a", "theme-a", [], 10);
+    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(10);
+    expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(10);
+    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(false);
+
+    // Background poll observes server generation 12 (remote changed)
+    useThemeWorkspaceStore.getState().hydrateFromQuery("store-a", "theme-a", [], 12);
+    // Accepted generation remains 10 because user hasn't saved or accepted
+    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(10);
+    expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(12);
+    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(true);
+
+    // Own save completes with generation 13, advancing both accepted and observed
+    useThemeWorkspaceStore.getState().markSaved(
+      {
+        id: "f-1",
+        storefrontId: "store-a",
+        themeId: "theme-a",
+        path: "src/pages/index.tsx",
+        content: "console.log(1);",
+        mimeType: "text/plain",
+        isEntry: true,
+        version: 2,
+        createdAt: "now",
+        updatedAt: "now",
+        sourceGeneration: 13,
+      },
+      scope,
+      13,
+    );
+    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(13);
+    expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(13);
+    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(false);
   });
 });

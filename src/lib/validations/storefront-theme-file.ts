@@ -124,5 +124,5 @@ export const rollbackThemeRevisionInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
   revisionNumber: z.number().int().min(1),
-  expectedSourceGeneration: z.number().int().min(1).optional(),
+  expectedSourceGeneration: z.number().int().min(1),
 });

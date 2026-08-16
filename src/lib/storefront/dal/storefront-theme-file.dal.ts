@@ -200,6 +200,12 @@ export const storefrontThemeFileDal = {
 
     const statements = [
       prepareThemeOwnershipGuard(storefrontId, themeId),
+      env.DATABASE.prepare(`
+        SELECT CASE WHEN NOT EXISTS (
+          SELECT 1 FROM storefront_theme_files
+          WHERE storefront_id = ?1 AND theme_id = ?2 AND deleted_at IS NULL
+        ) THEN 1 ELSE json('') END AS ok
+      `).bind(storefrontId, themeId),
     ];
 
     for (const f of STARTER_THEME_FILES) {
@@ -210,7 +216,6 @@ export const storefrontThemeFileDal = {
             is_entry, version, created_at, updated_at
           )
           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
-          ON CONFLICT(storefront_id, theme_id, path) WHERE deleted_at IS NULL DO NOTHING
         `).bind(
           crypto.randomUUID(),
           storefrontId,
@@ -245,6 +250,10 @@ export const storefrontThemeFileDal = {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("malformed JSON") || message.includes("constraint")) {
+        const existing = await this.listFiles(storefrontId, themeId);
+        if (existing.length > 0) {
+          return existing;
+        }
         throw new Error("CONFLICT_OWNERSHIP_MISMATCH: Theme does not exist or was deleted.");
       }
       throw error;
@@ -342,8 +351,8 @@ export const storefrontThemeFileDal = {
       revisionMessage?: string;
       createdBy?: string;
     },
-  ): Promise<StorefrontThemeFileDTO> {
-    const [saved] = await this.saveFilesBatch(
+  ): Promise<StorefrontThemeFileDTO & { sourceGeneration?: number }> {
+    const saved = await this.saveFilesBatch(
       storefrontId,
       themeId,
       [{
@@ -360,8 +369,9 @@ export const storefrontThemeFileDal = {
         createdBy: options?.createdBy,
       },
     );
-    if (!saved) throw new Error(`Failed to save theme file "${path}"`);
-    return saved;
+    const first = saved[0];
+    if (!first) throw new Error(`Failed to save theme file "${path}"`);
+    return Object.assign(first, { sourceGeneration: saved.sourceGeneration });
   },
 
   async saveFilesBatch(
@@ -380,8 +390,11 @@ export const storefrontThemeFileDal = {
       revisionMessage?: string;
       createdBy?: string;
     },
-  ): Promise<StorefrontThemeFileDTO[]> {
-    if (files.length === 0) return [];
+  ): Promise<StorefrontThemeFileDTO[] & { sourceGeneration?: number }> {
+    if (files.length === 0) {
+      const empty: StorefrontThemeFileDTO[] & { sourceGeneration?: number } = [];
+      return empty;
+    }
 
     const now = new Date().toISOString();
     const statements = [prepareThemeOwnershipGuard(storefrontId, themeId)];
@@ -493,8 +506,17 @@ export const storefrontThemeFileDal = {
       prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
     );
 
+    statements.push(
+      env.DATABASE.prepare(`
+        SELECT source_generation
+        FROM storefront_themes
+        WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL
+      `).bind(themeId, storefrontId),
+    );
+
+    let batchResults: unknown[] = [];
     try {
-      await env.DATABASE.batch(statements);
+      batchResults = (await env.DATABASE.batch(statements)) as unknown[];
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
@@ -509,15 +531,25 @@ export const storefrontThemeFileDal = {
       throw error;
     }
 
+    const lastResult = batchResults[batchResults.length - 1] as any;
+    const sourceGeneration = Number(
+      lastResult?.results?.[0]?.source_generation ??
+      lastResult?.[0]?.source_generation ??
+      lastResult?.source_generation ??
+      1,
+    );
+
     const current = await this.listFiles(storefrontId, themeId);
     const byPath = new Map(current.map((file) => [file.path, file]));
-    return files.map((item) => {
+    const resultFiles = files.map((item) => {
       const saved = byPath.get(item.path);
       if (!saved) {
         throw new Error(`SAVE_FAILED: "${item.path}" missing after atomic batch.`);
       }
-      return saved;
+      return Object.assign(saved, { sourceGeneration });
     });
+
+    return Object.assign(resultFiles, { sourceGeneration });
   },
 
   async deleteFile(
@@ -582,11 +614,10 @@ export const storefrontThemeFileDal = {
     storefrontId: string,
     themeId: string,
     options: {
+      expectedSourceGeneration: number;
       message?: string;
-      source?: "manual" | "ai" | "publish" | "rollback";
-      expectedSourceGeneration?: number;
       createdBy?: string;
-    } = {},
+    },
   ): Promise<StorefrontThemeRevisionDTO> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
     if (!isOwner) {
@@ -606,11 +637,12 @@ export const storefrontThemeFileDal = {
         storefrontId,
         themeId,
         revisionId,
-        message: options.message ?? "Theme source checkpoint",
-        source: options.source ?? "manual",
+        message: options.message ?? "Manual checkpoint",
+        source: "manual",
         createdBy: options.createdBy,
         now,
       }),
+      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
     ];
 
     try {
@@ -622,30 +654,38 @@ export const storefrontThemeFileDal = {
         message.includes("constraint")
       ) {
         throw new Error(
-          `CONFLICT_SOURCE_GENERATION_MISMATCH: theme source generation mismatch (expected ${options.expectedSourceGeneration}).`,
+          "CONFLICT_SOURCE_GENERATION_MISMATCH: Theme source was modified concurrently. Refresh files to continue.",
         );
       }
       throw error;
     }
 
     const db = await getDb();
-    const [row] = await db
+    const [created] = await db
       .select()
       .from(storefrontThemeRevisions)
       .where(eq(storefrontThemeRevisions.id, revisionId))
       .limit(1);
-    if (!row) throw new Error("Revision could not be read after insert");
+
+    if (!created) {
+      throw new Error("REVISION_FAILED: Revision not found after atomic batch.");
+    }
 
     return {
-      id: row.id,
-      storefrontId: row.storefrontId,
-      themeId: row.themeId,
-      revisionNumber: row.revisionNumber,
-      message: row.message,
-      source: row.source as "manual" | "ai" | "publish" | "rollback",
-      snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
-      createdBy: row.createdBy,
-      createdAt: row.createdAt,
+      id: created.id,
+      storefrontId: created.storefrontId,
+      themeId: created.themeId,
+      revisionNumber: created.revisionNumber,
+      message: created.message,
+      source: created.source as "manual" | "ai" | "publish" | "rollback",
+      snapshot: (created.snapshot ?? []) as Array<{
+        path: string;
+        content: string;
+        mimeType: string;
+        isEntry: boolean;
+      }>,
+      createdBy: created.createdBy,
+      createdAt: created.createdAt,
     };
   },
 
@@ -699,12 +739,7 @@ export const storefrontThemeFileDal = {
       revisionNumber: row.revisionNumber,
       message: row.message,
       source: row.source as "manual" | "ai" | "publish" | "rollback",
-      snapshot: (row.snapshot ?? []) as Array<{
-        path: string;
-        content: string;
-        mimeType: string;
-        isEntry: boolean;
-      }>,
+      snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
       createdBy: row.createdBy,
       createdAt: row.createdAt,
     }));
@@ -717,8 +752,8 @@ export const storefrontThemeFileDal = {
     storefrontId: string,
     themeId: string,
     revisionNumber: number,
-    options?: {
-      expectedSourceGeneration?: number;
+    options: {
+      expectedSourceGeneration: number;
       createdBy?: string;
     },
   ): Promise<StorefrontThemeFileDTO[]> {
@@ -749,7 +784,7 @@ export const storefrontThemeFileDal = {
       prepareThemeOwnershipGuard(
         storefrontId,
         themeId,
-        options?.expectedSourceGeneration,
+        options.expectedSourceGeneration,
       ),
       env.DATABASE.prepare(`
         UPDATE storefront_theme_files

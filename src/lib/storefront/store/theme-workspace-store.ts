@@ -53,6 +53,8 @@ export interface WorkspaceScope {
 export interface ThemeWorkspaceStore {
   activeWorkspaceKey: string | null;
   workspaces: Record<string, Record<string, ThemeWorkspaceFileState>>;
+  acceptedGenerations: Record<string, number>;
+  observedGenerations: Record<string, number>;
   generations: Record<string, number>;
   files: Record<string, ThemeWorkspaceFileState>;
 
@@ -63,9 +65,16 @@ export interface ThemeWorkspaceStore {
     themeFiles: StorefrontThemeFileDTO[],
     sourceGeneration?: number,
   ) => void;
+  getAcceptedSourceGeneration: (scope?: WorkspaceScope) => number;
   getBaseSourceGeneration: (scope?: WorkspaceScope) => number;
   setBaseSourceGeneration: (
     generation: number,
+    scope?: WorkspaceScope,
+  ) => void;
+  getObservedSourceGeneration: (scope?: WorkspaceScope) => number;
+  hasRemoteSourceChanged: (scope?: WorkspaceScope) => boolean;
+  acceptRemoteGeneration: (
+    generation?: number,
     scope?: WorkspaceScope,
   ) => void;
   getWorkspaceFiles: (
@@ -137,6 +146,8 @@ function getTargetWorkspace(
 export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => ({
   activeWorkspaceKey: null,
   workspaces: {},
+  acceptedGenerations: {},
+  observedGenerations: {},
   generations: {},
   files: {},
 
@@ -152,17 +163,50 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
     });
   },
 
+  getAcceptedSourceGeneration: (scope?: WorkspaceScope) => {
+    const state = get();
+    const { key } = getTargetWorkspace(state, scope);
+    return state.acceptedGenerations[key] ?? state.generations[key] ?? 1;
+  },
+
   getBaseSourceGeneration: (scope?: WorkspaceScope) => {
     const state = get();
     const { key } = getTargetWorkspace(state, scope);
-    return state.generations[key] ?? 1;
+    return state.acceptedGenerations[key] ?? state.generations[key] ?? 1;
   },
 
   setBaseSourceGeneration: (generation: number, scope?: WorkspaceScope) => {
     set((state) => {
       const { key } = getTargetWorkspace(state, scope);
       return {
+        acceptedGenerations: { ...state.acceptedGenerations, [key]: generation },
         generations: { ...state.generations, [key]: generation },
+      };
+    });
+  },
+
+  getObservedSourceGeneration: (scope?: WorkspaceScope) => {
+    const state = get();
+    const { key } = getTargetWorkspace(state, scope);
+    return state.observedGenerations[key] ?? state.acceptedGenerations[key] ?? 1;
+  },
+
+  hasRemoteSourceChanged: (scope?: WorkspaceScope) => {
+    const state = get();
+    const { key } = getTargetWorkspace(state, scope);
+    const accepted = state.acceptedGenerations[key] ?? state.generations[key] ?? 1;
+    const observed = state.observedGenerations[key] ?? accepted;
+    return observed > accepted;
+  },
+
+  acceptRemoteGeneration: (generation?: number, scope?: WorkspaceScope) => {
+    set((state) => {
+      const { key } = getTargetWorkspace(state, scope);
+      const targetGen = generation ?? state.observedGenerations[key] ?? state.acceptedGenerations[key] ?? 1;
+      return {
+        acceptedGenerations: { ...state.acceptedGenerations, [key]: targetGen },
+        generations: { ...state.generations, [key]: targetGen },
+        observedGenerations: { ...state.observedGenerations, [key]: targetGen },
       };
     });
   },
@@ -285,7 +329,11 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         }
       }
 
-      if (!hasChanges && state.generations[targetKey] === sourceGeneration) {
+      const existingAccepted = state.acceptedGenerations[targetKey];
+      const initialAccepted = existingAccepted ?? (typeof sourceGeneration === "number" ? sourceGeneration : 1);
+      const nextObserved = typeof sourceGeneration === "number" ? sourceGeneration : (state.observedGenerations[targetKey] ?? 1);
+
+      if (!hasChanges && state.observedGenerations[targetKey] === nextObserved && existingAccepted !== undefined) {
         return state;
       }
 
@@ -294,14 +342,22 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         [targetKey]: next,
       };
 
-      const nextGenerations = typeof sourceGeneration === "number"
-        ? { ...state.generations, [targetKey]: sourceGeneration }
-        : state.generations;
+      const nextAcceptedGenerations = {
+        ...state.acceptedGenerations,
+        [targetKey]: initialAccepted,
+      };
+
+      const nextObservedGenerations = {
+        ...state.observedGenerations,
+        [targetKey]: nextObserved,
+      };
 
       const isActive = state.activeWorkspaceKey === targetKey;
       return {
         workspaces: nextWorkspaces,
-        generations: nextGenerations,
+        acceptedGenerations: nextAcceptedGenerations,
+        observedGenerations: nextObservedGenerations,
+        generations: nextAcceptedGenerations,
         activeWorkspaceKey: state.activeWorkspaceKey ?? targetKey,
         files: isActive || state.activeWorkspaceKey === null ? next : state.files,
       };
@@ -438,14 +494,19 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
       };
       const nextWorkspaces = { ...state.workspaces, [key]: next };
       const gen = sourceGeneration ?? (saved as any).sourceGeneration;
-      const nextGenerations = typeof gen === "number"
-        ? { ...state.generations, [key]: gen }
-        : state.generations;
+      const nextAcceptedGenerations = typeof gen === "number"
+        ? { ...state.acceptedGenerations, [key]: gen }
+        : state.acceptedGenerations;
+      const nextObservedGenerations = typeof gen === "number"
+        ? { ...state.observedGenerations, [key]: gen }
+        : state.observedGenerations;
 
       const isActive = state.activeWorkspaceKey === key;
       return {
         workspaces: nextWorkspaces,
-        generations: nextGenerations,
+        acceptedGenerations: nextAcceptedGenerations,
+        observedGenerations: nextObservedGenerations,
+        generations: nextAcceptedGenerations,
         files: isActive ? next : state.files,
       };
     });

@@ -24,7 +24,7 @@ import {
   toEditorTemplateSearch,
 } from "./editor-template";
 
-type EditorSectionsPanelProps = {
+export type EditorSectionsPanelProps = {
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
   style?: React.CSSProperties;
@@ -32,6 +32,7 @@ type EditorSectionsPanelProps = {
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
   onSectionOrderChange: (sectionIds: string[]) => void;
   onSaveStateChange: (state: "idle" | "saving" | "error") => void;
+  onReorderSections?: (sectionIds: string[]) => Promise<unknown>;
 };
 
 type EditorSection =
@@ -68,24 +69,23 @@ function SortableSectionRow({
       ref={ref}
       className={cn(
         "group flex w-full min-w-0 items-center rounded-md px-1.5 py-0.5 hover:bg-accent transition-colors",
-        selected && "bg-accent text-accent-foreground font-medium",
-        isDragging && "relative z-10 bg-accent shadow-md",
+        selected && "bg-accent",
+        isDragging && "opacity-40",
       )}
     >
       <button
         ref={handleRef}
         type="button"
-        disabled={disabled}
-        title="Drag to reorder section"
-        aria-label={`Reorder ${section.type}`}
-        className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground active:cursor-grabbing disabled:cursor-not-allowed hover:text-foreground"
+        className="cursor-grab p-1 text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
+        tabIndex={-1}
+        aria-label={`Reorder section ${section.type}`}
       >
         <GripVertical className="size-3.5" />
       </button>
       <button
         type="button"
-        className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         onClick={onSelect}
+        className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left"
       >
         <span className="w-3.5 shrink-0 text-center text-[10px] tabular-nums text-muted-foreground">
           {index + 1}
@@ -107,6 +107,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onSearchChange,
   onSectionOrderChange,
   onSaveStateChange,
+  onReorderSections,
 }: EditorSectionsPanelProps) {
   const activeTemplate = resolveEditorTemplate(context, search);
   const sourceSections = activeTemplate?.document.sections ?? [];
@@ -131,7 +132,10 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   );
   const reorderMutation = useMutation({
     onMutate: () => onSaveStateChange("saving"),
-    mutationFn: (sectionIds: string[]) => {
+    mutationFn: async (sectionIds: string[]) => {
+      if (onReorderSections) {
+        return onReorderSections(sectionIds);
+      }
       if (!activeTemplate) throw new Error("No active template");
       return reorderStorefrontThemeSections({
         data: {
@@ -143,8 +147,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
         },
       });
     },
-    onSuccess: async (result) => {
-      if (!result.success) {
+    onSuccess: async (result: any) => {
+      if (result && !result.success) {
         updateSections(sourceSections);
         onSaveStateChange("error");
         toast.error(result.message);

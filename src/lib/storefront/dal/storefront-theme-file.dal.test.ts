@@ -103,6 +103,9 @@ beforeEach(() => {
       updated_at text NOT NULL,
       deleted_at text
     );
+    CREATE UNIQUE INDEX storefront_theme_files_unique_path_idx
+    ON storefront_theme_files (storefront_id, theme_id, path)
+    WHERE deleted_at IS NULL;
   `);
 
   sqlite.exec(`
@@ -204,5 +207,41 @@ describe("storefront theme file DAL", () => {
     expect(
       await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
     ).toBe(3);
+  });
+
+  it("initializes starter theme idempotently without duplicating files or revisions", async () => {
+    const files1 = await storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a");
+    expect(files1.length).toBeGreaterThan(0);
+    const gen1 = await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a");
+
+    // Second call should return existing files cleanly without incrementing generation
+    const files2 = await storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a");
+    expect(files2.length).toBe(files1.length);
+    const gen2 = await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a");
+    expect(gen2).toBe(gen1);
+  });
+
+  it("rolls back to revision with expectedSourceGeneration OCC guard", async () => {
+    await storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a");
+    const gen = await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a");
+
+    // Rollback with matching generation
+    const rolledBack = await storefrontThemeFileDal.rollbackToRevision(
+      "storefront-a",
+      "theme-a",
+      1,
+      { expectedSourceGeneration: gen ?? 1 },
+    );
+    expect(rolledBack.length).toBeGreaterThan(0);
+
+    // Rollback with stale generation should fail
+    await expect(
+      storefrontThemeFileDal.rollbackToRevision(
+        "storefront-a",
+        "theme-a",
+        1,
+        { expectedSourceGeneration: 999 },
+      ),
+    ).rejects.toThrow();
   });
 });

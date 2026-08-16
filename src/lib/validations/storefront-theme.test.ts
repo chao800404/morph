@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   publishStorefrontThemeTemplateInputSchema,
+  reorderStorefrontThemeSectionsInputSchema,
   storefrontThemeEditorSearchSchema,
   storefrontThemePreviewSearchSchema,
+  updateStorefrontThemeSectionPropsInputSchema,
 } from "./storefront-theme";
-import { createThemeRevisionInputSchema } from "./storefront-theme-file";
+import {
+  createThemeRevisionInputSchema,
+  rollbackThemeRevisionInputSchema,
+} from "./storefront-theme-file";
 
 describe("storefront theme editor search", () => {
   it("keeps legacy template type links compatible", () => {
@@ -145,6 +150,72 @@ describe("create theme revision input schema", () => {
         storefrontId: "storefront-1",
         themeId: "theme-1",
         expectedSourceGeneration: 0,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("reorder and update props schemas", () => {
+  it("requires expectedDraftGeneration on reorder and update props", () => {
+    const storefrontId = crypto.randomUUID();
+    const themeId = crypto.randomUUID();
+    const templateId = crypto.randomUUID();
+
+    const validReorder = {
+      storefrontId,
+      themeId,
+      templateId,
+      sectionIds: ["s1", "s2"],
+      expectedDraftGeneration: 2,
+    };
+    expect(reorderStorefrontThemeSectionsInputSchema.parse(validReorder)).toEqual(validReorder);
+
+    expect(() =>
+      reorderStorefrontThemeSectionsInputSchema.parse({
+        storefrontId,
+        themeId,
+        templateId,
+        sectionIds: ["s1", "s2"],
+      }),
+    ).toThrow();
+
+    const validProps = {
+      storefrontId,
+      themeId,
+      templateId,
+      sectionId: "s1",
+      props: { title: "Hello" },
+      expectedDraftGeneration: 3,
+    };
+    expect(updateStorefrontThemeSectionPropsInputSchema.parse(validProps)).toEqual(validProps);
+
+    expect(() =>
+      updateStorefrontThemeSectionPropsInputSchema.parse({
+        storefrontId,
+        themeId,
+        templateId,
+        sectionId: "s1",
+        props: { title: "Hello" },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("rollback theme revision input schema", () => {
+  it("requires expectedSourceGeneration >= 1", () => {
+    const valid = {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      revisionNumber: 2,
+      expectedSourceGeneration: 4,
+    };
+    expect(rollbackThemeRevisionInputSchema.parse(valid)).toEqual(valid);
+
+    expect(() =>
+      rollbackThemeRevisionInputSchema.parse({
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        revisionNumber: 2,
       }),
     ).toThrow();
   });
