@@ -322,13 +322,13 @@ export const storefrontThemeBuildDal = {
   /**
    * State Transition: building -> succeeded
    * Throws INVALID_STATE_TRANSITION if current status is not "building".
+   * Note: Build identity fields (sourceRevisionId, inputHash, compilerId, compilerVersion) are permanently frozen and cannot be altered.
    */
   async markBuildSucceeded(
     storefrontId: string,
     themeId: string,
     buildId: string,
-    options: {
-      inputHash?: string;
+    options?: {
       artifactPrefix?: string;
       manifestJson?: any;
       diagnosticsJson?: any;
@@ -348,16 +348,15 @@ export const storefrontThemeBuildDal = {
 
     const db = await getDb();
     const now = new Date().toISOString();
-    const completedAt = options.completedAt ?? now;
+    const completedAt = options?.completedAt ?? now;
 
     const [updated] = await db
       .update(storefrontThemeBuilds)
       .set({
         status: "succeeded",
-        inputHash: options.inputHash ?? existing.inputHash,
-        artifactPrefix: options.artifactPrefix ?? existing.artifactPrefix,
-        manifestJson: options.manifestJson ?? existing.manifestJson,
-        diagnosticsJson: options.diagnosticsJson ?? existing.diagnosticsJson,
+        artifactPrefix: options?.artifactPrefix ?? existing.artifactPrefix,
+        manifestJson: options?.manifestJson ?? existing.manifestJson,
+        diagnosticsJson: options?.diagnosticsJson ?? existing.diagnosticsJson,
         completedAt,
         updatedAt: now,
       })
@@ -371,6 +370,7 @@ export const storefrontThemeBuildDal = {
         ),
       )
       .returning();
+
 
     if (!updated) {
       throw new Error(

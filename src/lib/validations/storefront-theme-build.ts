@@ -39,23 +39,22 @@ export const markBuildStartedInputSchema = z.object({
   inputHash: z
     .string()
     .trim()
-    .length(64, "inputHash must be 64-character SHA-256 hex"),
+    .regex(/^[0-9a-f]{64}$/i, "inputHash must be 64-character SHA-256 hex"),
   compilerId: z.string().trim().min(1).max(100),
   compilerVersion: z.string().trim().min(1).max(50),
 });
 
 export type MarkBuildStartedInput = z.infer<typeof markBuildStartedInputSchema>;
 
-
 export const markBuildSucceededInputSchema = z.object({
   storefrontId: idSchema("storefront"),
   themeId: idSchema("storefront theme"),
   buildId: idSchema("storefront theme build"),
-  inputHash: z.string().trim().max(128).optional(),
   artifactPrefix: z.string().trim().max(255).optional(),
   manifestJson: z.any().optional(),
   diagnosticsJson: z.any().optional(),
 });
+
 
 export type MarkBuildSucceededInput = z.infer<
   typeof markBuildSucceededInputSchema

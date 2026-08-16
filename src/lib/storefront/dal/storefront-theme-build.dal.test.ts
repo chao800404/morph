@@ -258,13 +258,12 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
       expect(building.compilerId).toBe("tailwind-v4");
       expect(building.compilerVersion).toBe("4.1.17");
 
-      // Transition 2: building -> succeeded
+      // Transition 2: building -> succeeded (retains frozen inputHash and cannot alter it)
       const succeeded = await storefrontThemeBuildDal.markBuildSucceeded(
         "storefront-a",
         "theme-a",
         build.id,
         {
-          inputHash: "a".repeat(64),
           artifactPrefix: "r2://artifacts/build-1",
         },
       );
@@ -273,6 +272,7 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
       expect(succeeded.inputHash).toBe("a".repeat(64));
       expect(succeeded.artifactPrefix).toBe("r2://artifacts/build-1");
     });
+
 
     it("allows valid failure lifecycle: queued -> building -> failed", async () => {
       seedStorefront("storefront-a");
@@ -451,16 +451,85 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         { sourceRevisionId: "rev-source-1" },
       );
 
-      const source = await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-a",
-        "theme-a",
-        build.id,
-      );
+      const source =
+        await storefrontThemeBuildDal.getBuildMaterializationSource(
+          "storefront-a",
+          "theme-a",
+          build.id,
+        );
 
       expect(source.build.id).toBe(build.id);
       expect(source.revision.id).toBe("rev-source-1");
       expect(source.revision.revisionNumber).toBe(1);
     });
 
+    it("throws BUILD_NOT_FOUND when attempting to get materialization source for non-existent build", async () => {
+      seedStorefront("storefront-a");
+      seedTheme("storefront-a", "theme-a");
+
+      await expect(
+        storefrontThemeBuildDal.getBuildMaterializationSource(
+          "storefront-a",
+          "theme-a",
+          "non-existent-build",
+        ),
+      ).rejects.toThrow(/BUILD_NOT_FOUND/);
+    });
+
+    it("prevents identity drift on competing concurrent markBuildStarted CAS executions", async () => {
+      seedStorefront("storefront-a");
+      seedTheme("storefront-a", "theme-a");
+      seedRevision("storefront-a", "theme-a", "rev-source-2", 1);
+
+      const build = await storefrontThemeBuildDal.createBuild(
+        "storefront-a",
+        "theme-a",
+        { sourceRevisionId: "rev-source-2" },
+      );
+
+      // Launch competing start calls
+      const [res1, res2] = await Promise.allSettled([
+        storefrontThemeBuildDal.markBuildStarted(
+          "storefront-a",
+          "theme-a",
+          build.id,
+          {
+            inputHash: "1".repeat(64),
+            compilerId: "tailwind-v4",
+            compilerVersion: "4.1.17",
+          },
+        ),
+        storefrontThemeBuildDal.markBuildStarted(
+          "storefront-a",
+          "theme-a",
+          build.id,
+          {
+            inputHash: "2".repeat(64),
+            compilerId: "tailwind-v4",
+            compilerVersion: "4.2.0",
+          },
+        ),
+      ]);
+
+      // Exactly one succeeds, the other fails CAS transition
+      const fulfilled = [res1, res2].filter((r) => r.status === "fulfilled");
+      const rejected = [res1, res2].filter((r) => r.status === "rejected");
+
+      expect(fulfilled.length).toBe(1);
+      expect(rejected.length).toBe(1);
+
+      // The build record in DB must have the winner's frozen identity
+      const dbBuild = await storefrontThemeBuildDal.getBuild(
+        "storefront-a",
+        "theme-a",
+        build.id,
+      );
+      expect(dbBuild?.status).toBe("building");
+      expect(
+        dbBuild?.inputHash === "1".repeat(64) ||
+          dbBuild?.inputHash === "2".repeat(64),
+      ).toBe(true);
+    });
   });
 });
+
