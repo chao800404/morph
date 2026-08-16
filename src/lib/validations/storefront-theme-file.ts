@@ -113,6 +113,12 @@ export const listThemeRevisionsInputSchema = z.object({
   themeId: z.string().min(1),
 });
 
+export const createThemeRevisionInputSchema = z.object({
+  storefrontId: z.string().min(1),
+  themeId: z.string().min(1),
+  message: z.string().trim().max(200).optional(),
+});
+
 export const rollbackThemeRevisionInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),

@@ -17,3 +17,5 @@ todos.json
 
 .dev.vars*
 !.dev.vars.example
+
+.phase3-seal-backup/

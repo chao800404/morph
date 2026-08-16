@@ -9,6 +9,7 @@ import {
   initStarterThemeFilesInputSchema,
   listThemeFilesInputSchema,
   listThemeRevisionsInputSchema,
+  createThemeRevisionInputSchema,
   rollbackThemeRevisionInputSchema,
   saveThemeFileInputSchema,
   saveThemeFilesBatchInputSchema,
@@ -244,3 +245,29 @@ export const rollbackStorefrontThemeRevision = createServerFn({ method: "POST" }
       );
     }
   });
+
+export const createStorefrontThemeRevision = createServerFn({ method: "POST" })
+  .validator((data: unknown) => createThemeRevisionInputSchema.parse(data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data, context }) => {
+    try {
+      const revision = await storefrontThemeFileDal.createRevision(
+        data.storefrontId,
+        data.themeId,
+        {
+          message: data.message ?? "Published Theme Source",
+          source: "publish",
+          createdBy: context.user?.id,
+        },
+      );
+      return ok("Theme revision created", revision);
+    } catch (error) {
+      return failure(
+        "Create theme revision error",
+        error,
+        "CREATE_FAILED",
+        "Failed to create theme revision",
+      );
+    }
+  });
+

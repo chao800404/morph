@@ -88,14 +88,14 @@ function useTailwindPreviewRuntime(
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
 
-    // 1. Inject Tailwind Play CDN script into iframe head for full dynamic utility coverage
+    // 1. Inject Tailwind v4 browser script into iframe head for dynamic utility coverage
     let script = document.getElementById(
       "morph-tailwind-cdn",
     ) as HTMLScriptElement | null;
     if (!script) {
       script = document.createElement("script");
       script.id = "morph-tailwind-cdn";
-      script.src = "https://cdn.tailwindcss.com";
+      script.src = "https://unpkg.com/@tailwindcss/browser@4";
       script.async = true;
       document.head.appendChild(script);
     }

@@ -62,6 +62,7 @@ import {
   updateStorefrontCommentGroup,
 } from "@/server/storefront/storefront-comments.serverFn";
 import {
+  createStorefrontThemeRevision,
   getStorefrontThemeFile,
   saveStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -467,13 +468,18 @@ export function VisualEditorShell({
   });
   const commentThreads = commentsQuery.data?.data ?? [];
   const publishMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (variables?: {
+      sourceRevisionId?: string;
+      expectedDraftRevisionId?: string;
+    }) => {
       if (!activeTemplate) throw new Error("No active template");
       return publishStorefrontThemeTemplate({
         data: {
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
           templateId: activeTemplate.id,
+          sourceRevisionId: variables?.sourceRevisionId,
+          expectedDraftRevisionId: variables?.expectedDraftRevisionId,
         },
       });
     },
@@ -936,8 +942,32 @@ export function VisualEditorShell({
       return;
     }
 
-    await publishMutation.mutateAsync();
+    if (!activeTemplate) return;
+
+    // Freeze current working files into a distinct Source Revision
+    const freezeResult = await createStorefrontThemeRevision({
+      data: {
+        storefrontId: context.storefront.id,
+        themeId: context.theme.id,
+        message: "Published Theme Source",
+      },
+    });
+
+    if (!freezeResult.success || !freezeResult.data?.id) {
+      toast.error(
+        freezeResult.message || "Failed to snapshot source files before publish",
+      );
+      return;
+    }
+
+    await publishMutation.mutateAsync({
+      sourceRevisionId: freezeResult.data.id,
+      expectedDraftRevisionId: activeTemplate.draftRevisionId ?? undefined,
+    });
   }, [
+    activeTemplate,
+    context.storefront.id,
+    context.theme.id,
     handleUnifiedSaveFile,
     monacoDirtyFiles,
     publishMutation,

@@ -221,4 +221,79 @@ describe("storefront theme DAL", () => {
       "11111111-1111-4111-8111-111111111111",
     );
   });
+
+  it("publishes explicit source revision snapshot and binds it to published_source_revision_id", async () => {
+    const draftDocument = JSON.stringify({
+      version: 1,
+      sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
+    });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+         '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '${draftDocument.replaceAll("'", "''")}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1,
+         'Frozen checkpoint', 'publish', '[]', 'now', 'now');
+    `);
+
+    const res = await storefrontThemeDal.publishTemplate({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+    });
+
+    expect(res).toEqual({
+      revisionId: "11111111-1111-4111-8111-111111111111",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      unchanged: false,
+    });
+
+    const theme = sqlite
+      .prepare(
+        "SELECT published_source_revision_id FROM storefront_themes WHERE id = ?",
+      )
+      .get("theme-a") as { published_source_revision_id: string | null };
+    expect(theme.published_source_revision_id).toBe(
+      "22222222-2222-4222-8222-222222222222",
+    );
+  });
+
+  it("aborts and throws when CAS guard fails on invalid source revision", async () => {
+    const draftDocument = JSON.stringify({
+      version: 1,
+      sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
+    });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+         '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '${draftDocument.replaceAll("'", "''")}', 'now');
+    `);
+
+    // Non-existent sourceRevisionId should fail the CAS guard (json('') in SQLite)
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+        sourceRevisionId: "99999999-9999-4999-8999-999999999999",
+      }),
+    ).rejects.toThrow();
+  });
 });
