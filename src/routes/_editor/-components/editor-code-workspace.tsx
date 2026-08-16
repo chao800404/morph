@@ -97,6 +97,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   ]);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({});
+  const [conflictFiles, setConflictFiles] = useState<Record<string, string>>({});
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
@@ -137,18 +138,34 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
   }, [jumpLocation]);
 
-  // Initialize file contents map from incoming files
+  // Synchronize external file updates (Design Inspector AST patches, server queries, AI)
   useEffect(() => {
-    const contents: Record<string, string> = {};
-    for (const f of files) {
-      if (!(f.path in fileContents)) {
-        contents[f.path] = f.content;
+    setFileContents((prev) => {
+      let changed = false;
+      const next = { ...prev };
+
+      for (const f of files) {
+        if (!(f.path in next)) {
+          // 1. Initial file load
+          next[f.path] = f.content;
+          changed = true;
+        } else if (!dirtyFiles[f.path]) {
+          // 2. Clean file: seamlessly sync external updates from Design / AST
+          if (next[f.path] !== f.content) {
+            next[f.path] = f.content;
+            changed = true;
+          }
+        } else {
+          // 3. Dirty file: external content changed while user has uncommitted edits in Monaco
+          if (next[f.path] !== f.content) {
+            setConflictFiles((c) => ({ ...c, [f.path]: f.content }));
+          }
+        }
       }
-    }
-    if (Object.keys(contents).length > 0) {
-      setFileContents((prev) => ({ ...contents, ...prev }));
-    }
-  }, [files, fileContents]);
+
+      return changed ? next : prev;
+    });
+  }, [files, dirtyFiles]);
 
   const activeFile = useMemo(() => {
     return files.find((f) => f.path === activeFilePath);
@@ -438,6 +455,57 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             </Button>
           </div>
         </div>
+
+        {/* Conflict Resolution Banner */}
+        {conflictFiles[activeFilePath] ? (
+          <div className="flex items-center justify-between border-b bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">Conflict:</span>
+              <span>
+                This file was modified externally (Design / AI). Your local editor has unsaved changes.
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="xs"
+                className="h-6 text-[11px] bg-background"
+                onClick={() => {
+                  const external = conflictFiles[activeFilePath];
+                  setFileContents((prev) => ({
+                    ...prev,
+                    [activeFilePath]: external,
+                  }));
+                  setDirtyFiles((prev) => ({
+                    ...prev,
+                    [activeFilePath]: false,
+                  }));
+                  setConflictFiles((prev) => {
+                    const next = { ...prev };
+                    delete next[activeFilePath];
+                    return next;
+                  });
+                }}
+              >
+                Reload External
+              </Button>
+              <Button
+                variant="ghost"
+                size="xs"
+                className="h-6 text-[11px]"
+                onClick={() => {
+                  setConflictFiles((prev) => {
+                    const next = { ...prev };
+                    delete next[activeFilePath];
+                    return next;
+                  });
+                }}
+              >
+                Keep Local
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         {/* Monaco Editor Container */}
         <div className="flex-1 min-h-0 relative">

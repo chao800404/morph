@@ -251,6 +251,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       sectionId: string | null;
       type: string;
       label: string;
+      elementKey: string | null;
+      fieldKey: string | null;
       field: string | null;
     };
 
@@ -322,14 +324,24 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         const sectionEl = morphEl.closest<HTMLElement>(
           "[data-storefront-section-id], [data-morph-section]",
         );
-        const morphField = morphEl.dataset.morphElement!;
+        const elementKey = morphEl.dataset.morphElement!;
+        const fieldKey =
+          morphEl.dataset.storefrontField ??
+          (elementKey === "action"
+            ? "actionLabel"
+            : elementKey === "image"
+              ? "imageSrc"
+              : elementKey);
+
         return {
           element: morphEl,
           section: sectionEl,
           sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
-          type: morphField,
-          label: morphField.charAt(0).toUpperCase() + morphField.slice(1),
-          field: morphField,
+          type: elementKey,
+          label: elementKey.charAt(0).toUpperCase() + elementKey.slice(1),
+          elementKey,
+          fieldKey,
+          field: fieldKey,
         };
       }
 
@@ -344,13 +356,26 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         const compType =
           componentEl.dataset.storefrontComponent ??
           componentEl.tagName.toLowerCase();
+        const fieldKey = componentEl.dataset.storefrontField ?? null;
+        const elementKey =
+          componentEl.dataset.morphElement ??
+          (compType === "heading" ||
+          compType === "eyebrow" ||
+          compType === "description" ||
+          compType === "action" ||
+          compType === "image"
+            ? compType
+            : null);
+
         return {
           element: componentEl,
           section: sectionEl,
           sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
           type: compType,
           label: getComponentDisplayName(compType),
-          field: componentEl.dataset.storefrontField ?? null,
+          elementKey,
+          fieldKey,
+          field: fieldKey ?? elementKey,
         };
       }
 
@@ -368,12 +393,20 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           : tag === "img"
             ? "image"
             : tag === "a" || tag === "button"
-              ? "button"
+              ? "action"
               : tag === "p"
-                ? "body"
+                ? "description"
                 : tag === "article"
                   ? "card"
                   : tag;
+
+        const fieldKey =
+          elementEl.dataset.storefrontField ??
+          (compType === "action"
+            ? "actionLabel"
+            : compType === "image"
+              ? "imageSrc"
+              : compType);
 
         return {
           element: elementEl,
@@ -381,7 +414,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
           type: compType,
           label: getComponentDisplayName(compType),
-          field: elementEl.dataset.storefrontField ?? null,
+          elementKey: compType,
+          fieldKey,
+          field: fieldKey,
         };
       }
 
@@ -397,6 +432,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           sectionId: section.dataset.storefrontSectionId ?? null,
           type: secType,
           label: getComponentDisplayName(secType),
+          elementKey: null,
+          fieldKey: null,
           field: null,
         };
       }
@@ -556,7 +593,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             type: "morph:storefront-preview-select-section",
             sectionId: selectable.sectionId,
             componentType: selectable.type,
-            field: selectable.field,
+            elementKey: selectable.elementKey,
+            fieldKey: selectable.fieldKey,
+            field: selectable.fieldKey ?? selectable.elementKey,
           },
           window.location.origin,
         );

@@ -554,9 +554,8 @@ export function VisualEditorShell({
     [],
   );
 
-  const [activeSelectedField, setActiveSelectedField] = useState<
-    string | null
-  >(null);
+  const [activeElementKey, setActiveElementKey] = useState<string | null>(null);
+  const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -593,20 +592,44 @@ export function VisualEditorShell({
     },
   });
 
+  const sourceCodeBufferRef = useRef<Map<string, string>>(new Map());
+  const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+
+  // Sync buffer from themeFiles query
+  useEffect(() => {
+    for (const f of themeFiles) {
+      if (!sourceCodeBufferRef.current.has(f.path)) {
+        sourceCodeBufferRef.current.set(f.path, f.content);
+      }
+    }
+  }, [themeFiles]);
+
   const handleUpdateThemeFileStyle = useCallback(
     (
       filePath: string,
       elementName: string,
       updater: (prevClasses: string) => string,
     ) => {
-      const file = themeFiles.find((f) => f.path === filePath);
-      if (!file) return;
+      const currentSource =
+        sourceCodeBufferRef.current.get(filePath) ??
+        themeFiles.find((f) => f.path === filePath)?.content;
+      if (!currentSource) return;
 
-      const updatedContent = patchElementClassName(file.content, elementName, updater);
-      if (updatedContent !== file.content) {
-        // Optimistic query cache update
+      const updatedContent = patchElementClassName(
+        currentSource,
+        elementName,
+        updater,
+      );
+      if (updatedContent !== currentSource) {
+        // 1. Immediately update in-memory buffer
+        sourceCodeBufferRef.current.set(filePath, updatedContent);
+
+        // 2. Optimistically update TanStack Query cache for instant Monaco/UI sync
         queryClient.setQueryData(
-          storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id).queryKey,
+          storefrontThemeFileQueries.tree(
+            context.storefront.id,
+            context.theme.id,
+          ).queryKey,
           (old: any) => {
             if (!old?.files) return old;
             return {
@@ -618,10 +641,32 @@ export function VisualEditorShell({
           },
         );
 
-        saveThemeFileMutation.mutate({ path: filePath, content: updatedContent });
+        // 3. Debounce network persistence to D1 (400ms)
+        const existingTimer = pendingSaveTimersRef.current.get(filePath);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+        }
+
+        const timer = setTimeout(() => {
+          const latestContent =
+            sourceCodeBufferRef.current.get(filePath) ?? updatedContent;
+          saveThemeFileMutation.mutate({
+            path: filePath,
+            content: latestContent,
+          });
+          pendingSaveTimersRef.current.delete(filePath);
+        }, 400);
+
+        pendingSaveTimersRef.current.set(filePath, timer);
       }
     },
-    [themeFiles, saveThemeFileMutation, context.storefront.id, context.theme.id, queryClient],
+    [
+      themeFiles,
+      saveThemeFileMutation,
+      context.storefront.id,
+      context.theme.id,
+      queryClient,
+    ],
   );
 
   const normalWidthSessionKey = activeTemplate
@@ -855,11 +900,18 @@ export function VisualEditorShell({
         return;
       }
       const sectionId = message.sectionId;
-      const field =
-        "field" in message && typeof message.field === "string"
-          ? message.field
+      const elementKey =
+        "elementKey" in message && typeof message.elementKey === "string"
+          ? message.elementKey
           : null;
-      setActiveSelectedField(field);
+      const fieldKey =
+        "fieldKey" in message && typeof message.fieldKey === "string"
+          ? message.fieldKey
+          : "field" in message && typeof message.field === "string"
+            ? message.field
+            : null;
+      setActiveElementKey(elementKey);
+      setActiveFieldKey(fieldKey);
 
       onSearchChange({ section: sectionId });
     };
@@ -2176,7 +2228,8 @@ export function VisualEditorShell({
           onSelectCommentThread={handleSelectCommentThread}
           previewWidth={previewWidth}
           themeFiles={themeFiles}
-          activeSelectedField={activeSelectedField}
+          activeElementKey={activeElementKey}
+          activeFieldKey={activeFieldKey}
           onUpdateThemeFileStyle={handleUpdateThemeFileStyle}
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}

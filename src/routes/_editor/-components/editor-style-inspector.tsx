@@ -42,7 +42,8 @@ type EditorSection =
 type EditorStyleInspectorProps = {
   section: EditorSection;
   themeFiles?: StorefrontThemeFileDTO[];
-  activeSelectedField?: string | null;
+  activeElementKey?: string | null;
+  activeFieldKey?: string | null;
   onUpdateThemeFileStyle?: (
     filePath: string,
     elementName: string,
@@ -68,7 +69,8 @@ const THEME_PALETTE_COLORS = [
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   themeFiles,
-  activeSelectedField,
+  activeElementKey,
+  activeFieldKey: _activeFieldKey,
   onUpdateThemeFileStyle,
   onPropsChange,
   onToggleEnabled,
@@ -98,7 +100,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   }, [section.id]);
 
   const componentPath = getComponentFilePath(section.type);
-  const targetElement = activeSelectedField || "heading";
+  const targetElement = activeElementKey || "heading";
   const props = localProps;
 
   const handleFieldChange = useCallback(
