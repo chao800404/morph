@@ -260,9 +260,44 @@ export const storefrontThemeBuildDal = {
   },
 
   /**
+   * Finds the latest build for a specific revision (and optionally filtered by status).
+   */
+  async findLatestBuildByRevision(
+    storefrontId: string,
+    themeId: string,
+    sourceRevisionId: string,
+    options?: { status?: (typeof storefrontThemeBuilds.$inferSelect)["status"] },
+  ): Promise<StorefrontThemeBuildDTO | null> {
+    const isOwner = await this.verifyThemeOwnership(storefrontId, themeId);
+    if (!isOwner) return null;
+
+    const db = await getDb();
+    const conditions = [
+      eq(storefrontThemeBuilds.storefrontId, storefrontId),
+      eq(storefrontThemeBuilds.themeId, themeId),
+      eq(storefrontThemeBuilds.sourceRevisionId, sourceRevisionId),
+      isNull(storefrontThemeBuilds.deletedAt),
+    ];
+
+    if (options?.status) {
+      conditions.push(eq(storefrontThemeBuilds.status, options.status));
+    }
+
+    const [row] = await db
+      .select()
+      .from(storefrontThemeBuilds)
+      .where(and(...conditions))
+      .orderBy(desc(storefrontThemeBuilds.createdAt))
+      .limit(1);
+
+    return row ? mapBuildRowToDTO(row) : null;
+  },
+
+  /**
    * State Transition: queued -> building with atomic compiler/input identity freeze.
    * Throws INVALID_STATE_TRANSITION if current status is not "queued".
    */
+
   async markBuildStarted(
     storefrontId: string,
     themeId: string,

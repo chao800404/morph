@@ -1,5 +1,5 @@
 import { failure, ok } from "@/lib/db/server-result";
-import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
+import { themeBuildService } from "@/lib/storefront/service/theme-build.service";
 import {
   createStorefrontThemeBuildInputSchema,
   getStorefrontThemeBuildInputSchema,
@@ -15,14 +15,12 @@ export const createPreviewBuild = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const build = await storefrontThemeBuildDal.createBuild(
-        data.storefrontId,
-        data.themeId,
-        {
-          sourceRevisionId: data.sourceRevisionId,
-          createdBy: context.session?.user?.id,
-        },
-      );
+      const build = await themeBuildService.requestPreviewBuild({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        sourceRevisionId: data.sourceRevisionId,
+        createdBy: context.session?.user?.id,
+      });
       return ok("Theme build created", build);
     } catch (error) {
       return failure(
@@ -39,11 +37,11 @@ export const getThemeBuild = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const build = await storefrontThemeBuildDal.getBuild(
-        data.storefrontId,
-        data.themeId,
-        data.buildId,
-      );
+      const build = await themeBuildService.getThemeBuild({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        buildId: data.buildId,
+      });
       if (!build) {
         return failure(
           "Get theme build error",
@@ -68,14 +66,12 @@ export const listThemeBuilds = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const builds = await storefrontThemeBuildDal.listBuilds(
-        data.storefrontId,
-        data.themeId,
-        {
-          limit: data.limit,
-          offset: data.offset,
-        },
-      );
+      const builds = await themeBuildService.listThemeBuilds({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        limit: data.limit,
+        offset: data.offset,
+      });
       return ok("Theme builds listed", builds);
     } catch (error) {
       return failure(
