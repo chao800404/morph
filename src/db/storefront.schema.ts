@@ -416,4 +416,57 @@ export const storefrontThemeRevisions = sqliteTable(
   ],
 );
 
+export type StorefrontThemeBuildStatus =
+  | "queued"
+  | "building"
+  | "succeeded"
+  | "failed";
+
+/** Build execution record permanently bound to an immutable source revision. */
+export const storefrontThemeBuilds = sqliteTable(
+  "storefront_theme_builds",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    sourceRevisionId: text("source_revision_id")
+      .notNull()
+      .references(() => storefrontThemeRevisions.id, { onDelete: "cascade" }),
+    status: text("status")
+      .$type<StorefrontThemeBuildStatus>()
+      .notNull()
+      .default("queued"),
+    inputHash: text("input_hash"),
+    compilerId: text("compiler_id"),
+    compilerVersion: text("compiler_version"),
+    artifactPrefix: text("artifact_prefix"),
+    manifestJson: text("manifest_json", { mode: "json" }),
+    diagnosticsJson: text("diagnostics_json", { mode: "json" }),
+    errorMessage: text("error_message"),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    createdBy: text("created_by"),
+    ...timestamps,
+  },
+  (table) => [
+    index("storefront_theme_builds_theme_idx").on(
+      table.themeId,
+      table.deletedAt,
+    ),
+    index("storefront_theme_builds_revision_idx").on(
+      table.sourceRevisionId,
+      table.deletedAt,
+    ),
+    index("storefront_theme_builds_status_idx").on(
+      table.status,
+      table.deletedAt,
+    ),
+  ],
+);
+
+
 
