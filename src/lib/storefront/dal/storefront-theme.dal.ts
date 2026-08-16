@@ -13,12 +13,17 @@ import { and, asc, eq, isNull, max } from "drizzle-orm";
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export const SECTION_CONTENT_MANIFESTS: Record<
+export interface ComponentContentManifest {
+  allowedContentFields: Set<string>;
+}
+
+export const COMPONENT_CONTENT_MANIFESTS: Record<
   string,
-  { allowedFields: Set<string> }
+  ComponentContentManifest
 > = {
-  hero: {
-    allowedFields: new Set([
+  // Hero components
+  "hero.default": {
+    allowedContentFields: new Set([
       "heading",
       "subheading",
       "description",
@@ -37,8 +42,64 @@ export const SECTION_CONTENT_MANIFESTS: Record<
       "backgroundMedia",
     ]),
   },
-  header: {
-    allowedFields: new Set([
+  "hero.split": {
+    allowedContentFields: new Set([
+      "heading",
+      "subheading",
+      "description",
+      "title",
+      "subtitle",
+      "badge",
+      "badgeText",
+      "actionLabel",
+      "actionHref",
+      "secondaryActionLabel",
+      "secondaryActionHref",
+      "imageSrc",
+      "imageAlt",
+    ]),
+  },
+  "hero.minimal": {
+    allowedContentFields: new Set([
+      "heading",
+      "subheading",
+      "title",
+      "subtitle",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+  "hero.video": {
+    allowedContentFields: new Set([
+      "heading",
+      "subheading",
+      "description",
+      "title",
+      "subtitle",
+      "videoSrc",
+      "posterSrc",
+      "autoplay",
+      "loop",
+      "muted",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+  "hero.3d": {
+    allowedContentFields: new Set([
+      "heading",
+      "subheading",
+      "description",
+      "modelSrc",
+      "environmentSrc",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+
+  // Header components
+  "header.default": {
+    allowedContentFields: new Set([
       "logoText",
       "logoSrc",
       "logoAlt",
@@ -49,8 +110,29 @@ export const SECTION_CONTENT_MANIFESTS: Record<
       "announcementText",
     ]),
   },
-  footer: {
-    allowedFields: new Set([
+  "header.minimal": {
+    allowedContentFields: new Set([
+      "logoText",
+      "logoSrc",
+      "navItems",
+      "showCart",
+    ]),
+  },
+  "header.centered": {
+    allowedContentFields: new Set([
+      "logoText",
+      "logoSrc",
+      "logoAlt",
+      "navItems",
+      "menuItems",
+      "showCart",
+      "showSearch",
+    ]),
+  },
+
+  // Footer components
+  "footer.default": {
+    allowedContentFields: new Set([
       "copyrightText",
       "brandText",
       "columns",
@@ -59,8 +141,29 @@ export const SECTION_CONTENT_MANIFESTS: Record<
       "showNewsletter",
     ]),
   },
-  "featured-products": {
-    allowedFields: new Set([
+  "footer.minimal": {
+    allowedContentFields: new Set([
+      "copyrightText",
+      "brandText",
+      "links",
+    ]),
+  },
+  "footer.multi-column": {
+    allowedContentFields: new Set([
+      "copyrightText",
+      "brandText",
+      "columns",
+      "links",
+      "socialLinks",
+      "showNewsletter",
+      "newsletterHeading",
+      "newsletterPlaceholder",
+    ]),
+  },
+
+  // Products
+  "featured-products.default": {
+    allowedContentFields: new Set([
       "title",
       "subtitle",
       "collectionId",
@@ -71,49 +174,151 @@ export const SECTION_CONTENT_MANIFESTS: Record<
       "actionHref",
     ]),
   },
-  "product-detail": {
-    allowedFields: new Set([
+  "featured-products.carousel": {
+    allowedContentFields: new Set([
+      "title",
+      "subtitle",
+      "collectionId",
+      "productLimit",
+      "autoPlay",
+      "showPrice",
+    ]),
+  },
+  "featured-products.grid": {
+    allowedContentFields: new Set([
+      "title",
+      "subtitle",
+      "collectionId",
+      "productLimit",
+      "columns",
+      "showPrice",
+    ]),
+  },
+  "product-detail.default": {
+    allowedContentFields: new Set([
       "showVendor",
       "showSku",
       "showShare",
       "galleryPosition",
     ]),
   },
+  "product-detail.gallery": {
+    allowedContentFields: new Set([
+      "showVendor",
+      "showSku",
+      "showShare",
+      "layout",
+      "thumbnailPosition",
+    ]),
+  },
+  "product-grid.default": {
+    allowedContentFields: new Set([
+      "title",
+      "collectionId",
+      "itemsPerPage",
+      "columns",
+      "showFilters",
+      "showSort",
+    ]),
+  },
+
+  // Content / Banners / Showcase
+  "banner.default": {
+    allowedContentFields: new Set([
+      "heading",
+      "description",
+      "imageSrc",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+  "banner.announcement": {
+    allowedContentFields: new Set([
+      "text",
+      "linkHref",
+      "linkLabel",
+      "dismissible",
+    ]),
+  },
+  "newsletter.default": {
+    allowedContentFields: new Set([
+      "heading",
+      "subheading",
+      "description",
+      "buttonText",
+      "placeholder",
+    ]),
+  },
+  "rich-text.default": {
+    allowedContentFields: new Set([
+      "heading",
+      "body",
+      "content",
+      "html",
+    ]),
+  },
+  "showcase.default": {
+    allowedContentFields: new Set([
+      "title",
+      "subtitle",
+      "description",
+      "items",
+      "imageSrc",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+  "showcase.immersive": {
+    allowedContentFields: new Set([
+      "title",
+      "subtitle",
+      "description",
+      "items",
+      "mediaSrc",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
 };
 
-export const FORBIDDEN_PRESENTATION_KEYS = new Set([
-  "backgroundColor", "bgColor", "textColor", "color", "textAlign",
-  "fontFamily", "fontWeight", "lineHeight", "fontSize", "letterSpacing",
-  "borderRadius", "padding", "paddingTop", "paddingBottom", "paddingLeft", "paddingRight",
-  "paddingX", "paddingY", "margin", "marginTop", "marginBottom", "marginLeft", "marginRight",
-  "marginX", "marginY", "gap", "opacity", "shadow", "boxShadow", "border", "borderColor",
-  "borderWidth", "borderStyle", "className", "classes", "customClass", "style", "css",
-  "customCss", "styles",
-]);
+export const SECTION_TYPE_DEFAULT_MANIFESTS: Record<string, string> = {
+  hero: "hero.default",
+  header: "header.default",
+  footer: "footer.default",
+  "featured-products": "featured-products.default",
+  "product-detail": "product-detail.default",
+  "product-grid": "product-grid.default",
+  banner: "banner.default",
+  newsletter: "newsletter.default",
+  "rich-text": "rich-text.default",
+  showcase: "showcase.default",
+};
 
 export function filterSectionContentProps(
   sectionType: string,
   rawProps: Record<string, unknown>,
+  componentRef?: string | null,
 ): Record<string, unknown> {
-  const manifest = SECTION_CONTENT_MANIFESTS[sectionType];
+  const manifestKey =
+    componentRef && COMPONENT_CONTENT_MANIFESTS[componentRef]
+      ? componentRef
+      : SECTION_TYPE_DEFAULT_MANIFESTS[sectionType];
+
+  const manifest = manifestKey ? COMPONENT_CONTENT_MANIFESTS[manifestKey] : null;
+
   if (manifest) {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(rawProps)) {
-      if (manifest.allowedFields.has(k)) {
+      if (manifest.allowedContentFields.has(k)) {
         result[k] = v;
       }
     }
     return result;
   }
 
-  // Fallback for custom / dynamic components: strictly strip presentation keys
-  const result: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(rawProps)) {
-    if (!FORBIDDEN_PRESENTATION_KEYS.has(k)) {
-      result[k] = v;
-    }
-  }
-  return result;
+  // Unknown componentRef / sectionType: strictly reject writable content fields (empty object)
+  // Presentation & layout styling MUST live exclusively in Theme Source TSX/AST!
+  return {};
 }
 
 function prepareTemplateDraftCASGuard(args: {
@@ -434,10 +639,12 @@ export const storefrontThemeDal = {
     const cleanIncomingProps = filterSectionContentProps(
       targetSection.type,
       restProps,
+      targetSection.componentRef,
     );
     const cleanExistingProps = filterSectionContentProps(
       targetSection.type,
       (targetSection.props as Record<string, unknown>) ?? {},
+      targetSection.componentRef,
     );
 
     const document = storefrontPageDocumentSchema.parse({

@@ -801,15 +801,16 @@ export function VisualEditorShell({
 
   const saveThemeFileSequentially = useCallback(
     async (filePath: string, contentToSave: string, targetRevision: number) => {
-      const opKey = getScopedOpKey(filePath);
+      const fileOpKey = getScopedOpKey(filePath);
+      const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
       const previousPromise =
-        saveQueueRef.current.get(opKey) ?? Promise.resolve();
+        saveQueueRef.current.get(themeOpKey) ?? Promise.resolve();
 
       const nextPromise = previousPromise
         .catch(() => {})
         .then(async () => {
           const latestQueuedRevision =
-            fileRevisionRef.current.get(opKey) ?? 0;
+            fileRevisionRef.current.get(fileOpKey) ?? 0;
           if (targetRevision < latestQueuedRevision) return null;
 
           const current = useThemeWorkspaceStore
@@ -824,6 +825,10 @@ export function VisualEditorShell({
           markWorkspaceSaving(filePath, workspaceScope);
 
           try {
+            const acceptedGeneration = useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope);
+
             const res = await saveStorefrontThemeFile({
               data: {
                 storefrontId: context.storefront.id,
@@ -837,14 +842,28 @@ export function VisualEditorShell({
                   ? current.serverVersion ?? undefined
                   : undefined,
                 expectMissing: !current.serverExists,
-                expectedSourceGeneration: useThemeWorkspaceStore
-                  .getState()
-                  .getAcceptedSourceGeneration(workspaceScope),
+                expectedSourceGeneration: acceptedGeneration,
               },
             });
 
             if (!res.success) {
-              if (res.error === "VERSION_CONFLICT") {
+              if (res.error === "SOURCE_GENERATION_CONFLICT") {
+                await queryClient.invalidateQueries({
+                  queryKey: storefrontThemeFileQueries.tree(
+                    context.storefront.id,
+                    context.theme.id,
+                  ).queryKey,
+                });
+                toast.error(
+                  "Remote source changes detected in this theme. Please review/accept remote changes before saving.",
+                );
+                throw new Error("Remote theme source was modified concurrently.");
+              }
+
+              if (
+                res.error === "FILE_VERSION_CONFLICT" ||
+                res.error === "VERSION_CONFLICT"
+              ) {
                 const latestRes = await getStorefrontThemeFile({
                   data: {
                     storefrontId: context.storefront.id,
@@ -922,7 +941,7 @@ export function VisualEditorShell({
           }
         });
 
-      saveQueueRef.current.set(opKey, nextPromise);
+      saveQueueRef.current.set(themeOpKey, nextPromise);
       return nextPromise;
     },
     [

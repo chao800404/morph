@@ -209,6 +209,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             ? state.serverVersion ?? undefined
             : undefined,
           expectMissing: state ? !state.serverExists : true,
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
         },
       });
       if (!res.success) throw new Error(res.message);

@@ -424,4 +424,86 @@ describe("storefront theme DAL", () => {
     expect(heroProps.backgroundColor).toBeUndefined();
     expect(heroProps.className).toBeUndefined();
   });
+
+  it("supports componentRef manifest (e.g. hero.video) and allows variant-specific content fields", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-video', 'theme-a', 'index', 'Home', '{"version":1,"sections":[{"id":"hero-vid","type":"hero","componentRef":"hero.video","enabled":true,"props":{"heading":"Watch Video"}}]}',
+         '22222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'template-video', 1,
+         '{"version":1,"sections":[{"id":"hero-vid","type":"hero","componentRef":"hero.video","enabled":true,"props":{"heading":"Watch Video"}}]}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-video",
+      sectionId: "hero-vid",
+      props: {
+        heading: "Hero Video Title",
+        videoSrc: "https://example.com/video.mp4",
+        posterSrc: "https://example.com/poster.jpg",
+        autoplay: true,
+        animation: "slide-up",
+        fontSize: 48,
+        width: 1200,
+      },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result).not.toBeNull();
+    const props = result?.document.sections[0].props as any;
+    // Allowed video content fields
+    expect(props.heading).toBe("Hero Video Title");
+    expect(props.videoSrc).toBe("https://example.com/video.mp4");
+    expect(props.posterSrc).toBe("https://example.com/poster.jpg");
+    expect(props.autoplay).toBe(true);
+    // Presentation styling props must be stripped
+    expect(props.animation).toBeUndefined();
+    expect(props.fontSize).toBeUndefined();
+    expect(props.width).toBeUndefined();
+  });
+
+  it("strictly rejects styling/presentation props on unknown componentRef", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-unknown', 'theme-a', 'index', 'Home', '{"version":1,"sections":[{"id":"custom-1","type":"custom","componentRef":"custom.experimental","enabled":true,"props":{}}]}',
+         '33333333-3333-4333-8333-333333333333', '33333333-3333-4333-8333-333333333333', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('33333333-3333-4333-8333-333333333333', 'template-unknown', 1,
+         '{"version":1,"sections":[{"id":"custom-1","type":"custom","componentRef":"custom.experimental","enabled":true,"props":{}}]}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-unknown",
+      sectionId: "custom-1",
+      props: {
+        width: 1200,
+        height: 800,
+        position: "absolute",
+        transform: "scale(1.2)",
+        gridTemplateColumns: "1fr 1fr",
+        animation: "fade-in",
+      },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result).not.toBeNull();
+    const props = result?.document.sections[0].props as any;
+    // Unknown componentRef must not accept arbitrary presentation props into D1
+    expect(Object.keys(props)).toHaveLength(0);
+  });
 });

@@ -533,6 +533,17 @@ export const storefrontThemeFileDal = {
         message.includes("constraint") ||
         message.includes("UNIQUE")
       ) {
+        if (options?.expectedSourceGeneration !== undefined) {
+          const currentGen = await this.getSourceGeneration(storefrontId, themeId);
+          if (
+            currentGen !== null &&
+            currentGen !== options.expectedSourceGeneration
+          ) {
+            throw new Error(
+              `CONFLICT_SOURCE_GENERATION_MISMATCH: Server source generation is ${currentGen}, but expected ${options.expectedSourceGeneration}.`,
+            );
+          }
+        }
         throw new Error(
           `CONFLICT_VERSION_MISMATCH: batch precondition failed. ${message}`,
         );
@@ -613,6 +624,17 @@ export const storefrontThemeFileDal = {
         message.includes("malformed JSON") ||
         message.includes("constraint")
       ) {
+        if (options?.expectedSourceGeneration !== undefined) {
+          const currentGen = await this.getSourceGeneration(storefrontId, themeId);
+          if (
+            currentGen !== null &&
+            currentGen !== options.expectedSourceGeneration
+          ) {
+            throw new Error(
+              `CONFLICT_SOURCE_GENERATION_MISMATCH: Server source generation is ${currentGen}, but expected ${options.expectedSourceGeneration}.`,
+            );
+          }
+        }
         throw new Error(
           `CONFLICT_VERSION_MISMATCH: "${path}" changed, was deleted, or was replaced.`,
         );

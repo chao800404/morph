@@ -191,7 +191,7 @@ describe("storefront theme file DAL", () => {
     ).rejects.toThrow("CONFLICT_SOURCE_GENERATION_MISMATCH");
   });
 
-  it("rejects saveFilesBatch when expectedSourceGeneration does not match server", async () => {
+  it("rejects saveFilesBatch with CONFLICT_SOURCE_GENERATION_MISMATCH when expectedSourceGeneration does not match server", async () => {
     // Server generation is 1. Client attempts to save expecting 99
     await expect(
       storefrontThemeFileDal.saveFilesBatch(
@@ -205,6 +205,39 @@ describe("storefront theme file DAL", () => {
           },
         ],
         { expectedSourceGeneration: 99 },
+      ),
+    ).rejects.toThrow("CONFLICT_SOURCE_GENERATION_MISMATCH");
+  });
+
+  it("rejects saveFilesBatch with CONFLICT_VERSION_MISMATCH when file version mismatches but generation matches", async () => {
+    // Save file at gen 1 -> gen becomes 2, file version becomes 1
+    const [file] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/pages/index.tsx",
+          content: "initial content",
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+
+    // Attempt to update with wrong expectedVersion (e.g. 99) while expectedSourceGeneration is 2
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/pages/index.tsx",
+            content: "new content",
+            expectedFileId: file.id,
+            expectedVersion: 99,
+          },
+        ],
+        { expectedSourceGeneration: 2 },
       ),
     ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
   });

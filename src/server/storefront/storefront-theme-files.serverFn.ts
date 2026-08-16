@@ -121,11 +121,25 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
     } catch (error) {
       if (
         error instanceof Error &&
+        error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+      ) {
+        const latestGen = await storefrontThemeFileDal.getSourceGeneration(
+          data.storefrontId,
+          data.themeId,
+        );
+        return fail(
+          `Remote source changes detected (current generation: ${latestGen ?? "unknown"}): the theme working source was updated by another operation.`,
+          { error: "SOURCE_GENERATION_CONFLICT" },
+        );
+      }
+
+      if (
+        error instanceof Error &&
         error.message.includes("CONFLICT_VERSION_MISMATCH")
       ) {
         return fail(
           "Version conflict detected: file was modified by another operation.",
-          { error: "VERSION_CONFLICT" },
+          { error: "FILE_VERSION_CONFLICT" },
         );
       }
 
@@ -161,11 +175,25 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
     } catch (error) {
       if (
         error instanceof Error &&
+        error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+      ) {
+        const latestGen = await storefrontThemeFileDal.getSourceGeneration(
+          data.storefrontId,
+          data.themeId,
+        );
+        return fail(
+          `Remote source changes detected in batch (current generation: ${latestGen ?? "unknown"}): the theme working source was updated by another operation.`,
+          { error: "SOURCE_GENERATION_CONFLICT" },
+        );
+      }
+
+      if (
+        error instanceof Error &&
         error.message.includes("CONFLICT_VERSION_MISMATCH")
       ) {
         return fail(
           "Version conflict detected in batch: one or more files were modified concurrently.",
-          { error: "VERSION_CONFLICT" },
+          { error: "FILE_VERSION_CONFLICT" },
         );
       }
 
@@ -199,11 +227,25 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
     } catch (error) {
       if (
         error instanceof Error &&
+        error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+      ) {
+        const latestGen = await storefrontThemeFileDal.getSourceGeneration(
+          data.storefrontId,
+          data.themeId,
+        );
+        return fail(
+          `Remote source changes detected before delete (current generation: ${latestGen ?? "unknown"}): the theme working source was updated by another operation.`,
+          { error: "SOURCE_GENERATION_CONFLICT" },
+        );
+      }
+
+      if (
+        error instanceof Error &&
         error.message.includes("CONFLICT_VERSION_MISMATCH")
       ) {
         return fail(
           "Version conflict detected: file was modified or replaced before delete.",
-          { error: "VERSION_CONFLICT" },
+          { error: "FILE_VERSION_CONFLICT" },
         );
       }
       return failure(
