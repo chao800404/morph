@@ -279,4 +279,85 @@ describe("ThemeWorkspaceStore", () => {
         ?.localContent,
     ).toBe("remote update");
   });
+
+  it("markDirty preserves local dirty state on source generation conflict without marking as error", () => {
+    const scope = { storefrontId: "store-a", themeId: "theme-a" };
+    const store = useThemeWorkspaceStore.getState();
+
+    store.hydrateFromQuery(
+      "store-a",
+      "theme-a",
+      [
+        {
+          id: "f-hero",
+          storefrontId: "store-a",
+          themeId: "theme-a",
+          path: "src/components/Hero.tsx",
+          content: "export const Hero = () => <div>Original</div>;",
+          mimeType: "text/plain",
+          isEntry: false,
+          version: 1,
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      ],
+      10,
+    );
+
+    // User edits Hero locally
+    store.updateLocalContent(
+      "src/components/Hero.tsx",
+      "export const Hero = () => <div>My Dirty Hero</div>;",
+      scope,
+    );
+
+    // Marked as saving
+    store.markSaving("src/components/Hero.tsx", scope);
+    expect(
+      store.getWorkspaceFiles("store-a", "theme-a")["src/components/Hero.tsx"]?.saveState,
+    ).toBe("saving");
+
+    // Source generation conflict occurs (e.g. Footer was modified concurrently)
+    // Server rejects save with SOURCE_GENERATION_CONFLICT -> client calls markDirty
+    store.markDirty("src/components/Hero.tsx", scope);
+
+    const heroFile = store.getWorkspaceFiles("store-a", "theme-a")["src/components/Hero.tsx"];
+    expect(heroFile?.dirty).toBe(true);
+    expect(heroFile?.saveState).toBe("dirty");
+    expect(heroFile?.errorMessage).toBeUndefined();
+    expect(heroFile?.localContent).toBe("export const Hero = () => <div>My Dirty Hero</div>;");
+
+    // Remote query background refetch observes generation 11
+    store.hydrateFromQuery(
+      "store-a",
+      "theme-a",
+      [
+        {
+          id: "f-hero",
+          storefrontId: "store-a",
+          themeId: "theme-a",
+          path: "src/components/Hero.tsx",
+          content: "export const Hero = () => <div>Original</div>;",
+          mimeType: "text/plain",
+          isEntry: false,
+          version: 1,
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      ],
+      11,
+    );
+    expect(store.hasRemoteSourceChanged(scope)).toBe(true);
+
+    // User accepts remote generation
+    store.acceptRemoteGeneration(undefined, scope);
+    expect(store.getAcceptedSourceGeneration(scope)).toBe(11);
+    expect(store.hasRemoteSourceChanged(scope)).toBe(false);
+
+    // Hero is still dirty with user's edits intact ready for next save!
+    const heroAfterAccept = store.getWorkspaceFiles("store-a", "theme-a")["src/components/Hero.tsx"];
+    expect(heroAfterAccept?.dirty).toBe(true);
+    expect(heroAfterAccept?.saveState).toBe("dirty");
+    expect(heroAfterAccept?.localContent).toBe("export const Hero = () => <div>My Dirty Hero</div>;");
+  });
 });
