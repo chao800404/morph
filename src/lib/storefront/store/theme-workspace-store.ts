@@ -89,6 +89,7 @@ export interface ThemeWorkspaceStore {
   ) => void;
   markDebouncing: (path: string, scope?: WorkspaceScope) => void;
   markSaving: (path: string, scope?: WorkspaceScope) => void;
+  markDirty: (path: string, scope?: WorkspaceScope) => void;
   markSaved: (
     saved: StorefrontThemeFileDTO & { sourceGeneration?: number },
     scope?: WorkspaceScope,
@@ -497,6 +498,30 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         [path]: {
           ...current,
           saveState: "saving" as const,
+          errorMessage: undefined,
+        },
+      };
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key;
+      return {
+        workspaces: nextWorkspaces,
+        files: isActive ? next : state.files,
+      };
+    });
+  },
+
+  markDirty: (path, scope) => {
+    set((state) => {
+      const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+      const current = workspaceFiles[path];
+      if (!current) return state;
+
+      const next = {
+        ...workspaceFiles,
+        [path]: {
+          ...current,
+          dirty: true,
+          saveState: current.conflict ? ("conflict" as const) : ("dirty" as const),
           errorMessage: undefined,
         },
       };

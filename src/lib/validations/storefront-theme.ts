@@ -19,6 +19,7 @@ export const publishStorefrontThemeTemplateInputSchema =
     sourceRevisionId: z.string().uuid(),
     expectedDraftRevisionId: z.string().uuid(),
     expectedDraftGeneration: z.number().int().min(1),
+    expectedReleaseGeneration: z.number().int().min(1),
   });
 
 export const updateStorefrontThemeSectionPropsInputSchema =

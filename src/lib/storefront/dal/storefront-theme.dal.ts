@@ -24,6 +24,8 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
   // Hero components
   "hero.default": {
     allowedContentFields: new Set([
+      "eyebrow",
+      "label",
       "heading",
       "subheading",
       "description",
@@ -44,6 +46,8 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
   },
   "hero.split": {
     allowedContentFields: new Set([
+      "eyebrow",
+      "label",
       "heading",
       "subheading",
       "description",
@@ -61,6 +65,8 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
   },
   "hero.minimal": {
     allowedContentFields: new Set([
+      "eyebrow",
+      "label",
       "heading",
       "subheading",
       "title",
@@ -71,6 +77,8 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
   },
   "hero.video": {
     allowedContentFields: new Set([
+      "eyebrow",
+      "label",
       "heading",
       "subheading",
       "description",
@@ -87,6 +95,8 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
   },
   "hero.3d": {
     allowedContentFields: new Set([
+      "eyebrow",
+      "label",
       "heading",
       "subheading",
       "description",
@@ -97,12 +107,73 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     ]),
   },
 
+  // Editorial intro
+  "editorial-intro.default": {
+    allowedContentFields: new Set([
+      "label",
+      "eyebrow",
+      "heading",
+      "subheading",
+      "body",
+      "description",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+
+  // Category showcase
+  "category-showcase.default": {
+    allowedContentFields: new Set([
+      "label",
+      "eyebrow",
+      "heading",
+      "subheading",
+      "description",
+      "title",
+      "subtitle",
+      "categories",
+      "items",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+
+  // Image with text
+  "image-with-text.default": {
+    allowedContentFields: new Set([
+      "eyebrow",
+      "label",
+      "heading",
+      "subheading",
+      "body",
+      "description",
+      "imageSrc",
+      "imageAlt",
+      "imagePosition",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+
+  // Principles
+  "principles.default": {
+    allowedContentFields: new Set([
+      "label",
+      "eyebrow",
+      "heading",
+      "subheading",
+      "description",
+      "items",
+    ]),
+  },
+
   // Header components
   "header.default": {
     allowedContentFields: new Set([
       "logoText",
       "logoSrc",
       "logoAlt",
+      "storeName",
       "navItems",
       "menuItems",
       "showCart",
@@ -114,6 +185,7 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "logoText",
       "logoSrc",
+      "storeName",
       "navItems",
       "showCart",
     ]),
@@ -123,6 +195,7 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
       "logoText",
       "logoSrc",
       "logoAlt",
+      "storeName",
       "navItems",
       "menuItems",
       "showCart",
@@ -135,6 +208,7 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "copyrightText",
       "brandText",
+      "storeName",
       "columns",
       "links",
       "socialLinks",
@@ -145,6 +219,7 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "copyrightText",
       "brandText",
+      "storeName",
       "links",
     ]),
   },
@@ -152,6 +227,7 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "copyrightText",
       "brandText",
+      "storeName",
       "columns",
       "links",
       "socialLinks",
@@ -166,6 +242,8 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "title",
       "subtitle",
+      "heading",
+      "subheading",
       "collectionId",
       "productLimit",
       "columns",
@@ -178,6 +256,8 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "title",
       "subtitle",
+      "heading",
+      "subheading",
       "collectionId",
       "productLimit",
       "autoPlay",
@@ -188,6 +268,8 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "title",
       "subtitle",
+      "heading",
+      "subheading",
       "collectionId",
       "productLimit",
       "columns",
@@ -214,6 +296,7 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
   "product-grid.default": {
     allowedContentFields: new Set([
       "title",
+      "heading",
       "collectionId",
       "itemsPerPage",
       "columns",
@@ -222,12 +305,15 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     ]),
   },
 
-  // Content / Banners / Showcase
+  // Content / Banners / Showcase / Newsletter
   "banner.default": {
     allowedContentFields: new Set([
+      "eyebrow",
       "heading",
+      "subheading",
       "description",
       "imageSrc",
+      "imageAlt",
       "actionLabel",
       "actionHref",
     ]),
@@ -242,16 +328,24 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
   },
   "newsletter.default": {
     allowedContentFields: new Set([
+      "eyebrow",
+      "label",
       "heading",
       "subheading",
+      "body",
       "description",
       "buttonText",
+      "actionLabel",
       "placeholder",
+      "note",
+      "disclaimer",
     ]),
   },
   "rich-text.default": {
     allowedContentFields: new Set([
+      "eyebrow",
       "heading",
+      "subheading",
       "body",
       "content",
       "html",
@@ -261,9 +355,11 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "title",
       "subtitle",
+      "heading",
       "description",
       "items",
       "imageSrc",
+      "imageAlt",
       "actionLabel",
       "actionHref",
     ]),
@@ -272,6 +368,7 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
     allowedContentFields: new Set([
       "title",
       "subtitle",
+      "heading",
       "description",
       "items",
       "mediaSrc",
@@ -283,13 +380,17 @@ export const COMPONENT_CONTENT_MANIFESTS: Record<
 
 export const SECTION_TYPE_DEFAULT_MANIFESTS: Record<string, string> = {
   hero: "hero.default",
+  "editorial-intro": "editorial-intro.default",
+  "category-showcase": "category-showcase.default",
+  "image-with-text": "image-with-text.default",
+  principles: "principles.default",
+  newsletter: "newsletter.default",
   header: "header.default",
   footer: "footer.default",
   "featured-products": "featured-products.default",
   "product-detail": "product-detail.default",
   "product-grid": "product-grid.default",
   banner: "banner.default",
-  newsletter: "newsletter.default",
   "rich-text": "rich-text.default",
   showcase: "showcase.default",
 };
@@ -299,12 +400,25 @@ export function filterSectionContentProps(
   rawProps: Record<string, unknown>,
   componentRef?: string | null,
 ): Record<string, unknown> {
-  const manifestKey =
-    componentRef && COMPONENT_CONTENT_MANIFESTS[componentRef]
-      ? componentRef
-      : SECTION_TYPE_DEFAULT_MANIFESTS[sectionType];
+  // If componentRef is explicitly specified, check COMPONENT_CONTENT_MANIFESTS.
+  // If not found in manifest, return {} (strict reject, do not fall back to sectionType).
+  if (componentRef) {
+    const manifest = COMPONENT_CONTENT_MANIFESTS[componentRef];
+    if (!manifest) return {};
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(rawProps)) {
+      if (manifest.allowedContentFields.has(k)) {
+        result[k] = v;
+      }
+    }
+    return result;
+  }
 
-  const manifest = manifestKey ? COMPONENT_CONTENT_MANIFESTS[manifestKey] : null;
+  // If componentRef is omitted, fall back to SECTION_TYPE_DEFAULT_MANIFESTS[sectionType]
+  const defaultManifestKey = SECTION_TYPE_DEFAULT_MANIFESTS[sectionType];
+  const manifest = defaultManifestKey
+    ? COMPONENT_CONTENT_MANIFESTS[defaultManifestKey]
+    : null;
 
   if (manifest) {
     const result: Record<string, unknown> = {};
@@ -316,8 +430,7 @@ export function filterSectionContentProps(
     return result;
   }
 
-  // Unknown componentRef / sectionType: strictly reject writable content fields (empty object)
-  // Presentation & layout styling MUST live exclusively in Theme Source TSX/AST!
+  // Unknown sectionType: strict reject
   return {};
 }
 
@@ -367,6 +480,7 @@ export const storefrontThemeDal = {
         themeId: storefrontThemes.id,
         themeName: storefrontThemes.name,
         themeStatus: storefrontThemes.status,
+        themeReleaseGeneration: storefrontThemes.releaseGeneration,
       })
       .from(storefrontThemes)
       .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
@@ -459,6 +573,7 @@ export const storefrontThemeDal = {
         id: context.themeId,
         name: context.themeName,
         status: context.themeStatus,
+        releaseGeneration: context.themeReleaseGeneration ?? 1,
       },
       templates,
     };
@@ -789,6 +904,7 @@ export const storefrontThemeDal = {
     sourceRevisionId: string;
     expectedDraftRevisionId: string;
     expectedDraftGeneration: number;
+    expectedReleaseGeneration: number;
     createdBy?: string;
   }) {
     const db = await getDb();
@@ -798,6 +914,7 @@ export const storefrontThemeDal = {
         publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
         draftGeneration: storefrontThemeTemplates.draftGeneration,
         publishedSourceRevisionId: storefrontThemes.publishedSourceRevisionId,
+        releaseGeneration: storefrontThemes.releaseGeneration,
       })
       .from(storefrontThemeTemplates)
       .innerJoin(
@@ -855,13 +972,14 @@ export const storefrontThemeDal = {
             AND t.id = ?3
             AND t.draft_revision_id = ?4
             AND t.draft_generation = ?5
+            AND th.release_generation = ?6
             AND s.deleted_at IS NULL
             AND th.deleted_at IS NULL
             AND t.deleted_at IS NULL
         ) AND EXISTS (
           SELECT 1
           FROM storefront_theme_revisions r
-          WHERE r.id = ?6
+          WHERE r.id = ?7
             AND r.theme_id = ?2
             AND r.storefront_id = ?1
             AND r.deleted_at IS NULL
@@ -872,6 +990,7 @@ export const storefrontThemeDal = {
         data.templateId,
         data.expectedDraftRevisionId,
         data.expectedDraftGeneration,
+        data.expectedReleaseGeneration,
         data.sourceRevisionId,
       ),
     ];
@@ -905,7 +1024,7 @@ export const storefrontThemeDal = {
     statements.push(
       env.DATABASE.prepare(`
         UPDATE storefront_themes
-        SET published_source_revision_id = ?1, updated_at = ?2
+        SET published_source_revision_id = ?1, release_generation = release_generation + 1, updated_at = ?2
         WHERE id = ?3 AND storefront_id = ?4 AND deleted_at IS NULL
       `).bind(data.sourceRevisionId, now, data.themeId, data.storefrontId),
     );
@@ -915,7 +1034,7 @@ export const storefrontThemeDal = {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("malformed JSON") || message.includes("constraint")) {
-        throw new Error("CONFLICT_PUBLISH_GUARD_FAILED: Template or Source revision mismatch or concurrently modified.");
+        throw new Error("CONFLICT_PUBLISH_GUARD_FAILED: Template, Source revision, or Release generation mismatch or concurrently modified.");
       }
       throw error;
     }
@@ -926,6 +1045,7 @@ export const storefrontThemeDal = {
       draftGeneration: templateUnchanged
         ? (template.draftGeneration ?? 1)
         : (template.draftGeneration ?? 1) + 1,
+      releaseGeneration: (template.releaseGeneration ?? 1) + 1,
       templateUnchanged,
       sourceUnchanged,
       unchanged,

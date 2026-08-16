@@ -17,7 +17,8 @@ vi.mock("cloudflare:workers", () => ({
           return {
             run: () => {
               const stmt = sqlite.prepare(sql);
-              if (sql.trim().toUpperCase().startsWith("SELECT")) {
+              const upper = sql.trim().toUpperCase();
+              if (upper.startsWith("SELECT") || upper.includes("RETURNING")) {
                 const res = hasNumbered ? stmt.all(params) : stmt.all(...args);
                 return { results: res };
               }
@@ -140,11 +141,29 @@ describe("storefront theme file DAL", () => {
           expectMissing: true,
         },
       ],
+      { expectedSourceGeneration: 1 },
     );
 
     expect(
       await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
     ).toBe(2);
+  });
+
+  it("strictly requires expectedSourceGeneration at the DAL layer", async () => {
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/pages/index.tsx",
+            content: "export default function() { return <div>Home</div>; }",
+            expectMissing: true,
+          },
+        ],
+        undefined as any,
+      ),
+    ).rejects.toThrow("expectedSourceGeneration is required");
   });
 
   it("freezes source revision without incrementing source_generation and guards with OCC", async () => {

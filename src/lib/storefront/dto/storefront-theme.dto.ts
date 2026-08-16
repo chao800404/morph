@@ -16,6 +16,7 @@ export interface StorefrontThemeEditorDTO {
     id: string;
     name: string;
     status: StorefrontThemeStatus;
+    releaseGeneration: number;
   };
   templates: Array<{
     id: string;

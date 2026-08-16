@@ -344,15 +344,20 @@ export const storefrontThemeFileDal = {
     content: string,
     mimeType?: string,
     options?: {
+      expectedSourceGeneration: number;
       expectedFileId?: string;
       expectedVersion?: number;
       expectMissing?: boolean;
-      expectedSourceGeneration?: number;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
     },
   ): Promise<StorefrontThemeFileDTO & { sourceGeneration?: number }> {
+    if (!options || typeof options.expectedSourceGeneration !== "number") {
+      throw new Error(
+        "expectedSourceGeneration is required to mutate storefront theme files.",
+      );
+    }
     const saved = await this.saveFilesBatch(
       storefrontId,
       themeId,
@@ -360,15 +365,15 @@ export const storefrontThemeFileDal = {
         path,
         content,
         mimeType,
-        expectedFileId: options?.expectedFileId,
-        expectedVersion: options?.expectedVersion,
-        expectMissing: options?.expectMissing,
+        expectedFileId: options.expectedFileId,
+        expectedVersion: options.expectedVersion,
+        expectMissing: options.expectMissing,
       }],
       {
-        expectedSourceGeneration: options?.expectedSourceGeneration,
-        createRevision: options?.createRevision,
-        revisionMessage: options?.revisionMessage,
-        createdBy: options?.createdBy,
+        expectedSourceGeneration: options.expectedSourceGeneration,
+        createRevision: options.createRevision,
+        revisionMessage: options.revisionMessage,
+        createdBy: options.createdBy,
       },
     );
     const first = saved[0];
@@ -387,13 +392,18 @@ export const storefrontThemeFileDal = {
       expectMissing?: boolean;
       mimeType?: string;
     }>,
-    options?: {
-      expectedSourceGeneration?: number;
+    options: {
+      expectedSourceGeneration: number;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
     },
   ): Promise<StorefrontThemeFileDTO[] & { sourceGeneration?: number }> {
+    if (!options || typeof options.expectedSourceGeneration !== "number") {
+      throw new Error(
+        "expectedSourceGeneration is required to mutate storefront theme files.",
+      );
+    }
     if (files.length === 0) {
       const empty: StorefrontThemeFileDTO[] & { sourceGeneration?: number } = [];
       return empty;
@@ -404,11 +414,16 @@ export const storefrontThemeFileDal = {
       prepareThemeOwnershipGuard(
         storefrontId,
         themeId,
-        options?.expectedSourceGeneration,
+        options.expectedSourceGeneration,
       ),
     ];
 
-    for (const item of files) {
+    const preparedFiles = files.map((item) => ({
+      ...item,
+      fileId: item.expectedFileId ?? crypto.randomUUID(),
+    }));
+
+    for (const item of preparedFiles) {
       const expectsExisting =
         Boolean(item.expectedFileId) && item.expectedVersion !== undefined;
 
@@ -437,7 +452,7 @@ export const storefrontThemeFileDal = {
             ) THEN 1 ELSE json('') END AS ok
           `).bind(
             storefrontId, themeId, item.path,
-            item.expectedFileId!, item.expectedVersion!,
+            item.fileId, item.expectedVersion!,
           ),
         );
         statements.push(
@@ -453,6 +468,7 @@ export const storefrontThemeFileDal = {
               AND id = ?7
               AND version = ?8
               AND deleted_at IS NULL
+            RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
           `).bind(
             item.content,
             detectThemeMimeType(item.path, item.mimeType),
@@ -460,7 +476,7 @@ export const storefrontThemeFileDal = {
             storefrontId,
             themeId,
             item.path,
-            item.expectedFileId!,
+            item.fileId,
             item.expectedVersion!,
           ),
         );
@@ -483,8 +499,9 @@ export const storefrontThemeFileDal = {
               is_entry, version, created_at, updated_at
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
+            RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
           `).bind(
-            crypto.randomUUID(),
+            item.fileId,
             storefrontId,
             themeId,
             item.path,
@@ -497,7 +514,7 @@ export const storefrontThemeFileDal = {
       }
     }
 
-    if (options?.createRevision) {
+    if (options.createRevision) {
       statements.push(
         prepareRevisionInsert({
           storefrontId,
@@ -533,16 +550,14 @@ export const storefrontThemeFileDal = {
         message.includes("constraint") ||
         message.includes("UNIQUE")
       ) {
-        if (options?.expectedSourceGeneration !== undefined) {
-          const currentGen = await this.getSourceGeneration(storefrontId, themeId);
-          if (
-            currentGen !== null &&
-            currentGen !== options.expectedSourceGeneration
-          ) {
-            throw new Error(
-              `CONFLICT_SOURCE_GENERATION_MISMATCH: Server source generation is ${currentGen}, but expected ${options.expectedSourceGeneration}.`,
-            );
-          }
+        const currentGen = await this.getSourceGeneration(storefrontId, themeId);
+        if (
+          currentGen !== null &&
+          currentGen !== options.expectedSourceGeneration
+        ) {
+          throw new Error(
+            `CONFLICT_SOURCE_GENERATION_MISMATCH: Server source generation is ${currentGen}, but expected ${options.expectedSourceGeneration}.`,
+          );
         }
         throw new Error(
           `CONFLICT_VERSION_MISMATCH: batch precondition failed. ${message}`,
@@ -559,14 +574,30 @@ export const storefrontThemeFileDal = {
       1,
     );
 
-    const current = await this.listFiles(storefrontId, themeId);
-    const byPath = new Map(current.map((file) => [file.path, file]));
-    const resultFiles = files.map((item) => {
-      const saved = byPath.get(item.path);
-      if (!saved) {
-        throw new Error(`SAVE_FAILED: "${item.path}" missing after atomic batch.`);
-      }
-      return Object.assign(saved, { sourceGeneration });
+    const resultFiles: StorefrontThemeFileDTO[] = preparedFiles.map((item, index) => {
+      // The mutation statement is at index 1 + 2 * index + 1
+      const mutationIndex = 1 + 2 * index + 1;
+      const mutationResult = batchResults[mutationIndex] as any;
+      const row =
+        mutationResult?.results?.[0] ??
+        mutationResult?.[0] ??
+        mutationResult?.results ??
+        mutationResult;
+
+      const fileDto: StorefrontThemeFileDTO = {
+        id: row?.id ?? item.fileId,
+        storefrontId: row?.storefront_id ?? row?.storefrontId ?? storefrontId,
+        themeId: row?.theme_id ?? row?.themeId ?? themeId,
+        path: row?.path ?? item.path,
+        content: row?.content ?? item.content,
+        mimeType: row?.mime_type ?? row?.mimeType ?? detectThemeMimeType(item.path, item.mimeType),
+        isEntry: Boolean(row?.is_entry ?? row?.isEntry ?? (item.path === "src/pages/index.tsx")),
+        version: Number(row?.version ?? (item.expectedVersion ? item.expectedVersion + 1 : 1)),
+        createdAt: row?.created_at ?? row?.createdAt ?? now,
+        updatedAt: row?.updated_at ?? row?.updatedAt ?? now,
+      };
+
+      return Object.assign(fileDto, { sourceGeneration });
     });
 
     return Object.assign(resultFiles, { sourceGeneration });
@@ -578,10 +609,15 @@ export const storefrontThemeFileDal = {
     path: string,
     expectedFileId: string,
     expectedVersion: number,
-    options?: {
-      expectedSourceGeneration?: number;
+    options: {
+      expectedSourceGeneration: number;
     },
   ): Promise<boolean> {
+    if (!options || typeof options.expectedSourceGeneration !== "number") {
+      throw new Error(
+        "expectedSourceGeneration is required to delete storefront theme file.",
+      );
+    }
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
     if (!isOwner) return false;
 
@@ -590,7 +626,7 @@ export const storefrontThemeFileDal = {
       prepareThemeOwnershipGuard(
         storefrontId,
         themeId,
-        options?.expectedSourceGeneration,
+        options.expectedSourceGeneration,
       ),
       env.DATABASE.prepare(`
         SELECT CASE WHEN EXISTS (
@@ -624,16 +660,14 @@ export const storefrontThemeFileDal = {
         message.includes("malformed JSON") ||
         message.includes("constraint")
       ) {
-        if (options?.expectedSourceGeneration !== undefined) {
-          const currentGen = await this.getSourceGeneration(storefrontId, themeId);
-          if (
-            currentGen !== null &&
-            currentGen !== options.expectedSourceGeneration
-          ) {
-            throw new Error(
-              `CONFLICT_SOURCE_GENERATION_MISMATCH: Server source generation is ${currentGen}, but expected ${options.expectedSourceGeneration}.`,
-            );
-          }
+        const currentGen = await this.getSourceGeneration(storefrontId, themeId);
+        if (
+          currentGen !== null &&
+          currentGen !== options.expectedSourceGeneration
+        ) {
+          throw new Error(
+            `CONFLICT_SOURCE_GENERATION_MISMATCH: Server source generation is ${currentGen}, but expected ${options.expectedSourceGeneration}.`,
+          );
         }
         throw new Error(
           `CONFLICT_VERSION_MISMATCH: "${path}" changed, was deleted, or was replaced.`,

@@ -473,6 +473,7 @@ export function VisualEditorShell({
       sourceRevisionId: string;
       expectedDraftRevisionId: string;
       expectedDraftGeneration: number;
+      expectedReleaseGeneration: number;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return publishStorefrontThemeTemplate({
@@ -483,6 +484,7 @@ export function VisualEditorShell({
           sourceRevisionId: variables.sourceRevisionId,
           expectedDraftRevisionId: variables.expectedDraftRevisionId,
           expectedDraftGeneration: variables.expectedDraftGeneration,
+          expectedReleaseGeneration: variables.expectedReleaseGeneration,
         },
       });
     },
@@ -848,6 +850,9 @@ export function VisualEditorShell({
 
             if (!res.success) {
               if (res.error === "SOURCE_GENERATION_CONFLICT") {
+                useThemeWorkspaceStore
+                  .getState()
+                  .markDirty(filePath, workspaceScope);
                 await queryClient.invalidateQueries({
                   queryKey: storefrontThemeFileQueries.tree(
                     context.storefront.id,
@@ -855,9 +860,22 @@ export function VisualEditorShell({
                   ).queryKey,
                 });
                 toast.error(
-                  "Remote source changes detected in this theme. Please review/accept remote changes before saving.",
+                  "Remote source changes detected in this theme.",
+                  {
+                    action: {
+                      label: "Accept Remote",
+                      onClick: () => {
+                        useThemeWorkspaceStore
+                          .getState()
+                          .acceptRemoteGeneration(undefined, workspaceScope);
+                        toast.success(
+                          "Remote source generation accepted. You can now save your local changes.",
+                        );
+                      },
+                    },
+                  },
                 );
-                throw new Error("Remote theme source was modified concurrently.");
+                return null;
               }
 
               if (
@@ -930,7 +948,10 @@ export function VisualEditorShell({
                 workspaceScope.storefrontId,
                 workspaceScope.themeId,
               )[filePath];
-            if (afterError?.saveState !== "conflict") {
+            if (
+              afterError?.saveState !== "conflict" &&
+              afterError?.saveState !== "dirty"
+            ) {
               markWorkspaceError(
                 filePath,
                 error instanceof Error ? error.message : "Save failed",
@@ -1134,11 +1155,11 @@ export function VisualEditorShell({
       }
     }
 
-    await Promise.all(
-      Array.from(saveQueueRef.current.entries()).map(([opKey, promise]) =>
-        opKey.startsWith(scopedPrefix) ? promise.catch(() => null) : Promise.resolve(),
-      ),
-    );
+    const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
+    const pendingThemeSave = saveQueueRef.current.get(themeOpKey);
+    if (pendingThemeSave) {
+      await pendingThemeSave.catch(() => null);
+    }
 
     const workspace = useThemeWorkspaceStore.getState();
     if (
@@ -1192,6 +1213,7 @@ export function VisualEditorShell({
       sourceRevisionId: freezeResult.data.id,
       expectedDraftRevisionId: publishDraftRevisionId,
       expectedDraftGeneration: publishDraftGeneration,
+      expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
     });
   }, [
     activeTemplate,

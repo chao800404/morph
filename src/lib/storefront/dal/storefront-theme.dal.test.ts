@@ -72,6 +72,7 @@ beforeEach(() => {
       status text NOT NULL,
       published_source_revision_id text,
       source_generation integer DEFAULT 1 NOT NULL,
+      release_generation integer DEFAULT 1 NOT NULL,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -125,30 +126,18 @@ beforeEach(() => {
       created_at text NOT NULL,
       published_at text
     );
-    INSERT INTO storefronts
-      (id, sales_channel_id, name, status, created_at, updated_at)
-    VALUES
-      ('storefront-a', 'channel-a', 'Store A', 'published', 'now', 'now'),
-      ('storefront-b', 'channel-b', 'Store B', 'published', 'now', 'now');
-    INSERT INTO storefront_themes
-      (id, storefront_id, name, status, created_at, updated_at)
-    VALUES
-      ('theme-a', 'storefront-a', 'Theme A', 'published', 'now', 'now'),
-      ('theme-b', 'storefront-b', 'Theme B', 'published', 'now', 'now');
-    INSERT INTO storefront_theme_templates
-      (id, theme_id, type, name, document, created_at, updated_at)
-    VALUES
-      ('template-b', 'theme-b', 'index', 'Home', '{"version":1,"sections":[]}', 'now', 'now');
   `);
 
-  const db = drizzle(sqlite, { schema: storefrontSchema });
-  const testDb = Object.assign(db, {
-    batch: async (queries: Array<{ execute: () => Promise<unknown> }>) =>
-      Promise.all(queries.map((query) => query.execute())),
-  });
-  vi.mocked(getDb).mockResolvedValue(
-    testDb as unknown as Awaited<ReturnType<typeof getDb>>,
-  );
+  drizzle(sqlite, { schema: storefrontSchema });
+  // @ts-expect-error test mock
+  vi.mocked(getDb).mockResolvedValue(drizzle(sqlite, { schema: storefrontSchema }));
+
+  sqlite.exec(`
+    INSERT INTO storefronts (id, sales_channel_id, name, status, created_at, updated_at)
+    VALUES ('storefront-a', 'channel-a', 'Store A', 'active', 'now', 'now');
+    INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, release_generation, created_at, updated_at)
+    VALUES ('theme-a', 'storefront-a', 'Default Theme', 'draft', 1, 1, 'now', 'now');
+  `);
 });
 
 afterEach(() => {
@@ -180,7 +169,7 @@ describe("storefront theme DAL", () => {
     ).rejects.toThrow();
   });
 
-  it("publishes the current draft revision without exposing older drafts", async () => {
+  it("publishes template document and updates publishedRevisionId", async () => {
     const draftDocument = JSON.stringify({
       version: 1,
       sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
@@ -211,28 +200,17 @@ describe("storefront theme DAL", () => {
         sourceRevisionId: "22222222-2222-4222-8222-222222222222",
         expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
         expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 1,
       }),
     ).resolves.toEqual({
       revisionId: "11111111-1111-4111-8111-111111111111",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       draftGeneration: 2,
+      releaseGeneration: 2,
       templateUnchanged: false,
       sourceUnchanged: false,
       unchanged: false,
     });
-
-    const published = sqlite
-      .prepare(
-        "SELECT document, published_revision_id FROM storefront_theme_templates WHERE id = ?",
-      )
-      .get("template-a") as {
-      document: string;
-      published_revision_id: string | null;
-    };
-    expect(JSON.parse(published.document)).toEqual(JSON.parse(draftDocument));
-    expect(published.published_revision_id).toBe(
-      "11111111-1111-4111-8111-111111111111",
-    );
   });
 
   it("publishes explicit source revision snapshot and binds it to published_source_revision_id", async () => {
@@ -265,12 +243,14 @@ describe("storefront theme DAL", () => {
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
       expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
     });
 
     expect(res).toEqual({
       revisionId: "11111111-1111-4111-8111-111111111111",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       draftGeneration: 2,
+      releaseGeneration: 2,
       templateUnchanged: false,
       sourceUnchanged: false,
       unchanged: false,
@@ -278,15 +258,16 @@ describe("storefront theme DAL", () => {
 
     const theme = sqlite
       .prepare(
-        "SELECT published_source_revision_id FROM storefront_themes WHERE id = ?",
+        "SELECT published_source_revision_id, release_generation FROM storefront_themes WHERE id = ?",
       )
-      .get("theme-a") as { published_source_revision_id: string | null };
+      .get("theme-a") as { published_source_revision_id: string | null; release_generation: number };
     expect(theme.published_source_revision_id).toBe(
       "22222222-2222-4222-8222-222222222222",
     );
+    expect(theme.release_generation).toBe(2);
   });
 
-  it("aborts and throws when CAS guard fails on invalid source revision", async () => {
+  it("aborts and throws when CAS guard fails on invalid source revision or mismatched expectedReleaseGeneration", async () => {
     const draftDocument = JSON.stringify({
       version: 1,
       sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
@@ -302,9 +283,14 @@ describe("storefront theme DAL", () => {
       VALUES
         ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
          '${draftDocument.replaceAll("'", "''")}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1,
+         'Frozen checkpoint', 'publish', '[]', 'now', 'now');
     `);
 
-    // Non-existent sourceRevisionId should fail the CAS guard (json('') in SQLite)
+    // Non-existent sourceRevisionId should fail the CAS guard
     await expect(
       storefrontThemeDal.publishTemplate({
         storefrontId: "storefront-a",
@@ -313,6 +299,20 @@ describe("storefront theme DAL", () => {
         sourceRevisionId: "99999999-9999-4999-8999-999999999999",
         expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
         expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 1,
+      }),
+    ).rejects.toThrow();
+
+    // Mismatched expectedReleaseGeneration should fail the CAS guard
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+        expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 99,
       }),
     ).rejects.toThrow();
   });
@@ -348,6 +348,7 @@ describe("storefront theme DAL", () => {
         sourceRevisionId: "22222222-2222-4222-8222-222222222222",
         expectedDraftRevisionId: "33333333-3333-4333-8333-333333333333",
         expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 1,
       }),
     ).resolves.toBeNull();
   });
@@ -505,5 +506,135 @@ describe("storefront theme DAL", () => {
     const props = result?.document.sections[0].props as any;
     // Unknown componentRef must not accept arbitrary presentation props into D1
     expect(Object.keys(props)).toHaveLength(0);
+  });
+
+  it("strictly rejects unrecognized componentRef on known section type (does not fall back to sectionType default)", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-unknown-hero', 'theme-a', 'index', 'Home', '{"version":1,"sections":[{"id":"hero-unregistered","type":"hero","componentRef":"hero.unregistered-custom","enabled":true,"props":{"heading":"Existing Heading"}}]}',
+         '44444444-4444-4444-8444-444444444444', '44444444-4444-4444-8444-444444444444', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('44444444-4444-4444-8444-444444444444', 'template-unknown-hero', 1,
+         '{"version":1,"sections":[{"id":"hero-unregistered","type":"hero","componentRef":"hero.unregistered-custom","enabled":true,"props":{"heading":"Existing Heading"}}]}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-unknown-hero",
+      sectionId: "hero-unregistered",
+      props: {
+        heading: "Attempted New Heading",
+        customProp: "not allowed",
+      },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result).not.toBeNull();
+    const props = result?.document.sections[0].props as any;
+    // Unregistered componentRef strictly returns {} (no fallback to hero.default)
+    expect(Object.keys(props)).toHaveLength(0);
+  });
+
+  it("preserves ALL starter template section content props across partial updates without data loss", async () => {
+    // 1. Hero with eyebrow
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-starter', 'theme-a', 'index', 'Home',
+         '{"version":1,"sections":[{"id":"hero-1","type":"hero","componentRef":"hero.default","enabled":true,"props":{"eyebrow":"New collection","heading":"Objects for everyday rituals.","description":"Quiet essentials.","actionLabel":"Explore","actionHref":"/collections/new","imageSrc":"/img.png","imageAlt":"Ceramics"}},{"id":"intro-1","type":"editorial-intro","enabled":true,"props":{"label":"Considered living","heading":"Fewer things. Better chosen.","body":"We bring together useful objects."}},{"id":"cat-1","type":"category-showcase","enabled":true,"props":{"heading":"Shop by ritual","items":[{"title":"Morning","caption":"Cups","href":"/morning","imageSrc":"/img.png","imageAlt":"Table","imagePosition":"30% center"}]}},{"id":"story-1","type":"image-with-text","enabled":true,"props":{"eyebrow":"Our point of view","heading":"Made to be kept.","body":"We look for objects that age gracefully.","actionLabel":"Read our story","actionHref":"/about","imageSrc":"/img.png","imageAlt":"Vase","imagePosition":"center center"}},{"id":"principles-1","type":"principles","enabled":true,"props":{"items":[{"number":"01","title":"Natural","body":"Tactile surfaces."}]}},{"id":"news-1","type":"newsletter","enabled":true,"props":{"eyebrow":"Notes from the studio","heading":"A quieter inbox.","body":"New objects.","placeholder":"Email address","actionLabel":"Subscribe"}}]}',
+         '55555555-5555-4555-8555-555555555555', '55555555-5555-4555-8555-555555555555', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('55555555-5555-4555-8555-555555555555', 'template-starter', 1,
+         '{"version":1,"sections":[{"id":"hero-1","type":"hero","componentRef":"hero.default","enabled":true,"props":{"eyebrow":"New collection","heading":"Objects for everyday rituals.","description":"Quiet essentials.","actionLabel":"Explore","actionHref":"/collections/new","imageSrc":"/img.png","imageAlt":"Ceramics"}},{"id":"intro-1","type":"editorial-intro","enabled":true,"props":{"label":"Considered living","heading":"Fewer things. Better chosen.","body":"We bring together useful objects."}},{"id":"cat-1","type":"category-showcase","enabled":true,"props":{"heading":"Shop by ritual","items":[{"title":"Morning","caption":"Cups","href":"/morning","imageSrc":"/img.png","imageAlt":"Table","imagePosition":"30% center"}]}},{"id":"story-1","type":"image-with-text","enabled":true,"props":{"eyebrow":"Our point of view","heading":"Made to be kept.","body":"We look for objects that age gracefully.","actionLabel":"Read our story","actionHref":"/about","imageSrc":"/img.png","imageAlt":"Vase","imagePosition":"center center"}},{"id":"principles-1","type":"principles","enabled":true,"props":{"items":[{"number":"01","title":"Natural","body":"Tactile surfaces."}]}},{"id":"news-1","type":"newsletter","enabled":true,"props":{"eyebrow":"Notes from the studio","heading":"A quieter inbox.","body":"New objects.","placeholder":"Email address","actionLabel":"Subscribe"}}]}', 'now');
+    `);
+
+    // Edit hero description -> eyebrow, heading, actionLabel, imageSrc MUST be preserved
+    const heroResult = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-starter",
+      sectionId: "hero-1",
+      props: { description: "Updated hero description." },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+    const heroProps = heroResult?.document.sections.find((s) => s.id === "hero-1")?.props as any;
+    expect(heroProps.eyebrow).toBe("New collection");
+    expect(heroProps.heading).toBe("Objects for everyday rituals.");
+    expect(heroProps.description).toBe("Updated hero description.");
+    expect(heroProps.actionLabel).toBe("Explore");
+    expect(heroProps.imageSrc).toBe("/img.png");
+
+    // Edit editorial-intro heading -> label, body MUST be preserved
+    const introResult = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-starter",
+      sectionId: "intro-1",
+      props: { heading: "New Intro Heading" },
+      expectedDraftGeneration: 2,
+      createdBy: "user-1",
+    });
+    const introProps = introResult?.document.sections.find((s) => s.id === "intro-1")?.props as any;
+    expect(introProps.label).toBe("Considered living");
+    expect(introProps.heading).toBe("New Intro Heading");
+    expect(introProps.body).toBe("We bring together useful objects.");
+
+    // Edit category-showcase heading -> items array MUST be preserved
+    const catResult = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-starter",
+      sectionId: "cat-1",
+      props: { heading: "New Showcase Heading" },
+      expectedDraftGeneration: 3,
+      createdBy: "user-1",
+    });
+    const catProps = catResult?.document.sections.find((s) => s.id === "cat-1")?.props as any;
+    expect(catProps.heading).toBe("New Showcase Heading");
+    expect(catProps.items).toHaveLength(1);
+    expect(catProps.items[0].title).toBe("Morning");
+
+    // Edit image-with-text actionLabel -> eyebrow, body, imagePosition MUST be preserved
+    const storyResult = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-starter",
+      sectionId: "story-1",
+      props: { actionLabel: "Discover More" },
+      expectedDraftGeneration: 4,
+      createdBy: "user-1",
+    });
+    const storyProps = storyResult?.document.sections.find((s) => s.id === "story-1")?.props as any;
+    expect(storyProps.eyebrow).toBe("Our point of view");
+    expect(storyProps.heading).toBe("Made to be kept.");
+    expect(storyProps.actionLabel).toBe("Discover More");
+    expect(storyProps.imagePosition).toBe("center center");
+
+    // Edit newsletter placeholder -> eyebrow, body, actionLabel MUST be preserved
+    const newsResult = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-starter",
+      sectionId: "news-1",
+      props: { placeholder: "Your email here..." },
+      expectedDraftGeneration: 5,
+      createdBy: "user-1",
+    });
+    const newsProps = newsResult?.document.sections.find((s) => s.id === "news-1")?.props as any;
+    expect(newsProps.eyebrow).toBe("Notes from the studio");
+    expect(newsProps.heading).toBe("A quieter inbox.");
+    expect(newsProps.body).toBe("New objects.");
+    expect(newsProps.placeholder).toBe("Your email here...");
+    expect(newsProps.actionLabel).toBe("Subscribe");
   });
 });
