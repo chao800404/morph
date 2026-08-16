@@ -10,12 +10,17 @@ import type {
 /**
  * ThemeCompilerManager
  *
- * Coordinates theme compilation jobs with clean separation between:
+ * Coordinates theme compilation jobs with strict separation between:
  * 1. Raw content-addressed compiler cache (`rawCache` keyed by inputHash)
- * 2. Per-theme last-known-good fallback (`lastKnownGood` keyed by themeKey)
+ *    - Stores pure, immutable compiler results.
+ *    - Never mutated with theme-specific fallbacks.
+ * 2. In-flight deduplication (`inFlight` keyed by inputHash)
+ *    - Stores promises resolving to pure, immutable compiler results.
+ * 3. Per-theme last-known-good fallback (`lastKnownGood` keyed by themeKey)
+ *    - Tracks latest successful CSS per theme.
  *
- * Every compile request (cache hit, in-flight deduplicated, or new compile)
- * advances the per-theme request sequence and maintains lastKnownGood accurately.
+ * Every compile request (Cache Hit, In-Flight deduplicated, or New Compile)
+ * advances the per-theme request sequence and constructs an isolated response object.
  */
 export class ThemeCompilerManager {
   private rawCache = new Map<string, ThemeCompilerCacheEntry>();
@@ -45,67 +50,83 @@ export class ThemeCompilerManager {
     const currentSeq = (this.themeSequences.get(themeKey) ?? 0) + 1;
     this.themeSequences.set(themeKey, currentSeq);
 
-    // 3. Cache hit check (content-addressed raw cache)
+    // 3. Cache hit check (pure immutable raw cache)
     const cached = this.rawCache.get(inputHash);
     if (cached) {
-      // Update per-theme lastKnownGood if this is still the newest request and compile was successful
-      if (currentSeq === this.themeSequences.get(themeKey) && cached.result.success && cached.result.css) {
-        this.lastKnownGood.set(themeKey, cached.result);
-      }
-      return {
-        ...cached.result,
-        sourceGeneration: input.sourceGeneration,
-      };
+      return this.buildThemeResponse(
+        cached.result,
+        themeKey,
+        currentSeq,
+        input.sourceGeneration,
+      );
     }
 
-    // 4. In-flight deduplication
+    // 4. In-flight deduplication (pure immutable in-flight promise)
     const existingFlight = this.inFlight.get(inputHash);
     if (existingFlight) {
-      const flightResult = await existingFlight;
-      if (currentSeq === this.themeSequences.get(themeKey) && flightResult.success && flightResult.css) {
-        this.lastKnownGood.set(themeKey, flightResult);
-      }
-      return {
-        ...flightResult,
-        sourceGeneration: input.sourceGeneration,
-      };
+      const rawResult = await existingFlight;
+      return this.buildThemeResponse(
+        rawResult,
+        themeKey,
+        currentSeq,
+        input.sourceGeneration,
+      );
     }
 
-    // 5. Launch compilation
-    const compilePromise = (async () => {
+    // 5. Launch new compilation
+    const rawPromise = (async () => {
       try {
-        const result = await targetCompiler.compile(input, { inputHash });
+        const rawResult = await targetCompiler.compile(input, { inputHash });
 
-        // Store immutable result into raw compiler cache
+        // Store pure immutable result into raw compiler cache
         this.rawCache.set(inputHash, {
-          result,
+          result: rawResult,
           timestamp: Date.now(),
           sourceGeneration: input.sourceGeneration,
         });
 
-        // Sequence guard: only update lastKnownGood if this is still the newest request for the theme
-        if (currentSeq === this.themeSequences.get(themeKey)) {
-          if (result.success && result.css) {
-            this.lastKnownGood.set(themeKey, result);
-          }
-        }
-
-        // If compile failed, attach lastKnownGood CSS if available for visual stability in preview
-        if (!result.success) {
-          const fallback = this.lastKnownGood.get(themeKey);
-          if (fallback?.css) {
-            result.css = fallback.css;
-          }
-        }
-
-        return result;
+        return rawResult;
       } finally {
         this.inFlight.delete(inputHash);
       }
     })();
 
-    this.inFlight.set(inputHash, compilePromise);
-    return compilePromise;
+    this.inFlight.set(inputHash, rawPromise);
+    const rawResult = await rawPromise;
+
+    return this.buildThemeResponse(
+      rawResult,
+      themeKey,
+      currentSeq,
+      input.sourceGeneration,
+    );
+  }
+
+  /**
+   * Constructs an isolated response for a specific theme request without mutating rawResult.
+   * Updates lastKnownGood if sequence is current, and attaches theme-specific fallback if failed.
+   */
+  private buildThemeResponse(
+    rawResult: ThemeCompilerResult,
+    themeKey: string,
+    requestSeq: number,
+    sourceGeneration?: number,
+  ): ThemeCompilerResult {
+    // Sequence guard: only update lastKnownGood if this is still the newest request for the theme
+    if (requestSeq === this.themeSequences.get(themeKey)) {
+      if (rawResult.success && rawResult.css) {
+        this.lastKnownGood.set(themeKey, rawResult);
+      }
+    }
+
+    // Resolve theme-specific fallback without mutating rawResult
+    const fallback = rawResult.success ? undefined : this.lastKnownGood.get(themeKey);
+
+    return {
+      ...rawResult,
+      sourceGeneration,
+      css: rawResult.css ?? fallback?.css,
+    };
   }
 
   getLastKnownGood(themeId?: string): ThemeCompilerResult | undefined {

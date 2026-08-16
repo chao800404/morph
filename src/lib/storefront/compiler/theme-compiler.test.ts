@@ -238,6 +238,125 @@ describe("Theme Compiler Foundation (Phase 4A)", () => {
     });
   });
 
+  describe("Raw Compiler Cache & Per-Theme Fallback Strict Isolation (P1 Regressions)", () => {
+    it("never pollutes raw compiler cache or leaks Theme A fallback to Theme B on cache hit", async () => {
+      const themeA = "theme-isolation-A";
+      const themeB = "theme-isolation-B";
+
+      // 1. Theme A compiles valid source -> lastKnownGood(A) = A.css
+      const resA = await manager.compile({
+        themeId: themeA,
+        files: [
+          { path: "src/styles/global.css", content: '@import "tailwindcss";\nbody { color: #aaaaaa; }' },
+          { path: "src/Hero.tsx", content: '<div className="p-4">Theme A</div>' },
+        ],
+      });
+      expect(resA.success).toBe(true);
+      expect(resA.css).toContain("color: #aaaaaa");
+      expect(manager.getLastKnownGood(themeA)?.css).toBe(resA.css);
+
+      // 2. Theme B compiles valid source -> lastKnownGood(B) = B.css
+      const resB = await manager.compile({
+        themeId: themeB,
+        files: [
+          { path: "src/styles/global.css", content: '@import "tailwindcss";\nbody { color: #bbbbbb; }' },
+          { path: "src/Hero.tsx", content: '<div className="p-4">Theme B</div>' },
+        ],
+      });
+      expect(resB.success).toBe(true);
+      expect(resB.css).toContain("color: #bbbbbb");
+      expect(manager.getLastKnownGood(themeB)?.css).toBe(resB.css);
+
+      // 3. Theme A compiles Broken Source X
+      const brokenFiles: ThemeCompilerFile[] = [
+        { path: "src/Hero.tsx", content: 'export default () => <div BROKEN_SYNTAX_X' },
+      ];
+
+      const brokenResultA = await manager.compile({
+        themeId: themeA,
+        files: brokenFiles,
+      });
+      expect(brokenResultA.success).toBe(false);
+      // Theme A receives Theme A's fallback CSS
+      expect(brokenResultA.css).toContain("color: #aaaaaa");
+
+      // 4. Theme B compiles the EXACT same Broken Source X (triggers raw cache hit)
+      const brokenResultB = await manager.compile({
+        themeId: themeB,
+        files: brokenFiles,
+      });
+      expect(brokenResultB.success).toBe(false);
+      // Theme B MUST receive Theme B's fallback CSS and NEVER Theme A's CSS!
+      expect(brokenResultB.css).toBe(resB.css);
+      expect(brokenResultB.css).toContain("color: #bbbbbb");
+      expect(brokenResultB.css).not.toContain("color: #aaaaaa");
+    });
+
+    it("never leaks fallbacks between concurrent Theme A and Theme B requests during in-flight deduplication", async () => {
+      const themeA = "theme-flight-A";
+      const themeB = "theme-flight-B";
+
+      let resolveSlowBrokenJob: (res: any) => void;
+      const slowBrokenPromise = new Promise<any>((resolve) => {
+        resolveSlowBrokenJob = resolve;
+      });
+
+      const mockCompiler = {
+        id: "mock-compiler",
+        version: "4.1.17",
+        compile: async (input: ThemeCompilerInput) => {
+          if (input.files[0]?.content.includes("GOOD_A")) {
+            return { success: true, inputHash: "hash-A", css: "/* Theme A Good CSS */", diagnostics: [], compiledAt: "" };
+          }
+          if (input.files[0]?.content.includes("GOOD_B")) {
+            return { success: true, inputHash: "hash-B", css: "/* Theme B Good CSS */", diagnostics: [], compiledAt: "" };
+          }
+          // Slow broken job shared across inputHash
+          return slowBrokenPromise;
+        },
+      };
+
+      const flightManager = new ThemeCompilerManager(mockCompiler as any);
+
+      // 1. Seed lastKnownGood for Theme A and Theme B
+      await flightManager.compile({ themeId: themeA, files: [{ path: "1.tsx", content: "GOOD_A" }] });
+      await flightManager.compile({ themeId: themeB, files: [{ path: "1.tsx", content: "GOOD_B" }] });
+
+      expect(flightManager.getLastKnownGood(themeA)?.css).toBe("/* Theme A Good CSS */");
+      expect(flightManager.getLastKnownGood(themeB)?.css).toBe("/* Theme B Good CSS */");
+
+      // 2. Both Theme A and Theme B concurrently request identical Broken Source
+      const brokenInputA: ThemeCompilerInput = {
+        themeId: themeA,
+        files: [{ path: "broken.tsx", content: "IDENTICAL_BROKEN_CODE" }],
+      };
+      const brokenInputB: ThemeCompilerInput = {
+        themeId: themeB,
+        files: [{ path: "broken.tsx", content: "IDENTICAL_BROKEN_CODE" }],
+      };
+
+      const promiseA = flightManager.compile(brokenInputA);
+      const promiseB = flightManager.compile(brokenInputB);
+
+      // 3. Resolve the in-flight compiler job with a pure failure (css: undefined)
+      resolveSlowBrokenJob!({
+        success: false,
+        inputHash: "hash-broken-identical",
+        css: undefined,
+        diagnostics: [{ level: "error", message: "Compilation failed" }],
+        compiledAt: new Date().toISOString(),
+      });
+
+      const [resA, resB] = await Promise.all([promiseA, promiseB]);
+
+      expect(resA.success).toBe(false);
+      expect(resA.css).toBe("/* Theme A Good CSS */");
+
+      expect(resB.success).toBe(false);
+      expect(resB.css).toBe("/* Theme B Good CSS */");
+    });
+  });
+
   describe("Out-of-Order Race Protection for lastKnownGood", () => {
     it("prevents slower, superseded compilation jobs from overwriting newer lastKnownGood CSS", async () => {
       const themeId = "theme-race";
