@@ -37,6 +37,10 @@ type EditorCodeWorkspaceProps = {
   initialActiveFilePath?: string;
   jumpLocation?: { filePath: string; line?: number; column?: number };
   onRefreshPreview?: () => void;
+  onSaveFile?: (
+    path: string,
+    content: string,
+  ) => Promise<StorefrontThemeFileDTO>;
 };
 
 function getFileIcon(filename: string) {
@@ -68,26 +72,19 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   initialActiveFilePath,
   jumpLocation,
   onRefreshPreview,
+  onSaveFile,
 }: EditorCodeWorkspaceProps) {
   const queryClient = useQueryClient();
   const editorRef = useRef<any>(null);
 
   // Find initial active file (default to Hero.tsx or index.tsx)
   const defaultFile = useMemo(() => {
-    if (jumpLocation?.filePath) {
-      const match = files.find((f) => f.path === jumpLocation.filePath);
-      if (match) return match;
-    }
-    if (initialActiveFilePath) {
-      const match = files.find((f) => f.path === initialActiveFilePath);
-      if (match) return match;
-    }
     return (
-      files.find((f) => f.path.includes("Hero.tsx")) ??
-      files.find((f) => f.path.includes("index.tsx")) ??
+      files.find((f) => f.path === "src/components/Hero.tsx") ??
+      files.find((f) => f.isEntry) ??
       files[0]
     );
-  }, [files, initialActiveFilePath, jumpLocation]);
+  }, [files]);
 
   const [activeFilePath, setActiveFilePath] = useState<string>(
     jumpLocation?.filePath ?? defaultFile?.path ?? "src/components/Hero.tsx",
@@ -191,6 +188,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       path: string;
       content: string;
     }) => {
+      if (onSaveFile) {
+        return onSaveFile(path, content);
+      }
       const res = await saveStorefrontThemeFile({
         data: {
           storefrontId,
@@ -510,6 +510,10 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                 size="xs"
                 className="h-6 text-[11px]"
                 onClick={() => {
+                  const external = conflictFiles[activeFilePath];
+                  if (external) {
+                    externalBaselineRef.current[activeFilePath] = external;
+                  }
                   setConflictFiles((prev) => {
                     const next = { ...prev };
                     delete next[activeFilePath];

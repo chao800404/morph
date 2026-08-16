@@ -567,11 +567,15 @@ export function VisualEditorShell({
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const fileRevisionRef = useRef<Map<string, number>>(new Map());
+  const inFlightSavesRef = useRef<Set<string>>(new Set());
 
   // Synchronize in-memory shared buffer whenever themeFiles query updates (e.g. Code save in Monaco)
   useEffect(() => {
     for (const f of themeFiles) {
-      if (!pendingSaveTimersRef.current.has(f.path)) {
+      if (
+        !pendingSaveTimersRef.current.has(f.path) &&
+        !inFlightSavesRef.current.has(f.path)
+      ) {
         sourceCodeBufferRef.current.set(f.path, f.content);
       }
     }
@@ -589,44 +593,76 @@ export function VisualEditorShell({
           const latestQueuedRevision =
             fileRevisionRef.current.get(filePath) ?? 0;
           if (targetRevision < latestQueuedRevision) {
-            return;
+            return null;
           }
 
-          const res = await saveStorefrontThemeFile({
-            data: {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-              path: filePath,
-              content: contentToSave,
-            },
-          });
+          inFlightSavesRef.current.add(filePath);
+          try {
+            const res = await saveStorefrontThemeFile({
+              data: {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                path: filePath,
+                content: contentToSave,
+              },
+            });
 
-          if (!res.success) {
-            throw new Error(res.message);
+            if (!res.success) {
+              throw new Error(res.message);
+            }
+
+            // Invalidate/update query cache on successful serialized save
+            queryClient.setQueryData(
+              storefrontThemeFileQueries.tree(
+                context.storefront.id,
+                context.theme.id,
+              ).queryKey,
+              (old: any) => {
+                if (!old?.files) return old;
+                return {
+                  ...old,
+                  files: old.files.map((f: any) =>
+                    f.path === filePath ? { ...f, content: contentToSave } : f,
+                  ),
+                };
+              },
+            );
+
+            return res.data;
+          } finally {
+            inFlightSavesRef.current.delete(filePath);
           }
-
-          // Invalidate/update query cache on successful serialized save
-          queryClient.setQueryData(
-            storefrontThemeFileQueries.tree(
-              context.storefront.id,
-              context.theme.id,
-            ).queryKey,
-            (old: any) => {
-              if (!old?.files) return old;
-              return {
-                ...old,
-                files: old.files.map((f: any) =>
-                  f.path === filePath ? { ...f, content: contentToSave } : f,
-                ),
-              };
-            },
-          );
         });
 
       saveQueueRef.current.set(filePath, nextPromise);
       return nextPromise;
     },
     [context.storefront.id, context.theme.id, queryClient],
+  );
+
+  const handleUnifiedSaveFile = useCallback(
+    async (filePath: string, content: string) => {
+      const existingTimer = pendingSaveTimersRef.current.get(filePath);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        pendingSaveTimersRef.current.delete(filePath);
+      }
+
+      sourceCodeBufferRef.current.set(filePath, content);
+      const nextRevision = (fileRevisionRef.current.get(filePath) ?? 0) + 1;
+      fileRevisionRef.current.set(filePath, nextRevision);
+
+      const result = await saveThemeFileSequentially(
+        filePath,
+        content,
+        nextRevision,
+      );
+      if (!result) {
+        throw new Error("Save superseded by a newer version");
+      }
+      return result;
+    },
+    [saveThemeFileSequentially],
   );
 
   const handleUpdateThemeFileStyle = useCallback(
@@ -1908,6 +1944,7 @@ export function VisualEditorShell({
           initialActiveFilePath={activeCodeFilePath}
           jumpLocation={jumpLocation}
           onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
+          onSaveFile={handleUnifiedSaveFile}
         />
       </div>
 
