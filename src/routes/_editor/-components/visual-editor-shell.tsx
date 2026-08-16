@@ -563,46 +563,71 @@ export function VisualEditorShell({
   const themeFiles = themeFilesQuery.data?.files ?? [];
   const themeTree = themeFilesQuery.data?.tree ?? [];
 
-  const saveThemeFileMutation = useMutation({
-    mutationFn: async ({ path, content }: { path: string; content: string }) => {
-      const res = await saveStorefrontThemeFile({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          path,
-          content,
-        },
-      });
-      if (!res.success) throw new Error(res.message);
-      return res.data;
-    },
-    onSuccess: async (_data, variables) => {
-      queryClient.setQueryData(
-        storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id).queryKey,
-        (old: any) => {
-          if (!old?.files) return old;
-          return {
-            ...old,
-            files: old.files.map((f: any) =>
-              f.path === variables.path ? { ...f, content: variables.content } : f,
-            ),
-          };
-        },
-      );
-    },
-  });
-
   const sourceCodeBufferRef = useRef<Map<string, string>>(new Map());
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  const fileRevisionRef = useRef<Map<string, number>>(new Map());
 
-  // Sync buffer from themeFiles query
+  // Synchronize in-memory shared buffer whenever themeFiles query updates (e.g. Code save in Monaco)
   useEffect(() => {
     for (const f of themeFiles) {
-      if (!sourceCodeBufferRef.current.has(f.path)) {
+      if (!pendingSaveTimersRef.current.has(f.path)) {
         sourceCodeBufferRef.current.set(f.path, f.content);
       }
     }
   }, [themeFiles]);
+
+  const saveThemeFileSequentially = useCallback(
+    async (filePath: string, contentToSave: string, targetRevision: number) => {
+      const previousPromise =
+        saveQueueRef.current.get(filePath) ?? Promise.resolve();
+
+      const nextPromise = previousPromise
+        .catch(() => {})
+        .then(async () => {
+          // If a newer revision was already queued, skip persisting this stale snapshot
+          const latestQueuedRevision =
+            fileRevisionRef.current.get(filePath) ?? 0;
+          if (targetRevision < latestQueuedRevision) {
+            return;
+          }
+
+          const res = await saveStorefrontThemeFile({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              path: filePath,
+              content: contentToSave,
+            },
+          });
+
+          if (!res.success) {
+            throw new Error(res.message);
+          }
+
+          // Invalidate/update query cache on successful serialized save
+          queryClient.setQueryData(
+            storefrontThemeFileQueries.tree(
+              context.storefront.id,
+              context.theme.id,
+            ).queryKey,
+            (old: any) => {
+              if (!old?.files) return old;
+              return {
+                ...old,
+                files: old.files.map((f: any) =>
+                  f.path === filePath ? { ...f, content: contentToSave } : f,
+                ),
+              };
+            },
+          );
+        });
+
+      saveQueueRef.current.set(filePath, nextPromise);
+      return nextPromise;
+    },
+    [context.storefront.id, context.theme.id, queryClient],
+  );
 
   const handleUpdateThemeFileStyle = useCallback(
     (
@@ -641,28 +666,36 @@ export function VisualEditorShell({
           },
         );
 
-        // 3. Debounce network persistence to D1 (400ms)
+        // 3. Debounce & serialize persistence to D1
         const existingTimer = pendingSaveTimersRef.current.get(filePath);
         if (existingTimer) {
           clearTimeout(existingTimer);
         }
 
+        const nextRevision = (fileRevisionRef.current.get(filePath) ?? 0) + 1;
+        fileRevisionRef.current.set(filePath, nextRevision);
+
         const timer = setTimeout(() => {
           const latestContent =
             sourceCodeBufferRef.current.get(filePath) ?? updatedContent;
-          saveThemeFileMutation.mutate({
-            path: filePath,
-            content: latestContent,
+          saveThemeFileSequentially(
+            filePath,
+            latestContent,
+            nextRevision,
+          ).catch((err) => {
+            toast.error(
+              `Failed to persist ${filePath}: ${err instanceof Error ? err.message : "Error"}`,
+            );
           });
           pendingSaveTimersRef.current.delete(filePath);
-        }, 400);
+        }, 350);
 
         pendingSaveTimersRef.current.set(filePath, timer);
       }
     },
     [
       themeFiles,
-      saveThemeFileMutation,
+      saveThemeFileSequentially,
       context.storefront.id,
       context.theme.id,
       queryClient,

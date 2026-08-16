@@ -70,7 +70,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   themeFiles,
   activeElementKey,
-  activeFieldKey: _activeFieldKey,
+  activeFieldKey,
   onUpdateThemeFileStyle,
   onPropsChange,
   onToggleEnabled,
@@ -180,7 +180,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       >
         <div className="space-y-3">
           {"eyebrow" in props && (
-            <InspectorField label="Eyebrow / Subtitle">
+            <InspectorField
+              label="Eyebrow / Subtitle"
+              isFocused={activeFieldKey === "eyebrow"}
+            >
               <Input
                 value={props.eyebrow ?? ""}
                 onChange={(e) => handleFieldChange("eyebrow", e.target.value)}
@@ -192,7 +195,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           )}
 
           {"label" in props && (
-            <InspectorField label="Label">
+            <InspectorField
+              label="Label"
+              isFocused={activeFieldKey === "label"}
+            >
               <Input
                 value={props.label ?? ""}
                 onChange={(e) => handleFieldChange("label", e.target.value)}
@@ -204,7 +210,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           )}
 
           {"heading" in props && (
-            <InspectorField label="Heading">
+            <InspectorField
+              label="Heading"
+              isFocused={activeFieldKey === "heading"}
+            >
               <Textarea
                 rows={2}
                 value={props.heading ?? ""}
@@ -217,7 +226,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           )}
 
           {"description" in props && (
-            <InspectorField label="Description">
+            <InspectorField
+              label="Description"
+              isFocused={activeFieldKey === "description"}
+            >
               <Textarea
                 rows={3}
                 value={props.description ?? ""}
@@ -232,7 +244,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           )}
 
           {"body" in props && (
-            <InspectorField label="Body text">
+            <InspectorField
+              label="Body text"
+              isFocused={activeFieldKey === "body"}
+            >
               <Textarea
                 rows={3}
                 value={props.body ?? ""}
@@ -245,7 +260,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           )}
 
           {"actionLabel" in props && (
-            <div className="space-y-2 rounded-lg border bg-muted/20 p-2.5">
+            <div
+              className={cn(
+                "space-y-2 rounded-lg border p-2.5 transition-all",
+                activeFieldKey === "actionLabel" ||
+                  activeFieldKey === "actionHref" ||
+                  activeElementKey === "action"
+                  ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
+                  : "bg-muted/20",
+              )}
+            >
               <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
                 <Link className="size-3 text-muted-foreground" />
                 <span>Action Button</span>
@@ -284,7 +308,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           )}
 
           {"imageSrc" in props && (
-            <div className="space-y-2 rounded-lg border bg-muted/20 p-2.5">
+            <div
+              className={cn(
+                "space-y-2 rounded-lg border p-2.5 transition-all",
+                activeFieldKey === "imageSrc" ||
+                  activeFieldKey === "imageAlt" ||
+                  activeElementKey === "image"
+                  ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
+                  : "bg-muted/20",
+              )}
+            >
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
                   <ImageIcon className="size-3 text-muted-foreground" />
@@ -750,14 +783,26 @@ function InspectorGroup({
 
 function InspectorField({
   label,
+  isFocused = false,
   children,
 }: {
   label: string;
+  isFocused?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-1">
-      <label className="text-[11px] font-medium text-muted-foreground">
+    <div
+      className={cn(
+        "space-y-1 rounded-lg p-1.5 transition-all duration-150",
+        isFocused && "bg-primary/10 ring-1 ring-primary/40",
+      )}
+    >
+      <label
+        className={cn(
+          "text-[11px] font-medium transition-colors block",
+          isFocused ? "text-primary font-semibold" : "text-muted-foreground",
+        )}
+      >
         {label}
       </label>
       {children}

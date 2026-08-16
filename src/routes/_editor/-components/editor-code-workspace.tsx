@@ -138,6 +138,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
   }, [jumpLocation]);
 
+  const externalBaselineRef = useRef<Record<string, string>>({});
+
   // Synchronize external file updates (Design Inspector AST patches, server queries, AI)
   useEffect(() => {
     setFileContents((prev) => {
@@ -145,22 +147,29 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       const next = { ...prev };
 
       for (const f of files) {
-        if (!(f.path in next)) {
+        const lastBaseline = externalBaselineRef.current[f.path];
+
+        if (lastBaseline === undefined) {
           // 1. Initial file load
-          next[f.path] = f.content;
-          changed = true;
-        } else if (!dirtyFiles[f.path]) {
-          // 2. Clean file: seamlessly sync external updates from Design / AST
-          if (next[f.path] !== f.content) {
+          externalBaselineRef.current[f.path] = f.content;
+          if (!(f.path in next)) {
             next[f.path] = f.content;
             changed = true;
           }
-        } else {
-          // 3. Dirty file: external content changed while user has uncommitted edits in Monaco
-          if (next[f.path] !== f.content) {
+        } else if (f.content !== lastBaseline) {
+          // 2. External actually changed on server / Design AST!
+          if (!dirtyFiles[f.path]) {
+            // Clean file: seamlessly update local Monaco content and advance baseline
+            next[f.path] = f.content;
+            externalBaselineRef.current[f.path] = f.content;
+            changed = true;
+          } else {
+            // Dirty file: true conflict! External changed while user has uncommitted edits in Monaco
             setConflictFiles((c) => ({ ...c, [f.path]: f.content }));
           }
         }
+        // If f.content === lastBaseline: External did NOT change.
+        // Even if user is actively typing (dirtyFiles[f.path] === true), NO false conflict is raised!
       }
 
       return changed ? next : prev;
@@ -194,7 +203,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       return res.data;
     },
     onSuccess: (saved) => {
+      externalBaselineRef.current[saved.path] = saved.content;
       setDirtyFiles((prev) => ({ ...prev, [saved.path]: false }));
+      setConflictFiles((prev) => {
+        const next = { ...prev };
+        delete next[saved.path];
+        return next;
+      });
       queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
       });
@@ -472,6 +487,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                 className="h-6 text-[11px] bg-background"
                 onClick={() => {
                   const external = conflictFiles[activeFilePath];
+                  externalBaselineRef.current[activeFilePath] = external;
                   setFileContents((prev) => ({
                     ...prev,
                     [activeFilePath]: external,
