@@ -3,8 +3,9 @@ import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FakeThemeBuildRunner } from "../compiler/theme-build-runner.types";
+import { FakeThemeBuildRunner } from "../compiler/fake-theme-build-runner";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
+
 import { ThemeBuildService } from "./theme-build.service";
 
 vi.mock("@/db", () => ({ getDb: vi.fn() }));

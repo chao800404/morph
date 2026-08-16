@@ -1,68 +1,65 @@
 import type { StorefrontThemeBuildInput } from "@/lib/storefront/dto/storefront-theme-build.dto";
 
+export type ThemeBuildDiagnosticSeverity = "info" | "warning" | "error";
+
+export type ThemeBuildDiagnostic = {
+  severity: ThemeBuildDiagnosticSeverity;
+  message: string;
+  file?: string;
+  line?: number;
+  column?: number;
+  code?: string;
+};
+
+export type ThemeBuildRunnerLog = {
+  timestamp: string;
+  level: "info" | "warn" | "error";
+  message: string;
+};
+
+export type ThemeBuildArtifactManifest = {
+  entry: string;
+  filesCount: number;
+  inputHash: string;
+  bundleFiles?: Array<{
+    path: string;
+    sizeBytes: number;
+    mimeType: string;
+  }>;
+  cssChunks?: string[];
+  jsChunks?: string[];
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
 export type ThemeBuildRunnerResult = {
   success: boolean;
   artifactPrefix?: string;
-  manifestJson?: any;
-  diagnosticsJson?: any;
+  manifestJson?: ThemeBuildArtifactManifest | Record<string, unknown>;
+  diagnosticsJson?: {
+    errors?: ThemeBuildDiagnostic[];
+    warnings?: ThemeBuildDiagnostic[];
+    diagnostics?: ThemeBuildDiagnostic[];
+    stage?: string;
+    [key: string]: unknown;
+  };
   errorMessage?: string;
+  logs?: ThemeBuildRunnerLog[];
+  durationMs?: number;
 };
 
+/**
+ * Formal contract for theme build runners (e.g. SandboxViteThemeBuildRunner in Phase 4B-5).
+ *
+ * Security Invariant:
+ * Theme and customer source files MUST NOT be evaluated (via eval, new Function, dynamic import,
+ * or direct worker execution) in the Morph Core request runtime.
+ * Execution must remain isolated within a sandbox process or container without access
+ * to Morph Core secrets, database bindings, or production credentials.
+ */
 export interface ThemeBuildRunner {
   readonly id: string;
+  readonly version: string;
+  readonly isolation: "isolated-process" | "sandbox-container" | "fake-mock";
   run(input: StorefrontThemeBuildInput): Promise<ThemeBuildRunnerResult>;
-}
-
-/**
- * Fake/Test Runner used for Theme Build orchestration in Phase 4B-3 before Cloudflare Sandbox Runner.
- */
-export class FakeThemeBuildRunner implements ThemeBuildRunner {
-  readonly id = "fake-theme-build-runner";
-
-  constructor(
-    private readonly behavior: {
-      shouldSucceed?: boolean;
-      shouldThrow?: boolean;
-      errorMessage?: string;
-      artifactPrefix?: string;
-      manifest?: any;
-      diagnostics?: any;
-      onRun?: (input: StorefrontThemeBuildInput) => void | Promise<void>;
-    } = {},
-  ) {}
-
-  async run(input: StorefrontThemeBuildInput): Promise<ThemeBuildRunnerResult> {
-    if (this.behavior.onRun) {
-      await this.behavior.onRun(input);
-    }
-
-
-    if (this.behavior.shouldThrow) {
-      throw new Error(
-        this.behavior.errorMessage ?? "Fake runner execution exception",
-      );
-    }
-
-    if (this.behavior.shouldSucceed === false) {
-      return {
-        success: false,
-        errorMessage: this.behavior.errorMessage ?? "Fake runner build failed",
-        diagnosticsJson: this.behavior.diagnostics ?? {
-          errors: ["Build syntax error"],
-        },
-      };
-    }
-
-    return {
-      success: true,
-      artifactPrefix:
-        this.behavior.artifactPrefix ?? `artifacts/${input.buildId}`,
-      manifestJson: this.behavior.manifest ?? {
-        entry: input.entry,
-        filesCount: input.files.length,
-        inputHash: input.inputHash,
-      },
-      diagnosticsJson: this.behavior.diagnostics ?? { warnings: [] },
-    };
-  }
 }
