@@ -249,7 +249,7 @@ export const storefrontThemeFileDal = {
       }
 
       const nextVersion = currentVersion + 1;
-      await db
+      const updateResult = await db
         .update(storefrontThemeFiles)
         .set({
           content,
@@ -262,19 +262,27 @@ export const storefrontThemeFileDal = {
             eq(storefrontThemeFiles.id, existing.id),
             eq(storefrontThemeFiles.version, currentVersion),
           ),
-        );
+        )
+        .returning();
 
+      if (!updateResult || updateResult.length === 0) {
+        throw new Error(
+          `CONFLICT_VERSION_MISMATCH: Atomic update failed for file "${path}". The file was modified by another concurrent operation.`,
+        );
+      }
+
+      const updatedRow = updateResult[0];
       savedFile = {
-        id: existing.id,
+        id: updatedRow.id,
         storefrontId,
         themeId,
         path,
-        content,
-        mimeType: mimeType ?? existing.mimeType ?? "text/plain",
-        isEntry: Boolean(existing.isEntry),
-        version: nextVersion,
-        createdAt: existing.createdAt,
-        updatedAt: now,
+        content: updatedRow.content,
+        mimeType: updatedRow.mimeType ?? "text/plain",
+        isEntry: Boolean(updatedRow.isEntry),
+        version: updatedRow.version ?? nextVersion,
+        createdAt: updatedRow.createdAt,
+        updatedAt: updatedRow.updatedAt ?? now,
       };
     } else {
       const newId = crypto.randomUUID();

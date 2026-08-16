@@ -57,7 +57,7 @@ import {
   updateStorefrontCommentGroup,
 } from "@/server/storefront/storefront-comments.serverFn";
 import { saveStorefrontThemeFile } from "@/server/storefront/storefront-theme-files.serverFn";
-import { patchElementClassName } from "@/lib/storefront/ast/theme-ast-transformer";
+import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
@@ -568,8 +568,9 @@ export function VisualEditorShell({
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const fileRevisionRef = useRef<Map<string, number>>(new Map());
   const inFlightSavesRef = useRef<Set<string>>(new Set());
+  const fileVersionRef = useRef<Map<string, number>>(new Map());
 
-  // Synchronize in-memory shared buffer whenever themeFiles query updates (e.g. Code save in Monaco)
+  // Synchronize in-memory shared buffer and version ref whenever themeFiles query updates
   useEffect(() => {
     for (const f of themeFiles) {
       if (
@@ -577,6 +578,10 @@ export function VisualEditorShell({
         !inFlightSavesRef.current.has(f.path)
       ) {
         sourceCodeBufferRef.current.set(f.path, f.content);
+      }
+      // Update baseline version if not currently tracking an in-flight sequence
+      if (!inFlightSavesRef.current.has(f.path) && typeof f.version === "number") {
+        fileVersionRef.current.set(f.path, f.version);
       }
     }
   }, [themeFiles]);
@@ -607,19 +612,28 @@ export function VisualEditorShell({
           setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "saving" }));
 
           try {
-            const currentFile = themeFiles.find((f) => f.path === filePath);
+            // Read monotonic expectedVersion directly from fileVersionRef at the exact execution time
+            const expectedVersion =
+              fileVersionRef.current.get(filePath) ??
+              themeFiles.find((f) => f.path === filePath)?.version;
+
             const res = await saveStorefrontThemeFile({
               data: {
                 storefrontId: context.storefront.id,
                 themeId: context.theme.id,
                 path: filePath,
                 content: contentToSave,
-                expectedVersion: currentFile?.version,
+                expectedVersion,
               },
             });
 
             if (!res.success) {
               throw new Error(res.message);
+            }
+
+            // Immediately advance monotonic version in ref for next queued save
+            if (res.data?.version) {
+              fileVersionRef.current.set(filePath, res.data.version);
             }
 
             setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "idle" }));
@@ -716,11 +730,26 @@ export function VisualEditorShell({
         themeFiles.find((f) => f.path === filePath)?.content;
       if (!currentSource) return;
 
-      const updatedContent = patchElementClassName(
+      const patchResult = patchElementClassNameResult(
         currentSource,
         elementName,
         updater,
       );
+
+      if (!patchResult.editable) {
+        if (patchResult.reason === "dynamic-classname") {
+          toast.warning(
+            `Element "${elementName}" has a dynamic className expression (e.g. cn(...)). Edit in Code mode to preserve component logic.`,
+          );
+        } else if (patchResult.reason === "parse-error") {
+          toast.error(
+            `Cannot modify styles: syntax error in ${filePath}. Fix TSX in Code mode.`,
+          );
+        }
+        return;
+      }
+
+      const updatedContent = patchResult.code;
       if (updatedContent !== currentSource) {
         // 1. Immediately update in-memory buffer
         sourceCodeBufferRef.current.set(filePath, updatedContent);

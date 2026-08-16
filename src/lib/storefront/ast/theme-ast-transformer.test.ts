@@ -115,4 +115,50 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(res.editable).toBe(false);
     expect(res.reason).toBe("dynamic-classname");
   });
+
+  it("patches self-closing JSX elements without existing className without breaking syntax", () => {
+    const selfClosingCode = `
+      export default function ImageHero() {
+        return (
+          <div>
+            <img
+              data-morph-element="image"
+            />
+          </div>
+        );
+      }
+    `;
+    const res = patchElementClassNameResult(selfClosingCode, "image", () => "size-full object-cover");
+    expect(res.editable).toBe(true);
+    expect(res.code).toContain('className="size-full object-cover"');
+    // Ensure it didn't inject inside the closing `/>` as `/<className>`
+    expect(res.code).toMatch(/<img[\s\S]*className="size-full object-cover"[\s\S]*\/>/);
+    const reParsed = parseComponentSource(res.code);
+    expect(reParsed.parseOk).toBe(true);
+    expect(reParsed.elements.image.className).toBe("size-full object-cover");
+    expect(reParsed.elements.image.isSelfClosing).toBe(true);
+  });
+
+  it("resolves component path from structured manifest sections and returns null for unmapped CMS-only sections", async () => {
+    const { getComponentFilePath } = await import("./theme-ast-transformer");
+    const files = [
+      {
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          sections: {
+            hero: { component: "Hero", source: "src/components/Hero.tsx" },
+            "custom-banner": { source: "src/components/CustomBanner.tsx" },
+          },
+        }),
+      },
+      { path: "src/components/Hero.tsx", content: "export default () => null;" },
+      { path: "src/components/CustomBanner.tsx", content: "export default () => null;" },
+      { path: "src/pages/index.tsx", content: "export default () => null;" },
+    ];
+
+    expect(getComponentFilePath("hero", files)).toBe("src/components/Hero.tsx");
+    expect(getComponentFilePath("custom-banner", files)).toBe("src/components/CustomBanner.tsx");
+    // Should return null (CMS-only) rather than falling back to index.tsx!
+    expect(getComponentFilePath("editorial-intro", files)).toBeNull();
+  });
 });

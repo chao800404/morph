@@ -13,12 +13,14 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   findSourceLocation,
   getComponentFilePath,
+  parseComponentSource,
   updateTailwindClass,
 } from "@/lib/storefront/ast/theme-ast-transformer";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { cn } from "@/lib/utils";
 import {
+  AlertTriangle,
   AlignCenter,
   AlignLeft,
   AlignRight,
@@ -103,6 +105,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const targetElement = activeElementKey || "heading";
   const props = localProps;
 
+  const componentFile = themeFiles?.find((f) => f.path === componentPath);
+  const parsedMeta = componentFile?.content
+    ? parseComponentSource(componentFile.content)
+    : null;
+  const targetElementMeta = parsedMeta?.elements[targetElement];
+  const isDynamicClassName = Boolean(
+    targetElementMeta?.classNameOffsets?.isExpression,
+  );
+  const hasSyntaxError = parsedMeta ? !parsedMeta.parseOk : false;
+
   const patchStyle = useCallback(
     (updater: (prevClasses: string) => string) => {
       if (!componentPath) return;
@@ -185,6 +197,32 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           )}
         </div>
       </div>
+
+      {/* Syntax Error Alert */}
+      {hasSyntaxError && (
+        <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive flex items-start gap-2.5 shadow-xs">
+          <AlertTriangle className="size-4 shrink-0 mt-0.5 text-destructive" />
+          <div className="space-y-1">
+            <div className="font-semibold text-xs leading-none">TSX Syntax Errors in Source</div>
+            <p className="text-[11px] opacity-90 leading-relaxed">
+              {componentPath?.split("/").pop()} contains syntax errors. Visual style patching is paused until syntax is resolved in Code mode.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Dynamic ClassName (Code-controlled) Banner */}
+      {!hasSyntaxError && isDynamicClassName && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
+          <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+          <div className="space-y-1">
+            <div className="font-semibold text-xs leading-none">Code-Controlled ClassName ({targetElement})</div>
+            <p className="text-[11px] opacity-90 leading-relaxed">
+              This element uses a dynamic expression (e.g. <code>cn(...)</code>). Direct style patching is disabled to protect component logic.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* 1. Content & Text Fields */}
       <InspectorGroup

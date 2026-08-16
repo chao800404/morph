@@ -16,6 +16,7 @@ export type ComponentElementMeta = {
   elementName: string;
   tag: string;
   className: string;
+  isSelfClosing: boolean;
   location: SourceLocation;
   startOffset: number;
   endOffset: number;
@@ -38,24 +39,46 @@ export type ParsedComponentMeta = {
 /**
  * Resolves actual component file path from section type using morph.theme.json manifest
  * or convention-based verification against existing workspace files.
+ * Returns null if the section has no dedicated source file (CMS-only).
  */
 export function getComponentFilePath(
   type: string,
   themeFiles?: Array<{ path: string; content?: string }>,
 ): string | null {
+  const normalizedType = type.toLowerCase().trim();
+  const strippedType = normalizedType.replace(/-/g, "");
+
   // 1. Check morph.theme.json manifest if available
   if (themeFiles) {
     const manifestFile = themeFiles.find((f) => f.path === "morph.theme.json");
     if (manifestFile && manifestFile.content) {
       try {
         const manifest = JSON.parse(manifestFile.content);
+
+        // A. Check structured `manifest.sections` object mapping
+        if (manifest.sections && typeof manifest.sections === "object") {
+          const sectionConfig =
+            manifest.sections[normalizedType] ?? manifest.sections[strippedType];
+          const sourcePath =
+            typeof sectionConfig === "string"
+              ? sectionConfig
+              : sectionConfig?.source ?? sectionConfig?.path;
+          if (sourcePath && themeFiles.some((f) => f.path === sourcePath)) {
+            return sourcePath;
+          }
+        }
+
+        // B. Check `manifest.components` array
         if (Array.isArray(manifest.components)) {
           const match = manifest.components.find(
-            (c: { name: string; path: string }) =>
-              c.name.toLowerCase() === type.toLowerCase().replace(/-/g, ""),
+            (c: { name: string; path?: string; source?: string }) => {
+              const name = (c.name || "").toLowerCase().replace(/-/g, "");
+              return name === strippedType || name === normalizedType;
+            },
           );
-          if (match && themeFiles.some((f) => f.path === match.path)) {
-            return match.path;
+          const sourcePath = match?.path ?? match?.source;
+          if (sourcePath && themeFiles.some((f) => f.path === sourcePath)) {
+            return sourcePath;
           }
         }
       } catch {}
@@ -63,30 +86,35 @@ export function getComponentFilePath(
   }
 
   // 2. Standard convention check against existing theme files
-  const normalized = type.toLowerCase().replace(/-/g, "");
-  if (normalized === "hero") {
+  if (strippedType === "hero") {
     const candidate = "src/components/Hero.tsx";
-    if (!themeFiles || themeFiles.some((f) => f.path === candidate)) {
+    if (themeFiles ? themeFiles.some((f) => f.path === candidate) : true) {
       return candidate;
     }
   }
-  if (normalized === "header") {
+  if (strippedType === "header") {
     const candidate = "src/components/Header.tsx";
-    if (!themeFiles || themeFiles.some((f) => f.path === candidate)) {
+    if (themeFiles ? themeFiles.some((f) => f.path === candidate) : true) {
       return candidate;
     }
   }
-  if (normalized === "footer") {
+  if (strippedType === "footer") {
     const candidate = "src/components/Footer.tsx";
-    if (!themeFiles || themeFiles.some((f) => f.path === candidate)) {
+    if (themeFiles ? themeFiles.some((f) => f.path === candidate) : true) {
       return candidate;
     }
   }
 
-  // 3. Fallback to entry page if present in files
-  const entryFile = "src/pages/index.tsx";
-  if (themeFiles && themeFiles.some((f) => f.path === entryFile)) {
-    return entryFile;
+  // 3. Check if a component file named directly after the section type exists in src/components/
+  if (themeFiles) {
+    const pascalName = normalizedType
+      .split("-")
+      .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+      .join("");
+    const directCandidate = `src/components/${pascalName}.tsx`;
+    if (themeFiles.some((f) => f.path === directCandidate)) {
+      return directCandidate;
+    }
   }
 
   return null;
@@ -212,6 +240,12 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
           }
         }
 
+        const isSelfClosing = Boolean(
+          openingElement.selfClosing ||
+            node.selfClosing ||
+            node.type === "JSXSelfClosingElement",
+        );
+
         if (morphElementName) {
           let tagName = "div";
           if (openingElement.name?.type === "JSXIdentifier") {
@@ -225,6 +259,7 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
             elementName: morphElementName,
             tag: tagName,
             className,
+            isSelfClosing,
             location: {
               line,
               column,
@@ -271,7 +306,16 @@ export function patchComponentDefaultProp(
 
       let isMatchingComponent = true;
       if (componentName) {
-        if (node.type === "FunctionDeclaration" && node.id?.name !== componentName) {
+        if (node.type === "FunctionDeclaration") {
+          isMatchingComponent = node.id?.name === componentName;
+        } else if (node.type === "ExportDefaultDeclaration") {
+          const decl = node.declaration;
+          if (decl && typeof decl === "object" && "id" in decl && decl.id) {
+            isMatchingComponent = (decl.id as any).name === componentName;
+          } else {
+            isMatchingComponent = componentName === "default" || componentName === "Hero";
+          }
+        } else {
           isMatchingComponent = false;
         }
       }
@@ -305,6 +349,7 @@ export function patchComponentDefaultProp(
       }
 
       if (
+        !componentName &&
         !targetNode &&
         node.type === "AssignmentPattern" &&
         node.left?.type === "Identifier" &&
@@ -362,15 +407,22 @@ export function patchElementClassNameResult(
     };
   }
 
-  // If element has no className attribute yet, insert one before tag close
-  const insertPos =
-    element.openingEndOffset > 0 ? element.openingEndOffset - 1 : 0;
+  // If element has no className attribute yet, insert one before tag close (> or />)
+  let insertPos = 0;
+  if (element.isSelfClosing) {
+    const slashIdx = sourceCode.lastIndexOf("/", element.openingEndOffset);
+    insertPos = slashIdx !== -1 ? slashIdx : element.openingEndOffset - 2;
+  } else {
+    const closeIdx = sourceCode.lastIndexOf(">", element.openingEndOffset);
+    insertPos = closeIdx !== -1 ? closeIdx : element.openingEndOffset - 1;
+  }
+
   if (insertPos > 0) {
     const nextClasses = updater("");
     return {
       code:
         sourceCode.slice(0, insertPos) +
-        ` className=${JSON.stringify(nextClasses)}` +
+        ` className=${JSON.stringify(nextClasses)} ` +
         sourceCode.slice(insertPos),
       editable: true,
     };
