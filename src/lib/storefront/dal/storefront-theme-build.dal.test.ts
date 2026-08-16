@@ -241,19 +241,22 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
       );
       expect(build.status).toBe("queued");
 
-      // Transition 1: queued -> building
+      // Transition 1: queued -> building with atomic identity freeze
       const building = await storefrontThemeBuildDal.markBuildStarted(
         "storefront-a",
         "theme-a",
         build.id,
         {
+          inputHash: "a".repeat(64),
           compilerId: "tailwind-v4",
           compilerVersion: "4.1.17",
         },
       );
       expect(building.status).toBe("building");
       expect(building.startedAt).toBeDefined();
+      expect(building.inputHash).toBe("a".repeat(64));
       expect(building.compilerId).toBe("tailwind-v4");
+      expect(building.compilerVersion).toBe("4.1.17");
 
       // Transition 2: building -> succeeded
       const succeeded = await storefrontThemeBuildDal.markBuildSucceeded(
@@ -261,13 +264,13 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         "theme-a",
         build.id,
         {
-          inputHash: "hash-123456",
+          inputHash: "a".repeat(64),
           artifactPrefix: "r2://artifacts/build-1",
         },
       );
       expect(succeeded.status).toBe("succeeded");
       expect(succeeded.completedAt).toBeDefined();
-      expect(succeeded.inputHash).toBe("hash-123456");
+      expect(succeeded.inputHash).toBe("a".repeat(64));
       expect(succeeded.artifactPrefix).toBe("r2://artifacts/build-1");
     });
 
@@ -286,6 +289,11 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         "storefront-a",
         "theme-a",
         build.id,
+        {
+          inputHash: "b".repeat(64),
+          compilerId: "tailwind-v4",
+          compilerVersion: "4.1.17",
+        },
       );
 
       const failed = await storefrontThemeBuildDal.markBuildFailed(
@@ -342,6 +350,11 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         "storefront-a",
         "theme-a",
         build.id,
+        {
+          inputHash: "c".repeat(64),
+          compilerId: "tailwind-v4",
+          compilerVersion: "4.1.17",
+        },
       );
       await storefrontThemeBuildDal.markBuildSucceeded(
         "storefront-a",
@@ -356,6 +369,11 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
           "storefront-a",
           "theme-a",
           build.id,
+          {
+            inputHash: "c".repeat(64),
+            compilerId: "tailwind-v4",
+            compilerVersion: "4.1.17",
+          },
         ),
       ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
 
@@ -384,6 +402,11 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         "storefront-a",
         "theme-a",
         build.id,
+        {
+          inputHash: "d".repeat(64),
+          compilerId: "tailwind-v4",
+          compilerVersion: "4.1.17",
+        },
       );
       await storefrontThemeBuildDal.markBuildFailed(
         "storefront-a",
@@ -398,6 +421,11 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
           "storefront-a",
           "theme-a",
           build.id,
+          {
+            inputHash: "d".repeat(64),
+            compilerId: "tailwind-v4",
+            compilerVersion: "4.1.17",
+          },
         ),
       ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
 
@@ -411,5 +439,28 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         ),
       ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
     });
+
+    it("retrieves materialization source (build and revision) from DAL", async () => {
+      seedStorefront("storefront-a");
+      seedTheme("storefront-a", "theme-a");
+      seedRevision("storefront-a", "theme-a", "rev-source-1", 1);
+
+      const build = await storefrontThemeBuildDal.createBuild(
+        "storefront-a",
+        "theme-a",
+        { sourceRevisionId: "rev-source-1" },
+      );
+
+      const source = await storefrontThemeBuildDal.getBuildMaterializationSource(
+        "storefront-a",
+        "theme-a",
+        build.id,
+      );
+
+      expect(source.build.id).toBe(build.id);
+      expect(source.revision.id).toBe("rev-source-1");
+      expect(source.revision.revisionNumber).toBe(1);
+    });
+
   });
 });

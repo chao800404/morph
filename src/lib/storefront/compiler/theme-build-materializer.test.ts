@@ -4,7 +4,10 @@ import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
-import { themeBuildMaterializer } from "./theme-build-materializer";
+import {
+  materializeThemeBuildInput,
+  normalizeRevisionSnapshot,
+} from "./theme-build-materializer";
 
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
 
@@ -130,7 +133,12 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
     themeId: string,
     revisionId: string,
     revisionNumber: number,
-    files: Array<{ path: string; content: string; mimeType?: string; isEntry?: boolean }>,
+    files: Array<{
+      path: string;
+      content: string;
+      mimeType?: string;
+      isEntry?: boolean;
+    }>,
   ) => {
     sqlite
       .prepare(
@@ -190,7 +198,8 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       },
       {
         path: "src/pages/index.tsx",
-        content: 'import Hero from "../components/Hero"; export default () => <Hero />;',
+        content:
+          'import Hero from "../components/Hero"; export default () => <Hero />;',
         mimeType: "text/typescript",
         isEntry: true,
       },
@@ -213,13 +222,18 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       '<div className="text-[80px]">Hero 80px (Working File Mutation)</div>',
     );
 
-    // 4. Materialize Build B1
-    const buildInput =
-      await themeBuildMaterializer.materializeThemeBuildInput(
+    // 4. Fetch source from DAL & materialize pure build input
+    const source =
+      await storefrontThemeBuildDal.getBuildMaterializationSource(
         "storefront-1",
         "theme-1",
         build.id,
       );
+
+    const buildInput = materializeThemeBuildInput({
+      build: source.build,
+      revision: source.revision,
+    });
 
     // 5. Assert: B1 must strictly contain text-[48px] and NOT text-[80px]
     expect(buildInput.buildId).toBe(build.id);
@@ -239,11 +253,16 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
 
-    // Seed unordered snapshot
     seedRevision("storefront-1", "theme-1", "rev-det", 1, [
-      { path: "src/pages/index.tsx", content: "export default () => <div>Index</div>;" },
+      {
+        path: "src/pages/index.tsx",
+        content: "export default () => <div>Index</div>;",
+      },
       { path: "package.json", content: '{"name": "theme"}' },
-      { path: "src/components/Header.tsx", content: "export default () => <header />;" },
+      {
+        path: "src/components/Header.tsx",
+        content: "export default () => <header />;",
+      },
       { path: "src/styles/global.css", content: '@import "tailwindcss";' },
     ]);
 
@@ -253,17 +272,21 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-det" },
     );
 
-    const input1 = await themeBuildMaterializer.materializeThemeBuildInput(
-      "storefront-1",
-      "theme-1",
-      build.id,
-    );
+    const source =
+      await storefrontThemeBuildDal.getBuildMaterializationSource(
+        "storefront-1",
+        "theme-1",
+        build.id,
+      );
 
-    const input2 = await themeBuildMaterializer.materializeThemeBuildInput(
-      "storefront-1",
-      "theme-1",
-      build.id,
-    );
+    const input1 = materializeThemeBuildInput({
+      build: source.build,
+      revision: source.revision,
+    });
+    const input2 = materializeThemeBuildInput({
+      build: source.build,
+      revision: source.revision,
+    });
 
     // Assert files are sorted alphabetically by path
     expect(input1.files.map((f) => f.path)).toEqual([
@@ -283,7 +306,10 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
 
     seedRevision("storefront-1", "theme-1", "rev-immutable", 1, [
       { path: "src/styles/global.css", content: '@import "tailwindcss";' },
-      { path: "src/pages/index.tsx", content: "export default () => <div>Page</div>;" },
+      {
+        path: "src/pages/index.tsx",
+        content: "export default () => <div>Page</div>;",
+      },
     ]);
 
     const build = await storefrontThemeBuildDal.createBuild(
@@ -292,23 +318,36 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-immutable" },
     );
 
-    const initialInput =
-      await themeBuildMaterializer.materializeThemeBuildInput(
+    const source1 =
+      await storefrontThemeBuildDal.getBuildMaterializationSource(
         "storefront-1",
         "theme-1",
         build.id,
       );
+    const initialInput = materializeThemeBuildInput({
+      build: source1.build,
+      revision: source1.revision,
+    });
 
     // Mutate working tree heavily
     seedWorkingFile("storefront-1", "theme-1", "src/extra.tsx", "extra");
-    seedWorkingFile("storefront-1", "theme-1", "src/styles/global.css", "mutated");
+    seedWorkingFile(
+      "storefront-1",
+      "theme-1",
+      "src/styles/global.css",
+      "mutated",
+    );
 
-    const subsequentInput =
-      await themeBuildMaterializer.materializeThemeBuildInput(
+    const source2 =
+      await storefrontThemeBuildDal.getBuildMaterializationSource(
         "storefront-1",
         "theme-1",
         build.id,
       );
+    const subsequentInput = materializeThemeBuildInput({
+      build: source2.build,
+      revision: source2.revision,
+    });
 
     expect(subsequentInput.inputHash).toBe(initialInput.inputHash);
     expect(subsequentInput.files).toEqual(initialInput.files);
@@ -336,33 +375,31 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-B" },
     );
 
-    const inputA = await themeBuildMaterializer.materializeThemeBuildInput(
-      "storefront-1",
-      "theme-1",
-      buildA.id,
-    );
-    const inputB = await themeBuildMaterializer.materializeThemeBuildInput(
-      "storefront-1",
-      "theme-1",
-      buildB.id,
-    );
+    const sourceA =
+      await storefrontThemeBuildDal.getBuildMaterializationSource(
+        "storefront-1",
+        "theme-1",
+        buildA.id,
+      );
+    const sourceB =
+      await storefrontThemeBuildDal.getBuildMaterializationSource(
+        "storefront-1",
+        "theme-1",
+        buildB.id,
+      );
+
+    const inputA = materializeThemeBuildInput({
+      build: sourceA.build,
+      revision: sourceA.revision,
+    });
+    const inputB = materializeThemeBuildInput({
+      build: sourceB.build,
+      revision: sourceB.revision,
+    });
 
     expect(inputA.inputHash).not.toBe(inputB.inputHash);
     expect(inputA.sourceRevisionId).toBe("rev-A");
     expect(inputB.sourceRevisionId).toBe("rev-B");
-  });
-
-  it("fails if build does not exist", async () => {
-    seedStorefront("storefront-1");
-    seedTheme("storefront-1", "theme-1");
-
-    await expect(
-      themeBuildMaterializer.materializeThemeBuildInput(
-        "storefront-1",
-        "theme-1",
-        "non-existent-build",
-      ),
-    ).rejects.toThrow(/BUILD_NOT_FOUND/);
   });
 
   it("fails if bound source revision was deleted or does not belong to storefront/theme", async () => {
@@ -380,11 +417,13 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
 
     // Soft-delete the revision
     sqlite
-      .prepare("UPDATE storefront_theme_revisions SET deleted_at = ? WHERE id = ?")
+      .prepare(
+        "UPDATE storefront_theme_revisions SET deleted_at = ? WHERE id = ?",
+      )
       .run(new Date().toISOString(), "rev-valid");
 
     await expect(
-      themeBuildMaterializer.materializeThemeBuildInput(
+      storefrontThemeBuildDal.getBuildMaterializationSource(
         "storefront-1",
         "theme-1",
         build.id,
@@ -396,7 +435,6 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
 
-    // Seed working file that could tempt a fallback
     seedWorkingFile(
       "storefront-1",
       "theme-1",
@@ -427,12 +465,164 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-empty" },
     );
 
-    await expect(
-      themeBuildMaterializer.materializeThemeBuildInput(
+    const source =
+      await storefrontThemeBuildDal.getBuildMaterializationSource(
         "storefront-1",
         "theme-1",
         build.id,
+      );
+
+    expect(() =>
+      materializeThemeBuildInput({
+        build: source.build,
+        revision: source.revision,
+      }),
+    ).toThrow(/EMPTY_OR_CORRUPT_REVISION_SNAPSHOT/);
+  });
+
+  it("fails closed on unsafe paths (traversal, leading slash, null bytes)", () => {
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [{ path: "../secret.txt", content: "bad" }],
+        "rev-bad-1",
       ),
-    ).rejects.toThrow(/EMPTY_OR_CORRUPT_REVISION_SNAPSHOT/);
+    ).toThrow(/CORRUPT_REVISION_FILE_PATH/);
+
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [{ path: "/root/abs.txt", content: "bad" }],
+        "rev-bad-2",
+      ),
+    ).toThrow(/CORRUPT_REVISION_FILE_PATH/);
+
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [{ path: "src/file\0.tsx", content: "bad" }],
+        "rev-bad-3",
+      ),
+    ).toThrow(/CORRUPT_REVISION_FILE_PATH/);
+  });
+
+  it("fails closed on duplicate paths and multiple isEntry flags", () => {
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [
+          { path: "src/Hero.tsx", content: "A" },
+          { path: "src/Hero.tsx", content: "B" },
+        ],
+        "rev-dup",
+      ),
+    ).toThrow(/CORRUPT_REVISION_SNAPSHOT: Duplicate file path/);
+
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [
+          { path: "src/PageA.tsx", content: "A", isEntry: true },
+          { path: "src/PageB.tsx", content: "B", isEntry: true },
+        ],
+        "rev-multi-entry",
+      ),
+    ).toThrow(/CORRUPT_REVISION_SNAPSHOT: Multiple entry files/);
+  });
+
+  it("enforces identity freeze: locked build strictly rejects conflicting compilerIdentity overrides", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-freeze", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Frozen</h1>;" },
+    ]);
+
+    const build = await storefrontThemeBuildDal.createBuild(
+      "storefront-1",
+      "theme-1",
+      { sourceRevisionId: "rev-freeze" },
+    );
+
+    const source =
+      await storefrontThemeBuildDal.getBuildMaterializationSource(
+        "storefront-1",
+        "theme-1",
+        build.id,
+      );
+
+    // Initial materialization for queued build
+    const input = materializeThemeBuildInput({
+      build: source.build,
+      revision: source.revision,
+      compilerIdentity: { compilerId: "tailwind-v4-build", compilerVersion: "4.1.17" },
+    });
+
+    // Mark build started (atomic identity freeze)
+    const startedBuild = await storefrontThemeBuildDal.markBuildStarted(
+      "storefront-1",
+      "theme-1",
+      build.id,
+      {
+        inputHash: input.inputHash,
+        compilerId: input.compilerId,
+        compilerVersion: input.compilerVersion,
+      },
+    );
+
+    expect(startedBuild.status).toBe("building");
+    expect(startedBuild.compilerVersion).toBe("4.1.17");
+
+    // Later materialization on building build MUST retain original identity
+    const lockedInput = materializeThemeBuildInput({
+      build: startedBuild,
+      revision: source.revision,
+    });
+    expect(lockedInput.inputHash).toBe(input.inputHash);
+    expect(lockedInput.compilerVersion).toBe("4.1.17");
+
+    // If caller attempts to pass conflicting compiler version to locked build, MUST throw!
+    expect(() =>
+      materializeThemeBuildInput({
+        build: startedBuild,
+        revision: source.revision,
+        compilerIdentity: { compilerVersion: "99.0.0" },
+      }),
+    ).toThrow(/COMPILER_IDENTITY_MISMATCH/);
+  });
+
+  it("prevents identity race on concurrent markBuildStarted attempts", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-race", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Race</h1>;" },
+    ]);
+
+    const build = await storefrontThemeBuildDal.createBuild(
+      "storefront-1",
+      "theme-1",
+      { sourceRevisionId: "rev-race" },
+    );
+
+    // Worker 1 starts the build with version 4.1.17
+    const worker1 = await storefrontThemeBuildDal.markBuildStarted(
+      "storefront-1",
+      "theme-1",
+      build.id,
+      {
+        inputHash: "1".repeat(64),
+        compilerId: "tailwind-v4",
+        compilerVersion: "4.1.17",
+      },
+    );
+    expect(worker1.status).toBe("building");
+
+    // Worker 2 attempting to start the same queued build with version 4.2.0 MUST fail CAS conflict
+    await expect(
+      storefrontThemeBuildDal.markBuildStarted(
+        "storefront-1",
+        "theme-1",
+        build.id,
+        {
+          inputHash: "2".repeat(64),
+          compilerId: "tailwind-v4",
+          compilerVersion: "4.2.0",
+        },
+      ),
+    ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
   });
 });

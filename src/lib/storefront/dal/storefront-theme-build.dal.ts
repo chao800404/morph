@@ -5,6 +5,7 @@ import {
   storefrontThemes,
 } from "@/db/storefront.schema";
 import type { StorefrontThemeBuildDTO } from "@/lib/storefront/dto/storefront-theme-build.dto";
+import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { and, desc, eq, isNull } from "drizzle-orm";
 
 function mapBuildRowToDTO(
@@ -28,6 +29,22 @@ function mapBuildRowToDTO(
     createdBy: row.createdBy,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function mapRevisionRowToDTO(
+  row: typeof storefrontThemeRevisions.$inferSelect,
+): StorefrontThemeRevisionDTO {
+  return {
+    id: row.id,
+    storefrontId: row.storefrontId,
+    themeId: row.themeId,
+    revisionNumber: row.revisionNumber,
+    message: row.message,
+    source: row.source as "manual" | "ai" | "publish" | "rollback",
+    snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
   };
 }
 
@@ -158,6 +175,62 @@ export const storefrontThemeBuildDal = {
   },
 
   /**
+   * Retrieves both Build and bound Source Revision records needed for materialization.
+   */
+  async getBuildMaterializationSource(
+    storefrontId: string,
+    themeId: string,
+    buildId: string,
+  ): Promise<{
+    build: StorefrontThemeBuildDTO;
+    revision: StorefrontThemeRevisionDTO;
+  }> {
+    const db = await getDb();
+    const [buildRow] = await db
+      .select()
+      .from(storefrontThemeBuilds)
+      .where(
+        and(
+          eq(storefrontThemeBuilds.id, buildId),
+          eq(storefrontThemeBuilds.storefrontId, storefrontId),
+          eq(storefrontThemeBuilds.themeId, themeId),
+          isNull(storefrontThemeBuilds.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!buildRow) {
+      throw new Error(
+        `BUILD_NOT_FOUND: Theme build "${buildId}" not found for storefront "${storefrontId}" and theme "${themeId}".`,
+      );
+    }
+
+    const [revisionRow] = await db
+      .select()
+      .from(storefrontThemeRevisions)
+      .where(
+        and(
+          eq(storefrontThemeRevisions.id, buildRow.sourceRevisionId),
+          eq(storefrontThemeRevisions.storefrontId, storefrontId),
+          eq(storefrontThemeRevisions.themeId, themeId),
+          isNull(storefrontThemeRevisions.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!revisionRow) {
+      throw new Error(
+        `SOURCE_REVISION_NOT_FOUND: Immutable source revision "${buildRow.sourceRevisionId}" bound to build "${buildId}" was not found or was deleted.`,
+      );
+    }
+
+    return {
+      build: mapBuildRowToDTO(buildRow),
+      revision: mapRevisionRowToDTO(revisionRow),
+    };
+  },
+
+  /**
    * Lists historical build records for a theme.
    */
   async listBuilds(
@@ -187,16 +260,17 @@ export const storefrontThemeBuildDal = {
   },
 
   /**
-   * State Transition: queued -> building
+   * State Transition: queued -> building with atomic compiler/input identity freeze.
    * Throws INVALID_STATE_TRANSITION if current status is not "queued".
    */
   async markBuildStarted(
     storefrontId: string,
     themeId: string,
     buildId: string,
-    options?: {
-      compilerId?: string;
-      compilerVersion?: string;
+    options: {
+      inputHash: string;
+      compilerId: string;
+      compilerVersion: string;
       startedAt?: string;
     },
   ): Promise<StorefrontThemeBuildDTO> {
@@ -213,28 +287,32 @@ export const storefrontThemeBuildDal = {
 
     const db = await getDb();
     const now = new Date().toISOString();
-    const startedAt = options?.startedAt ?? now;
+    const startedAt = options.startedAt ?? now;
 
     const [updated] = await db
       .update(storefrontThemeBuilds)
       .set({
         status: "building",
-        compilerId: options?.compilerId ?? existing.compilerId,
-        compilerVersion: options?.compilerVersion ?? existing.compilerVersion,
+        inputHash: options.inputHash,
+        compilerId: options.compilerId,
+        compilerVersion: options.compilerVersion,
         startedAt,
         updatedAt: now,
       })
       .where(
         and(
           eq(storefrontThemeBuilds.id, buildId),
+          eq(storefrontThemeBuilds.storefrontId, storefrontId),
+          eq(storefrontThemeBuilds.themeId, themeId),
           eq(storefrontThemeBuilds.status, "queued"),
+          isNull(storefrontThemeBuilds.deletedAt),
         ),
       )
       .returning();
 
     if (!updated) {
       throw new Error(
-        "CONFLICT_STATE_CONCURRENCY: Build status changed concurrently during start transition",
+        "CONFLICT_STATE_CONCURRENCY: Build status changed concurrently during start transition or already building",
       );
     }
 
@@ -286,7 +364,10 @@ export const storefrontThemeBuildDal = {
       .where(
         and(
           eq(storefrontThemeBuilds.id, buildId),
+          eq(storefrontThemeBuilds.storefrontId, storefrontId),
+          eq(storefrontThemeBuilds.themeId, themeId),
           eq(storefrontThemeBuilds.status, "building"),
+          isNull(storefrontThemeBuilds.deletedAt),
         ),
       )
       .returning();
@@ -341,7 +422,10 @@ export const storefrontThemeBuildDal = {
       .where(
         and(
           eq(storefrontThemeBuilds.id, buildId),
+          eq(storefrontThemeBuilds.storefrontId, storefrontId),
+          eq(storefrontThemeBuilds.themeId, themeId),
           eq(storefrontThemeBuilds.status, existing.status),
+          isNull(storefrontThemeBuilds.deletedAt),
         ),
       )
       .returning();
@@ -354,28 +438,4 @@ export const storefrontThemeBuildDal = {
 
     return mapBuildRowToDTO(updated);
   },
-
-  /**
-   * Materializes the immutable virtual filesystem and compiler input strictly from the Build's bound sourceRevisionId.
-   */
-  async materializeBuildInput(
-    storefrontId: string,
-    themeId: string,
-    buildId: string,
-    options?: {
-      compilerId?: string;
-      compilerVersion?: string;
-    },
-  ) {
-    const { themeBuildMaterializer } = await import(
-      "@/lib/storefront/compiler/theme-build-materializer"
-    );
-    return themeBuildMaterializer.materializeThemeBuildInput(
-      storefrontId,
-      themeId,
-      buildId,
-      options,
-    );
-  },
 };
-

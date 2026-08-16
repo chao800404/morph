@@ -1,19 +1,27 @@
-import { getDb } from "@/db";
-import {
-  storefrontThemeBuilds,
-  storefrontThemeRevisions,
-} from "@/db/storefront.schema";
-import type { StorefrontThemeBuildInput } from "@/lib/storefront/dto/storefront-theme-build.dto";
-import { and, eq, isNull } from "drizzle-orm";
+import type {
+  StorefrontThemeBuildDTO,
+  StorefrontThemeBuildInput,
+} from "@/lib/storefront/dto/storefront-theme-build.dto";
+import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
 import { computeThemeInputHash } from "./theme-compiler-hasher";
 import type { ThemeCompilerFile } from "./theme-compiler.types";
 
+export type MaterializeThemeBuildInputParams = {
+  build: StorefrontThemeBuildDTO;
+  revision: StorefrontThemeRevisionDTO;
+  compilerIdentity?: {
+    compilerId?: string;
+    compilerVersion?: string;
+  };
+};
+
 /**
- * Normalizes snapshot raw entries into a sorted, unique ThemeCompilerFile array.
+ * Normalizes snapshot raw entries into a sorted, unique ThemeCompilerFile array with fail-closed security checks.
  */
 export function normalizeRevisionSnapshot(
-  snapshot: any,
+  snapshot: unknown,
   sourceRevisionId: string,
 ): { files: ThemeCompilerFile[]; entry: string } {
   if (!snapshot || !Array.isArray(snapshot) || snapshot.length === 0) {
@@ -36,8 +44,29 @@ export function normalizeRevisionSnapshot(
       );
     }
 
-    const path = raw.path.replace(/\\/g, "/").trim();
-    if (!path) continue;
+    const normalizedPath = raw.path.replace(/\\/g, "/").trim();
+    const parseResult = safeThemeFilePathSchema.safeParse(normalizedPath);
+    if (!parseResult.success) {
+      throw new Error(
+        `CORRUPT_REVISION_FILE_PATH: Unsafe file path "${raw.path}" in source revision ${sourceRevisionId}: ${parseResult.error.issues[0]?.message}`,
+      );
+    }
+    const path = parseResult.data;
+
+    if (fileMap.has(path)) {
+      throw new Error(
+        `CORRUPT_REVISION_SNAPSHOT: Duplicate file path found in source revision ${sourceRevisionId}: "${path}".`,
+      );
+    }
+
+    if (raw.isEntry) {
+      if (detectedEntry) {
+        throw new Error(
+          `CORRUPT_REVISION_SNAPSHOT: Multiple entry files declared in source revision ${sourceRevisionId}: "${detectedEntry}" and "${path}".`,
+        );
+      }
+      detectedEntry = path;
+    }
 
     const file: ThemeCompilerFile = {
       path,
@@ -45,10 +74,6 @@ export function normalizeRevisionSnapshot(
       mimeType: raw.mimeType,
       isEntry: Boolean(raw.isEntry),
     };
-
-    if (raw.isEntry) {
-      detectedEntry = path;
-    }
 
     fileMap.set(path, file);
   }
@@ -76,119 +101,96 @@ export function normalizeRevisionSnapshot(
   };
 }
 
-export const themeBuildMaterializer = {
-  /**
-   * Materializes an immutable StorefrontThemeBuildInput strictly from the Build's bound sourceRevisionId.
-   *
-   * STRICT INVARIANTS:
-   * 1. Reads ONLY from storefront_theme_revisions.snapshot.
-   * 2. NEVER reads from or falls back to storefront_theme_files working tree.
-   * 3. Deterministic file sorting and SHA-256 input hashing via computeThemeInputHash.
-   * 4. Updates build record's inputHash/compiler metadata if status is non-terminal.
-   */
-  async materializeThemeBuildInput(
-    storefrontId: string,
-    themeId: string,
-    buildId: string,
-    options?: {
-      compilerId?: string;
-      compilerVersion?: string;
-    },
-  ): Promise<StorefrontThemeBuildInput> {
-    const db = await getDb();
-
-    // 1. Fetch Build Record
-    const [build] = await db
-      .select()
-      .from(storefrontThemeBuilds)
-      .where(
-        and(
-          eq(storefrontThemeBuilds.id, buildId),
-          eq(storefrontThemeBuilds.storefrontId, storefrontId),
-          eq(storefrontThemeBuilds.themeId, themeId),
-          isNull(storefrontThemeBuilds.deletedAt),
-        ),
-      )
-      .limit(1);
-
-    if (!build) {
-      throw new Error(
-        `BUILD_NOT_FOUND: Theme build "${buildId}" not found for storefront "${storefrontId}" and theme "${themeId}".`,
-      );
-    }
-
-    // 2. Fetch Bound Immutable Source Revision Record (strictly from storefront_theme_revisions)
-    const [revision] = await db
-      .select()
-      .from(storefrontThemeRevisions)
-      .where(
-        and(
-          eq(storefrontThemeRevisions.id, build.sourceRevisionId),
-          eq(storefrontThemeRevisions.storefrontId, storefrontId),
-          eq(storefrontThemeRevisions.themeId, themeId),
-          isNull(storefrontThemeRevisions.deletedAt),
-        ),
-      )
-      .limit(1);
-
-    if (!revision) {
-      throw new Error(
-        `SOURCE_REVISION_NOT_FOUND: Immutable source revision "${build.sourceRevisionId}" bound to build "${buildId}" was not found or was deleted.`,
-      );
-    }
-
-    // 3. Materialize and validate files strictly from revision.snapshot
-    const { files, entry } = normalizeRevisionSnapshot(
-      revision.snapshot,
-      build.sourceRevisionId,
+/**
+ * Pure Materializer Function:
+ * Reconstructs the complete, immutable virtual filesystem and compiler input strictly from the provided Build and Revision DTOs.
+ *
+ * Identity Invariants:
+ * 1. If build already has frozen compilerId / compilerVersion (e.g. status !== "queued" or already set),
+ *    and caller passes conflicting compilerIdentity, it throws COMPILER_IDENTITY_MISMATCH.
+ * 2. If build is queued and has no compilerId / compilerVersion set, it uses provided compilerIdentity or defaults.
+ * 3. Pure function: performs ZERO database queries or side effects.
+ */
+export function materializeThemeBuildInput({
+  build,
+  revision,
+  compilerIdentity,
+}: MaterializeThemeBuildInputParams): StorefrontThemeBuildInput {
+  // Validate ownership match between Build and Revision
+  if (
+    build.sourceRevisionId !== revision.id ||
+    build.storefrontId !== revision.storefrontId ||
+    build.themeId !== revision.themeId
+  ) {
+    throw new Error(
+      `SOURCE_REVISION_MISMATCH: Build "${build.id}" bound revision "${build.sourceRevisionId}" does not match provided revision "${revision.id}" or storefront/theme ownership mismatch.`,
     );
+  }
 
-    // 4. Compute single identity SHA-256 hash
-    const compilerId =
-      options?.compilerId ?? build.compilerId ?? "tailwind-v4-build";
-    const compilerVersion =
-      options?.compilerVersion ?? build.compilerVersion ?? TAILWIND_VERSION;
+  // Determine compiler identity & guard against identity drift
+  let compilerId: string;
+  let compilerVersion: string;
 
-    const inputHash = computeThemeInputHash(
-      { files, entry },
-      { id: compilerId, version: compilerVersion },
-    );
+  if (build.compilerId || build.compilerVersion || build.status !== "queued") {
+    // Identity is already bound / frozen on build
+    const boundCompilerId = build.compilerId ?? "tailwind-v4-build";
+    const boundCompilerVersion = build.compilerVersion ?? TAILWIND_VERSION;
 
-    // 5. Persist inputHash / compiler metadata to build record if queued/building and not yet set
     if (
-      (build.status === "queued" || build.status === "building") &&
-      (build.inputHash !== inputHash ||
-        build.compilerId !== compilerId ||
-        build.compilerVersion !== compilerVersion)
+      compilerIdentity?.compilerId &&
+      compilerIdentity.compilerId !== boundCompilerId
     ) {
-      const now = new Date().toISOString();
-      await db
-        .update(storefrontThemeBuilds)
-        .set({
-          inputHash,
-          compilerId,
-          compilerVersion,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(storefrontThemeBuilds.id, buildId),
-            eq(storefrontThemeBuilds.status, build.status),
-          ),
-        );
+      throw new Error(
+        `COMPILER_IDENTITY_MISMATCH: Cannot override compilerId for build "${build.id}" with status "${build.status}". Expected "${boundCompilerId}", got "${compilerIdentity.compilerId}".`,
+      );
     }
 
-    return {
-      buildId: build.id,
-      storefrontId: build.storefrontId,
-      themeId: build.themeId,
-      sourceRevisionId: build.sourceRevisionId,
-      revisionNumber: revision.revisionNumber,
-      files,
-      entry,
-      inputHash,
-      compilerId,
-      compilerVersion,
-    };
-  },
-};
+    if (
+      compilerIdentity?.compilerVersion &&
+      compilerIdentity.compilerVersion !== boundCompilerVersion
+    ) {
+      throw new Error(
+        `COMPILER_IDENTITY_MISMATCH: Cannot override compilerVersion for build "${build.id}" with status "${build.status}". Expected "${boundCompilerVersion}", got "${compilerIdentity.compilerVersion}".`,
+      );
+    }
+
+    compilerId = boundCompilerId;
+    compilerVersion = boundCompilerVersion;
+  } else {
+    // Build is queued and not yet bound
+    compilerId = compilerIdentity?.compilerId ?? "tailwind-v4-build";
+    compilerVersion = compilerIdentity?.compilerVersion ?? TAILWIND_VERSION;
+  }
+
+  // Normalize files strictly from revision snapshot
+  const { files, entry } = normalizeRevisionSnapshot(
+    revision.snapshot,
+    revision.id,
+  );
+
+  // Compute deterministic SHA-256 hash
+  const inputHash = computeThemeInputHash(
+    { files, entry },
+    { id: compilerId, version: compilerVersion },
+  );
+
+  // Verify hash matches build.inputHash if already set
+  if (build.inputHash && build.inputHash !== inputHash) {
+    throw new Error(
+      `INPUT_HASH_MISMATCH: Computed inputHash "${inputHash}" does not match recorded build inputHash "${build.inputHash}".`,
+    );
+  }
+
+  return {
+    buildId: build.id,
+    storefrontId: build.storefrontId,
+    themeId: build.themeId,
+    sourceRevisionId: build.sourceRevisionId,
+    revisionNumber: revision.revisionNumber,
+    files,
+    entry,
+    inputHash,
+    compilerId,
+    compilerVersion,
+  };
+}
