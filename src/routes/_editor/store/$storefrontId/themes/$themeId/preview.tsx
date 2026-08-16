@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
 
 import { storefrontThemeFileQueries } from "../../../../-queries/storefront-theme-files.queries";
+import { useThemeCompiler } from "@/lib/storefront/compiler/use-theme-compiler";
 
 export const Route = createFileRoute(
   "/_editor/store/$storefrontId/themes/$themeId/preview",
@@ -63,98 +64,42 @@ function ReadyStorefrontPreview({
     (candidate) => candidate.id === templateId,
   );
   const previewDocument = usePreviewDocument(template?.document);
-  const previewThemeFiles = usePreviewThemeFiles(
-    context.storefront.id,
-    context.theme.id,
-  );
+  const { themeFiles: previewThemeFiles, sourceGeneration } =
+    usePreviewThemeFiles(context.storefront.id, context.theme.id);
 
-  // Dynamic Tailwind JIT & arbitrary CSS rule compiler for theme source files
-  useTailwindPreviewRuntime(previewThemeFiles);
+  // Phase 4A: Unified Theme Compiler pipeline for Preview runtime
+  const { diagnostics, hasErrors } = useThemeCompiler(previewThemeFiles, {
+    themeId: context.theme.id,
+    storefrontId: context.storefront.id,
+    sourceGeneration,
+  });
 
   return (
-    <StorefrontPreview
-      context={context}
-      templateId={templateId}
-      viewportHeight={viewportHeight}
-      document={previewDocument}
-      themeFiles={previewThemeFiles}
-    />
+    <>
+      {hasErrors && (
+        <div
+          data-storefront-compiler-diagnostics="true"
+          className="fixed top-3 right-3 z-[2147483647] max-w-md rounded-lg border border-amber-500/40 bg-amber-950/90 p-3 text-xs text-amber-200 shadow-xl backdrop-blur-sm"
+        >
+          <div className="font-semibold text-amber-300">Theme Compile Diagnostic</div>
+          <div className="mt-1 space-y-1">
+            {diagnostics.slice(0, 3).map((d, i) => (
+              <div key={i} className="truncate">
+                {d.filePath ? `${d.filePath}: ` : ""}{d.message}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <StorefrontPreview
+        context={context}
+        templateId={templateId}
+        viewportHeight={viewportHeight}
+        document={previewDocument}
+        themeFiles={previewThemeFiles}
+      />
+    </>
   );
-}
-
-function useTailwindPreviewRuntime(
-  themeFiles: Array<{ path: string; content: string }>,
-) {
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof document === "undefined") return;
-
-    // 1. Inject Tailwind v4 browser script into iframe head for dynamic utility coverage
-    let script = document.getElementById(
-      "morph-tailwind-cdn",
-    ) as HTMLScriptElement | null;
-    if (!script) {
-      script = document.createElement("script");
-      script.id = "morph-tailwind-cdn";
-      script.src = "https://unpkg.com/@tailwindcss/browser@4";
-      script.async = true;
-      document.head.appendChild(script);
-    }
-
-    // 2. High-speed 0ms fallback arbitrary utility generator for immediate visual response
-    let styleTag = document.getElementById(
-      "morph-theme-arbitrary-styles",
-    ) as HTMLStyleElement | null;
-    if (!styleTag) {
-      styleTag = document.createElement("style");
-      styleTag.id = "morph-theme-arbitrary-styles";
-      document.head.appendChild(styleTag);
-    }
-
-    const cssRules: string[] = [];
-    for (const file of themeFiles) {
-      // Find arbitrary utility classes e.g. text-[100px], text-[clamp(...)], min-h-[42rem], bg-[#ff0055]
-      const matches = file.content.matchAll(/([a-zA-Z0-9_-]+)-\[([^\]]+)\]/g);
-      for (const match of matches) {
-        const [fullMatch, prefix, value] = match;
-        const escapedSelector =
-          "." +
-          fullMatch.replace(
-            /([\[\]\#\(\)\,\.\%\:\/])/g,
-            "\\$1",
-          );
-        if (prefix === "text") {
-          cssRules.push(`${escapedSelector} { font-size: ${value}; }`);
-        } else if (prefix === "bg") {
-          cssRules.push(`${escapedSelector} { background-color: ${value}; }`);
-        } else if (prefix === "min-h") {
-          cssRules.push(`${escapedSelector} { min-height: ${value}; }`);
-        } else if (prefix === "max-w") {
-          cssRules.push(`${escapedSelector} { max-width: ${value}; }`);
-        } else if (prefix === "h") {
-          cssRules.push(`${escapedSelector} { height: ${value}; }`);
-        } else if (prefix === "w") {
-          cssRules.push(`${escapedSelector} { width: ${value}; }`);
-        } else if (prefix === "p" || prefix === "px" || prefix === "py") {
-          const prop =
-            prefix === "px"
-              ? `padding-left: ${value}; padding-right: ${value};`
-              : prefix === "py"
-                ? `padding-top: ${value}; padding-bottom: ${value};`
-                : `padding: ${value};`;
-          cssRules.push(`${escapedSelector} { ${prop} }`);
-        }
-      }
-    }
-    styleTag.textContent = cssRules.join("\n");
-
-    // 3. Trigger Tailwind Play CDN refresh if loaded
-    const w = window as any;
-    if (w.tailwind?.refresh) {
-      try {
-        w.tailwind.refresh();
-      } catch {}
-    }
-  }, [themeFiles]);
 }
 
 function usePreviewThemeFiles(storefrontId: string, themeId: string) {
@@ -164,10 +109,16 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
   const [themeFiles, setThemeFiles] = useState<
     Array<{ path: string; content: string }>
   >([]);
+  const [sourceGeneration, setSourceGeneration] = useState<number | undefined>(
+    undefined,
+  );
 
   useEffect(() => {
     if (fileQuery.data?.files) {
       setThemeFiles(fileQuery.data.files);
+    }
+    if (typeof fileQuery.data?.sourceGeneration === "number") {
+      setSourceGeneration(fileQuery.data.sourceGeneration);
     }
   }, [fileQuery.data]);
 
@@ -192,6 +143,9 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
         setThemeFiles(
           message.files as Array<{ path: string; content: string }>,
         );
+        if ("sourceGeneration" in message && typeof message.sourceGeneration === "number") {
+          setSourceGeneration(message.sourceGeneration);
+        }
       }
     };
 
@@ -199,7 +153,7 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
     return () => window.removeEventListener("message", handleThemeFileMessage);
   }, []);
 
-  return themeFiles;
+  return { themeFiles, sourceGeneration };
 }
 
 function usePreviewDocument(document: StorefrontPageDocument | undefined) {
