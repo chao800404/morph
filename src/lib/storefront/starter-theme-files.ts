@@ -70,23 +70,27 @@ export default function Hero({
   return (
     <section
       data-morph-section="hero"
+      data-morph-node="hero-root"
       className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]"
     >
       <div className="flex items-center px-[clamp(1.75rem,6vw,6rem)] py-20">
         <div className="max-w-xl">
           <p
+            data-morph-node="hero-eyebrow"
             data-morph-element="eyebrow"
             className="text-xs font-medium uppercase tracking-[0.24em] text-stone-500"
           >
             {eyebrow}
           </p>
           <h1
+            data-morph-node="hero-heading"
             data-morph-element="heading"
             className="mt-6 font-serif text-[clamp(3.25rem,7vw,7rem)] leading-[0.88] tracking-[-0.055em] text-stone-950"
           >
             {heading}
           </h1>
           <p
+            data-morph-node="hero-description"
             data-morph-element="description"
             className="mt-7 max-w-md text-base leading-7 text-stone-600"
           >
@@ -95,6 +99,7 @@ export default function Hero({
           <div className="mt-8">
             <a
               href={actionHref}
+              data-morph-node="hero-action"
               data-morph-element="action"
               className="inline-flex items-center justify-center rounded-md bg-stone-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-stone-800"
             >
@@ -104,6 +109,7 @@ export default function Hero({
         </div>
       </div>
       <div
+        data-morph-node="hero-image"
         data-morph-element="image"
         className="min-h-[30rem] overflow-hidden lg:min-h-0"
       >
@@ -202,11 +208,27 @@ export default function HomePage() {
         version: "1.0.0",
         author: "Morph Studio",
         entry: "src/pages/index.tsx",
-        components: [
-          { name: "Hero", path: "src/components/Hero.tsx" },
-          { name: "Header", path: "src/components/Header.tsx" },
-          { name: "Footer", path: "src/components/Footer.tsx" },
-        ],
+        components: {
+          "hero.default": {
+            name: "Hero",
+            source: "src/components/Hero.tsx",
+            sectionType: "hero",
+          },
+          "layout.header": {
+            name: "Header",
+            source: "src/components/Header.tsx",
+          },
+          "layout.footer": {
+            name: "Footer",
+            source: "src/components/Footer.tsx",
+          },
+        },
+        sections: {
+          hero: {
+            componentRef: "hero.default",
+            source: "src/components/Hero.tsx",
+          },
+        },
       },
       null,
       2,

@@ -103,7 +103,9 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
         data.content,
         data.mimeType,
         {
+          expectedFileId: data.expectedFileId,
           expectedVersion: data.expectedVersion,
+          expectMissing: data.expectMissing,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,
@@ -175,11 +177,22 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
         data.storefrontId,
         data.themeId,
         data.path,
+        data.expectedFileId,
+        data.expectedVersion,
       );
       return success
         ? ok("Theme file deleted", { path: data.path })
         : fail("Failed to delete file", { error: "DELETE_FAILED" });
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("CONFLICT_VERSION_MISMATCH")
+      ) {
+        return fail(
+          "Version conflict detected: file was modified or replaced before delete.",
+          { error: "VERSION_CONFLICT" },
+        );
+      }
       return failure(
         "Delete theme file error",
         error,

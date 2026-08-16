@@ -27,6 +27,7 @@ export type StorefrontPageDocument = {
   sections: Array<{
     id: string;
     type: string;
+    componentRef?: string | null;
     enabled: boolean;
     props: Record<string, JsonValue>;
   }>;
@@ -104,6 +105,7 @@ export const storefrontThemes = sqliteTable(
       .$type<StorefrontThemeStatus>()
       .notNull()
       .default("draft"),
+    publishedSourceRevisionId: text("published_source_revision_id"),
     metadata: metadata(),
     ...timestamps,
   },
@@ -285,6 +287,7 @@ export const storefrontCommentThreads = sqliteTable(
       onDelete: "cascade",
     }),
     sectionId: text("section_id"),
+    nodeId: text("node_id"),
     elementKey: text("element_key"),
     viewportWidth: integer("viewport_width").default(1440),
     viewport: text("viewport").default("desktop"),

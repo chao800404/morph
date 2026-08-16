@@ -14,6 +14,14 @@ export default defineConfig({
     viteTsConfigPaths({ projects: ["./tsconfig.json"] }),
     viteReact(),
   ],
+  resolve: {
+    alias: {
+      "cloudflare:workers": new URL(
+        "./src/lib/test-utils/cloudflare-workers-stub.ts",
+        import.meta.url,
+      ).pathname,
+    },
+  },
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],

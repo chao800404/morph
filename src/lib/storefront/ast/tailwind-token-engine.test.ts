@@ -90,4 +90,41 @@ describe("tailwind-token-engine", () => {
 
     expect(patched).toBe("p-8 bg-white");
   });
+
+  it("never guesses ambiguous arbitrary utilities as editable presentation slots", () => {
+    expect(classifyTailwindUtility("text-[#ff0000]")).toBe("other");
+    expect(classifyTailwindUtility("bg-[url(https://example.com/a:b.png)]")).toBe("other");
+    expect(classifyTailwindUtility("font-[700]")).toBe("font-weight");
+    expect(classifyTailwindUtility("font-[var(--brand-font)]")).toBe("other");
+  });
+
+  it("parses arbitrary variants and arbitrary values containing colons", () => {
+    const token = parseTailwindToken(
+      "[&:nth-child(2)]:hover:bg-[url(https://example.com/a:b.png)]",
+    );
+    expect(token.variants).toEqual(["[&:nth-child(2)]", "hover"]);
+    expect(token.utility).toBe("bg-[url(https://example.com/a:b.png)]");
+  });
+
+  it("treats variant order as semantic", () => {
+    const original = "md:hover:text-6xl hover:md:text-7xl text-4xl";
+    const updated = patchTailwindClasses(original, {
+      property: "font-size",
+      value: "text-[72px]",
+      targetVariants: ["md", "hover"],
+    });
+    expect(updated).toBe("md:hover:text-[72px] hover:md:text-7xl text-4xl");
+  });
+
+  it("preserves unknown arbitrary utilities while changing font size", () => {
+    const original =
+      "text-[#ff0000] text-4xl bg-[url(https://example.com/a:b.png)]";
+    const updated = patchTailwindClasses(original, {
+      property: "font-size",
+      value: "text-[88px]",
+    });
+    expect(updated).toContain("text-[#ff0000]");
+    expect(updated).toContain("bg-[url(https://example.com/a:b.png)]");
+    expect(updated).toContain("text-[88px]");
+  });
 });

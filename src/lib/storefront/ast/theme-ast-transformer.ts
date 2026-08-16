@@ -304,11 +304,24 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
           };
 
           if (morphElementName) {
-            elements[morphElementName] = meta;
+            if (!elements[morphElementName]) {
+              elements[morphElementName] = meta;
+            } else {
+              diagnostics.push(
+                `Duplicate data-morph-element "${morphElementName}" requires a unique data-morph-node for precise editing.`,
+              );
+            }
           }
           if (morphNodeId) {
-            elements[morphNodeId] = meta;
-            nodeMap[morphNodeId] = meta;
+            if (nodeMap[morphNodeId]) {
+              parseOk = false;
+              diagnostics.push(
+                `Duplicate data-morph-node "${morphNodeId}" detected. Node IDs must be unique within a source file.`,
+              );
+            } else {
+              elements[morphNodeId] = meta;
+              nodeMap[morphNodeId] = meta;
+            }
           }
         }
       }

@@ -35,6 +35,7 @@ export const createStorefrontCommentThreadInputSchema = z.object({
   templateId: idSchema("storefront theme template"),
   groupId: z.string().trim().max(100).optional().nullable(),
   sectionId: z.string().trim().max(100).optional().nullable(),
+  nodeId: z.string().trim().max(160).optional().nullable(),
   elementKey: z.string().trim().max(100).optional().nullable(),
   viewportWidth: z.number().int().min(100).max(5000).optional().nullable(),
   viewport: z.string().trim().max(50).optional().nullable(),
@@ -84,6 +85,7 @@ export const updateStorefrontCommentThreadPositionInputSchema = z.object({
   positionX: z.number().min(0).max(100),
   positionY: z.number().min(0).max(100),
   sectionId: z.string().trim().max(100).optional().nullable(),
+  nodeId: z.string().trim().max(160).optional().nullable(),
   elementKey: z.string().trim().max(100).optional().nullable(),
 });
 

@@ -719,6 +719,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
       if (selectable.sectionId) {
         const computed = window.getComputedStyle(selectable.element);
+        const sectionComputed = window.getComputedStyle(
+          selectable.section ?? selectable.element,
+        );
         const computedStyle = {
           fontSize: computed.fontSize,
           lineHeight: computed.lineHeight,
@@ -731,6 +734,14 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           paddingRight: computed.paddingRight,
           backgroundColor: computed.backgroundColor,
           borderRadius: computed.borderRadius,
+        };
+        const sectionComputedStyle = {
+          paddingTop: sectionComputed.paddingTop,
+          paddingBottom: sectionComputed.paddingBottom,
+          paddingLeft: sectionComputed.paddingLeft,
+          paddingRight: sectionComputed.paddingRight,
+          backgroundColor: sectionComputed.backgroundColor,
+          borderRadius: sectionComputed.borderRadius,
         };
 
         const morphNodeId =
@@ -748,6 +759,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             fieldKey: selectable.fieldKey,
             field: selectable.fieldKey ?? selectable.elementKey,
             computedStyle,
+            sectionComputedStyle,
           },
           window.location.origin,
         );
@@ -810,6 +822,52 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         event.data === null ||
         !("type" in event.data)
       ) {
+        return;
+      }
+
+      if (event.data.type === "morph:storefront-preview-request-selection-style") {
+        if (selectedItem?.sectionId) {
+          const computed = window.getComputedStyle(selectedItem.element);
+          const sectionComputed = window.getComputedStyle(
+            selectedItem.section ?? selectedItem.element,
+          );
+          window.parent.postMessage(
+            {
+              type: "morph:storefront-preview-select-section",
+              sectionId: selectedItem.sectionId,
+              componentType: selectedItem.type,
+              nodeId:
+                selectedItem.element.getAttribute("data-morph-node") ||
+                selectedItem.element.dataset.morphNode ||
+                undefined,
+              elementKey: selectedItem.elementKey,
+              fieldKey: selectedItem.fieldKey,
+              field: selectedItem.fieldKey ?? selectedItem.elementKey,
+              computedStyle: {
+                fontSize: computed.fontSize,
+                lineHeight: computed.lineHeight,
+                fontFamily: computed.fontFamily,
+                fontWeight: computed.fontWeight,
+                textAlign: computed.textAlign,
+                paddingTop: computed.paddingTop,
+                paddingBottom: computed.paddingBottom,
+                paddingLeft: computed.paddingLeft,
+                paddingRight: computed.paddingRight,
+                backgroundColor: computed.backgroundColor,
+                borderRadius: computed.borderRadius,
+              },
+              sectionComputedStyle: {
+                paddingTop: sectionComputed.paddingTop,
+                paddingBottom: sectionComputed.paddingBottom,
+                paddingLeft: sectionComputed.paddingLeft,
+                paddingRight: sectionComputed.paddingRight,
+                backgroundColor: sectionComputed.backgroundColor,
+                borderRadius: sectionComputed.borderRadius,
+              },
+            },
+            window.location.origin,
+          );
+        }
         return;
       }
 

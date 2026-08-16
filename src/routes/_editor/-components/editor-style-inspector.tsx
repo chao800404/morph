@@ -23,7 +23,10 @@ import {
   parseTailwindPadding,
   parseTailwindTextAlign,
 } from "@/lib/storefront/ast/theme-ast-transformer";
-import { patchTailwindClasses } from "@/lib/storefront/ast/tailwind-token-engine";
+import {
+  patchTailwindClasses as patchTailwindClassesBase,
+  type PatchTailwindOptions,
+} from "@/lib/storefront/ast/tailwind-token-engine";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { cn } from "@/lib/utils";
@@ -56,6 +59,8 @@ type EditorStyleInspectorProps = {
   activeElementKey?: string | null;
   activeFieldKey?: string | null;
   activeComputedStyle?: Record<string, string> | null;
+  activeSectionComputedStyle?: Record<string, string> | null;
+  activeViewport?: "desktop" | "tablet" | "mobile";
   onUpdateThemeFileStyle?: (
     filePath: string,
     elementName: string,
@@ -78,6 +83,75 @@ const THEME_PALETTE_COLORS = [
   { label: "Black", value: "#000000", preview: "bg-black border-stone-800" },
 ];
 
+
+function parsePx(value?: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function computedFontFamilyKind(
+  value?: string | null,
+): "serif" | "sans" | "mono" | null {
+  if (!value) return null;
+  const normalized = value.toLowerCase();
+  if (
+    normalized.includes("monospace") ||
+    normalized.includes("menlo") ||
+    normalized.includes("monaco") ||
+    normalized.includes("consolas")
+  ) {
+    return "mono";
+  }
+  if (
+    normalized.includes("serif") ||
+    normalized.includes("georgia") ||
+    normalized.includes("times")
+  ) {
+    return "serif";
+  }
+  return "sans";
+}
+
+function computedFontWeightKind(
+  value?: string | null,
+): "normal" | "medium" | "bold" | null {
+  if (!value) return null;
+  const numeric = Number.parseInt(value, 10);
+  if (Number.isFinite(numeric)) {
+    if (numeric >= 650) return "bold";
+    if (numeric >= 500) return "medium";
+    return "normal";
+  }
+  if (value === "bold") return "bold";
+  return value === "normal" ? "normal" : null;
+}
+
+function computedLineHeightRatio(
+  lineHeight?: string | null,
+  fontSize?: string | null,
+): number | null {
+  const line = parsePx(lineHeight);
+  const font = parsePx(fontSize);
+  if (line === null || font === null || font <= 0) return null;
+  return Math.round((line / font) * 100) / 100;
+}
+
+function computedColorToHex(value?: string | null): string | null {
+  if (!value) return null;
+  const raw = value.trim();
+  if (/^#[0-9a-f]{6}$/i.test(raw)) return raw.toLowerCase();
+  const match = raw.match(
+    /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)$/i,
+  );
+  if (!match) return null;
+  const alpha = match[4] === undefined ? 1 : Number(match[4]);
+  if (!Number.isFinite(alpha) || alpha < 0.999) return null;
+  return `#${[match[1], match[2], match[3]]
+    .map((part) => Number(part).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   themeFiles,
@@ -85,6 +159,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   activeElementKey,
   activeFieldKey,
   activeComputedStyle,
+  activeSectionComputedStyle,
+  activeViewport = "mobile",
   onUpdateThemeFileStyle,
   onPropsChange,
   onToggleEnabled,
@@ -116,7 +192,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const componentPath = getComponentFilePath(
     section.type,
     themeFiles,
-    (section as any).componentRef,
+    section.componentRef ?? undefined,
   );
   const targetElement = activeNodeId || activeElementKey || "heading";
   const props = localProps;
@@ -147,66 +223,115 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const complexFontSizeRaw =
     fontSizeDetailed.type === "complex" ? fontSizeDetailed.raw : null;
 
-  const computedFontSizeNum = activeComputedStyle?.fontSize
-    ? parseFloat(activeComputedStyle.fontSize)
-    : null;
-
+  const computedFontSizeNum = parsePx(activeComputedStyle?.fontSize);
   const effectiveFontSize =
-    fontSizeDetailed.type === "exact"
+    computedFontSizeNum ??
+    (fontSizeDetailed.type === "exact"
       ? fontSizeDetailed.value
-      : computedFontSizeNum && !isNaN(computedFontSizeNum)
-        ? Math.round(computedFontSizeNum)
-        : (typeof props.fontSize === "number" ? props.fontSize : 48);
+      : typeof props.fontSize === "number"
+        ? props.fontSize
+        : 48);
 
   const effectiveFontFamily =
+    computedFontFamilyKind(activeComputedStyle?.fontFamily) ??
     parseTailwindFontFamily(targetClassName) ??
-    activeComputedStyle?.fontFamily ??
     props.fontFamily ??
     "serif";
 
   const effectiveFontWeight =
+    computedFontWeightKind(activeComputedStyle?.fontWeight) ??
     parseTailwindFontWeight(targetClassName) ??
-    activeComputedStyle?.fontWeight ??
     props.fontWeight ??
     "normal";
 
+  const computedAlign = activeComputedStyle?.textAlign;
   const effectiveTextAlign =
-    parseTailwindTextAlign(targetClassName) ??
-    (activeComputedStyle?.textAlign as any) ??
-    props.textAlign ??
-    "left";
+    computedAlign === "left" ||
+    computedAlign === "center" ||
+    computedAlign === "right" ||
+    computedAlign === "justify" ||
+    computedAlign === "start" ||
+    computedAlign === "end"
+      ? computedAlign
+      : parseTailwindTextAlign(targetClassName) ?? props.textAlign ?? "left";
 
   const effectiveLineHeight =
+    computedLineHeightRatio(
+      activeComputedStyle?.lineHeight,
+      activeComputedStyle?.fontSize,
+    ) ??
     parseTailwindLineHeight(targetClassName) ??
     (typeof props.lineHeight === "number" ? props.lineHeight : 1.1);
 
-  const effectivePadding = parseTailwindPadding(sectionClassName);
-  const effectivePaddingAll =
-    effectivePadding.all ?? (typeof props.padding === "number" ? props.padding : 48);
+  const sourcePadding = parseTailwindPadding(sectionClassName);
+  const computedPaddingTop = parsePx(activeSectionComputedStyle?.paddingTop);
+  const computedPaddingBottom = parsePx(activeSectionComputedStyle?.paddingBottom);
+  const computedPaddingLeft = parsePx(activeSectionComputedStyle?.paddingLeft);
+  const computedPaddingRight = parsePx(activeSectionComputedStyle?.paddingRight);
+  const sourcePaddingAll =
+    sourcePadding.all ??
+    (typeof props.padding === "number" ? props.padding : 48);
+
   const effectivePaddingTop =
-    effectivePadding.top ?? effectivePadding.y ?? effectivePaddingAll;
+    computedPaddingTop ?? sourcePadding.top ?? sourcePadding.y ?? sourcePaddingAll;
   const effectivePaddingBottom =
-    effectivePadding.bottom ?? effectivePadding.y ?? effectivePaddingAll;
+    computedPaddingBottom ??
+    sourcePadding.bottom ??
+    sourcePadding.y ??
+    sourcePaddingAll;
   const effectivePaddingLeft =
-    effectivePadding.left ??
-    effectivePadding.x ??
+    computedPaddingLeft ??
+    sourcePadding.left ??
+    sourcePadding.x ??
     (typeof props.paddingLeft === "number" ? props.paddingLeft : 24);
   const effectivePaddingRight =
-    effectivePadding.right ??
-    effectivePadding.x ??
+    computedPaddingRight ??
+    sourcePadding.right ??
+    sourcePadding.x ??
     (typeof props.paddingRight === "number" ? props.paddingRight : 24);
+  const effectivePaddingAll =
+    effectivePaddingTop === effectivePaddingBottom &&
+    effectivePaddingTop === effectivePaddingLeft &&
+    effectivePaddingTop === effectivePaddingRight
+      ? effectivePaddingTop
+      : sourcePaddingAll;
 
   const effectiveBgColor =
+    computedColorToHex(activeSectionComputedStyle?.backgroundColor) ??
     parseTailwindBackgroundColor(sectionClassName) ??
     props.backgroundColor ??
     "#fafaf9";
 
   const effectiveBorderRadius =
+    parsePx(activeSectionComputedStyle?.borderRadius) ??
     parseTailwindBorderRadius(sectionClassName) ??
     (typeof props.borderRadius === "number" ? props.borderRadius : 0);
 
   const effectiveRawClassName =
-    targetClassName || sectionClassName || props.className || props.customClass || "";
+    targetClassName ||
+    sectionClassName ||
+    props.className ||
+    props.customClass ||
+    "";
+
+  const targetVariants =
+    activeViewport === "desktop"
+      ? ["lg"]
+      : activeViewport === "tablet"
+        ? ["md"]
+        : [];
+
+  const patchTailwindClasses = useCallback(
+    (
+      current: string,
+      options: Omit<PatchTailwindOptions, "targetVariants">,
+    ) =>
+      patchTailwindClassesBase(current, {
+        ...options,
+        targetVariants,
+      }),
+    [activeViewport],
+  );
 
   const patchStyle = useCallback(
     (updater: (prevClasses: string) => string) => {
@@ -921,7 +1046,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       handleFieldChange("backgroundColor", item.value);
                     patchContainerStyle((prev) =>
                       patchTailwindClasses(prev, {
-                        property: "background",
+                        property: "background-color",
                         value: `bg-[${item.value}]`,
                       }),
                     );
@@ -948,7 +1073,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 if (!componentPath) handleFieldChange("backgroundColor", val);
                 patchContainerStyle((prev) =>
                   patchTailwindClasses(prev, {
-                    property: "background",
+                    property: "background-color",
                     value: `bg-[${val}]`,
                   }),
                 );
@@ -968,7 +1093,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 if (!componentPath) handleFieldChange("backgroundColor", val);
                 patchContainerStyle((prev) =>
                   patchTailwindClasses(prev, {
-                    property: "background",
+                    property: "background-color",
                     value: `bg-[${val}]`,
                   }),
                 );

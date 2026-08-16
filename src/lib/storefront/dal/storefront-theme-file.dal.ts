@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
 import {
   storefrontThemeFiles,
@@ -10,7 +11,74 @@ import type {
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
-import { and, asc, desc, eq, isNull, max } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
+
+function detectThemeMimeType(path: string, mimeType?: string | null) {
+  if (mimeType) return mimeType;
+  if (path.endsWith(".tsx") || path.endsWith(".ts")) return "text/typescript";
+  if (path.endsWith(".css")) return "text/css";
+  if (path.endsWith(".json")) return "application/json";
+  return "text/plain";
+}
+
+function prepareThemeOwnershipGuard(storefrontId: string, themeId: string) {
+  return env.DATABASE.prepare(`
+    SELECT CASE WHEN EXISTS (
+      SELECT 1 FROM storefront_themes
+      WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL
+    ) THEN 1 ELSE json('') END AS ok
+  `).bind(themeId, storefrontId);
+}
+
+function prepareRevisionInsert(args: {
+  storefrontId: string;
+  themeId: string;
+  revisionId: string;
+  message: string;
+  source: "manual" | "ai" | "publish" | "rollback";
+  createdBy?: string | null;
+  now: string;
+}) {
+  return env.DATABASE.prepare(`
+    INSERT INTO storefront_theme_revisions (
+      id, storefront_id, theme_id, revision_number, message, source,
+      snapshot, created_by, created_at, updated_at
+    )
+    SELECT
+      ?1, ?2, ?3,
+      COALESCE((
+        SELECT MAX(revision_number) + 1
+        FROM storefront_theme_revisions
+        WHERE theme_id = ?3 AND deleted_at IS NULL
+      ), 1),
+      ?4, ?5,
+      COALESCE((
+        SELECT json_group_array(
+          json_object(
+            'path', path,
+            'content', content,
+            'mimeType', COALESCE(mime_type, 'text/plain'),
+            'isEntry', json(CASE WHEN is_entry = 1 THEN 'true' ELSE 'false' END)
+          )
+        )
+        FROM (
+          SELECT path, content, mime_type, is_entry
+          FROM storefront_theme_files
+          WHERE storefront_id = ?2 AND theme_id = ?3 AND deleted_at IS NULL
+          ORDER BY path
+        )
+      ), json('[]')),
+      ?6, ?7, ?7
+  `).bind(
+    args.revisionId,
+    args.storefrontId,
+    args.themeId,
+    args.message,
+    args.source,
+    args.createdBy ?? null,
+    args.now,
+  );
+}
 
 export function buildFileTree(
   files: StorefrontThemeFileDTO[],
@@ -210,142 +278,44 @@ export const storefrontThemeFileDal = {
     content: string,
     mimeType?: string,
     options?: {
+      expectedFileId?: string;
       expectedVersion?: number;
+      expectMissing?: boolean;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
     },
   ): Promise<StorefrontThemeFileDTO> {
-    const isOwner = await this.verifyOwnership(storefrontId, themeId);
-    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
-
-    const db = await getDb();
-    const now = new Date().toISOString();
-
-    const [existing] = await db
-      .select()
-      .from(storefrontThemeFiles)
-      .where(
-        and(
-          eq(storefrontThemeFiles.storefrontId, storefrontId),
-          eq(storefrontThemeFiles.themeId, themeId),
-          eq(storefrontThemeFiles.path, path),
-          isNull(storefrontThemeFiles.deletedAt),
-        ),
-      )
-      .limit(1);
-
-    let savedFile: StorefrontThemeFileDTO;
-
-    if (existing) {
-      const currentVersion = existing.version ?? 1;
-      if (
-        options?.expectedVersion !== undefined &&
-        options.expectedVersion !== currentVersion
-      ) {
-        throw new Error(
-          `CONFLICT_VERSION_MISMATCH: file "${path}" was modified elsewhere (expected v${options.expectedVersion}, currently v${currentVersion})`,
-        );
-      }
-
-      const nextVersion = currentVersion + 1;
-      const updateResult = await db
-        .update(storefrontThemeFiles)
-        .set({
-          content,
-          version: nextVersion,
-          mimeType: mimeType ?? existing.mimeType,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(storefrontThemeFiles.id, existing.id),
-            eq(storefrontThemeFiles.version, currentVersion),
-          ),
-        )
-        .returning();
-
-      if (!updateResult || updateResult.length === 0) {
-        throw new Error(
-          `CONFLICT_VERSION_MISMATCH: Atomic update failed for file "${path}". The file was modified by another concurrent operation.`,
-        );
-      }
-
-      const updatedRow = updateResult[0];
-      savedFile = {
-        id: updatedRow.id,
-        storefrontId,
-        themeId,
-        path,
-        content: updatedRow.content,
-        mimeType: updatedRow.mimeType ?? "text/plain",
-        isEntry: Boolean(updatedRow.isEntry),
-        version: updatedRow.version ?? nextVersion,
-        createdAt: updatedRow.createdAt,
-        updatedAt: updatedRow.updatedAt ?? now,
-      };
-    } else {
-      const newId = crypto.randomUUID();
-      const isEntry = path === "src/pages/index.tsx";
-      const detectedMime =
-        mimeType ??
-        (path.endsWith(".tsx") || path.endsWith(".ts")
-          ? "text/typescript"
-          : path.endsWith(".css")
-            ? "text/css"
-            : path.endsWith(".json")
-              ? "application/json"
-              : "text/plain");
-
-      await db.insert(storefrontThemeFiles).values({
-        id: newId,
-        storefrontId,
-        themeId,
+    const [saved] = await this.saveFilesBatch(
+      storefrontId,
+      themeId,
+      [{
         path,
         content,
-        mimeType: detectedMime,
-        isEntry,
-        version: 1,
-        createdAt: now,
-        updatedAt: now,
-      });
-
-      savedFile = {
-        id: newId,
-        storefrontId,
-        themeId,
-        path,
-        content,
-        mimeType: detectedMime,
-        isEntry,
-        version: 1,
-        createdAt: now,
-        updatedAt: now,
-      };
-    }
-
-    if (options?.createRevision) {
-      await this.createRevision(storefrontId, themeId, {
-        message: options.revisionMessage ?? `Update ${path}`,
-        source: "manual",
-        createdBy: options.createdBy,
-      });
-    }
-
-    return savedFile;
+        mimeType,
+        expectedFileId: options?.expectedFileId,
+        expectedVersion: options?.expectedVersion,
+        expectMissing: options?.expectMissing,
+      }],
+      {
+        createRevision: options?.createRevision,
+        revisionMessage: options?.revisionMessage,
+        createdBy: options?.createdBy,
+      },
+    );
+    if (!saved) throw new Error(`Failed to save theme file "${path}"`);
+    return saved;
   },
 
-  /**
-   * Atomically saves multiple files with optimistic concurrency version checks.
-   * If any file encounters a version conflict, the entire transaction rolls back.
-   */
   async saveFilesBatch(
     storefrontId: string,
     themeId: string,
     files: Array<{
       path: string;
       content: string;
+      expectedFileId?: string;
       expectedVersion?: number;
+      expectMissing?: boolean;
       mimeType?: string;
     }>,
     options?: {
@@ -354,156 +324,173 @@ export const storefrontThemeFileDal = {
       createdBy?: string;
     },
   ): Promise<StorefrontThemeFileDTO[]> {
-    const isOwner = await this.verifyOwnership(storefrontId, themeId);
-    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+    if (files.length === 0) return [];
 
-    const db = await getDb();
     const now = new Date().toISOString();
-    const savedFiles: StorefrontThemeFileDTO[] = [];
+    const statements = [prepareThemeOwnershipGuard(storefrontId, themeId)];
 
-    // Verify all files sequentially with CAS checks
     for (const item of files) {
-      const [existing] = await db
-        .select()
-        .from(storefrontThemeFiles)
-        .where(
-          and(
-            eq(storefrontThemeFiles.storefrontId, storefrontId),
-            eq(storefrontThemeFiles.themeId, themeId),
-            eq(storefrontThemeFiles.path, item.path),
-            isNull(storefrontThemeFiles.deletedAt),
+      const expectsExisting =
+        Boolean(item.expectedFileId) && item.expectedVersion !== undefined;
+
+      if (item.expectMissing && expectsExisting) {
+        throw new Error(
+          `INVALID_WRITE_PRECONDITION: "${item.path}" cannot expect both existing and missing state.`,
+        );
+      }
+      if (!item.expectMissing && !expectsExisting) {
+        throw new Error(
+          `MISSING_WRITE_PRECONDITION: "${item.path}" requires expectedFileId+expectedVersion or expectMissing=true.`,
+        );
+      }
+
+      if (expectsExisting) {
+        statements.push(
+          env.DATABASE.prepare(`
+            SELECT CASE WHEN EXISTS (
+              SELECT 1 FROM storefront_theme_files
+              WHERE storefront_id = ?1
+                AND theme_id = ?2
+                AND path = ?3
+                AND id = ?4
+                AND version = ?5
+                AND deleted_at IS NULL
+            ) THEN 1 ELSE json('') END AS ok
+          `).bind(
+            storefrontId, themeId, item.path,
+            item.expectedFileId!, item.expectedVersion!,
           ),
-        )
-        .limit(1);
-
-      if (existing) {
-        const currentVersion = existing.version ?? 1;
-        if (
-          item.expectedVersion !== undefined &&
-          item.expectedVersion !== currentVersion
-        ) {
-          throw new Error(
-            `CONFLICT_VERSION_MISMATCH: file "${item.path}" was modified elsewhere (expected v${item.expectedVersion}, currently v${currentVersion})`,
-          );
-        }
-
-        const nextVersion = currentVersion + 1;
-        const updateResult = await db
-          .update(storefrontThemeFiles)
-          .set({
-            content: item.content,
-            version: nextVersion,
-            mimeType: item.mimeType ?? existing.mimeType,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(storefrontThemeFiles.id, existing.id),
-              eq(storefrontThemeFiles.version, currentVersion),
-            ),
-          )
-          .returning();
-
-        if (!updateResult || updateResult.length === 0) {
-          throw new Error(
-            `CONFLICT_VERSION_MISMATCH: Atomic update failed for file "${item.path}".`,
-          );
-        }
-
-        savedFiles.push({
-          id: updateResult[0].id,
-          storefrontId,
-          themeId,
-          path: item.path,
-          content: updateResult[0].content,
-          mimeType: updateResult[0].mimeType ?? "text/plain",
-          isEntry: Boolean(updateResult[0].isEntry),
-          version: updateResult[0].version ?? nextVersion,
-          createdAt: updateResult[0].createdAt,
-          updatedAt: updateResult[0].updatedAt ?? now,
-        });
-      } else {
-        const newId = crypto.randomUUID();
-        const isEntry = item.path === "src/pages/index.tsx";
-        const detectedMime =
-          item.mimeType ??
-          (item.path.endsWith(".tsx") || item.path.endsWith(".ts")
-            ? "text/typescript"
-            : item.path.endsWith(".json")
-              ? "application/json"
-              : item.path.endsWith(".css")
-                ? "text/css"
-                : "text/plain");
-
-        const [inserted] = await db
-          .insert(storefrontThemeFiles)
-          .values({
-            id: newId,
+        );
+        statements.push(
+          env.DATABASE.prepare(`
+            UPDATE storefront_theme_files
+            SET content = ?1,
+                mime_type = ?2,
+                version = version + 1,
+                updated_at = ?3
+            WHERE storefront_id = ?4
+              AND theme_id = ?5
+              AND path = ?6
+              AND id = ?7
+              AND version = ?8
+              AND deleted_at IS NULL
+          `).bind(
+            item.content,
+            detectThemeMimeType(item.path, item.mimeType),
+            now,
             storefrontId,
             themeId,
-            path: item.path,
-            content: item.content,
-            mimeType: detectedMime,
-            isEntry,
-            version: 1,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
-
-        savedFiles.push({
-          id: inserted?.id ?? newId,
-          storefrontId,
-          themeId,
-          path: item.path,
-          content: item.content,
-          mimeType: detectedMime,
-          isEntry,
-          version: 1,
-          createdAt: now,
-          updatedAt: now,
-        });
+            item.path,
+            item.expectedFileId!,
+            item.expectedVersion!,
+          ),
+        );
+      } else {
+        statements.push(
+          env.DATABASE.prepare(`
+            SELECT CASE WHEN NOT EXISTS (
+              SELECT 1 FROM storefront_theme_files
+              WHERE storefront_id = ?1
+                AND theme_id = ?2
+                AND path = ?3
+                AND deleted_at IS NULL
+            ) THEN 1 ELSE json('') END AS ok
+          `).bind(storefrontId, themeId, item.path),
+        );
+        statements.push(
+          env.DATABASE.prepare(`
+            INSERT INTO storefront_theme_files (
+              id, storefront_id, theme_id, path, content, mime_type,
+              is_entry, version, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
+          `).bind(
+            crypto.randomUUID(),
+            storefrontId,
+            themeId,
+            item.path,
+            item.content,
+            detectThemeMimeType(item.path, item.mimeType),
+            item.path === "src/pages/index.tsx" ? 1 : 0,
+            now,
+          ),
+        );
       }
     }
 
     if (options?.createRevision) {
-      await this.createRevision(storefrontId, themeId, {
-        message: options.revisionMessage ?? `Batch save of ${files.length} files`,
-        source: "manual",
-        createdBy: options.createdBy,
-      });
+      statements.push(
+        prepareRevisionInsert({
+          storefrontId,
+          themeId,
+          revisionId: crypto.randomUUID(),
+          message: options.revisionMessage ?? `Batch save of ${files.length} files`,
+          source: "manual",
+          createdBy: options.createdBy,
+          now,
+        }),
+      );
     }
 
-    return savedFiles;
+    try {
+      await env.DATABASE.batch(statements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint") ||
+        message.includes("UNIQUE")
+      ) {
+        throw new Error(
+          `CONFLICT_VERSION_MISMATCH: batch precondition failed. ${message}`,
+        );
+      }
+      throw error;
+    }
+
+    const current = await this.listFiles(storefrontId, themeId);
+    const byPath = new Map(current.map((file) => [file.path, file]));
+    return files.map((item) => {
+      const saved = byPath.get(item.path);
+      if (!saved) {
+        throw new Error(`SAVE_FAILED: "${item.path}" missing after atomic batch.`);
+      }
+      return saved;
+    });
   },
 
   async deleteFile(
     storefrontId: string,
     themeId: string,
     path: string,
+    expectedFileId: string,
+    expectedVersion: number,
   ): Promise<boolean> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
     if (!isOwner) return false;
 
     const db = await getDb();
     const now = new Date().toISOString();
-
     const result = await db
       .update(storefrontThemeFiles)
-      .set({
-        deletedAt: now,
-        updatedAt: now,
-      })
+      .set({ deletedAt: now, updatedAt: now })
       .where(
         and(
           eq(storefrontThemeFiles.storefrontId, storefrontId),
           eq(storefrontThemeFiles.themeId, themeId),
           eq(storefrontThemeFiles.path, path),
+          eq(storefrontThemeFiles.id, expectedFileId),
+          eq(storefrontThemeFiles.version, expectedVersion),
           isNull(storefrontThemeFiles.deletedAt),
         ),
       );
 
-    return (result.meta?.changes ?? 1) > 0;
+    if (Number(result.meta?.changes ?? 0) === 0) {
+      throw new Error(
+        `CONFLICT_VERSION_MISMATCH: "${path}" changed, was deleted, or was replaced.`,
+      );
+    }
+    return true;
   },
 
   /**
@@ -519,58 +506,44 @@ export const storefrontThemeFileDal = {
     } = {},
   ): Promise<StorefrontThemeRevisionDTO> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
-    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+    if (!isOwner) {
+      throw new Error("Theme not found or does not belong to storefront");
+    }
+
+    const now = new Date().toISOString();
+    const revisionId = crypto.randomUUID();
+
+    await env.DATABASE.batch([
+      prepareThemeOwnershipGuard(storefrontId, themeId),
+      prepareRevisionInsert({
+        storefrontId,
+        themeId,
+        revisionId,
+        message: options.message ?? "Theme source checkpoint",
+        source: options.source ?? "manual",
+        createdBy: options.createdBy,
+        now,
+      }),
+    ]);
 
     const db = await getDb();
-    const now = new Date().toISOString();
-
-    // 1. Get current active files
-    const currentFiles = await this.listFiles(storefrontId, themeId);
-
-    // 2. Find next revision number
-    const [latestRev] = await db
-      .select({ maxRev: max(storefrontThemeRevisions.revisionNumber) })
+    const [row] = await db
+      .select()
       .from(storefrontThemeRevisions)
-      .where(
-        and(
-          eq(storefrontThemeRevisions.storefrontId, storefrontId),
-          eq(storefrontThemeRevisions.themeId, themeId),
-        ),
-      );
-
-    const nextRevNumber = (latestRev?.maxRev ?? 0) + 1;
-    const newId = crypto.randomUUID();
-
-    const snapshot = currentFiles.map((f) => ({
-      path: f.path,
-      content: f.content,
-      mimeType: f.mimeType,
-      isEntry: Boolean(f.isEntry),
-    }));
-
-    await db.insert(storefrontThemeRevisions).values({
-      id: newId,
-      storefrontId,
-      themeId,
-      revisionNumber: nextRevNumber,
-      message: options.message ?? `Revision ${nextRevNumber}`,
-      source: options.source ?? "manual",
-      snapshot,
-      createdBy: options.createdBy ?? null,
-      createdAt: now,
-      updatedAt: now,
-    });
+      .where(eq(storefrontThemeRevisions.id, revisionId))
+      .limit(1);
+    if (!row) throw new Error("Revision could not be read after insert");
 
     return {
-      id: newId,
-      storefrontId,
-      themeId,
-      revisionNumber: nextRevNumber,
-      message: options.message ?? `Revision ${nextRevNumber}`,
-      source: options.source ?? "manual",
-      snapshot,
-      createdBy: options.createdBy ?? null,
-      createdAt: now,
+      id: row.id,
+      storefrontId: row.storefrontId,
+      themeId: row.themeId,
+      revisionNumber: row.revisionNumber,
+      message: row.message,
+      source: row.source as "manual" | "ai" | "publish" | "rollback",
+      snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
+      createdBy: row.createdBy,
+      createdAt: row.createdAt,
     };
   },
 
@@ -625,7 +598,9 @@ export const storefrontThemeFileDal = {
     createdBy?: string,
   ): Promise<StorefrontThemeFileDTO[]> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
-    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+    if (!isOwner) {
+      throw new Error("Theme not found or does not belong to storefront");
+    }
 
     const db = await getDb();
     const [rev] = await db
@@ -640,55 +615,54 @@ export const storefrontThemeFileDal = {
         ),
       )
       .limit(1);
-
     if (!rev) throw new Error(`Revision #${revisionNumber} not found`);
 
-    const snapshot = rev.snapshot as Array<{
-      path: string;
-      content: string;
-      mimeType: string;
-      isEntry?: boolean;
-    }>;
-
+    const snapshot =
+      (rev.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"];
     const now = new Date().toISOString();
+    const statements = [
+      prepareThemeOwnershipGuard(storefrontId, themeId),
+      env.DATABASE.prepare(`
+        UPDATE storefront_theme_files
+        SET deleted_at = ?1, updated_at = ?1
+        WHERE storefront_id = ?2 AND theme_id = ?3 AND deleted_at IS NULL
+      `).bind(now, storefrontId, themeId),
+    ];
 
-    // Soft delete all existing files
-    await db
-      .update(storefrontThemeFiles)
-      .set({ deletedAt: now, updatedAt: now })
-      .where(
-        and(
-          eq(storefrontThemeFiles.storefrontId, storefrontId),
-          eq(storefrontThemeFiles.themeId, themeId),
-          isNull(storefrontThemeFiles.deletedAt),
+    for (const file of snapshot) {
+      statements.push(
+        env.DATABASE.prepare(`
+          INSERT INTO storefront_theme_files (
+            id, storefront_id, theme_id, path, content, mime_type,
+            is_entry, version, created_at, updated_at
+          )
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
+        `).bind(
+          crypto.randomUUID(),
+          storefrontId,
+          themeId,
+          file.path,
+          file.content,
+          file.mimeType,
+          file.isEntry ? 1 : 0,
+          now,
         ),
       );
-
-    // Restore snapshot files
-    for (const f of snapshot) {
-      await db.insert(storefrontThemeFiles).values({
-        id: crypto.randomUUID(),
-        storefrontId,
-        themeId,
-        path: f.path,
-        content: f.content,
-        mimeType: f.mimeType,
-        isEntry:
-          typeof f.isEntry === "boolean"
-            ? f.isEntry
-            : f.path === "src/pages/index.tsx",
-        createdAt: now,
-        updatedAt: now,
-      });
     }
 
-    // Record rollback revision
-    await this.createRevision(storefrontId, themeId, {
-      message: `Rollback to revision #${revisionNumber}`,
-      source: "rollback",
-      createdBy,
-    });
+    statements.push(
+      prepareRevisionInsert({
+        storefrontId,
+        themeId,
+        revisionId: crypto.randomUUID(),
+        message: `Rollback to revision #${revisionNumber}`,
+        source: "rollback",
+        createdBy,
+        now,
+      }),
+    );
 
+    await env.DATABASE.batch(statements);
     return this.listFiles(storefrontId, themeId);
   },
 
@@ -704,36 +678,37 @@ export const storefrontThemeFileDal = {
 
     const db = await getDb();
     const [row] = await db
-      .select()
-      .from(storefrontThemeRevisions)
+      .select({ revision: storefrontThemeRevisions })
+      .from(storefrontThemes)
+      .innerJoin(
+        storefrontThemeRevisions,
+        eq(
+          storefrontThemes.publishedSourceRevisionId,
+          storefrontThemeRevisions.id,
+        ),
+      )
       .where(
         and(
-          eq(storefrontThemeRevisions.storefrontId, storefrontId),
-          eq(storefrontThemeRevisions.themeId, themeId),
-          eq(storefrontThemeRevisions.source, "publish"),
+          eq(storefrontThemes.id, themeId),
+          eq(storefrontThemes.storefrontId, storefrontId),
+          isNull(storefrontThemes.deletedAt),
           isNull(storefrontThemeRevisions.deletedAt),
         ),
       )
-      .orderBy(desc(storefrontThemeRevisions.revisionNumber))
       .limit(1);
 
-    if (!row) return null;
-
+    if (!row?.revision) return null;
+    const revision = row.revision;
     return {
-      id: row.id,
-      storefrontId: row.storefrontId,
-      themeId: row.themeId,
-      revisionNumber: row.revisionNumber,
-      message: row.message,
-      source: row.source as "manual" | "ai" | "publish" | "rollback",
-      snapshot: (row.snapshot ?? []) as Array<{
-        path: string;
-        content: string;
-        mimeType: string;
-        isEntry: boolean;
-      }>,
-      createdBy: row.createdBy,
-      createdAt: row.createdAt,
+      id: revision.id,
+      storefrontId: revision.storefrontId,
+      themeId: revision.themeId,
+      revisionNumber: revision.revisionNumber,
+      message: revision.message,
+      source: revision.source as "manual" | "ai" | "publish" | "rollback",
+      snapshot: (revision.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
+      createdBy: revision.createdBy,
+      createdAt: revision.createdAt,
     };
   },
 };

@@ -94,8 +94,21 @@ export const EditorPathNavigator = memo(function EditorPathNavigator({
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <div className="flex items-center">
+    <div className="flex items-center gap-0.5">
+      <button
+        type="button"
+        className="flex size-7 items-center justify-center rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRefresh();
+        }}
+        title="Refresh preview"
+        aria-label="Refresh preview"
+      >
+        <RefreshCw className="size-3.5 transition-transform hover:rotate-180" />
+      </button>
+
+      <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
             variant="ghost"
@@ -104,18 +117,6 @@ export const EditorPathNavigator = memo(function EditorPathNavigator({
             aria-label={`Current route: ${descriptor.path}. Click to switch page path.`}
             title="Switch template or page route"
           >
-            <button
-              type="button"
-              className="flex size-4 items-center justify-center rounded-xs transition-transform hover:rotate-180"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRefresh();
-              }}
-              title="Refresh preview"
-              aria-label="Refresh preview"
-            >
-              <RefreshCw className="size-3 text-muted-foreground" />
-            </button>
             <span className="truncate font-medium">{descriptor.name}</span>
             <span aria-hidden="true" className="opacity-50">
               ·
@@ -126,14 +127,13 @@ export const EditorPathNavigator = memo(function EditorPathNavigator({
             <ChevronDown className="size-3 text-muted-foreground shrink-0" />
           </Button>
         </PopoverTrigger>
-      </div>
 
-      <PopoverContent
-        side="top"
-        align="center"
-        sideOffset={8}
-        className="w-72 p-0 overflow-hidden rounded-xl border bg-popover shadow-xl text-popover-foreground"
-      >
+        <PopoverContent
+          side="top"
+          align="center"
+          sideOffset={8}
+          className="w-72 p-0 overflow-hidden rounded-xl border bg-popover shadow-xl text-popover-foreground"
+        >
         {/* Search input header */}
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <Search className="size-3.5 text-muted-foreground shrink-0" />
@@ -169,9 +169,9 @@ export const EditorPathNavigator = memo(function EditorPathNavigator({
               );
             })}
           </div>
-
         </ScrollArea>
       </PopoverContent>
     </Popover>
-  );
+  </div>
+);
 });

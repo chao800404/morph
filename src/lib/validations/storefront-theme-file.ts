@@ -19,6 +19,37 @@ export const safeThemeFilePathSchema = z
     "File path contains invalid characters (allowed: alphanumeric, _, -, ., /)",
   );
 
+function requireWritePrecondition(
+  value: {
+    expectedFileId?: string;
+    expectedVersion?: number;
+    expectMissing?: boolean;
+  },
+  ctx: z.RefinementCtx,
+) {
+  const hasExisting =
+    value.expectedFileId !== undefined || value.expectedVersion !== undefined;
+
+  if (value.expectMissing && hasExisting) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "expectMissing cannot be combined with expectedFileId/expectedVersion",
+    });
+    return;
+  }
+
+  if (!value.expectMissing) {
+    if (!value.expectedFileId || value.expectedVersion === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "Existing file writes require expectedFileId and expectedVersion; new files require expectMissing=true",
+      });
+    }
+  }
+}
+
 export const listThemeFilesInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
@@ -30,30 +61,36 @@ export const getThemeFileInputSchema = z.object({
   path: safeThemeFilePathSchema,
 });
 
-export const saveThemeFileInputSchema = z.object({
-  storefrontId: z.string().min(1),
-  themeId: z.string().min(1),
-  path: safeThemeFilePathSchema,
-  content: z.string(),
-  mimeType: z.string().optional(),
-  expectedVersion: z.number().int().min(1).optional(),
-  createRevision: z.boolean().optional().default(false),
-  revisionMessage: z.string().max(200).optional(),
-});
+export const saveThemeFileInputSchema = z
+  .object({
+    storefrontId: z.string().min(1),
+    themeId: z.string().min(1),
+    path: safeThemeFilePathSchema,
+    content: z.string(),
+    mimeType: z.string().optional(),
+    expectedFileId: z.string().uuid().optional(),
+    expectedVersion: z.number().int().min(1).optional(),
+    expectMissing: z.boolean().optional().default(false),
+    createRevision: z.boolean().optional().default(false),
+    revisionMessage: z.string().max(200).optional(),
+  })
+  .superRefine(requireWritePrecondition);
+
+const batchFileSchema = z
+  .object({
+    path: safeThemeFilePathSchema,
+    content: z.string(),
+    mimeType: z.string().optional(),
+    expectedFileId: z.string().uuid().optional(),
+    expectedVersion: z.number().int().min(1).optional(),
+    expectMissing: z.boolean().optional().default(false),
+  })
+  .superRefine(requireWritePrecondition);
 
 export const saveThemeFilesBatchInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
-  files: z
-    .array(
-      z.object({
-        path: safeThemeFilePathSchema,
-        content: z.string(),
-        mimeType: z.string().optional(),
-        expectedVersion: z.number().int().min(1).optional(),
-      }),
-    )
-    .min(1, "Batch must contain at least one file"),
+  files: z.array(batchFileSchema).min(1, "Batch must contain at least one file"),
   createRevision: z.boolean().optional().default(false),
   revisionMessage: z.string().max(200).optional(),
 });
@@ -62,6 +99,8 @@ export const deleteThemeFileInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
   path: safeThemeFilePathSchema,
+  expectedFileId: z.string().uuid(),
+  expectedVersion: z.number().int().min(1),
 });
 
 export const initStarterThemeFilesInputSchema = z.object({

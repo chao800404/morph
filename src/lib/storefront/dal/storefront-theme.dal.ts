@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
 import {
   storefronts,
@@ -11,6 +12,20 @@ import { and, asc, eq, isNull, max } from "drizzle-orm";
 
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const SOURCE_PRESENTATION_PROP_KEYS = new Set([
+  "backgroundColor", "textColor", "textAlign", "fontFamily", "fontWeight",
+  "lineHeight", "fontSize", "borderRadius", "padding", "paddingTop",
+  "paddingBottom", "paddingLeft", "paddingRight", "className", "customClass",
+]);
+
+function stripPresentationProps(
+  props: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(props).filter(([key]) => !SOURCE_PRESENTATION_PROP_KEYS.has(key)),
+  );
+}
 
 export const storefrontThemeDal = {
   async findEditorContext(
@@ -239,6 +254,11 @@ export const storefrontThemeDal = {
     if (!targetSection) return null;
 
     const { enabled: propEnabled, ...restProps } = data.props;
+    const sourceBacked =
+      Boolean(targetSection.componentRef) || targetSection.type === "hero";
+    const incomingProps = sourceBacked
+      ? stripPresentationProps(restProps)
+      : restProps;
 
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,
@@ -251,8 +271,12 @@ export const storefrontThemeDal = {
                   ? propEnabled
                   : section.enabled !== false,
               props: {
-                ...section.props,
-                ...restProps,
+                ...(sourceBacked
+                  ? stripPresentationProps(
+                      section.props as Record<string, unknown>,
+                    )
+                  : section.props),
+                ...incomingProps,
               },
             }
           : section,
@@ -337,6 +361,7 @@ export const storefrontThemeDal = {
     storefrontId: string;
     themeId: string;
     templateId: string;
+    createdBy?: string;
   }) {
     const db = await getDb();
     const [template] = await db
@@ -363,9 +388,6 @@ export const storefrontThemeDal = {
       .limit(1);
 
     if (!template?.draftRevisionId) return null;
-    if (template.draftRevisionId === template.publishedRevisionId) {
-      return { revisionId: template.draftRevisionId, unchanged: true };
-    }
 
     const [revision] = await db
       .select({ document: storefrontThemeTemplateRevisions.document })
@@ -381,35 +403,112 @@ export const storefrontThemeDal = {
 
     const document = storefrontPageDocumentSchema.parse(revision.document);
     const now = new Date().toISOString();
-    await db.batch([
-      db
-        .update(storefrontThemeTemplates)
-        .set({
-          document,
-          publishedRevisionId: template.draftRevisionId,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(storefrontThemeTemplates.id, data.templateId),
-            eq(storefrontThemeTemplates.themeId, data.themeId),
-            eq(
-              storefrontThemeTemplates.draftRevisionId,
-              template.draftRevisionId,
-            ),
-            isNull(storefrontThemeTemplates.deletedAt),
-          ),
+    const sourceRevisionId = crypto.randomUUID();
+    const unchanged =
+      template.draftRevisionId === template.publishedRevisionId;
+
+    const statements = [
+      env.DATABASE.prepare(`
+        SELECT CASE WHEN EXISTS (
+          SELECT 1
+          FROM storefront_theme_templates t
+          INNER JOIN storefront_themes th ON th.id = t.theme_id
+          INNER JOIN storefronts s ON s.id = th.storefront_id
+          WHERE s.id = ?1
+            AND th.id = ?2
+            AND t.id = ?3
+            AND t.draft_revision_id = ?4
+            AND s.deleted_at IS NULL
+            AND th.deleted_at IS NULL
+            AND t.deleted_at IS NULL
+        ) THEN 1 ELSE json('null') END AS ok
+      `).bind(
+        data.storefrontId,
+        data.themeId,
+        data.templateId,
+        template.draftRevisionId,
+      ),
+    ];
+
+    if (!unchanged) {
+      statements.push(
+        env.DATABASE.prepare(`
+          UPDATE storefront_theme_templates
+          SET document = ?1, published_revision_id = ?2, updated_at = ?3
+          WHERE id = ?4
+            AND theme_id = ?5
+            AND draft_revision_id = ?2
+            AND deleted_at IS NULL
+        `).bind(
+          JSON.stringify(document),
+          template.draftRevisionId,
+          now,
+          data.templateId,
+          data.themeId,
         ),
-      db
-        .update(storefrontThemeTemplateRevisions)
-        .set({ publishedAt: now })
-        .where(
-          and(
-            eq(storefrontThemeTemplateRevisions.id, template.draftRevisionId),
-            eq(storefrontThemeTemplateRevisions.templateId, data.templateId),
-          ),
-        ),
-    ]);
-    return { revisionId: template.draftRevisionId, unchanged: false };
+      );
+      statements.push(
+        env.DATABASE.prepare(`
+          UPDATE storefront_theme_template_revisions
+          SET published_at = ?1
+          WHERE id = ?2 AND template_id = ?3
+        `).bind(now, template.draftRevisionId, data.templateId),
+      );
+    }
+
+    statements.push(
+      env.DATABASE.prepare(`
+        INSERT INTO storefront_theme_revisions (
+          id, storefront_id, theme_id, revision_number, message, source,
+          snapshot, created_by, created_at, updated_at
+        )
+        SELECT
+          ?1, ?2, ?3,
+          COALESCE((
+            SELECT MAX(revision_number) + 1
+            FROM storefront_theme_revisions
+            WHERE theme_id = ?3 AND deleted_at IS NULL
+          ), 1),
+          'Published Theme Source',
+          'publish',
+          COALESCE((
+            SELECT json_group_array(
+              json_object(
+                'path', path,
+                'content', content,
+                'mimeType', COALESCE(mime_type, 'text/plain'),
+                'isEntry', json(CASE WHEN is_entry = 1 THEN 'true' ELSE 'false' END)
+              )
+            )
+            FROM (
+              SELECT path, content, mime_type, is_entry
+              FROM storefront_theme_files
+              WHERE storefront_id = ?2 AND theme_id = ?3 AND deleted_at IS NULL
+              ORDER BY path
+            )
+          ), json('[]')),
+          ?4, ?5, ?5
+      `).bind(
+        sourceRevisionId,
+        data.storefrontId,
+        data.themeId,
+        data.createdBy ?? null,
+        now,
+      ),
+    );
+    statements.push(
+      env.DATABASE.prepare(`
+        UPDATE storefront_themes
+        SET published_source_revision_id = ?1, updated_at = ?2
+        WHERE id = ?3 AND storefront_id = ?4 AND deleted_at IS NULL
+      `).bind(sourceRevisionId, now, data.themeId, data.storefrontId),
+    );
+
+    await env.DATABASE.batch(statements);
+    return {
+      revisionId: template.draftRevisionId,
+      sourceRevisionId,
+      unchanged,
+    };
   },
 };

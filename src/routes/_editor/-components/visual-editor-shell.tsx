@@ -49,6 +49,10 @@ import type {
   StorefrontCommentGroupDTO,
   StorefrontCommentThreadDTO,
 } from "@/lib/storefront/dto/storefront-comment.dto";
+import type {
+  StorefrontThemeFileDTO,
+  StorefrontThemeFileTreeNode,
+} from "@/lib/storefront/dto/storefront-theme-file.dto";
 import {
   publishStorefrontThemeTemplate,
   updateStorefrontThemeSectionProps,
@@ -62,6 +66,7 @@ import {
   saveStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
+import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
@@ -121,6 +126,9 @@ type CanvasTransform = {
   y: number;
   scale: number;
 };
+
+const EMPTY_THEME_FILES: StorefrontThemeFileDTO[] = [];
+const EMPTY_THEME_TREE: StorefrontThemeFileTreeNode[] = [];
 
 const initialCanvasTransform: CanvasTransform = {
   x: 0,
@@ -568,46 +576,70 @@ export function VisualEditorShell({
   const [activeComputedStyle, setActiveComputedStyle] = useState<
     Record<string, string> | null
   >(null);
+  const [activeSectionComputedStyle, setActiveSectionComputedStyle] = useState<
+    Record<string, string> | null
+  >(null);
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
   });
-  const themeFiles = themeFilesQuery.data?.files ?? [];
-  const themeTree = themeFilesQuery.data?.tree ?? [];
+  const themeFiles = themeFilesQuery.data?.files ?? EMPTY_THEME_FILES;
+  const themeTree = themeFilesQuery.data?.tree ?? EMPTY_THEME_TREE;
 
-  const sourceCodeBufferRef = useRef<Map<string, string>>(new Map());
+  const workspaceFiles = useThemeWorkspaceStore((state) => state.files);
+  const hydrateWorkspace = useThemeWorkspaceStore((state) => state.hydrateFromQuery);
+  const updateWorkspaceLocal = useThemeWorkspaceStore((state) => state.updateLocalContent);
+  const markWorkspaceDebouncing = useThemeWorkspaceStore((state) => state.markDebouncing);
+  const markWorkspaceSaving = useThemeWorkspaceStore((state) => state.markSaving);
+  const markWorkspaceSaved = useThemeWorkspaceStore((state) => state.markSaved);
+  const markWorkspaceError = useThemeWorkspaceStore((state) => state.markError);
+  const markWorkspaceConflict = useThemeWorkspaceStore((state) => state.markConflict);
+  const resolveWorkspaceConflict = useThemeWorkspaceStore((state) => state.resolveConflict);
+
+  useEffect(() => {
+    if (themeFilesQuery.data?.files) {
+      hydrateWorkspace(themeFilesQuery.data.files);
+    }
+  }, [themeFilesQuery.data?.files, hydrateWorkspace]);
+
+  const effectiveThemeFiles = useMemo(
+    () =>
+      themeFiles.map((file) => ({
+        ...file,
+        content: workspaceFiles[file.path]?.localContent ?? file.content,
+      })),
+    [themeFiles, workspaceFiles],
+  );
+
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const fileRevisionRef = useRef<Map<string, number>>(new Map());
-  const inFlightSavesRef = useRef<Set<string>>(new Set());
-  const fileVersionRef = useRef<Map<string, number>>(new Map());
 
-  // Synchronize in-memory shared buffer and version ref whenever themeFiles query updates
-  useEffect(() => {
-    for (const f of themeFiles) {
-      if (
-        !pendingSaveTimersRef.current.has(f.path) &&
-        !inFlightSavesRef.current.has(f.path)
-      ) {
-        sourceCodeBufferRef.current.set(f.path, f.content);
-      }
-      // Update baseline version if not currently tracking an in-flight sequence
-      if (!inFlightSavesRef.current.has(f.path) && typeof f.version === "number") {
-        fileVersionRef.current.set(f.path, f.version);
-      }
-    }
-  }, [themeFiles]);
+  const themeFileSaveStatus = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.values(workspaceFiles).map((file) => [
+          file.path,
+          file.saveState === "saving" || file.saveState === "debouncing"
+            ? "saving"
+            : file.saveState === "error" || file.saveState === "conflict"
+              ? "error"
+              : "idle",
+        ]),
+      ) as Record<string, "idle" | "saving" | "error">,
+    [workspaceFiles],
+  );
 
-  const [themeFileSaveStatus, setThemeFileSaveStatus] = useState<
-    Record<string, "idle" | "saving" | "error">
-  >({});
-  const [themeFileSaveErrors, setThemeFileSaveErrors] = useState<
-    Record<string, string>
-  >({});
-  const [activeConflicts, setActiveConflicts] = useState<
-    Record<string, { remoteVersion: number; remoteContent: string }>
-  >({});
+  const themeFileSaveErrors = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.values(workspaceFiles)
+          .filter((file) => file.errorMessage)
+          .map((file) => [file.path, file.errorMessage!]),
+      ),
+    [workspaceFiles],
+  );
 
   const latestPublishedRevision = (themeFilesQuery.data as any)
     ?.latestPublishedRevision;
@@ -624,8 +656,8 @@ export function VisualEditorShell({
   const hasThemeSourceChanges = useMemo(() => {
     // True server-backed published state diffing
     if (publishedSnapshotMap) {
-      if (themeFiles.length !== publishedSnapshotMap.size) return true;
-      for (const f of themeFiles) {
+      if (effectiveThemeFiles.length !== publishedSnapshotMap.size) return true;
+      for (const f of effectiveThemeFiles) {
         const publishedContent = publishedSnapshotMap.get(f.path);
         if (publishedContent === undefined) return true; // new file
         if (f.content !== publishedContent) return true; // modified file
@@ -633,8 +665,8 @@ export function VisualEditorShell({
       return false;
     }
     // Fallback if theme has never been published yet
-    return themeFiles.some((f) => (f.version ?? 1) > 1);
-  }, [themeFiles, publishedSnapshotMap]);
+    return effectiveThemeFiles.some((f) => (f.version ?? 1) > 1);
+  }, [effectiveThemeFiles, publishedSnapshotMap]);
 
   const hasTemplateChanges = Boolean(
     activeTemplate?.draftRevisionId &&
@@ -644,42 +676,36 @@ export function VisualEditorShell({
 
   const saveThemeFileSequentially = useCallback(
     async (filePath: string, contentToSave: string, targetRevision: number) => {
-      // If file has an active unresolved server conflict, block automatic save
-      if (activeConflicts[filePath]) {
-        throw new Error(
-          "File has an active version conflict. Please reload remote or choose to overwrite before saving.",
-        );
-      }
-
       const previousPromise =
         saveQueueRef.current.get(filePath) ?? Promise.resolve();
 
       const nextPromise = previousPromise
         .catch(() => {})
         .then(async () => {
-          // If a newer revision was already queued, skip persisting this stale snapshot
           const latestQueuedRevision =
             fileRevisionRef.current.get(filePath) ?? 0;
-          if (targetRevision < latestQueuedRevision) {
-            return null;
-          }
+          if (targetRevision < latestQueuedRevision) return null;
 
-          inFlightSavesRef.current.add(filePath);
-          setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "saving" }));
+          const current = useThemeWorkspaceStore.getState().files[filePath];
+          if (!current) throw new Error(`Workspace file "${filePath}" is missing`);
+          if (current.conflict) throw new Error("File has an unresolved conflict.");
+
+          markWorkspaceSaving(filePath);
 
           try {
-            // Read monotonic expectedVersion directly from fileVersionRef at the exact execution time
-            const expectedVersion =
-              fileVersionRef.current.get(filePath) ??
-              themeFiles.find((f) => f.path === filePath)?.version;
-
             const res = await saveStorefrontThemeFile({
               data: {
                 storefrontId: context.storefront.id,
                 themeId: context.theme.id,
                 path: filePath,
                 content: contentToSave,
-                expectedVersion,
+                expectedFileId: current.serverExists
+                  ? current.serverFileId ?? undefined
+                  : undefined,
+                expectedVersion: current.serverExists
+                  ? current.serverVersion ?? undefined
+                  : undefined,
+                expectMissing: !current.serverExists,
               },
             });
 
@@ -694,39 +720,27 @@ export function VisualEditorShell({
                 }).catch(() => null);
 
                 if (latestRes?.success && latestRes.data) {
-                  setActiveConflicts((prev) => ({
-                    ...prev,
-                    [filePath]: {
-                      remoteVersion: latestRes.data.version,
-                      remoteContent: latestRes.data.content,
-                    },
-                  }));
+                  markWorkspaceConflict(filePath, {
+                    kind: current.serverExists ? "modified" : "created",
+                    remoteExists: true,
+                    remoteFileId: latestRes.data.id,
+                    remoteVersion: latestRes.data.version,
+                    remoteContent: latestRes.data.content,
+                  });
+                } else {
+                  markWorkspaceConflict(filePath, {
+                    kind: "deleted",
+                    remoteExists: false,
+                    remoteFileId: null,
+                    remoteVersion: null,
+                    remoteContent: null,
+                  });
                 }
               }
               throw new Error(res.message);
             }
 
-            // Immediately advance monotonic version in ref for next queued save
-            if (res.data?.version) {
-              fileVersionRef.current.set(filePath, res.data.version);
-            }
-
-            // Clear any lingering conflict for this path on successful save
-            setActiveConflicts((prev) => {
-              if (!prev[filePath]) return prev;
-              const next = { ...prev };
-              delete next[filePath];
-              return next;
-            });
-
-            setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "idle" }));
-            setThemeFileSaveErrors((prev) => {
-              const next = { ...prev };
-              delete next[filePath];
-              return next;
-            });
-
-            // Invalidate/update query cache on successful serialized save
+            markWorkspaceSaved(res.data);
             queryClient.setQueryData(
               storefrontThemeFileQueries.tree(
                 context.storefront.id,
@@ -734,32 +748,43 @@ export function VisualEditorShell({
               ).queryKey,
               (old: any) => {
                 if (!old?.files) return old;
+                const exists = old.files.some((file: any) => file.path === filePath);
                 return {
                   ...old,
-                  files: old.files.map((f: any) =>
-                    f.path === filePath ? { ...f, ...res.data } : f,
-                  ),
+                  files: exists
+                    ? old.files.map((file: any) =>
+                        file.path === filePath ? { ...file, ...res.data } : file,
+                      )
+                    : [...old.files, res.data],
                 };
               },
             );
 
             return res.data;
-          } catch (err) {
-            setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "error" }));
-            setThemeFileSaveErrors((prev) => ({
-              ...prev,
-              [filePath]: err instanceof Error ? err.message : "Save failed",
-            }));
-            throw err;
-          } finally {
-            inFlightSavesRef.current.delete(filePath);
+          } catch (error) {
+            const afterError = useThemeWorkspaceStore.getState().files[filePath];
+            if (afterError?.saveState !== "conflict") {
+              markWorkspaceError(
+                filePath,
+                error instanceof Error ? error.message : "Save failed",
+              );
+            }
+            throw error;
           }
         });
 
       saveQueueRef.current.set(filePath, nextPromise);
       return nextPromise;
     },
-    [context.storefront.id, context.theme.id, themeFiles, queryClient],
+    [
+      context.storefront.id,
+      context.theme.id,
+      markWorkspaceConflict,
+      markWorkspaceError,
+      markWorkspaceSaved,
+      markWorkspaceSaving,
+      queryClient,
+    ],
   );
 
   const handleUnifiedSaveFile = useCallback(
@@ -770,17 +795,16 @@ export function VisualEditorShell({
         pendingSaveTimersRef.current.delete(filePath);
       }
 
-      sourceCodeBufferRef.current.set(filePath, content);
+      updateWorkspaceLocal(filePath, content);
 
       previewIframeRef.current?.contentWindow?.postMessage(
         {
           type: "morph:storefront-preview-update-theme-files",
-          files: themeFiles.map((f) => ({
-            path: f.path,
+          files: themeFiles.map((file) => ({
+            path: file.path,
             content:
-              f.path === filePath
-                ? content
-                : (sourceCodeBufferRef.current.get(f.path) ?? f.content),
+              useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+              file.content,
           })),
         },
         window.location.origin,
@@ -794,138 +818,130 @@ export function VisualEditorShell({
         content,
         nextRevision,
       );
-      if (!result) {
-        throw new Error("Save superseded by a newer version");
-      }
+      if (!result) throw new Error("Save superseded by a newer version");
+
+      requestAnimationFrame(() => {
+        previewIframeRef.current?.contentWindow?.postMessage(
+          { type: "morph:storefront-preview-request-selection-style" },
+          window.location.origin,
+        );
+      });
       return result;
     },
-    [saveThemeFileSequentially, themeFiles],
+    [saveThemeFileSequentially, themeFiles, updateWorkspaceLocal],
   );
 
   const handleResolveConflict = useCallback(
     async (filePath: string, resolution: "reload" | "force_mine") => {
-      const conflict = activeConflicts[filePath];
-      if (!conflict) return;
+      const resolved = resolveWorkspaceConflict(filePath, resolution);
+      if (!resolved) return;
 
       if (resolution === "reload") {
-        sourceCodeBufferRef.current.set(filePath, conflict.remoteContent);
-        fileVersionRef.current.set(filePath, conflict.remoteVersion);
-        setActiveConflicts((prev) => {
-          const next = { ...prev };
-          delete next[filePath];
-          return next;
-        });
-        queryClient.setQueryData(
-          storefrontThemeFileQueries.tree(
+        await queryClient.invalidateQueries({
+          queryKey: storefrontThemeFileQueries.tree(
             context.storefront.id,
             context.theme.id,
           ).queryKey,
-          (old: any) => {
-            if (!old?.files) return old;
-            return {
-              ...old,
-              files: old.files.map((f: any) =>
-                f.path === filePath
-                  ? {
-                      ...f,
-                      content: conflict.remoteContent,
-                      version: conflict.remoteVersion,
-                    }
-                  : f,
-              ),
-            };
-          },
-        );
-        // Clear save error status on reload
-        setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "idle" }));
-        setThemeFileSaveErrors((prev) => {
-          if (!prev[filePath]) return prev;
-          const next = { ...prev };
-          delete next[filePath];
-          return next;
         });
-
-        // Broadcast reloaded remote file to preview iframe
         previewIframeRef.current?.contentWindow?.postMessage(
           {
             type: "morph:storefront-preview-update-theme-files",
-            files: themeFiles.map((f) => ({
-              path: f.path,
-              content:
-                f.path === filePath
-                  ? conflict.remoteContent
-                  : (sourceCodeBufferRef.current.get(f.path) ?? f.content),
-            })),
+            files: themeFiles.flatMap((file) => {
+              const current = useThemeWorkspaceStore.getState().files[file.path];
+              return current
+                ? [{ path: file.path, content: current.localContent }]
+                : [];
+            }),
           },
           window.location.origin,
         );
-
-        toast.info(`Reloaded remote version of ${filePath}`);
-      } else if (resolution === "force_mine") {
-        const localContent = sourceCodeBufferRef.current.get(filePath);
-        if (!localContent) return;
-        fileVersionRef.current.set(filePath, conflict.remoteVersion);
-        setActiveConflicts((prev) => {
-          const next = { ...prev };
-          delete next[filePath];
-          return next;
-        });
-        toast.info(
-          `Overwriting remote version with local changes for ${filePath}...`,
-        );
-        await handleUnifiedSaveFile(filePath, localContent);
+        toast.info(`Reloaded remote state of ${filePath}`);
+        return;
       }
+
+      const local = useThemeWorkspaceStore.getState().files[filePath]?.localContent;
+      if (local === undefined) return;
+      toast.info(`Applying local version of ${filePath}...`);
+      await handleUnifiedSaveFile(filePath, local);
     },
     [
-      activeConflicts,
       context.storefront.id,
       context.theme.id,
-      queryClient,
       handleUnifiedSaveFile,
+      queryClient,
+      resolveWorkspaceConflict,
+      themeFiles,
     ],
   );
 
   const handlePublish = useCallback(async () => {
-    // 1. Block if Monaco has unsaved edits
     if (monacoDirtyFiles.length > 0) {
       toast.error(
-        `Cannot publish: You have unsaved changes in Code Editor (${monacoDirtyFiles.join(", ")}). Please save them first.`,
+        `Cannot publish: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
       );
       return;
     }
 
-    // 2. Block if any file is in conflict
-    if (Object.keys(activeConflicts).length > 0) {
-      toast.error(
-        "Cannot publish: You have unresolved file conflicts. Please resolve them first.",
-      );
+    if (useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors()) {
+      toast.error("Cannot publish: resolve source conflicts/save errors first.");
       return;
     }
 
-    // 3. Flush any pending debounced saves
+    if (debouncedSavePropsTimeoutRef.current) {
+      clearTimeout(debouncedSavePropsTimeoutRef.current);
+      debouncedSavePropsTimeoutRef.current = null;
+    }
+    if (pendingPropsSaveRef.current) {
+      const pending = pendingPropsSaveRef.current;
+      pendingPropsSaveRef.current = null;
+      const result = await updatePropsMutation.mutateAsync(pending);
+      if (!result.success) {
+        toast.error(result.message);
+        return;
+      }
+    }
+
     const pendingFiles = Array.from(pendingSaveTimersRef.current.keys());
     for (const filePath of pendingFiles) {
       const timer = pendingSaveTimersRef.current.get(filePath);
       if (timer) clearTimeout(timer);
       pendingSaveTimersRef.current.delete(filePath);
-      const pendingContent = sourceCodeBufferRef.current.get(filePath);
-      if (pendingContent !== undefined) {
+      const content =
+        useThemeWorkspaceStore.getState().files[filePath]?.localContent;
+      if (content !== undefined) {
         try {
-          await handleUnifiedSaveFile(filePath, pendingContent);
-        } catch (err: any) {
-          toast.error(`Failed to save ${filePath}: ${err.message}`);
+          await handleUnifiedSaveFile(filePath, content);
+        } catch (error) {
+          toast.error(
+            `Failed to save ${filePath}: ${
+              error instanceof Error ? error.message : "Save failed"
+            }`,
+          );
           return;
         }
       }
     }
 
-    // 4. Trigger publish mutation
-    publishMutation.mutate();
+    await Promise.all(
+      Array.from(saveQueueRef.current.values()).map((promise) =>
+        promise.catch(() => null),
+      ),
+    );
+
+    const workspace = useThemeWorkspaceStore.getState();
+    if (workspace.hasActiveConflictsOrErrors() || workspace.hasUnsavedEdits()) {
+      toast.error(
+        "Cannot publish: source workspace is not fully saved and conflict-free.",
+      );
+      return;
+    }
+
+    await publishMutation.mutateAsync();
   }, [
-    monacoDirtyFiles,
-    activeConflicts,
     handleUnifiedSaveFile,
+    monacoDirtyFiles,
     publishMutation,
+    updatePropsMutation,
   ]);
 
   const handleUpdateThemeFileStyle = useCallback(
@@ -935,7 +951,7 @@ export function VisualEditorShell({
       updater: (prevClasses: string) => string,
     ) => {
       const currentSource =
-        sourceCodeBufferRef.current.get(filePath) ??
+        useThemeWorkspaceStore.getState().files[filePath]?.localContent ??
         themeFiles.find((f) => f.path === filePath)?.content;
       if (!currentSource) return;
 
@@ -960,42 +976,31 @@ export function VisualEditorShell({
 
       const updatedContent = patchResult.code;
       if (updatedContent !== currentSource) {
-        // 1. Immediately update in-memory buffer
-        sourceCodeBufferRef.current.set(filePath, updatedContent);
+        updateWorkspaceLocal(filePath, updatedContent);
 
-        // 2. Real-time 0ms sync to preview iframe
         previewIframeRef.current?.contentWindow?.postMessage(
           {
             type: "morph:storefront-preview-update-theme-files",
-            files: themeFiles.map((f) => ({
-              path: f.path,
+            files: themeFiles.map((file) => ({
+              path: file.path,
               content:
-                f.path === filePath
+                file.path === filePath
                   ? updatedContent
-                  : (sourceCodeBufferRef.current.get(f.path) ?? f.content),
+                  : useThemeWorkspaceStore.getState().files[file.path]
+                      ?.localContent ?? file.content,
             })),
           },
           window.location.origin,
         );
 
-        // 3. Optimistically update TanStack Query cache for instant Monaco/UI sync
-        queryClient.setQueryData(
-          storefrontThemeFileQueries.tree(
-            context.storefront.id,
-            context.theme.id,
-          ).queryKey,
-          (old: any) => {
-            if (!old?.files) return old;
-            return {
-              ...old,
-              files: old.files.map((f: any) =>
-                f.path === filePath ? { ...f, content: updatedContent } : f,
-              ),
-            };
-          },
-        );
+        requestAnimationFrame(() => {
+          previewIframeRef.current?.contentWindow?.postMessage(
+            { type: "morph:storefront-preview-request-selection-style" },
+            window.location.origin,
+          );
+        });
 
-        // 4. Debounce save to database (300ms)
+        // Debounce save to database (300ms)
         const existingTimer = pendingSaveTimersRef.current.get(filePath);
         if (existingTimer) {
           clearTimeout(existingTimer);
@@ -1016,6 +1021,7 @@ export function VisualEditorShell({
         }, 300);
 
         pendingSaveTimersRef.current.set(filePath, newTimer);
+        markWorkspaceDebouncing(filePath);
       }
     },
     [
@@ -1282,7 +1288,15 @@ export function VisualEditorShell({
       setActiveNodeId(nodeId);
       setActiveElementKey(elementKey);
       setActiveFieldKey(fieldKey);
+      const sectionComputedStyle =
+        "sectionComputedStyle" in message &&
+        typeof message.sectionComputedStyle === "object" &&
+        message.sectionComputedStyle !== null
+          ? (message.sectionComputedStyle as Record<string, string>)
+          : null;
+
       setActiveComputedStyle(computedStyle);
+      setActiveSectionComputedStyle(sectionComputedStyle);
 
       onSearchChange({ section: sectionId });
     };
@@ -1333,6 +1347,10 @@ export function VisualEditorShell({
   const debouncedSavePropsTimeoutRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
+  const pendingPropsSaveRef = useRef<{
+    sectionId: string;
+    props: Record<string, unknown>;
+  } | null>(null);
 
   const handleSectionPropsChange = useCallback(
     (sectionId: string, nextProps: Record<string, unknown>) => {
@@ -1343,7 +1361,9 @@ export function VisualEditorShell({
       if (debouncedSavePropsTimeoutRef.current) {
         clearTimeout(debouncedSavePropsTimeoutRef.current);
       }
+      pendingPropsSaveRef.current = { sectionId, props: nextProps };
       debouncedSavePropsTimeoutRef.current = setTimeout(() => {
+        pendingPropsSaveRef.current = null;
         updatePropsMutation.mutate({ sectionId, props: nextProps });
       }, 300);
     },
@@ -2242,6 +2262,9 @@ export function VisualEditorShell({
               draftSaveState !== "idle" ||
               Object.values(themeFileSaveStatus).some((s) => s === "saving") ||
               Object.values(themeFileSaveErrors).length > 0 ||
+              monacoDirtyFiles.length > 0 ||
+              useThemeWorkspaceStore.getState().hasUnsavedEdits() ||
+              useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors() ||
               publishMutation.isPending
             }
             onClick={handlePublish}
@@ -2260,11 +2283,10 @@ export function VisualEditorShell({
         <EditorCodeWorkspace
           storefrontId={context.storefront.id}
           themeId={context.theme.id}
-          files={themeFiles}
+          files={effectiveThemeFiles}
           tree={themeTree}
           initialActiveFilePath={activeCodeFilePath}
           jumpLocation={jumpLocation}
-          externalConflictFiles={activeConflicts}
           onResolveConflict={handleResolveConflict}
           onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
           onDirtyFilesChange={setMonacoDirtyFiles}
@@ -2621,11 +2643,13 @@ export function VisualEditorShell({
           activeCommentThreadId={activeCommentThreadId}
           onSelectCommentThread={handleSelectCommentThread}
           previewWidth={previewWidth}
-          themeFiles={themeFiles}
+          themeFiles={effectiveThemeFiles}
           activeNodeId={activeNodeId}
           activeElementKey={activeElementKey}
           activeFieldKey={activeFieldKey}
           activeComputedStyle={activeComputedStyle}
+          activeSectionComputedStyle={activeSectionComputedStyle}
+          activeViewport={search.viewport}
           onUpdateThemeFileStyle={handleUpdateThemeFileStyle}
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}

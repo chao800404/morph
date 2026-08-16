@@ -34,6 +34,8 @@ type EditorAssistantPanelProps = {
   activeElementKey?: string | null;
   activeFieldKey?: string | null;
   activeComputedStyle?: Record<string, string> | null;
+  activeSectionComputedStyle?: Record<string, string> | null;
+  activeViewport?: StorefrontThemeEditorSearch["viewport"];
   onUpdateThemeFileStyle?: (
     filePath: string,
     elementName: string,
@@ -78,6 +80,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   activeElementKey,
   activeFieldKey,
   activeComputedStyle,
+  activeSectionComputedStyle,
+  activeViewport,
   onUpdateThemeFileStyle,
   onSectionPropsChange,
   onSectionToggleEnabled,
@@ -228,6 +232,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               activeElementKey={activeElementKey}
               activeFieldKey={activeFieldKey}
               activeComputedStyle={activeComputedStyle}
+              activeSectionComputedStyle={activeSectionComputedStyle}
+              activeViewport={activeViewport ?? search.viewport}
               onUpdateThemeFileStyle={onUpdateThemeFileStyle}
               onPropsChange={(nextProps) =>
                 onSectionPropsChange?.(selectedSection.id, nextProps)

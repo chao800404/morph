@@ -197,6 +197,7 @@ function renderSection(
         <StorefrontHero
           key={section.id}
           sectionId={section.id}
+          componentRef={section.componentRef}
           rawProps={rawProps}
           themeFiles={themeFiles}
           {...(parsedData as any)}
@@ -254,6 +255,7 @@ function renderSection(
 
 function StorefrontHero({
   sectionId,
+  componentRef,
   rawProps,
   themeFiles,
   eyebrow,
@@ -265,6 +267,7 @@ function StorefrontHero({
   imageAlt,
 }: {
   sectionId: string;
+  componentRef?: string | null;
   rawProps?: Record<string, any>;
   themeFiles?: Array<{ path: string; content: string }>;
   eyebrow?: string | null;
@@ -276,7 +279,8 @@ function StorefrontHero({
   imageAlt?: string | null;
 }) {
   const componentPath =
-    getComponentFilePath("hero", themeFiles) ?? "src/components/Hero.tsx";
+    getComponentFilePath("hero", themeFiles, componentRef ?? undefined) ??
+    "src/components/Hero.tsx";
   const heroFile = themeFiles?.find((f) => f.path === componentPath);
   const heroAst = heroFile?.content ? parseComponentSource(heroFile.content) : null;
   // Presentation SSOT: when TSX source exists, Tailwind classes from source govern layout/style without inline style overrides
@@ -335,6 +339,8 @@ function StorefrontHero({
       data-storefront-section-type="hero"
       data-morph-source-file={componentPath}
       data-morph-component="Hero"
+      data-morph-component-ref={componentRef ?? "hero.default"}
+      data-morph-node={heroAst?.elements["section"]?.nodeId}
       style={customStyle}
       className={cn(sectionClassName, customClass)}
     >
@@ -343,6 +349,7 @@ function StorefrontHero({
           <p
             data-storefront-component="eyebrow"
             data-storefront-field="eyebrow"
+            data-morph-node={heroAst?.elements["eyebrow"]?.nodeId}
             data-morph-element="eyebrow"
             className={eyebrowClassName}
           >
@@ -351,6 +358,7 @@ function StorefrontHero({
           <h1
             data-storefront-component="heading"
             data-storefront-field="heading"
+            data-morph-node={heroAst?.elements["heading"]?.nodeId}
             data-morph-element="heading"
             className={headingClassName}
           >
@@ -359,6 +367,7 @@ function StorefrontHero({
           <p
             data-storefront-component="description"
             data-storefront-field="description"
+            data-morph-node={heroAst?.elements["description"]?.nodeId}
             data-morph-element="description"
             className={descriptionClassName}
           >
@@ -369,6 +378,7 @@ function StorefrontHero({
               href={displayActionHref}
               data-storefront-component="button"
               data-storefront-field="actionLabel"
+              data-morph-node={heroAst?.elements["action"]?.nodeId}
               data-morph-element="action"
               className={actionClassName}
             >
@@ -380,6 +390,7 @@ function StorefrontHero({
       <div
         data-storefront-component="image"
         data-storefront-field="imageSrc"
+        data-morph-node={heroAst?.elements["image"]?.nodeId}
         data-morph-element="image"
         className={imageContainerClassName}
       >

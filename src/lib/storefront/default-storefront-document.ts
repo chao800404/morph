@@ -38,7 +38,10 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
   return {
     version: 1,
     sections: [
-      legacyStarterDocument.sections[0]!,
+      {
+        ...legacyStarterDocument.sections[0]!,
+        componentRef: "hero.default",
+      },
       {
         id: "starter-introduction",
         type: "editorial-intro",

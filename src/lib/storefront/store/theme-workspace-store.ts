@@ -9,102 +9,233 @@ export type ThemeFileSaveState =
   | "error"
   | "conflict";
 
+export type ThemeFileConflict =
+  | {
+      kind: "modified" | "created";
+      remoteExists: true;
+      remoteFileId: string;
+      remoteVersion: number;
+      remoteContent: string;
+    }
+  | {
+      kind: "deleted";
+      remoteExists: false;
+      remoteFileId: null;
+      remoteVersion: null;
+      remoteContent: null;
+    };
+
 export interface ThemeWorkspaceFileState {
   path: string;
+  serverExists: boolean;
+  serverFileId: string | null;
   serverContent: string;
   localContent: string;
-  serverVersion: number;
+  serverVersion: number | null;
   dirty: boolean;
   saveState: ThemeFileSaveState;
-  conflict?: {
-    remoteVersion: number;
-    remoteContent: string;
-  };
+  conflict?: ThemeFileConflict;
   errorMessage?: string;
+}
+
+export interface ThemeConflictResolution {
+  content: string | null;
+  serverExists: boolean;
+  serverFileId: string | null;
+  serverVersion: number | null;
 }
 
 export interface ThemeWorkspaceStore {
   files: Record<string, ThemeWorkspaceFileState>;
-  inFlightSaves: Set<string>;
-  pendingTimers: Record<string, NodeJS.Timeout>;
-
-  // Actions
   hydrateFromQuery: (themeFiles: StorefrontThemeFileDTO[]) => void;
   updateLocalContent: (path: string, content: string) => void;
-  markDebouncing: (path: string, timer: NodeJS.Timeout) => void;
+  markDebouncing: (path: string) => void;
   markSaving: (path: string) => void;
-  markSaved: (path: string, newVersion: number, savedContent: string) => void;
+  markSaved: (saved: StorefrontThemeFileDTO) => void;
   markError: (path: string, message: string) => void;
-  markConflict: (
-    path: string,
-    remoteVersion: number,
-    remoteContent: string,
-  ) => void;
+  markConflict: (path: string, conflict: ThemeFileConflict) => void;
   resolveConflict: (
     path: string,
     resolution: "reload" | "force_mine",
-  ) => { newContent: string; newVersion: number } | null;
-  clearPendingTimer: (path: string) => void;
+  ) => ThemeConflictResolution | null;
+  discardLocalChanges: (path: string) => void;
   getDirtyFiles: () => string[];
   hasUnsavedEdits: () => boolean;
   hasActiveConflictsOrErrors: () => boolean;
 }
 
+function fromServerFile(file: StorefrontThemeFileDTO): ThemeWorkspaceFileState {
+  return {
+    path: file.path,
+    serverExists: true,
+    serverFileId: file.id,
+    serverContent: file.content,
+    localContent: file.content,
+    serverVersion: file.version,
+    dirty: false,
+    saveState: "clean",
+  };
+}
+
 export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => ({
   files: {},
-  inFlightSaves: new Set(),
-  pendingTimers: {},
 
   hydrateFromQuery: (themeFiles) => {
     set((state) => {
-      const nextFiles = { ...state.files };
-      for (const f of themeFiles) {
-        const existing = nextFiles[f.path];
-        // If file is not dirty and not currently in flight save, sync server content
-        if (!existing || (!existing.dirty && !state.inFlightSaves.has(f.path))) {
-          nextFiles[f.path] = {
-            path: f.path,
-            serverContent: f.content,
-            localContent: existing?.dirty ? existing.localContent : f.content,
-            serverVersion: f.version ?? 1,
-            dirty: Boolean(existing?.dirty),
-            saveState: existing?.saveState ?? "clean",
-            conflict: existing?.conflict,
-            errorMessage: existing?.errorMessage,
-          };
-        } else if (existing && existing.serverVersion !== f.version && f.version) {
-          // If server version advanced while local is dirty and not our in-flight save, mark conflict
-          if (!state.inFlightSaves.has(f.path) && f.content !== existing.localContent) {
-            nextFiles[f.path] = {
-              ...existing,
+      const incoming = new Map(themeFiles.map((file) => [file.path, file]));
+      let hasChanges = false;
+      const next = { ...state.files };
+
+      for (const file of themeFiles) {
+        const current = state.files[file.path];
+        if (!current) {
+          next[file.path] = fromServerFile(file);
+          hasChanges = true;
+          continue;
+        }
+
+        if (current.saveState === "saving") continue;
+
+        if (!current.serverExists && current.dirty) {
+          const isSameConflict =
+            current.saveState === "conflict" &&
+            current.conflict?.kind === "created" &&
+            current.conflict?.remoteFileId === file.id &&
+            current.conflict?.remoteVersion === file.version &&
+            current.conflict?.remoteContent === file.content;
+
+          if (!isSameConflict) {
+            next[file.path] = {
+              ...current,
               saveState: "conflict",
               conflict: {
-                remoteVersion: f.version,
-                remoteContent: f.content,
+                kind: "created",
+                remoteExists: true,
+                remoteFileId: file.id,
+                remoteVersion: file.version,
+                remoteContent: file.content,
               },
             };
+            hasChanges = true;
           }
+          continue;
+        }
+
+        const serverChanged =
+          current.serverFileId !== file.id ||
+          current.serverVersion !== file.version ||
+          current.serverContent !== file.content ||
+          !current.serverExists;
+
+        if (current.dirty && serverChanged) {
+          const isSameConflict =
+            current.saveState === "conflict" &&
+            current.conflict?.kind === "modified" &&
+            current.conflict?.remoteFileId === file.id &&
+            current.conflict?.remoteVersion === file.version &&
+            current.conflict?.remoteContent === file.content;
+
+          if (!isSameConflict) {
+            next[file.path] = {
+              ...current,
+              saveState: "conflict",
+              conflict: {
+                kind: "modified",
+                remoteExists: true,
+                remoteFileId: file.id,
+                remoteVersion: file.version,
+                remoteContent: file.content,
+              },
+            };
+            hasChanges = true;
+          }
+          continue;
+        }
+
+        if (!current.dirty && (serverChanged || current.saveState !== "clean")) {
+          next[file.path] = fromServerFile(file);
+          hasChanges = true;
         }
       }
-      return { files: nextFiles };
+
+      for (const [path, current] of Object.entries(state.files)) {
+        if (incoming.has(path) || !current.serverExists) continue;
+        if (current.saveState === "saving") continue;
+
+        if (current.dirty) {
+          const isSameConflict =
+            current.saveState === "conflict" &&
+            current.conflict?.kind === "deleted";
+
+          if (!isSameConflict) {
+            next[path] = {
+              ...current,
+              saveState: "conflict",
+              conflict: {
+                kind: "deleted",
+                remoteExists: false,
+                remoteFileId: null,
+                remoteVersion: null,
+                remoteContent: null,
+              },
+            };
+            hasChanges = true;
+          }
+        } else {
+          delete next[path];
+          hasChanges = true;
+        }
+      }
+
+      if (!hasChanges) return state;
+      return { files: next };
     });
   },
 
   updateLocalContent: (path, content) => {
     set((state) => {
       const current = state.files[path];
-      const isDirty = current ? content !== current.serverContent : true;
+      if (!current) {
+        return {
+          files: {
+            ...state.files,
+            [path]: {
+              path,
+              serverExists: false,
+              serverFileId: null,
+              serverContent: "",
+              localContent: content,
+              serverVersion: null,
+              dirty: true,
+              saveState: "dirty",
+            },
+          },
+        };
+      }
+
+      if (
+        current.localContent === content &&
+        current.errorMessage === undefined
+      ) {
+        return state;
+      }
+
+      const dirty = current.serverExists
+        ? content !== current.serverContent
+        : true;
+
       return {
         files: {
           ...state.files,
           [path]: {
-            path,
-            serverContent: current?.serverContent ?? content,
+            ...current,
             localContent: content,
-            serverVersion: current?.serverVersion ?? 1,
-            dirty: isDirty,
-            saveState: isDirty ? "dirty" : "clean",
-            conflict: current?.conflict,
+            dirty,
+            saveState: current.conflict
+              ? "conflict"
+              : dirty
+                ? "dirty"
+                : "clean",
             errorMessage: undefined,
           },
         },
@@ -112,28 +243,24 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
     });
   },
 
-  markDebouncing: (path, timer) => {
+  markDebouncing: (path) => {
     set((state) => {
       const current = state.files[path];
-      if (!current) return state;
+      if (!current || current.conflict) return state;
       return {
         files: {
           ...state.files,
           [path]: { ...current, saveState: "debouncing" },
         },
-        pendingTimers: { ...state.pendingTimers, [path]: timer },
       };
     });
   },
 
   markSaving: (path) => {
     set((state) => {
-      const nextInFlight = new Set(state.inFlightSaves);
-      nextInFlight.add(path);
       const current = state.files[path];
-      if (!current) return { inFlightSaves: nextInFlight };
+      if (!current || current.conflict) return state;
       return {
-        inFlightSaves: nextInFlight,
         files: {
           ...state.files,
           [path]: { ...current, saveState: "saving", errorMessage: undefined },
@@ -142,21 +269,19 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
     });
   },
 
-  markSaved: (path, newVersion, savedContent) => {
+  markSaved: (saved) => {
     set((state) => {
-      const nextInFlight = new Set(state.inFlightSaves);
-      nextInFlight.delete(path);
-      const current = state.files[path];
-      if (!current) return { inFlightSaves: nextInFlight };
-      const stillDirty = current.localContent !== savedContent;
+      const current = state.files[saved.path] ?? fromServerFile(saved);
+      const stillDirty = current.localContent !== saved.content;
       return {
-        inFlightSaves: nextInFlight,
         files: {
           ...state.files,
-          [path]: {
+          [saved.path]: {
             ...current,
-            serverContent: savedContent,
-            serverVersion: newVersion,
+            serverExists: true,
+            serverFileId: saved.id,
+            serverContent: saved.content,
+            serverVersion: saved.version,
             dirty: stillDirty,
             saveState: stillDirty ? "dirty" : "clean",
             conflict: undefined,
@@ -169,38 +294,29 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
 
   markError: (path, message) => {
     set((state) => {
-      const nextInFlight = new Set(state.inFlightSaves);
-      nextInFlight.delete(path);
       const current = state.files[path];
-      if (!current) return { inFlightSaves: nextInFlight };
+      if (!current) return state;
       return {
-        inFlightSaves: nextInFlight,
         files: {
           ...state.files,
-          [path]: {
-            ...current,
-            saveState: "error",
-            errorMessage: message,
-          },
+          [path]: { ...current, saveState: "error", errorMessage: message },
         },
       };
     });
   },
 
-  markConflict: (path, remoteVersion, remoteContent) => {
+  markConflict: (path, conflict) => {
     set((state) => {
-      const nextInFlight = new Set(state.inFlightSaves);
-      nextInFlight.delete(path);
       const current = state.files[path];
-      if (!current) return { inFlightSaves: nextInFlight };
+      if (!current) return state;
       return {
-        inFlightSaves: nextInFlight,
         files: {
           ...state.files,
           [path]: {
             ...current,
             saveState: "conflict",
-            conflict: { remoteVersion, remoteContent },
+            conflict,
+            errorMessage: undefined,
           },
         },
       };
@@ -211,18 +327,31 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
     const state = get();
     const current = state.files[path];
     if (!current?.conflict) return null;
+    const conflict = current.conflict;
 
     if (resolution === "reload") {
-      const newContent = current.conflict.remoteContent;
-      const newVersion = current.conflict.remoteVersion;
+      if (!conflict.remoteExists) {
+        const next = { ...state.files };
+        delete next[path];
+        set({ files: next });
+        return {
+          content: null,
+          serverExists: false,
+          serverFileId: null,
+          serverVersion: null,
+        };
+      }
+
       set({
         files: {
           ...state.files,
           [path]: {
             ...current,
-            localContent: newContent,
-            serverContent: newContent,
-            serverVersion: newVersion,
+            serverExists: true,
+            serverFileId: conflict.remoteFileId,
+            serverContent: conflict.remoteContent,
+            localContent: conflict.remoteContent,
+            serverVersion: conflict.remoteVersion,
             dirty: false,
             saveState: "clean",
             conflict: undefined,
@@ -230,54 +359,79 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
           },
         },
       });
-      return { newContent, newVersion };
-    } else {
-      // force_mine: acknowledge remote version so next save CAS succeeds
-      const newVersion = current.conflict.remoteVersion;
-      set({
+      return {
+        content: conflict.remoteContent,
+        serverExists: true,
+        serverFileId: conflict.remoteFileId,
+        serverVersion: conflict.remoteVersion,
+      };
+    }
+
+    set({
+      files: {
+        ...state.files,
+        [path]: {
+          ...current,
+          serverExists: conflict.remoteExists,
+          serverFileId: conflict.remoteExists ? conflict.remoteFileId : null,
+          serverContent: conflict.remoteExists ? conflict.remoteContent : "",
+          serverVersion: conflict.remoteExists ? conflict.remoteVersion : null,
+          dirty: true,
+          saveState: "dirty",
+          conflict: undefined,
+          errorMessage: undefined,
+        },
+      },
+    });
+
+    return {
+      content: current.localContent,
+      serverExists: conflict.remoteExists,
+      serverFileId: conflict.remoteExists ? conflict.remoteFileId : null,
+      serverVersion: conflict.remoteExists ? conflict.remoteVersion : null,
+    };
+  },
+
+  discardLocalChanges: (path) => {
+    set((state) => {
+      const current = state.files[path];
+      if (!current) return state;
+      if (!current.serverExists) {
+        const next = { ...state.files };
+        delete next[path];
+        return { files: next };
+      }
+      return {
         files: {
           ...state.files,
           [path]: {
             ...current,
-            serverVersion: newVersion,
-            saveState: "dirty",
+            localContent: current.serverContent,
+            dirty: false,
+            saveState: "clean",
             conflict: undefined,
             errorMessage: undefined,
           },
         },
-      });
-      return { newContent: current.localContent, newVersion };
-    }
+      };
+    });
   },
 
-  clearPendingTimer: (path) => {
-    const timer = get().pendingTimers[path];
-    if (timer) {
-      clearTimeout(timer);
-      set((state) => {
-        const next = { ...state.pendingTimers };
-        delete next[path];
-        return { pendingTimers: next };
-      });
-    }
-  },
+  getDirtyFiles: () =>
+    Object.values(get().files)
+      .filter((file) => file.dirty)
+      .map((file) => file.path),
 
-  getDirtyFiles: () => {
-    const files = get().files;
-    return Object.keys(files).filter((p) => files[p].dirty);
-  },
+  hasUnsavedEdits: () =>
+    Object.values(get().files).some(
+      (file) =>
+        file.dirty ||
+        file.saveState === "debouncing" ||
+        file.saveState === "saving",
+    ),
 
-  hasUnsavedEdits: () => {
-    const files = get().files;
-    return Object.values(files).some(
-      (f) => f.dirty || f.saveState === "debouncing" || f.saveState === "saving",
-    );
-  },
-
-  hasActiveConflictsOrErrors: () => {
-    const files = get().files;
-    return Object.values(files).some(
-      (f) => f.saveState === "conflict" || f.saveState === "error",
-    );
-  },
+  hasActiveConflictsOrErrors: () =>
+    Object.values(get().files).some(
+      (file) => file.saveState === "conflict" || file.saveState === "error",
+    ),
 }));

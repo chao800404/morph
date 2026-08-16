@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { cn } from "@/lib/utils";
 import type {
   StorefrontThemeFileDTO,
@@ -45,7 +46,7 @@ type EditorCodeWorkspaceProps = {
     resolution: "reload" | "force_mine",
   ) => void;
   onRefreshPreview?: () => void;
-  onDirtyFilesChange?: (dirtyFiles: string[]) => void;
+  onDirtyFilesChange?: (dirtyPaths: string[]) => void;
   onSaveFile?: (
     path: string,
     content: string,
@@ -104,12 +105,16 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [openTabs, setOpenTabs] = useState<string[]>([
     jumpLocation?.filePath ?? defaultFile?.path ?? "src/components/Hero.tsx",
   ]);
-  const [fileContents, setFileContents] = useState<Record<string, string>>({});
-  const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({});
-  const [conflictFiles, setConflictFiles] = useState<Record<string, string>>({});
+  const workspaceFiles = useThemeWorkspaceStore((state) => state.files);
+  const updateWorkspaceLocal = useThemeWorkspaceStore((state) => state.updateLocalContent);
+  const markWorkspaceSaving = useThemeWorkspaceStore((state) => state.markSaving);
+  const markWorkspaceSaved = useThemeWorkspaceStore((state) => state.markSaved);
+  const markWorkspaceError = useThemeWorkspaceStore((state) => state.markError);
+  const discardWorkspaceLocal = useThemeWorkspaceStore((state) => state.discardLocalChanges);
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
+  const prevDirtyPathsRef = useRef<string[]>([]);
 
   useEffect(() => {
     if (initialActiveFilePath) {
@@ -158,50 +163,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
   }, [files, activeFilePath, defaultFile]);
 
-  const externalBaselineRef = useRef<Record<string, string>>({});
-
-  // Synchronize external file updates (Design Inspector AST patches, server queries, AI)
-  useEffect(() => {
-    setFileContents((prev) => {
-      let changed = false;
-      const next = { ...prev };
-
-      for (const f of files) {
-        const lastBaseline = externalBaselineRef.current[f.path];
-
-        if (lastBaseline === undefined) {
-          // 1. Initial file load
-          externalBaselineRef.current[f.path] = f.content;
-          if (!(f.path in next)) {
-            next[f.path] = f.content;
-            changed = true;
-          }
-        } else if (f.content !== lastBaseline) {
-          // 2. External actually changed on server / Design AST!
-          if (!dirtyFiles[f.path]) {
-            // Clean file: seamlessly update local Monaco content and advance baseline
-            next[f.path] = f.content;
-            externalBaselineRef.current[f.path] = f.content;
-            changed = true;
-          } else {
-            // Dirty file: true conflict! External changed while user has uncommitted edits in Monaco
-            setConflictFiles((c) => ({ ...c, [f.path]: f.content }));
-          }
-        }
-        // If f.content === lastBaseline: External did NOT change.
-        // Even if user is actively typing (dirtyFiles[f.path] === true), NO false conflict is raised!
-      }
-
-      return changed ? next : prev;
-    });
-  }, [files, dirtyFiles]);
 
   const activeFile = useMemo(() => {
     return files.find((f) => f.path === activeFilePath);
   }, [files, activeFilePath]);
 
   const currentEditorContent =
-    fileContents[activeFilePath] ?? activeFile?.content ?? "";
+    workspaceFiles[activeFilePath]?.localContent ?? activeFile?.content ?? "";
 
   const saveMutation = useMutation({
     mutationFn: async ({
@@ -211,36 +179,40 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       path: string;
       content: string;
     }) => {
-      if (onSaveFile) {
-        return onSaveFile(path, content);
-      }
+      markWorkspaceSaving(path);
+      if (onSaveFile) return onSaveFile(path, content);
+
+      const state = useThemeWorkspaceStore.getState().files[path];
       const res = await saveStorefrontThemeFile({
         data: {
           storefrontId,
           themeId,
           path,
           content,
+          expectedFileId: state?.serverExists
+            ? state.serverFileId ?? undefined
+            : undefined,
+          expectedVersion: state?.serverExists
+            ? state.serverVersion ?? undefined
+            : undefined,
+          expectMissing: state ? !state.serverExists : true,
         },
       });
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
     onSuccess: (saved) => {
-      externalBaselineRef.current[saved.path] = saved.content;
-      setDirtyFiles((prev) => ({ ...prev, [saved.path]: false }));
-      setConflictFiles((prev) => {
-        const next = { ...prev };
-        delete next[saved.path];
-        return next;
-      });
+      markWorkspaceSaved(saved);
       queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
       });
       toast.success(`Saved ${saved.path}`);
       onRefreshPreview?.();
     },
-    onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "Failed to save file");
+    onError: (err, variables) => {
+      const message = err instanceof Error ? err.message : "Failed to save file";
+      markWorkspaceError(variables.path, message);
+      toast.error(message);
     },
   });
 
@@ -271,20 +243,29 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleContentChange = (value?: string) => {
     if (value === undefined) return;
-    setFileContents((prev) => ({ ...prev, [activeFilePath]: value }));
-    setDirtyFiles((prev) => ({ ...prev, [activeFilePath]: true }));
+    updateWorkspaceLocal(activeFilePath, value);
   };
 
   useEffect(() => {
-    const dirty = Object.keys(dirtyFiles).filter((k) => dirtyFiles[k]);
-    onDirtyFilesChange?.(dirty);
-  }, [dirtyFiles, onDirtyFilesChange]);
+    const dirty = Object.values(workspaceFiles)
+      .filter((file) => file.dirty)
+      .map((file) => file.path);
+    const prev = prevDirtyPathsRef.current;
+    if (
+      dirty.length !== prev.length ||
+      dirty.some((p, i) => p !== prev[i])
+    ) {
+      prevDirtyPathsRef.current = dirty;
+      onDirtyFilesChange?.(dirty);
+    }
+  }, [workspaceFiles, onDirtyFilesChange]);
 
   const handleSaveCurrentFile = useCallback(() => {
     if (!activeFilePath || saveMutation.isPending) return;
-    const content = fileContents[activeFilePath] ?? activeFile?.content ?? "";
+    const content =
+      workspaceFiles[activeFilePath]?.localContent ?? activeFile?.content ?? "";
     saveMutation.mutate({ path: activeFilePath, content });
-  }, [activeFilePath, activeFile, fileContents, saveMutation]);
+  }, [activeFilePath, activeFile, workspaceFiles, saveMutation]);
 
   // Keyboard shortcut Ctrl+S / Cmd+S
   useEffect(() => {
@@ -307,7 +288,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleCloseTab = (path: string, event: React.MouseEvent) => {
     event.stopPropagation();
-    if (dirtyFiles[path]) {
+    if (workspaceFiles[path]?.dirty) {
       const confirmed = window.confirm(
         `File "${path}" has unsaved changes. Discard changes and close tab?`,
       );
@@ -315,11 +296,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
     const nextTabs = openTabs.filter((p) => p !== path);
     setOpenTabs(nextTabs);
-    setDirtyFiles((prev) => {
-      const next = { ...prev };
-      delete next[path];
-      return next;
-    });
+    discardWorkspaceLocal(path);
 
     if (activeFilePath === path) {
       setActiveFilePath(nextTabs[nextTabs.length - 1] ?? "");
@@ -365,7 +342,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
 
     const isActive = activeFilePath === node.path;
-    const isDirty = Boolean(dirtyFiles[node.path]);
+    const isDirty = Boolean(workspaceFiles[node.path]?.dirty);
 
     return (
       <div
@@ -447,7 +424,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             {openTabs.map((path) => {
               const name = path.split("/").pop() ?? path;
               const isActive = activeFilePath === path;
-              const isDirty = Boolean(dirtyFiles[path]);
+              const isDirty = Boolean(workspaceFiles[path]?.dirty);
 
               return (
                 <div
@@ -485,7 +462,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               onClick={handleSaveCurrentFile}
               disabled={
                 saveMutation.isPending ||
-                !dirtyFiles[activeFilePath] ||
+                !workspaceFiles[activeFilePath]?.dirty ||
                 Boolean(externalConflictFiles?.[activeFilePath])
               }
               className="h-7 gap-1.5 text-xs font-medium"
@@ -502,15 +479,14 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         </div>
 
         {/* Conflict Resolution Banner */}
-        {externalConflictFiles?.[activeFilePath] ||
-        conflictFiles[activeFilePath] ? (
+        {workspaceFiles[activeFilePath]?.conflict ? (
           <div className="flex items-center justify-between border-b bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
             <div className="flex items-center gap-2">
               <span className="font-semibold">Conflict:</span>
               <span>
-                {externalConflictFiles?.[activeFilePath]
-                  ? `Server version conflict (v${externalConflictFiles[activeFilePath].remoteVersion}). Please reload remote or explicitly overwrite.`
-                  : "This file was modified externally. Your local editor has unsaved changes."}
+                {workspaceFiles[activeFilePath]?.conflict?.remoteExists
+                  ? `Server conflict (v${workspaceFiles[activeFilePath]?.conflict?.remoteVersion}). Reload remote or explicitly overwrite.`
+                  : "This file was deleted remotely. Reload the deletion or explicitly recreate it."}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -519,28 +495,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                 size="xs"
                 className="h-6 text-[11px] bg-background"
                 onClick={() => {
-                  const external =
-                    externalConflictFiles?.[activeFilePath]?.remoteContent ??
-                    conflictFiles[activeFilePath];
-                  if (externalConflictFiles?.[activeFilePath]) {
-                    onResolveConflict?.(activeFilePath, "reload");
-                  }
-                  if (external) {
-                    externalBaselineRef.current[activeFilePath] = external;
-                    setFileContents((prev) => ({
-                      ...prev,
-                      [activeFilePath]: external,
-                    }));
-                  }
-                  setDirtyFiles((prev) => ({
-                    ...prev,
-                    [activeFilePath]: false,
-                  }));
-                  setConflictFiles((prev) => {
-                    const next = { ...prev };
-                    delete next[activeFilePath];
-                    return next;
-                  });
+                  onResolveConflict?.(activeFilePath, "reload");
                 }}
               >
                 Reload Remote
@@ -550,19 +505,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                 size="xs"
                 className="h-6 text-[11px]"
                 onClick={() => {
-                  if (externalConflictFiles?.[activeFilePath]) {
-                    onResolveConflict?.(activeFilePath, "force_mine");
-                  } else {
-                    const external = conflictFiles[activeFilePath];
-                    if (external) {
-                      externalBaselineRef.current[activeFilePath] = external;
-                    }
-                  }
-                  setConflictFiles((prev) => {
-                    const next = { ...prev };
-                    delete next[activeFilePath];
-                    return next;
-                  });
+                  onResolveConflict?.(activeFilePath, "force_mine");
                 }}
               >
                 Keep Mine (Overwrite)

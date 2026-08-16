@@ -12,39 +12,94 @@ export type TailwindPropertyFamily =
   | "padding-x"
   | "padding-y"
   | "background"
+  | "background-color"
   | "border-radius"
   | "other";
 
 export interface TailwindToken {
   raw: string;
-  variants: string[]; // e.g. ["md"], ["hover"], ["md", "hover"], []
-  utility: string;    // e.g. "text-6xl", "text-[100px]", "p-8"
+  variants: string[];
+  utility: string;
   propertyFamily: TailwindPropertyFamily;
 }
 
-const FONT_SIZE_PATTERN = /^text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl|\[.+\])$/;
-const FONT_FAMILY_PATTERN = /^font-(serif|sans|mono|\[.+\])$/;
-const FONT_WEIGHT_PATTERN = /^font-(light|normal|medium|semibold|bold|extrabold|black|\[.+\])$/;
-const TEXT_ALIGN_PATTERN = /^text-(left|center|right|justify|start|end)$/;
-const LINE_HEIGHT_PATTERN = /^leading-(none|tight|snug|normal|relaxed|loose|\[.+\]|\d+)$/;
-const PADDING_ALL_PATTERN = /^p-(auto|\d+|\[.+\])$/;
-const PADDING_TOP_PATTERN = /^pt-(auto|\d+|\[.+\])$/;
-const PADDING_BOTTOM_PATTERN = /^pb-(auto|\d+|\[.+\])$/;
-const PADDING_LEFT_PATTERN = /^pl-(auto|\d+|\[.+\])$/;
-const PADDING_RIGHT_PATTERN = /^pr-(auto|\d+|\[.+\])$/;
-const PADDING_X_PATTERN = /^px-(auto|\d+|\[.+\])$/;
-const PADDING_Y_PATTERN = /^py-(auto|\d+|\[.+\])$/;
-const BACKGROUND_PATTERN = /^bg-(?!gradient|opacity|repeat|fixed|cover|contain|auto|center|top|bottom|left|right)(.+)$/;
-const BORDER_RADIUS_PATTERN = /^rounded(-none|-sm|-md|-lg|-xl|-2xl|-3xl|-full|-\[.+\]|\[.+\])?$/;
+export interface PatchTailwindOptions {
+  property: Exclude<TailwindPropertyFamily, "other">;
+  value: string;
+  targetVariants?: string[];
+}
 
-/**
- * Classifies a Tailwind utility into a property family.
- */
-export function classifyTailwindUtility(utility: string): TailwindPropertyFamily {
-  if (FONT_SIZE_PATTERN.test(utility)) return "font-size";
-  if (FONT_FAMILY_PATTERN.test(utility)) return "font-family";
-  if (FONT_WEIGHT_PATTERN.test(utility)) return "font-weight";
-  if (TEXT_ALIGN_PATTERN.test(utility)) return "text-align";
+const FONT_SIZE_NAMES = new Set([
+  "text-xs", "text-sm", "text-base", "text-lg", "text-xl",
+  "text-2xl", "text-3xl", "text-4xl", "text-5xl",
+  "text-6xl", "text-7xl", "text-8xl", "text-9xl",
+]);
+
+const FONT_WEIGHT_NAMES = new Set([
+  "font-thin", "font-extralight", "font-light", "font-normal",
+  "font-medium", "font-semibold", "font-bold", "font-extrabold", "font-black",
+]);
+
+const FONT_FAMILY_NAMES = new Set(["font-sans", "font-serif", "font-mono"]);
+const TEXT_ALIGN_NAMES = new Set([
+  "text-left", "text-center", "text-right", "text-justify", "text-start", "text-end",
+]);
+const LINE_HEIGHT_PATTERN =
+  /^leading-(none|tight|snug|normal|relaxed|loose|\d+(?:\.\d+)?|\[.+\])$/;
+const PADDING_ALL_PATTERN = /^p-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const PADDING_TOP_PATTERN = /^pt-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const PADDING_BOTTOM_PATTERN = /^pb-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const PADDING_LEFT_PATTERN = /^pl-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const PADDING_RIGHT_PATTERN = /^pr-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const PADDING_X_PATTERN = /^px-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const PADDING_Y_PATTERN = /^py-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const BORDER_RADIUS_PATTERN =
+  /^rounded(?:-(?:none|sm|md|lg|xl|2xl|3xl|full|\[.+\]))?$/;
+
+function arbitraryValue(utility: string, prefix: string): string | null {
+  const start = `${prefix}-[`;
+  if (!utility.startsWith(start) || !utility.endsWith("]")) return null;
+  return utility.slice(start.length, -1).trim();
+}
+
+function looksLikeCssLengthExpression(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (/^-?\d*\.?\d+(px|rem|em|vw|vh|vmin|vmax|ch|ex|cm|mm|in|pt|pc|%)$/.test(normalized)) {
+    return true;
+  }
+  if (/^(calc|min|max|clamp)\(/.test(normalized)) return true;
+  if (/^(length|size):/.test(normalized)) return true;
+  return false;
+}
+
+function looksLikeFontWeight(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (/^(100|200|300|400|500|600|700|800|900)$/.test(normalized)) return true;
+  return /^weight:/.test(normalized);
+}
+
+function looksLikeBackgroundColor(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (/^(color:)/.test(normalized)) return true;
+  if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(normalized)) return true;
+  if (/^(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color)\(/.test(normalized)) return true;
+  if (/^var\(--(?:color|brand|surface|background|bg)-/.test(normalized)) return true;
+  return false;
+}
+
+export function classifyTailwindUtility(
+  utility: string,
+): TailwindPropertyFamily {
+  if (FONT_SIZE_NAMES.has(utility)) return "font-size";
+  const textArbitrary = arbitraryValue(utility, "text");
+  if (textArbitrary && looksLikeCssLengthExpression(textArbitrary)) return "font-size";
+
+  if (FONT_FAMILY_NAMES.has(utility)) return "font-family";
+  if (FONT_WEIGHT_NAMES.has(utility)) return "font-weight";
+  const fontArbitrary = arbitraryValue(utility, "font");
+  if (fontArbitrary && looksLikeFontWeight(fontArbitrary)) return "font-weight";
+
+  if (TEXT_ALIGN_NAMES.has(utility)) return "text-align";
   if (LINE_HEIGHT_PATTERN.test(utility)) return "line-height";
   if (PADDING_ALL_PATTERN.test(utility)) return "padding";
   if (PADDING_TOP_PATTERN.test(utility)) return "padding-top";
@@ -53,95 +108,144 @@ export function classifyTailwindUtility(utility: string): TailwindPropertyFamily
   if (PADDING_RIGHT_PATTERN.test(utility)) return "padding-right";
   if (PADDING_X_PATTERN.test(utility)) return "padding-x";
   if (PADDING_Y_PATTERN.test(utility)) return "padding-y";
-  if (BACKGROUND_PATTERN.test(utility)) return "background";
+
+  const bgArbitrary = arbitraryValue(utility, "bg");
+  if (bgArbitrary) {
+    return looksLikeBackgroundColor(bgArbitrary) ? "background" : "other";
+  }
+  if (
+    /^bg-(?:transparent|current|black|white)$/.test(utility) ||
+    /^bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}$/.test(
+      utility,
+    )
+  ) {
+    return "background";
+  }
+
   if (BORDER_RADIUS_PATTERN.test(utility)) return "border-radius";
   return "other";
 }
 
-/**
- * Parses a single raw class token (e.g. "md:hover:text-[100px]") into structured token components.
- */
-export function parseTailwindToken(rawToken: string): TailwindToken {
-  const parts = rawToken.split(":");
-  const utility = parts[parts.length - 1] ?? "";
-  const variants = parts.slice(0, parts.length - 1);
-  const propertyFamily = classifyTailwindUtility(utility);
+function splitTopLevel(input: string, separator: ":" | "whitespace"): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let square = 0;
+  let round = 0;
+  let curly = 0;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
 
+  const flush = () => {
+    if (current) parts.push(current);
+    current = "";
+  };
+
+  for (const ch of input) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      current += ch;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+
+    if (ch === "[") square++;
+    else if (ch === "]") square = Math.max(0, square - 1);
+    else if (ch === "(") round++;
+    else if (ch === ")") round = Math.max(0, round - 1);
+    else if (ch === "{") curly++;
+    else if (ch === "}") curly = Math.max(0, curly - 1);
+
+    const atTopLevel = square === 0 && round === 0 && curly === 0;
+    if (separator === ":" && ch === ":" && atTopLevel) {
+      flush();
+      continue;
+    }
+    if (separator === "whitespace" && /\s/.test(ch) && atTopLevel) {
+      flush();
+      continue;
+    }
+    current += ch;
+  }
+
+  flush();
+  return parts;
+}
+
+export function parseTailwindToken(rawToken: string): TailwindToken {
+  const parts = splitTopLevel(rawToken, ":");
+  const utility = parts.pop() ?? "";
   return {
     raw: rawToken,
-    variants,
+    variants: parts,
     utility,
-    propertyFamily,
+    propertyFamily: classifyTailwindUtility(utility),
   };
 }
 
-/**
- * Parses a full className string into an array of structured TailwindToken objects.
- */
 export function tokenizeTailwindClasses(className?: string): TailwindToken[] {
   if (!className || typeof className !== "string") return [];
-  const rawTokens = className.trim().split(/\s+/).filter(Boolean);
-  return rawTokens.map(parseTailwindToken);
-}
-
-export interface PatchTailwindOptions {
-  property: TailwindPropertyFamily;
-  value: string; // The utility or full token to set (e.g. "text-[100px]" or "p-8", or empty string to remove)
-  targetVariants?: string[]; // Empty array for base/mobile class, or e.g. ["md"], ["hover"]
+  return splitTopLevel(className.trim(), "whitespace")
+    .filter(Boolean)
+    .map(parseTailwindToken);
 }
 
 function areVariantsEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sortedA = [...a].sort();
-  const sortedB = [...b].sort();
-  return sortedA.every((val, idx) => val === sortedB[idx]);
+  return a.length === b.length && a.every((variant, index) => variant === b[index]);
 }
 
-/**
- * Patches a Tailwind className string with variant awareness.
- * Guarantees that updating a base class will NEVER remove or mutate variant classes like md:text-6xl or hover:text-red-500.
- */
+function normalizeReplacementUtility(value: string): string {
+  if (!value) return "";
+  const parsed = parseTailwindToken(value);
+  return parsed.utility || value;
+}
+
 export function patchTailwindClasses(
   currentClassName: string,
   options: PatchTailwindOptions,
 ): string {
   const tokens = tokenizeTailwindClasses(currentClassName);
   const targetVariants = options.targetVariants ?? [];
-
-  // Determine which tokens match the target property and target variants
-  const remainingTokens: TailwindToken[] = [];
+  const replacementUtility = normalizeReplacementUtility(options.value);
+  const result: TailwindToken[] = [];
   let replaced = false;
 
   for (const token of tokens) {
-    const matchesProperty = token.propertyFamily === options.property;
-    const matchesVariants = areVariantsEqual(token.variants, targetVariants);
+    const isSameFamily =
+      token.propertyFamily === options.property ||
+      ((token.propertyFamily === "background" || token.propertyFamily === "background-color") &&
+        (options.property === "background" || options.property === "background-color"));
+    const matches = isSameFamily && areVariantsEqual(token.variants, targetVariants);
 
-    if (matchesProperty && matchesVariants) {
-      if (!replaced && options.value) {
-        // Build replacement token with target variants
-        const prefix = targetVariants.length > 0 ? `${targetVariants.join(":")}:` : "";
-        const cleanUtility = options.value.includes(":")
-          ? options.value.split(":").pop()!
-          : options.value;
-        const newRaw = `${prefix}${cleanUtility}`;
-        remainingTokens.push(parseTailwindToken(newRaw));
-        replaced = true;
-      }
-      // If options.value is empty, token is dropped (removed)
-    } else {
-      remainingTokens.push(token);
+    if (!matches) {
+      result.push(token);
+      continue;
+    }
+
+    if (!replaced && replacementUtility) {
+      const raw = [...targetVariants, replacementUtility].join(":");
+      result.push(parseTailwindToken(raw));
+      replaced = true;
     }
   }
 
-  // If no matching token was found and we have a value to insert
-  if (!replaced && options.value) {
-    const prefix = targetVariants.length > 0 ? `${targetVariants.join(":")}:` : "";
-    const cleanUtility = options.value.includes(":")
-      ? options.value.split(":").pop()!
-      : options.value;
-    const newRaw = `${prefix}${cleanUtility}`;
-    remainingTokens.push(parseTailwindToken(newRaw));
+  if (!replaced && replacementUtility) {
+    const raw = [...targetVariants, replacementUtility].join(":");
+    result.push(parseTailwindToken(raw));
   }
 
-  return remainingTokens.map((t) => t.raw).join(" ");
+  return result.map((token) => token.raw).join(" ");
 }

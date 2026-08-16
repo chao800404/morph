@@ -1,6 +1,5 @@
 import { fail, failure, ok } from "@/lib/db/server-result";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
-import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import {
   publishStorefrontThemeTemplateInputSchema,
   reorderStorefrontThemeSectionsInputSchema,
@@ -128,19 +127,12 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
     publishStorefrontThemeTemplateInputSchema.parse(data),
   )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
     try {
-      const result = await storefrontThemeDal.publishTemplate(data);
-      if (result) {
-        await storefrontThemeFileDal.createRevision(
-          data.storefrontId,
-          data.themeId,
-          {
-            message: "Published Theme Source",
-            source: "publish",
-          },
-        );
-      }
+      const result = await storefrontThemeDal.publishTemplate({
+        ...data,
+        createdBy: context.user.id,
+      });
       return result
         ? ok(
             result.unchanged ? "Theme is already published" : "Theme published",

@@ -40,6 +40,7 @@ export interface StorefrontCommentThreadDTO {
   templateId: string;
   groupId?: string | null;
   sectionId: string | null;
+  nodeId: string | null;
   elementKey: string | null;
   viewportWidth?: number | null;
   viewport?: string | null;

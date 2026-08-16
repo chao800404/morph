@@ -52,22 +52,29 @@ const buttonVariants = cva(
     }
 );
 
-function Button({
-    className,
-    variant,
-    size,
-    asChild = false,
-    rounded,
-    type,
-    ...props
-}: React.ComponentProps<"button"> &
-    VariantProps<typeof buttonVariants> & {
-        asChild?: boolean;
-    }) {
+const Button = React.forwardRef<
+    HTMLButtonElement,
+    React.ComponentProps<"button"> &
+        VariantProps<typeof buttonVariants> & {
+            asChild?: boolean;
+        }
+>(function Button(
+    {
+        className,
+        variant,
+        size,
+        asChild = false,
+        rounded,
+        type,
+        ...props
+    },
+    ref
+) {
     const Comp = asChild ? Slot : "button";
 
     return (
         <Comp
+            ref={ref}
             data-slot="button"
             // HTML defaults a button inside a form to `submit`, so a Close or
             // Cancel button silently submitted it. Everything that really
@@ -79,6 +86,6 @@ function Button({
             {...props}
         />
     );
-}
+});
 
 export { Button, buttonVariants };

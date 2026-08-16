@@ -5,6 +5,47 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storefrontThemeDal } from "./storefront-theme.dal";
 
+vi.mock("cloudflare:workers", () => ({
+  env: {
+    DATABASE: {
+      prepare: (sql: string) => ({
+        bind: (...args: any[]) => {
+          const hasNumbered = /\?\d+/.test(sql);
+          const params = hasNumbered
+            ? Object.fromEntries(args.map((val, idx) => [String(idx + 1), val]))
+            : args;
+          return {
+            run: () => {
+              const stmt = sqlite.prepare(sql);
+              if (sql.trim().toUpperCase().startsWith("SELECT")) {
+                const res = hasNumbered ? stmt.all(params) : stmt.all(...args);
+                return { results: res };
+              }
+              const res = hasNumbered ? stmt.run(params) : stmt.run(...args);
+              return { meta: { changes: res.changes } };
+            },
+            all: () => {
+              const stmt = sqlite.prepare(sql);
+              const res = hasNumbered ? stmt.all(params) : stmt.all(...args);
+              return { results: res };
+            },
+            first: () => {
+              const stmt = sqlite.prepare(sql);
+              return hasNumbered ? stmt.get(params) : stmt.get(...args);
+            },
+          };
+        },
+      }),
+      batch: async (statements: Array<any>) => {
+        return statements.map((s) => {
+          if (typeof s.run === "function") return s.run();
+          if (typeof s.all === "function") return s.all();
+          return {};
+        });
+      },
+    },
+  },
+}));
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
 
 let sqlite: Database.Database;
@@ -29,7 +70,34 @@ beforeEach(() => {
       storefront_id text NOT NULL,
       name text NOT NULL,
       status text NOT NULL,
+      published_source_revision_id text,
       metadata text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_theme_files (
+      id text PRIMARY KEY NOT NULL,
+      storefront_id text NOT NULL,
+      theme_id text NOT NULL,
+      path text NOT NULL,
+      content text NOT NULL,
+      mime_type text,
+      is_entry integer DEFAULT 0,
+      version integer DEFAULT 1,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_theme_revisions (
+      id text PRIMARY KEY NOT NULL,
+      storefront_id text NOT NULL,
+      theme_id text NOT NULL,
+      revision_number integer NOT NULL,
+      message text,
+      source text,
+      snapshot text,
+      created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       deleted_at text
@@ -136,6 +204,7 @@ describe("storefront theme DAL", () => {
       }),
     ).resolves.toEqual({
       revisionId: "11111111-1111-4111-8111-111111111111",
+      sourceRevisionId: expect.any(String),
       unchanged: false,
     });
 
