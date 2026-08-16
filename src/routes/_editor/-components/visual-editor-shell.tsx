@@ -40,6 +40,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -457,10 +458,6 @@ export function VisualEditorShell({
     enabled: Boolean(activeTemplate?.id),
   });
   const commentThreads = commentsQuery.data?.data ?? [];
-  const hasUnpublishedChanges = Boolean(
-    activeTemplate?.draftRevisionId &&
-    activeTemplate.draftRevisionId !== activeTemplate.publishedRevisionId,
-  );
   const publishMutation = useMutation({
     mutationFn: () => {
       if (!activeTemplate) throw new Error("No active template");
@@ -491,6 +488,11 @@ export function VisualEditorShell({
           ).queryKey,
         }),
       ]);
+      const map: Record<string, number> = {};
+      for (const f of themeFiles) {
+        map[f.path] = f.version ?? 1;
+      }
+      setPublishedSourceBaselines(map);
       toast.success(result.message);
     },
     onError: () => toast.error("Failed to publish theme"),
@@ -603,9 +605,49 @@ export function VisualEditorShell({
   const [themeFileSaveErrors, setThemeFileSaveErrors] = useState<
     Record<string, string>
   >({});
+  const [activeConflicts, setActiveConflicts] = useState<
+    Record<string, { remoteVersion: number; remoteContent: string }>
+  >({});
+
+  const [publishedSourceBaselines, setPublishedSourceBaselines] = useState<
+    Record<string, number>
+  >({});
+  const [hasInitializedSourceBaselines, setHasInitializedSourceBaselines] =
+    useState(false);
+
+  useEffect(() => {
+    if (!hasInitializedSourceBaselines && themeFiles.length > 0) {
+      const map: Record<string, number> = {};
+      for (const f of themeFiles) {
+        map[f.path] = f.version ?? 1;
+      }
+      setPublishedSourceBaselines(map);
+      setHasInitializedSourceBaselines(true);
+    }
+  }, [themeFiles, hasInitializedSourceBaselines]);
+
+  const hasThemeSourceChanges = useMemo(() => {
+    if (!hasInitializedSourceBaselines) return false;
+    return themeFiles.some(
+      (f) => (f.version ?? 1) > (publishedSourceBaselines[f.path] ?? 1),
+    );
+  }, [themeFiles, publishedSourceBaselines, hasInitializedSourceBaselines]);
+
+  const hasTemplateChanges = Boolean(
+    activeTemplate?.draftRevisionId &&
+    activeTemplate.draftRevisionId !== activeTemplate.publishedRevisionId,
+  );
+  const hasUnpublishedChanges = hasTemplateChanges || hasThemeSourceChanges;
 
   const saveThemeFileSequentially = useCallback(
     async (filePath: string, contentToSave: string, targetRevision: number) => {
+      // If file has an active unresolved server conflict, block automatic save
+      if (activeConflicts[filePath]) {
+        throw new Error(
+          "File has an active version conflict. Please reload remote or choose to overwrite before saving.",
+        );
+      }
+
       const previousPromise =
         saveQueueRef.current.get(filePath) ?? Promise.resolve();
 
@@ -640,39 +682,23 @@ export function VisualEditorShell({
 
             if (!res.success) {
               if (res.error === "VERSION_CONFLICT") {
-                getStorefrontThemeFile({
+                const latestRes = await getStorefrontThemeFile({
                   data: {
                     storefrontId: context.storefront.id,
                     themeId: context.theme.id,
                     path: filePath,
                   },
-                })
-                  .then((latestRes) => {
-                    if (latestRes.success && latestRes.data) {
-                      fileVersionRef.current.set(
-                        filePath,
-                        latestRes.data.version,
-                      );
-                      queryClient.setQueryData(
-                        storefrontThemeFileQueries.tree(
-                          context.storefront.id,
-                          context.theme.id,
-                        ).queryKey,
-                        (old: any) => {
-                          if (!old?.files) return old;
-                          return {
-                            ...old,
-                            files: old.files.map((f: any) =>
-                              f.path === filePath
-                                ? { ...f, ...latestRes.data }
-                                : f,
-                            ),
-                          };
-                        },
-                      );
-                    }
-                  })
-                  .catch(() => {});
+                }).catch(() => null);
+
+                if (latestRes?.success && latestRes.data) {
+                  setActiveConflicts((prev) => ({
+                    ...prev,
+                    [filePath]: {
+                      remoteVersion: latestRes.data.version,
+                      remoteContent: latestRes.data.content,
+                    },
+                  }));
+                }
               }
               throw new Error(res.message);
             }
@@ -681,6 +707,14 @@ export function VisualEditorShell({
             if (res.data?.version) {
               fileVersionRef.current.set(filePath, res.data.version);
             }
+
+            // Clear any lingering conflict for this path on successful save
+            setActiveConflicts((prev) => {
+              if (!prev[filePath]) return prev;
+              const next = { ...prev };
+              delete next[filePath];
+              return next;
+            });
 
             setThemeFileSaveStatus((prev) => ({ ...prev, [filePath]: "idle" }));
             setThemeFileSaveErrors((prev) => {
@@ -763,6 +797,65 @@ export function VisualEditorShell({
       return result;
     },
     [saveThemeFileSequentially, themeFiles],
+  );
+
+  const handleResolveConflict = useCallback(
+    async (filePath: string, resolution: "reload" | "force_mine") => {
+      const conflict = activeConflicts[filePath];
+      if (!conflict) return;
+
+      if (resolution === "reload") {
+        sourceCodeBufferRef.current.set(filePath, conflict.remoteContent);
+        fileVersionRef.current.set(filePath, conflict.remoteVersion);
+        setActiveConflicts((prev) => {
+          const next = { ...prev };
+          delete next[filePath];
+          return next;
+        });
+        queryClient.setQueryData(
+          storefrontThemeFileQueries.tree(
+            context.storefront.id,
+            context.theme.id,
+          ).queryKey,
+          (old: any) => {
+            if (!old?.files) return old;
+            return {
+              ...old,
+              files: old.files.map((f: any) =>
+                f.path === filePath
+                  ? {
+                      ...f,
+                      content: conflict.remoteContent,
+                      version: conflict.remoteVersion,
+                    }
+                  : f,
+              ),
+            };
+          },
+        );
+        toast.info(`Reloaded remote version of ${filePath}`);
+      } else if (resolution === "force_mine") {
+        const localContent = sourceCodeBufferRef.current.get(filePath);
+        if (!localContent) return;
+        fileVersionRef.current.set(filePath, conflict.remoteVersion);
+        setActiveConflicts((prev) => {
+          const next = { ...prev };
+          delete next[filePath];
+          return next;
+        });
+        toast.info(
+          `Overwriting remote version with local changes for ${filePath}...`,
+        );
+        await handleUnifiedSaveFile(filePath, localContent);
+      }
+    },
+    [
+      activeConflicts,
+      context.storefront.id,
+      context.theme.id,
+      queryClient,
+      handleUnifiedSaveFile,
+    ],
   );
 
   const handleUpdateThemeFileStyle = useCallback(
@@ -2088,6 +2181,8 @@ export function VisualEditorShell({
           tree={themeTree}
           initialActiveFilePath={activeCodeFilePath}
           jumpLocation={jumpLocation}
+          externalConflictFiles={activeConflicts}
+          onResolveConflict={handleResolveConflict}
           onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
           onSaveFile={handleUnifiedSaveFile}
         />

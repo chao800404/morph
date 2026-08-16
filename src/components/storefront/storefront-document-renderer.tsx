@@ -275,13 +275,13 @@ function StorefrontHero({
   imageSrc?: string | null;
   imageAlt?: string | null;
 }) {
-  const customStyle = resolveSectionStyle(rawProps ?? {});
-  const customClass = rawProps?.className ?? rawProps?.customClass;
-
   const componentPath =
     getComponentFilePath("hero", themeFiles) ?? "src/components/Hero.tsx";
   const heroFile = themeFiles?.find((f) => f.path === componentPath);
   const heroAst = heroFile?.content ? parseComponentSource(heroFile.content) : null;
+  // Presentation SSOT: when TSX source exists, Tailwind classes from source govern layout/style without inline style overrides
+  const customStyle = heroFile ? undefined : resolveSectionStyle(rawProps ?? {});
+  const customClass = heroFile ? undefined : (rawProps?.className ?? rawProps?.customClass);
 
   const sectionClassName =
     heroAst?.elements["section"]?.className ||

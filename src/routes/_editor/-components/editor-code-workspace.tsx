@@ -36,6 +36,14 @@ type EditorCodeWorkspaceProps = {
   tree: StorefrontThemeFileTreeNode[];
   initialActiveFilePath?: string;
   jumpLocation?: { filePath: string; line?: number; column?: number };
+  externalConflictFiles?: Record<
+    string,
+    { remoteVersion: number; remoteContent: string }
+  >;
+  onResolveConflict?: (
+    path: string,
+    resolution: "reload" | "force_mine",
+  ) => void;
   onRefreshPreview?: () => void;
   onSaveFile?: (
     path: string,
@@ -71,6 +79,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   tree,
   initialActiveFilePath,
   jumpLocation,
+  externalConflictFiles,
+  onResolveConflict,
   onRefreshPreview,
   onSaveFile,
 }: EditorCodeWorkspaceProps) {
@@ -467,7 +477,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               size="xs"
               onClick={handleSaveCurrentFile}
               disabled={
-                saveMutation.isPending || !dirtyFiles[activeFilePath]
+                saveMutation.isPending ||
+                !dirtyFiles[activeFilePath] ||
+                Boolean(externalConflictFiles?.[activeFilePath])
               }
               className="h-7 gap-1.5 text-xs font-medium"
             >
@@ -483,12 +495,15 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         </div>
 
         {/* Conflict Resolution Banner */}
-        {conflictFiles[activeFilePath] ? (
+        {externalConflictFiles?.[activeFilePath] ||
+        conflictFiles[activeFilePath] ? (
           <div className="flex items-center justify-between border-b bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
             <div className="flex items-center gap-2">
               <span className="font-semibold">Conflict:</span>
               <span>
-                This file was modified externally (Design / AI). Your local editor has unsaved changes.
+                {externalConflictFiles?.[activeFilePath]
+                  ? `Server version conflict (v${externalConflictFiles[activeFilePath].remoteVersion}). Please reload remote or explicitly overwrite.`
+                  : "This file was modified externally. Your local editor has unsaved changes."}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -497,12 +512,19 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                 size="xs"
                 className="h-6 text-[11px] bg-background"
                 onClick={() => {
-                  const external = conflictFiles[activeFilePath];
-                  externalBaselineRef.current[activeFilePath] = external;
-                  setFileContents((prev) => ({
-                    ...prev,
-                    [activeFilePath]: external,
-                  }));
+                  const external =
+                    externalConflictFiles?.[activeFilePath]?.remoteContent ??
+                    conflictFiles[activeFilePath];
+                  if (externalConflictFiles?.[activeFilePath]) {
+                    onResolveConflict?.(activeFilePath, "reload");
+                  }
+                  if (external) {
+                    externalBaselineRef.current[activeFilePath] = external;
+                    setFileContents((prev) => ({
+                      ...prev,
+                      [activeFilePath]: external,
+                    }));
+                  }
                   setDirtyFiles((prev) => ({
                     ...prev,
                     [activeFilePath]: false,
@@ -514,16 +536,20 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                   });
                 }}
               >
-                Reload External
+                Reload Remote
               </Button>
               <Button
                 variant="ghost"
                 size="xs"
                 className="h-6 text-[11px]"
                 onClick={() => {
-                  const external = conflictFiles[activeFilePath];
-                  if (external) {
-                    externalBaselineRef.current[activeFilePath] = external;
+                  if (externalConflictFiles?.[activeFilePath]) {
+                    onResolveConflict?.(activeFilePath, "force_mine");
+                  } else {
+                    const external = conflictFiles[activeFilePath];
+                    if (external) {
+                      externalBaselineRef.current[activeFilePath] = external;
+                    }
                   }
                   setConflictFiles((prev) => {
                     const next = { ...prev };
@@ -532,7 +558,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                   });
                 }}
               >
-                Keep Local
+                Keep Mine (Overwrite)
               </Button>
             </div>
           </div>

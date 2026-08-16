@@ -474,3 +474,79 @@ export function updateTailwindClass(
   }
   return filtered.join(" ");
 }
+
+const TAILWIND_FONT_SIZE_MAP: Record<string, number> = {
+  xs: 12,
+  sm: 14,
+  base: 16,
+  lg: 18,
+  xl: 20,
+  "2xl": 24,
+  "3xl": 30,
+  "4xl": 36,
+  "5xl": 48,
+  "6xl": 60,
+  "7xl": 72,
+  "8xl": 96,
+  "9xl": 128,
+};
+
+/**
+ * Parses font size in pixels from Tailwind className string.
+ */
+export function parseTailwindFontSize(className?: string): number | null {
+  if (!className) return null;
+  const arbitraryMatch = className.match(/\btext-\[(\d+)(?:px)?\]/);
+  if (arbitraryMatch) {
+    return parseInt(arbitraryMatch[1], 10);
+  }
+  const tokenMatch = className.match(
+    /\btext-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl)\b/,
+  );
+  if (tokenMatch && TAILWIND_FONT_SIZE_MAP[tokenMatch[1]]) {
+    return TAILWIND_FONT_SIZE_MAP[tokenMatch[1]];
+  }
+  return null;
+}
+
+/**
+ * Parses font family from Tailwind className string.
+ */
+export function parseTailwindFontFamily(className?: string): string | null {
+  if (!className) return null;
+  const match = className.match(/\bfont-(serif|sans|mono)\b/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Parses font weight from Tailwind className string.
+ */
+export function parseTailwindFontWeight(className?: string): string | null {
+  if (!className) return null;
+  const match = className.match(/\bfont-(light|normal|medium|semibold|bold)\b/);
+  if (!match) return null;
+  switch (match[1]) {
+    case "light":
+      return "300";
+    case "normal":
+      return "normal";
+    case "medium":
+      return "medium";
+    case "semibold":
+    case "bold":
+      return "bold";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Parses text alignment from Tailwind className string.
+ */
+export function parseTailwindTextAlign(
+  className?: string,
+): "left" | "center" | "right" | null {
+  if (!className) return null;
+  const match = className.match(/\btext-(left|center|right)\b/);
+  return match ? (match[1] as "left" | "center" | "right") : null;
+}

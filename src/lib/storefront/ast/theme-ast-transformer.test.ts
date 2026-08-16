@@ -161,4 +161,37 @@ describe("theme-ast-transformer (TSX AST)", () => {
     // Should return null (CMS-only) rather than falling back to index.tsx!
     expect(getComponentFilePath("editorial-intro", files)).toBeNull();
   });
+
+  it("correctly reverse-parses Tailwind classes into presentation style values", async () => {
+    const {
+      parseTailwindFontSize,
+      parseTailwindFontFamily,
+      parseTailwindFontWeight,
+      parseTailwindTextAlign,
+    } = await import("./theme-ast-transformer");
+
+    // Arbitrary & standard font sizes
+    expect(parseTailwindFontSize("mt-6 text-[100px] font-sans")).toBe(100);
+    expect(parseTailwindFontSize("mt-6 text-[64px] font-serif")).toBe(64);
+    expect(parseTailwindFontSize("text-6xl font-bold")).toBe(60);
+    expect(parseTailwindFontSize("text-4xl text-center")).toBe(36);
+    expect(parseTailwindFontSize("no-size-here")).toBeNull();
+
+    // Font families
+    expect(parseTailwindFontFamily("text-xl font-serif text-white")).toBe("serif");
+    expect(parseTailwindFontFamily("text-xl font-sans tracking-tight")).toBe("sans");
+    expect(parseTailwindFontFamily("font-mono text-sm")).toBe("mono");
+
+    // Font weights
+    expect(parseTailwindFontWeight("font-light text-base")).toBe("300");
+    expect(parseTailwindFontWeight("font-normal text-base")).toBe("normal");
+    expect(parseTailwindFontWeight("font-medium text-base")).toBe("medium");
+    expect(parseTailwindFontWeight("font-bold text-base")).toBe("bold");
+    expect(parseTailwindFontWeight("font-semibold text-base")).toBe("bold");
+
+    // Text alignment
+    expect(parseTailwindTextAlign("mt-4 text-center font-bold")).toBe("center");
+    expect(parseTailwindTextAlign("text-right text-stone-600")).toBe("right");
+    expect(parseTailwindTextAlign("text-left")).toBe("left");
+  });
 });

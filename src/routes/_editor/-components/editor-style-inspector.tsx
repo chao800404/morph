@@ -14,6 +14,10 @@ import {
   findSourceLocation,
   getComponentFilePath,
   parseComponentSource,
+  parseTailwindFontFamily,
+  parseTailwindFontSize,
+  parseTailwindFontWeight,
+  parseTailwindTextAlign,
   updateTailwindClass,
 } from "@/lib/storefront/ast/theme-ast-transformer";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
@@ -110,11 +114,34 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     ? parseComponentSource(componentFile.content)
     : null;
   const targetElementMeta = parsedMeta?.elements[targetElement];
+  const sectionElementMeta =
+    parsedMeta?.elements["section"] ?? parsedMeta?.elements["root"];
+
   const isDynamicClassName = Boolean(
     targetElementMeta?.classNameOffsets?.isExpression,
   );
   const hasSyntaxError = parsedMeta ? !parsedMeta.parseOk : false;
   const sourceStyleLocked = hasSyntaxError || isDynamicClassName;
+
+  // Code as SSOT: derive style values from the source code AST
+  const targetClassName = targetElementMeta?.className || "";
+  const sectionClassName = sectionElementMeta?.className || "";
+
+  const effectiveFontSize =
+    parseTailwindFontSize(targetClassName) ??
+    (typeof props.fontSize === "number" ? props.fontSize : 48);
+
+  const effectiveFontFamily =
+    parseTailwindFontFamily(targetClassName) ?? props.fontFamily ?? "serif";
+
+  const effectiveFontWeight =
+    parseTailwindFontWeight(targetClassName) ?? props.fontWeight ?? "normal";
+
+  const effectiveTextAlign =
+    parseTailwindTextAlign(targetClassName) ?? props.textAlign ?? "left";
+
+  const effectiveRawClassName =
+    targetClassName || sectionClassName || props.className || props.customClass || "";
 
   const patchStyle = useCallback(
     (updater: (prevClasses: string) => string) => {
@@ -536,13 +563,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             <div className="flex items-center rounded-lg border bg-muted/30 p-0.5">
               <Button
                 type="button"
-                variant={props.textAlign === "left" || !props.textAlign ? "secondary" : "ghost"}
+                variant={effectiveTextAlign === "left" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
                 disabled={disabled || sourceStyleLocked}
                 onClick={() => {
                   if (sourceStyleLocked) return;
-                  handleFieldChange("textAlign", "left");
+                  if (!componentPath) handleFieldChange("textAlign", "left");
                   patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-left"),
                   );
@@ -552,13 +579,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               </Button>
               <Button
                 type="button"
-                variant={props.textAlign === "center" ? "secondary" : "ghost"}
+                variant={effectiveTextAlign === "center" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
                 disabled={disabled || sourceStyleLocked}
                 onClick={() => {
                   if (sourceStyleLocked) return;
-                  handleFieldChange("textAlign", "center");
+                  if (!componentPath) handleFieldChange("textAlign", "center");
                   patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-center"),
                   );
@@ -568,13 +595,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               </Button>
               <Button
                 type="button"
-                variant={props.textAlign === "right" ? "secondary" : "ghost"}
+                variant={effectiveTextAlign === "right" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-6 shadow-none"
                 disabled={disabled || sourceStyleLocked}
                 onClick={() => {
                   if (sourceStyleLocked) return;
-                  handleFieldChange("textAlign", "right");
+                  if (!componentPath) handleFieldChange("textAlign", "right");
                   patchStyle((prev) =>
                     updateTailwindClass(prev, /text-(left|center|right)/, "text-right"),
                   );
@@ -599,10 +626,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             <div>
               <label className="text-[10px] text-muted-foreground">Font</label>
               <Select
-                value={props.fontFamily ?? "serif"}
+                value={effectiveFontFamily}
                 onValueChange={(val) => {
                   if (sourceStyleLocked) return;
-                  handleFieldChange("fontFamily", val);
+                  if (!componentPath) handleFieldChange("fontFamily", val);
                   patchStyle((prev) =>
                     updateTailwindClass(prev, /font-(serif|sans|mono)/, `font-${val}`),
                   );
@@ -622,10 +649,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             <div>
               <label className="text-[10px] text-muted-foreground">Weight</label>
               <Select
-                value={props.fontWeight ?? "normal"}
+                value={effectiveFontWeight}
                 onValueChange={(val) => {
                   if (sourceStyleLocked) return;
-                  handleFieldChange("fontWeight", val);
+                  if (!componentPath) handleFieldChange("fontWeight", val);
                   const weightClass =
                     val === "300"
                       ? "font-light"
@@ -661,7 +688,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             <div className="flex items-center justify-between rounded-lg border bg-background px-2.5 py-1">
               <span className="text-[11px] text-muted-foreground">Size</span>
               <ScrubbableNumberInput
-                value={Number(props.fontSize ?? 48)}
+                value={effectiveFontSize}
                 min={12}
                 max={120}
                 step={2}
@@ -670,7 +697,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 ariaLabel="Heading font size"
                 onValueChange={(val) => {
                   if (sourceStyleLocked) return;
-                  handleFieldChange("fontSize", val);
+                  if (!componentPath) handleFieldChange("fontSize", val);
                   patchStyle((prev) =>
                     updateTailwindClass(
                       prev,
@@ -795,13 +822,19 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             Direct Tailwind utility classes applied to this section container.
           </p>
           <Textarea
-            value={props.className ?? props.customClass ?? ""}
+            value={effectiveRawClassName}
             onChange={(e) => {
-              handleFieldChange("className", e.target.value);
-              patchStyle(() => e.target.value);
+              if (sourceStyleLocked) return;
+              const nextClasses = e.target.value;
+              if (componentPath) {
+                patchStyle(() => nextClasses);
+              } else {
+                handleFieldChange("className", nextClasses);
+              }
             }}
+            disabled={disabled || sourceStyleLocked}
             placeholder="e.g. py-24 bg-stone-900 text-white rounded-2xl shadow-xl"
-            rows={2}
+            rows={3}
             className="font-mono text-xs resize-none"
           />
         </div>
