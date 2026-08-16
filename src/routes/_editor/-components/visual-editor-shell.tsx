@@ -802,7 +802,15 @@ export function VisualEditorShell({
   const hasUnpublishedChanges = hasTemplateChanges || hasThemeSourceChanges;
 
   const saveThemeFileSequentially = useCallback(
-    async (filePath: string, contentToSave: string, targetRevision: number) => {
+    async (
+      filePath: string,
+      contentToSave: string,
+      targetRevision: number,
+    ): Promise<
+      | { status: "saved"; file: StorefrontThemeFileDTO }
+      | { status: "superseded" }
+      | { status: "source-conflict" }
+    > => {
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
       const previousPromise =
@@ -810,10 +818,16 @@ export function VisualEditorShell({
 
       const nextPromise = previousPromise
         .catch(() => {})
-        .then(async () => {
+        .then(async (): Promise<
+          | { status: "saved"; file: StorefrontThemeFileDTO }
+          | { status: "superseded" }
+          | { status: "source-conflict" }
+        > => {
           const latestQueuedRevision =
             fileRevisionRef.current.get(fileOpKey) ?? 0;
-          if (targetRevision < latestQueuedRevision) return null;
+          if (targetRevision < latestQueuedRevision) {
+            return { status: "superseded" };
+          }
 
           const current = useThemeWorkspaceStore
             .getState()
@@ -875,7 +889,7 @@ export function VisualEditorShell({
                     },
                   },
                 );
-                return null;
+                return { status: "source-conflict" };
               }
 
               if (
@@ -940,7 +954,7 @@ export function VisualEditorShell({
               },
             );
 
-            return res.data;
+            return { status: "saved", file: res.data };
           } catch (error) {
             const afterError = useThemeWorkspaceStore
               .getState()
@@ -1014,7 +1028,9 @@ export function VisualEditorShell({
         content,
         nextRevision,
       );
-      if (!result) throw new Error("Save superseded by a newer version");
+      if (result.status === "superseded" || result.status === "source-conflict") {
+        return null;
+      }
 
       requestAnimationFrame(() => {
         previewIframeRef.current?.contentWindow?.postMessage(
@@ -1022,7 +1038,7 @@ export function VisualEditorShell({
           window.location.origin,
         );
       });
-      return result;
+      return result.file;
     },
     [
       getScopedOpKey,

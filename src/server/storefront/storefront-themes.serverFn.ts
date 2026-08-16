@@ -142,6 +142,19 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
             error: "NOT_FOUND",
           });
     } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to publish theme";
+      if (message.includes("RELEASE_GENERATION_CONFLICT")) {
+        return fail(
+          "Another release was published. Refresh the latest release before publishing again.",
+          { error: "RELEASE_GENERATION_CONFLICT" },
+        );
+      }
+      if (message.includes("TEMPLATE_DRAFT_CONFLICT")) {
+        return fail("Template draft was modified concurrently.", {
+          error: "TEMPLATE_DRAFT_CONFLICT",
+        });
+      }
       return failure(
         "Publish storefront theme template error",
         error,

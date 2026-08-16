@@ -303,7 +303,7 @@ describe("storefront theme DAL", () => {
       }),
     ).rejects.toThrow();
 
-    // Mismatched expectedReleaseGeneration should fail the CAS guard
+    // Mismatched expectedReleaseGeneration should fail the CAS guard with RELEASE_GENERATION_CONFLICT
     await expect(
       storefrontThemeDal.publishTemplate({
         storefrontId: "storefront-a",
@@ -314,7 +314,7 @@ describe("storefront theme DAL", () => {
         expectedDraftGeneration: 1,
         expectedReleaseGeneration: 99,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("RELEASE_GENERATION_CONFLICT");
   });
 
   it("returns null when expectedDraftRevisionId does not match template", async () => {

@@ -343,7 +343,7 @@ export const storefrontThemeFileDal = {
     path: string,
     content: string,
     mimeType?: string,
-    options?: {
+    options: {
       expectedSourceGeneration: number;
       expectedFileId?: string;
       expectedVersion?: number;
@@ -351,7 +351,7 @@ export const storefrontThemeFileDal = {
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
-    },
+    } = {} as any,
   ): Promise<StorefrontThemeFileDTO & { sourceGeneration?: number }> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
       throw new Error(

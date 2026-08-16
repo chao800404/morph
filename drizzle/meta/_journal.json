@@ -302,6 +302,13 @@
       "when": 1786873968730,
       "tag": "0042_yellow_black_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1786879417306,
+      "tag": "0043_modern_cerebro",
+      "breakpoints": true
     }
   ]
 }

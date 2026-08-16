@@ -50,7 +50,7 @@ type EditorCodeWorkspaceProps = {
   onSaveFile?: (
     path: string,
     content: string,
-  ) => Promise<StorefrontThemeFileDTO>;
+  ) => Promise<StorefrontThemeFileDTO | null>;
 };
 
 function getFileIcon(filename: string) {
@@ -214,10 +214,33 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             .getAcceptedSourceGeneration(workspaceScope),
         },
       });
-      if (!res.success) throw new Error(res.message);
+      if (!res.success) {
+        if (res.error === "SOURCE_GENERATION_CONFLICT") {
+          useThemeWorkspaceStore.getState().markDirty(path, workspaceScope);
+          await queryClient.invalidateQueries({
+            queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId).queryKey,
+          });
+          toast.error("Remote source changes detected in this theme.", {
+            action: {
+              label: "Accept Remote",
+              onClick: () => {
+                useThemeWorkspaceStore
+                  .getState()
+                  .acceptRemoteGeneration(undefined, workspaceScope);
+                toast.success(
+                  "Remote source generation accepted. You can now save your local changes.",
+                );
+              },
+            },
+          });
+          return null;
+        }
+        throw new Error(res.message);
+      }
       return res.data;
     },
     onSuccess: (saved) => {
+      if (!saved) return;
       markWorkspaceSaved(saved, workspaceScope);
       queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
@@ -226,6 +249,18 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       onRefreshPreview?.();
     },
     onError: (err, variables) => {
+      const fileState = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        )[variables.path];
+      if (
+        fileState?.saveState === "dirty" ||
+        fileState?.saveState === "conflict"
+      ) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Failed to save file";
       markWorkspaceError(variables.path, message, workspaceScope);
       toast.error(message);

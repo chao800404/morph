@@ -1034,7 +1034,33 @@ export const storefrontThemeDal = {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("malformed JSON") || message.includes("constraint")) {
-        throw new Error("CONFLICT_PUBLISH_GUARD_FAILED: Template, Source revision, or Release generation mismatch or concurrently modified.");
+        const latestContext = await this.findEditorContext(
+          data.storefrontId,
+          data.themeId,
+        );
+        const latestTemplate = latestContext?.templates.find(
+          (t) => t.id === data.templateId,
+        );
+        if (
+          latestContext &&
+          (latestContext.theme.releaseGeneration ?? 1) !==
+            data.expectedReleaseGeneration
+        ) {
+          throw new Error(
+            "RELEASE_GENERATION_CONFLICT: Another release was published. Refresh the latest release before publishing again.",
+          );
+        }
+        if (
+          latestTemplate &&
+          latestTemplate.draftGeneration !== data.expectedDraftGeneration
+        ) {
+          throw new Error(
+            "TEMPLATE_DRAFT_CONFLICT: Template draft was modified concurrently.",
+          );
+        }
+        throw new Error(
+          "CONFLICT_PUBLISH_GUARD_FAILED: Template, Source revision, or Release generation mismatch or concurrently modified.",
+        );
       }
       throw error;
     }
