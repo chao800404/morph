@@ -212,8 +212,15 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
 
     const fakeRunner = new FakeThemeBuildRunner({
       shouldSucceed: true,
-      artifactPrefix: "r2://artifacts/build-test",
-      manifest: { bundles: ["index.js", "global.css"] },
+      manifest: {
+        entry: "src/pages/index.tsx",
+        filesCount: 2,
+        inputHash: "placeholder",
+        bundleFiles: [
+          { path: "index.js", sizeBytes: 1024, mimeType: "application/javascript" },
+          { path: "global.css", sizeBytes: 512, mimeType: "text/css" },
+        ],
+      },
     });
 
     const build = await service.requestPreviewBuild({
@@ -229,13 +236,19 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(build.inputHash?.length).toBe(64);
     expect(build.compilerId).toBe("tailwind-v4-build");
     expect(build.compilerVersion).toBeDefined();
-    expect(build.artifactPrefix).toBe("r2://artifacts/build-test");
     expect(build.manifestJson).toEqual({
-      bundles: ["index.js", "global.css"],
+      entry: "src/pages/index.tsx",
+      filesCount: 2,
+      inputHash: "placeholder",
+      bundleFiles: [
+        { path: "index.js", sizeBytes: 1024, mimeType: "application/javascript" },
+        { path: "global.css", sizeBytes: 512, mimeType: "text/css" },
+      ],
     });
     expect(build.startedAt).toBeDefined();
     expect(build.completedAt).toBeDefined();
   });
+
 
   it("transitions to failed when runner throws an exception", async () => {
     seedStorefront("storefront-1");
@@ -379,24 +392,49 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       storefrontId: "storefront-1",
       themeId: "theme-A",
       sourceRevisionId: "rev-A",
-      runner: new FakeThemeBuildRunner({ artifactPrefix: "r2://theme-A" }),
+      runner: new FakeThemeBuildRunner({
+        manifest: {
+          entry: "src/index.tsx",
+          filesCount: 1,
+          inputHash: "hash-A",
+          metadata: { themeName: "A" },
+        },
+      }),
     });
 
     const buildB = await service.requestPreviewBuild({
       storefrontId: "storefront-1",
       themeId: "theme-B",
       sourceRevisionId: "rev-B",
-      runner: new FakeThemeBuildRunner({ artifactPrefix: "r2://theme-B" }),
+      runner: new FakeThemeBuildRunner({
+        manifest: {
+          entry: "src/index.tsx",
+          filesCount: 1,
+          inputHash: "hash-B",
+          metadata: { themeName: "B" },
+        },
+      }),
     });
 
     expect(buildA.themeId).toBe("theme-A");
-    expect(buildA.artifactPrefix).toBe("r2://theme-A");
+    expect(buildA.manifestJson).toEqual({
+      entry: "src/index.tsx",
+      filesCount: 1,
+      inputHash: "hash-A",
+      metadata: { themeName: "A" },
+    });
 
     expect(buildB.themeId).toBe("theme-B");
-    expect(buildB.artifactPrefix).toBe("r2://theme-B");
+    expect(buildB.manifestJson).toEqual({
+      entry: "src/index.tsx",
+      filesCount: 1,
+      inputHash: "hash-B",
+      metadata: { themeName: "B" },
+    });
 
     expect(buildA.inputHash).not.toBe(buildB.inputHash);
   });
+
 
   it("verifies runner receives pure immutable revision input and never working files", async () => {
     seedStorefront("storefront-1");
@@ -518,7 +556,12 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
         await new Promise((resolve) => setTimeout(resolve, 60));
       },
       shouldSucceed: true,
-      artifactPrefix: "r2://winner-build",
+      manifest: {
+        entry: "src/index.tsx",
+        filesCount: 1,
+        inputHash: "concurrent-hash",
+        metadata: { winner: true },
+      },
     });
 
     const secondWorkerRunner = new FakeThemeBuildRunner({
@@ -556,7 +599,12 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     const resultA = await promiseA;
     expect(resultA.status).toBe("succeeded");
     expect(resultA.compilerVersion).toBe("4.1.17");
-    expect(resultA.artifactPrefix).toBe("r2://winner-build");
+    expect(resultA.manifestJson).toEqual({
+      entry: "src/index.tsx",
+      filesCount: 1,
+      inputHash: "concurrent-hash",
+      metadata: { winner: true },
+    });
 
     // Total runner invocations was exactly 1 (Worker B did not duplicate execution)
     expect(runnerRunCount).toBe(1);
@@ -572,4 +620,5 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(finalInDb?.errorMessage).toBeNull();
   });
 });
+
 

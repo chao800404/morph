@@ -1,6 +1,10 @@
 import { materializeThemeBuildInput } from "@/lib/storefront/compiler/theme-build-materializer";
-import type { ThemeBuildRunner } from "@/lib/storefront/compiler/theme-build-runner.types";
+import type {
+  ThemeBuildRunner,
+  ThemeBuildRunnerResult,
+} from "@/lib/storefront/compiler/theme-build-runner.types";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
+
 import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildInput,
@@ -242,13 +246,7 @@ export class ThemeBuildService {
     }
 
     // Stage 4: Run Build via Runner
-    let runnerResult: {
-      success: boolean;
-      artifactPrefix?: string;
-      manifestJson?: any;
-      diagnosticsJson?: any;
-      errorMessage?: string;
-    };
+    let runnerResult: ThemeBuildRunnerResult;
     try {
       runnerResult = await runner.run(buildInput);
     } catch (runnerException) {
@@ -278,7 +276,7 @@ export class ThemeBuildService {
         params.buildId,
         {
           errorMessage:
-            runnerResult.errorMessage ??
+            runnerResult.errorMessage ||
             "Theme build failed during runner execution",
           diagnosticsJson: runnerResult.diagnosticsJson,
         },
@@ -286,17 +284,18 @@ export class ThemeBuildService {
     }
 
     // Stage 5: Finalize state
+    // Note: In Phase 4B-6, runnerResult.artifacts will be uploaded to R2 to yield artifactPrefix
     return await this.dal.markBuildSucceeded(
       params.storefrontId,
       params.themeId,
       params.buildId,
       {
-        artifactPrefix: runnerResult.artifactPrefix,
         manifestJson: runnerResult.manifestJson,
         diagnosticsJson: runnerResult.diagnosticsJson,
       },
     );
   }
+
 
   async getThemeBuild(params: {
     storefrontId: string;

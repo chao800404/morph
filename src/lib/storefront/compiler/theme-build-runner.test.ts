@@ -50,26 +50,23 @@ describe("ThemeBuildRunner Abstraction (Phase 4B-4)", () => {
     const result = await runner.run(input);
 
     expect(result.success).toBe(true);
-    expect(result.artifactPrefix).toBe("artifacts/build-123");
-    expect(result.manifestJson).toBeDefined();
-    expect(result.manifestJson?.entry).toBe("src/main.tsx");
-    expect(result.manifestJson?.filesCount).toBe(2);
-    expect(result.manifestJson?.inputHash).toBe("a".repeat(64));
-    expect(result.manifestJson?.bundleFiles).toEqual([
-      {
-        path: "index.js",
-        sizeBytes: 1024,
-        mimeType: "application/javascript",
-      },
-      {
-        path: "index.css",
-        sizeBytes: 512,
-        mimeType: "text/css",
-      },
-    ]);
-    expect(result.logs?.length).toBeGreaterThan(0);
-    expect(result.logs?.[0]?.level).toBe("info");
-    expect(typeof result.durationMs).toBe("number");
+    if (result.success) {
+      expect(result.artifacts).toHaveLength(3);
+      expect(result.artifacts.map((a) => a.path)).toEqual([
+        "index.html",
+        "assets/index.js",
+        "assets/index.css",
+      ]);
+      expect(result.manifestJson).toBeDefined();
+      expect(result.manifestJson.entry).toBe("src/main.tsx");
+      expect(result.manifestJson.filesCount).toBe(2);
+      expect(result.manifestJson.inputHash).toBe("a".repeat(64));
+      expect(result.manifestJson.bundleFiles).toHaveLength(3);
+      expect(result.logs?.length).toBeGreaterThan(0);
+      expect(result.logs?.[0]?.level).toBe("info");
+      expect(typeof result.durationMs).toBe("number");
+    }
+
   });
 
   it("produces failure result with errorMessage and diagnostics when shouldSucceed is false", async () => {
@@ -93,13 +90,16 @@ describe("ThemeBuildRunner Abstraction (Phase 4B-4)", () => {
     const result = await runner.run(input);
 
     expect(result.success).toBe(false);
-    expect(result.errorMessage).toBe(
-      "Vite build bundle failed: SyntaxError in src/main.tsx",
-    );
-    expect(result.diagnosticsJson?.errors).toHaveLength(1);
-    expect(result.diagnosticsJson?.errors?.[0]?.file).toBe("src/main.tsx");
-    expect(result.logs?.[0]?.level).toBe("error");
+    if (!result.success) {
+      expect(result.errorMessage).toBe(
+        "Vite build bundle failed: SyntaxError in src/main.tsx",
+      );
+      expect(result.diagnosticsJson?.errors).toHaveLength(1);
+      expect(result.diagnosticsJson?.errors?.[0]?.file).toBe("src/main.tsx");
+      expect(result.logs?.[0]?.level).toBe("error");
+    }
   });
+
 
   it("throws exception when shouldThrow is true", async () => {
     const runner = new FakeThemeBuildRunner({

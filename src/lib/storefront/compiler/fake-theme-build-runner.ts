@@ -1,7 +1,8 @@
-import type { StorefrontThemeBuildInput } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import type {
+  ThemeBuildArtifactFile,
   ThemeBuildArtifactManifest,
   ThemeBuildRunner,
+  ThemeBuildRunnerInput,
   ThemeBuildRunnerResult,
 } from "./theme-build-runner.types";
 
@@ -12,10 +13,10 @@ export type FakeThemeBuildRunnerOptions = {
   shouldThrow?: boolean;
   delayMs?: number;
   errorMessage?: string;
-  artifactPrefix?: string;
-  manifest?: ThemeBuildArtifactManifest | Record<string, unknown>;
+  artifacts?: ThemeBuildArtifactFile[];
+  manifest?: ThemeBuildArtifactManifest;
   diagnostics?: any;
-  onRun?: (input: StorefrontThemeBuildInput) => void | Promise<void>;
+  onRun?: (input: ThemeBuildRunnerInput) => void | Promise<void>;
 };
 
 /**
@@ -32,7 +33,7 @@ export class FakeThemeBuildRunner implements ThemeBuildRunner {
     this.version = options.version ?? "1.0.0-test";
   }
 
-  async run(input: StorefrontThemeBuildInput): Promise<ThemeBuildRunnerResult> {
+  async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
     const startTime = Date.now();
 
     if (this.options.delayMs) {
@@ -74,27 +75,46 @@ export class FakeThemeBuildRunner implements ThemeBuildRunner {
       };
     }
 
+    const defaultArtifacts: ThemeBuildArtifactFile[] = [
+      {
+        path: "index.html",
+        content: `<!DOCTYPE html><html><head><title>Theme Preview</title><link rel="stylesheet" href="/assets/index.css"></head><body><div id="root"></div><script type="module" src="/assets/index.js"></script></body></html>`,
+        mimeType: "text/html",
+        sizeBytes: 198,
+      },
+      {
+        path: "assets/index.js",
+        content: `// Compiled Theme Bundle for ${input.buildId}\nconsole.log("Theme loaded");`,
+        mimeType: "application/javascript",
+        sizeBytes: 1024,
+      },
+      {
+        path: "assets/index.css",
+        content: `/* Compiled Tailwind CSS for ${input.buildId} */\n@layer base, components, utilities;`,
+        mimeType: "text/css",
+        sizeBytes: 512,
+      },
+    ];
+
+    const artifacts = this.options.artifacts ?? defaultArtifacts;
+
+    const manifest: ThemeBuildArtifactManifest = this.options.manifest ?? {
+      entry: input.entry,
+      filesCount: input.files.length,
+      inputHash: input.inputHash,
+      bundleFiles: artifacts.map((a) => ({
+        path: a.path,
+        sizeBytes: a.sizeBytes ?? (typeof a.content === "string" ? a.content.length : a.content.byteLength),
+        mimeType: a.mimeType,
+      })),
+      cssChunks: ["assets/index.css"],
+      jsChunks: ["assets/index.js"],
+    };
+
     return {
       success: true,
-      artifactPrefix:
-        this.options.artifactPrefix ?? `artifacts/${input.buildId}`,
-      manifestJson: this.options.manifest ?? {
-        entry: input.entry,
-        filesCount: input.files.length,
-        inputHash: input.inputHash,
-        bundleFiles: [
-          {
-            path: "index.js",
-            sizeBytes: 1024,
-            mimeType: "application/javascript",
-          },
-          {
-            path: "index.css",
-            sizeBytes: 512,
-            mimeType: "text/css",
-          },
-        ],
-      },
+      artifacts,
+      manifestJson: manifest,
       diagnosticsJson: this.options.diagnostics ?? { warnings: [] },
       logs: [
         {
