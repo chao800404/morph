@@ -77,6 +77,7 @@ export interface ThemeWorkspaceStore {
     generation?: number,
     scope?: WorkspaceScope,
   ) => void;
+  acceptRemoteWorkspace: (scope?: WorkspaceScope) => void;
   getWorkspaceFiles: (
     storefrontId?: string,
     themeId?: string,
@@ -207,6 +208,46 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>((set, get) => 
         acceptedGenerations: { ...state.acceptedGenerations, [key]: targetGen },
         generations: { ...state.generations, [key]: targetGen },
         observedGenerations: { ...state.observedGenerations, [key]: targetGen },
+      };
+    });
+  },
+
+  acceptRemoteWorkspace: (scope?: WorkspaceScope) => {
+    set((state) => {
+      const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+      const targetGen =
+        state.observedGenerations[key] ?? state.acceptedGenerations[key] ?? 1;
+
+      const next = { ...workspaceFiles };
+      for (const [path, file] of Object.entries(workspaceFiles)) {
+        if (file.conflict) {
+          if (file.conflict.remoteExists && file.conflict.remoteFileId) {
+            next[path] = {
+              path,
+              serverExists: true,
+              serverFileId: file.conflict.remoteFileId,
+              serverContent: file.conflict.remoteContent ?? "",
+              localContent: file.conflict.remoteContent ?? "",
+              serverVersion: file.conflict.remoteVersion,
+              dirty: false,
+              saveState: "clean",
+              conflict: undefined,
+              errorMessage: undefined,
+            };
+          } else {
+            delete next[path];
+          }
+        }
+      }
+
+      const nextWorkspaces = { ...state.workspaces, [key]: next };
+      const isActive = state.activeWorkspaceKey === key;
+      return {
+        workspaces: nextWorkspaces,
+        acceptedGenerations: { ...state.acceptedGenerations, [key]: targetGen },
+        generations: { ...state.generations, [key]: targetGen },
+        observedGenerations: { ...state.observedGenerations, [key]: targetGen },
+        files: isActive ? next : state.files,
       };
     });
   },

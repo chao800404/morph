@@ -147,7 +147,7 @@ describe("storefront theme file DAL", () => {
     ).toBe(2);
   });
 
-  it("freezes source revision with expectedSourceGeneration OCC guard", async () => {
+  it("freezes source revision without incrementing source_generation and guards with OCC", async () => {
     // Save a file so source_generation becomes 2
     await storefrontThemeFileDal.saveFilesBatch(
       "storefront-a",
@@ -159,16 +159,28 @@ describe("storefront theme file DAL", () => {
           expectMissing: true,
         },
       ],
+      { expectedSourceGeneration: 1 },
     );
 
-    // Freezing with matching expectedSourceGeneration (2) succeeds
+    expect(
+      await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).toBe(2);
+
+    // Freezing with matching expectedSourceGeneration (2) succeeds and DOES NOT bump generation
     const rev = await storefrontThemeFileDal.createRevision("storefront-a", "theme-a", {
       expectedSourceGeneration: 2,
       message: "Frozen checkpoint",
+      source: "publish",
     });
 
     expect(rev.id).toBeDefined();
     expect(rev.message).toBe("Frozen checkpoint");
+    expect(rev.source).toBe("publish");
+
+    // Generation must remain 2 after snapshot
+    expect(
+      await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).toBe(2);
 
     // Attempting to freeze with stale expectedSourceGeneration (e.g. 1) rejects due to OCC
     await expect(
@@ -179,7 +191,25 @@ describe("storefront theme file DAL", () => {
     ).rejects.toThrow("CONFLICT_SOURCE_GENERATION_MISMATCH");
   });
 
-  it("increments source_generation on deleteFile", async () => {
+  it("rejects saveFilesBatch when expectedSourceGeneration does not match server", async () => {
+    // Server generation is 1. Client attempts to save expecting 99
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/pages/index.tsx",
+            content: "export default function() { return <div>Home</div>; }",
+            expectMissing: true,
+          },
+        ],
+        { expectedSourceGeneration: 99 },
+      ),
+    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+  });
+
+  it("increments source_generation on deleteFile with matching expectedSourceGeneration", async () => {
     const [file] = await storefrontThemeFileDal.saveFilesBatch(
       "storefront-a",
       "theme-a",
@@ -190,6 +220,7 @@ describe("storefront theme file DAL", () => {
           expectMissing: true,
         },
       ],
+      { expectedSourceGeneration: 1 },
     );
 
     expect(
@@ -202,6 +233,7 @@ describe("storefront theme file DAL", () => {
       "src/components/Header.tsx",
       file.id,
       file.version,
+      { expectedSourceGeneration: 2 },
     );
 
     expect(

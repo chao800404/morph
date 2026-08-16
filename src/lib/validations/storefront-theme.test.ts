@@ -8,7 +8,10 @@ import {
 } from "./storefront-theme";
 import {
   createThemeRevisionInputSchema,
+  deleteThemeFileInputSchema,
   rollbackThemeRevisionInputSchema,
+  saveThemeFileInputSchema,
+  saveThemeFilesBatchInputSchema,
 } from "./storefront-theme-file";
 
 describe("storefront theme editor search", () => {
@@ -133,7 +136,10 @@ describe("create theme revision input schema", () => {
       message: "Checkpoint",
     };
 
-    expect(createThemeRevisionInputSchema.parse(valid)).toEqual(valid);
+    expect(createThemeRevisionInputSchema.parse(valid)).toEqual({
+      ...valid,
+      source: "manual",
+    });
 
     // Missing expectedSourceGeneration
     expect(() =>
@@ -216,6 +222,84 @@ describe("rollback theme revision input schema", () => {
         storefrontId: "storefront-1",
         themeId: "theme-1",
         revisionNumber: 2,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("save and delete theme file schemas", () => {
+  it("requires expectedSourceGeneration on save, batch save, and delete", () => {
+    const validSave = {
+      storefrontId: "store-1",
+      themeId: "theme-1",
+      path: "src/pages/index.tsx",
+      content: "console.log(1)",
+      expectMissing: true,
+      expectedSourceGeneration: 1,
+    };
+    expect(saveThemeFileInputSchema.parse(validSave)).toEqual({
+      ...validSave,
+      createRevision: false,
+    });
+
+    expect(() =>
+      saveThemeFileInputSchema.parse({
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        path: "src/pages/index.tsx",
+        content: "console.log(1)",
+        expectMissing: true,
+      }),
+    ).toThrow();
+
+    const validBatch = {
+      storefrontId: "store-1",
+      themeId: "theme-1",
+      files: [
+        {
+          path: "src/pages/index.tsx",
+          content: "console.log(1)",
+          expectMissing: true,
+        },
+      ],
+      expectedSourceGeneration: 2,
+    };
+    expect(saveThemeFilesBatchInputSchema.parse(validBatch)).toEqual({
+      ...validBatch,
+      createRevision: false,
+    });
+
+    expect(() =>
+      saveThemeFilesBatchInputSchema.parse({
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        files: [
+          {
+            path: "src/pages/index.tsx",
+            content: "console.log(1)",
+            expectMissing: true,
+          },
+        ],
+      }),
+    ).toThrow();
+
+    const validDelete = {
+      storefrontId: "store-1",
+      themeId: "theme-1",
+      path: "src/pages/index.tsx",
+      expectedFileId: crypto.randomUUID(),
+      expectedVersion: 1,
+      expectedSourceGeneration: 3,
+    };
+    expect(deleteThemeFileInputSchema.parse(validDelete)).toEqual(validDelete);
+
+    expect(() =>
+      deleteThemeFileInputSchema.parse({
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        path: "src/pages/index.tsx",
+        expectedFileId: crypto.randomUUID(),
+        expectedVersion: 1,
       }),
     ).toThrow();
   });

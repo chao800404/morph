@@ -13,6 +13,109 @@ import { and, asc, eq, isNull, max } from "drizzle-orm";
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export const SECTION_CONTENT_MANIFESTS: Record<
+  string,
+  { allowedFields: Set<string> }
+> = {
+  hero: {
+    allowedFields: new Set([
+      "heading",
+      "subheading",
+      "description",
+      "title",
+      "subtitle",
+      "badge",
+      "badgeText",
+      "actionLabel",
+      "actionHref",
+      "secondaryActionLabel",
+      "secondaryActionHref",
+      "buttonText",
+      "buttonLink",
+      "imageSrc",
+      "imageAlt",
+      "backgroundMedia",
+    ]),
+  },
+  header: {
+    allowedFields: new Set([
+      "logoText",
+      "logoSrc",
+      "logoAlt",
+      "navItems",
+      "menuItems",
+      "showCart",
+      "showSearch",
+      "announcementText",
+    ]),
+  },
+  footer: {
+    allowedFields: new Set([
+      "copyrightText",
+      "brandText",
+      "columns",
+      "links",
+      "socialLinks",
+      "showNewsletter",
+    ]),
+  },
+  "featured-products": {
+    allowedFields: new Set([
+      "title",
+      "subtitle",
+      "collectionId",
+      "productLimit",
+      "columns",
+      "showPrice",
+      "actionLabel",
+      "actionHref",
+    ]),
+  },
+  "product-detail": {
+    allowedFields: new Set([
+      "showVendor",
+      "showSku",
+      "showShare",
+      "galleryPosition",
+    ]),
+  },
+};
+
+export const FORBIDDEN_PRESENTATION_KEYS = new Set([
+  "backgroundColor", "bgColor", "textColor", "color", "textAlign",
+  "fontFamily", "fontWeight", "lineHeight", "fontSize", "letterSpacing",
+  "borderRadius", "padding", "paddingTop", "paddingBottom", "paddingLeft", "paddingRight",
+  "paddingX", "paddingY", "margin", "marginTop", "marginBottom", "marginLeft", "marginRight",
+  "marginX", "marginY", "gap", "opacity", "shadow", "boxShadow", "border", "borderColor",
+  "borderWidth", "borderStyle", "className", "classes", "customClass", "style", "css",
+  "customCss", "styles",
+]);
+
+export function filterSectionContentProps(
+  sectionType: string,
+  rawProps: Record<string, unknown>,
+): Record<string, unknown> {
+  const manifest = SECTION_CONTENT_MANIFESTS[sectionType];
+  if (manifest) {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(rawProps)) {
+      if (manifest.allowedFields.has(k)) {
+        result[k] = v;
+      }
+    }
+    return result;
+  }
+
+  // Fallback for custom / dynamic components: strictly strip presentation keys
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rawProps)) {
+    if (!FORBIDDEN_PRESENTATION_KEYS.has(k)) {
+      result[k] = v;
+    }
+  }
+  return result;
+}
+
 function prepareTemplateDraftCASGuard(args: {
   storefrontId: string;
   themeId: string;
@@ -328,6 +431,15 @@ export const storefrontThemeDal = {
     if (!targetSection) return null;
 
     const { enabled: propEnabled, ...restProps } = data.props;
+    const cleanIncomingProps = filterSectionContentProps(
+      targetSection.type,
+      restProps,
+    );
+    const cleanExistingProps = filterSectionContentProps(
+      targetSection.type,
+      (targetSection.props as Record<string, unknown>) ?? {},
+    );
+
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,
       sections: template.document.sections.map((section) =>
@@ -339,8 +451,8 @@ export const storefrontThemeDal = {
                   ? propEnabled
                   : section.enabled !== false,
               props: {
-                ...section.props,
-                ...restProps,
+                ...cleanExistingProps,
+                ...cleanIncomingProps,
               },
             }
           : section,

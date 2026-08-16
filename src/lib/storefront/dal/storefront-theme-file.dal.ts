@@ -347,6 +347,7 @@ export const storefrontThemeFileDal = {
       expectedFileId?: string;
       expectedVersion?: number;
       expectMissing?: boolean;
+      expectedSourceGeneration?: number;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
@@ -364,6 +365,7 @@ export const storefrontThemeFileDal = {
         expectMissing: options?.expectMissing,
       }],
       {
+        expectedSourceGeneration: options?.expectedSourceGeneration,
         createRevision: options?.createRevision,
         revisionMessage: options?.revisionMessage,
         createdBy: options?.createdBy,
@@ -386,6 +388,7 @@ export const storefrontThemeFileDal = {
       mimeType?: string;
     }>,
     options?: {
+      expectedSourceGeneration?: number;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
@@ -397,7 +400,13 @@ export const storefrontThemeFileDal = {
     }
 
     const now = new Date().toISOString();
-    const statements = [prepareThemeOwnershipGuard(storefrontId, themeId)];
+    const statements = [
+      prepareThemeOwnershipGuard(
+        storefrontId,
+        themeId,
+        options?.expectedSourceGeneration,
+      ),
+    ];
 
     for (const item of files) {
       const expectsExisting =
@@ -558,13 +567,20 @@ export const storefrontThemeFileDal = {
     path: string,
     expectedFileId: string,
     expectedVersion: number,
+    options?: {
+      expectedSourceGeneration?: number;
+    },
   ): Promise<boolean> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
     if (!isOwner) return false;
 
     const now = new Date().toISOString();
     const statements = [
-      prepareThemeOwnershipGuard(storefrontId, themeId),
+      prepareThemeOwnershipGuard(
+        storefrontId,
+        themeId,
+        options?.expectedSourceGeneration,
+      ),
       env.DATABASE.prepare(`
         SELECT CASE WHEN EXISTS (
           SELECT 1 FROM storefront_theme_files
@@ -609,6 +625,8 @@ export const storefrontThemeFileDal = {
 
   /**
    * Create an immutable snapshot revision of the theme's source code.
+   * NOTE: Creating a snapshot revision does NOT mutate working files,
+   * so it does not increment source_generation.
    */
   async createRevision(
     storefrontId: string,
@@ -616,6 +634,7 @@ export const storefrontThemeFileDal = {
     options: {
       expectedSourceGeneration: number;
       message?: string;
+      source?: "manual" | "ai" | "publish" | "rollback";
       createdBy?: string;
     },
   ): Promise<StorefrontThemeRevisionDTO> {
@@ -638,11 +657,10 @@ export const storefrontThemeFileDal = {
         themeId,
         revisionId,
         message: options.message ?? "Manual checkpoint",
-        source: "manual",
+        source: options.source ?? "manual",
         createdBy: options.createdBy,
         now,
       }),
-      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
     ];
 
     try {

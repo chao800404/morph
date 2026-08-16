@@ -71,6 +71,7 @@ export const saveThemeFileInputSchema = z
     expectedFileId: z.string().uuid().optional(),
     expectedVersion: z.number().int().min(1).optional(),
     expectMissing: z.boolean().optional().default(false),
+    expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
   })
@@ -91,6 +92,7 @@ export const saveThemeFilesBatchInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
   files: z.array(batchFileSchema).min(1, "Batch must contain at least one file"),
+  expectedSourceGeneration: z.number().int().min(1),
   createRevision: z.boolean().optional().default(false),
   revisionMessage: z.string().max(200).optional(),
 });
@@ -101,6 +103,7 @@ export const deleteThemeFileInputSchema = z.object({
   path: safeThemeFilePathSchema,
   expectedFileId: z.string().uuid(),
   expectedVersion: z.number().int().min(1),
+  expectedSourceGeneration: z.number().int().min(1),
 });
 
 export const initStarterThemeFilesInputSchema = z.object({
@@ -118,6 +121,10 @@ export const createThemeRevisionInputSchema = z.object({
   themeId: z.string().min(1),
   expectedSourceGeneration: z.number().int().min(1),
   message: z.string().trim().max(200).optional(),
+  source: z
+    .enum(["manual", "publish", "ai", "rollback"])
+    .optional()
+    .default("manual"),
 });
 
 export const rollbackThemeRevisionInputSchema = z.object({

@@ -111,6 +111,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
           expectedFileId: data.expectedFileId,
           expectedVersion: data.expectedVersion,
           expectMissing: data.expectMissing,
+          expectedSourceGeneration: data.expectedSourceGeneration,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,
@@ -147,6 +148,7 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
         data.themeId,
         data.files,
         {
+          expectedSourceGeneration: data.expectedSourceGeneration,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,
@@ -187,6 +189,9 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
         data.path,
         data.expectedFileId,
         data.expectedVersion,
+        {
+          expectedSourceGeneration: data.expectedSourceGeneration,
+        },
       );
       return success
         ? ok("Theme file deleted", { path: data.path })
@@ -266,6 +271,7 @@ export const createStorefrontThemeRevision = createServerFn({ method: "POST" })
         data.themeId,
         {
           message: data.message ?? "Published Theme Source",
+          source: data.source ?? "manual",
           expectedSourceGeneration: data.expectedSourceGeneration,
           createdBy: context.user?.id,
         },

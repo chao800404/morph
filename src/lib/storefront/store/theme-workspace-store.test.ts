@@ -215,4 +215,68 @@ describe("ThemeWorkspaceStore", () => {
     expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(13);
     expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(false);
   });
+
+  it("acceptRemoteWorkspace accepts remote generation and resolves conflict states", () => {
+    const scope = { storefrontId: "store-a", themeId: "theme-a" };
+    const store = useThemeWorkspaceStore.getState();
+
+    store.hydrateFromQuery(
+      "store-a",
+      "theme-a",
+      [
+        {
+          id: "f-1",
+          storefrontId: "store-a",
+          themeId: "theme-a",
+          path: "src/pages/index.tsx",
+          content: "initial",
+          mimeType: "text/plain",
+          isEntry: true,
+          version: 1,
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      ],
+      10,
+    );
+
+    // Make local change
+    useThemeWorkspaceStore.getState().updateLocalContent("src/pages/index.tsx", "local draft", scope);
+
+    // Background refetch gets version 2, generation 15 -> creates conflict
+    useThemeWorkspaceStore.getState().hydrateFromQuery(
+      "store-a",
+      "theme-a",
+      [
+        {
+          id: "f-1",
+          storefrontId: "store-a",
+          themeId: "theme-a",
+          path: "src/pages/index.tsx",
+          content: "remote update",
+          mimeType: "text/plain",
+          isEntry: true,
+          version: 2,
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      ],
+      15,
+    );
+
+    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(true);
+    expect(useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors(scope)).toBe(true);
+
+    // Explicitly accept remote workspace
+    useThemeWorkspaceStore.getState().acceptRemoteWorkspace(scope);
+
+    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(15);
+    expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(15);
+    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(false);
+    expect(useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors(scope)).toBe(false);
+    expect(
+      useThemeWorkspaceStore.getState().getWorkspaceFiles("store-a", "theme-a")["src/pages/index.tsx"]
+        ?.localContent,
+    ).toBe("remote update");
+  });
 });

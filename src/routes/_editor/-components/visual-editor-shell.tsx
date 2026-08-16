@@ -837,6 +837,9 @@ export function VisualEditorShell({
                   ? current.serverVersion ?? undefined
                   : undefined,
                 expectMissing: !current.serverExists,
+                expectedSourceGeneration: useThemeWorkspaceStore
+                  .getState()
+                  .getAcceptedSourceGeneration(workspaceScope),
               },
             });
 
@@ -1006,6 +1009,10 @@ export function VisualEditorShell({
             context.theme.id,
           ).queryKey,
         });
+        const workspace = useThemeWorkspaceStore.getState();
+        if (!workspace.hasActiveConflictsOrErrors(workspaceScope)) {
+          workspace.acceptRemoteGeneration(undefined, workspaceScope);
+        }
         previewIframeRef.current?.contentWindow?.postMessage(
           {
             type: "morph:storefront-preview-update-theme-files",
@@ -1151,6 +1158,7 @@ export function VisualEditorShell({
         themeId: context.theme.id,
         expectedSourceGeneration: currentGeneration,
         message: "Published Theme Source",
+        source: "publish",
       },
     });
 

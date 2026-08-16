@@ -382,4 +382,46 @@ describe("storefront theme DAL", () => {
     expect(result?.version).toBe(2);
     expect(result?.document.sections[0].props.title).toBe("Updated Title");
   });
+
+  it("strictly filters out presentation styling props and keeps only content fields", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-c', 'theme-a', 'index', 'Home', '{"version":1,"sections":[{"id":"hero-1","type":"hero","enabled":true,"props":{"heading":"Welcome"}}]}',
+         '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-c', 1,
+         '{"version":1,"sections":[{"id":"hero-1","type":"hero","enabled":true,"props":{"heading":"Welcome"}}]}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-c",
+      sectionId: "hero-1",
+      props: {
+        heading: "New Heading",
+        description: "New Description",
+        fontSize: 80,
+        padding: 100,
+        backgroundColor: "#ff0000",
+        className: "custom-hero",
+      },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result).not.toBeNull();
+    const heroProps = result?.document.sections[0].props as any;
+    expect(heroProps.heading).toBe("New Heading");
+    expect(heroProps.description).toBe("New Description");
+    // Presentation styling props must be stripped
+    expect(heroProps.fontSize).toBeUndefined();
+    expect(heroProps.padding).toBeUndefined();
+    expect(heroProps.backgroundColor).toBeUndefined();
+    expect(heroProps.className).toBeUndefined();
+  });
 });
