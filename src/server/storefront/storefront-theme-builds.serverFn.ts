@@ -1,4 +1,6 @@
+import { env } from "cloudflare:workers";
 import { failure, ok } from "@/lib/db/server-result";
+import { generatePreviewCapabilityToken } from "@/lib/storefront/service/theme-build-preview-token";
 import { createServerThemeBuildService } from "@/lib/storefront/service/theme-build-service.factory";
 import {
   createStorefrontThemeBuildInputSchema,
@@ -22,13 +24,70 @@ export const createPreviewBuild = createServerFn({ method: "POST" })
         sourceRevisionId: data.sourceRevisionId,
         createdBy: context.session?.user?.id,
       });
-      return ok("Theme build created", build);
+
+      let previewToken: string | undefined;
+      if (build.status === "succeeded") {
+        const secret =
+          (env as any)?.BETTER_AUTH_SECRET ||
+          "morph-preview-capability-secret";
+        previewToken = await generatePreviewCapabilityToken(
+          {
+            buildId: build.id,
+            storefrontId: build.storefrontId,
+            themeId: build.themeId,
+          },
+          secret,
+        );
+      }
+
+      return ok("Theme build created", { ...build, previewToken });
     } catch (error) {
       return failure(
         "Create theme build error",
         error,
         "BUILD_CREATE_FAILED",
         "Failed to create theme build",
+      );
+    }
+  });
+
+export const getPreviewBuildToken = createServerFn({ method: "POST" })
+  .validator((data: unknown) => getStorefrontThemeBuildInputSchema.parse(data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const service = createServerThemeBuildService();
+      const build = await service.getThemeBuild({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        buildId: data.buildId,
+      });
+      if (!build || build.status !== "succeeded") {
+        return failure(
+          "Get preview token error",
+          new Error("Theme build not found or not in succeeded state"),
+          "NOT_FOUND",
+          "Theme build not found or not in succeeded state",
+        );
+      }
+      const secret =
+        (env as any)?.BETTER_AUTH_SECRET ||
+        "morph-preview-capability-secret";
+      const token = await generatePreviewCapabilityToken(
+        {
+          buildId: build.id,
+          storefrontId: build.storefrontId,
+          themeId: build.themeId,
+        },
+        secret,
+      );
+      return ok("Preview token generated", { token, buildId: build.id });
+    } catch (error) {
+      return failure(
+        "Generate preview token error",
+        error,
+        "TOKEN_GENERATE_FAILED",
+        "Failed to generate preview capability token",
       );
     }
   });

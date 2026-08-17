@@ -655,8 +655,12 @@ export function VisualEditorShell({
   const [previewMode, setPreviewMode] = useState<"live" | "build">("live");
   const [activeBuildPreview, setActiveBuildPreview] =
     useState<StorefrontThemeBuildDTO | null>(null);
+  const [activePreviewToken, setActivePreviewToken] = useState<string | null>(
+    null,
+  );
   const [isBuildPending, setIsBuildPending] = useState(false);
   const [buildDiagnostics, setBuildDiagnostics] = useState<any | null>(null);
+
   const [activeCodeFilePath, setActiveCodeFilePath] = useState<
     string | undefined
   >();
@@ -1326,11 +1330,13 @@ export function VisualEditorShell({
       const build = buildResult.data;
       if (build.status === "succeeded") {
         setActiveBuildPreview(build);
+        setActivePreviewToken((build as any).previewToken ?? null);
         setPreviewMode("build");
         toast.success(
           `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
         );
       } else {
+
         toast.error(build.errorMessage || `Build status: ${build.status}`);
         setBuildDiagnostics(build.diagnosticsJson);
       }
@@ -2939,14 +2945,18 @@ export function VisualEditorShell({
                       </div>
                     )}
                     <iframe
-
                       key={`build-preview-${activeBuildPreview.id}`}
-                      src={`/preview-build/${encodeURIComponent(activeBuildPreview.id)}/`}
+                      src={
+                        activePreviewToken
+                          ? `/preview-build/${encodeURIComponent(activeBuildPreview.id)}/${encodeURIComponent(activePreviewToken)}/`
+                          : `/preview-build/${encodeURIComponent(activeBuildPreview.id)}/`
+                      }
                       title={`${context.theme.name} compiled build preview`}
                       sandbox="allow-scripts"
                       referrerPolicy="no-referrer"
                       className="block size-full flex-1 border-0 bg-stone-50"
                     />
+
                   </div>
                 ) : previewUrl ? (
                   <iframe

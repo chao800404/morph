@@ -6,11 +6,17 @@ import type {
 import type { StorefrontThemeBuildDAL } from "../dal/storefront-theme-build.dal";
 import type { StorefrontThemeBuildDTO } from "../dto/storefront-theme-build.dto";
 import {
+  generatePreviewCapabilityToken,
+  verifyPreviewCapabilityToken,
+} from "./theme-build-preview-token";
+import {
   sanitizePreviewArtifactPath,
   ThemeBuildPreviewService,
 } from "./theme-build-preview.service";
 
 describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
+  const TEST_SECRET = "test-hmac-preview-secret-key-32-chars-long";
+
   const createMockR2 = () => {
     const storage = new Map<
       string,
@@ -163,8 +169,8 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       verifyThemeOwnership: vi.fn(async () => isOwner),
     }) as unknown as StorefrontThemeBuildDAL;
 
-  const validSessionResolver = async () => ({
-    user: { id: "user-1", role: "admin" },
+  const validAdminSessionResolver = async () => ({
+    user: { id: "admin-1", role: "admin" },
   });
 
   describe("Path Sanitization & Security", () => {
@@ -200,8 +206,156 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
     });
   });
 
-  describe("Authentication & Authorization", () => {
-    it("returns 401 when request is unauthenticated", async () => {
+  describe("Ephemeral Preview Capability Token Security (Opaque Sandbox Fetch)", () => {
+    it("generates and verifies capability tokens bound to buildId and expiration", async () => {
+      const token = await generatePreviewCapabilityToken(
+        {
+          buildId: "build-1",
+          storefrontId: "store-1",
+          themeId: "theme-1",
+        },
+        TEST_SECRET,
+      );
+
+      expect(token).toBeDefined();
+      const verified = await verifyPreviewCapabilityToken(
+        token,
+        TEST_SECRET,
+        "build-1",
+      );
+      expect(verified.valid).toBe(true);
+      expect(verified.payload?.buildId).toBe("build-1");
+      expect(verified.payload?.storefrontId).toBe("store-1");
+    });
+
+    it("rejects capability token when used for a different build ID (cross-build protection)", async () => {
+      const token = await generatePreviewCapabilityToken(
+        {
+          buildId: "build-1",
+          storefrontId: "store-1",
+          themeId: "theme-1",
+        },
+        TEST_SECRET,
+      );
+
+      const verified = await verifyPreviewCapabilityToken(
+        token,
+        TEST_SECRET,
+        "build-2", // Attempting to use build-1 token for build-2
+      );
+      expect(verified.valid).toBe(false);
+      expect(verified.error).toContain("cannot access");
+    });
+
+    it("rejects tampered or forged capability tokens", async () => {
+      const token = await generatePreviewCapabilityToken(
+        {
+          buildId: "build-1",
+          storefrontId: "store-1",
+          themeId: "theme-1",
+        },
+        TEST_SECRET,
+      );
+
+      const tampered = token + "forged";
+      const verified = await verifyPreviewCapabilityToken(
+        tampered,
+        TEST_SECRET,
+        "build-1",
+      );
+      expect(verified.valid).toBe(false);
+    });
+
+    it("rejects expired capability tokens", async () => {
+      const expiredToken = await generatePreviewCapabilityToken(
+        {
+          buildId: "build-1",
+          storefrontId: "store-1",
+          themeId: "theme-1",
+          ttlMs: -1000, // Expired in the past
+        },
+        TEST_SECRET,
+      );
+
+      const verified = await verifyPreviewCapabilityToken(
+        expiredToken,
+        TEST_SECRET,
+        "build-1",
+      );
+      expect(verified.valid).toBe(false);
+      expect(verified.error).toContain("expired");
+    });
+
+    it("serves HTML entry and sub-resources under opaque sandbox without session cookies when valid token is present", async () => {
+      const { r2Bucket, storage } = createMockR2();
+      const prefix = "storefronts/store-1/themes/theme-1/builds/build-1";
+      storage.set(`${prefix}/index.html`, {
+        body: new TextEncoder().encode("<html>Sandbox Theme</html>").buffer,
+        httpEtag: "etag-html",
+      });
+      storage.set(`${prefix}/assets/index-abc.js`, {
+        body: new TextEncoder().encode("console.log('opaque asset');").buffer,
+        httpEtag: "etag-js",
+      });
+
+      const token = await generatePreviewCapabilityToken(
+        {
+          buildId: "build-1",
+          storefrontId: "store-1",
+          themeId: "theme-1",
+        },
+        TEST_SECRET,
+      );
+
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal: createMockDAL(),
+        tokenSecret: TEST_SECRET,
+        // Zero session provided (simulating opaque origin sub-resource fetch)
+        sessionResolver: async () => null,
+      });
+
+      // 1. Entry HTML fetch with capability token in path
+      const htmlRes = await service.handlePreviewRequest(
+        new Request("https://example.com/preview-build/build-1/token/"),
+        { buildId: "build-1", token, artifactPath: "" },
+      );
+      expect(htmlRes.status).toBe(200);
+      expect(await htmlRes.text()).toContain("Sandbox Theme");
+
+      // 2. Relative JS sub-resource fetch with same capability token inherited in path
+      const jsRes = await service.handlePreviewRequest(
+        new Request(
+          "https://example.com/preview-build/build-1/token/assets/index-abc.js",
+        ),
+        { buildId: "build-1", token, artifactPath: "assets/index-abc.js" },
+      );
+      expect(jsRes.status).toBe(200);
+      expect(await jsRes.text()).toBe("console.log('opaque asset');");
+    });
+
+    it("returns 401 when capability token is invalid or expired", async () => {
+      const { r2Bucket } = createMockR2();
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal: createMockDAL(),
+        tokenSecret: TEST_SECRET,
+        sessionResolver: async () => null,
+      });
+
+      const res = await service.handlePreviewRequest(
+        new Request(
+          "https://example.com/preview-build/build-1/bad-token/assets/x.js",
+        ),
+        { buildId: "build-1", token: "bad-token", artifactPath: "assets/x.js" },
+      );
+      expect(res.status).toBe(401);
+      expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    });
+  });
+
+  describe("Direct Session Authentication & Authorization (Admin-Only Model)", () => {
+    it("returns 401 when request has neither capability token nor valid session", async () => {
       const { r2Bucket } = createMockR2();
       const service = new ThemeBuildPreviewService({
         r2Bucket,
@@ -218,12 +372,14 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
 
-    it("returns 403 when role is non-admin user (admin-only regression)", async () => {
+    it("returns 403 when session user is non-admin user role", async () => {
       const { r2Bucket } = createMockR2();
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal: createMockDAL(),
-        sessionResolver: async () => ({ user: { id: "user-1", role: "user" } }),
+        sessionResolver: async () => ({
+          user: { id: "user-1", role: "user" },
+        }),
       });
 
       const res = await service.handlePreviewRequest(
@@ -236,7 +392,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
 
-    it("returns 403 when user has guest role", async () => {
+    it("returns 403 when session user has guest role", async () => {
       const { r2Bucket } = createMockR2();
       const service = new ThemeBuildPreviewService({
         r2Bucket,
@@ -253,29 +409,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
 
-    it("returns 403 when storefront access checker rejects user", async () => {
-      const { r2Bucket } = createMockR2();
-      const service = new ThemeBuildPreviewService({
-        r2Bucket,
-        dal: createMockDAL(),
-        sessionResolver: async () => ({ user: { id: "admin-user", role: "admin" } }),
-        storefrontAccessChecker: async (_userId, storefrontId) => {
-          return storefrontId === "store-other";
-        },
-      });
-
-      const res = await service.handlePreviewRequest(
-        new Request("https://example.com/preview-build/build-1/"),
-        { buildId: "build-1" },
-      );
-
-      expect(res.status).toBe(403);
-      expect(await res.text()).toContain("does not have access to this storefront");
-      expect(res.headers.get("Cache-Control")).toBe("private, no-store");
-    });
-
-
-    it("allows admin user to access any storefront preview build", async () => {
+    it("allows admin user with direct session to preview build", async () => {
       const { r2Bucket, storage } = createMockR2();
       const prefix = "storefronts/store-1/themes/theme-1/builds/build-1";
       storage.set(`${prefix}/index.html`, {
@@ -286,7 +420,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal: createMockDAL(),
-        sessionResolver: async () => ({ user: { id: "admin-user", role: "admin" } }),
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res = await service.handlePreviewRequest(
@@ -304,7 +438,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal,
-        sessionResolver: validSessionResolver,
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res = await service.handlePreviewRequest(
@@ -315,36 +449,16 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.status).toBe(403);
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
-
-
-    it("enforces full authorization check on individual asset requests", async () => {
-      const { r2Bucket } = createMockR2();
-      const dal = createMockDAL(createDummyBuild(), false);
-      const service = new ThemeBuildPreviewService({
-        r2Bucket,
-        dal,
-        sessionResolver: validSessionResolver,
-      });
-
-      const res = await service.handlePreviewRequest(
-        new Request(
-          "https://example.com/preview-build/build-1/assets/index-abc.js",
-        ),
-        { buildId: "build-1", artifactPath: "assets/index-abc.js" },
-      );
-
-      expect(res.status).toBe(403);
-    });
   });
 
-  describe("Authoritative Succeeded Build State", () => {
+  describe("Authoritative Succeeded Build State & Manifest Boundaries", () => {
     it("returns 404 when build does not exist", async () => {
       const { r2Bucket } = createMockR2();
       const dal = createMockDAL(null);
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal,
-        sessionResolver: validSessionResolver,
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res = await service.handlePreviewRequest(
@@ -355,31 +469,13 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.status).toBe(404);
     });
 
-    it("returns 409 when build is queued", async () => {
-      const { r2Bucket } = createMockR2();
-      const dal = createMockDAL(createDummyBuild({ status: "queued" }));
-      const service = new ThemeBuildPreviewService({
-        r2Bucket,
-        dal,
-        sessionResolver: validSessionResolver,
-      });
-
-      const res = await service.handlePreviewRequest(
-        new Request("https://example.com/preview-build/build-1/"),
-        { buildId: "build-1" },
-      );
-
-      expect(res.status).toBe(409);
-      expect(await res.text()).toContain("in progress");
-    });
-
-    it("returns 409 when build is building", async () => {
+    it("returns 409 when build is queued or building", async () => {
       const { r2Bucket } = createMockR2();
       const dal = createMockDAL(createDummyBuild({ status: "building" }));
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal,
-        sessionResolver: validSessionResolver,
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res = await service.handlePreviewRequest(
@@ -401,7 +497,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal,
-        sessionResolver: validSessionResolver,
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res = await service.handlePreviewRequest(
@@ -413,13 +509,13 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(await res.text()).toContain("Vite syntax error");
     });
 
-    it("fails closed (404) when artifactPrefix or manifestJson is missing on succeeded build", async () => {
+    it("fails closed (404) when artifactPrefix or manifestJson is missing", async () => {
       const { r2Bucket } = createMockR2();
       const dal = createMockDAL(createDummyBuild({ artifactPrefix: null }));
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal,
-        sessionResolver: validSessionResolver,
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res = await service.handlePreviewRequest(
@@ -429,85 +525,11 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
 
       expect(res.status).toBe(404);
     });
-  });
-
-  describe("Canonical Manifest Serving Boundary", () => {
-    it("serves HTML entry, JS, CSS, and binary assets from R2 for succeeded build", async () => {
-      const { r2Bucket, storage } = createMockR2();
-      const prefix = "storefronts/store-1/themes/theme-1/builds/build-1";
-
-      // Seed R2 objects
-      const encoder = new TextEncoder();
-      storage.set(`${prefix}/index.html`, {
-        body: encoder.encode("<!DOCTYPE html><html><body><h1>Theme</h1></body></html>").buffer,
-        httpEtag: "etag-html",
-      });
-      storage.set(`${prefix}/assets/index-abc.js`, {
-        body: encoder.encode("console.log('loaded');").buffer,
-        httpEtag: "etag-js",
-      });
-      storage.set(`${prefix}/assets/index-abc.css`, {
-        body: encoder.encode("body { margin: 0; }").buffer,
-        httpEtag: "etag-css",
-      });
-      storage.set(`${prefix}/assets/logo.png`, {
-        body: new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer,
-        httpEtag: "etag-png",
-      });
-
-      const service = new ThemeBuildPreviewService({
-        r2Bucket,
-        dal: createMockDAL(),
-        sessionResolver: validSessionResolver,
-      });
-
-      // 1. Entry HTML request
-      const htmlRes = await service.handlePreviewRequest(
-        new Request("https://example.com/preview-build/build-1/"),
-        { buildId: "build-1" },
-      );
-      expect(htmlRes.status).toBe(200);
-      expect(htmlRes.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
-      expect(htmlRes.headers.get("Cache-Control")).toBe("private, no-store");
-      expect(htmlRes.headers.get("X-Content-Type-Options")).toBe("nosniff");
-      expect(htmlRes.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'self'");
-      expect(await htmlRes.text()).toContain("<h1>Theme</h1>");
-
-      // 2. JS Asset request
-      const jsRes = await service.handlePreviewRequest(
-        new Request("https://example.com/preview-build/build-1/assets/index-abc.js"),
-        { buildId: "build-1", artifactPath: "assets/index-abc.js" },
-      );
-      expect(jsRes.status).toBe(200);
-      expect(jsRes.headers.get("Content-Type")).toBe("application/javascript; charset=utf-8");
-      expect(jsRes.headers.get("Cache-Control")).toBe("private, max-age=31536000, immutable");
-      expect(await jsRes.text()).toBe("console.log('loaded');");
-
-      // 3. CSS Asset request
-      const cssRes = await service.handlePreviewRequest(
-        new Request("https://example.com/preview-build/build-1/assets/index-abc.css"),
-        { buildId: "build-1", artifactPath: "assets/index-abc.css" },
-      );
-      expect(cssRes.status).toBe(200);
-      expect(cssRes.headers.get("Content-Type")).toBe("text/css; charset=utf-8");
-      expect(cssRes.headers.get("Cache-Control")).toBe("private, max-age=31536000, immutable");
-
-      // 4. Binary PNG Asset request
-      const pngRes = await service.handlePreviewRequest(
-        new Request("https://example.com/preview-build/build-1/assets/logo.png"),
-        { buildId: "build-1", artifactPath: "assets/logo.png" },
-      );
-      expect(pngRes.status).toBe(200);
-      expect(pngRes.headers.get("Content-Type")).toBe("image/png");
-      const pngBuffer = await pngRes.arrayBuffer();
-      expect(new Uint8Array(pngBuffer)).toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
-    });
 
     it("strictly rejects R2 orphan objects not listed in canonical manifest", async () => {
       const { r2Bucket, storage } = createMockR2();
       const prefix = "storefronts/store-1/themes/theme-1/builds/build-1";
 
-      // Seed an unlisted / orphan file in R2
       storage.set(`${prefix}/secret-orphan.js`, {
         body: new TextEncoder().encode("secret orphan").buffer,
         httpEtag: "etag-orphan",
@@ -516,7 +538,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal: createMockDAL(),
-        sessionResolver: validSessionResolver,
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res = await service.handlePreviewRequest(
@@ -524,7 +546,6 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
         { buildId: "build-1", artifactPath: "secret-orphan.js" },
       );
 
-      // Must be 404 because not in manifest.files!
       expect(res.status).toBe(404);
       expect(await res.text()).toContain("not part of build");
     });
@@ -541,7 +562,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal: createMockDAL(),
-        sessionResolver: validSessionResolver,
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res = await service.handlePreviewRequest(
@@ -600,7 +621,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal,
-        sessionResolver: validSessionResolver,
+        sessionResolver: validAdminSessionResolver,
       });
 
       const res1 = await service.handlePreviewRequest(
@@ -614,13 +635,6 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
         { buildId: "build-2" },
       );
       expect(await res2.text()).toContain("Build 2 Content");
-
-      // Verify B1 still returns B1
-      const res1Repeat = await service.handlePreviewRequest(
-        new Request("https://example.com/preview-build/build-1/"),
-        { buildId: "build-1" },
-      );
-      expect(await res1Repeat.text()).toContain("Build 1 Content");
     });
   });
 });

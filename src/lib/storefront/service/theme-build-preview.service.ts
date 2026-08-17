@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { getAuthWithAdmin } from "@/server/auth/helpers";
 import { hasAnyRole } from "@/server/middleware/auth.middleware";
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
@@ -9,6 +10,7 @@ import {
   storefrontThemeBuildDal,
   type StorefrontThemeBuildDAL,
 } from "../dal/storefront-theme-build.dal";
+import { verifyPreviewCapabilityToken } from "./theme-build-preview-token";
 
 export type AuthSessionResolver = (request: Request) => Promise<{
   user?: { id: string; role?: string | null } | null;
@@ -25,8 +27,8 @@ export interface ThemeBuildPreviewServiceOptions {
   r2Bucket?: R2BucketLike;
   sessionResolver?: AuthSessionResolver;
   storefrontAccessChecker?: StorefrontAccessChecker;
+  tokenSecret?: string;
 }
-
 
 const MIME_FALLBACKS: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -69,17 +71,27 @@ export function sanitizePreviewArtifactPath(rawPath?: string): string {
   try {
     decoded = decodeURIComponent(rawPath);
   } catch {
-    throw new Error("INVALID_PATH_ENCODING: Malformed URI encoding in requested path.");
+    throw new Error(
+      "INVALID_PATH_ENCODING: Malformed URI encoding in requested path.",
+    );
   }
 
   // Null byte check
   if (decoded.includes("\0") || rawPath.includes("%00")) {
-    throw new Error("PATH_TRAVERSAL_DETECTED: Null byte detected in artifact path.");
+    throw new Error(
+      "PATH_TRAVERSAL_DETECTED: Null byte detected in artifact path.",
+    );
   }
 
   // Backslash check
-  if (decoded.includes("\\") || rawPath.includes("%5c") || rawPath.includes("%5C")) {
-    throw new Error("PATH_TRAVERSAL_DETECTED: Backslashes are forbidden in artifact path.");
+  if (
+    decoded.includes("\\") ||
+    rawPath.includes("%5c") ||
+    rawPath.includes("%5C")
+  ) {
+    throw new Error(
+      "PATH_TRAVERSAL_DETECTED: Backslashes are forbidden in artifact path.",
+    );
   }
 
   // Encoded traversal tokens
@@ -89,7 +101,9 @@ export function sanitizePreviewArtifactPath(rawPath?: string): string {
     lowerRaw.includes("%252e") ||
     lowerRaw.includes("%2f")
   ) {
-    throw new Error("PATH_TRAVERSAL_DETECTED: Encoded traversal sequence detected.");
+    throw new Error(
+      "PATH_TRAVERSAL_DETECTED: Encoded traversal sequence detected.",
+    );
   }
 
   // Normalize path segments
@@ -98,7 +112,9 @@ export function sanitizePreviewArtifactPath(rawPath?: string): string {
 
   for (const seg of segments) {
     if (seg === ".." || seg === "." || seg.trim() === "") {
-      throw new Error(`PATH_TRAVERSAL_DETECTED: Invalid path segment "${seg}".`);
+      throw new Error(
+        `PATH_TRAVERSAL_DETECTED: Invalid path segment "${seg}".`,
+      );
     }
   }
 
@@ -111,16 +127,18 @@ export function sanitizePreviewArtifactPath(rawPath?: string): string {
  * Immutability & Security Invariants:
  * 1. Build Preview is strictly bound to buildId (never working source or mutable aliases).
  * 2. Only builds in "succeeded" status with valid artifactPrefix and manifestJson can be served.
- * 3. Strict authentication & storefront/theme ownership checks guard both HTML and asset requests.
- * 4. Only files declared in canonical manifest.files (or artifactEntry) can be served (rejects R2 orphans).
- * 5. Immutable assets are served with private long-lived cache; HTML and errors are private, no-store.
- * 6. Content-Type and security headers (nosniff, CSP) are consistently enforced.
+ * 3. Supports ephemeral HMAC preview capability tokens in URL path for sandboxed opaque-origin iframe sub-resources.
+ * 4. Direct session requests strictly require admin role and theme ownership.
+ * 5. Only files declared in canonical manifest.files (or sanitized artifactEntry) can be served.
+ * 6. Immutable assets are served with private long-lived cache; HTML and errors are private, no-store.
+ * 7. Content-Type and security headers (nosniff, CSP) are consistently enforced.
  */
 export class ThemeBuildPreviewService {
   private readonly dal: StorefrontThemeBuildDAL;
   private readonly r2Bucket?: R2BucketLike;
   private readonly sessionResolver: AuthSessionResolver;
   private readonly storefrontAccessChecker?: StorefrontAccessChecker;
+  private readonly tokenSecret: string;
 
   constructor(options: ThemeBuildPreviewServiceOptions = {}) {
     this.dal = options.dal ?? storefrontThemeBuildDal;
@@ -139,6 +157,10 @@ export class ThemeBuildPreviewService {
         }
       });
     this.storefrontAccessChecker = options.storefrontAccessChecker;
+    this.tokenSecret =
+      options.tokenSecret ??
+      (env as any)?.BETTER_AUTH_SECRET ??
+      "morph-preview-capability-secret";
   }
 
   /**
@@ -146,34 +168,14 @@ export class ThemeBuildPreviewService {
    */
   async handlePreviewRequest(
     request: Request,
-    params: { buildId: string; artifactPath?: string },
+    params: { buildId: string; token?: string; artifactPath?: string },
   ): Promise<Response> {
     const noStoreHeaders = {
       "Cache-Control": "private, no-store",
       "X-Content-Type-Options": "nosniff",
     };
 
-    // 1. Authentication Check
-    const session = await this.sessionResolver(request);
-    if (!session?.user) {
-      return new Response(
-        "Unauthorized: Please sign in to preview theme build",
-        {
-          status: 401,
-          headers: noStoreHeaders,
-        },
-      );
-    }
-
-    // 2. Role Check: Theme preview is strictly restricted to administrators, matching commerceAdminMiddleware
-    if (!hasAnyRole(session.user.role, ["admin"])) {
-      return new Response("Forbidden: Administrator access is required", {
-        status: 403,
-        headers: noStoreHeaders,
-      });
-    }
-
-    // 3. Validate buildId parameter
+    // 1. Validate buildId parameter
     const buildId = params.buildId?.trim();
     if (!buildId) {
       return new Response("Bad Request: Missing build ID", {
@@ -182,7 +184,7 @@ export class ThemeBuildPreviewService {
       });
     }
 
-    // 4. Resolve Build Record
+    // 2. Resolve Build Record
     const build = await this.dal.getBuildById(buildId);
     if (!build) {
       return new Response(`Build "${buildId}" not found`, {
@@ -191,25 +193,78 @@ export class ThemeBuildPreviewService {
       });
     }
 
-    // 5. Optional Storefront-Scoped Access Checker (fail-closed if configured)
-    if (this.storefrontAccessChecker) {
-      const hasStorefrontAccess = await this.storefrontAccessChecker(
-        session.user.id,
-        build.storefrontId,
-        session.user.role,
+    // 3. Authorization Check (Capability Token vs Direct Session)
+    if (params.token && params.token.trim() !== "") {
+      // Ephemeral Preview Capability Token validation (for opaque sandboxed iframe & sub-resources)
+      const tokenVerification = await verifyPreviewCapabilityToken(
+        params.token,
+        this.tokenSecret,
+        build.id,
       );
-      if (!hasStorefrontAccess) {
+
+      if (!tokenVerification.valid || !tokenVerification.payload) {
         return new Response(
-          "Forbidden: User does not have access to this storefront",
+          `Unauthorized: ${tokenVerification.error || "Invalid preview capability token"}`,
+          {
+            status: 401,
+            headers: noStoreHeaders,
+          },
+        );
+      }
+
+      // Verify token provenance matches build entity
+      const { payload } = tokenVerification;
+      if (
+        payload.storefrontId !== build.storefrontId ||
+        payload.themeId !== build.themeId
+      ) {
+        return new Response(
+          "Forbidden: Preview capability token does not match build entity",
           {
             status: 403,
             headers: noStoreHeaders,
           },
         );
       }
+    } else {
+      // Direct session authentication check (for direct browser navigation)
+      const session = await this.sessionResolver(request);
+      if (!session?.user) {
+        return new Response(
+          "Unauthorized: Please sign in to preview theme build",
+          {
+            status: 401,
+            headers: noStoreHeaders,
+          },
+        );
+      }
+
+      if (!hasAnyRole(session.user.role, ["admin"])) {
+        return new Response("Forbidden: Administrator access is required", {
+          status: 403,
+          headers: noStoreHeaders,
+        });
+      }
+
+      if (this.storefrontAccessChecker) {
+        const hasStorefrontAccess = await this.storefrontAccessChecker(
+          session.user.id,
+          build.storefrontId,
+          session.user.role,
+        );
+        if (!hasStorefrontAccess) {
+          return new Response(
+            "Forbidden: User does not have access to this storefront",
+            {
+              status: 403,
+              headers: noStoreHeaders,
+            },
+          );
+        }
+      }
     }
 
-    // 6. Verify Storefront & Theme Ownership (Theme belongs to that Storefront)
+    // 4. Verify Storefront & Theme Ownership (Theme belongs to that Storefront)
     const isOwner = await this.dal.verifyThemeOwnership(
       build.storefrontId,
       build.themeId,
@@ -224,17 +279,18 @@ export class ThemeBuildPreviewService {
       );
     }
 
-
-
     // 5. Authoritative Succeeded State Validation
     if (build.status === "queued" || build.status === "building") {
-      return new Response(`Build "${buildId}" is still in progress (${build.status})`, {
-        status: 409,
-        headers: {
-          ...noStoreHeaders,
-          "Content-Type": "text/plain; charset=utf-8",
+      return new Response(
+        `Build "${buildId}" is still in progress (${build.status})`,
+        {
+          status: 409,
+          headers: {
+            ...noStoreHeaders,
+            "Content-Type": "text/plain; charset=utf-8",
+          },
         },
-      });
+      );
     }
 
     if (build.status === "failed") {
@@ -250,16 +306,27 @@ export class ThemeBuildPreviewService {
       );
     }
 
-    if (build.status !== "succeeded" || !build.artifactPrefix || !build.manifestJson) {
-      return new Response(`Build "${buildId}" has no valid succeeded build artifacts`, {
-        status: 404,
-        headers: noStoreHeaders,
-      });
+    if (
+      build.status !== "succeeded" ||
+      !build.artifactPrefix ||
+      !build.manifestJson
+    ) {
+      return new Response(
+        `Build "${buildId}" has no valid succeeded build artifacts`,
+        {
+          status: 404,
+          headers: noStoreHeaders,
+        },
+      );
     }
 
     // 6. Canonical Manifest Parsing & Validation
     const manifest = build.manifestJson as CanonicalThemeBuildManifest;
-    if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.files)) {
+    if (
+      !manifest ||
+      typeof manifest !== "object" ||
+      !Array.isArray(manifest.files)
+    ) {
       return new Response("Invalid or corrupt theme build manifest", {
         status: 500,
         headers: noStoreHeaders,
@@ -277,19 +344,26 @@ export class ThemeBuildPreviewService {
       });
     }
 
-    // If root entry requested, resolve via manifest.artifactEntry
-    const defaultEntry = manifest.artifactEntry || manifest.entry || "index.html";
+    // Resolve entry point if root requested with P2 defense-in-depth sanitization
+    const rawEntry = manifest.artifactEntry || manifest.entry || "index.html";
+    let defaultEntry: string;
+    try {
+      defaultEntry = sanitizePreviewArtifactPath(rawEntry);
+    } catch {
+      defaultEntry = "index.html";
+    }
+
     if (canonicalPath === "") {
       canonicalPath = defaultEntry;
     }
 
     // 8. Canonical Manifest Serving Boundary Check
-    // The requested file MUST either match the canonical artifactEntry or exist in manifest.files
-    const isEntryFile = canonicalPath === defaultEntry;
     const manifestFile: CanonicalThemeBuildManifestFile | undefined =
       manifest.files.find((f) => f.path === canonicalPath);
 
-    if (!isEntryFile && !manifestFile) {
+    const isEntryFile = canonicalPath === defaultEntry;
+
+    if (!manifestFile && (!isEntryFile || manifest.files.length > 0)) {
       return new Response(
         `Artifact "${canonicalPath}" is not part of build "${buildId}" manifest`,
         {
@@ -310,15 +384,20 @@ export class ThemeBuildPreviewService {
     const fullKey = `${build.artifactPrefix}/${canonicalPath}`;
     const object = await this.r2Bucket.get(fullKey);
     if (!object) {
-      return new Response(`Artifact object "${canonicalPath}" not found in storage`, {
-        status: 404,
-        headers: noStoreHeaders,
-      });
+      return new Response(
+        `Artifact object "${canonicalPath}" not found in storage`,
+        {
+          status: 404,
+          headers: noStoreHeaders,
+        },
+      );
     }
 
     // 10. Conditional ETag / 304 Not Modified check
     const ifNoneMatch = request.headers.get("if-none-match");
-    const etag = object.httpEtag || (manifestFile ? `"${manifestFile.sha256}"` : undefined);
+    const etag =
+      object.httpEtag ||
+      (manifestFile ? `"${manifestFile.sha256}"` : undefined);
 
     if (ifNoneMatch && etag && ifNoneMatch === etag) {
       return new Response(null, {
@@ -346,7 +425,11 @@ export class ThemeBuildPreviewService {
       headers.set("ETag", etag);
     }
 
-    if (isEntryFile || canonicalPath.endsWith(".html") || canonicalPath.endsWith(".htm")) {
+    if (
+      isEntryFile ||
+      canonicalPath.endsWith(".html") ||
+      canonicalPath.endsWith(".htm")
+    ) {
       // HTML entry: private, no-store with frame and CSP restrictions
       headers.set("Cache-Control", "private, no-store");
       headers.set("X-Frame-Options", "SAMEORIGIN");

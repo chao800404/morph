@@ -33,6 +33,8 @@ import { Route as BackendDashboardSlugCreateRouteImport } from './routes/_backen
 import { Route as BackendDashboardSlugViewRouteImport } from './routes/_backend/dashboard/$slug/view'
 import { Route as BackendDashboardSettingsIndexRouteImport } from './routes/_backend/dashboard/settings/index'
 import { Route as BackendDashboardSettingsSlugRouteImport } from './routes/_backend/dashboard/settings/$slug'
+import { Route as PreviewBuildBuildIdTokenIndexRouteImport } from './routes/preview-build/$buildId/$token/index'
+import { Route as PreviewBuildBuildIdTokenSplatRouteImport } from './routes/preview-build/$buildId/$token/$'
 import { Route as BackendDashboardSlugIdPageRouteImport } from './routes/_backend/dashboard/$slug/$id/$page'
 import { Route as BackendDashboardSlugIdEditRouteImport } from './routes/_backend/dashboard/$slug/$id/edit'
 import { Route as BackendDashboardSettingsSlugIdRouteImport } from './routes/_backend/dashboard/settings/$slug/$id'
@@ -172,6 +174,18 @@ const BackendDashboardSettingsSlugRoute =
     path: '/settings/$slug',
     getParentRoute: () => BackendDashboardRoute,
   } as any)
+const PreviewBuildBuildIdTokenIndexRoute =
+  PreviewBuildBuildIdTokenIndexRouteImport.update({
+    id: '/preview-build/$buildId/$token/',
+    path: '/preview-build/$buildId/$token/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const PreviewBuildBuildIdTokenSplatRoute =
+  PreviewBuildBuildIdTokenSplatRouteImport.update({
+    id: '/preview-build/$buildId/$token/$',
+    path: '/preview-build/$buildId/$token/$',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const BackendDashboardSlugIdPageRoute =
   BackendDashboardSlugIdPageRouteImport.update({
     id: '/$page',
@@ -259,8 +273,10 @@ export interface FileRoutesByFullPath {
   '/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
   '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRouteWithChildren
+  '/preview-build/$buildId/$token/$': typeof PreviewBuildBuildIdTokenSplatRoute
   '/reset-password/': typeof BackendAuthResetPasswordIndexRoute
   '/dashboard/settings/': typeof BackendDashboardSettingsIndexRoute
+  '/preview-build/$buildId/$token/': typeof PreviewBuildBuildIdTokenIndexRoute
   '/dashboard/$slug/$id/$page': typeof BackendDashboardSlugIdPageRouteWithChildren
   '/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
   '/dashboard/settings/$slug/$id': typeof BackendDashboardSettingsSlugIdRouteWithChildren
@@ -291,8 +307,10 @@ export interface FileRoutesByTo {
   '/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
   '/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRouteWithChildren
+  '/preview-build/$buildId/$token/$': typeof PreviewBuildBuildIdTokenSplatRoute
   '/reset-password': typeof BackendAuthResetPasswordIndexRoute
   '/dashboard/settings': typeof BackendDashboardSettingsIndexRoute
+  '/preview-build/$buildId/$token': typeof PreviewBuildBuildIdTokenIndexRoute
   '/dashboard/$slug/$id/$page': typeof BackendDashboardSlugIdPageRouteWithChildren
   '/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
   '/dashboard/settings/$slug/$id': typeof BackendDashboardSettingsSlugIdRouteWithChildren
@@ -329,8 +347,10 @@ export interface FileRoutesById {
   '/_backend/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/_backend/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
   '/_backend/dashboard/settings/$slug': typeof BackendDashboardSettingsSlugRouteWithChildren
+  '/preview-build/$buildId/$token/$': typeof PreviewBuildBuildIdTokenSplatRoute
   '/_backend/_auth/reset-password/': typeof BackendAuthResetPasswordIndexRoute
   '/_backend/dashboard/settings/': typeof BackendDashboardSettingsIndexRoute
+  '/preview-build/$buildId/$token/': typeof PreviewBuildBuildIdTokenIndexRoute
   '/_backend/dashboard/$slug/$id/$page': typeof BackendDashboardSlugIdPageRouteWithChildren
   '/_backend/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
   '/_backend/dashboard/settings/$slug/$id': typeof BackendDashboardSettingsSlugIdRouteWithChildren
@@ -365,8 +385,10 @@ export interface FileRouteTypes {
     | '/dashboard/$slug/create'
     | '/dashboard/$slug/view'
     | '/dashboard/settings/$slug'
+    | '/preview-build/$buildId/$token/$'
     | '/reset-password/'
     | '/dashboard/settings/'
+    | '/preview-build/$buildId/$token/'
     | '/dashboard/$slug/$id/$page'
     | '/dashboard/$slug/$id/edit'
     | '/dashboard/settings/$slug/$id'
@@ -397,8 +419,10 @@ export interface FileRouteTypes {
     | '/dashboard/$slug/create'
     | '/dashboard/$slug/view'
     | '/dashboard/settings/$slug'
+    | '/preview-build/$buildId/$token/$'
     | '/reset-password'
     | '/dashboard/settings'
+    | '/preview-build/$buildId/$token'
     | '/dashboard/$slug/$id/$page'
     | '/dashboard/$slug/$id/edit'
     | '/dashboard/settings/$slug/$id'
@@ -434,8 +458,10 @@ export interface FileRouteTypes {
     | '/_backend/dashboard/$slug/create'
     | '/_backend/dashboard/$slug/view'
     | '/_backend/dashboard/settings/$slug'
+    | '/preview-build/$buildId/$token/$'
     | '/_backend/_auth/reset-password/'
     | '/_backend/dashboard/settings/'
+    | '/preview-build/$buildId/$token/'
     | '/_backend/dashboard/$slug/$id/$page'
     | '/_backend/dashboard/$slug/$id/edit'
     | '/_backend/dashboard/settings/$slug/$id'
@@ -455,6 +481,8 @@ export interface RootRouteChildren {
   EditorRoute: typeof EditorRouteWithChildren
   PreviewBuildBuildIdSplatRoute: typeof PreviewBuildBuildIdSplatRoute
   PreviewBuildBuildIdIndexRoute: typeof PreviewBuildBuildIdIndexRoute
+  PreviewBuildBuildIdTokenSplatRoute: typeof PreviewBuildBuildIdTokenSplatRoute
+  PreviewBuildBuildIdTokenIndexRoute: typeof PreviewBuildBuildIdTokenIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -626,6 +654,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/dashboard/settings/$slug'
       preLoaderRoute: typeof BackendDashboardSettingsSlugRouteImport
       parentRoute: typeof BackendDashboardRoute
+    }
+    '/preview-build/$buildId/$token/': {
+      id: '/preview-build/$buildId/$token/'
+      path: '/preview-build/$buildId/$token'
+      fullPath: '/preview-build/$buildId/$token/'
+      preLoaderRoute: typeof PreviewBuildBuildIdTokenIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/preview-build/$buildId/$token/$': {
+      id: '/preview-build/$buildId/$token/$'
+      path: '/preview-build/$buildId/$token/$'
+      fullPath: '/preview-build/$buildId/$token/$'
+      preLoaderRoute: typeof PreviewBuildBuildIdTokenSplatRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_backend/dashboard/$slug/$id/$page': {
       id: '/_backend/dashboard/$slug/$id/$page'
@@ -902,6 +944,8 @@ const rootRouteChildren: RootRouteChildren = {
   EditorRoute: EditorRouteWithChildren,
   PreviewBuildBuildIdSplatRoute: PreviewBuildBuildIdSplatRoute,
   PreviewBuildBuildIdIndexRoute: PreviewBuildBuildIdIndexRoute,
+  PreviewBuildBuildIdTokenSplatRoute: PreviewBuildBuildIdTokenSplatRoute,
+  PreviewBuildBuildIdTokenIndexRoute: PreviewBuildBuildIdTokenIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
