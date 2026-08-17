@@ -235,7 +235,53 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
 
-    it("returns 403 when theme ownership verification fails (cross-storefront access attempt)", async () => {
+    it("returns 403 when user does not have access to the target storefront (cross-tenant attack)", async () => {
+      const { r2Bucket } = createMockR2();
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal: createMockDAL(),
+        sessionResolver: async () => ({ user: { id: "user-attacker", role: "user" } }),
+        storefrontAccessChecker: async (_userId, storefrontId) => {
+          // Attacker only has access to store-other, NOT store-1
+          return storefrontId === "store-other";
+        },
+
+      });
+
+      const res = await service.handlePreviewRequest(
+        new Request("https://example.com/preview-build/build-1/"),
+        { buildId: "build-1" },
+      );
+
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain("does not have access to this storefront");
+      expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    });
+
+    it("allows admin user to access any storefront preview build", async () => {
+      const { r2Bucket, storage } = createMockR2();
+      const prefix = "storefronts/store-1/themes/theme-1/builds/build-1";
+      storage.set(`${prefix}/index.html`, {
+        body: new TextEncoder().encode("<html>Admin Preview</html>").buffer,
+        httpEtag: "etag-html",
+      });
+
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal: createMockDAL(),
+        sessionResolver: async () => ({ user: { id: "admin-user", role: "admin" } }),
+      });
+
+      const res = await service.handlePreviewRequest(
+        new Request("https://example.com/preview-build/build-1/"),
+        { buildId: "build-1" },
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("Admin Preview");
+    });
+
+    it("returns 403 when theme ownership verification fails (theme does not belong to storefront)", async () => {
       const { r2Bucket } = createMockR2();
       const dal = createMockDAL(createDummyBuild(), false); // Ownership check returns false
       const service = new ThemeBuildPreviewService({
@@ -252,6 +298,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.status).toBe(403);
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
+
 
     it("enforces full authorization check on individual asset requests", async () => {
       const { r2Bucket } = createMockR2();
