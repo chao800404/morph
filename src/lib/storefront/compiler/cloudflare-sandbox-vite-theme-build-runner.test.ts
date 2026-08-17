@@ -53,7 +53,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
           return {
             exitCode: 0,
             success: true,
-            stdout: "/workspace/dist/index.html\n/workspace/dist/assets/index-A1b2.js\n/workspace/dist/assets/index-C3d4.css\n/workspace/dist/assets/logo.png\n",
+            stdout: "56 /workspace/dist/index.html\n1024 /workspace/dist/assets/index-A1b2.js\n512 /workspace/dist/assets/index-C3d4.css\n4 /workspace/dist/assets/logo.png\n",
             stderr: "",
           };
         }
@@ -64,6 +64,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
           stderr: "",
         };
       }),
+
       killProcess: vi.fn(async () => {
         processKilled = true;
       }),
@@ -351,4 +352,83 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
       expect(result.errorMessage).toContain("SANDBOX_UNAVAILABLE");
     }
   });
+
+  it("enforces maxOutputFiles preflight limit before reading file bodies", async () => {
+    const mock = createMockSandbox({
+      exec: vi.fn(async (command: string) => {
+        if (command.includes("find /workspace/dist")) {
+          return {
+            exitCode: 0,
+            success: true,
+            stdout: "100 /workspace/dist/1.js\n100 /workspace/dist/2.js\n100 /workspace/dist/3.js\n",
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, success: true, stdout: "", stderr: "" };
+      }),
+    });
+
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi.fn(async () => mock.session),
+    };
+
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+      maxOutputFiles: 2,
+    });
+
+    const input = createInput([
+      { path: "src/pages/index.tsx", content: "export default () => 1;", isEntry: true },
+    ]);
+
+    const result = await runner.run(input);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain("LIMIT_EXCEEDED");
+      expect(result.errorMessage).toContain("file count");
+    }
+    // Preflight prevented reading file bodies
+    expect(mock.session.readFile).not.toHaveBeenCalled();
+  });
+
+  it("enforces maxOutputSizeBytes preflight limit before reading file bodies", async () => {
+    const mock = createMockSandbox({
+      exec: vi.fn(async (command: string) => {
+        if (command.includes("find /workspace/dist")) {
+          return {
+            exitCode: 0,
+            success: true,
+            stdout: "50000000 /workspace/dist/huge-bundle.js\n",
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, success: true, stdout: "", stderr: "" };
+      }),
+    });
+
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi.fn(async () => mock.session),
+    };
+
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+      maxOutputSizeBytes: 1024 * 1024, // 1 MB limit
+    });
+
+    const input = createInput([
+      { path: "src/pages/index.tsx", content: "export default () => 1;", isEntry: true },
+    ]);
+
+    const result = await runner.run(input);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain("LIMIT_EXCEEDED");
+      expect(result.errorMessage).toContain("dist output (50000000 bytes) exceeds limit");
+    }
+    // Preflight prevented reading file bodies
+    expect(mock.session.readFile).not.toHaveBeenCalled();
+  });
 });
+

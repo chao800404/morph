@@ -1,5 +1,8 @@
+import { env } from "cloudflare:workers";
 import { failure, ok } from "@/lib/db/server-result";
-import { themeBuildService } from "@/lib/storefront/service/theme-build.service";
+import { CloudflareSandboxViteThemeBuildRunner } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-theme-build-runner";
+import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
+import { ThemeBuildService } from "@/lib/storefront/service/theme-build.service";
 import {
   createStorefrontThemeBuildInputSchema,
   getStorefrontThemeBuildInputSchema,
@@ -8,6 +11,13 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
+export function getServerThemeBuildService(): ThemeBuildService {
+  const runner = (env as any)?.Sandbox
+    ? new CloudflareSandboxViteThemeBuildRunner({ sandboxBinding: (env as any).Sandbox })
+    : undefined;
+  return new ThemeBuildService(storefrontThemeBuildDal, runner);
+}
+
 export const createPreviewBuild = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
     createStorefrontThemeBuildInputSchema.parse(data),
@@ -15,7 +25,8 @@ export const createPreviewBuild = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const build = await themeBuildService.requestPreviewBuild({
+      const service = getServerThemeBuildService();
+      const build = await service.requestPreviewBuild({
         storefrontId: data.storefrontId,
         themeId: data.themeId,
         sourceRevisionId: data.sourceRevisionId,
@@ -32,12 +43,14 @@ export const createPreviewBuild = createServerFn({ method: "POST" })
     }
   });
 
+
 export const getThemeBuild = createServerFn({ method: "POST" })
   .validator((data: unknown) => getStorefrontThemeBuildInputSchema.parse(data))
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const build = await themeBuildService.getThemeBuild({
+      const service = getServerThemeBuildService();
+      const build = await service.getThemeBuild({
         storefrontId: data.storefrontId,
         themeId: data.themeId,
         buildId: data.buildId,
@@ -66,7 +79,8 @@ export const listThemeBuilds = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const builds = await themeBuildService.listThemeBuilds({
+      const service = getServerThemeBuildService();
+      const builds = await service.listThemeBuilds({
         storefrontId: data.storefrontId,
         themeId: data.themeId,
         limit: data.limit,
@@ -82,3 +96,4 @@ export const listThemeBuilds = createServerFn({ method: "POST" })
       );
     }
   });
+

@@ -81,6 +81,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
   private readonly maxDurationMs: number;
   private readonly maxSourceFiles: number;
   private readonly maxSourceSizeBytes: number;
+  private readonly maxOutputFiles: number;
   private readonly maxOutputSizeBytes: number;
   private readonly maxLogLines: number;
   private readonly approvedDependencies: Set<string>;
@@ -92,6 +93,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
     this.maxDurationMs = options.maxDurationMs ?? 30_000;
     this.maxSourceFiles = options.maxSourceFiles ?? 200;
     this.maxSourceSizeBytes = options.maxSourceSizeBytes ?? 5 * 1024 * 1024; // 5 MB
+    this.maxOutputFiles = options.maxOutputFiles ?? 200;
     this.maxOutputSizeBytes = options.maxOutputSizeBytes ?? 20 * 1024 * 1024; // 20 MB
     this.maxLogLines = options.maxLogLines ?? 500;
     this.workDirPrefix = options.workDirPrefix ?? ".morph-builds";
@@ -99,6 +101,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       options.approvedDependencies ?? DEFAULT_APPROVED_DEPENDENCIES,
     );
   }
+
 
   async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
     const startTime = Date.now();
@@ -407,11 +410,16 @@ if (container) {
         if (timeoutTimer) clearTimeout(timeoutTimer);
       }
 
-      // Collect dist artifacts
-      const artifacts: ThemeBuildArtifactFile[] = [];
-      let totalOutputBytes = 0;
+      // Collect dist file metadata with stat
+      const fileStats: Array<{
+        fullPath: string;
+        relPath: string;
+        sizeBytes: number;
+        mimeType: string;
+        isText: boolean;
+      }> = [];
 
-      async function collectDir(dir: string, baseDir: string) {
+      async function collectDir(dir: string, baseDir: string): Promise<void> {
         const entries = await fs.readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
           const full = path.join(dir, entry.name);
@@ -421,17 +429,15 @@ if (container) {
             const relPath = path
               .relative(baseDir, full)
               .replace(/\\/g, "/");
-            const buffer = await fs.readFile(full);
-            totalOutputBytes += buffer.byteLength;
+            const stat = await fs.stat(full);
             const mimeType = getMimeType(relPath);
 
-            artifacts.push({
-              path: relPath,
-              content: isTextMimeType(mimeType)
-                ? buffer.toString("utf8")
-                : new Uint8Array(buffer),
+            fileStats.push({
+              fullPath: full,
+              relPath,
+              sizeBytes: stat.size,
               mimeType,
-              sizeBytes: buffer.byteLength,
+              isText: isTextMimeType(mimeType),
             });
           }
         }
@@ -439,9 +445,24 @@ if (container) {
 
       await collectDir(outDir, outDir);
 
-      // Guard: Check output size limit
-      if (totalOutputBytes > this.maxOutputSizeBytes) {
-        const msg = `LIMIT_EXCEEDED: Theme dist output (${totalOutputBytes} bytes) exceeds limit of ${this.maxOutputSizeBytes} bytes`;
+      if (fileStats.length === 0) {
+        const msg = "DIST_NOT_FOUND: Vite build did not produce any output files";
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "output-collection",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      // PREFLIGHT GUARD 1: Max output files limit
+      if (fileStats.length > this.maxOutputFiles) {
+        const msg = `LIMIT_EXCEEDED: Theme dist output file count (${fileStats.length}) exceeds limit of ${this.maxOutputFiles}`;
         addLog("error", msg);
         return {
           success: false,
@@ -453,6 +474,45 @@ if (container) {
           logs,
           durationMs: Date.now() - startTime,
         };
+      }
+
+      // PREFLIGHT GUARD 2: Max output total size limit BEFORE reading bodies into memory
+      let totalEstimatedBytes = 0;
+      for (const item of fileStats) {
+        totalEstimatedBytes += item.sizeBytes;
+      }
+
+      if (totalEstimatedBytes > this.maxOutputSizeBytes) {
+        const msg = `LIMIT_EXCEEDED: Theme dist output (${totalEstimatedBytes} bytes) exceeds limit of ${this.maxOutputSizeBytes} bytes`;
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "output-limits",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      // Only read file bodies into memory after preflight passes
+      const artifacts: ThemeBuildArtifactFile[] = [];
+      let totalOutputBytes = 0;
+
+      for (const item of fileStats) {
+        const buffer = await fs.readFile(item.fullPath);
+        totalOutputBytes += buffer.byteLength;
+
+        artifacts.push({
+          path: item.relPath,
+          content: item.isText
+            ? buffer.toString("utf8")
+            : new Uint8Array(buffer),
+          mimeType: item.mimeType,
+          sizeBytes: buffer.byteLength,
+        });
       }
 
       const cssChunks = artifacts

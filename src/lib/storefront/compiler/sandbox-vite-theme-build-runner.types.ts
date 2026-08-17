@@ -7,8 +7,11 @@ export type SandboxViteThemeBuildRunnerOptions = {
   maxSourceFiles?: number;
   /** Maximum total size of input source files in bytes (default: 5MB) */
   maxSourceSizeBytes?: number;
+  /** Maximum number of output dist files allowed (default: 200) */
+  maxOutputFiles?: number;
   /** Maximum total size of output dist artifacts in bytes (default: 20MB) */
   maxOutputSizeBytes?: number;
+
   /** Maximum number of log lines captured (default: 500) */
   maxLogLines?: number;
   /** Custom directory prefix for temp build workspaces */

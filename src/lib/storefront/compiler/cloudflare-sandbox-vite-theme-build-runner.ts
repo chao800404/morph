@@ -183,6 +183,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
   private readonly maxDurationMs: number;
   private readonly maxSourceFiles: number;
   private readonly maxSourceSizeBytes: number;
+  private readonly maxOutputFiles: number;
   private readonly maxOutputSizeBytes: number;
   private readonly maxLogLines: number;
   private readonly approvedDependencies: Set<string>;
@@ -195,6 +196,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     this.maxDurationMs = options.maxDurationMs ?? 30_000;
     this.maxSourceFiles = options.maxSourceFiles ?? 200;
     this.maxSourceSizeBytes = options.maxSourceSizeBytes ?? 5 * 1024 * 1024; // 5 MB
+    this.maxOutputFiles = options.maxOutputFiles ?? 200;
     this.maxOutputSizeBytes = options.maxOutputSizeBytes ?? 20 * 1024 * 1024; // 20 MB
     this.maxLogLines = options.maxLogLines ?? 500;
     this.approvedDependencies = new Set(
@@ -203,6 +205,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     this.sandboxBinding = options.sandboxBinding;
     this.sandboxProvider = options.sandboxProvider;
   }
+
 
   async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
     const startTime = Date.now();
@@ -547,14 +550,57 @@ export default defineConfig({
         };
       }
 
-      // Discover dist artifacts dynamically from container filesystem using find
-      const findResult = await sandbox.exec(`find ${workspaceRoot}/dist -type f -print`);
-      const filePaths = (findResult.stdout || "")
-        .split("\n")
-        .map((p) => p.trim())
-        .filter((p) => p.length > 0);
+      // Discover dist artifacts dynamically from container filesystem using find with stat
+      const findResult = await sandbox.exec(
+        `find ${workspaceRoot}/dist -type f -exec stat -c "%s %n" {} +`,
+        {
+          timeout: 10_000,
+          timeoutMs: 10_000,
+        },
+      );
 
-      if (filePaths.length === 0) {
+      const rawListing = (findResult.stdout || "").trim();
+      const distDir = `${workspaceRoot}/dist`;
+
+      // Parse metadata (size + path) from listing
+      const metadataList: Array<{
+        fullPath: string;
+        relPath: string;
+        sizeBytes: number;
+        mimeType: string;
+        isText: boolean;
+      }> = [];
+
+      for (const line of rawListing.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const match = trimmed.match(/^(\d+)\s+(.+)$/);
+        let size = 0;
+        let fullFilePath = trimmed;
+        if (match) {
+          size = parseInt(match[1], 10);
+          fullFilePath = match[2].trim();
+        } else if (trimmed.startsWith(distDir) || trimmed.startsWith("/")) {
+          fullFilePath = trimmed;
+        }
+
+        const relPath = fullFilePath.startsWith(distDir)
+          ? fullFilePath.slice(distDir.length).replace(/^\/+/, "")
+          : fullFilePath;
+
+        const mimeType = getMimeType(relPath);
+        const isText = isTextMimeType(mimeType);
+
+        metadataList.push({
+          fullPath: fullFilePath,
+          relPath,
+          sizeBytes: size,
+          mimeType,
+          isText,
+        });
+      }
+
+      if (metadataList.length === 0) {
         const msg = "DIST_NOT_FOUND: Vite build did not produce any output files in /workspace/dist";
         addLog("error", msg);
         return {
@@ -569,52 +615,9 @@ export default defineConfig({
         };
       }
 
-      const distDir = `${workspaceRoot}/dist`;
-      const artifacts: ThemeBuildArtifactFile[] = [];
-      let totalOutputBytes = 0;
-
-      for (const fullFilePath of filePaths) {
-        const relPath = fullFilePath.startsWith(distDir)
-          ? fullFilePath.slice(distDir.length).replace(/^\/+/, "")
-          : fullFilePath;
-
-        const mimeType = getMimeType(relPath);
-        const isText = isTextMimeType(mimeType);
-
-        let content: string | Uint8Array;
-        let sizeBytes: number;
-
-        if (isText) {
-          const readResult = await sandbox.readFile(fullFilePath, { encoding: "utf-8" });
-          const raw =
-            readResult && typeof readResult === "object" && "content" in readResult
-              ? readResult.content
-              : readResult;
-          content = typeof raw === "string" ? raw : new TextDecoder().decode(await fileContentToUint8Array(raw));
-          sizeBytes = Buffer.byteLength(content, "utf8");
-        } else {
-          const readResult = await sandbox.readFile(fullFilePath, { encoding: "none" });
-          const raw =
-            readResult && typeof readResult === "object" && "content" in readResult
-              ? readResult.content
-              : readResult;
-          content = await fileContentToUint8Array(raw);
-          sizeBytes = content.byteLength;
-        }
-
-        totalOutputBytes += sizeBytes;
-
-        artifacts.push({
-          path: relPath,
-          content,
-          mimeType,
-          sizeBytes,
-        });
-      }
-
-      // Guard: Check output size limit
-      if (totalOutputBytes > this.maxOutputSizeBytes) {
-        const msg = `LIMIT_EXCEEDED: Theme dist output (${totalOutputBytes} bytes) exceeds limit of ${this.maxOutputSizeBytes} bytes`;
+      // PREFLIGHT GUARD 1: Max output files limit
+      if (metadataList.length > this.maxOutputFiles) {
+        const msg = `LIMIT_EXCEEDED: Theme dist output file count (${metadataList.length}) exceeds limit of ${this.maxOutputFiles}`;
         addLog("error", msg);
         return {
           success: false,
@@ -627,6 +630,79 @@ export default defineConfig({
           durationMs: Date.now() - startTime,
         };
       }
+
+      // PREFLIGHT GUARD 2: Max output total size limit BEFORE reading bodies
+      let totalEstimatedBytes = 0;
+      for (const item of metadataList) {
+        totalEstimatedBytes += item.sizeBytes;
+      }
+
+      if (totalEstimatedBytes > this.maxOutputSizeBytes) {
+        const msg = `LIMIT_EXCEEDED: Theme dist output (${totalEstimatedBytes} bytes) exceeds limit of ${this.maxOutputSizeBytes} bytes`;
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "output-limits",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      // Only read file bodies after preflight checks pass
+      const artifacts: ThemeBuildArtifactFile[] = [];
+      let totalOutputBytes = 0;
+
+      for (const item of metadataList) {
+        let content: string | Uint8Array;
+        let sizeBytes = item.sizeBytes;
+
+        if (item.isText) {
+          const readResult = await sandbox.readFile(item.fullPath, { encoding: "utf-8" });
+          const raw =
+            readResult && typeof readResult === "object" && "content" in readResult
+              ? readResult.content
+              : readResult;
+          content = typeof raw === "string" ? raw : new TextDecoder().decode(await fileContentToUint8Array(raw));
+          sizeBytes = Buffer.byteLength(content, "utf8");
+        } else {
+          const readResult = await sandbox.readFile(item.fullPath, { encoding: "none" });
+          const raw =
+            readResult && typeof readResult === "object" && "content" in readResult
+              ? readResult.content
+              : readResult;
+          content = await fileContentToUint8Array(raw);
+          sizeBytes = content.byteLength;
+        }
+
+        totalOutputBytes += sizeBytes;
+
+        if (totalOutputBytes > this.maxOutputSizeBytes) {
+          const msg = `LIMIT_EXCEEDED: Theme dist output (${totalOutputBytes} bytes) exceeds limit of ${this.maxOutputSizeBytes} bytes`;
+          addLog("error", msg);
+          return {
+            success: false,
+            errorMessage: msg,
+            diagnosticsJson: {
+              stage: "output-limits",
+              errors: [{ severity: "error", message: msg }],
+            },
+            logs,
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        artifacts.push({
+          path: item.relPath,
+          content,
+          mimeType: item.mimeType,
+          sizeBytes,
+        });
+      }
+
 
       const cssChunks = artifacts
         .filter((a) => a.mimeType === "text/css")

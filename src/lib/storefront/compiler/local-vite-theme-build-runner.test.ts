@@ -386,5 +386,54 @@ export default function Page() {
       }
     }
   });
+
+  it("enforces maxOutputSizeBytes preflight limit", async () => {
+    const runner = new LocalViteThemeBuildRunner({
+      maxOutputSizeBytes: 10, // 10 bytes limit
+    });
+
+    const input = createInput([
+      {
+        path: "src/pages/index.tsx",
+        content: "export default function Home() { return <div>Normal size</div>; }",
+        isEntry: true,
+      },
+    ]);
+
+    const result = await runner.run(input);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain("LIMIT_EXCEEDED");
+      expect(result.errorMessage).toContain("Theme dist output");
+    }
+  });
+
+  it("enforces maxOutputFiles preflight limit", async () => {
+    const runner = new LocalViteThemeBuildRunner({
+      maxOutputFiles: 1, // Only 1 file allowed, but Vite build produces index.html + js + css (>= 2)
+    });
+
+    const input = createInput([
+      {
+        path: "src/styles/global.css",
+        content: "@import \"tailwindcss\";",
+      },
+      {
+        path: "src/pages/index.tsx",
+        content: "export default function Home() { return <div>Home</div>; }",
+        isEntry: true,
+      },
+    ]);
+
+    const result = await runner.run(input);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain("LIMIT_EXCEEDED");
+      expect(result.errorMessage).toContain("file count");
+    }
+  });
 });
+
 
