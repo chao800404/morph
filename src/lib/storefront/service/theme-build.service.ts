@@ -12,7 +12,7 @@ import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildInput,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
-import { d1ThemeRevisionStore } from "@/lib/storefront/storage/d1-theme-storage";
+import { themeRevisionStore } from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
 
 export type RequestPreviewBuildOptions = {
@@ -35,7 +35,7 @@ export class ThemeBuildService {
     private readonly defaultRunner?: ThemeBuildRunner,
     private readonly materializer: typeof materializeThemeBuildInput = materializeThemeBuildInput,
     private readonly defaultArtifactStore?: ThemeBuildArtifactStore,
-    private readonly revisionStore: ThemeRevisionStore = d1ThemeRevisionStore,
+    private readonly revisionStore: ThemeRevisionStore = themeRevisionStore,
   ) {}
 
   /**
