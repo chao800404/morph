@@ -559,8 +559,28 @@ export default defineConfig({
         },
       );
 
+      const isFindSuccess = findResult.success ?? findResult.exitCode === 0;
+      if (!isFindSuccess) {
+        const errorMsg =
+          findResult.stderr ||
+          findResult.stdout ||
+          "Failed to scan /workspace/dist output directory";
+        addLog("error", errorMsg);
+        return {
+          success: false,
+          errorMessage: `DIST_SCAN_FAILED: ${errorMsg}`,
+          diagnosticsJson: {
+            stage: "output-collection",
+            errors: [{ severity: "error", message: errorMsg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
       const rawListing = (findResult.stdout || "").trim();
       const distDir = `${workspaceRoot}/dist`;
+
 
       // Parse metadata (size + path) from listing
       const metadataList: Array<{

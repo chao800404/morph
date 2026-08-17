@@ -1,6 +1,5 @@
-import { env } from "cloudflare:workers";
 import { failure, ok } from "@/lib/db/server-result";
-import { CloudflareSandboxViteThemeBuildRunner } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-theme-build-runner";
+import type { ThemeBuildRunner } from "@/lib/storefront/compiler/theme-build-runner.types";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { ThemeBuildService } from "@/lib/storefront/service/theme-build.service";
 import {
@@ -11,12 +10,12 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
-export function getServerThemeBuildService(): ThemeBuildService {
-  const runner = (env as any)?.Sandbox
-    ? new CloudflareSandboxViteThemeBuildRunner({ sandboxBinding: (env as any).Sandbox })
-    : undefined;
-  return new ThemeBuildService(storefrontThemeBuildDal, runner);
+export function getServerThemeBuildService(options?: {
+  runner?: ThemeBuildRunner;
+}): ThemeBuildService {
+  return new ThemeBuildService(storefrontThemeBuildDal, options?.runner);
 }
+
 
 export const createPreviewBuild = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
