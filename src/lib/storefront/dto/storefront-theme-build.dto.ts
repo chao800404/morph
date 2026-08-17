@@ -14,12 +14,18 @@ export type StorefrontThemeBuildDTO = {
   manifestJson: any | null;
   diagnosticsJson: any | null;
   errorMessage: string | null;
+  previewToken?: string | null;
   startedAt: string | null;
   completedAt: string | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
 };
+
+export type StorefrontThemeBuildPreviewDTO = StorefrontThemeBuildDTO & {
+  previewToken?: string | null;
+};
+
 
 export type StorefrontThemeBuildInput = {
   buildId: string;

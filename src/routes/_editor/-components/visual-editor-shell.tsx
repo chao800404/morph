@@ -74,7 +74,9 @@ import {
 import {
   createPreviewBuild,
   getPreviewBuildToken,
+  getThemeBuild,
 } from "@/server/storefront/storefront-theme-builds.serverFn";
+
 
 
 import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
@@ -1331,9 +1333,10 @@ export function VisualEditorShell({
       }
 
 
-      let build = buildResult.data;
+      let build: StorefrontThemeBuildDTO = buildResult.data;
 
-      // Poll if build was queued or building
+      // Poll getThemeBuild if build was queued or building
+
       let attempts = 0;
       while (
         (build.status === "queued" || build.status === "building") &&
@@ -1341,22 +1344,23 @@ export function VisualEditorShell({
       ) {
         attempts++;
         await new Promise((r) => setTimeout(r, 1000));
-        const tokenPollResult = await getPreviewBuildToken({
+        const pollResult = await getThemeBuild({
           data: {
             storefrontId: context.storefront.id,
             themeId: context.theme.id,
             buildId: build.id,
           },
         });
-        if (tokenPollResult.success && tokenPollResult.data) {
-          setActivePreviewToken(tokenPollResult.data.token);
-          build = { ...build, status: "succeeded" };
-          break;
+        if (pollResult.success && pollResult.data) {
+          build = pollResult.data;
+          if (build.status === "succeeded" || build.status === "failed") {
+            break;
+          }
         }
       }
 
       if (build.status === "succeeded") {
-        let token = (build as any).previewToken;
+        let token = build.previewToken;
         if (!token) {
           const tokenResult = await getPreviewBuildToken({
             data: {
@@ -1397,6 +1401,7 @@ export function VisualEditorShell({
     } finally {
       setIsBuildPending(false);
     }
+
 
   }, [
     context.storefront.id,

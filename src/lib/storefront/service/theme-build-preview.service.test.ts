@@ -679,9 +679,51 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
 
       expect(res.status).toBe(304);
     });
+
+    it("strictly rejects entry point if not listed in canonical manifest.files (absolute fail-closed boundary)", async () => {
+
+      const { r2Bucket, storage } = createMockR2();
+      const prefix = "storefronts/store-1/themes/theme-1/builds/build-1";
+      storage.set(`${prefix}/index.html`, {
+        body: new TextEncoder().encode("<html>Unlisted Entry</html>").buffer,
+        httpEtag: "etag-html",
+      });
+
+      const manifestWithoutEntry = {
+        ...createDummyManifest(),
+        files: [
+          {
+            path: "assets/index-abc.js",
+            contentType: "application/javascript; charset=utf-8",
+            sizeBytes: 500,
+            sha256: "hash-js",
+            r2Etag: "etag-js",
+          },
+        ],
+      };
+
+      const dal = createMockDAL(
+        createDummyBuild({ manifestJson: manifestWithoutEntry }),
+      );
+
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal,
+        sessionResolver: validAdminSessionResolver,
+      });
+
+      const res = await service.handlePreviewRequest(
+        new Request("https://example.com/preview-build/build-1/"),
+        { buildId: "build-1", artifactPath: "" },
+      );
+
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain("not part of build");
+    });
   });
 
   describe("Build Immutability & Scope Isolation", () => {
+
     it("ensures Build B1 URL strictly serves B1 artifacts and Build B2 serves B2 artifacts", async () => {
       const { r2Bucket, storage } = createMockR2();
       const prefixB1 = "storefronts/store-1/themes/theme-1/builds/build-1";

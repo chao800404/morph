@@ -202,8 +202,10 @@ export class ThemeBuildPreviewService {
     const noStoreHeaders: Record<string, string> = {
       "Cache-Control": "private, no-store",
       "X-Content-Type-Options": "nosniff",
+      Vary: "Origin",
       ...baseCorsHeaders,
     };
+
 
 
     // 1. Validate buildId parameter
@@ -403,12 +405,11 @@ export class ThemeBuildPreviewService {
     }
 
     // 8. Canonical Manifest Serving Boundary Check
+    // Invariant: Every served file (including the root entry file) MUST strictly exist in manifest.files
     const manifestFile: CanonicalThemeBuildManifestFile | undefined =
       manifest.files.find((f) => f.path === canonicalPath);
 
-    const isEntryFile = canonicalPath === defaultEntry;
-
-    if (!manifestFile && (!isEntryFile || manifest.files.length > 0)) {
+    if (!manifestFile) {
       return new Response(
         `Artifact "${canonicalPath}" is not part of build "${buildId}" manifest`,
         {
@@ -417,6 +418,8 @@ export class ThemeBuildPreviewService {
         },
       );
     }
+
+    const isEntryFile = canonicalPath === defaultEntry;
 
     // 9. Fetch Immutable Object from R2
     if (!this.r2Bucket) {
@@ -453,6 +456,7 @@ export class ThemeBuildPreviewService {
             ? "private, no-store"
             : "private, max-age=31536000, immutable",
           "X-Content-Type-Options": "nosniff",
+          Vary: "Origin",
           ...baseCorsHeaders,
         },
       });
@@ -471,6 +475,8 @@ export class ThemeBuildPreviewService {
     headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     headers.set("Cross-Origin-Resource-Policy", "cross-origin");
     headers.set("Timing-Allow-Origin", "*");
+    headers.set("Vary", "Origin");
+
 
 
     if (etag) {
