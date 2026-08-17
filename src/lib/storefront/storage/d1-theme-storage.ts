@@ -1,5 +1,9 @@
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
-import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
+import {
+  buildFileTree,
+  storefrontThemeFileDal,
+} from "@/lib/storefront/dal/storefront-theme-file.dal";
+import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type {
   ThemeRevisionStore,
   ThemeSourceStore,
@@ -23,6 +27,14 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
   getSourceGeneration: (...args) =>
     storefrontThemeFileDal.getSourceGeneration(...args),
 };
+
+/**
+ * Pure presentation helper exposed from the storage composition module so
+ * server functions do not need to import the concrete D1 DAL directly.
+ */
+export function buildThemeSourceFileTree(files: StorefrontThemeFileDTO[]) {
+  return buildFileTree(files);
+}
 
 /**
  * Current D1-backed implementation of immutable theme revisions.
