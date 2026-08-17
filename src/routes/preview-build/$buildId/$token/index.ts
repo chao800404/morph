@@ -15,6 +15,26 @@ export const Route = createFileRoute("/preview-build/$buildId/$token/")({
           artifactPath: "",
         });
       },
+      HEAD: async ({ request, params }) => {
+        const previewService = new ThemeBuildPreviewService({
+          r2Bucket: (env as any)?.R2_BUCKET,
+        });
+        return await previewService.handlePreviewRequest(request, {
+          buildId: params.buildId,
+          token: params.token,
+          artifactPath: "",
+        });
+      },
+      OPTIONS: async ({ request, params }) => {
+        const previewService = new ThemeBuildPreviewService({
+          r2Bucket: (env as any)?.R2_BUCKET,
+        });
+        return await previewService.handlePreviewRequest(request, {
+          buildId: params.buildId,
+          token: params.token,
+          artifactPath: "",
+        });
+      },
     },
   },
 });

@@ -10,7 +10,10 @@ import {
   storefrontThemeBuildDal,
   type StorefrontThemeBuildDAL,
 } from "../dal/storefront-theme-build.dal";
-import { verifyPreviewCapabilityToken } from "./theme-build-preview-token";
+import {
+  resolveThemePreviewSecret,
+  verifyPreviewCapabilityToken,
+} from "./theme-build-preview-token";
 
 export type AuthSessionResolver = (request: Request) => Promise<{
   user?: { id: string; role?: string | null } | null;
@@ -128,17 +131,19 @@ export function sanitizePreviewArtifactPath(rawPath?: string): string {
  * 1. Build Preview is strictly bound to buildId (never working source or mutable aliases).
  * 2. Only builds in "succeeded" status with valid artifactPrefix and manifestJson can be served.
  * 3. Supports ephemeral HMAC preview capability tokens in URL path for sandboxed opaque-origin iframe sub-resources.
- * 4. Direct session requests strictly require admin role and theme ownership.
- * 5. Only files declared in canonical manifest.files (or sanitized artifactEntry) can be served.
- * 6. Immutable assets are served with private long-lived cache; HTML and errors are private, no-store.
- * 7. Content-Type and security headers (nosniff, CSP) are consistently enforced.
+ * 4. Fails closed with 500 when no secret is configured (zero hardcoded fallback secrets).
+ * 5. Supports CORS for Origin: null to enable browser module graph sub-resource fetches under opaque sandbox.
+ * 6. Direct session requests strictly require admin role and theme ownership.
+ * 7. Only files declared in canonical manifest.files (or sanitized artifactEntry) can be served.
+ * 8. Immutable assets are served with private long-lived cache; HTML and errors are private, no-store.
+ * 9. Content-Type and security headers (nosniff, CSP) are consistently enforced.
  */
 export class ThemeBuildPreviewService {
   private readonly dal: StorefrontThemeBuildDAL;
   private readonly r2Bucket?: R2BucketLike;
   private readonly sessionResolver: AuthSessionResolver;
   private readonly storefrontAccessChecker?: StorefrontAccessChecker;
-  private readonly tokenSecret: string;
+  private readonly explicitTokenSecret?: string;
 
   constructor(options: ThemeBuildPreviewServiceOptions = {}) {
     this.dal = options.dal ?? storefrontThemeBuildDal;
@@ -157,10 +162,11 @@ export class ThemeBuildPreviewService {
         }
       });
     this.storefrontAccessChecker = options.storefrontAccessChecker;
-    this.tokenSecret =
-      options.tokenSecret ??
-      (env as any)?.BETTER_AUTH_SECRET ??
-      "morph-preview-capability-secret";
+    this.explicitTokenSecret = options.tokenSecret;
+  }
+
+  private getTokenSecret(): string {
+    return resolveThemePreviewSecret(this.explicitTokenSecret, env);
   }
 
   /**
@@ -170,9 +176,30 @@ export class ThemeBuildPreviewService {
     request: Request,
     params: { buildId: string; token?: string; artifactPath?: string },
   ): Promise<Response> {
-    const noStoreHeaders = {
+    // 0. Handle CORS Preflight OPTIONS immediately (supports Origin: null from opaque iframe sandbox)
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+          "Access-Control-Allow-Headers": "*",
+          "Access-Control-Max-Age": "86400",
+        },
+      });
+    }
+
+    const baseCorsHeaders: Record<string, string> = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      "Cross-Origin-Resource-Policy": "cross-origin",
+      "Timing-Allow-Origin": "*",
+    };
+
+    const noStoreHeaders: Record<string, string> = {
       "Cache-Control": "private, no-store",
       "X-Content-Type-Options": "nosniff",
+      ...baseCorsHeaders,
     };
 
     // 1. Validate buildId parameter
@@ -195,10 +222,24 @@ export class ThemeBuildPreviewService {
 
     // 3. Authorization Check (Capability Token vs Direct Session)
     if (params.token && params.token.trim() !== "") {
+      // Resolve secret key with fail-closed behavior
+      let secret: string;
+      try {
+        secret = this.getTokenSecret();
+      } catch (err: any) {
+        return new Response(
+          `Server Configuration Error: ${err?.message || "Missing preview token secret"}`,
+          {
+            status: 500,
+            headers: noStoreHeaders,
+          },
+        );
+      }
+
       // Ephemeral Preview Capability Token validation (for opaque sandboxed iframe & sub-resources)
       const tokenVerification = await verifyPreviewCapabilityToken(
         params.token,
-        this.tokenSecret,
+        secret,
         build.id,
       );
 
@@ -408,11 +449,12 @@ export class ThemeBuildPreviewService {
             ? "private, no-store"
             : "private, max-age=31536000, immutable",
           "X-Content-Type-Options": "nosniff",
+          ...baseCorsHeaders,
         },
       });
     }
 
-    // 11. Content-Type & Security Headers
+    // 11. Content-Type, CORS & Security Headers
     const contentType =
       manifestFile?.contentType ||
       object.httpMetadata?.contentType ||
@@ -421,6 +463,11 @@ export class ThemeBuildPreviewService {
     const headers = new Headers();
     headers.set("Content-Type", contentType);
     headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+    headers.set("Timing-Allow-Origin", "*");
+
     if (etag) {
       headers.set("ETag", etag);
     }

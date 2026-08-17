@@ -152,3 +152,31 @@ export async function verifyPreviewCapabilityToken(
     };
   }
 }
+
+/**
+ * Resolves the secret key for Theme Build Preview capability tokens.
+ * Fails closed (throws error) if no secret is configured, rather than using an insecure fallback string.
+ */
+export function resolveThemePreviewSecret(
+  explicitSecret?: string,
+  envBindings?: any,
+): string {
+  const candidate =
+    explicitSecret?.trim() ||
+    envBindings?.THEME_PREVIEW_SECRET?.trim() ||
+    envBindings?.BETTER_AUTH_SECRET?.trim() ||
+    envBindings?.AUTH_SECRET?.trim() ||
+    (typeof process !== "undefined" &&
+      (process.env.THEME_PREVIEW_SECRET?.trim() ||
+        process.env.BETTER_AUTH_SECRET?.trim() ||
+        process.env.AUTH_SECRET?.trim()));
+
+  if (!candidate) {
+    throw new Error(
+      "MISSING_THEME_PREVIEW_SECRET: No secret key configured for Theme Build Preview capability tokens. Please set THEME_PREVIEW_SECRET or BETTER_AUTH_SECRET.",
+    );
+  }
+
+  return candidate;
+}
+

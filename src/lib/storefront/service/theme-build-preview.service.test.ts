@@ -315,23 +315,82 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
         sessionResolver: async () => null,
       });
 
-      // 1. Entry HTML fetch with capability token in path
+      // 1. Entry HTML fetch with capability token in path and Origin: null
       const htmlRes = await service.handlePreviewRequest(
-        new Request("https://example.com/preview-build/build-1/token/"),
+        new Request("https://example.com/preview-build/build-1/token/", {
+          headers: { origin: "null" },
+        }),
         { buildId: "build-1", token, artifactPath: "" },
       );
       expect(htmlRes.status).toBe(200);
       expect(await htmlRes.text()).toContain("Sandbox Theme");
+      expect(htmlRes.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(htmlRes.headers.get("Cross-Origin-Resource-Policy")).toBe(
+        "cross-origin",
+      );
 
-      // 2. Relative JS sub-resource fetch with same capability token inherited in path
+      // 2. Relative JS module graph sub-resource fetch with Origin: null
       const jsRes = await service.handlePreviewRequest(
         new Request(
           "https://example.com/preview-build/build-1/token/assets/index-abc.js",
+          { headers: { origin: "null" } },
         ),
         { buildId: "build-1", token, artifactPath: "assets/index-abc.js" },
       );
       expect(jsRes.status).toBe(200);
       expect(await jsRes.text()).toBe("console.log('opaque asset');");
+      expect(jsRes.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(jsRes.headers.get("Cross-Origin-Resource-Policy")).toBe(
+        "cross-origin",
+      );
+    });
+
+    it("supports CORS preflight OPTIONS request for opaque sandbox", async () => {
+      const { r2Bucket } = createMockR2();
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal: createMockDAL(),
+        tokenSecret: TEST_SECRET,
+      });
+
+      const optionsRes = await service.handlePreviewRequest(
+        new Request(
+          "https://example.com/preview-build/build-1/token/assets/index-abc.js",
+          {
+            method: "OPTIONS",
+            headers: {
+              origin: "null",
+              "access-control-request-method": "GET",
+            },
+          },
+        ),
+        { buildId: "build-1", token: "tok", artifactPath: "assets/index-abc.js" },
+      );
+
+      expect(optionsRes.status).toBe(204);
+      expect(optionsRes.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(optionsRes.headers.get("Access-Control-Allow-Methods")).toContain(
+        "GET",
+      );
+    });
+
+    it("fails closed with 500 when secret key is missing (zero hardcoded fallback secrets)", async () => {
+      const { r2Bucket } = createMockR2();
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal: createMockDAL(),
+        // No secret passed, environment has no secret
+      });
+
+      const res = await service.handlePreviewRequest(
+        new Request(
+          "https://example.com/preview-build/build-1/token/assets/x.js",
+        ),
+        { buildId: "build-1", token: "some-token", artifactPath: "assets/x.js" },
+      );
+
+      expect(res.status).toBe(500);
+      expect(await res.text()).toContain("Server Configuration Error");
     });
 
     it("returns 401 when capability token is invalid or expired", async () => {
@@ -353,6 +412,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
   });
+
 
   describe("Direct Session Authentication & Authorization (Admin-Only Model)", () => {
     it("returns 401 when request has neither capability token nor valid session", async () => {

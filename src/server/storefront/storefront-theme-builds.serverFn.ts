@@ -1,6 +1,10 @@
 import { env } from "cloudflare:workers";
 import { failure, ok } from "@/lib/db/server-result";
-import { generatePreviewCapabilityToken } from "@/lib/storefront/service/theme-build-preview-token";
+import {
+  generatePreviewCapabilityToken,
+  resolveThemePreviewSecret,
+} from "@/lib/storefront/service/theme-build-preview-token";
+
 import { createServerThemeBuildService } from "@/lib/storefront/service/theme-build-service.factory";
 import {
   createStorefrontThemeBuildInputSchema,
@@ -27,9 +31,7 @@ export const createPreviewBuild = createServerFn({ method: "POST" })
 
       let previewToken: string | undefined;
       if (build.status === "succeeded") {
-        const secret =
-          (env as any)?.BETTER_AUTH_SECRET ||
-          "morph-preview-capability-secret";
+        const secret = resolveThemePreviewSecret(undefined, env);
         previewToken = await generatePreviewCapabilityToken(
           {
             buildId: build.id,
@@ -70,9 +72,7 @@ export const getPreviewBuildToken = createServerFn({ method: "POST" })
           "Theme build not found or not in succeeded state",
         );
       }
-      const secret =
-        (env as any)?.BETTER_AUTH_SECRET ||
-        "morph-preview-capability-secret";
+      const secret = resolveThemePreviewSecret(undefined, env);
       const token = await generatePreviewCapabilityToken(
         {
           buildId: build.id,
@@ -81,6 +81,7 @@ export const getPreviewBuildToken = createServerFn({ method: "POST" })
         },
         secret,
       );
+
       return ok("Preview token generated", { token, buildId: build.id });
     } catch (error) {
       return failure(
