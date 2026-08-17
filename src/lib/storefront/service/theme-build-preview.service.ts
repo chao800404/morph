@@ -120,7 +120,7 @@ export class ThemeBuildPreviewService {
   private readonly dal: StorefrontThemeBuildDAL;
   private readonly r2Bucket?: R2BucketLike;
   private readonly sessionResolver: AuthSessionResolver;
-  private readonly storefrontAccessChecker: StorefrontAccessChecker;
+  private readonly storefrontAccessChecker?: StorefrontAccessChecker;
 
   constructor(options: ThemeBuildPreviewServiceOptions = {}) {
     this.dal = options.dal ?? storefrontThemeBuildDal;
@@ -138,16 +138,7 @@ export class ThemeBuildPreviewService {
           return null;
         }
       });
-    this.storefrontAccessChecker =
-      options.storefrontAccessChecker ??
-      (async (_userId: string, _storefrontId: string, role?: string | null) => {
-        // Global administrators have access across storefronts
-        if (hasAnyRole(role, ["admin"])) {
-          return true;
-        }
-        // Standard CMS users have access to active storefronts within their tenant/scope
-        return hasAnyRole(role, ["user"]);
-      });
+    this.storefrontAccessChecker = options.storefrontAccessChecker;
   }
 
   /**
@@ -174,14 +165,15 @@ export class ThemeBuildPreviewService {
       );
     }
 
-    if (!hasAnyRole(session.user.role, ["admin", "user"])) {
-      return new Response("Forbidden: Access denied to preview theme build", {
+    // 2. Role Check: Theme preview is strictly restricted to administrators, matching commerceAdminMiddleware
+    if (!hasAnyRole(session.user.role, ["admin"])) {
+      return new Response("Forbidden: Administrator access is required", {
         status: 403,
         headers: noStoreHeaders,
       });
     }
 
-    // 2. Validate buildId parameter
+    // 3. Validate buildId parameter
     const buildId = params.buildId?.trim();
     if (!buildId) {
       return new Response("Bad Request: Missing build ID", {
@@ -190,7 +182,7 @@ export class ThemeBuildPreviewService {
       });
     }
 
-    // 3. Resolve Build Record
+    // 4. Resolve Build Record
     const build = await this.dal.getBuildById(buildId);
     if (!build) {
       return new Response(`Build "${buildId}" not found`, {
@@ -199,23 +191,25 @@ export class ThemeBuildPreviewService {
       });
     }
 
-    // 4. Verify User -> Storefront Authorization (Tenant / User-level access)
-    const hasStorefrontAccess = await this.storefrontAccessChecker(
-      session.user.id,
-      build.storefrontId,
-      session.user.role,
-    );
-    if (!hasStorefrontAccess) {
-      return new Response(
-        "Forbidden: User does not have access to this storefront",
-        {
-          status: 403,
-          headers: noStoreHeaders,
-        },
+    // 5. Optional Storefront-Scoped Access Checker (fail-closed if configured)
+    if (this.storefrontAccessChecker) {
+      const hasStorefrontAccess = await this.storefrontAccessChecker(
+        session.user.id,
+        build.storefrontId,
+        session.user.role,
       );
+      if (!hasStorefrontAccess) {
+        return new Response(
+          "Forbidden: User does not have access to this storefront",
+          {
+            status: 403,
+            headers: noStoreHeaders,
+          },
+        );
+      }
     }
 
-    // 5. Verify Storefront & Theme Ownership (Theme belongs to that Storefront)
+    // 6. Verify Storefront & Theme Ownership (Theme belongs to that Storefront)
     const isOwner = await this.dal.verifyThemeOwnership(
       build.storefrontId,
       build.themeId,
@@ -229,6 +223,7 @@ export class ThemeBuildPreviewService {
         },
       );
     }
+
 
 
     // 5. Authoritative Succeeded State Validation

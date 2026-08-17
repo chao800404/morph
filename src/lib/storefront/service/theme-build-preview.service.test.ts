@@ -218,7 +218,25 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
 
-    it("returns 403 when user lacks admin/user role", async () => {
+    it("returns 403 when role is non-admin user (admin-only regression)", async () => {
+      const { r2Bucket } = createMockR2();
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal: createMockDAL(),
+        sessionResolver: async () => ({ user: { id: "user-1", role: "user" } }),
+      });
+
+      const res = await service.handlePreviewRequest(
+        new Request("https://example.com/preview-build/build-1/"),
+        { buildId: "build-1" },
+      );
+
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain("Administrator access is required");
+      expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    });
+
+    it("returns 403 when user has guest role", async () => {
       const { r2Bucket } = createMockR2();
       const service = new ThemeBuildPreviewService({
         r2Bucket,
@@ -235,17 +253,15 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
 
-    it("returns 403 when user does not have access to the target storefront (cross-tenant attack)", async () => {
+    it("returns 403 when storefront access checker rejects user", async () => {
       const { r2Bucket } = createMockR2();
       const service = new ThemeBuildPreviewService({
         r2Bucket,
         dal: createMockDAL(),
-        sessionResolver: async () => ({ user: { id: "user-attacker", role: "user" } }),
+        sessionResolver: async () => ({ user: { id: "admin-user", role: "admin" } }),
         storefrontAccessChecker: async (_userId, storefrontId) => {
-          // Attacker only has access to store-other, NOT store-1
           return storefrontId === "store-other";
         },
-
       });
 
       const res = await service.handlePreviewRequest(
@@ -257,6 +273,7 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       expect(await res.text()).toContain("does not have access to this storefront");
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
+
 
     it("allows admin user to access any storefront preview build", async () => {
       const { r2Bucket, storage } = createMockR2();
