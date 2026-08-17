@@ -369,6 +369,7 @@ if (container) {
 
       const buildPromise = viteBuild({
         root: tempDir,
+        base: "./",
         configFile: false,
         plugins: [
           tailwindcss(),

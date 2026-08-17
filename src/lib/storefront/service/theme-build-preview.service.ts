@@ -1,0 +1,338 @@
+import { getAuthWithAdmin } from "@/server/auth/helpers";
+import { hasAnyRole } from "@/server/middleware/auth.middleware";
+import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
+import type {
+  CanonicalThemeBuildManifest,
+  CanonicalThemeBuildManifestFile,
+} from "../compiler/theme-build-artifact-store.types";
+import {
+  storefrontThemeBuildDal,
+  type StorefrontThemeBuildDAL,
+} from "../dal/storefront-theme-build.dal";
+
+export type AuthSessionResolver = (request: Request) => Promise<{
+  user?: { id: string; role?: string | null } | null;
+} | null>;
+
+
+export interface ThemeBuildPreviewServiceOptions {
+  dal?: StorefrontThemeBuildDAL;
+  r2Bucket?: R2BucketLike;
+  sessionResolver?: AuthSessionResolver;
+}
+
+const MIME_FALLBACKS: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".htm": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".txt": "text/plain; charset=utf-8",
+};
+
+function resolveMimeFallback(filename: string): string {
+  const dotIdx = filename.lastIndexOf(".");
+  if (dotIdx === -1) return "application/octet-stream";
+  const ext = filename.slice(dotIdx).toLowerCase();
+  return MIME_FALLBACKS[ext] || "application/octet-stream";
+}
+
+/**
+ * Validates and canonicalizes an untrusted preview artifact path.
+ * Strictly prevents path traversal attempts (.., \, encoded dots/slashes, null bytes).
+ */
+export function sanitizePreviewArtifactPath(rawPath?: string): string {
+  if (!rawPath || rawPath.trim() === "" || rawPath.trim() === "/") {
+    return "";
+  }
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawPath);
+  } catch {
+    throw new Error("INVALID_PATH_ENCODING: Malformed URI encoding in requested path.");
+  }
+
+  // Null byte check
+  if (decoded.includes("\0") || rawPath.includes("%00")) {
+    throw new Error("PATH_TRAVERSAL_DETECTED: Null byte detected in artifact path.");
+  }
+
+  // Backslash check
+  if (decoded.includes("\\") || rawPath.includes("%5c") || rawPath.includes("%5C")) {
+    throw new Error("PATH_TRAVERSAL_DETECTED: Backslashes are forbidden in artifact path.");
+  }
+
+  // Encoded traversal tokens
+  const lowerRaw = rawPath.toLowerCase();
+  if (
+    lowerRaw.includes("%2e%2e") ||
+    lowerRaw.includes("%252e") ||
+    lowerRaw.includes("%2f")
+  ) {
+    throw new Error("PATH_TRAVERSAL_DETECTED: Encoded traversal sequence detected.");
+  }
+
+  // Normalize path segments
+  const normalized = decoded.replace(/^\/+/, "").replace(/\/+$/, "");
+  const segments = normalized.split("/");
+
+  for (const seg of segments) {
+    if (seg === ".." || seg === "." || seg.trim() === "") {
+      throw new Error(`PATH_TRAVERSAL_DETECTED: Invalid path segment "${seg}".`);
+    }
+  }
+
+  return segments.join("/");
+}
+
+/**
+ * Theme Build Preview Serving Service.
+ *
+ * Immutability & Security Invariants:
+ * 1. Build Preview is strictly bound to buildId (never working source or mutable aliases).
+ * 2. Only builds in "succeeded" status with valid artifactPrefix and manifestJson can be served.
+ * 3. Strict authentication & storefront/theme ownership checks guard both HTML and asset requests.
+ * 4. Only files declared in canonical manifest.files (or artifactEntry) can be served (rejects R2 orphans).
+ * 5. Immutable assets are served with private long-lived cache; HTML and errors are private, no-store.
+ * 6. Content-Type and security headers (nosniff, CSP) are consistently enforced.
+ */
+export class ThemeBuildPreviewService {
+  private readonly dal: StorefrontThemeBuildDAL;
+  private readonly r2Bucket?: R2BucketLike;
+  private readonly sessionResolver: AuthSessionResolver;
+
+  constructor(options: ThemeBuildPreviewServiceOptions = {}) {
+    this.dal = options.dal ?? storefrontThemeBuildDal;
+    this.r2Bucket = options.r2Bucket;
+    this.sessionResolver =
+      options.sessionResolver ??
+      (async (request: Request) => {
+        try {
+          const auth = getAuthWithAdmin();
+          const session = await auth.api.getSession({
+            headers: request.headers,
+          });
+          return session;
+        } catch {
+          return null;
+        }
+      });
+  }
+
+  /**
+   * Serves an immutable theme build artifact for preview.
+   */
+  async handlePreviewRequest(
+    request: Request,
+    params: { buildId: string; artifactPath?: string },
+  ): Promise<Response> {
+    const noStoreHeaders = {
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    };
+
+    // 1. Authentication Check
+    const session = await this.sessionResolver(request);
+    if (!session?.user) {
+      return new Response("Unauthorized: Please sign in to preview theme build", {
+        status: 401,
+        headers: noStoreHeaders,
+      });
+    }
+
+    if (!hasAnyRole(session.user.role, ["admin", "user"])) {
+      return new Response("Forbidden: Access denied to preview theme build", {
+        status: 403,
+        headers: noStoreHeaders,
+      });
+    }
+
+    // 2. Validate buildId parameter
+    const buildId = params.buildId?.trim();
+    if (!buildId) {
+      return new Response("Bad Request: Missing build ID", {
+        status: 400,
+        headers: noStoreHeaders,
+      });
+    }
+
+    // 3. Resolve Build Record
+    const build = await this.dal.getBuildById(buildId);
+    if (!build) {
+      return new Response(`Build "${buildId}" not found`, {
+        status: 404,
+        headers: noStoreHeaders,
+      });
+    }
+
+    // 4. Verify Storefront & Theme Ownership
+    const isOwner = await this.dal.verifyThemeOwnership(
+      build.storefrontId,
+      build.themeId,
+    );
+    if (!isOwner) {
+      return new Response("Forbidden: Storefront theme ownership verification failed", {
+        status: 403,
+        headers: noStoreHeaders,
+      });
+    }
+
+    // 5. Authoritative Succeeded State Validation
+    if (build.status === "queued" || build.status === "building") {
+      return new Response(`Build "${buildId}" is still in progress (${build.status})`, {
+        status: 409,
+        headers: {
+          ...noStoreHeaders,
+          "Content-Type": "text/plain; charset=utf-8",
+        },
+      });
+    }
+
+    if (build.status === "failed") {
+      return new Response(
+        `Build "${buildId}" failed: ${build.errorMessage || "Theme compilation error"}`,
+        {
+          status: 422,
+          headers: {
+            ...noStoreHeaders,
+            "Content-Type": "text/plain; charset=utf-8",
+          },
+        },
+      );
+    }
+
+    if (build.status !== "succeeded" || !build.artifactPrefix || !build.manifestJson) {
+      return new Response(`Build "${buildId}" has no valid succeeded build artifacts`, {
+        status: 404,
+        headers: noStoreHeaders,
+      });
+    }
+
+    // 6. Canonical Manifest Parsing & Validation
+    const manifest = build.manifestJson as CanonicalThemeBuildManifest;
+    if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.files)) {
+      return new Response("Invalid or corrupt theme build manifest", {
+        status: 500,
+        headers: noStoreHeaders,
+      });
+    }
+
+    // 7. Sanitize & Canonicalize Requested Artifact Path
+    let canonicalPath: string;
+    try {
+      canonicalPath = sanitizePreviewArtifactPath(params.artifactPath);
+    } catch (err: any) {
+      return new Response(err?.message || "Invalid artifact path", {
+        status: 400,
+        headers: noStoreHeaders,
+      });
+    }
+
+    // If root entry requested, resolve via manifest.artifactEntry
+    const defaultEntry = manifest.artifactEntry || manifest.entry || "index.html";
+    if (canonicalPath === "") {
+      canonicalPath = defaultEntry;
+    }
+
+    // 8. Canonical Manifest Serving Boundary Check
+    // The requested file MUST either match the canonical artifactEntry or exist in manifest.files
+    const isEntryFile = canonicalPath === defaultEntry;
+    const manifestFile: CanonicalThemeBuildManifestFile | undefined =
+      manifest.files.find((f) => f.path === canonicalPath);
+
+    if (!isEntryFile && !manifestFile) {
+      return new Response(
+        `Artifact "${canonicalPath}" is not part of build "${buildId}" manifest`,
+        {
+          status: 404,
+          headers: noStoreHeaders,
+        },
+      );
+    }
+
+    // 9. Fetch Immutable Object from R2
+    if (!this.r2Bucket) {
+      return new Response("R2 storage bucket binding is not configured", {
+        status: 500,
+        headers: noStoreHeaders,
+      });
+    }
+
+    const fullKey = `${build.artifactPrefix}/${canonicalPath}`;
+    const object = await this.r2Bucket.get(fullKey);
+    if (!object) {
+      return new Response(`Artifact object "${canonicalPath}" not found in storage`, {
+        status: 404,
+        headers: noStoreHeaders,
+      });
+    }
+
+    // 10. Conditional ETag / 304 Not Modified check
+    const ifNoneMatch = request.headers.get("if-none-match");
+    const etag = object.httpEtag || (manifestFile ? `"${manifestFile.sha256}"` : undefined);
+
+    if (ifNoneMatch && etag && ifNoneMatch === etag) {
+      return new Response(null, {
+        status: 304,
+        headers: {
+          etag,
+          "Cache-Control": isEntryFile
+            ? "private, no-store"
+            : "private, max-age=31536000, immutable",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    }
+
+    // 11. Content-Type & Security Headers
+    const contentType =
+      manifestFile?.contentType ||
+      object.httpMetadata?.contentType ||
+      resolveMimeFallback(canonicalPath);
+
+    const headers = new Headers();
+    headers.set("Content-Type", contentType);
+    headers.set("X-Content-Type-Options", "nosniff");
+    if (etag) {
+      headers.set("ETag", etag);
+    }
+
+    if (isEntryFile || canonicalPath.endsWith(".html") || canonicalPath.endsWith(".htm")) {
+      // HTML entry: private, no-store with frame and CSP restrictions
+      headers.set("Cache-Control", "private, no-store");
+      headers.set("X-Frame-Options", "SAMEORIGIN");
+      headers.set(
+        "Content-Security-Policy",
+        "default-src 'self' 'unsafe-inline' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' blob: https:; frame-ancestors 'self'; object-src 'none'; base-uri 'self';",
+      );
+    } else {
+      // Immutable hashed bundle assets (JS, CSS, images, fonts): private, max-age=1yr, immutable
+      headers.set("Cache-Control", "private, max-age=31536000, immutable");
+    }
+
+    // Return object body
+    let bodyStream: any = object.body;
+    if (!bodyStream && typeof (object as any).arrayBuffer === "function") {
+      const buf = await (object as any).arrayBuffer();
+      bodyStream = new Uint8Array(buf);
+    }
+
+    return new Response(bodyStream, {
+      status: 200,
+      headers,
+    });
+  }
+}

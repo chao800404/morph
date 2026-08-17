@@ -67,6 +67,9 @@ export default function HomePage() {
       const htmlArtifact = result.artifacts.find((a) => a.path === "index.html");
       expect(htmlArtifact).toBeDefined();
       expect(htmlArtifact?.mimeType).toBe("text/html");
+      // Verify portable relative asset base: dist/index.html references ./assets/*
+      expect(String(htmlArtifact?.content)).toMatch(/src=["']\.\/assets\//);
+
 
       const jsArtifact = result.artifacts.find((a) =>
         a.path.startsWith("assets/") && a.path.endsWith(".js"),

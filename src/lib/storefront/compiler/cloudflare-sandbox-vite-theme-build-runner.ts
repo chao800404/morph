@@ -497,6 +497,7 @@ const dependencyEnforcerPlugin = {
 
 export default defineConfig({
   root: "${workspaceRoot}",
+  base: "./",
   plugins: [tailwindcss(), viteReact(), dependencyEnforcerPlugin],
   build: {
     outDir: "${workspaceRoot}/dist",
@@ -506,6 +507,7 @@ export default defineConfig({
     sourcemap: false,
   },
 });
+
 `;
       await sandbox.writeFile(`${workspaceRoot}/vite.config.ts`, viteConfigContent);
 

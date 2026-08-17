@@ -18,17 +18,20 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   AppWindow,
+  CheckCircle2,
   CircleCheck,
   CircleAlert,
   ChevronDown,
   Code2,
   ExternalLink,
+  Layers,
   Layout,
   LoaderCircle,
   Lock,
   MessageCircle,
   Monitor,
   MousePointer2,
+  Play,
   Redo2,
   Smartphone,
   Tablet,
@@ -53,6 +56,7 @@ import type {
   StorefrontThemeFileDTO,
   StorefrontThemeFileTreeNode,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import type { StorefrontThemeBuildDTO } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import {
   publishStorefrontThemeTemplate,
   reorderStorefrontThemeSections,
@@ -67,6 +71,8 @@ import {
   getStorefrontThemeFile,
   saveStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
+import { createPreviewBuild } from "@/server/storefront/storefront-theme-builds.serverFn";
+
 import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
@@ -646,6 +652,11 @@ export function VisualEditorShell({
     Monitor;
 
   const [editorMode, setEditorMode] = useState<"design" | "code">("design");
+  const [previewMode, setPreviewMode] = useState<"live" | "build">("live");
+  const [activeBuildPreview, setActiveBuildPreview] =
+    useState<StorefrontThemeBuildDTO | null>(null);
+  const [isBuildPending, setIsBuildPending] = useState(false);
+  const [buildDiagnostics, setBuildDiagnostics] = useState<any | null>(null);
   const [activeCodeFilePath, setActiveCodeFilePath] = useState<
     string | undefined
   >();
@@ -674,6 +685,7 @@ export function VisualEditorShell({
     Record<string, string> | null
   >(null);
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
+
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -1242,6 +1254,100 @@ export function VisualEditorShell({
     updatePropsMutation,
     workspaceScope,
   ]);
+
+  const handleBuildPreview = useCallback(async () => {
+    if (isBuildPending) return;
+
+    if (
+      monacoDirtyFiles.length > 0 ||
+      useThemeWorkspaceStore.getState().hasUnsavedEdits(workspaceScope)
+    ) {
+      toast.error(
+        `Cannot build preview: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
+      );
+      return;
+    }
+
+    if (
+      useThemeWorkspaceStore
+        .getState()
+        .hasActiveConflictsOrErrors(workspaceScope)
+    ) {
+      toast.error(
+        "Cannot build preview: resolve source conflicts/save errors first.",
+      );
+      return;
+    }
+
+    setIsBuildPending(true);
+    setBuildDiagnostics(null);
+
+    try {
+      const currentGeneration = useThemeWorkspaceStore
+        .getState()
+        .getBaseSourceGeneration(workspaceScope);
+
+      // 1. Freeze current source files into a revision snapshot
+      const freezeResult = await createStorefrontThemeRevision({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          expectedSourceGeneration: currentGeneration,
+          message: "Build Preview Snapshot",
+          source: "manual",
+        },
+      });
+
+      if (!freezeResult.success || !freezeResult.data?.id) {
+        toast.error(
+          freezeResult.message || "Failed to snapshot source files for build",
+        );
+        setIsBuildPending(false);
+        return;
+      }
+
+      // 2. Request compilation & immutable R2 artifact persistence
+      const buildResult = await createPreviewBuild({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          sourceRevisionId: freezeResult.data.id,
+        },
+      });
+
+      if (!buildResult.success || !buildResult.data) {
+        toast.error(buildResult.message || "Theme build failed");
+        setBuildDiagnostics({ error: buildResult.message });
+        setIsBuildPending(false);
+        return;
+      }
+
+
+      const build = buildResult.data;
+      if (build.status === "succeeded") {
+        setActiveBuildPreview(build);
+        setPreviewMode("build");
+        toast.success(
+          `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
+        );
+      } else {
+        toast.error(build.errorMessage || `Build status: ${build.status}`);
+        setBuildDiagnostics(build.diagnosticsJson);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to create preview build");
+      setBuildDiagnostics({ error: err?.message || String(err) });
+    } finally {
+      setIsBuildPending(false);
+    }
+  }, [
+    context.storefront.id,
+    context.theme.id,
+    isBuildPending,
+    monacoDirtyFiles,
+    workspaceScope,
+  ]);
+
 
   const handleUpdateThemeFileStyle = useCallback(
     (
@@ -2627,14 +2733,44 @@ export function VisualEditorShell({
           <Button variant="ghost" size="icon" disabled aria-label="Redo">
             <Redo2 />
           </Button>
+          {activeBuildPreview && (
+            <Button
+              type="button"
+              variant={previewMode === "build" ? "toolbarActive" : "ghost"}
+              size="xs"
+              className="gap-1 px-2.5 text-xs font-medium max-sm:hidden"
+              onClick={() =>
+                setPreviewMode((prev) => (prev === "build" ? "live" : "build"))
+              }
+              title={
+                previewMode === "build"
+                  ? "Switch to Live Preview"
+                  : "View compiled Build Preview"
+              }
+            >
+              <Layers className="size-3.5" />
+              <span>
+                {previewMode === "build" ? "Build Preview" : "View Build"}
+              </span>
+            </Button>
+          )}
           <Button
+            type="button"
             variant="outline"
             size="xs"
-            disabled
-            className="max-sm:hidden"
+            disabled={isBuildPending}
+            className="gap-1.5 max-sm:hidden"
+            onClick={handleBuildPreview}
+            title="Compile and bundle theme into immutable R2 preview build"
           >
-            Preview
+            {isBuildPending ? (
+              <LoaderCircle className="size-3.5 animate-spin text-primary" />
+            ) : (
+              <Play className="size-3.5" />
+            )}
+            <span>{isBuildPending ? "Building…" : "Build Preview"}</span>
           </Button>
+
           <Button
             type="button"
             size="xs"
@@ -2765,7 +2901,54 @@ export function VisualEditorShell({
                   height: previewFrameHeight,
                 }}
               >
-                {previewUrl ? (
+                {previewMode === "build" && activeBuildPreview ? (
+                  <div className="flex size-full flex-col">
+                    <div className="flex items-center justify-between border-b bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                          <CheckCircle2 className="size-3" />
+                          Immutable Build
+                        </span>
+                        <span className="font-mono text-[11px]">
+                          {activeBuildPreview.id.slice(0, 8)}
+                        </span>
+                        <span>·</span>
+                        <span>
+                          {activeBuildPreview.compilerId} v
+                          {activeBuildPreview.compilerVersion}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        className="h-6 text-[11px]"
+                        onClick={() => setPreviewMode("live")}
+                      >
+                        Back to Live
+                      </Button>
+                    </div>
+                    {buildDiagnostics && (
+                      <div className="border-b bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+                        <span className="font-semibold">Diagnostic: </span>
+                        {typeof buildDiagnostics === "object"
+                          ? buildDiagnostics.error ||
+                            buildDiagnostics.message ||
+                            JSON.stringify(buildDiagnostics)
+                          : String(buildDiagnostics)}
+                      </div>
+                    )}
+                    <iframe
+
+                      key={`build-preview-${activeBuildPreview.id}`}
+                      src={`/preview-build/${encodeURIComponent(activeBuildPreview.id)}/`}
+                      title={`${context.theme.name} compiled build preview`}
+                      sandbox="allow-scripts"
+                      referrerPolicy="no-referrer"
+                      className="block size-full flex-1 border-0 bg-stone-50"
+                    />
+                  </div>
+                ) : previewUrl ? (
                   <iframe
                     ref={previewIframeRef}
                     key={previewKey}
@@ -2790,6 +2973,7 @@ export function VisualEditorShell({
                     No template is available for preview.
                   </div>
                 )}
+
 
                 {/* Comment Click Overlay when in Comment Mode & Open tab (disabled in Resolved tab) */}
                 {isCommentMode && commentFilter === "open" ? (

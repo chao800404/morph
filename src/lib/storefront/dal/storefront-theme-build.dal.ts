@@ -193,6 +193,27 @@ export const storefrontThemeBuildDal = {
   },
 
   /**
+   * Retrieves a build record by ID across all storefronts/themes.
+   * Note: Caller MUST perform tenant authorization and theme ownership validation.
+   */
+  async getBuildById(buildId: string): Promise<StorefrontThemeBuildDTO | null> {
+    const db = await getDb();
+    const [row] = await db
+      .select()
+      .from(storefrontThemeBuilds)
+      .where(
+        and(
+          eq(storefrontThemeBuilds.id, buildId),
+          isNull(storefrontThemeBuilds.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    return row ? mapBuildRowToDTO(row) : null;
+  },
+
+
+  /**
    * Retrieves both Build and bound Source Revision records needed for materialization.
    */
   async getBuildMaterializationSource(
@@ -523,3 +544,6 @@ export const storefrontThemeBuildDal = {
     return mapBuildRowToDTO(updated);
   },
 };
+
+export type StorefrontThemeBuildDAL = typeof storefrontThemeBuildDal;
+
