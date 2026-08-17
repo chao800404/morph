@@ -177,27 +177,35 @@ export class ThemeBuildPreviewService {
     params: { buildId: string; token?: string; artifactPath?: string },
   ): Promise<Response> {
     const reqOrigin = request.headers.get("origin");
-    const allowedOrigin = reqOrigin === "null" ? "null" : (reqOrigin || "*");
+    // Defense-in-depth: emit ACAO: null for sandboxed opaque origins (Origin: null) or omit if direct navigation / foreign origin
+    const isNullOrigin = reqOrigin === "null";
+    const allowedOrigin = isNullOrigin ? "null" : undefined;
 
     // 0. Handle CORS Preflight OPTIONS immediately (supports Origin: null from opaque iframe sandbox)
     if (request.method === "OPTIONS") {
+      const headers: Record<string, string> = {
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Max-Age": "86400",
+        Vary: "Origin",
+      };
+      if (allowedOrigin) {
+        headers["Access-Control-Allow-Origin"] = allowedOrigin;
+      }
       return new Response(null, {
         status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": allowedOrigin,
-          "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-          "Access-Control-Allow-Headers": "*",
-          "Access-Control-Max-Age": "86400",
-        },
+        headers,
       });
     }
 
     const baseCorsHeaders: Record<string, string> = {
-      "Access-Control-Allow-Origin": allowedOrigin,
-      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
       "Cross-Origin-Resource-Policy": "cross-origin",
       "Timing-Allow-Origin": "*",
     };
+    if (allowedOrigin) {
+      baseCorsHeaders["Access-Control-Allow-Origin"] = allowedOrigin;
+      baseCorsHeaders["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS";
+    }
 
     const noStoreHeaders: Record<string, string> = {
       "Cache-Control": "private, no-store",
@@ -205,6 +213,7 @@ export class ThemeBuildPreviewService {
       Vary: "Origin",
       ...baseCorsHeaders,
     };
+
 
 
 
@@ -471,11 +480,14 @@ export class ThemeBuildPreviewService {
     const headers = new Headers();
     headers.set("Content-Type", contentType);
     headers.set("X-Content-Type-Options", "nosniff");
-    headers.set("Access-Control-Allow-Origin", allowedOrigin);
-    headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     headers.set("Cross-Origin-Resource-Policy", "cross-origin");
     headers.set("Timing-Allow-Origin", "*");
     headers.set("Vary", "Origin");
+    if (allowedOrigin) {
+      headers.set("Access-Control-Allow-Origin", allowedOrigin);
+      headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    }
+
 
 
 

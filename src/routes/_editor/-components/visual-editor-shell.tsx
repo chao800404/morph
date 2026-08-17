@@ -56,7 +56,11 @@ import type {
   StorefrontThemeFileDTO,
   StorefrontThemeFileTreeNode,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
-import type { StorefrontThemeBuildDTO } from "@/lib/storefront/dto/storefront-theme-build.dto";
+import type {
+  StorefrontThemeBuildDTO,
+  StorefrontThemeBuildPreviewDTO,
+} from "@/lib/storefront/dto/storefront-theme-build.dto";
+
 import {
   publishStorefrontThemeTemplate,
   reorderStorefrontThemeSections,
@@ -1360,7 +1364,7 @@ export function VisualEditorShell({
       }
 
       if (build.status === "succeeded") {
-        let token = build.previewToken;
+        let token = (buildResult.data as StorefrontThemeBuildPreviewDTO).previewToken;
         if (!token) {
           const tokenResult = await getPreviewBuildToken({
             data: {
@@ -1373,6 +1377,7 @@ export function VisualEditorShell({
             token = tokenResult.data.token;
           }
         }
+
 
         if (!token) {
           toast.error("Build succeeded but preview capability token missing.");
