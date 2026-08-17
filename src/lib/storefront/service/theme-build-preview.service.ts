@@ -176,12 +176,15 @@ export class ThemeBuildPreviewService {
     request: Request,
     params: { buildId: string; token?: string; artifactPath?: string },
   ): Promise<Response> {
+    const reqOrigin = request.headers.get("origin");
+    const allowedOrigin = reqOrigin === "null" ? "null" : (reqOrigin || "*");
+
     // 0. Handle CORS Preflight OPTIONS immediately (supports Origin: null from opaque iframe sandbox)
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
         headers: {
-          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Origin": allowedOrigin,
           "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
           "Access-Control-Allow-Headers": "*",
           "Access-Control-Max-Age": "86400",
@@ -190,7 +193,7 @@ export class ThemeBuildPreviewService {
     }
 
     const baseCorsHeaders: Record<string, string> = {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin": allowedOrigin,
       "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
       "Cross-Origin-Resource-Policy": "cross-origin",
       "Timing-Allow-Origin": "*",
@@ -201,6 +204,7 @@ export class ThemeBuildPreviewService {
       "X-Content-Type-Options": "nosniff",
       ...baseCorsHeaders,
     };
+
 
     // 1. Validate buildId parameter
     const buildId = params.buildId?.trim();
@@ -463,10 +467,11 @@ export class ThemeBuildPreviewService {
     const headers = new Headers();
     headers.set("Content-Type", contentType);
     headers.set("X-Content-Type-Options", "nosniff");
-    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("Access-Control-Allow-Origin", allowedOrigin);
     headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     headers.set("Cross-Origin-Resource-Policy", "cross-origin");
     headers.set("Timing-Allow-Origin", "*");
+
 
     if (etag) {
       headers.set("ETag", etag);
@@ -477,17 +482,18 @@ export class ThemeBuildPreviewService {
       canonicalPath.endsWith(".html") ||
       canonicalPath.endsWith(".htm")
     ) {
-      // HTML entry: private, no-store with frame and CSP restrictions
+      // HTML entry: private, no-store with strict document-level CSP sandbox (opaque origin isolation)
       headers.set("Cache-Control", "private, no-store");
       headers.set("X-Frame-Options", "SAMEORIGIN");
       headers.set(
         "Content-Security-Policy",
-        "default-src 'self' 'unsafe-inline' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' blob: https:; frame-ancestors 'self'; object-src 'none'; base-uri 'self';",
+        "sandbox allow-scripts; default-src 'self' 'unsafe-inline' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' blob: https:; frame-ancestors 'self'; object-src 'none'; base-uri 'none';",
       );
     } else {
       // Immutable hashed bundle assets (JS, CSS, images, fonts): private, max-age=1yr, immutable
       headers.set("Cache-Control", "private, max-age=31536000, immutable");
     }
+
 
     // Return object body
     let bodyStream: any = object.body;

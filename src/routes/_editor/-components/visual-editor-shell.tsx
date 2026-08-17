@@ -71,7 +71,11 @@ import {
   getStorefrontThemeFile,
   saveStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
-import { createPreviewBuild } from "@/server/storefront/storefront-theme-builds.serverFn";
+import {
+  createPreviewBuild,
+  getPreviewBuildToken,
+} from "@/server/storefront/storefront-theme-builds.serverFn";
+
 
 import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
@@ -1327,16 +1331,63 @@ export function VisualEditorShell({
       }
 
 
-      const build = buildResult.data;
+      let build = buildResult.data;
+
+      // Poll if build was queued or building
+      let attempts = 0;
+      while (
+        (build.status === "queued" || build.status === "building") &&
+        attempts < 30
+      ) {
+        attempts++;
+        await new Promise((r) => setTimeout(r, 1000));
+        const tokenPollResult = await getPreviewBuildToken({
+          data: {
+            storefrontId: context.storefront.id,
+            themeId: context.theme.id,
+            buildId: build.id,
+          },
+        });
+        if (tokenPollResult.success && tokenPollResult.data) {
+          setActivePreviewToken(tokenPollResult.data.token);
+          build = { ...build, status: "succeeded" };
+          break;
+        }
+      }
+
       if (build.status === "succeeded") {
+        let token = (build as any).previewToken;
+        if (!token) {
+          const tokenResult = await getPreviewBuildToken({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              buildId: build.id,
+            },
+          });
+          if (tokenResult.success && tokenResult.data) {
+            token = tokenResult.data.token;
+          }
+        }
+
+        if (!token) {
+          toast.error("Build succeeded but preview capability token missing.");
+          setBuildDiagnostics({
+            error:
+              "Missing preview capability token. Ensure THEME_PREVIEW_SECRET is configured.",
+          });
+          setActiveBuildPreview(build);
+          setActivePreviewToken(null);
+          return;
+        }
+
         setActiveBuildPreview(build);
-        setActivePreviewToken((build as any).previewToken ?? null);
+        setActivePreviewToken(token);
         setPreviewMode("build");
         toast.success(
           `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
         );
       } else {
-
         toast.error(build.errorMessage || `Build status: ${build.status}`);
         setBuildDiagnostics(build.diagnosticsJson);
       }
@@ -1346,6 +1397,7 @@ export function VisualEditorShell({
     } finally {
       setIsBuildPending(false);
     }
+
   }, [
     context.storefront.id,
     context.theme.id,
@@ -2944,21 +2996,26 @@ export function VisualEditorShell({
                           : String(buildDiagnostics)}
                       </div>
                     )}
-                    <iframe
-                      key={`build-preview-${activeBuildPreview.id}`}
-                      src={
-                        activePreviewToken
-                          ? `/preview-build/${encodeURIComponent(activeBuildPreview.id)}/${encodeURIComponent(activePreviewToken)}/`
-                          : `/preview-build/${encodeURIComponent(activeBuildPreview.id)}/`
-                      }
-                      title={`${context.theme.name} compiled build preview`}
-                      sandbox="allow-scripts"
-                      referrerPolicy="no-referrer"
-                      className="block size-full flex-1 border-0 bg-stone-50"
-                    />
-
+                    {activePreviewToken ? (
+                      <iframe
+                        key={`build-preview-${activeBuildPreview.id}`}
+                        src={`/preview-build/${encodeURIComponent(activeBuildPreview.id)}/${encodeURIComponent(activePreviewToken)}/`}
+                        title={`${context.theme.name} compiled build preview`}
+                        sandbox="allow-scripts"
+                        referrerPolicy="no-referrer"
+                        className="block size-full flex-1 border-0 bg-stone-50"
+                      />
+                    ) : (
+                      <div className="flex size-full flex-1 flex-col items-center justify-center p-8 text-center bg-stone-50 text-stone-700">
+                        <p className="font-medium text-sm">Preview Token Required</p>
+                        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+                          Theme build succeeded, but preview capability token is missing. Please ensure THEME_PREVIEW_SECRET is configured.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 ) : previewUrl ? (
+
                   <iframe
                     ref={previewIframeRef}
                     key={previewKey}

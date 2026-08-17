@@ -324,10 +324,14 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       );
       expect(htmlRes.status).toBe(200);
       expect(await htmlRes.text()).toContain("Sandbox Theme");
-      expect(htmlRes.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(htmlRes.headers.get("Access-Control-Allow-Origin")).toBe("null");
       expect(htmlRes.headers.get("Cross-Origin-Resource-Policy")).toBe(
         "cross-origin",
       );
+      // Verify Document-level CSP sandbox enforcement (guarantees opaque origin even when opened directly in a new tab)
+      const csp = htmlRes.headers.get("Content-Security-Policy");
+      expect(csp).toContain("sandbox allow-scripts;");
+      expect(csp).not.toContain("allow-same-origin");
 
       // 2. Relative JS module graph sub-resource fetch with Origin: null
       const jsRes = await service.handlePreviewRequest(
@@ -339,11 +343,48 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       );
       expect(jsRes.status).toBe(200);
       expect(await jsRes.text()).toBe("console.log('opaque asset');");
-      expect(jsRes.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(jsRes.headers.get("Access-Control-Allow-Origin")).toBe("null");
       expect(jsRes.headers.get("Cross-Origin-Resource-Policy")).toBe(
         "cross-origin",
       );
     });
+
+    it("enforces CSP sandbox allow-scripts on direct top-level preview HTML navigation (prevents same-origin privilege escape)", async () => {
+      const { r2Bucket, storage } = createMockR2();
+      const prefix = "storefronts/store-1/themes/theme-1/builds/build-1";
+      storage.set(`${prefix}/index.html`, {
+        body: new TextEncoder().encode("<html>Direct Tab Theme</html>").buffer,
+        httpEtag: "etag-html",
+      });
+
+      const token = await generatePreviewCapabilityToken(
+        {
+          buildId: "build-1",
+          storefrontId: "store-1",
+          themeId: "theme-1",
+        },
+        TEST_SECRET,
+      );
+
+      const service = new ThemeBuildPreviewService({
+        r2Bucket,
+        dal: createMockDAL(),
+        tokenSecret: TEST_SECRET,
+      });
+
+      // User opens preview URL directly in browser tab
+      const res = await service.handlePreviewRequest(
+        new Request("https://morph.example/preview-build/build-1/token/"),
+        { buildId: "build-1", token, artifactPath: "" },
+      );
+
+      expect(res.status).toBe(200);
+      const csp = res.headers.get("Content-Security-Policy");
+      expect(csp).toContain("sandbox allow-scripts;");
+      expect(csp).not.toContain("allow-same-origin");
+      expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
+    });
+
 
     it("supports CORS preflight OPTIONS request for opaque sandbox", async () => {
       const { r2Bucket } = createMockR2();
@@ -368,10 +409,11 @@ describe("ThemeBuildPreviewService (Phase 4B-7)", () => {
       );
 
       expect(optionsRes.status).toBe(204);
-      expect(optionsRes.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(optionsRes.headers.get("Access-Control-Allow-Origin")).toBe("null");
       expect(optionsRes.headers.get("Access-Control-Allow-Methods")).toContain(
         "GET",
       );
+
     });
 
     it("fails closed with 500 when secret key is missing (zero hardcoded fallback secrets)", async () => {
