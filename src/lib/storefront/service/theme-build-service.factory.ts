@@ -5,15 +5,16 @@ import type { ThemeBuildArtifactStore } from "@/lib/storefront/compiler/theme-bu
 import { materializeThemeBuildInput } from "@/lib/storefront/compiler/theme-build-materializer";
 import type { ThemeBuildRunner } from "@/lib/storefront/compiler/theme-build-runner.types";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
-import { d1ThemeRevisionStore } from "@/lib/storefront/storage/d1-theme-storage";
+import { themeRevisionStore } from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
 import { ThemeBuildService } from "./theme-build.service";
 
 /**
  * Server composition root for ThemeBuildService.
  *
- * Storage implementation selection is centralized here so future source
- * revision backends can be swapped without changing BuildService callers.
+ * Storage implementation selection is centralized behind the generic server
+ * storage composition module so future source revision backends can be swapped
+ * without changing BuildService callers.
  */
 export function createServerThemeBuildService(options?: {
   runner?: ThemeBuildRunner;
@@ -42,6 +43,6 @@ export function createServerThemeBuildService(options?: {
     runner,
     materializeThemeBuildInput,
     artifactStore,
-    options?.revisionStore ?? d1ThemeRevisionStore,
+    options?.revisionStore ?? themeRevisionStore,
   );
 }
