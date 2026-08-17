@@ -141,8 +141,10 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     const writtenViteConfig = String(mock.writtenFiles.get("/workspace/vite.config.ts"));
     expect(writtenViteConfig).toContain("morph-dependency-enforcer");
     expect(writtenViteConfig).toContain("UNAPPROVED_DEPENDENCY");
+    expect(writtenViteConfig).toContain("UNAPPROVED_DEPENDENCY_PATH");
     expect(writtenViteConfig).toContain("WORKSPACE_PATH_ESCAPE");
-    expect(writtenViteConfig).toContain('!resolved.startsWith("/workspace")');
+    expect(writtenViteConfig).toContain('!normalizedResolved.startsWith("/workspace")');
+
 
     // Verify exact pinned vite binary execution
     expect(mock.session.exec).toHaveBeenCalledWith(

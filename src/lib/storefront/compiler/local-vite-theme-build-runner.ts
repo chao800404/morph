@@ -288,8 +288,19 @@ if (container) {
                 `WORKSPACE_PATH_ESCAPE: Import "${source}" in "${importer ?? "root"}" resolves outside workspace root: "${resolved}"`,
               );
             }
+
+            if (
+              normalizedResolved.includes("/node_modules") ||
+              normalizedResolved.includes("\\node_modules")
+            ) {
+              throw new Error(
+                `UNAPPROVED_DEPENDENCY_PATH: Direct filesystem imports from node_modules are forbidden in theme source files. Use approved bare module specifiers instead (attempted to import "${source}").`,
+              );
+            }
+
             return null;
           }
+
 
 
 

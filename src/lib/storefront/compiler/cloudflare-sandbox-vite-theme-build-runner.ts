@@ -441,13 +441,23 @@ const dependencyEnforcerPlugin = {
       }
 
       const rel = path.relative("/workspace", resolved);
-      if (rel.startsWith("..") || !resolved.startsWith("/workspace")) {
+      const normalizedResolved = resolved.replace(/\\/g, "/");
+
+      if (rel.startsWith("..") || !normalizedResolved.startsWith("/workspace")) {
         throw new Error(
           'WORKSPACE_PATH_ESCAPE: Import "' + source + '" resolves outside workspace root: "' + resolved + '"'
         );
       }
+
+      if (normalizedResolved.includes("/node_modules")) {
+        throw new Error(
+          'UNAPPROVED_DEPENDENCY_PATH: Direct filesystem imports from node_modules are forbidden in theme source files. Use approved bare module specifiers instead (attempted: "' + source + '").'
+        );
+      }
+
       return null;
     }
+
 
     if (typeof source === "string" && source.startsWith("\\0")) {
       return null;

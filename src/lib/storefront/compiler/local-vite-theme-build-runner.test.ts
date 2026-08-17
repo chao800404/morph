@@ -265,6 +265,60 @@ export default function Page() {
     }
   });
 
+  it("blocks direct relative filesystem imports from node_modules with UNAPPROVED_DEPENDENCY_PATH", async () => {
+    const runner = new LocalViteThemeBuildRunner();
+
+    const input = createInput([
+      {
+        path: "src/styles/global.css",
+        content: '@import "tailwindcss";',
+      },
+      {
+        path: "src/pages/index.tsx",
+        content: `import { clsx } from "../../node_modules/clsx/dist/clsx.mjs";
+export default function Page() {
+  return <div>{typeof clsx}</div>;
+}`,
+        isEntry: true,
+      },
+    ]);
+
+    const result = await runner.run(input);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain("UNAPPROVED_DEPENDENCY_PATH");
+      expect(result.errorMessage).toContain("node_modules");
+    }
+  });
+
+  it("blocks web-root filesystem imports from /node_modules with UNAPPROVED_DEPENDENCY_PATH", async () => {
+    const runner = new LocalViteThemeBuildRunner();
+
+    const input = createInput([
+      {
+        path: "src/styles/global.css",
+        content: '@import "tailwindcss";',
+      },
+      {
+        path: "src/pages/index.tsx",
+        content: `import { clsx } from "/node_modules/clsx/dist/clsx.mjs";
+export default function Page() {
+  return <div>{typeof clsx}</div>;
+}`,
+        isEntry: true,
+      },
+    ]);
+
+    const result = await runner.run(input);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorMessage).toContain("UNAPPROVED_DEPENDENCY_PATH");
+    }
+  });
+
+
   it("enforces max source files limit", async () => {
     const runner = new LocalViteThemeBuildRunner({
       maxSourceFiles: 2,
