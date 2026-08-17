@@ -52,6 +52,11 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
         };
       }),
       put: vi.fn(async (key: string, value: any, options: any) => {
+        // True R2 conditional write: onlyIf etagDoesNotMatch "*" fails if key exists
+        if (options?.onlyIf?.etagDoesNotMatch === "*" && storage.has(key)) {
+          return null;
+        }
+
         let buffer: ArrayBuffer;
         if (typeof value === "string") {
           const enc = new TextEncoder().encode(value);
@@ -63,7 +68,6 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
         } else {
           buffer = new ArrayBuffer(0);
         }
-
 
         const httpEtag = `etag-${key.replace(/[^a-zA-Z0-9]/g, "")}-${buffer.byteLength}`;
         storage.set(key, {
@@ -92,7 +96,7 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
     return { r2Bucket, storage };
   };
 
-  const createDummyBuild = (): StorefrontThemeBuildDTO => ({
+  const createDummyBuild = (overrides?: Partial<StorefrontThemeBuildDTO>): StorefrontThemeBuildDTO => ({
     id: "build-101",
     storefrontId: "store-1",
     themeId: "theme-1",
@@ -105,11 +109,12 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
     manifestJson: null,
     diagnosticsJson: null,
     errorMessage: null,
-    startedAt: new Date().toISOString(),
+    startedAt: "2026-08-17T00:00:00.000Z",
     completedAt: null,
     createdBy: "admin",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: "2026-08-17T00:00:00.000Z",
+    updatedAt: "2026-08-17T00:00:00.000Z",
+    ...overrides,
   });
 
   const createDummyBuildInput = (): StorefrontThemeBuildInput => ({
@@ -170,6 +175,7 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
     expect(result.manifest.files).toHaveLength(4);
     expect(result.manifest.cssChunks).toEqual(["assets/index.css"]);
     expect(result.manifest.jsChunks).toEqual(["assets/index.js"]);
+    expect(result.manifest.createdAt).toBe("2026-08-17T00:00:00.000Z");
 
     // Verify R2 objects
     const prefix = "storefronts/store-1/themes/theme-1/builds/build-101";
@@ -205,7 +211,7 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
     }
   });
 
-  it("enforces immutability: rejects overwriting existing artifact with different SHA-256", async () => {
+  it("enforces immutability: rejects overwriting existing artifact with different SHA-256 via conditional write", async () => {
     const { r2Bucket } = createMockR2();
     const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
 
@@ -235,7 +241,7 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
     ).rejects.toThrow(/IMMUTABLE_ARTIFACT_OVERWRITE_FORBIDDEN/);
   });
 
-  it("allows idempotent retry when artifact SHA-256 is identical", async () => {
+  it("allows idempotent retry when artifact SHA-256 is identical via conditional write collision", async () => {
     const { r2Bucket } = createMockR2();
     const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
 
@@ -252,7 +258,7 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
       artifacts,
     });
 
-    // Second call with identical content
+    // Second call with identical content (triggers onlyIf precondition failure, then verifies identical SHA-256)
     const result2 = await store.persistBuildArtifacts({
       build,
       buildInput,
@@ -260,6 +266,92 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
     });
 
     expect(result1.manifest.files[0].sha256).toBe(result2.manifest.files[0].sha256);
+    expect(result1.manifest.createdAt).toBe(result2.manifest.createdAt);
+  });
+
+  it("verifies full content bytes when existing R2 object has no customMetadata.sha256", async () => {
+    const { r2Bucket, storage } = createMockR2();
+    const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+
+    const build = createDummyBuild();
+    const buildInput = createDummyBuildInput();
+
+    const key = "storefronts/store-1/themes/theme-1/builds/build-101/index.html";
+    const existingBytes = new TextEncoder().encode("pre-existing content without metadata");
+    storage.set(key, {
+      body: existingBytes.buffer,
+      httpMetadata: { contentType: "text/html" },
+      customMetadata: undefined, // Missing sha256!
+      httpEtag: "pre-existing-etag",
+    });
+
+    // Attempt to write DIFFERENT content -> MUST download and reject
+    await expect(
+      store.persistBuildArtifacts({
+        build,
+        buildInput,
+        artifacts: [{ path: "index.html", content: "different incoming content", mimeType: "text/html" }],
+      }),
+    ).rejects.toThrow(/IMMUTABLE_ARTIFACT_OVERWRITE_FORBIDDEN/);
+
+    // Attempt to write IDENTICAL content -> MUST download, verify matching hash, and accept idempotently
+    const result = await store.persistBuildArtifacts({
+      build,
+      buildInput,
+      artifacts: [{ path: "index.html", content: "pre-existing content without metadata", mimeType: "text/html" }],
+    });
+
+    expect(result.manifest.files[0].sha256).toBe(calculateArtifactSha256(existingBytes));
+  });
+
+  it("rejects when runner declares a mismatched sizeBytes", async () => {
+    const { r2Bucket } = createMockR2();
+    const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+
+    const build = createDummyBuild();
+    const buildInput = createDummyBuildInput();
+
+    await expect(
+      store.persistBuildArtifacts({
+        build,
+        buildInput,
+        artifacts: [
+          {
+            path: "index.html",
+            content: "1234567890", // 10 bytes
+            sizeBytes: 5, // Conflicting runner declaration
+            mimeType: "text/html",
+          },
+        ],
+      }),
+    ).rejects.toThrow(/ARTIFACT_SIZE_MISMATCH/);
+  });
+
+  it("enforces provenance: rejects non-building status or mismatched identity", async () => {
+    const { r2Bucket } = createMockR2();
+    const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+
+    const buildInput = createDummyBuildInput();
+
+    // 1. Rejects queued build
+    const queuedBuild = createDummyBuild({ status: "queued" });
+    await expect(
+      store.persistBuildArtifacts({
+        build: queuedBuild,
+        buildInput,
+        artifacts: [{ path: "index.html", content: "hello", mimeType: "text/html" }],
+      }),
+    ).rejects.toThrow(/BUILD_PROVENANCE_MISMATCH/);
+
+    // 2. Rejects mismatched inputHash
+    const mismatchedHashBuild = createDummyBuild({ inputHash: "wrong-hash" });
+    await expect(
+      store.persistBuildArtifacts({
+        build: mismatchedHashBuild,
+        buildInput,
+        artifacts: [{ path: "index.html", content: "hello", mimeType: "text/html" }],
+      }),
+    ).rejects.toThrow(/BUILD_PROVENANCE_MISMATCH/);
   });
 
   it("retrieves stored artifact via getArtifact", async () => {

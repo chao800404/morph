@@ -299,8 +299,62 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
 
 
 
+  it("transitions to failed when runner succeeds but no artifactStore is configured", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-no-store", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+    ]);
+
+    const serviceWithoutStore = new ThemeBuildService(storefrontThemeBuildDal);
+    const fakeRunner = new FakeThemeBuildRunner({ shouldSucceed: true });
+
+    const failedBuild = await serviceWithoutStore.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-no-store",
+      runner: fakeRunner,
+    });
+
+    expect(failedBuild.status).toBe("failed");
+    expect(failedBuild.errorMessage).toContain("NO_ARTIFACT_STORE_CONFIGURED");
+    expect(failedBuild.diagnosticsJson?.stage).toBe("artifact-storage");
+  });
+
+  it("transitions to failed when DB finalize (markBuildSucceeded) fails after R2 persistence", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-finalize-fail", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+    ]);
+
+    const fakeRunner = new FakeThemeBuildRunner({ shouldSucceed: true });
+    const fakeStore = new FakeThemeBuildArtifactStore();
+
+    // Mock dal.markBuildSucceeded to simulate DB constraint or network error during commit
+    const markSucceededSpy = vi
+      .spyOn(storefrontThemeBuildDal, "markBuildSucceeded")
+      .mockRejectedValueOnce(new Error("D1_COMMIT_FAILURE: SQLite disk full"));
+
+    const failedBuild = await service.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-finalize-fail",
+      runner: fakeRunner,
+      artifactStore: fakeStore,
+    });
+
+    expect(failedBuild.status).toBe("failed");
+    expect(failedBuild.errorMessage).toContain("DB finalize failed");
+    expect(failedBuild.errorMessage).toContain("D1_COMMIT_FAILURE");
+    expect(failedBuild.diagnosticsJson?.stage).toBe("finalize");
+
+    markSucceededSpy.mockRestore();
+  });
+
   it("transitions to failed when runner throws an exception", async () => {
     seedStorefront("storefront-1");
+
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-throw", 1, [
       { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },

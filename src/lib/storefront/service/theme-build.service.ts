@@ -1,4 +1,7 @@
-import type { ThemeBuildArtifactStore } from "@/lib/storefront/compiler/theme-build-artifact-store.types";
+import type {
+  ThemeBuildArtifactStore,
+  ThemeBuildArtifactStoreResult,
+} from "@/lib/storefront/compiler/theme-build-artifact-store.types";
 import { materializeThemeBuildInput } from "@/lib/storefront/compiler/theme-build-materializer";
 import type {
   ThemeBuildRunner,
@@ -222,8 +225,9 @@ export class ThemeBuildService {
 
 
     // Stage 3: Transition queued -> building with atomic identity freeze
+    let startedBuild: StorefrontThemeBuildDTO;
     try {
-      await this.dal.markBuildStarted(
+      startedBuild = await this.dal.markBuildStarted(
         params.storefrontId,
         params.themeId,
         params.buildId,
@@ -291,70 +295,83 @@ export class ThemeBuildService {
     }
 
     // Stage 5: Persist Artifacts via ThemeBuildArtifactStore
-    let artifactPrefix: string | null =
-      (runnerResult as any).artifactPrefix ?? null;
-    let manifestJson: any = runnerResult.manifestJson;
-
-
-    if (artifactStore) {
-      try {
-        const storeResult = await artifactStore.persistBuildArtifacts({
-          build: source.build,
-          buildInput,
-          artifacts: runnerResult.artifacts ?? [],
-          runnerManifest: runnerResult.manifestJson,
-        });
-        artifactPrefix = storeResult.artifactPrefix;
-        manifestJson = storeResult.manifest;
-      } catch (storeException) {
-        const exceptionMessage =
-          storeException instanceof Error
-            ? storeException.message
-            : String(storeException);
-
-        return await this.dal.markBuildFailed(
-          params.storefrontId,
-          params.themeId,
-          params.buildId,
-          {
-            errorMessage: `Artifact persistence failed: ${exceptionMessage}`,
-            diagnosticsJson: {
-              stage: "artifact-storage",
-              error: exceptionMessage,
-            },
-          },
-        );
-      }
-    }
-
-    if (!artifactPrefix) {
+    if (!artifactStore) {
       return await this.dal.markBuildFailed(
         params.storefrontId,
         params.themeId,
         params.buildId,
         {
           errorMessage:
-            "CANNOT_SUCCEED_BUILD_WITHOUT_ARTIFACT: Succeeded build must have an artifact prefix.",
+            "NO_ARTIFACT_STORE_CONFIGURED: ThemeBuildArtifactStore is required to persist build artifacts and obtain a verified artifactPrefix.",
           diagnosticsJson: {
             stage: "artifact-storage",
-            error: "Artifact store did not produce an artifact prefix.",
+            error: "Missing artifactStore dependency",
+          },
+        },
+      );
+    }
+
+    let storeResult: ThemeBuildArtifactStoreResult;
+    try {
+      storeResult = await artifactStore.persistBuildArtifacts({
+        build: startedBuild,
+        buildInput,
+        artifacts: runnerResult.artifacts ?? [],
+        runnerManifest: runnerResult.manifestJson,
+      });
+    } catch (storeException) {
+      const exceptionMessage =
+        storeException instanceof Error
+          ? storeException.message
+          : String(storeException);
+
+      return await this.dal.markBuildFailed(
+        params.storefrontId,
+        params.themeId,
+        params.buildId,
+        {
+          errorMessage: `Artifact persistence failed: ${exceptionMessage}`,
+          diagnosticsJson: {
+            stage: "artifact-storage",
+            error: exceptionMessage,
           },
         },
       );
     }
 
     // Stage 6: Finalize state
-    return await this.dal.markBuildSucceeded(
-      params.storefrontId,
-      params.themeId,
-      params.buildId,
-      {
-        artifactPrefix,
-        manifestJson,
-        diagnosticsJson: runnerResult.diagnosticsJson,
-      },
-    );
+    try {
+      return await this.dal.markBuildSucceeded(
+        params.storefrontId,
+        params.themeId,
+        params.buildId,
+        {
+          artifactPrefix: storeResult.artifactPrefix,
+          manifestJson: storeResult.manifest,
+          diagnosticsJson: runnerResult.diagnosticsJson,
+        },
+      );
+    } catch (finalizeError) {
+      const finalizeMessage =
+        finalizeError instanceof Error
+          ? finalizeError.message
+          : String(finalizeError);
+
+      return await this.dal.markBuildFailed(
+        params.storefrontId,
+        params.themeId,
+        params.buildId,
+        {
+          errorMessage: `DB finalize failed: ${finalizeMessage}`,
+          diagnosticsJson: {
+            stage: "finalize",
+            error: finalizeMessage,
+          },
+        },
+      );
+    }
   }
+
 
 
   async getThemeBuild(params: {

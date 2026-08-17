@@ -58,12 +58,26 @@ export class FakeThemeBuildArtifactStore implements ThemeBuildArtifactStore {
       throw new Error("EMPTY_ARTIFACTS: Cannot persist build with zero artifact files.");
     }
 
+    // Provenance verification against frozen started build record
+    if (build.status !== "building") {
+      throw new Error(
+        `BUILD_PROVENANCE_MISMATCH: Build must be in "building" status when persisting artifacts (current: "${build.status}").`,
+      );
+    }
     if (build.id !== buildInput.buildId) {
       throw new Error(
         `BUILD_PROVENANCE_MISMATCH: Build ID mismatch between build record (${build.id}) and buildInput (${buildInput.buildId}).`,
       );
     }
-
+    if (build.storefrontId !== buildInput.storefrontId || build.themeId !== buildInput.themeId) {
+      throw new Error("BUILD_PROVENANCE_MISMATCH: Tenant scope mismatch between build and buildInput.");
+    }
+    if (build.sourceRevisionId !== buildInput.sourceRevisionId) {
+      throw new Error("BUILD_PROVENANCE_MISMATCH: Source revision mismatch between build and buildInput.");
+    }
+    if (build.inputHash !== buildInput.inputHash) {
+      throw new Error("BUILD_PROVENANCE_MISMATCH: Input hash mismatch between build record and buildInput.");
+    }
 
     const artifactPrefix = buildThemeArtifactPrefix(
       buildInput.storefrontId,
@@ -84,12 +98,20 @@ export class FakeThemeBuildArtifactStore implements ThemeBuildArtifactStore {
       const artifact = artifacts[i];
       const relPath = validateAndCanonicalizeArtifactPath(artifact.path);
       const fullKey = `${artifactPrefix}/${relPath}`;
-      const sha256 = calculateArtifactSha256(artifact.content);
-      const sizeBytes =
-        artifact.sizeBytes ??
-        (typeof artifact.content === "string"
+
+      // Authoritative byte size calculation
+      const actualSizeBytes =
+        typeof artifact.content === "string"
           ? Buffer.byteLength(artifact.content, "utf8")
-          : artifact.content.byteLength);
+          : artifact.content.byteLength;
+
+      if (artifact.sizeBytes !== undefined && artifact.sizeBytes !== actualSizeBytes) {
+        throw new Error(
+          `ARTIFACT_SIZE_MISMATCH: Declared sizeBytes (${artifact.sizeBytes}) does not match actual byte count (${actualSizeBytes}) for artifact "${artifact.path}".`,
+        );
+      }
+
+      const sha256 = calculateArtifactSha256(artifact.content);
 
       const existing = this.storedObjects.get(fullKey);
       if (existing) {
@@ -103,15 +125,15 @@ export class FakeThemeBuildArtifactStore implements ThemeBuildArtifactStore {
           content: artifact.content,
           mimeType: artifact.mimeType || "application/octet-stream",
           sha256,
-          sizeBytes,
+          sizeBytes: actualSizeBytes,
         });
       }
 
-      totalSizeBytes += sizeBytes;
+      totalSizeBytes += actualSizeBytes;
       manifestFiles.push({
         path: relPath,
         contentType: artifact.mimeType || "application/octet-stream",
-        sizeBytes,
+        sizeBytes: actualSizeBytes,
         sha256,
         r2Etag: `fake-etag-${sha256.slice(0, 8)}`,
       });
@@ -138,6 +160,9 @@ export class FakeThemeBuildArtifactStore implements ThemeBuildArtifactStore {
       manifestFiles[0]?.path ??
       "index.html";
 
+    const manifestCreatedAt =
+      build.startedAt ?? build.createdAt ?? new Date().toISOString();
+
     const manifest: CanonicalThemeBuildManifest = {
       buildId: buildInput.buildId,
       storefrontId: buildInput.storefrontId,
@@ -150,23 +175,33 @@ export class FakeThemeBuildArtifactStore implements ThemeBuildArtifactStore {
       sourceEntry: buildInput.entry,
       entry: buildInput.entry,
       artifactEntry,
-
       filesCount: manifestFiles.length,
       totalSizeBytes,
       files: manifestFiles,
       cssChunks,
       jsChunks,
-      createdAt: new Date().toISOString(),
+      createdAt: manifestCreatedAt,
     };
 
     const manifestKey = `${artifactPrefix}/manifest.json`;
     const manifestJsonString = JSON.stringify(manifest, null, 2);
-    this.storedObjects.set(manifestKey, {
-      content: manifestJsonString,
-      mimeType: "application/json",
-      sha256: calculateArtifactSha256(manifestJsonString),
-      sizeBytes: Buffer.byteLength(manifestJsonString, "utf8"),
-    });
+    const manifestSha = calculateArtifactSha256(manifestJsonString);
+
+    const existingManifest = this.storedObjects.get(manifestKey);
+    if (existingManifest) {
+      if (existingManifest.sha256 !== manifestSha) {
+        throw new Error(
+          `IMMUTABLE_MANIFEST_OVERWRITE_FORBIDDEN: Manifest "${manifestKey}" already exists with different hash.`,
+        );
+      }
+    } else {
+      this.storedObjects.set(manifestKey, {
+        content: manifestJsonString,
+        mimeType: "application/json",
+        sha256: manifestSha,
+        sizeBytes: Buffer.byteLength(manifestJsonString, "utf8"),
+      });
+    }
 
     return {
       artifactPrefix,

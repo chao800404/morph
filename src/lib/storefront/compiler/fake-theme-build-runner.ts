@@ -75,26 +75,31 @@ export class FakeThemeBuildRunner implements ThemeBuildRunner {
       };
     }
 
+    const htmlContent = `<!DOCTYPE html><html><head><title>Theme Preview</title><link rel="stylesheet" href="/assets/index.css"></head><body><div id="root"></div><script type="module" src="/assets/index.js"></script></body></html>`;
+    const jsContent = `// Compiled Theme Bundle for ${input.buildId}\nconsole.log("Theme loaded");`;
+    const cssContent = `/* Compiled Tailwind CSS for ${input.buildId} */\n@layer base, components, utilities;`;
+
     const defaultArtifacts: ThemeBuildArtifactFile[] = [
       {
         path: "index.html",
-        content: `<!DOCTYPE html><html><head><title>Theme Preview</title><link rel="stylesheet" href="/assets/index.css"></head><body><div id="root"></div><script type="module" src="/assets/index.js"></script></body></html>`,
+        content: htmlContent,
         mimeType: "text/html",
-        sizeBytes: 198,
+        sizeBytes: Buffer.byteLength(htmlContent, "utf8"),
       },
       {
         path: "assets/index.js",
-        content: `// Compiled Theme Bundle for ${input.buildId}\nconsole.log("Theme loaded");`,
+        content: jsContent,
         mimeType: "application/javascript",
-        sizeBytes: 1024,
+        sizeBytes: Buffer.byteLength(jsContent, "utf8"),
       },
       {
         path: "assets/index.css",
-        content: `/* Compiled Tailwind CSS for ${input.buildId} */\n@layer base, components, utilities;`,
+        content: cssContent,
         mimeType: "text/css",
-        sizeBytes: 512,
+        sizeBytes: Buffer.byteLength(cssContent, "utf8"),
       },
     ];
+
 
     const artifacts = this.options.artifacts ?? defaultArtifacts;
 

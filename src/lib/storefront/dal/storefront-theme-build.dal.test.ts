@@ -265,15 +265,17 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         build.id,
         {
           artifactPrefix: "r2://artifacts/build-1",
+          manifestJson: { entry: "src/index.tsx", filesCount: 1 },
         },
       );
       expect(succeeded.status).toBe("succeeded");
       expect(succeeded.completedAt).toBeDefined();
       expect(succeeded.inputHash).toBe("a".repeat(64));
       expect(succeeded.artifactPrefix).toBe("r2://artifacts/build-1");
+      expect(succeeded.manifestJson).toEqual({ entry: "src/index.tsx", filesCount: 1 });
     });
 
-    it("strictly requires valid non-empty artifactPrefix to transition to succeeded", async () => {
+    it("strictly requires valid non-empty artifactPrefix and manifestJson to transition to succeeded", async () => {
       seedStorefront("storefront-a");
       seedTheme("storefront-a", "theme-a");
       seedRevision("storefront-a", "theme-a", "rev-100", 1);
@@ -294,28 +296,29 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         },
       );
 
+      // Rejects empty artifactPrefix
       await expect(
         storefrontThemeBuildDal.markBuildSucceeded(
           "storefront-a",
           "theme-a",
           build.id,
-          { artifactPrefix: "" },
+          { artifactPrefix: "", manifestJson: { entry: "src/index.tsx" } },
         ),
       ).rejects.toThrow(/CANNOT_SUCCEED_BUILD_WITHOUT_ARTIFACT/);
 
+      // Rejects missing manifestJson
       await expect(
         storefrontThemeBuildDal.markBuildSucceeded(
           "storefront-a",
           "theme-a",
           build.id,
-          { artifactPrefix: "   " },
+          { artifactPrefix: "r2://artifacts", manifestJson: null as any },
         ),
-      ).rejects.toThrow(/CANNOT_SUCCEED_BUILD_WITHOUT_ARTIFACT/);
+      ).rejects.toThrow(/CANNOT_SUCCEED_BUILD_WITHOUT_MANIFEST/);
     });
 
-
-
     it("allows valid failure lifecycle: queued -> building -> failed", async () => {
+
       seedStorefront("storefront-a");
       seedTheme("storefront-a", "theme-a");
       seedRevision("storefront-a", "theme-a", "rev-100", 1);
@@ -403,8 +406,10 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         build.id,
         {
           artifactPrefix: "r2://artifacts/build-c",
+          manifestJson: { entry: "src/index.tsx" },
         },
       );
+
 
 
       // succeeded -> building ❌
@@ -481,9 +486,11 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
           build.id,
           {
             artifactPrefix: "r2://artifacts/invalid",
+            manifestJson: { entry: "src/index.tsx" },
           },
         ),
       ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
+
     });
 
 

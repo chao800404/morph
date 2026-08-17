@@ -19,21 +19,22 @@ export function getServerThemeBuildService(options?: {
   runner?: ThemeBuildRunner;
   artifactStore?: ThemeBuildArtifactStore;
 }): ThemeBuildService {
-  const runner =
-    options?.runner ??
-    ((env as any)?.Sandbox
-      ? new CloudflareSandboxViteThemeBuildRunner({
-          sandboxBinding: (env as any).Sandbox,
-        })
-      : undefined);
+  let runner = options?.runner;
+  let artifactStore = options?.artifactStore;
 
-  const artifactStore =
-    options?.artifactStore ??
-    ((env as any)?.R2_BUCKET
-      ? new CloudflareR2ThemeBuildArtifactStore({
-          r2Bucket: (env as any).R2_BUCKET,
-        })
-      : undefined);
+  if (
+    runner === undefined &&
+    artifactStore === undefined &&
+    (env as any)?.Sandbox &&
+    (env as any)?.R2_BUCKET
+  ) {
+    runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxBinding: (env as any).Sandbox,
+    });
+    artifactStore = new CloudflareR2ThemeBuildArtifactStore({
+      r2Bucket: (env as any).R2_BUCKET,
+    });
+  }
 
   return new ThemeBuildService(
     storefrontThemeBuildDal,
@@ -42,6 +43,7 @@ export function getServerThemeBuildService(options?: {
     artifactStore,
   );
 }
+
 
 
 

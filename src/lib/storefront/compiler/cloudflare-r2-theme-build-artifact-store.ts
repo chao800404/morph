@@ -163,7 +163,8 @@ export function buildThemeArtifactPrefix(
 
 /**
  * Cloudflare R2 Theme Build Artifact Store.
- * Handles immutable R2 persistence, deterministic SHA-256 verification, and canonical manifest commitment.
+ * Handles atomic immutable R2 persistence via conditional creates, deterministic SHA-256 verification,
+ * and authoritative canonical manifest commitment.
  */
 export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactStore {
   readonly id: string;
@@ -198,7 +199,12 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       );
     }
 
-    // Provenance consistency checks against immutable build & buildInput
+    // Provenance consistency checks against immutable frozen build & buildInput
+    if (build.status !== "building") {
+      throw new Error(
+        `BUILD_PROVENANCE_MISMATCH: Build must be in "building" status when persisting artifacts (current: "${build.status}").`,
+      );
+    }
     if (build.id !== buildInput.buildId) {
       throw new Error(
         `BUILD_PROVENANCE_MISMATCH: Build ID mismatch between build record (${build.id}) and buildInput (${buildInput.buildId}).`,
@@ -210,6 +216,15 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
     if (build.sourceRevisionId !== buildInput.sourceRevisionId) {
       throw new Error("BUILD_PROVENANCE_MISMATCH: Source revision mismatch between build and buildInput.");
     }
+    if (build.inputHash !== buildInput.inputHash) {
+      throw new Error("BUILD_PROVENANCE_MISMATCH: Input hash mismatch between build record and buildInput.");
+    }
+    if (build.compilerId !== buildInput.compilerId || build.compilerVersion !== buildInput.compilerVersion) {
+      throw new Error("BUILD_PROVENANCE_MISMATCH: Compiler identity mismatch between build record and buildInput.");
+    }
+    if (build.artifactPrefix !== null) {
+      throw new Error("BUILD_PROVENANCE_MISMATCH: In-flight build must have artifactPrefix set to null before persistence.");
+    }
 
     const artifactPrefix = buildThemeArtifactPrefix(
       buildInput.storefrontId,
@@ -217,13 +232,13 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       buildInput.buildId,
     );
 
-    // Stage 1: Validate and Hash all artifact files before writing
+    // Stage 1: Validate, calculate authoritative actual size, and Hash all artifact files
     const validatedFiles: Array<{
       relPath: string;
       fullKey: string;
       content: string | Uint8Array;
       mimeType: string;
-      sizeBytes: number;
+      actualSizeBytes: number;
       sha256: string;
     }> = [];
 
@@ -240,50 +255,36 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
         );
       }
 
-      const sha256 = calculateArtifactSha256(artifact.content);
-      const sizeBytes =
-        artifact.sizeBytes ??
-        (typeof artifact.content === "string"
+      // Authoritative byte size calculation
+      const actualSizeBytes =
+        typeof artifact.content === "string"
           ? Buffer.byteLength(artifact.content, "utf8")
-          : artifact.content.byteLength);
+          : artifact.content.byteLength;
 
-      totalSizeBytes += sizeBytes;
+      // Fail-closed verification if runner declared a conflicting size
+      if (artifact.sizeBytes !== undefined && artifact.sizeBytes !== actualSizeBytes) {
+        throw new Error(
+          `ARTIFACT_SIZE_MISMATCH: Declared sizeBytes (${artifact.sizeBytes}) does not match actual byte count (${actualSizeBytes}) for artifact "${artifact.path}".`,
+        );
+      }
+
+      const sha256 = calculateArtifactSha256(artifact.content);
+      totalSizeBytes += actualSizeBytes;
 
       validatedFiles.push({
         relPath,
         fullKey,
         content: artifact.content,
         mimeType: artifact.mimeType || "application/octet-stream",
-        sizeBytes,
+        actualSizeBytes,
         sha256,
       });
     }
 
-    // Stage 2: Upload all artifact files with immutability verification
+    // Stage 2: Upload all artifact files via atomic conditional creates
     const uploadedManifestFiles: CanonicalThemeBuildManifestFile[] = [];
 
     for (const item of validatedFiles) {
-      // Check existing object to enforce immutability
-      const existing = await this.r2Bucket.head(item.fullKey);
-      if (existing) {
-        const existingSha256 = existing.customMetadata?.sha256;
-        if (existingSha256 && existingSha256 !== item.sha256) {
-          throw new Error(
-            `IMMUTABLE_ARTIFACT_OVERWRITE_FORBIDDEN: Artifact at key "${item.fullKey}" already exists with different content hash (existing: ${existingSha256}, incoming: ${item.sha256}).`,
-          );
-        }
-        // If identical sha256 exists, treat as idempotent success
-        uploadedManifestFiles.push({
-          path: item.relPath,
-          contentType: item.mimeType,
-          sizeBytes: existing.size ?? item.sizeBytes,
-          sha256: item.sha256,
-          r2Etag: existing.httpEtag,
-        });
-        continue;
-      }
-
-      // Write new object to R2
       const body =
         typeof item.content === "string"
           ? item.content
@@ -291,7 +292,9 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
             ? item.content
             : new Uint8Array(item.content);
 
+      // Atomic conditional write: onlyIf etagDoesNotMatch: "*" prevents TOCTOU concurrent overwrite race
       const putResult = await this.r2Bucket.put(item.fullKey, body, {
+        onlyIf: { etagDoesNotMatch: "*" },
         httpMetadata: {
           contentType: item.mimeType,
         },
@@ -303,12 +306,52 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
         },
       });
 
+      if (putResult !== null) {
+        // Successfully created new object
+        uploadedManifestFiles.push({
+          path: item.relPath,
+          contentType: item.mimeType,
+          sizeBytes: item.actualSizeBytes,
+          sha256: item.sha256,
+          r2Etag: putResult.httpEtag,
+        });
+        continue;
+      }
+
+      // Precondition failed: object already exists in R2.
+      // MUST NOT assume identical! Verify existing object hash.
+      const existingHead = await this.r2Bucket.head(item.fullKey);
+      let existingSha256 = existingHead?.customMetadata?.sha256;
+      let existingEtag = existingHead?.httpEtag;
+      let existingSize = existingHead?.size;
+
+      if (!existingSha256) {
+        // No SHA-256 metadata present: fetch full object to verify actual content bytes
+        const existingObj = await this.r2Bucket.get(item.fullKey);
+        if (!existingObj) {
+          throw new Error(
+            `CONCURRENT_ARTIFACT_DELETION: Object "${item.fullKey}" vanished during concurrent conflict resolution.`,
+          );
+        }
+        const downloadedBytes = new Uint8Array(await existingObj.arrayBuffer());
+        existingSha256 = calculateArtifactSha256(downloadedBytes);
+        existingEtag = existingObj.httpEtag;
+        existingSize = downloadedBytes.byteLength;
+      }
+
+      if (existingSha256 !== item.sha256) {
+        throw new Error(
+          `IMMUTABLE_ARTIFACT_OVERWRITE_FORBIDDEN: Artifact at key "${item.fullKey}" already exists with different content hash (existing: ${existingSha256}, incoming: ${item.sha256}). Succeeded/immutable build artifacts cannot be overwritten.`,
+        );
+      }
+
+      // Identical SHA-256: idempotent success
       uploadedManifestFiles.push({
         path: item.relPath,
         contentType: item.mimeType,
-        sizeBytes: item.sizeBytes,
+        sizeBytes: existingSize ?? item.actualSizeBytes,
         sha256: item.sha256,
-        r2Etag: putResult?.httpEtag,
+        r2Etag: existingEtag,
       });
     }
 
@@ -319,7 +362,7 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       );
     }
 
-    // Stage 4: Construct and Commit Canonical Manifest LAST as the commit marker
+    // Stage 4: Construct and Commit Canonical Manifest LAST as the atomic commit marker
     const cssChunks = uploadedManifestFiles
       .filter((f) => f.contentType === "text/css" || f.path.endsWith(".css"))
       .map((f) => f.path);
@@ -338,6 +381,10 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       uploadedManifestFiles[0]?.path ??
       "index.html";
 
+    // Use deterministic build startedAt/createdAt timestamp for manifest reproducibility across identical retries
+    const manifestCreatedAt =
+      build.startedAt ?? build.createdAt ?? new Date().toISOString();
+
     const canonicalManifest: CanonicalThemeBuildManifest = {
       buildId: buildInput.buildId,
       storefrontId: buildInput.storefrontId,
@@ -350,20 +397,21 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       sourceEntry: buildInput.entry,
       entry: buildInput.entry,
       artifactEntry,
-
       filesCount: uploadedManifestFiles.length,
       totalSizeBytes,
       files: uploadedManifestFiles,
       cssChunks,
       jsChunks,
-      createdAt: new Date().toISOString(),
+      createdAt: manifestCreatedAt,
     };
 
     const manifestKey = `${artifactPrefix}/manifest.json`;
     const manifestJsonString = JSON.stringify(canonicalManifest, null, 2);
     const manifestSha256 = calculateArtifactSha256(manifestJsonString);
 
-    await this.r2Bucket.put(manifestKey, manifestJsonString, {
+    // Conditional create for manifest.json as well
+    const manifestPutResult = await this.r2Bucket.put(manifestKey, manifestJsonString, {
+      onlyIf: { etagDoesNotMatch: "*" },
       httpMetadata: {
         contentType: "application/json",
       },
@@ -373,6 +421,23 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
         type: "canonical-manifest",
       },
     });
+
+    if (manifestPutResult === null) {
+      // Manifest already exists - verify identical content
+      const existingManifestObj = await this.r2Bucket.get(manifestKey);
+      if (!existingManifestObj) {
+        throw new Error(
+          `CONCURRENT_MANIFEST_DELETION: Manifest "${manifestKey}" vanished during conflict check.`,
+        );
+      }
+      const existingManifestText = await existingManifestObj.text();
+      const existingManifestSha = calculateArtifactSha256(existingManifestText);
+      if (existingManifestSha !== manifestSha256) {
+        throw new Error(
+          `IMMUTABLE_MANIFEST_OVERWRITE_FORBIDDEN: Canonical manifest at "${manifestKey}" already exists with different content hash.`,
+        );
+      }
+    }
 
     return {
       artifactPrefix,

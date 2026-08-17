@@ -310,6 +310,7 @@ export const storefrontThemeBuildDal = {
           eq(storefrontThemeBuilds.compilerVersion, params.compilerVersion),
           eq(storefrontThemeBuilds.status, "succeeded"),
           isNotNull(storefrontThemeBuilds.artifactPrefix),
+          isNotNull(storefrontThemeBuilds.manifestJson),
           isNull(storefrontThemeBuilds.deletedAt),
         ),
       )
@@ -383,7 +384,7 @@ export const storefrontThemeBuildDal = {
    * State Transition: building -> succeeded
    * Throws INVALID_STATE_TRANSITION if current status is not "building".
    * Note: Build identity fields (sourceRevisionId, inputHash, compilerId, compilerVersion) are permanently frozen and cannot be altered.
-   * Requires non-empty artifactPrefix to prevent artifact-less succeeded builds.
+   * Requires non-empty artifactPrefix and non-null manifestJson to guarantee full build provenance.
    */
   async markBuildSucceeded(
     storefrontId: string,
@@ -391,7 +392,7 @@ export const storefrontThemeBuildDal = {
     buildId: string,
     options: {
       artifactPrefix: string;
-      manifestJson?: any;
+      manifestJson: any;
       diagnosticsJson?: any;
       completedAt?: string;
     },
@@ -417,6 +418,15 @@ export const storefrontThemeBuildDal = {
       );
     }
 
+    if (
+      options?.manifestJson === undefined ||
+      options?.manifestJson === null ||
+      typeof options.manifestJson !== "object"
+    ) {
+      throw new Error(
+        "CANNOT_SUCCEED_BUILD_WITHOUT_MANIFEST: markBuildSucceeded requires a valid canonical manifestJson object.",
+      );
+    }
 
     const db = await getDb();
     const now = new Date().toISOString();
@@ -427,7 +437,7 @@ export const storefrontThemeBuildDal = {
       .set({
         status: "succeeded",
         artifactPrefix: options.artifactPrefix.trim(),
-        manifestJson: options.manifestJson ?? existing.manifestJson,
+        manifestJson: options.manifestJson,
         diagnosticsJson: options.diagnosticsJson ?? existing.diagnosticsJson,
         completedAt,
         updatedAt: now,
@@ -442,6 +452,7 @@ export const storefrontThemeBuildDal = {
         ),
       )
       .returning();
+
 
 
 
