@@ -1,9 +1,9 @@
 import { fail, failure, ok } from "@/lib/db/server-result";
 import { buildFileTree } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import {
-  d1ThemeRevisionStore,
-  d1ThemeSourceStore,
-} from "@/lib/storefront/storage/d1-theme-storage";
+  themeRevisionStore,
+  themeSourceStore,
+} from "@/lib/storefront/storage/theme-storage.server";
 import {
   createThemeRevisionInputSchema,
   deleteThemeFileInputSchema,
@@ -25,12 +25,9 @@ export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
     try {
       const [treeFiles, sourceGeneration, latestPublishedRevision] =
         await Promise.all([
-          d1ThemeSourceStore.listFiles(data.storefrontId, data.themeId),
-          d1ThemeSourceStore.getSourceGeneration(
-            data.storefrontId,
-            data.themeId,
-          ),
-          d1ThemeRevisionStore.getLatestPublishedRevision(
+          themeSourceStore.listFiles(data.storefrontId, data.themeId),
+          themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
+          themeRevisionStore.getLatestPublishedRevision(
             data.storefrontId,
             data.themeId,
           ),
@@ -57,7 +54,7 @@ export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const files = await d1ThemeSourceStore.initStarterTheme(
+      const files = await themeSourceStore.initStarterTheme(
         data.storefrontId,
         data.themeId,
         context.user?.id,
@@ -79,7 +76,7 @@ export const getStorefrontThemeFile = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const file = await d1ThemeSourceStore.getFileByPath(
+      const file = await themeSourceStore.getFileByPath(
         data.storefrontId,
         data.themeId,
         data.path,
@@ -102,7 +99,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const saved = await d1ThemeSourceStore.saveFile(
+      const saved = await themeSourceStore.saveFile(
         data.storefrontId,
         data.themeId,
         data.path,
@@ -124,7 +121,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
         error instanceof Error &&
         error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
       ) {
-        const latestGen = await d1ThemeSourceStore.getSourceGeneration(
+        const latestGen = await themeSourceStore.getSourceGeneration(
           data.storefrontId,
           data.themeId,
         );
@@ -158,7 +155,7 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const saved = await d1ThemeSourceStore.saveFilesBatch(
+      const saved = await themeSourceStore.saveFilesBatch(
         data.storefrontId,
         data.themeId,
         data.files,
@@ -178,7 +175,7 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
         error instanceof Error &&
         error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
       ) {
-        const latestGen = await d1ThemeSourceStore.getSourceGeneration(
+        const latestGen = await themeSourceStore.getSourceGeneration(
           data.storefrontId,
           data.themeId,
         );
@@ -212,7 +209,7 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const success = await d1ThemeSourceStore.deleteFile(
+      const success = await themeSourceStore.deleteFile(
         data.storefrontId,
         data.themeId,
         data.path,
@@ -230,7 +227,7 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
         error instanceof Error &&
         error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
       ) {
-        const latestGen = await d1ThemeSourceStore.getSourceGeneration(
+        const latestGen = await themeSourceStore.getSourceGeneration(
           data.storefrontId,
           data.themeId,
         );
@@ -263,7 +260,7 @@ export const listStorefrontThemeRevisions = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
-      const revisions = await d1ThemeRevisionStore.listRevisions(
+      const revisions = await themeRevisionStore.listRevisions(
         data.storefrontId,
         data.themeId,
       );
@@ -283,7 +280,7 @@ export const rollbackStorefrontThemeRevision = createServerFn({ method: "POST" }
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const files = await d1ThemeRevisionStore.rollbackToRevision(
+      const files = await themeRevisionStore.rollbackToRevision(
         data.storefrontId,
         data.themeId,
         data.revisionNumber,
@@ -309,7 +306,7 @@ export const createStorefrontThemeRevision = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data, context }) => {
     try {
-      const revision = await d1ThemeRevisionStore.createRevision(
+      const revision = await themeRevisionStore.createRevision(
         data.storefrontId,
         data.themeId,
         {
