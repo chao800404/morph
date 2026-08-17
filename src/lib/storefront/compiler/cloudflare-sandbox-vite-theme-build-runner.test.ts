@@ -2,8 +2,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CloudflareSandboxViteThemeBuildRunner,
-  type CloudflareSandboxFileInfo,
   type CloudflareSandboxProvider,
+  type CloudflareSandboxReadFileOptions,
   type CloudflareSandboxSession,
 } from "./cloudflare-sandbox-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
@@ -24,7 +24,8 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
         writtenFiles.set(filePath, content);
       }),
       mkdir: vi.fn(async () => {}),
-      readFile: vi.fn(async (filePath: string, _encoding?: "utf8" | "binary" | { encoding?: "utf8" | "binary" }) => {
+      readFile: vi.fn(async (filePath: string, options?: CloudflareSandboxReadFileOptions | "utf8" | "binary") => {
+        const encoding = typeof options === "object" ? options.encoding : options;
         if (filePath.endsWith(".html")) {
           return { content: "<!DOCTYPE html><html><body><div id='root'></div></body></html>" };
         }
@@ -35,24 +36,34 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
           return { content: "/* compiled tailwind v4 */\n.grid { display: grid; }" };
         }
         if (filePath.endsWith(".png")) {
-          return { content: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) };
+          // Verify binary mode uses { encoding: "none" } and test stream return value
+          expect(encoding).toBe("none");
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+              controller.close();
+            },
+          });
+          return { content: stream };
         }
         return { content: "file content" };
       }) as any,
-      listFiles: vi.fn(async (dirPath: string): Promise<CloudflareSandboxFileInfo[]> => {
-        return [
-          { path: `${dirPath}/index.html`, isDirectory: false, sizeBytes: 56 },
-          { path: `${dirPath}/assets/index.js`, isDirectory: false, sizeBytes: 1024 },
-          { path: `${dirPath}/assets/index.css`, isDirectory: false, sizeBytes: 512 },
-          { path: `${dirPath}/assets/logo.png`, isDirectory: false, sizeBytes: 4 },
-        ];
+      exec: vi.fn(async (command: string) => {
+        if (command.includes("find /workspace/dist")) {
+          return {
+            exitCode: 0,
+            success: true,
+            stdout: "/workspace/dist/index.html\n/workspace/dist/assets/index-A1b2.js\n/workspace/dist/assets/index-C3d4.css\n/workspace/dist/assets/logo.png\n",
+            stderr: "",
+          };
+        }
+        return {
+          exitCode: 0,
+          success: true,
+          stdout: "vite build complete in 1.2s",
+          stderr: "",
+        };
       }),
-      exec: vi.fn(async () => ({
-        exitCode: 0,
-        success: true,
-        stdout: "vite build complete in 1.2s",
-        stderr: "",
-      })),
       killProcess: vi.fn(async () => {
         processKilled = true;
       }),
@@ -91,7 +102,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     ...overrides,
   });
 
-  it("orchestrates build inside isolated Cloudflare Sandbox container with pinned toolchain & dependency enforcer", async () => {
+  it("orchestrates build inside isolated Cloudflare Sandbox container with pinned toolchain, official readFile contract, and /workspace containment", async () => {
     const mock = createMockSandbox();
     const provider: CloudflareSandboxProvider = {
       getSandbox: vi.fn(async () => mock.session),
@@ -126,14 +137,16 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(writtenPkg.dependencies["@tailwindcss/vite"]).toBe("4.1.17");
     expect(writtenPkg.dependencies["@vitejs/plugin-react"]).toBe("5.2.0");
 
-    // Verify container vite.config.ts has injected dependency enforcer
+    // Verify container vite.config.ts has injected dependency enforcer AND path containment
     const writtenViteConfig = String(mock.writtenFiles.get("/workspace/vite.config.ts"));
     expect(writtenViteConfig).toContain("morph-dependency-enforcer");
     expect(writtenViteConfig).toContain("UNAPPROVED_DEPENDENCY");
+    expect(writtenViteConfig).toContain("WORKSPACE_PATH_ESCAPE");
+    expect(writtenViteConfig).toContain('!resolved.startsWith("/workspace")');
 
-    // Verify exec command invocation
+    // Verify exact pinned vite binary execution
     expect(mock.session.exec).toHaveBeenCalledWith(
-      "npx vite build --config /workspace/vite.config.ts",
+      "/opt/morph-toolchain/node_modules/.bin/vite build --config /workspace/vite.config.ts",
       expect.objectContaining({
         timeout: 30_000,
         env: { NODE_ENV: "production" },
@@ -151,6 +164,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
       const png = result.artifacts.find((a) => a.path === "assets/logo.png");
       expect(png?.mimeType).toBe("image/png");
       expect(png?.content instanceof Uint8Array).toBe(true);
+      expect(png?.sizeBytes).toBe(4);
     }
   });
 

@@ -1,4 +1,4 @@
-FROM cloudflare/sandbox:latest
+FROM docker.io/cloudflare/sandbox:0.12.7
 
 # Pre-install pinned exact toolchain & approved dependencies
 WORKDIR /opt/morph-toolchain
@@ -15,5 +15,9 @@ RUN npm init -y && \
       lucide-react@0.544.0 \
       class-variance-authority@0.7.1
 
-ENV NODE_PATH=/opt/morph-toolchain/node_modules
+# Symlink toolchain node_modules so /workspace can resolve locally without npm download
+RUN mkdir -p /workspace && ln -s /opt/morph-toolchain/node_modules /workspace/node_modules
+
+ENV PATH="/opt/morph-toolchain/node_modules/.bin:${PATH}"
+ENV NODE_PATH="/opt/morph-toolchain/node_modules"
 WORKDIR /workspace

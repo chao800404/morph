@@ -3,7 +3,6 @@ import {
   DEFAULT_APPROVED_DEPENDENCIES,
   type SandboxViteThemeBuildRunnerOptions,
 } from "./sandbox-vite-theme-build-runner.types";
-
 import type {
   ThemeBuildArtifactFile,
   ThemeBuildArtifactManifest,
@@ -21,24 +20,25 @@ export type CloudflareSandboxExecResult = {
   stderr: string;
 };
 
-export type CloudflareSandboxFileInfo = {
-  path: string;
-  isDirectory: boolean;
-  sizeBytes?: number;
+export type CloudflareSandboxReadFileOptions = {
+  encoding?: "utf-8" | "none" | "utf8" | "binary";
+};
+
+export type CloudflareSandboxReadFileResult = {
+  content: string | Uint8Array | ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>;
 };
 
 /**
  * Formal contract for Cloudflare Sandbox container sessions.
- * Compatible with @cloudflare/sandbox SandboxClient and test doubles.
+ * Matches official @cloudflare/sandbox SandboxClient API.
  */
 export interface CloudflareSandboxSession {
   writeFile(filePath: string, content: string | Uint8Array): Promise<void>;
   mkdir(dirPath: string, options?: { recursive?: boolean }): Promise<void>;
   readFile(
     filePath: string,
-    encoding?: "utf8" | "binary" | { encoding?: "utf8" | "binary" },
-  ): Promise<{ content: string | Uint8Array } | string | Uint8Array>;
-  listFiles?(dirPath: string): Promise<CloudflareSandboxFileInfo[]>;
+    options?: CloudflareSandboxReadFileOptions | "utf8" | "binary",
+  ): Promise<CloudflareSandboxReadFileResult | string | Uint8Array>;
   exec(
     command: string,
     options?: { timeout?: number; timeoutMs?: number; env?: Record<string, string> },
@@ -97,6 +97,52 @@ function isTextMimeType(mime: string): boolean {
   );
 }
 
+function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
+  let totalLength = 0;
+  for (const arr of arrays) {
+    totalLength += arr.length;
+  }
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const arr of arrays) {
+    result.set(arr, offset);
+    offset += arr.length;
+  }
+  return result;
+}
+
+/**
+ * Converts any stream, buffer, or string payload into a pure Uint8Array.
+ */
+async function fileContentToUint8Array(content: unknown): Promise<Uint8Array> {
+  if (content instanceof Uint8Array) {
+    return content;
+  }
+  if (typeof content === "string") {
+    return new TextEncoder().encode(content);
+  }
+  if (content && typeof (content as any)[Symbol.asyncIterator] === "function") {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of content as AsyncIterable<Uint8Array>) {
+      chunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+    }
+    return concatUint8Arrays(chunks);
+  }
+  if (content && typeof (content as any).getReader === "function") {
+    const reader = (content as ReadableStream<Uint8Array>).getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value instanceof Uint8Array ? value : new Uint8Array(value));
+      }
+    }
+    return concatUint8Arrays(chunks);
+  }
+  return new Uint8Array(0);
+}
+
 /**
  * Pinned exact toolchain versions for deterministic sandbox builds.
  */
@@ -122,7 +168,7 @@ export const PINNED_SANDBOX_DEPENDENCIES: Record<string, string> = {
  * 2. Morph server runtime secrets (D1, R2 credentials, BetterAuth secrets) are NEVER passed into the container.
  * 3. Strict containment check prevents path traversal (e.g. `../../`) before files are transmitted.
  * 4. Pinned approved dependencies ensure deterministic builds with no wildcard npm downloads.
- * 5. Injected dependency allowlist plugin blocks unapproved package imports inside container Vite.
+ * 5. Injected dependency allowlist and /workspace containment plugin blocks unapproved package imports and path escapes inside container Vite.
  * 6. On timeout, container process is killed and the sandbox session is immediately destroyed.
  * 7. True binary asset preservation for dist files (PNG, WOFF2, TTF kept as Uint8Array).
  */
@@ -260,7 +306,6 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         const { getSandbox } = await import("@cloudflare/sandbox");
         sandbox = getSandbox(this.sandboxBinding as DurableObjectNamespace<Sandbox>, input.buildId) as any;
       } else {
-
         const msg = "SANDBOX_UNAVAILABLE: Cloudflare Sandbox binding or provider is not configured in current environment";
         addLog("error", msg);
         return {
@@ -360,9 +405,10 @@ if (container) {
       );
       await sandbox.writeFile(`${workspaceRoot}/package.json`, packageJson);
 
-      // Write controlled vite.config.ts with Morph dependency enforcer inside container
+      // Write controlled vite.config.ts with Morph dependency enforcer AND workspace path containment inside container
       const approvedArrayJson = JSON.stringify(Array.from(this.approvedDependencies));
       const viteConfigContent = `
+import path from "node:path";
 import { defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 import viteReact from "@vitejs/plugin-react";
@@ -376,14 +422,37 @@ const dependencyEnforcerPlugin = {
     if (importer && importer.includes("/node_modules/")) {
       return null;
     }
+
+    // Enforce /workspace filesystem containment for relative and absolute imports
     if (
       source.startsWith("./") ||
       source.startsWith("../") ||
       source.startsWith("/") ||
-      (typeof source === "string" && source.startsWith("\\0"))
+      path.isAbsolute(source)
     ) {
+      let resolved;
+      if (source.startsWith("/")) {
+        resolved = path.resolve("/workspace", source.slice(1));
+      } else if (path.isAbsolute(source)) {
+        resolved = path.resolve(source);
+      } else {
+        const importerDir = importer ? path.dirname(importer) : "/workspace";
+        resolved = path.resolve(importerDir, source);
+      }
+
+      const rel = path.relative("/workspace", resolved);
+      if (rel.startsWith("..") || !resolved.startsWith("/workspace")) {
+        throw new Error(
+          'WORKSPACE_PATH_ESCAPE: Import "' + source + '" resolves outside workspace root: "' + resolved + '"'
+        );
+      }
       return null;
     }
+
+    if (typeof source === "string" && source.startsWith("\\0")) {
+      return null;
+    }
+
     const basePkg = source.startsWith("@")
       ? source.split("/").slice(0, 2).join("/")
       : source.split("/")[0];
@@ -413,9 +482,9 @@ export default defineConfig({
 
       addLog("info", "Executing Vite build inside Cloudflare Sandbox container...");
 
-      // Execute build inside container with timeout guard
+      // Execute build inside container with exact pinned Vite binary and timeout guard
       const execResult = await sandbox.exec(
-        `npx vite build --config ${workspaceRoot}/vite.config.ts`,
+        `/opt/morph-toolchain/node_modules/.bin/vite build --config ${workspaceRoot}/vite.config.ts`,
         {
           timeout: this.maxDurationMs,
           timeoutMs: this.maxDurationMs,
@@ -452,47 +521,69 @@ export default defineConfig({
         };
       }
 
-      // Collect dist artifacts from container
+      // Discover dist artifacts dynamically from container filesystem using find
+      const findResult = await sandbox.exec(`find ${workspaceRoot}/dist -type f -print`);
+      const filePaths = (findResult.stdout || "")
+        .split("\n")
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0);
+
+      if (filePaths.length === 0) {
+        const msg = "DIST_NOT_FOUND: Vite build did not produce any output files in /workspace/dist";
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "output-collection",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
       const distDir = `${workspaceRoot}/dist`;
       const artifacts: ThemeBuildArtifactFile[] = [];
       let totalOutputBytes = 0;
 
-      // Handle file list if listFiles is available, or collect standard dist files
-      const fileList = sandbox.listFiles
-        ? await sandbox.listFiles(distDir)
-        : [
-            { path: `${distDir}/index.html`, isDirectory: false },
-            { path: `${distDir}/assets/index.js`, isDirectory: false },
-            { path: `${distDir}/assets/index.css`, isDirectory: false },
-          ];
+      for (const fullFilePath of filePaths) {
+        const relPath = fullFilePath.startsWith(distDir)
+          ? fullFilePath.slice(distDir.length).replace(/^\/+/, "")
+          : fullFilePath;
 
-      for (const item of fileList) {
-        if (!item.isDirectory) {
-          const relPath = item.path.startsWith(distDir)
-            ? item.path.slice(distDir.length).replace(/^\/+/, "")
-            : item.path;
+        const mimeType = getMimeType(relPath);
+        const isText = isTextMimeType(mimeType);
 
-          const mimeType = getMimeType(relPath);
-          const isText = isTextMimeType(mimeType);
+        let content: string | Uint8Array;
+        let sizeBytes: number;
 
-          const readResult = await sandbox.readFile(item.path, isText ? "utf8" : "binary");
-          const content =
+        if (isText) {
+          const readResult = await sandbox.readFile(fullFilePath, { encoding: "utf-8" });
+          const raw =
             readResult && typeof readResult === "object" && "content" in readResult
-              ? (readResult as { content: string | Uint8Array }).content
-              : (readResult as string | Uint8Array);
-
-          const sizeBytes =
-            item.sizeBytes ??
-            (typeof content === "string" ? Buffer.byteLength(content, "utf8") : content.byteLength);
-          totalOutputBytes += sizeBytes;
-
-          artifacts.push({
-            path: relPath,
-            content,
-            mimeType,
-            sizeBytes,
-          });
+              ? readResult.content
+              : readResult;
+          content = typeof raw === "string" ? raw : new TextDecoder().decode(await fileContentToUint8Array(raw));
+          sizeBytes = Buffer.byteLength(content, "utf8");
+        } else {
+          const readResult = await sandbox.readFile(fullFilePath, { encoding: "none" });
+          const raw =
+            readResult && typeof readResult === "object" && "content" in readResult
+              ? readResult.content
+              : readResult;
+          content = await fileContentToUint8Array(raw);
+          sizeBytes = content.byteLength;
         }
+
+        totalOutputBytes += sizeBytes;
+
+        artifacts.push({
+          path: relPath,
+          content,
+          mimeType,
+          sizeBytes,
+        });
       }
 
       // Guard: Check output size limit
