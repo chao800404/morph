@@ -72,7 +72,8 @@ function isTextMimeType(mime: string): boolean {
 export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
   readonly id: string;
   readonly version: string;
-  readonly isolation = "isolated-process" as const;
+  readonly isolation = "local-in-process" as const;
+
 
   readonly compilerId = "tailwind-v4-build";
   readonly compilerVersion = "4.1.17";

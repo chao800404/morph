@@ -1,7 +1,9 @@
+import type { Sandbox } from "@cloudflare/sandbox";
 import {
   DEFAULT_APPROVED_DEPENDENCIES,
   type SandboxViteThemeBuildRunnerOptions,
 } from "./sandbox-vite-theme-build-runner.types";
+
 import type {
   ThemeBuildArtifactFile,
   ThemeBuildArtifactManifest,
@@ -13,7 +15,8 @@ import type {
 } from "./theme-build-runner.types";
 
 export type CloudflareSandboxExecResult = {
-  exitCode: number;
+  exitCode?: number;
+  success?: boolean;
   stdout: string;
   stderr: string;
 };
@@ -26,21 +29,21 @@ export type CloudflareSandboxFileInfo = {
 
 /**
  * Formal contract for Cloudflare Sandbox container sessions.
- * In production Cloudflare Workers runtime, this delegates to `@cloudflare/sandbox` (getSandbox(env.Sandbox, buildId)).
+ * Compatible with @cloudflare/sandbox SandboxClient and test doubles.
  */
 export interface CloudflareSandboxSession {
   writeFile(filePath: string, content: string | Uint8Array): Promise<void>;
   mkdir(dirPath: string, options?: { recursive?: boolean }): Promise<void>;
-  readFile(filePath: string, encoding: "utf8"): Promise<string>;
-  readFile(filePath: string, encoding: "binary"): Promise<Uint8Array>;
-  readFile(filePath: string, encoding?: "utf8" | "binary"): Promise<string | Uint8Array>;
-  listFiles(dirPath: string): Promise<CloudflareSandboxFileInfo[]>;
+  readFile(
+    filePath: string,
+    encoding?: "utf8" | "binary" | { encoding?: "utf8" | "binary" },
+  ): Promise<{ content: string | Uint8Array } | string | Uint8Array>;
+  listFiles?(dirPath: string): Promise<CloudflareSandboxFileInfo[]>;
   exec(
     command: string,
-    args: string[],
-    options?: { timeoutMs?: number; env?: Record<string, string> },
+    options?: { timeout?: number; timeoutMs?: number; env?: Record<string, string> },
   ): Promise<CloudflareSandboxExecResult>;
-  killProcess(pid?: number): Promise<void>;
+  killProcess?(pid?: number): Promise<void>;
   destroy(): Promise<void>;
 }
 
@@ -95,6 +98,22 @@ function isTextMimeType(mime: string): boolean {
 }
 
 /**
+ * Pinned exact toolchain versions for deterministic sandbox builds.
+ */
+export const PINNED_SANDBOX_DEPENDENCIES: Record<string, string> = {
+  "react": "19.2.1",
+  "react-dom": "19.2.1",
+  "clsx": "2.1.1",
+  "tailwind-merge": "3.4.0",
+  "lucide-react": "0.544.0",
+  "class-variance-authority": "0.7.1",
+  "tailwindcss": "4.1.17",
+  "@tailwindcss/vite": "4.1.17",
+  "@vitejs/plugin-react": "5.2.0",
+  "vite": "7.2.7",
+};
+
+/**
  * Cloudflare Sandbox Vite Theme Build Runner.
  * Executes untrusted customer theme compilation inside an isolated Cloudflare Sandbox container.
  *
@@ -102,9 +121,10 @@ function isTextMimeType(mime: string): boolean {
  * 1. Theme code executes strictly inside a dedicated Cloudflare Sandbox container session.
  * 2. Morph server runtime secrets (D1, R2 credentials, BetterAuth secrets) are NEVER passed into the container.
  * 3. Strict containment check prevents path traversal (e.g. `../../`) before files are transmitted.
- * 4. Whitelisted approved dependencies ensure no arbitrary npm package install/postinstall scripts.
- * 5. On timeout, container process is killed and the sandbox session is immediately destroyed.
- * 6. True binary asset preservation for dist files (PNG, WOFF2, TTF kept as Uint8Array).
+ * 4. Pinned approved dependencies ensure deterministic builds with no wildcard npm downloads.
+ * 5. Injected dependency allowlist plugin blocks unapproved package imports inside container Vite.
+ * 6. On timeout, container process is killed and the sandbox session is immediately destroyed.
+ * 7. True binary asset preservation for dist files (PNG, WOFF2, TTF kept as Uint8Array).
  */
 export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
   readonly id: string;
@@ -198,7 +218,6 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     if (totalSourceBytes > this.maxSourceSizeBytes) {
       const msg = `LIMIT_EXCEEDED: Theme total source size (${totalSourceBytes} bytes) exceeds limit of ${this.maxSourceSizeBytes} bytes`;
       addLog("error", msg);
-
       return {
         success: false,
         errorMessage: msg,
@@ -230,26 +249,35 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       }
     }
 
-    if (!this.sandboxProvider) {
-      const msg = "SANDBOX_UNAVAILABLE: Cloudflare Sandbox provider is not configured in current environment";
-      addLog("error", msg);
-      return {
-        success: false,
-        errorMessage: msg,
-        diagnosticsJson: {
-          stage: "sandbox-init",
-          errors: [{ severity: "error", message: msg }],
-        },
-        logs,
-        durationMs: Date.now() - startTime,
-      };
-    }
-
     let sandbox: CloudflareSandboxSession | null = null;
 
     try {
       addLog("info", "Acquiring isolated Cloudflare Sandbox container session...");
-      sandbox = await this.sandboxProvider.getSandbox(this.sandboxBinding, input.buildId);
+
+      if (this.sandboxProvider) {
+        sandbox = await this.sandboxProvider.getSandbox(this.sandboxBinding, input.buildId);
+      } else if (this.sandboxBinding) {
+        const { getSandbox } = await import("@cloudflare/sandbox");
+        sandbox = getSandbox(this.sandboxBinding as DurableObjectNamespace<Sandbox>, input.buildId) as any;
+      } else {
+
+        const msg = "SANDBOX_UNAVAILABLE: Cloudflare Sandbox binding or provider is not configured in current environment";
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "sandbox-init",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      if (!sandbox) {
+        throw new Error("Failed to initialize Cloudflare Sandbox session");
+      }
 
       const workspaceRoot = "/workspace";
       await sandbox.mkdir(workspaceRoot, { recursive: true });
@@ -313,10 +341,12 @@ if (container) {
         await sandbox.writeFile(indexPath, indexHtml);
       }
 
-      // Write controlled package.json in container
+      // Write controlled package.json with exact pinned dependencies (deterministic toolchain)
       const dependenciesObj: Record<string, string> = {};
       for (const dep of this.approvedDependencies) {
-        dependenciesObj[dep] = "*";
+        if (PINNED_SANDBOX_DEPENDENCIES[dep]) {
+          dependenciesObj[dep] = PINNED_SANDBOX_DEPENDENCIES[dep];
+        }
       }
       const packageJson = JSON.stringify(
         {
@@ -330,15 +360,46 @@ if (container) {
       );
       await sandbox.writeFile(`${workspaceRoot}/package.json`, packageJson);
 
-      // Write controlled vite.config.ts in container
+      // Write controlled vite.config.ts with Morph dependency enforcer inside container
+      const approvedArrayJson = JSON.stringify(Array.from(this.approvedDependencies));
       const viteConfigContent = `
 import { defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 import viteReact from "@vitejs/plugin-react";
 
+const approvedSet = new Set(${approvedArrayJson});
+
+const dependencyEnforcerPlugin = {
+  name: "morph-dependency-enforcer",
+  enforce: "pre",
+  resolveId(source, importer) {
+    if (importer && importer.includes("/node_modules/")) {
+      return null;
+    }
+    if (
+      source.startsWith("./") ||
+      source.startsWith("../") ||
+      source.startsWith("/") ||
+      (typeof source === "string" && source.startsWith("\\0"))
+    ) {
+      return null;
+    }
+    const basePkg = source.startsWith("@")
+      ? source.split("/").slice(0, 2).join("/")
+      : source.split("/")[0];
+
+    if (!approvedSet.has(source) && !approvedSet.has(basePkg)) {
+      throw new Error(
+        "UNAPPROVED_DEPENDENCY: Theme imports unapproved module \\"" + source + "\\". Approved dependencies: " + Array.from(approvedSet).join(", ")
+      );
+    }
+    return null;
+  }
+};
+
 export default defineConfig({
   root: "${workspaceRoot}",
-  plugins: [tailwindcss(), viteReact()],
+  plugins: [tailwindcss(), viteReact(), dependencyEnforcerPlugin],
   build: {
     outDir: "${workspaceRoot}/dist",
     emptyOutDir: true,
@@ -350,14 +411,13 @@ export default defineConfig({
 `;
       await sandbox.writeFile(`${workspaceRoot}/vite.config.ts`, viteConfigContent);
 
-
       addLog("info", "Executing Vite build inside Cloudflare Sandbox container...");
 
       // Execute build inside container with timeout guard
       const execResult = await sandbox.exec(
-        "npx",
-        ["vite", "build", "--config", `${workspaceRoot}/vite.config.ts`],
+        `npx vite build --config ${workspaceRoot}/vite.config.ts`,
         {
+          timeout: this.maxDurationMs,
           timeoutMs: this.maxDurationMs,
           // Zero Morph server secrets passed into container
           env: {
@@ -370,7 +430,8 @@ export default defineConfig({
         addLog("info", execResult.stdout);
       }
 
-      if (execResult.exitCode !== 0) {
+      const isSuccess = execResult.success ?? execResult.exitCode === 0;
+      if (!isSuccess) {
         const errorMsg = execResult.stderr || execResult.stdout || "Vite build exited with non-zero status code";
         addLog("error", errorMsg);
 
@@ -393,11 +454,19 @@ export default defineConfig({
 
       // Collect dist artifacts from container
       const distDir = `${workspaceRoot}/dist`;
-      const allFiles = await sandbox.listFiles(distDir);
       const artifacts: ThemeBuildArtifactFile[] = [];
       let totalOutputBytes = 0;
 
-      for (const item of allFiles) {
+      // Handle file list if listFiles is available, or collect standard dist files
+      const fileList = sandbox.listFiles
+        ? await sandbox.listFiles(distDir)
+        : [
+            { path: `${distDir}/index.html`, isDirectory: false },
+            { path: `${distDir}/assets/index.js`, isDirectory: false },
+            { path: `${distDir}/assets/index.css`, isDirectory: false },
+          ];
+
+      for (const item of fileList) {
         if (!item.isDirectory) {
           const relPath = item.path.startsWith(distDir)
             ? item.path.slice(distDir.length).replace(/^\/+/, "")
@@ -406,11 +475,15 @@ export default defineConfig({
           const mimeType = getMimeType(relPath);
           const isText = isTextMimeType(mimeType);
 
-          const content = isText
-            ? await sandbox.readFile(item.path, "utf8")
-            : await sandbox.readFile(item.path, "binary");
+          const readResult = await sandbox.readFile(item.path, isText ? "utf8" : "binary");
+          const content =
+            readResult && typeof readResult === "object" && "content" in readResult
+              ? (readResult as { content: string | Uint8Array }).content
+              : (readResult as string | Uint8Array);
 
-          const sizeBytes = item.sizeBytes ?? (typeof content === "string" ? Buffer.byteLength(content, "utf8") : content.byteLength);
+          const sizeBytes =
+            item.sizeBytes ??
+            (typeof content === "string" ? Buffer.byteLength(content, "utf8") : content.byteLength);
           totalOutputBytes += sizeBytes;
 
           artifacts.push({
@@ -473,7 +546,7 @@ export default defineConfig({
       addLog("error", `Sandbox build error: ${errMessage}`);
 
       // Ensure timeout destroys container process immediately
-      if (sandbox && errMessage.includes("TIMEOUT")) {
+      if (sandbox && errMessage.includes("TIMEOUT") && sandbox.killProcess) {
         try {
           await sandbox.killProcess();
         } catch {}

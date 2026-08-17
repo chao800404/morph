@@ -1,0 +1,19 @@
+FROM cloudflare/sandbox:latest
+
+# Pre-install pinned exact toolchain & approved dependencies
+WORKDIR /opt/morph-toolchain
+RUN npm init -y && \
+    npm install --save-exact \
+      vite@7.2.7 \
+      tailwindcss@4.1.17 \
+      @tailwindcss/vite@4.1.17 \
+      @vitejs/plugin-react@5.2.0 \
+      react@19.2.1 \
+      react-dom@19.2.1 \
+      clsx@2.1.1 \
+      tailwind-merge@3.4.0 \
+      lucide-react@0.544.0 \
+      class-variance-authority@0.7.1
+
+ENV NODE_PATH=/opt/morph-toolchain/node_modules
+WORKDIR /workspace

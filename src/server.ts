@@ -40,6 +40,8 @@ if (import.meta.hot) {
   });
 }
 
+export { Sandbox } from "@cloudflare/sandbox";
+
 export default {
   async fetch(
     ...args: Parameters<StartRequestHandler>
@@ -47,3 +49,4 @@ export default {
     return (await getHandler())(...args);
   },
 };
+

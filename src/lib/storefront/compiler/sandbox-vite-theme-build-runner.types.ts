@@ -29,8 +29,10 @@ export const DEFAULT_APPROVED_DEPENDENCIES: string[] = [
   "class-variance-authority",
   "tailwindcss",
   "@tailwindcss/vite",
+  "@vitejs/plugin-react",
   "vite",
   "vite/modulepreload-polyfill",
 ];
+
 
 

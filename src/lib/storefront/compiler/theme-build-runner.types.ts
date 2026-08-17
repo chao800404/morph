@@ -112,6 +112,7 @@ export type ThemeBuildRunnerInput = Readonly<{
 export interface ThemeBuildRunner {
   readonly id: string;
   readonly version: string;
-  readonly isolation: "isolated-process" | "sandbox-container" | "fake-mock";
+  readonly isolation: "local-in-process" | "sandbox-container" | "fake-mock";
   run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult>;
 }
+

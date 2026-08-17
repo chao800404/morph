@@ -24,21 +24,20 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
         writtenFiles.set(filePath, content);
       }),
       mkdir: vi.fn(async () => {}),
-      readFile: vi.fn(async (filePath: string, _encoding?: "utf8" | "binary") => {
-
+      readFile: vi.fn(async (filePath: string, _encoding?: "utf8" | "binary" | { encoding?: "utf8" | "binary" }) => {
         if (filePath.endsWith(".html")) {
-          return "<!DOCTYPE html><html><body><div id='root'></div></body></html>";
+          return { content: "<!DOCTYPE html><html><body><div id='root'></div></body></html>" };
         }
         if (filePath.endsWith(".js")) {
-          return 'console.log("compiled bundle");';
+          return { content: 'console.log("compiled bundle");' };
         }
         if (filePath.endsWith(".css")) {
-          return "/* compiled tailwind v4 */\n.grid { display: grid; }";
+          return { content: "/* compiled tailwind v4 */\n.grid { display: grid; }" };
         }
         if (filePath.endsWith(".png")) {
-          return new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+          return { content: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) };
         }
-        return "file content";
+        return { content: "file content" };
       }) as any,
       listFiles: vi.fn(async (dirPath: string): Promise<CloudflareSandboxFileInfo[]> => {
         return [
@@ -50,6 +49,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
       }),
       exec: vi.fn(async () => ({
         exitCode: 0,
+        success: true,
         stdout: "vite build complete in 1.2s",
         stderr: "",
       })),
@@ -91,7 +91,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     ...overrides,
   });
 
-  it("orchestrates build inside isolated Cloudflare Sandbox container and destroys container on completion", async () => {
+  it("orchestrates build inside isolated Cloudflare Sandbox container with pinned toolchain & dependency enforcer", async () => {
     const mock = createMockSandbox();
     const provider: CloudflareSandboxProvider = {
       getSandbox: vi.fn(async () => mock.session),
@@ -118,11 +118,24 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
 
     expect(result.success).toBe(true);
     expect(provider.getSandbox).toHaveBeenCalledWith({ name: "SANDBOX_DO" }, "sandbox-build-123");
+
+    // Verify container package.json has pinned exact toolchain dependencies
+    const writtenPkg = JSON.parse(String(mock.writtenFiles.get("/workspace/package.json")));
+    expect(writtenPkg.dependencies["react"]).toBe("19.2.1");
+    expect(writtenPkg.dependencies["tailwindcss"]).toBe("4.1.17");
+    expect(writtenPkg.dependencies["@tailwindcss/vite"]).toBe("4.1.17");
+    expect(writtenPkg.dependencies["@vitejs/plugin-react"]).toBe("5.2.0");
+
+    // Verify container vite.config.ts has injected dependency enforcer
+    const writtenViteConfig = String(mock.writtenFiles.get("/workspace/vite.config.ts"));
+    expect(writtenViteConfig).toContain("morph-dependency-enforcer");
+    expect(writtenViteConfig).toContain("UNAPPROVED_DEPENDENCY");
+
+    // Verify exec command invocation
     expect(mock.session.exec).toHaveBeenCalledWith(
-      "npx",
-      ["vite", "build", "--config", "/workspace/vite.config.ts"],
+      "npx vite build --config /workspace/vite.config.ts",
       expect.objectContaining({
-        timeoutMs: 30_000,
+        timeout: 30_000,
         env: { NODE_ENV: "production" },
       }),
     );
@@ -203,6 +216,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     const mock = createMockSandbox({
       exec: vi.fn(async () => ({
         exitCode: 1,
+        success: false,
         stdout: "",
         stderr: "SyntaxError: Unexpected token in /workspace/src/pages/index.tsx (10:4)",
       })),
