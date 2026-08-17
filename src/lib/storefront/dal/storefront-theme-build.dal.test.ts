@@ -273,6 +273,47 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
       expect(succeeded.artifactPrefix).toBe("r2://artifacts/build-1");
     });
 
+    it("strictly requires valid non-empty artifactPrefix to transition to succeeded", async () => {
+      seedStorefront("storefront-a");
+      seedTheme("storefront-a", "theme-a");
+      seedRevision("storefront-a", "theme-a", "rev-100", 1);
+
+      const build = await storefrontThemeBuildDal.createBuild(
+        "storefront-a",
+        "theme-a",
+        { sourceRevisionId: "rev-100" },
+      );
+      await storefrontThemeBuildDal.markBuildStarted(
+        "storefront-a",
+        "theme-a",
+        build.id,
+        {
+          inputHash: "a".repeat(64),
+          compilerId: "tailwind-v4",
+          compilerVersion: "4.1.17",
+        },
+      );
+
+      await expect(
+        storefrontThemeBuildDal.markBuildSucceeded(
+          "storefront-a",
+          "theme-a",
+          build.id,
+          { artifactPrefix: "" },
+        ),
+      ).rejects.toThrow(/CANNOT_SUCCEED_BUILD_WITHOUT_ARTIFACT/);
+
+      await expect(
+        storefrontThemeBuildDal.markBuildSucceeded(
+          "storefront-a",
+          "theme-a",
+          build.id,
+          { artifactPrefix: "   " },
+        ),
+      ).rejects.toThrow(/CANNOT_SUCCEED_BUILD_WITHOUT_ARTIFACT/);
+    });
+
+
 
     it("allows valid failure lifecycle: queued -> building -> failed", async () => {
       seedStorefront("storefront-a");
@@ -360,8 +401,11 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         "storefront-a",
         "theme-a",
         build.id,
-        {},
+        {
+          artifactPrefix: "r2://artifacts/build-c",
+        },
       );
+
 
       // succeeded -> building ❌
       await expect(
@@ -435,10 +479,13 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
           "storefront-a",
           "theme-a",
           build.id,
-          {},
+          {
+            artifactPrefix: "r2://artifacts/invalid",
+          },
         ),
       ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
     });
+
 
     it("retrieves materialization source (build and revision) from DAL", async () => {
       seedStorefront("storefront-a");

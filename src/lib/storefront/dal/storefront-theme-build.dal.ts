@@ -6,7 +6,8 @@ import {
 } from "@/db/storefront.schema";
 import type { StorefrontThemeBuildDTO } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+
 
 function mapBuildRowToDTO(
   row: typeof storefrontThemeBuilds.$inferSelect,
@@ -308,6 +309,7 @@ export const storefrontThemeBuildDal = {
           eq(storefrontThemeBuilds.compilerId, params.compilerId),
           eq(storefrontThemeBuilds.compilerVersion, params.compilerVersion),
           eq(storefrontThemeBuilds.status, "succeeded"),
+          isNotNull(storefrontThemeBuilds.artifactPrefix),
           isNull(storefrontThemeBuilds.deletedAt),
         ),
       )
@@ -317,12 +319,10 @@ export const storefrontThemeBuildDal = {
     return row ? mapBuildRowToDTO(row) : null;
   },
 
-
   /**
    * State Transition: queued -> building with atomic compiler/input identity freeze.
    * Throws INVALID_STATE_TRANSITION if current status is not "queued".
    */
-
   async markBuildStarted(
     storefrontId: string,
     themeId: string,
@@ -383,13 +383,14 @@ export const storefrontThemeBuildDal = {
    * State Transition: building -> succeeded
    * Throws INVALID_STATE_TRANSITION if current status is not "building".
    * Note: Build identity fields (sourceRevisionId, inputHash, compilerId, compilerVersion) are permanently frozen and cannot be altered.
+   * Requires non-empty artifactPrefix to prevent artifact-less succeeded builds.
    */
   async markBuildSucceeded(
     storefrontId: string,
     themeId: string,
     buildId: string,
-    options?: {
-      artifactPrefix?: string;
+    options: {
+      artifactPrefix: string;
       manifestJson?: any;
       diagnosticsJson?: any;
       completedAt?: string;
@@ -406,17 +407,28 @@ export const storefrontThemeBuildDal = {
       );
     }
 
+    if (
+      !options?.artifactPrefix ||
+      typeof options.artifactPrefix !== "string" ||
+      options.artifactPrefix.trim().length === 0
+    ) {
+      throw new Error(
+        "CANNOT_SUCCEED_BUILD_WITHOUT_ARTIFACT: markBuildSucceeded requires a valid non-empty artifactPrefix.",
+      );
+    }
+
+
     const db = await getDb();
     const now = new Date().toISOString();
-    const completedAt = options?.completedAt ?? now;
+    const completedAt = options.completedAt ?? now;
 
     const [updated] = await db
       .update(storefrontThemeBuilds)
       .set({
         status: "succeeded",
-        artifactPrefix: options?.artifactPrefix ?? existing.artifactPrefix,
-        manifestJson: options?.manifestJson ?? existing.manifestJson,
-        diagnosticsJson: options?.diagnosticsJson ?? existing.diagnosticsJson,
+        artifactPrefix: options.artifactPrefix.trim(),
+        manifestJson: options.manifestJson ?? existing.manifestJson,
+        diagnosticsJson: options.diagnosticsJson ?? existing.diagnosticsJson,
         completedAt,
         updatedAt: now,
       })
@@ -430,6 +442,7 @@ export const storefrontThemeBuildDal = {
         ),
       )
       .returning();
+
 
 
     if (!updated) {

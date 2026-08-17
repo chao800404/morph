@@ -1,4 +1,9 @@
+import { env } from "cloudflare:workers";
 import { failure, ok } from "@/lib/db/server-result";
+import { CloudflareR2ThemeBuildArtifactStore } from "@/lib/storefront/compiler/cloudflare-r2-theme-build-artifact-store";
+import { CloudflareSandboxViteThemeBuildRunner } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-theme-build-runner";
+import type { ThemeBuildArtifactStore } from "@/lib/storefront/compiler/theme-build-artifact-store.types";
+import { materializeThemeBuildInput } from "@/lib/storefront/compiler/theme-build-materializer";
 import type { ThemeBuildRunner } from "@/lib/storefront/compiler/theme-build-runner.types";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { ThemeBuildService } from "@/lib/storefront/service/theme-build.service";
@@ -12,9 +17,32 @@ import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
 export function getServerThemeBuildService(options?: {
   runner?: ThemeBuildRunner;
+  artifactStore?: ThemeBuildArtifactStore;
 }): ThemeBuildService {
-  return new ThemeBuildService(storefrontThemeBuildDal, options?.runner);
+  const runner =
+    options?.runner ??
+    ((env as any)?.Sandbox
+      ? new CloudflareSandboxViteThemeBuildRunner({
+          sandboxBinding: (env as any).Sandbox,
+        })
+      : undefined);
+
+  const artifactStore =
+    options?.artifactStore ??
+    ((env as any)?.R2_BUCKET
+      ? new CloudflareR2ThemeBuildArtifactStore({
+          r2Bucket: (env as any).R2_BUCKET,
+        })
+      : undefined);
+
+  return new ThemeBuildService(
+    storefrontThemeBuildDal,
+    runner,
+    materializeThemeBuildInput,
+    artifactStore,
+  );
 }
+
 
 
 export const createPreviewBuild = createServerFn({ method: "POST" })

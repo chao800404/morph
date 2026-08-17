@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeThemeBuildArtifactStore } from "../compiler/fake-theme-build-artifact-store";
 import { FakeThemeBuildRunner } from "../compiler/fake-theme-build-runner";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
 
@@ -60,19 +61,20 @@ beforeEach(() => {
       theme_id text NOT NULL,
       revision_number integer NOT NULL,
       message text,
-      source text,
+      source text DEFAULT 'manual' NOT NULL,
       snapshot text NOT NULL,
       created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       deleted_at text
     );
+
     CREATE TABLE storefront_theme_builds (
       id text PRIMARY KEY NOT NULL,
       storefront_id text NOT NULL,
       theme_id text NOT NULL,
       source_revision_id text NOT NULL,
-      status text DEFAULT 'queued' NOT NULL,
+      status text NOT NULL,
       input_hash text,
       compiler_id text,
       compiler_version text,
@@ -91,7 +93,12 @@ beforeEach(() => {
 
   const db = drizzle(sqlite, { schema: storefrontSchema });
   vi.mocked(getDb).mockResolvedValue(db as any);
-  service = new ThemeBuildService(storefrontThemeBuildDal);
+  service = new ThemeBuildService(
+    storefrontThemeBuildDal,
+    undefined,
+    undefined,
+    new FakeThemeBuildArtifactStore(),
+  );
 });
 
 afterEach(() => {
@@ -232,22 +239,64 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     });
 
     expect(build.status).toBe("succeeded");
+    expect(build.artifactPrefix).toBe(`storefronts/storefront-1/themes/theme-1/builds/${build.id}`);
     expect(build.inputHash).toBeDefined();
     expect(build.inputHash?.length).toBe(64);
     expect(build.compilerId).toBe("tailwind-v4-build");
     expect(build.compilerVersion).toBeDefined();
-    expect(build.manifestJson).toEqual({
-      entry: "src/pages/index.tsx",
-      filesCount: 2,
-      inputHash: "placeholder",
-      bundleFiles: [
-        { path: "index.js", sizeBytes: 1024, mimeType: "application/javascript" },
-        { path: "global.css", sizeBytes: 512, mimeType: "text/css" },
-      ],
-    });
+    expect(build.manifestJson.buildId).toBe(build.id);
+    expect(build.manifestJson.storefrontId).toBe("storefront-1");
+    expect(build.manifestJson.themeId).toBe("theme-1");
+    expect(build.manifestJson.filesCount).toBeGreaterThan(0);
     expect(build.startedAt).toBeDefined();
     expect(build.completedAt).toBeDefined();
   });
+
+  it("transitions to failed when artifact store throws an exception during file upload", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-store-fail", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+    ]);
+
+    const fakeRunner = new FakeThemeBuildRunner({ shouldSucceed: true });
+    const failingStore = new FakeThemeBuildArtifactStore({ shouldFail: true });
+
+    const failedBuild = await service.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-store-fail",
+      runner: fakeRunner,
+      artifactStore: failingStore,
+    });
+
+    expect(failedBuild.status).toBe("failed");
+    expect(failedBuild.errorMessage).toContain("Artifact persistence failed");
+    expect(failedBuild.diagnosticsJson?.stage).toBe("artifact-storage");
+  });
+
+  it("transitions to failed when artifact store fails during manifest write", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-manifest-fail", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+    ]);
+
+    const fakeRunner = new FakeThemeBuildRunner({ shouldSucceed: true });
+    const failingStore = new FakeThemeBuildArtifactStore({ failAtManifest: true });
+
+    const failedBuild = await service.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-manifest-fail",
+      runner: fakeRunner,
+      artifactStore: failingStore,
+    });
+
+    expect(failedBuild.status).toBe("failed");
+    expect(failedBuild.errorMessage).toContain("FAKE_MANIFEST_FAILURE");
+  });
+
 
 
   it("transitions to failed when runner throws an exception", async () => {
@@ -417,23 +466,22 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     });
 
     expect(buildA.themeId).toBe("theme-A");
-    expect(buildA.manifestJson).toEqual({
-      entry: "src/index.tsx",
-      filesCount: 1,
-      inputHash: "hash-A",
-      metadata: { themeName: "A" },
-    });
+    expect(buildA.manifestJson.themeId).toBe("theme-A");
+    expect(buildA.manifestJson.sourceRevisionId).toBe("rev-A");
+    expect(buildA.artifactPrefix).toBe(
+      `storefronts/storefront-1/themes/theme-A/builds/${buildA.id}`,
+    );
 
     expect(buildB.themeId).toBe("theme-B");
-    expect(buildB.manifestJson).toEqual({
-      entry: "src/index.tsx",
-      filesCount: 1,
-      inputHash: "hash-B",
-      metadata: { themeName: "B" },
-    });
+    expect(buildB.manifestJson.themeId).toBe("theme-B");
+    expect(buildB.manifestJson.sourceRevisionId).toBe("rev-B");
+    expect(buildB.artifactPrefix).toBe(
+      `storefronts/storefront-1/themes/theme-B/builds/${buildB.id}`,
+    );
 
     expect(buildA.inputHash).not.toBe(buildB.inputHash);
   });
+
 
 
   it("verifies runner receives pure immutable revision input and never working files", async () => {
@@ -599,15 +647,14 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     const resultA = await promiseA;
     expect(resultA.status).toBe("succeeded");
     expect(resultA.compilerVersion).toBe("4.1.17");
-    expect(resultA.manifestJson).toEqual({
-      entry: "src/index.tsx",
-      filesCount: 1,
-      inputHash: "concurrent-hash",
-      metadata: { winner: true },
-    });
+    expect(resultA.manifestJson.buildId).toBe(build.id);
+    expect(resultA.manifestJson.storefrontId).toBe("storefront-1");
+    expect(resultA.manifestJson.themeId).toBe("theme-1");
+    expect(resultA.artifactPrefix).toBe(`storefronts/storefront-1/themes/theme-1/builds/${build.id}`);
 
     // Total runner invocations was exactly 1 (Worker B did not duplicate execution)
     expect(runnerRunCount).toBe(1);
+
 
     // Final state in DB is succeeded with Winner's version 4.1.17
     const finalInDb = await storefrontThemeBuildDal.getBuild(

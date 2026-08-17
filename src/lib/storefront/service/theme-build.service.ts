@@ -1,3 +1,4 @@
+import type { ThemeBuildArtifactStore } from "@/lib/storefront/compiler/theme-build-artifact-store.types";
 import { materializeThemeBuildInput } from "@/lib/storefront/compiler/theme-build-materializer";
 import type {
   ThemeBuildRunner,
@@ -21,6 +22,7 @@ export type RequestPreviewBuildOptions = {
   };
   reuseExisting?: boolean;
   runner?: ThemeBuildRunner;
+  artifactStore?: ThemeBuildArtifactStore;
 };
 
 export class ThemeBuildService {
@@ -28,7 +30,9 @@ export class ThemeBuildService {
     private readonly dal: typeof storefrontThemeBuildDal = storefrontThemeBuildDal,
     private readonly defaultRunner?: ThemeBuildRunner,
     private readonly materializer: typeof materializeThemeBuildInput = materializeThemeBuildInput,
+    private readonly defaultArtifactStore?: ThemeBuildArtifactStore,
   ) {}
+
 
   /**
    * High-level entry point: requests or orchestrates a theme preview build.
@@ -110,9 +114,8 @@ export class ThemeBuildService {
       },
     );
 
+    // 3. Fallback to default runner
     const runner = options.runner ?? this.defaultRunner;
-
-    // 3. If no runner is provided (e.g. production pre-Sandbox), return queued record without fake build
     if (!runner) {
       return build;
     }
@@ -124,6 +127,7 @@ export class ThemeBuildService {
       buildId: build.id,
       compilerIdentity: options.compilerIdentity,
       runner,
+      artifactStore: options.artifactStore ?? this.defaultArtifactStore,
     });
   }
 
@@ -133,7 +137,8 @@ export class ThemeBuildService {
    * 2. Pure Materialization
    * 3. Atomic CAS Start Transition (Start loser does NOT fail winner)
    * 4. Runner execution
-   * 5. Finalize state
+   * 5. Artifact persistence via ThemeBuildArtifactStore
+   * 6. Finalize state
    */
   async executeBuildOrchestration(params: {
     storefrontId: string;
@@ -141,8 +146,10 @@ export class ThemeBuildService {
     buildId: string;
     compilerIdentity?: { compilerId?: string; compilerVersion?: string };
     runner: ThemeBuildRunner;
+    artifactStore?: ThemeBuildArtifactStore;
   }): Promise<StorefrontThemeBuildDTO> {
     const { runner } = params;
+    const artifactStore = params.artifactStore ?? this.defaultArtifactStore;
 
     // Stage 1: Retrieve Build and Revision records strictly via DAL
     let source: {
@@ -283,14 +290,67 @@ export class ThemeBuildService {
       );
     }
 
-    // Stage 5: Finalize state
-    // Note: In Phase 4B-6, runnerResult.artifacts will be uploaded to R2 to yield artifactPrefix
+    // Stage 5: Persist Artifacts via ThemeBuildArtifactStore
+    let artifactPrefix: string | null =
+      (runnerResult as any).artifactPrefix ?? null;
+    let manifestJson: any = runnerResult.manifestJson;
+
+
+    if (artifactStore) {
+      try {
+        const storeResult = await artifactStore.persistBuildArtifacts({
+          build: source.build,
+          buildInput,
+          artifacts: runnerResult.artifacts ?? [],
+          runnerManifest: runnerResult.manifestJson,
+        });
+        artifactPrefix = storeResult.artifactPrefix;
+        manifestJson = storeResult.manifest;
+      } catch (storeException) {
+        const exceptionMessage =
+          storeException instanceof Error
+            ? storeException.message
+            : String(storeException);
+
+        return await this.dal.markBuildFailed(
+          params.storefrontId,
+          params.themeId,
+          params.buildId,
+          {
+            errorMessage: `Artifact persistence failed: ${exceptionMessage}`,
+            diagnosticsJson: {
+              stage: "artifact-storage",
+              error: exceptionMessage,
+            },
+          },
+        );
+      }
+    }
+
+    if (!artifactPrefix) {
+      return await this.dal.markBuildFailed(
+        params.storefrontId,
+        params.themeId,
+        params.buildId,
+        {
+          errorMessage:
+            "CANNOT_SUCCEED_BUILD_WITHOUT_ARTIFACT: Succeeded build must have an artifact prefix.",
+          diagnosticsJson: {
+            stage: "artifact-storage",
+            error: "Artifact store did not produce an artifact prefix.",
+          },
+        },
+      );
+    }
+
+    // Stage 6: Finalize state
     return await this.dal.markBuildSucceeded(
       params.storefrontId,
       params.themeId,
       params.buildId,
       {
-        manifestJson: runnerResult.manifestJson,
+        artifactPrefix,
+        manifestJson,
         diagnosticsJson: runnerResult.diagnosticsJson,
       },
     );
