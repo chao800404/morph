@@ -276,9 +276,24 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       };
     }
 
-    // Guard 3: Validate Path Containment on all virtual files
+    // Guard 3: Validate Path Containment and Reserved Paths on all virtual files
     for (const file of input.files) {
       const normalized = file.path.replace(/\\/g, "/");
+      const segments = normalized.split("/");
+      if (segments.some((segment) => segment.toLowerCase() === "node_modules")) {
+        const msg = `RESERVED_THEME_PATH: Theme files cannot be created inside node_modules: "${file.path}"`;
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "security-containment",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
       if (normalized.startsWith("../") || normalized.includes("/../") || normalized.startsWith("/")) {
         const msg = `WORKSPACE_PATH_ESCAPE: File path "${file.path}" escapes sandbox workspace root`;
         addLog("error", msg);
@@ -294,6 +309,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         };
       }
     }
+
 
     let sandbox: CloudflareSandboxSession | null = null;
 

@@ -172,6 +172,40 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       };
     }
 
+    // Guard 3: Validate Path Containment and Reserved Paths on all virtual files
+    for (const file of input.files) {
+      const normalized = file.path.replace(/\\/g, "/");
+      const segments = normalized.split("/");
+      if (segments.some((segment) => segment.toLowerCase() === "node_modules")) {
+        const msg = `RESERVED_THEME_PATH: Theme files cannot be created inside node_modules: "${file.path}"`;
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "security-containment",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+      if (normalized.startsWith("../") || normalized.includes("/../") || normalized.startsWith("/")) {
+        const msg = `WORKSPACE_PATH_ESCAPE: File path "${file.path}" escapes workspace root`;
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "security-containment",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+    }
+
     // Create isolated temporary workspace inside project builds hierarchy
     const buildsBaseDir = path.resolve(process.cwd(), this.workDirPrefix);
     await fs.mkdir(buildsBaseDir, { recursive: true });
@@ -180,9 +214,10 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
     );
 
     try {
-      // Guard 3: Validate and Write virtual files into temp workspace
+      // Write virtual files into temp workspace
       let hasCustomIndexHtml = false;
       const cssFiles: string[] = [];
+
 
       for (const file of input.files) {
         const fullPath = path.resolve(tempDir, file.path);

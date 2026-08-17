@@ -197,6 +197,42 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(provider.getSandbox).not.toHaveBeenCalled();
   });
 
+  it("blocks theme virtual files located inside node_modules before sandbox is acquired", async () => {
+    const mock = createMockSandbox();
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi.fn(async () => mock.session),
+    };
+
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+    });
+
+    const attackPaths = [
+      "node_modules/vite/x.js",
+      "src/node_modules/evil.ts",
+      "node_modules/.bin/vite",
+    ];
+
+    for (const attackPath of attackPaths) {
+      const input = createInput([
+        {
+          path: attackPath,
+          content: "malicious code",
+        },
+      ]);
+
+      const result = await runner.run(input);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain("RESERVED_THEME_PATH");
+      }
+      expect(provider.getSandbox).not.toHaveBeenCalled();
+      expect(mock.session.writeFile).not.toHaveBeenCalled();
+    }
+  });
+
+
   it("rejects compiler identity mismatch", async () => {
     const mock = createMockSandbox();
     const provider: CloudflareSandboxProvider = {

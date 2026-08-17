@@ -319,4 +319,29 @@ describe("save and delete theme file schemas", () => {
       }),
     ).toThrow();
   });
+
+  it("rejects file paths containing node_modules segments", () => {
+    const invalidPaths = [
+      "node_modules/foo.js",
+      "node_modules/vite/x.js",
+      "node_modules/.bin/vite",
+      "src/node_modules/evil.ts",
+      "foo/node_modules/bar.js",
+      "NODE_MODULES/package.json",
+    ];
+
+    for (const invalidPath of invalidPaths) {
+      expect(() =>
+        saveThemeFileInputSchema.parse({
+          storefrontId: "store-1",
+          themeId: "theme-1",
+          path: invalidPath,
+          content: "console.log(1)",
+          expectMissing: true,
+          expectedSourceGeneration: 1,
+        }),
+      ).toThrow(/node_modules/);
+    }
+  });
 });
+

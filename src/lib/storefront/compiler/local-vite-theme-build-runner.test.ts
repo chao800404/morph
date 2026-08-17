@@ -360,4 +360,31 @@ export default function Page() {
       expect(result.errorMessage).toContain("total source size");
     }
   });
+
+  it("blocks theme virtual files located inside node_modules before write", async () => {
+    const runner = new LocalViteThemeBuildRunner();
+
+    const attackPaths = [
+      "node_modules/vite/x.js",
+      "src/node_modules/evil.ts",
+      "node_modules/.bin/vite",
+    ];
+
+    for (const attackPath of attackPaths) {
+      const input = createInput([
+        {
+          path: attackPath,
+          content: "malicious code",
+        },
+      ]);
+
+      const result = await runner.run(input);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain("RESERVED_THEME_PATH");
+      }
+    }
+  });
 });
+

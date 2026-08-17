@@ -15,9 +15,18 @@ export const safeThemeFilePathSchema = z
   )
   .refine((p) => !p.includes("\0"), "File path cannot contain null bytes")
   .refine(
+    (p) =>
+      !p
+        .replace(/\\/g, "/")
+        .split("/")
+        .some((segment) => segment.toLowerCase() === "node_modules"),
+    "Theme file path cannot contain node_modules",
+  )
+  .refine(
     (p) => /^[a-zA-Z0-9_\-./]+$/.test(p),
     "File path contains invalid characters (allowed: alphanumeric, _, -, ., /)",
   );
+
 
 function requireWritePrecondition(
   value: {
