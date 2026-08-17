@@ -20,3 +20,4 @@ todos.json
 !.dev.vars.example
 
 .phase3-seal-backup/
+.morph-builds

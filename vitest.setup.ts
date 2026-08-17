@@ -45,9 +45,10 @@ globalThis.DOMRect ??= class DOMRectStub {
   }
 } as unknown as typeof DOMRect;
 
-if (!Element.prototype.scrollIntoView) {
+if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
+
 
 /**
  * Unmount between tests.
@@ -56,4 +57,7 @@ if (!Element.prototype.scrollIntoView) {
  * enabled — and they are not here, so without it every render stacks up in the
  * same document and queries start matching the previous test's markup.
  */
-afterEach(cleanup);
+if (typeof window !== "undefined") {
+  afterEach(cleanup);
+}
+
