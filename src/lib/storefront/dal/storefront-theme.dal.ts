@@ -998,9 +998,8 @@ export const storefrontThemeDal = {
     const themeBuildId = data.themeBuildId ?? activeRelease?.themeBuildId;
     if (
       !data.sourceRevisionId &&
-      activeRelease?.sourceGeneration !== null &&
-      activeRelease?.sourceGeneration !== undefined &&
-      activeRelease.sourceGeneration !== template.sourceGeneration
+      (activeRelease?.sourceGeneration == null ||
+        activeRelease.sourceGeneration !== template.sourceGeneration)
     ) {
       throw new Error(
         "PUBLISH_BUILD_NOT_READY: Theme source changed after the active release. Build Preview is required before publishing.",
@@ -1081,7 +1080,7 @@ export const storefrontThemeDal = {
       : crypto.randomUUID();
     const contentPublication = unchanged
       ? null
-      : await storefrontContentPublicationDal.createForTheme({
+      : await storefrontContentPublicationDal.resolveForTheme({
           storefrontId: data.storefrontId,
           themeId: data.themeId,
           templateId: data.templateId,
@@ -1123,6 +1122,12 @@ export const storefrontThemeDal = {
         sourceRevisionId,
       ),
     ];
+
+    if (contentPublication) {
+      statements.push(
+        ...storefrontContentPublicationDal.insertStatements(contentPublication),
+      );
+    }
 
     if (!templateUnchanged) {
       statements.push(

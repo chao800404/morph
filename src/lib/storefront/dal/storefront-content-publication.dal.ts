@@ -13,6 +13,8 @@ import type {
 } from "@/lib/storefront/dto/storefront-content-publication.dto";
 import { and, eq, isNull } from "drizzle-orm";
 
+export type StorefrontContentPublicationDraft = StorefrontContentPublicationDTO;
+
 const mapItem = (
   row: typeof storefrontContentPublicationItems.$inferSelect,
 ): StorefrontContentPublicationItemDTO => ({
@@ -25,13 +27,13 @@ const mapItem = (
 
 /** Creates an immutable content revision set for a storefront release. */
 export const storefrontContentPublicationDal = {
-  async createForTheme(data: {
+  async resolveForTheme(data: {
     storefrontId: string;
     themeId: string;
     templateId: string;
     templateRevisionId: string;
     createdBy?: string;
-  }): Promise<StorefrontContentPublicationDTO> {
+  }): Promise<StorefrontContentPublicationDraft> {
     const db = await getDb();
     const [templateRevision] = await db
       .select({
@@ -115,33 +117,6 @@ export const storefrontContentPublicationDal = {
         })),
     ];
 
-    await env.DATABASE.batch([
-      env.DATABASE.prepare(`
-        INSERT INTO storefront_content_publications
-          (id, storefront_id, created_by, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?4)
-      `).bind(
-        publicationId,
-        data.storefrontId,
-        data.createdBy ?? null,
-        now,
-      ),
-      ...items.map((item) =>
-        env.DATABASE.prepare(`
-          INSERT INTO storefront_content_publication_items
-            (id, publication_id, item_type, content_id, revision_id, created_at, updated_at)
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-        `).bind(
-          item.id,
-          publicationId,
-          item.itemType,
-          item.contentId,
-          item.revisionId,
-          now,
-        ),
-      ),
-    ]);
-
     return {
       id: publicationId,
       storefrontId: data.storefrontId,
@@ -156,6 +131,48 @@ export const storefrontContentPublicationDal = {
         revisionId: item.revisionId,
       })),
     };
+  },
+
+  insertStatements(publication: StorefrontContentPublicationDraft) {
+    return [
+      env.DATABASE.prepare(`
+        INSERT INTO storefront_content_publications
+          (id, storefront_id, created_by, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?4)
+      `).bind(
+        publication.id,
+        publication.storefrontId,
+        publication.createdBy,
+        publication.createdAt,
+      ),
+      ...publication.items.map((item) =>
+        env.DATABASE.prepare(`
+          INSERT INTO storefront_content_publication_items
+            (id, publication_id, item_type, content_id, revision_id, created_at, updated_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+        `).bind(
+          item.id,
+          publication.id,
+          item.itemType,
+          item.contentId,
+          item.revisionId,
+          publication.createdAt,
+        ),
+      ),
+    ];
+  },
+
+  /** Compatibility helper for callers that explicitly want persistence. */
+  async createForTheme(data: {
+    storefrontId: string;
+    themeId: string;
+    templateId: string;
+    templateRevisionId: string;
+    createdBy?: string;
+  }): Promise<StorefrontContentPublicationDTO> {
+    const publication = await this.resolveForTheme(data);
+    await env.DATABASE.batch(this.insertStatements(publication));
+    return publication;
   },
 
   async getById(

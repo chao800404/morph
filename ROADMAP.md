@@ -200,8 +200,8 @@ Edge Runtime
 
 目前主要缺口：
 
-- StorefrontRelease 已具備 base entity、`activeReleaseId`、build/source identity validation、OCC activation foundation；尚未完成 production runtime
-- content publication snapshot、content-only build reuse、release rollback / history UI
+- StorefrontRelease 已具備 base entity、`activeReleaseId` SSOT、ContentPublication model、immutable content revision snapshot foundation、build/source validation 與 content-only build reuse foundation；尚未完成 production runtime
+- publication + release atomic batch、legacy sourceGeneration safety、release rollback / history UI
 - production edge storefront router
 - custom domain → active release → artifact serving
 - Theme artifact + Page Document + Commerce DTO runtime composition

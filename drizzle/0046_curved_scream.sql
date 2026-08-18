@@ -45,7 +45,7 @@ CREATE TABLE `__new_storefront_releases` (
 	FOREIGN KEY (`theme_build_id`) REFERENCES `storefront_theme_builds`(`id`) ON UPDATE no action ON DELETE restrict
 );
 --> statement-breakpoint
-INSERT INTO `__new_storefront_releases`("id", "storefront_id", "theme_id", "source_revision_id", "theme_build_id", "content_publication_id", "status", "metadata", "created_by", "created_at", "updated_at", "deleted_at") SELECT "id", "storefront_id", "theme_id", "source_revision_id", "theme_build_id", "content_publication_id", "status", "metadata", "created_by", "created_at", "updated_at", "deleted_at" FROM `storefront_releases`;--> statement-breakpoint
+INSERT INTO `__new_storefront_releases`("id", "storefront_id", "theme_id", "source_revision_id", "theme_build_id", "content_publication_id", "status", "metadata", "created_by", "created_at", "updated_at", "deleted_at") SELECT "id", "storefront_id", "theme_id", "source_revision_id", "theme_build_id", NULL, "status", "metadata", "created_by", "created_at", "updated_at", "deleted_at" FROM `storefront_releases`;--> statement-breakpoint
 DROP TABLE `storefront_releases`;--> statement-breakpoint
 ALTER TABLE `__new_storefront_releases` RENAME TO `storefront_releases`;--> statement-breakpoint
 PRAGMA foreign_keys=ON;--> statement-breakpoint

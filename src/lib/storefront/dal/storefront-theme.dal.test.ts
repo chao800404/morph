@@ -251,9 +251,9 @@ describe("storefront theme DAL", () => {
         ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
          '${draftDocument.replaceAll("'", "''")}', 'now');
       INSERT INTO storefront_theme_revisions
-        (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+        (id, storefront_id, theme_id, revision_number, source_generation, message, source, snapshot, created_at, updated_at)
       VALUES
-        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1,
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1,
          'Frozen checkpoint', 'publish', '[]', 'now', 'now');
     `);
 
@@ -284,13 +284,14 @@ describe("storefront theme DAL", () => {
     expect(storefront.active_release_id).toBeTruthy();
     const release = sqlite
       .prepare(
-        "SELECT storefront_id, theme_id, source_revision_id, theme_build_id, status FROM storefront_releases WHERE id = ?",
+        "SELECT storefront_id, theme_id, source_revision_id, theme_build_id, content_publication_id, status FROM storefront_releases WHERE id = ?",
       )
       .get(storefront.active_release_id) as {
       storefront_id: string;
       theme_id: string;
       source_revision_id: string;
       theme_build_id: string;
+      content_publication_id: string;
       status: string;
     };
     expect(release).toEqual({
@@ -298,8 +299,82 @@ describe("storefront theme DAL", () => {
       theme_id: "theme-a",
       source_revision_id: "22222222-2222-4222-8222-222222222222",
       theme_build_id: "33333333-3333-4333-8333-333333333333",
+      content_publication_id: expect.any(String),
       status: "available",
     });
+
+    // Content-only publish reuses the active succeeded build and creates a
+    // new immutable publication without creating another source/build.
+    const nextDraftRevisionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    sqlite.exec(`
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('${nextDraftRevisionId}', 'template-a', 2,
+         '${draftDocument.replace("Original", "Updated").replaceAll("'", "''")}', 'now');
+      UPDATE storefront_theme_templates
+      SET draft_revision_id = '${nextDraftRevisionId}', draft_generation = 3
+      WHERE id = 'template-a';
+    `);
+
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+        expectedDraftRevisionId: nextDraftRevisionId,
+        expectedDraftGeneration: 3,
+        expectedReleaseGeneration: 2,
+      }),
+    ).resolves.toMatchObject({
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      unchanged: false,
+    });
+
+    const publicationCount = sqlite
+      .prepare("SELECT COUNT(*) AS count FROM storefront_content_publications")
+      .get() as { count: number };
+    expect(publicationCount.count).toBe(2);
+    const buildCount = sqlite
+      .prepare("SELECT COUNT(*) AS count FROM storefront_theme_builds")
+      .get() as { count: number };
+    expect(buildCount.count).toBe(1);
+
+    // A losing OCC publish must not insert another publication.
+    sqlite.exec(`
+      UPDATE storefront_theme_templates
+      SET draft_revision_id = '11111111-1111-4111-8111-111111111111', draft_generation = 4
+      WHERE id = 'template-a';
+    `);
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+        expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+        expectedDraftGeneration: 4,
+        expectedReleaseGeneration: 1,
+      }),
+    ).rejects.toThrow();
+    const publicationCountAfterConflict = sqlite
+      .prepare("SELECT COUNT(*) AS count FROM storefront_content_publications")
+      .get() as { count: number };
+    expect(publicationCountAfterConflict.count).toBe(2);
+
+    // Legacy/changed source generations fail closed for content-only publish.
+    sqlite.exec(
+      "UPDATE storefront_themes SET source_generation = 2 WHERE id = 'theme-a'",
+    );
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+        expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+        expectedDraftGeneration: 4,
+        expectedReleaseGeneration: 3,
+      }),
+    ).rejects.toThrow("PUBLISH_BUILD_NOT_READY");
   });
 
   it("publishes explicit source revision snapshot and binds it to published_source_revision_id", async () => {
