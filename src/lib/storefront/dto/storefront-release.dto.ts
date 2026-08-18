@@ -1,4 +1,5 @@
 import type { StorefrontReleaseStatus } from "@/db/storefront.schema";
+import type { Metadata } from "@/db/json";
 
 export type StorefrontReleaseDTO = {
   id: string;
@@ -8,7 +9,7 @@ export type StorefrontReleaseDTO = {
   themeBuildId: string;
   contentPublicationId: string | null;
   status: StorefrontReleaseStatus;
-  metadata: Record<string, unknown> | null;
+  metadata: Metadata | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;

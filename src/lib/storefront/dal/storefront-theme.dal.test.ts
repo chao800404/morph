@@ -4,6 +4,7 @@ import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storefrontThemeDal } from "./storefront-theme.dal";
+import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -335,6 +336,16 @@ describe("storefront theme DAL", () => {
       .prepare("SELECT COUNT(*) AS count FROM storefront_content_publications")
       .get() as { count: number };
     expect(publicationCount.count).toBe(2);
+    await expect(
+      storefrontContentPublicationDal.assertRevisionCanBeDeleted(
+        nextDraftRevisionId,
+      ),
+    ).rejects.toThrow("REVISION_RETENTION_CONFLICT");
+    await expect(
+      storefrontContentPublicationDal.assertRevisionCanBeDeleted(
+        "99999999-9999-4999-8999-999999999999",
+      ),
+    ).resolves.toBeUndefined();
     const buildCount = sqlite
       .prepare("SELECT COUNT(*) AS count FROM storefront_theme_builds")
       .get() as { count: number };

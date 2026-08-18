@@ -134,6 +134,7 @@ Release / activeReleaseId
 - `storefront_theme_builds`（或等價 build metadata store）保存 build identity、狀態、compiler、diagnostics 與 artifact metadata；成功的 `index.html`、JS、CSS、圖片、字型與其他 build output 必須存到 R2，例如 `themes/{themeId}/builds/{buildId}/`。
 - `StorefrontRelease`、`activeReleaseId` 與 release activation／OCC metadata 必須存於 D1。Production runtime 只能從 active release resolve immutable Theme Build Artifact 與 published content revision。
 - `storefronts.active_release_id` 是 production release 的唯一 SSOT；`storefront_releases.status` 只能表達 `available`／`invalidated` 等 lifecycle，不得再用 `active`／`superseded` 維護第二份 active state。Rollback 只切換 `active_release_id`。
+- 任何被 `storefront_content_publication_items.revision_id` reference 的 template/page/navigation revision 都是 retained immutable history；GC 或 hard-delete 必須先通過 retention guard，禁止刪除被 ContentPublication 引用的 revision。
 - Theme workspace source、source blobs、assets 與 build artifacts 不得寫回 Morph GitHub repository，也不得寫入 Morph Core 的 Worker bundle 或部署原始碼。GitHub／Worker 只保存 Morph Core、平台程式與 bootstrap starter source。
 - 目前若仍有 D1 snapshot 或 compatibility path，必須明確視為 migration／compatibility implementation，不能因此新增第二套 source、revision 或 production runtime SSOT。
 
@@ -512,10 +513,18 @@ StorefrontRelease
 ├─ themeId
 ├─ themeBuildId
 ├─ sourceRevisionId
-├─ template/page revision references
+├─ contentPublicationId
 ├─ createdBy
 ├─ createdAt
 └─ metadata
+```
+
+`ContentPublication` is the immutable set of published content references for
+that release:
+
+```text
+ContentPublication
+└─ template / page / navigation revision references
 ```
 
 Storefront 再持有：

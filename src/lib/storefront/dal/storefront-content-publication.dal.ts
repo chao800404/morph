@@ -27,6 +27,30 @@ const mapItem = (
 
 /** Creates an immutable content revision set for a storefront release. */
 export const storefrontContentPublicationDal = {
+  async isRevisionReferenced(revisionId: string): Promise<boolean> {
+    const db = await getDb();
+    const [reference] = await db
+      .select({ id: storefrontContentPublicationItems.id })
+      .from(storefrontContentPublicationItems)
+      .where(eq(storefrontContentPublicationItems.revisionId, revisionId))
+      .limit(1);
+    return Boolean(reference);
+  },
+
+  async assertRevisionCanBeDeleted(revisionId: string): Promise<void> {
+    if (await this.isRevisionReferenced(revisionId)) {
+      throw new Error(
+        `REVISION_RETENTION_CONFLICT: Revision "${revisionId}" is referenced by an immutable ContentPublication and cannot be hard-deleted.`,
+      );
+    }
+  },
+
+  async assertRevisionsCanBeDeleted(revisionIds: string[]): Promise<void> {
+    for (const revisionId of revisionIds) {
+      await this.assertRevisionCanBeDeleted(revisionId);
+    }
+  },
+
   async resolveForTheme(data: {
     storefrontId: string;
     themeId: string;

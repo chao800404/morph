@@ -200,8 +200,8 @@ Edge Runtime
 
 目前主要缺口：
 
-- StorefrontRelease 已具備 base entity、`activeReleaseId` SSOT、ContentPublication model、immutable content revision snapshot foundation、build/source validation 與 content-only build reuse foundation；尚未完成 production runtime
-- publication + release atomic batch、legacy sourceGeneration safety、release rollback / history UI
+- StorefrontRelease 已具備 base entity、`activeReleaseId` SSOT、ContentPublication model、immutable content revision snapshot foundation、build/source validation、content-only build reuse、publication + release atomic batch 與 legacy sourceGeneration fail-closed
+- release history UI、production runtime
 - production edge storefront router
 - custom domain → active release → artifact serving
 - Theme artifact + Page Document + Commerce DTO runtime composition
@@ -446,20 +446,23 @@ New Published Content Revisions
 
 ## Deliverables
 
-- `storefront_releases` data model
-- `storefront_content_publications` + immutable revision references
-- active release pointer
-- release generation / OCC
-- release creation service
-- verify succeeded build
-- verify sourceRevision ↔ build identity
-- content revision snapshot / references
-- content-only publish reuses the active succeeded build
-- atomic activation
-- previous release rollback
-- release history
-- audit actor
-- compatibility migration from current `publishedSourceRevisionId` / `publishedRevisionId`
+已完成：
+
+- `storefront_releases` / `activeReleaseId` SSOT
+- `ContentPublication` immutable template/page revision snapshot foundation
+- content-only build reuse
+- publication + release atomic activation
+- legacy `sourceGeneration` fail-closed
+- source/build identity validation
+- rollback activation service with history query and OCC
+- revision retention guard for ContentPublication references
+- 0045 → 0046 → 0047 migration regression coverage
+
+待完成：
+
+- release history UI
+- audit/history presentation
+- compatibility cleanup from current `publishedSourceRevisionId` / `publishedRevisionId`
 
 ## Completion criteria
 
