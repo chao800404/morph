@@ -1,339 +1,913 @@
 # Morph Product Roadmap
 
-This roadmap describes Morph's intended product evolution from a commerce CMS into an AI-native commerce application platform deployed on Cloudflare. It is directional rather than a promise of dates or release order within a phase.
+本文件描述 Morph 從目前 repository foundation 演進成 **AI-native Code-backed Commerce Platform** 的產品路線。
 
-Architecture and security invariants remain authoritative in [`.agent/rules.md`](./.agent/rules.md). A roadmap item does not permit bypassing those rules, production authorization, migrations, review, validation, or rollback requirements.
+它是方向與交付順序，不是日期承諾。
 
-## Product direction
+工程 invariants 以 [`.agent/rules.md`](./.agent/rules.md) 為準。
 
-Morph is intended to combine:
+---
 
-- Medusa-style modular commerce administration and data ownership.
-- Shopify-style storefront themes, pages, templates, navigation, preview, and publishing.
-- Schema-constrained AI page authoring for normal merchant workflows.
-- A controlled interactive-section library for Canvas, WebGL, 3D, maps, and scroll experiences.
-- An isolated code-agent workflow for advanced storefront customization.
-- Eventually, a commerce-focused application generator rather than an unrestricted general-purpose app generator.
+## 1. Product Vision
 
-The default product path remains data-driven:
+Morph 的目標不是只做另一個 Shopify section builder，也不是做完全無限制的 Base44 / Lovable clone。
 
-```text
-Human Visual Editor ─┐
-                     ├─> Page Document / Section Schema
-AI Schema Authoring ─┘                │
-                                      ├─> Draft Preview
-                                      └─> Authorized Publish
-                                                │
-                                      Published Storefront Renderer
-```
+Morph 的定位是：
 
-Ordinary content publishing must not require rebuilding or redeploying the storefront. Code generation is a separate advanced workflow.
+> **一個以 commerce correctness 為底座、以 React code 為 storefront presentation source、同時提供 Visual Editor 與 AI Code Agent 的 Cloudflare-native commerce platform。**
 
-## Current foundation
+Morph 希望同時具備：
 
-The repository already provides important parts of the platform foundation:
+- Medusa-style modular commerce backend
+- Shopify-style Online Store management
+- React / Tailwind Code-backed Themes
+- Visual AST editing
+- AI source generation and modification
+- real Canvas / WebGL / Three / GSAP capability
+- immutable builds and previews
+- atomic releases and rollback
+- Cloudflare edge storefront runtime
+- eventually commerce-focused app generation
 
-- TanStack Start dashboard and server runtime deployable to Cloudflare Workers.
-- D1-backed commerce and CMS data, R2 assets, KV binding, Better Auth, and role-aware server functions.
-- Commerce catalogue, cart, checkout, pricing, inventory, promotion, tax, order, and storefront-context boundaries.
-- Storefront, theme, template, domain, page, immutable page revision, draft/published pointer, metadata, and revision-restore data models.
-- Config-driven Dashboard navigation and dynamic collection routes.
-- `/dashboard/online-store` and `/dashboard/pages` management foundations.
-- Headless Store API for a separately implemented storefront.
+---
 
-The current foundation does not yet include the public page renderer, section registry, visual editor, AI page generation, interactive presets, sandbox build plane, or dynamic application schema.
+## 2. Architecture Direction
 
-## Phase 1 — Storefront Foundation
+Morph 不採用「所有 storefront presentation 都由固定 section schema 決定」的架構。
 
-### User value
+正式方向分成三個 authority layer。
 
-Published pages and templates become real customer-facing storefront routes without requiring a rebuild for content changes.
-
-### Deliverables
-
-- A single versioned `StorefrontPageDocument` contract shared by authoring, preview, AI, and rendering.
-- A section registry with stable identifiers, strict props schemas, supported variants, responsive contracts, renderer entries, and schema migrations.
-- Published-only DAL and DTO boundaries for storefront rendering.
-- Hostname and sales-channel-aware page resolution.
-- Public routes for home, pages, products, and collections.
-- Theme tokens for typography, color, spacing, radius, layout width, and motion.
-- Safe rich-text, asset, link, and commerce-reference rendering.
-- Cache invalidation tied to atomic publish operations.
-- SEO metadata, canonical URLs, sitemap, robots, and not-found handling.
-
-### Cloudflare shape
-
-- Workers for SSR, routing, and Store API.
-- D1 for published page/theme/template state and commerce data.
-- R2 for images, videos, documents, and 3D assets.
-- Workers Cache or KV for published snapshots where measurement supports it.
-
-### Completion criteria
-
-- A published page renders from its published revision on a storefront domain.
-- Draft data cannot be retrieved through public storefront routes.
-- Product templates read current commerce DTOs rather than copied product values.
-- Publishing content does not invoke a build or deploy.
-- Previous published content remains recoverable.
-
-### Not included
-
-- Arbitrary React/TSX generation.
-- Canvas/WebGL authoring.
-- Runtime creation of new database modules.
-
-## Phase 2 — Visual Editor
-
-### User value
-
-Merchants can build and maintain responsive storefront pages with a Shopify-style editor without touching source code.
-
-### Deliverables
-
-- Section tree with add, remove, duplicate, hide, reorder, and variant controls.
-- Fields-driven section settings generated from registry schemas.
-- Desktop, tablet, and mobile preview modes.
-- Preview isolation from the Dashboard shell.
-- Draft autosave with explicit save state and conflict handling.
-- Undo/redo based on document operations or revision checkpoints.
-- Selection overlays that connect preview elements to their editor controls.
-- Keyboard-accessible ordering and editing flows.
-- Publish review showing meaningful changes from the active published revision.
-
-### Cloudflare shape
-
-- Worker server functions for draft/revision coordination.
-- D1 for documents, revisions, and publish records.
-- Durable Objects only if realtime collaboration, presence, or document locking is introduced.
-
-### Completion criteria
-
-- Loading, empty, error, responsive, keyboard, and reduced-motion paths are verified.
-- Refreshing or sharing a preview retains the intended draft safely.
-- Concurrent edits cannot silently overwrite one another.
-- Every editor operation produces a schema-valid document.
-
-## Phase 3 — AI Schema Authoring
-
-### User value
-
-Merchants can describe a page or select an existing section and ask AI to generate or revise it within Morph's design system.
-
-### Deliverables
-
-- AI generation jobs with actor, site/page, model, schema version, status, validation errors, timestamps, and result revision.
-- Prompt context assembled from allowed sections, variants, theme tokens, brand settings, assets, and public commerce DTOs.
-- Structured output constrained to the section registry.
-- Validation and bounded repair loop before a result can become a draft revision.
-- Whole-page generation and selection-scoped section editing.
-- AI-assisted copy, SEO, localization, asset suggestions, and structured data binding.
-- Rate limits, quotas, cancellation, retry, observability, and cost attribution.
-- Clear disclosure of AI-generated changes before approval.
-
-### Cloudflare shape
-
-- Workers AI or an external model accessed through a server-only provider boundary.
-- AI Gateway where model routing, analytics, caching, or provider fallback is needed.
-- Workflows and Queues for durable, retryable generation jobs.
-- R2 for generated media and job artifacts.
-- Vectorize only when semantic retrieval across assets, content, or component documentation is justified.
-
-### Completion criteria
-
-- Invalid or executable output never reaches a page revision.
-- AI can create drafts but cannot publish or deploy.
-- Cancelling or failing a job leaves the active draft and published version consistent.
-- Secrets, raw database access, sessions, and unnecessary personal data are excluded from model context.
-
-## Phase 4 — Interactive Section Library
-
-### User value
-
-Merchants can produce high-end interactive pages such as scroll stories, Canvas scenes, maps, and 3D product presentations without generating code.
-
-### Initial presets
-
-- `ScrollCanvasStorySection`
-- `IoTNetworkPreset`
-- `DeviceDataFlowPreset`
-- `SmartCityMapPreset`
-- `ImageSequenceScrollSection`
-- `Product3DViewerSection`
-- `MapStorySection`
-
-### Deliverables
-
-- Strict schemas for steps, assets, cameras, timelines, presentation variants, and safe performance limits.
-- Desktop and mobile presentation strategies.
-- Static or reduced-motion fallbacks.
-- Asset preload budgets and failure states.
-- Lazy loading and visibility-based runtime activation.
-- Editor controls that expose semantic presets rather than shader or callback code.
-- Performance instrumentation for load, memory, frame time, and interaction responsiveness.
-
-### Cloudflare shape
-
-- Worker-rendered page shell and registry metadata.
-- R2 for GLB, image sequences, textures, and fallback media.
-- CDN/cache delivery for immutable versioned assets.
-- Cloudflare Images or media transformations only when the customer environment is provisioned and the capability is centrally enabled.
-
-### Completion criteria
-
-- Interactive pages remain usable without WebGL and with reduced motion.
-- Document props cannot create unbounded downloads, render loops, or arbitrary code execution.
-- Publishing preset configuration remains data-only and does not trigger a build.
-
-## Phase 5 — Advanced Code Mode
-
-### User value
-
-Approved advanced users can request genuinely new storefront components or workflows that exceed the section library, while production remains protected by an isolated engineering pipeline.
-
-### Deliverables
-
-- A source workspace per project/site or an explicit shared-source customization model.
-- Isolated sandbox execution with bounded CPU, memory, time, storage, network, and dependency access.
-- Agent tools for scoped file reads and edits.
-- Component registry and repository instructions supplied to the agent.
-- TypeScript, lint, tests, production build, dependency policy, and security scans.
-- Automated build-error repair with bounded attempts.
-- Preview deployment and immutable preview URL.
-- Human approval before production deployment.
-- Source revision, prompt/change record, build logs, artifacts, deployment version, and rollback target.
-- Production remains on the last known-good artifact when generation or deployment fails.
-
-### Cloudflare shape
+### 2.1 Commerce Data
 
 ```text
-Morph Control Plane Worker
-          │
-          ├─> Workflow / Queue
-          │         │
-          │         └─> Sandbox / Container build job
-          │                    │
-          │                    ├─> R2 source and artifacts
-          │                    └─> Preview deployment
-          │
-          └─> Human approval -> production deployment
+Products
+Prices
+Inventory
+Variants
+Orders
+Customers
+Promotions
+Tax
+Sales Channels
 ```
 
-Potential platform services include Cloudflare Workflows, Queues, Sandbox SDK/Containers, Workers Builds, Worker versions, preview URLs, and rollbacks. Availability, pricing, limits, and customer provisioning must be verified before committing to a production design.
+由 Commerce modules 擁有。
 
-### Completion criteria
+Page / Theme 只能 reference，不建立第二份可編輯 commerce truth。
 
-- Build infrastructure has no direct production database or production secret access.
-- Generated code cannot deploy without approval.
-- Every production deployment has a tested rollback target.
-- Code Mode failure cannot block normal schema-based authoring or publishing.
+### 2.2 Presentation Source
 
-## Phase 6 — Commerce Application Generator
+```text
+React / TSX
+Tailwind / CSS
+Component Composition
+Responsive Layout
+Motion
+GSAP
+Canvas
+WebGL
+Three / R3F
+Map Runtime
+```
 
-### User value
+由 Theme Source 擁有。
 
-Morph can generate commerce-adjacent applications such as B2B quotation portals, dealer portals, marketplace operations, subscriptions, service bookings, or product configurators.
+它是 storefront presentation 的主要 SSOT。
 
-### Deliverables
+### 2.3 Content / Assembly
 
-- A versioned Application Meta Schema for entities, fields, relations, permissions, views, actions, workflows, and APIs.
-- Dynamic form, table, detail, navigation, and dashboard rendering based on that schema.
-- Tenant-aware permission policies enforced server-side.
-- Workflow triggers, conditions, waits, retries, actions, and audit history.
-- Safe schema evolution and migration planning.
-- Generated or generic API contracts with validation and rate limiting.
-- A clear boundary between commerce source-of-truth modules and application-owned extension data.
+```text
+Copy
+Assets
+SEO
+Product / Collection References
+Section Instances
+Ordering
+Visibility
+Locale Content
+```
 
-### Implementation paths
+由 versioned Page / Template Document 擁有。
 
-1. Prefer a controlled runtime schema for common entities, forms, views, and workflows.
-2. Use Code Mode only when an application requirement exceeds the runtime schema.
-3. Never let runtime metadata directly become unchecked SQL, migrations, server code, or authorization logic.
+Document 是 data，不是 React implementation。
 
-### Completion criteria
+---
 
-- Generated applications preserve tenant isolation and server-side authorization.
-- Schema changes are previewed, validated, reversible, and explicitly approved.
-- Commerce records remain authoritative and are referenced rather than duplicated.
-- A failed migration cannot leave a partially upgraded application visible.
+## 3. Authoring Model
 
-### Scope boundary
+Morph 的 Human / AI authoring 最終都收斂到相同底層。
 
-The target is a **commerce-focused application generator**, not an unrestricted generator for every software category.
+```text
+                    ┌─ Visual AST Editor ─┐
+                    │                     │
+Theme Source ───────┼─ Monaco Code Editor ├─→ Theme Workspace
+                    │                     │
+                    └─ AI Code Agent ─────┘
+                                              ↓
+                                     Immutable Source Revision
+                                              ↓
+                                         Sandbox Build
+                                              ↓
+                                      Immutable Artifact
+```
 
-## Phase 7 — Cloudflare Multi-tenant Platform
+Content authoring：
 
-### User value
+```text
+Human Content Editor ─┐
+                      ├─→ Page / Template Draft
+AI Content Assistant ─┘
+                               ↓
+                       Immutable Content Revision
+```
 
-Morph operates as a scalable SaaS with shared and isolated deployment options for different customer tiers.
+Production：
 
-### Target topology
+```text
+Theme Build Artifact
+        +
+Published Content Revisions
+        +
+Current Commerce DTO
+        ↓
+Storefront Release
+        ↓
+Edge Runtime
+```
+
+---
+
+## 4. Current Foundation — 2026-08
+
+目前 repository 已具備相當多基礎。
+
+### Commerce / CMS
+
+已具備：
+
+- TanStack Start + React dashboard
+- Better Auth
+- Cloudflare D1
+- R2 assets
+- Drizzle ORM
+- config-driven Dashboard routes
+- commerce catalogue / pricing / inventory / cart / checkout / order 等 foundations
+- Storefront / Theme / Template / Page / Domain data models
+- Store API foundations
+
+### Theme Authoring
+
+已具備：
+
+- Theme file virtual workspace
+- starter React theme files
+- `morph.theme.json`
+- Monaco Code Workspace
+- source file save
+- file version OCC
+- theme `sourceGeneration`
+- immutable Theme Source Revision
+- AST parser / transformer
+- `data-morph-node` / `data-morph-element`
+- Tailwind token parsing / patching
+- Visual Editor shell
+- style inspector foundations
+- Canvas / code mode foundations
+- editor comments / collaboration UI foundations
+
+### Build Plane
+
+已具備：
+
+- immutable build identity
+- source revision materializer
+- deterministic input hash
+- compiler identity
+- queued / building / succeeded / failed lifecycle
+- CAS build ownership
+- Browser Tailwind preview compiler
+- local Vite runner
+- Cloudflare Sandbox Vite build runner
+- dependency allowlist
+- build resource limits
+- R2 artifact store
+- canonical build manifest
+- immutable build preview service
+- preview capability token
+- sandboxed iframe preview
+
+### 尚未完整閉環
+
+目前主要缺口：
+
+- 正式 Storefront Release entity / active release pointer
+- production edge storefront router
+- custom domain → active release → artifact serving
+- Theme artifact + Page Document + Commerce DTO runtime composition
+- content-only publish without rebuild 的完整 production flow
+- production rollback based on release
+- AI Code Agent backend workflow
+- AI patch / diff / repair orchestration
+- production-grade observability / metering / tenant isolation
+
+---
+
+# Phase 0 — Architecture Alignment
+
+## Goal
+
+讓 repository 文件、AI coding rules 與實際 Code-backed implementation 完全一致。
+
+## Deliverables
+
+- 重寫 `.agent/rules.md`
+- 重寫 `ROADMAP.md`
+- 把 Presentation SSOT 明確改為 Theme React Source
+- 把 Page Document 明確降回 Content / Assembly responsibility
+- 移除「AI 只能 Schema Authoring」的限制
+- 移除「Code Mode 最後才做」的舊演進規則
+- 定義 Visual Editor = AST/source editor
+- 定義 AI Code Agent 與 Sandbox / Release safety boundary
+- 定義 target Storefront Release model
+
+## Completion criteria
+
+- 開發者與 AI agent 不會再依文件建立第二套 schema-first storefront framework。
+- 新功能有明確 authority：Commerce、Source 或 Content。
+- Build / Preview / Publish 名詞在文件與程式中意思一致。
+
+---
+
+# Phase 1 — Authoring Convergence
+
+## User value
+
+使用者可以在 Canvas 或 Code Editor 編輯同一個真正的 React Theme，不會出現「Canvas 一份、程式碼另一份」。
+
+## Core flow
+
+```text
+Theme Source
+   ↕
+Visual AST Editor
+   ↕
+Monaco
+```
+
+## Deliverables
+
+### Theme Workspace
+
+- 完成 file create / rename / delete lifecycle
+- 完成 file tree UX
+- 強化 workspace dirty / saving / conflict state
+- 完成 multi-file OCC
+- 完成 source generation conflict UX
+- revision history / restore UI
+
+### Visual AST Editor
+
+- 選取 preview DOM → resolve `data-morph-node`
+- node → source file / AST position
+- Inspector read static Tailwind values
+- Inspector safe source patch
+- source save → preview refresh
+- Monaco edit → Inspector reparse
+- unsupported dynamic expression 顯示 Code-only state
+
+### Morph component metadata
+
+擴充 `morph.theme.json`：
+
+- component id
+- source path
+- entry
+- display name
+- visual-editor capability
+- optional inspector metadata
+
+Manifest 是 mapping / metadata，不是 styling SSOT。
+
+### Editing capability
+
+先把最重要的 CSS / Tailwind 能力打通：
+
+- typography
+- spacing
+- sizing
+- color
+- background
+- border / radius
+- flex
+- grid
+- alignment
+- responsive tokens
+
+## Completion criteria
+
+至少一個完整 vertical slice：
+
+```text
+Canvas 改 Hero heading font size
+→ Hero.tsx class 改變
+→ Monaco 立即看到
+→ Save
+→ reload 後保持
+→ create source revision
+→ build
+→ immutable preview 正確
+```
+
+反向：
+
+```text
+Monaco 改 Hero.tsx
+→ Save
+→ Visual Editor reparse
+→ Inspector 顯示新值
+```
+
+---
+
+# Phase 2 — Build & Preview Productionization
+
+## User value
+
+任何 source revision 都能以可重現方式 build，且 preview 真正對應 immutable artifact。
+
+目前 repository 已有大部分技術 foundation，本階段重點是 production hardening。
+
+## Deliverables
+
+### Build Runner
+
+- Cloudflare Sandbox production configuration
+- deterministic toolchain
+- approved dependency registry
+- dependency version policy
+- build timeout
+- file / source / output budgets
+- structured build logs
+- diagnostics mapping 到 Monaco / Inspector
+
+### Artifact
+
+- immutable R2 artifact prefix
+- canonical manifest
+- hash / metadata
+- retention policy
+- orphan artifact cleanup policy
+
+### Preview
+
+- stable immutable preview URL
+- preview token lifecycle
+- iframe isolation
+- build diagnostics UI
+- failed build UX
+- retry behavior
+- build history UI
+
+### Build verification
+
+Publish 前能確認：
+
+- source revision
+- compiler identity
+- build success
+- artifact availability
+- manifest integrity
+
+## Completion criteria
+
+- Build 永遠只讀 immutable revision。
+- 同一 revision + compiler identity 可以 deterministic rebuild / verify。
+- Failed build 不影響前一個 preview / production artifact。
+- Build Plane 無 production database / auth secrets。
+- Preview asset 只能從 manifest allowlist 讀取。
+
+---
+
+# Phase 3 — Storefront Release Model
+
+## User value
+
+Morph 可以安全地把一個已驗證版本切到 production，且瞬間 rollback。
+
+這是下一個最高優先級 backend milestone。
+
+## Target model
+
+```text
+StorefrontRelease
+├─ id
+├─ storefrontId
+├─ themeId
+├─ themeBuildId
+├─ sourceRevisionId
+├─ template revision references
+├─ page revision references / publish snapshot
+├─ createdBy
+├─ createdAt
+└─ metadata
+```
+
+```text
+Storefront
+└─ activeReleaseId
+```
+
+## Rules
+
+### Presentation release
+
+Theme Source 改變：
+
+```text
+Source Revision
+→ Successful Build
+→ New Release
+→ Atomic activate
+```
+
+### Content-only release
+
+只有 copy / assets / SEO / section ordering 改變：
+
+```text
+Existing Successful Theme Build
++
+New Published Content Revisions
+→ New Release
+→ Atomic activate
+```
+
+不需要重新 build theme。
+
+## Deliverables
+
+- `storefront_releases` data model
+- active release pointer
+- release generation / OCC
+- release creation service
+- verify succeeded build
+- verify sourceRevision ↔ build identity
+- content revision snapshot / references
+- atomic activation
+- previous release rollback
+- release history
+- audit actor
+- compatibility migration from current `publishedSourceRevisionId` / `publishedRevisionId`
+
+## Completion criteria
+
+- Production 永遠指向完整 immutable release。
+- 不可能出現 source 已 published 但 artifact 不存在。
+- Content-only publish 不觸發 Vite build。
+- Rollback 只需切回 previous release。
+- Concurrent publish 不 silent overwrite。
+
+---
+
+# Phase 4 — Production Edge Storefront Runtime
+
+## User value
+
+真正的顧客可以透過 storefront domain 使用 Morph 發布的網站。
+
+## Request path
+
+```text
+Hostname
+   ↓
+Storefront Resolver
+   ↓
+Active Release
+   ↓
+Theme Build Artifact
+   ↓
+Published Page / Template Context
+   ↓
+Commerce DTO
+   ↓
+Storefront
+```
+
+## Deliverables
+
+### Domain / routing
+
+- hostname resolver
+- primary domain
+- preview domain
+- home route
+- pages
+- products
+- collections
+- cart / checkout handoff
+- 404
+- canonical URL
+- sitemap
+- robots
+
+### Runtime bridge
+
+建立正式 `StorefrontRuntimeContext` contract。
+
+Theme build 不應 bake mutable content 與 commerce values。
+
+Theme runtime 可以透過：
+
+- initial serialized boot context
+- same-origin Store API
+- Morph runtime adapter
+
+取得：
+
+- page/template content
+- public product data
+- collection data
+- cart context
+- navigation
+- locale
+- currency / sales channel
+
+### Artifact serving
+
+- immutable cache
+- proper MIME
+- ETag / cache headers
+- route fallback
+- asset manifest
+- versioned URLs
+
+### Isolation
+
+- Control Plane downtime 不影響已發布 storefront。
+- Build Plane downtime 不影響 active release。
+- draft content 不可透過 public runtime 取得。
+
+## Completion criteria
+
+- custom domain 可以載入 active release。
+- `/`, `/products/:handle`, `/collections/:handle`, `/pages/:handle` 正常運作。
+- 同一 theme build 可以搭配更新後的 content release。
+- product price / inventory 更新不需要 theme rebuild。
+- previous release 可以立即 rollback。
+
+---
+
+# Phase 5 — AI Code Agent
+
+## User value
+
+使用者可以描述想要的頁面、元件或互動效果，AI 直接修改真正的 React Theme，而不是只能排列固定 sections。
+
+## AI scope
+
+AI 可以：
+
+- inspect source tree
+- read selected component
+- create component
+- modify React / TSX
+- modify Tailwind / CSS
+- create responsive layout
+- create GSAP animation
+- create Canvas / WebGL / Three / R3F experience
+- update `morph.theme.json`
+- add Morph visual-edit metadata
+- modify Page / Template content when appropriate
+
+## Architecture
+
+```text
+Prompt
+   ↓
+Context Builder
+   ↓
+Agent Workspace
+   ↓
+File Operations / Patch
+   ↓
+Validation
+   ↓
+Theme Workspace OCC
+   ↓
+AI Source Revision
+   ↓
+Sandbox Build
+   ↓
+Diagnostics
+   ↓
+Bounded Repair Loop
+   ↓
+Preview
+   ↓
+Human Approval
+```
+
+## Context Builder
+
+只提供必要資訊：
+
+- relevant source files
+- component manifest
+- current selected node
+- theme design language
+- dependency allowlist
+- public commerce DTO schema
+- Page / Template context
+- asset references
+- project rules
+
+不可提供：
+
+- production secrets
+- raw session secret
+- unrestricted D1
+- unrelated PII
+
+## Agent operations
+
+Agent 不應取得 unrestricted filesystem。
+
+提供 scoped tools：
+
+- list theme files
+- read file
+- create/update/delete allowed file
+- apply patch
+- query diagnostics
+- request source revision
+- request build
+- inspect build result
+
+## Repair loop
+
+- bounded attempts
+- every attempt recorded
+- build error fed back with scoped diagnostics
+- no infinite loop
+- failed repair leaves previous workspace / release recoverable
+
+## Human approval
+
+AI 不可：
+
+- publish
+- deploy
+- activate release
+- migrate production
+- expand dependency policy
+- expand its own permissions
+
+## Completion criteria
+
+使用者可以輸入：
+
+> 做一個跟著滾輪移動的 IoT Canvas hero，手機版改成靜態圖片。
+
+AI 能：
+
+1. 建立真正 React / Canvas code。
+2. 通過 dependency / path / security policy。
+3. Build。
+4. 顯示 preview。
+5. 失敗時有限次 repair。
+6. 使用者批准後才建立 / activate release。
+
+---
+
+# Phase 6 — AI Content & Commerce Authoring
+
+## User value
+
+對不需要寫 code 的工作，AI 可以用更快、更安全的資料層直接完成。
+
+## Use cases
+
+- landing page copy
+- SEO
+- image selection
+- product / collection binding
+- translation
+- navigation
+- reorder sections
+- campaign page content
+- product merchandising
+
+## Decision rule
+
+```text
+Content / assembly
+→ Page Document
+
+Presentation / behavior
+→ Theme Source
+```
+
+## Deliverables
+
+- content assistant
+- asset suggestion
+- localization
+- SEO generation
+- commerce reference search
+- structured content diff
+- draft revision
+- publish review
+
+## Completion criteria
+
+Content-only AI change 不需要 build Theme，也不會取得 code execution capability。
+
+---
+
+# Phase 7 — Advanced Interactive Runtime
+
+## User value
+
+Morph 可以穩定承載高品質品牌官網與互動式商品體驗。
+
+## Capabilities
+
+- Canvas
+- WebGL
+- Three.js / R3F
+- GSAP
+- image sequence
+- scroll story
+- Mapbox / maps
+- 3D product viewer
+- immersive landing page
+- IoT / data visualization
+
+## Platform work
+
+- dependency capability packs
+- asset preload budgets
+- GLB / texture / sequence pipeline
+- lazy activation
+- visibility lifecycle
+- render-loop controls
+- memory / FPS instrumentation
+- mobile strategy
+- no-WebGL fallback
+- reduced-motion fallback
+- error boundaries
+
+Reusable presets 可以存在，但它們是 authoring acceleration，而不是唯一可用 presentation vocabulary。
+
+## Completion criteria
+
+AI 能建立超出預設 component library 的新互動實作，同時 production 仍受到 build sandbox、resource budget 與 release policy 保護。
+
+---
+
+# Phase 8 — Multi-tenant SaaS Platform
+
+## User value
+
+Morph 可以安全地服務多個商家、網站與不同方案。
+
+## Target topology
 
 ```text
 Morph Control Plane
-├─ Accounts, organizations, projects, billing, entitlements
-├─ AI jobs, builds, deployments, domains, audit records
-└─ Tenant/runtime provisioning
-           │
-           ├─ Shared Storefront Runtime
-           ├─ Dedicated Enterprise Runtime
-           └─ Generated Application Runtime
+├─ users / orgs
+├─ projects / storefronts
+├─ billing / entitlement
+├─ AI jobs
+├─ builds
+├─ releases
+├─ domains
+└─ observability
 
-Morph Data Plane
-├─ Commerce services
-├─ Storefront renderer and Store API
-├─ Published cache and asset delivery
-└─ Tenant-aware observability
+Morph Authoring Plane
+├─ theme workspace
+├─ visual editor
+├─ Monaco
+└─ AI agent
 
 Morph Build Plane
-├─ Workflows and queues
-├─ Sandboxes/containers
-├─ Preview deployments
-└─ Artifacts and rollback
+├─ queue / workflow
+├─ sandbox / container
+├─ artifact store
+└─ immutable previews
+
+Morph Runtime Plane
+├─ hostname router
+├─ active releases
+├─ Store API
+├─ commerce runtime
+└─ CDN / cache
 ```
 
-### Deliverables
+## Deliverables
 
-- Explicit tenant identity propagated through request, auth, server function, DAL, cache, asset, and deployment boundaries.
-- Shared versus dedicated database/runtime strategy based on customer tier and measured limits.
-- Domain provisioning, certificate state, preview domains, and production routing.
-- Tenant-aware quotas, metering, billing events, logs, traces, backups, retention, and incident tooling.
-- Service bindings or Workers for Platforms only after concrete tenancy and isolation requirements are established.
-- Regional/data-residency strategy where required.
-- Disaster recovery and tested restore procedures for data and deployed artifacts.
+- explicit tenant identity
+- tenant-aware D1 / storage strategy
+- per-tenant quotas
+- AI cost attribution
+- build metering
+- release audit
+- backups
+- retention
+- domain lifecycle
+- incident tooling
+- logs / traces
+- enterprise isolation option
+- migration between shared / dedicated runtime
 
-### Completion criteria
+## Completion criteria
 
-- No request can resolve data, cache entries, assets, secrets, previews, or deployments belonging to another tenant.
-- A tenant can be migrated between shared and dedicated infrastructure without changing authored page semantics.
-- Control-plane failure does not take already published storefronts offline.
-- Build-plane failure cannot affect existing production runtimes.
+沒有任何 request 能取得其他 tenant 的：
 
-## Product ceiling
+- commerce data
+- theme source
+- artifact
+- preview
+- release
+- secret
+- domain
+- AI job
 
-If all phases are completed, Morph can become:
+---
 
-> An AI-native commerce platform that combines modular commerce operations, a visual storefront CMS, schema-constrained AI generation, interactive experiences, isolated code agents, and commerce-focused application generation on Cloudflare.
+# Phase 9 — Commerce Application Generator
 
-This ceiling is intentionally narrower than a completely unrestricted Base44/Lovable-style generator. Morph should compete through deeper commerce correctness, safer publishing, reusable visual authoring, and controlled extensibility rather than by generating every category of software.
+## User value
 
-## Cross-phase requirements
+Morph 不只產生 storefront，也能建立 commerce-adjacent application。
 
-Every phase must preserve the following:
+例如：
 
-- Commerce data remains the single source of truth for products, prices, inventory, options, media, customers, orders, promotions, tax, and sales channels.
-- Draft, preview, published, deployment, and production states remain distinct.
-- AI cannot publish, deploy, migrate production, or expand its own permissions.
-- All external input is validated at the server boundary.
-- Generated or authored documents contain data, not executable code.
-- Normal content publishing remains independent from Code Mode and the build plane.
-- Every mutation has authorization, auditability, bounded work, failure handling, and an appropriate negative test.
-- Cloudflare feature availability and customer provisioning are verified before enabling optional capabilities.
-- Existing dynamic Dashboard routes, shared UI primitives, query boundaries, DALs, DTOs, and schema conventions remain the extension points; phases must not create parallel frameworks.
+- B2B quotation portal
+- dealer portal
+- service booking
+- product configurator
+- marketplace operations
+- subscription management
+- wholesale customer portal
 
-## Roadmap governance
+## Architecture principle
 
-- Phases are dependency-ordered, but work inside a phase may be split into smaller milestones.
-- A later-phase experiment must not weaken or bypass an earlier-phase production boundary.
-- Before beginning a phase, write a scoped architecture decision describing tenancy, data ownership, threat model, failure recovery, Cloudflare limits/cost, and migration path.
-- A capability is not complete until its loading, empty, error, responsive, keyboard, authorization, negative, migration, rollback, and production-observability paths are verified in proportion to risk.
-- Update this roadmap when a product decision changes; update `.agent/rules.md` only when an invariant or mandatory implementation boundary changes.
+優先重用既有 commerce source of truth。
+
+對通用業務 entity 可建立 controlled application schema，但它不是 storefront presentation schema。
+
+```text
+Commerce Core
+     +
+Application-owned Extension Data
+     +
+Generated UI / Workflow
+```
+
+Code Agent 可處理超出 controlled runtime schema 的需求，但仍走 Sandbox → Preview → Approval → Release。
+
+## Completion criteria
+
+- commerce records 不被複製成第二套 truth。
+- generated server behavior 有 permission boundary。
+- migration 可 preview / rollback。
+- tenant isolation 完整。
+- production schema mutation 必須人工批准。
+
+---
+
+# Product Ceiling
+
+完成主要階段後，Morph 可以成為：
+
+> **一個 Cloudflare-native AI commerce platform：以 modular commerce backend 為資料核心，以 React code-backed theme 為 presentation 核心，提供 Visual AST Editor、AI Code Agent、immutable build/release、Edge Runtime 與 commerce-focused application generation。**
+
+Morph 的競爭點不是「限制越少越好」，而是：
+
+- AI 可以真的寫 code
+- storefront 自由度高
+- commerce data correctness 不犧牲
+- production 不直接執行 AI 草稿
+- 每個版本可以 build、preview、audit、publish、rollback
+- content update 不必因為 code-backed theme 而每次 rebuild
+
+---
+
+# Cross-phase Invariants
+
+所有 Phase 都必須維持：
+
+- Commerce modules 是 commerce SSOT。
+- React / TSX / Tailwind Theme Source 是 presentation SSOT。
+- Page / Template Document 是 content / assembly SSOT。
+- Visual Editor 不建立平行 presentation model。
+- AI code 只能先進 authoring workspace。
+- Build 只讀 immutable source revision。
+- Untrusted code 只在 isolated build environment 執行。
+- Failed build 不影響 active production release。
+- AI 不可自行 publish / deploy / migrate / elevate permission。
+- Content-only publish 不要求重新 build Theme。
+- Production 永遠可 rollback 到已知 good release。
+- Draft、Revision、Build、Preview、Release、Production 是不同 state。
+- 新功能不得繞過 authorization、OCC、validation、audit、bounded work 與 rollback。

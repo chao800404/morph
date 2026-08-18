@@ -1,641 +1,1063 @@
 # Morph 專案開發規則
 
-本規則適用於所有修改此 repository 的開發者與 AI 代理。規則以目前實際架構為準；若規則與執行中的程式碼不一致，先追查完整呼叫鏈，再以最小範圍修正規則或實作，不可直接建立第二套架構。
+本文件是 Morph repository 的**工程與架構規則**，適用於所有開發者與 AI coding agent。
 
-## 1. 核心工作原則
+本文件只規範「不可違反的邊界、SSOT、資料流、安全與實作慣例」。產品階段、優先順序與未來交付內容請看 [`ROADMAP.md`](../ROADMAP.md)。
 
-- 修改前先閱讀真正的入口、route、config、query、server function、DAL 與 schema；不要只依檔名推測資料流。
-- 僅修改需求直接相關的檔案。保留工作樹中既有且無關的變更，不可擅自 reset、restore、clean、重寫或刪除。
-- 優先延伸現有抽象與命名，不建立平行的 route registry、query key、權限判斷、DTO 或 config source of truth。
-- 不可手動修改 `src/routeTree.gen.ts`、建置產物、Cloudflare 產生型別或其他 generated files；應修改來源後由對應工具重新產生。
-- 除非使用者明確要求，不執行 deploy、production migration、push、建立 commit 或變更 Cloudflare 遠端資源。
+如果本文件與執行中的程式碼不一致：
 
-## 2. 專案架構與責任邊界
+1. 先追查真實 route → query → server function → service → DAL/storage → schema 的完整呼叫鏈。
+2. 判斷是既有程式尚未遷移，還是規則已過時。
+3. 以**單一架構收斂**為目標修正，不可建立第二套平行 framework。
+4. 不可為了讓局部功能先跑而繞過 authorization、revision、build、release、OCC 或 production safety boundary。
 
-### 產品定位與 Storefront 演進目標
+---
 
-- Morph 的長期產品定位是：保留 **Medusa 式商務後台**的模組化資源管理與資料責任邊界，同時提供 **Shopify 式 Online Store** 的前端頁面、主題、模板、導覽與偏好設定編輯能力；兩者共用 commerce source of truth，不建立第二套商品、集合、價格、庫存或銷售管道資料。
-- Dashboard 資訊架構應區分兩個責任區域：商品、訂單、庫存、客戶、促銷等營運能力屬於 commerce admin；`Online Store` 負責 `Themes`、`Pages`、`Navigation`、`Templates` 與 `Preferences`。網域、憑證與平台級連線設定仍放在 `Settings`，不可混入頁面內容編輯器。
-- Storefront 頁面必須以版本化、schema-validated 的結構化 document／section model 保存，不把作者輸入直接存成任意 React、HTML 或可執行程式碼。Editor、preview、storefront renderer 與 AI generation 必須讀寫同一份 document schema 與 section registry。
-- 商品頁面由「商品 commerce data + 已發布的 product template」組合渲染。模板可以決定版面與 section props，但不得複製或覆蓋商品價格、庫存、選項、媒體等權威資料；商品更新後，線上頁面應自然讀到最新 commerce data。
-- AI 頁面生成屬於 authoring workflow，不是直接部署能力。AI 只能產生符合既有 section registry 與 schema 的 draft／revision，必須經過 validation、preview、人工確認與明確 publish 後才可成為線上版本；禁止 AI 直接修改 published document、直接寫入任意程式碼或繞過權限與審核流程。
-- 所有可發布內容都必須支援 draft 與 published 狀態分離、可追蹤版本、發布時間與回復上一版本。後續若加入排程發布、多人協作或 AI 更新產品頁，也必須建立在同一條 revision → validation → preview → publish pipeline 上，不新增旁路。
-- Storefront renderer 必須只讀取已發布版本；Dashboard editor 與 preview 可以讀取 draft。發布操作由具權限的 server function 協調，DAL 負責原子切換 active/published version，client 不可自行指定或竄改線上版本。
+## 1. Morph 的產品與架構定位
 
-### AI Page Authoring、Interactive Sections 與 Code Mode
+Morph 是一個 **AI-native commerce platform**，目標結合：
 
-- Morph 一般頁面生成採 **Schema Authoring**，不是 code generation。AI 只能輸出通過共用 Zod schema 的 page document／section JSON；Visual Editor、AI authoring、preview 與 storefront renderer 必須共用同一份 document schema、schema version、section registry 與 theme tokens，不得各自建立相似但不相容的資料格式。
-- Section registry 是頁面能力的唯一來源。每個 section type 必須有穩定 identifier、props schema、允許的 variants、responsive contract、renderer 與必要的 migration；AI 只能選擇已註冊的 section、variant、資料來源與 token，不可捏造 component import、prop、CSS class 或 runtime dependency。
-- Page document 是資料，不是程式碼。禁止保存或執行任意 React／TSX、HTML script、event handler、JavaScript expression、`dangerouslySetInnerHTML` payload、動態 import、外部追蹤程式或可讀取環境變數的內容。Rich text 或嵌入內容也必須經既有 schema、allowlist 與 sanitizer 邊界處理。
-- AI 產出只能建立新的 draft revision；不得原地修改既有 revision、直接切換 published revision、直接部署或繞過 preview／人工確認。發布流程固定為 `generation → schema validation → draft revision → preview → human approval → authorized publish`，validation 失敗的結果只能留在 generation job／error 狀態，不得進入可發布 document。
-- 一般內容操作（文案、圖片、section 新增／移除／排序、variant、theme token 與資料綁定）只更新版本化資料，**不得觸發 storefront 重新 build 或 deploy**。只有新增或修改程式層 section renderer、互動能力、依賴或 runtime 時才需要正常工程 build／deploy 流程。
-- Canvas、WebGL、scroll story、3D viewer、image sequence 與其他高互動效果，第一優先做成 registry 中具名的 **Interactive Section／Preset**。Preset 自己擁有 React／Canvas 程式、資產限制、效能策略、responsive fallback、keyboard/reduced-motion 行為與 props schema；AI 只能設定經驗證的 preset、steps、assets、文案與安全參數，不可產生或注入 shader、Three.js／R3F 程式或逐幀 callback。
-- Interactive Section 必須提供不支援 WebGL、低效能裝置、reduced motion、資產載入失敗與 SSR／hydration 情境的可用 fallback。頁面作者不能透過 document props 關閉安全上限、建立無界資產下載、無界 canvas loop 或會阻塞 Dashboard／storefront 的工作量。
-- 商品、集合、價格、庫存、選項、媒體與銷售管道仍以 commerce module 為 source of truth。Page document／AI prompt 只能保存穩定 record reference、query source 與 presentation props，不得複製權威 commerce 值形成第二份可編輯資料；renderer 依目前 request context 讀取最新可公開 commerce DTO。
-- AI generation job 應保存操作者、站點／頁面、模型與 schema version、使用者指令摘要、允許的 section capability、結果 revision、validation errors、狀態與時間，以便稽核與重試；不得保存 secret、完整 session、未必要的個資或讓模型直接取得 server environment／raw database access。
-- 若未來提供 **Code Mode**，它是開發者／高階方案的獨立工程流程，不是一般 CMS Publish 的旁路。AI 修改程式碼必須在隔離 workspace／sandbox 進行，限制可用依賴與外部連線，通過 static security checks、TypeScript、lint、tests 與 production build，產生獨立 preview URL，經人工批准後才可部署，並保存 source revision、build log、artifact、deploy version 與 rollback target。
-- Code Mode 不得直接修改 production workspace、production database、published document 或 Cloudflare production resource。Build／repair loop 失敗時維持上一個 production artifact；一般 Page Schema 模式必須即使 Code Mode 不可用仍能獨立建立、預覽、發布與回復內容。
-- 產品演進順序固定為：先完成 Page Schema／Section Registry／Visual Editor／Preview／Publish；再擴充 Interactive Section Library；最後才建立 Code Mode 的 sandbox／build／preview／deploy 能力。不得為追求單一特殊視覺效果提前把一般頁面發布耦合到 code generation pipeline。
+- Medusa 式 commerce backend：商品、價格、庫存、訂單、客戶、促銷、稅務、sales channel 等維持明確資料責任邊界。
+- Shopify 式 Online Store：Theme、Page、Template、Navigation、Domain、Preview、Publish 與 Visual Editor。
+- Code-backed storefront：React / TSX / Tailwind 是 presentation 的主要 source of truth。
+- Visual AST Editor：Canvas 是 source code 的高階編輯介面，不是另一份 presentation JSON。
+- AI Code Agent：可以在受控 workspace 中新增或修改真正的 React / Tailwind / interaction code。
+- Cloudflare build / runtime plane：source revision、Sandbox build、R2 artifact、preview、release、edge runtime 與 rollback。
 
-### 路由與 CMS 導航
+Morph 不是單純的 section-schema page builder，也不是無限制的一般用途 app generator。
 
-#### Visual Editor route 與獨立應用外殼
+---
 
-- Visual Editor 是獨立的 authoring surface，不是 Dashboard collection 頁面。現階段正式 route 使用 `/store/$storefrontId/themes/$themeId/editor`；未來只有在資料庫具備唯一、不可因網站名稱變更而漂移的 `storeHandle` 後，才可遷移為 `/store/$storeHandle/themes/$themeId/editor`，不可直接拿可編輯的網站名稱或 slug 代替 record identity。
-- Dashboard 的 `Customize theme` 必須以新分頁開啟 Editor，並使用 `noopener noreferrer`。Editor 不渲染 Dashboard 的 header、sidebar、breadcrumb、scroll container 或 collection shell；它由獨立 pathless layout 負責 authentication、theme provider、全螢幕 editor shell 與 editor-level pending／error boundary。
-- Editor 左側欄只承載模板、sections、app embeds 與 theme settings 等 authoring 導航；中央為隔離的 storefront preview；右側為目前選取項目的設定。Dashboard sidebar 不可複製進 Editor，Editor sidebar 也不可反向加入 Dashboard collection config。
-- URL 中的 storefront 與 theme 都是不可信輸入。Server function／DAL 必須以兩者同時查詢並驗證 `theme.storefrontId === storefront.id`，不可只憑 theme id 讀取或修改其他站點主題；Editor 讀寫使用 commerce admin 權限邊界，client token／UI 隱藏不能取代 server-side authorization。
-- Editor、preview、storefront renderer 與 AI authoring 必須共用既有 storefront document schema、section registry、theme tokens、server function、DAL 與 revision／publish pipeline，不得建立 Editor 專屬的第二套 page schema、資料庫存取或 publish 狀態。一般編輯永遠先寫 draft revision，不直接覆蓋 published document。
-- 影響目前工作狀態的 Editor state 必須可被 URL 驗證並重現；至少包含 template 與 viewport，後續 section、locale 等可分享狀態也應加入 search schema。暫時無法運作的 Save／Publish／Add section 控制項應明確 disabled，不可用假成功互動冒充已完成能力。
-- Preview renderer 後續應使用專用 preview route／iframe 隔離 storefront CSS、runtime error 與 navigation；在真正 renderer 尚未完成前，Editor 可以顯示清楚標示的 theme preview placeholder，但不得把 placeholder 宣稱為可發布的真實渲染結果。
-- 「Dashboard route 由 collection config 決定」只約束 `/dashboard/**` collection surface；頂層 Visual Editor 可以有自己的靜態 file route，但仍必須使用 TanStack file routing、validated search、loader prefetch、具名 pending UI，且不可手動修改 `src/routeTree.gen.ts`。
+## 2. Source of Truth：不得混淆
 
-- `src/routes/` 使用 TanStack Router file-based routing；route 負責 URL 驗證、權限入口、loader/prefetch 與 view 組裝。
-- Dashboard 的頁面來源為：
-  `src/cms.config.ts` → `dashboard/-collections/**` → dynamic dashboard route → `dashboard/-views/**`。
-- 新增 Dashboard 功能時，應建立或延伸對應 view，再於既有 collection 設定的 capability（`index`、`create`、`preview`、`detail`、`edit`）下註冊 `view`、必填的 `pendingView` 與需要時才加入的 `prefetch`；不可另寫一份 sidebar 或 breadcrumb 對照表。
-- `-components`、`-queries`、`-views`、`-collections` 是 route-internal 模組，不應被無關的頂層功能反向依賴。
-- Route search params 必須用 schema 驗證。可分享、可返回或影響資料集的狀態，例如 `folderId`、`q`、排序與分頁，應以 URL 為單一真實來源。
+Morph 有多個 SSOT，但每一種資料只能有一個權威來源。
 
-### Dashboard 路由由 config 決定，不新增靜態路由檔
+| 領域 | Source of Truth |
+|---|---|
+| 商品、價格、庫存、選項、媒體、客戶、訂單、促銷、稅、sales channel | Commerce modules / D1 |
+| Storefront layout、樣式、responsive、motion、interaction、Canvas/WebGL/Three/GSAP implementation | React / TSX / CSS / Tailwind Theme Source |
+| 可視化元件 implementation | Theme Source |
+| 文案、圖片選擇、SEO、commerce references、頁面 section instance 與 ordering | Versioned Page / Template Document |
+| Theme 的可編輯工作狀態 | Theme Workspace Files |
+| 可重現的 Theme source snapshot | Immutable Theme Source Revision |
+| 可執行前端結果 | Immutable Theme Build Artifact |
+| 線上正在使用的 storefront 組合 | Storefront Release / Active Release |
+| 使用者登入、角色與 session | Better Auth / existing auth helpers |
 
-- 「有哪些頁面」的唯一來源是 collection config。不得為了單一 collection 新增靜態路由檔 —— 靜態片段的排序高於 `$slug`，會無聲蓋掉同名的 collection，頁面直接變空白而不報錯。
-- **collection 在自己的 namespace 內一律是平的**：Global collection 住在 `/dashboard/<slug>`；Settings collection 住在 `/dashboard/settings/<slug>`。`items[]` 只影響側邊欄分組與麵包屑，不增加 URL 層級。不可把 Products 的子項做成 `/dashboard/products/options`，也不可把 Settings 子項再巢狀一層。
-- 這條規則是詳情頁能存在的前提。若 Options 住在 `/dashboard/products/options`，那 `/dashboard/products/<id>` 就無法分辨是 collection 還是 record id。
-- 因為網址在 namespace 內是平的，**slug 必須在同一 namespace 內唯一**（`assertCollectionsAreAddressable` 會分別驗證 Global 與 Settings）。Global 的 `settings` 仍是保留字，因為它是 Settings namespace 的入口。
-- Global 與 Settings 各自使用同一套 capability 路由形狀；新增頁面請走 config，不可為單一 collection 增加專屬 route：
-  - `$slug` —— collection 列表頁，同時是底下所有 child route 的 layout，必須渲染 `<Outlet />`。
-  - `$slug/create` —— 建立頁，由 config 的 `create.view` 提供。
-  - `$slug/view` —— collection 層級的瀏覽頁，由 config 的 `preview.view` 提供；目前資產 id 放在 `?assetId`。
-  - `$slug/$id` —— 詳情頁，由 config 的 `detail.view` 提供。`create` 是靜態片段所以優先於 `$id`。
-  - `$slug/$id/edit` —— 編輯頁，由 config 的 `edit.view` 提供；有 `detail` 時疊在詳情頁上，沒有 `detail` 時疊在列表上。
-  - Settings 的 `$slug/edit` —— 僅供沒有 record id 的單例 collection（例如 Store）使用，由同一個 `edit.view` capability 提供；它疊在該 collection 列表上。一般 record collection 仍必須使用 `$slug/$id/edit`，不可用 singleton route 省略 id。
-  - `$slug/$id/$page` —— 記錄的附屬頁面，由 config 的 `pages[key]` 提供。`edit` 是靜態片段所以優先於 `$page`，因此 `edit` 是保留的 page key。
-- Global 另有 `$slug/$id/$page/$childId`，只負責讓 `pages` 中的獨立子資源（例如 Product Variant）具有可分享的 record URL；實際 view、prefetch 與 presentation 仍由父層 `pages[key]` capability 提供。不得為個別子資源再建立專屬 route。
-- child route 的行為不同，`$slug` 用 `useChildMatches` 區分：
-  - `/create` 與 `/$id/edit` **疊在**列表上，列表維持掛載，關閉即返回，不重抓也不丟失捲動與選取狀態。
-  - `/view` 一律**取代**列表。
-  - `/$id` 只有在該 collection 真的有 `detail` 時才取代列表。collection 可以只宣告 `edit` 而沒有 `detail`（Assets 就是），這時 `$id` 只是承載 id 的 layout，列表必須留在後面 —— 少判斷這個條件，編輯頁背後會是空的。
-  - 判斷用 `useChildMatches` 各自回傳 boolean，不要回傳陣列或字串再比對：陣列每次 render 都是新參考會使相等性檢查失效，而 routeId 之間有前綴關係（`$id` 是 `$id/edit` 的前綴），字串比對會誤判。
-- 解析 collection 一律使用 `findCollection(groups, slug)`，不可用 `getAllCollections()` 再自己 `find`。
-- 建立頁必須是列表頁的 child，不可做成平行的獨立路由。這樣列表在底下維持掛載，關閉建立頁是 `navigate({ to: "..", replace: true })` —— 不重新掛載、不重抓資料、不在歷史紀錄留下廢棄的草稿頁。這是 Medusa admin 的作法（`get-route.map.tsx` 把 `create`／`import`／`export` 放在 list 的 `children`，再用 `RouteFocusModal` 疊在上面）。
-- 新增保留字或新的靜態片段時，必須同步更新 `RESERVED_COLLECTION_SLUGS`。`assertCollectionsAreAddressable` 會在 `createCMSConfig` 就擋下撞到保留字或重複路徑的 collection，讓它在啟動時就爆，而不是等到使用者點進去看到空白頁。
+### 2.1 Presentation SSOT
 
-### pendingView 必須畫出整個頁面的外框
+React / TSX / CSS / Tailwind source 是 presentation SSOT。
 
-- 所有可導覽的 capability（`index`、`create`、`preview`、`detail`、`edit` 與 `pages[*]`）都**必須**宣告 `pendingView`；這是型別層級的必要欄位，不可提供一個全域 generic fallback 來掩蓋遺漏。新增頁面卻沒提供 pendingView 時，必須讓 TypeScript 直接報錯。
-- Dashboard 動態路由的 route-level `pendingComponent` 一律使用中央選擇器 `DashboardRoutePending`。它只依 TanStack Router 的 **requested destination pathname** 找到 collection/capability，然後渲染該 capability 自己的 `pendingView`；不可在每條 route 重寫 pathname 判斷，也不可把某個頁面的視覺骨架塞進中央選擇器。
-- 跨 Global／Settings 或 collection 導覽時，sidebar shell 應立即依 requested destination 切換，`<Outlet />` 則在目的 route loader/chunk 完成前顯示**目的頁自己的** pendingView。動態 Dashboard routes 統一使用 `pendingMs: 0` 與 `pendingMinMs: 250`，避免舊內容停留及骨架一閃而過；不可先顯示空白、舊頁或全域 spinner。
-- `pendingView` 不是「載入中的小圖示」，它是那個頁面在 chunk 到齊前的替身。**頁面有幾欄、幾張卡，pendingView 就要有幾欄、幾張卡**，只有內容換成 skeleton。
-- 理由不是美觀，是串流 SSR 的執行順序：伺服器會解析 lazy view 並把真實 HTML 串流出去，接著瀏覽器 hydration 時該 chunk 還沒下載完，React 會**重新** suspend 一次。所以 fallback 是插在一個已經完整的畫面中間，少畫一欄就會看到那一欄出現、消失、再出現。
-- 不需要資料就能畫的區塊（例如「未選取任何項目」的空狀態卡），pendingView 直接渲染真的那個組件，不要用灰塊假裝。
-- **疊層路由的 pendingView 必須也是疊層。** `create`、`$id/edit`、overlay presentation 的 `$id/$page` 與 `view` 都要保留 `RouteFullscreenSurface` 外框；表單型頁面使用頁面具名 pendingView，並以 `createRouteSurfacePendingView(fieldCount)` 或共享 skeleton primitives 畫出相符的欄位結構。不可退回只有空殼加 spinner 的 fallback，也不可用在流內排版的 `PageSpinner` —— 那會讓底下頁面露出來或產生明顯跳版。
-- 列表型頁面可用 `createCollectionIndexPendingView(columnCount)` 建立一致的 table card 骨架；表單型頁面可用 `createRouteSurfacePendingView(fieldCount)`。這些 factory 只是共享 primitive，collection config 仍須宣告具名 pendingView 並提供符合實頁的欄位數。Products、Assets、detail dashboard 等版型不同的頁面要沿用它們既有的專用 skeleton，不可為了共用而犧牲形狀準確度。
-- 但 `pendingView` 被 collection config **靜態** import，所以它的 import 圖不得觸及 server function。要共用真實組件時，先把不碰 server function 的部分抽成獨立檔案再共用（`asset-property-empty.tsx` 是這樣來的：`AssetPropertyCard` 的 header 會 import delete／move server function，整張卡不能直接拿來用）。
+以下資訊不得再建立第二份可獨立演進的 JSON presentation model：
 
-### Collection capability 設定契約
+- Tailwind class
+- arbitrary values
+- grid / flex layout
+- breakpoint behavior
+- component nesting
+- animation implementation
+- GSAP timeline
+- Three.js / R3F / Canvas logic
+- Map runtime
+- event handlers
+- custom component composition
+- component-local state
+- effect implementation
 
-- Collection config 只描述「這個 collection 有哪些 route-backed 頁面」。具名 capability 固定使用 `index`、`create`、`preview`、`detail`、`edit`，記錄的附屬頁面放同層的 `pages`。不可改回模糊的頂層 `component`，也不可讓 config 自行提供 `path`。
-- 為什麼是「具名五個 + 均勻的 `pages`」而不是 Medusa 那種全部均勻的 `{ path, view }` 陣列：那五個名字是**框架的分支條件** —— `create` 決定要不要渲染 Create 按鈕、`edit` 決定要不要有 Edit row action、`detail` 決定 `$id` 是否取代列表與表單關閉回哪一層。改成均勻陣列後，這些判斷只能退化成字串慣例（`path === "create"`），型別安全從編譯期擋變成打錯就靜默失效。Medusa 能用均勻陣列，是因為那些 UI 它全部手寫在各頁；我們的賣點是使用者宣告 collection 就自動獲得它們。
-- 每個 capability 的 render entry 一律叫 `view`；必要的 Suspense fallback 一律叫 `pendingView`；route 進入前的 query cache priming 一律叫 `prefetch`。`component`、`loader`、`loadData` 都是舊名稱，不得重新引入。
-- **`view` 一律用 `lazyView(() => import("..."))` 宣告，不要直接寫 `lazy(...)`。** 它保留 import factory，讓框架可以在點擊前就開始下載那個 chunk。路徑只寫一次 —— 在 `view` 旁邊另外放一個 `preload` 欄位就是兩個地方要同步，而且漂移不會報錯。
-- 開啟 view 的控制項要把 `useViewPreload(view)` 的 handlers 展開上去（hover、focus、touchstart 三者都要：只綁 hover 會讓鍵盤與觸控使用者等在原地）。Row action 這種藏在下拉裡的，改在**選單開啟時**預載 —— 指標移到項目上時距離點擊只剩幾十毫秒，太晚了。
-- 所有 Dashboard 內部導覽必須支援 intent preload。真正的 TanStack `<Link>`／`RouterLink` 使用 Router 全域 `defaultPreload: "intent"`（共用 wrapper 亦明確帶 `preload="intent"`），不可改成裸 `<a>` 或關閉 preload。Table row、card、command item 等因 DOM 限制而以 `navigate()` 模擬連結的控制項，必須在 hover、focus、touchstart 預載目的 route 的 loader/data，並透過 `viewPreloader`／`useViewPreload` 預載 config `lazyView` chunk；只在 click 後才載入不符合規則。共用 table 一律使用 `onRowPreload`，不可各自重寫 pointer handlers。
-- `view` 指的是「這條路由渲染哪個元件」，不是「唯讀顯示」。`create.view`、`edit.view` 與 `pages[key].view` 都是表單，一樣叫 `view` —— 六個 capability 讀起來必須一致。Medusa 也是一個名字打天下（React Router 的 `Component`）。
-- **被 config 引用的 view 一律 `export default`**，config 寫 `lazy(() => import("..."))` 即可，不要 `.then((m) => ({ default: m.X }))`。那層樣板每個 capability 都要重寫一次，而且具名與預設兩種寫法並存會讓人以為它們有差別。View 的具名 export 只在真的有第二個引用者時才保留。
-- `index` 是 collection 的預設目的地；`create`、`detail`、`edit` 是 record lifecycle 頁；`preview` 是 collection-level viewer，適合需要保留目前資料集並在項目間切換的介面。不要用 `detail` 假裝 Preview，也不要讓同一功能同時存在 route 與 Dialog 兩條入口。
-- Capability 可以省略。省略代表該 collection 不支援該頁面：框架不應渲染對應按鈕，直接輸入該 URL 則回傳 `NotFound`；不可放一個空 view 或 `NotImplemented` 來假裝已支援。
-- 子資源一旦同時承載多個可獨立閱讀的區塊（例如 Variant 的價格、價格歷史、庫存、媒體與 metadata），table row 應先進唯讀詳情頁，再由卡片或 row action 進入編輯頁。詳情與編輯必須是兩個 `pages` key，不能讓同一 URL 依入口偷偷改變語意；簡單子資源才可維持 row click 直接編輯。這類詳情 subpage 必須宣告 `presentation: "replace"`，讓它取代父層內容；route-backed editor 則維持預設 overlay，不可讓詳情頁接在父層頁面下方。
-- `presentation: "replace"` 的 subpage 進入時必須把 Dashboard 自訂 scroll container 與 mobile window scroll 重設到頂部；overlay 不可重設，否則關閉 editor 會失去父頁原本位置。
-- 動態 record breadcrumb 必須由 collection config 的 `detail.breadcrumb`／`pages[key].breadcrumb` resolver 提供，並由匹配路由的 loader data 組合；不可由 view 透過 Zustand、context 或 `useEffect` 手動發布／清除。每層 route 只負責自己的 label，父 Product 與子 Variant 會自然組成 `Products > Product > Variant`。
-- 有獨立身份的子資源必須使用真實 record path `/dashboard/<collection>/<parentId>/<page>/<childId>`；不可把 child ID 只放在 query string。Query 僅保留 filter、排序、pagination、return target 等 view state。
-- 價格列表與價格歷史是不同資料：Price List 表達期間、客群、區域或數量條件；Price History 是 append-only 稽核軌跡。詳情頁不可用 Price List 假裝歷史，價格更新必須在同一個資料寫入流程留下舊值、新值、幣別、操作者與時間。
-- `move`、`delete`、`download`、`post-process` 等命令不是頁面，不放進 collection config。它們由 feature action、共用確認視窗或專用工具視窗負責；只有當操作本身需要可分享、可重新整理的完整畫面時，才把它加進 `pages`（而不是新增 capability）。
-- `items[]` 只表示 sidebar／breadcrumb 的視覺分組，子 collection 仍使用自己的平面 `/dashboard/<slug>` URL，並套用相同 capability contract。
-- Collection config 不得靜態 import query 或 server function。`prefetch` 內以 `await import(...)` 載入 query options，且必須與 view 使用同一個參數正規化函式，確保 query key 完全相同。
-- View 自己負責 query、mutation、fields 與 feature interaction；config 不保存 fields、action、選取項目、Dialog open state 或 query result。Config 是 capability registry，不是 runtime state container。
+Visual Editor 若修改以上內容，應透過 AST / source transformer 更新 Theme Source。
 
-### 用 search param 選擇變體時，值必須來自共用的 union
+### 2.2 Page / Template Document 的責任
 
-- 一個路由若靠 `?variant` 之類的 search param 決定顯示哪個表單，那組合法值要 export 成一個 `as const` 陣列與其 union type，並提供一個收斂函式（例如 `toAssetCreateVariant`）。所有導頁處引用同一份，不可各自寫字串字面值。
-- 理由是這種路由通常有 fallback：`?variant=打錯了` 會靜默落到預設值而不是報錯。曾經同一個概念在三個檔案有三個名字（`upload`／`assets`／註解寫 `upload`），只因為 fallback 吃掉了全部非預期值才沒壞。
-- search param 的型別在 `dashboardSearchSchema` 裡是寬鬆的 `string`，因為那層不該知道每個 collection 的變體。收斂要在使用它的路由裡做。
+Page Document 是 content / assembly data，不是 presentation implementation。
 
-### 設定與環境邊界
+Document 可以保存：
 
-- CMS 設定集中在 `src/cms.config.ts`，由 `src/server/get-config.ts` 建立 server/client 版本。
-- Client 僅可取得 `getConfig().client` 的安全欄位。database、email adapter、secret、Cloudflare binding 與其他 server-only 值不得進入 client bundle。
-- 新增設定時，先判斷它是公開設定或 server-only 設定，再同步更新 `create-config.ts` 的型別與安全投影。
-- 密鑰只能透過環境變數或 Wrangler secret 管理；不可寫入原始碼、`wrangler.jsonc` 的 `vars`、測試 fixture 或 log。
+- section instance id
+- `componentRef`
+- enable / hide state
+- section ordering
+- copy
+- image / video / asset reference
+- CTA URL
+- SEO
+- navigation reference
+- product / collection / category reference
+- safe presentation-independent settings
+- locale-specific content
 
-### Server Function、DAL、DTO
+Document 不應保存可執行 JS、任意 TSX、shader、callback、dynamic import 或環境變數。
 
-- `src/server/**/*.serverFn.ts` 是 client/server 邊界：負責解析輸入、套用 middleware、協調 use case 並回傳穩定結果。
-- 所有外部輸入一律視為 `unknown`，使用 Zod 或既有 validation helper 驗證；不可只依賴 client-side validation。
-- Server function 不直接散落複雜 SQL。資料存取放在 `src/lib/**/dal/`，資料庫 row 到公開資料形狀的轉換放在 mapper，跨邊界型別放在 DTO。
-- 使用既有 `{ success, message, data?, error?, errors? }` 結果模式；預期中的驗證或操作錯誤應回傳可處理結果，真正未預期的錯誤才拋出或記錄。
-- 不把 raw database row、內部 metadata、secret 或不必要的個資直接回傳給 client。
+**Document 不得成為 React source 的鏡像。**
 
-### Barrel（index.ts）的使用界線
+如果同一個 styling value 同時存在於 TSX Tailwind 與 Document props，必須明確指定誰是 SSOT；預設 styling 以 Theme Source 為準。
 
-Barrel 本身沒問題，但 server function 模組不適用。理由是模組圖重量，這點可量測：
+### 2.3 Commerce SSOT
 
-`import { moveItems } from "@/server/asset"` 會連帶求值 `create-items`（R2 上傳）、`process-image`、`remove-background`（影像處理）、`search-assets`。一個拖曳元件只要一個 `moveItems`，不該扛這些。拆掉兩個 server barrel 後 client 檔案數從 122 降到 119。
+Page / Theme 不得複製可變 commerce 權威值成第二份可編輯資料。
 
-> 註：曾經以為 barrel 是 `Cannot access 'xxx' before initialization` 的成因，拆掉之後問題**依然存在**，真正的原因見下一節。這條規則的依據是模組圖重量，不是那個 bug。
+例如：
 
-界線：
+- product price
+- inventory quantity
+- variant availability
+- SKU
+- option value
+- promotion result
+- tax calculation
 
-|                  | 對象                                                                            |
-| ---------------- | ------------------------------------------------------------------------------- |
-| ✅ 可用 barrel   | 型別、DTO、mapper、純函式、UI 元件（`@/lib/product`、`@/components/ui`）        |
-| ⚠️ 不要用 barrel | **`src/server/**`的 server function**，一律從各自的`\*.serverFn.ts` 直接 import |
-| ❌ 絕對不要      | server 模組圖裡的 `export *` wildcard re-export                                 |
+頁面應保存 record reference 或 query configuration，production runtime 再讀取目前 request context 下的公開 Commerce DTO。
 
-判準是**有沒有「被外部按名稱或 id 反查」或「import 當下就產生副作用」的語意**。純型別與純函式沒有，server function 有。
+---
 
-### cms.config 的模組圖不得觸及 server function
+## 3. 核心工作原則
 
-`src/cms.config.ts` 被 `get-config.ts` 引用，而多個 server function 又引用 `get-config`。若 config 的**靜態** import 圖反過來觸及任何 server function，同一個 middleware 模組就會有多個入口；Vite 在 HMR 時並行重新求值這些入口，其中一個會讀到還沒綁定完的 namespace，於是 `.middleware([xxx])` 拿到 `undefined`，錯誤訊息是：
+- 修改前先閱讀真正的入口、route、query、server function、service、DAL/storage 與 schema。
+- 僅修改需求直接相關的檔案；保留工作樹中無關變更。
+- 優先延伸現有 abstraction，不建立平行 route registry、query key、auth helper、DTO、storage backend、publish state 或 page framework。
+- 不可手動修改 `src/routeTree.gen.ts`、Cloudflare generated types、build output 或其他 generated files。
+- 除非使用者明確要求，不執行 production deploy、remote migration、push、commit 或 Cloudflare remote resource mutation。
+- 新 capability 必須先確認它屬於 Control Plane、Authoring Plane、Build Plane 還是 Runtime Plane，避免責任混在同一個 module。
+- 不可用 UI 隱藏、disabled button 或 client state 代替 server-side authorization。
+- 不可用「先做假成功 UI」冒充 backend capability 已完成。尚未接線的 action 必須 disabled、標示 unavailable，或有清楚的 failure state。
 
-```
-Cannot use 'in' operator to search for 'Symbol(TSS_SERVER_FUNCTION_FACTORY)' in undefined
-Cannot access 'xxxServerFn' before initialization
+---
+
+## 4. Storefront Theme Source Workspace
+
+### 4.1 Theme Files
+
+Theme source workspace 是一個 virtual filesystem，典型內容包括：
+
+```text
+package.json
+morph.theme.json
+
+src/
+├─ pages/
+├─ components/
+├─ styles/
+└─ ...
 ```
 
-實際踩過：`-collections/account/index.ts` 一行 `import { sessionQueries } from "@queries/auth.queries"`，就把 `list-sessions.serverFn` 與 auth middleware 拖進了 config 的圖，導致編輯任何 server 檔案後 Assets 頁就壞。
-
-規則：
-
-- collection 設定裡需要 query 時，一律在 `prefetch` 內用 `await import(...)`，不可在模組頂層靜態 import。`-collections/contents/index.ts` 是正確範例。
-- 冷啟動正常、只有編輯原始碼後才壞，就是這個症狀。不要用重啟迴避，也不要在 UI 加 loading 遮罩掩蓋。
-- **這條規則已經有自動守衛：`src/lib/config/module-graph.test.ts`。** 它跑兩件事 ——「整個 app 沒有任何 import 環」與「`cms.config` 的靜態圖走不到 server function」。改完 import 就跑 `pnpm test`，不要再靠肉眼追鏈。
-
-### 沒有 import 環
-
-- 環不會被 `tsc` 或 `pnpm build` 抓到。它在冷啟動時看入口順序運氣好壞，HMR 重新求值時就爆 `Cannot access 'X' before initialization` —— 而且錯誤指的檔案通常是無辜的那個。使用者的症狀是「每次都要重啟」。
-- **共用 field／dialog／primitive 一律不得靜態 import server function 或 query 模組。** `FieldsRenderer` 在 `cms.config` 的靜態圖裡，所以任何欄位只要頂層 import 一個 `*.serverFn`，環就成立。需要時在事件處理器內 `await import(...)`，或用 `lazy()` 把整個子組件延後（`AssetLibraryPanel`、`FolderSelectField` 是這樣做的）。
-- **Barrel 是環的溫床。** `currency-add-skeleton.tsx` 只要一個 `DataTableToolbar`，卻從 `data-table-card/index.ts` 拿，於是把同資料夾的 `CollectionCreateButton` 一起拖進來，而那個按鈕會讀 `getConfig()` —— 環就從 config 繞回 config。在 `cms.config` 靜態圖內的檔案一律直接 import 具體路徑，不要走 barrel。
-- **只用到型別就寫 `import type`。** 它在編譯期被抹掉，根本不會成為 runtime edge。`navigation.ts` ↔ `create-config.ts` 那個環就只是少寫了 `type`。
-- 修好後的基準：環 0 個，`cms.config` 靜態圖 70 個模組且觸及 0 個 server function。數字會隨功能長，重點是後兩項。
-
-### 驗證與權限
-
-- 登入狀態由 Better Auth 與既有 auth helpers 提供，不可自行解析 cookie 或複製 session 邏輯。
-- 每個 server function 都必須依操作風險選擇 middleware。資產讀取沿用 `assetReadMiddleware`；建立、更新、移動、刪除等 mutation 沿用 `assetAdminMiddleware`。
-- 權限必須在 server 端執行。隱藏按鈕只屬 UI 行為，不能代替 authorization。
-- `createdBy`、`updatedBy`、`uploadedBy` 等 actor 欄位必須來自已驗證 session，不可相信 client 傳入的 user ID。
+Theme files 可以包含：
 
-## 3. 資料與狀態管理
+- `.tsx`
+- `.ts`
+- `.css`
+- `.json`
+- 允許的靜態資產或 manifest
 
-### 資料取得與分頁決策
-
-- 不可因為畫面屬於同一個 route，就預設一次抓完該頁可能用到的所有資料。先把資料分成「單筆主資源」、「會持續成長的資源清單」、「有明確小上限的 reference data」與「遠端選項」，再決定 query 邊界。
-- Products、Orders、Customers、Assets、Inventory、Promotions、Collections、logs，以及任何由使用者持續建立、沒有可靠 hard upper bound 的資源清單，預設使用 **server-side pagination**：
-  - URL 保存 `page`、`q`、`sortBy`、`sortOrder` 與 filters。
-  - `normalize*ListParams` 將 URL 正規化成 server function／DAL 的 `page + limit` 或 `offset + limit`。
-  - Server 回傳目前 slice 與 `total`／`totalPages`；搜尋、排序、filter 必須在切頁前於 server／DAL 執行，不可先抓一頁再於 client 過濾。
-  - Query key 必須包含所有會改變資料集的正規化參數；換頁使用 `keepPreviousData`，不要為了維持畫面而一次下載完整資料集。
-- 固定型 reference data（例如 ISO currencies、countries、locales、有限狀態選項）只有同時符合以下條件，才可一次抓取後做 **client-side pagination**：
-  - 資料有可說明的固定上限，不會隨商店內容持續成長。
-  - 每筆是小型文字／數值資料，不包含 blob、大型 metadata 或深層 relation。
-  - 完整 payload 與 client 搜尋、排序成本可接受。
-  - Query／server function 名稱與註解明確表示它回傳完整 bounded dataset，並保留 server-side hard limit；不可把高 `limit` 當成真正的無限制查詢。
-  - 此時 pagination 只是呈現層的 `slice`，換頁不得改 query key、重新 fetch 或把 viewport 推導出的 page size 傳回 server。
-- 若需求明確要求 **Medusa Admin parity**，resource list 一律沿用 Medusa 的 server-side contract，即使資料目前不多。Medusa 2.18 的 Store 頁是單獨抓 Store；Currencies table 使用 `limit: 10 + offset`；Add Currencies 使用 `limit: 50 + offset`；price preferences 是獨立 query。不得把「Store response 含 supported currency codes」說成已完整載入所有 currency records。
-- Detail page 先 retrieve 單一主資源；variants、prices、orders、products 等可能增長的 section 各自使用獨立 query，且需要時各自 server-side pagination。不要建立一個會無界展開全部 relation 的 mega response，也不要因為 section 位於 detail page 就一次載入全部關聯。
-- Route loader／`prefetch` 只 prime 首屏真正需要的 query，且參數與 component query 必須完全相同。Loader 抓第一頁不是「把整個頁面資料抓完」；其他 section 可以在掛載時各自查詢，但要避免相同資料的重複 request 與可預見的 serial waterfall。
-- 遠端 Select、Combobox 與關聯資源 picker 預設使用 debounced search 加 `limit + offset` 的 infinite query；必須另外以 id 載入目前已選值，不能假設選中項目一定存在第一頁。只有符合 bounded reference-data 條件的選項才可一次載入。
-- 為 filter 建立的選項資料可以使用較高但明確的上限（Medusa 常用 `1000`），這是小型輔助資料的特例，不代表主 table 可以一次抓完。若可能超過上限，filter 本身也必須改成 searchable remote options。
-- 跨頁勾選要保存穩定 resource ids，而不是保存「目前頁 row index」。換頁不得自動清除已選 ids；bulk mutation 送出 ids 後仍須在 server 重新驗證存在性、權限與操作上限。
-- 決策順序固定為：
-  1. 資料是否會持續成長或包含大型 relation？是 → server-side pagination。
-  2. 是否為固定、小型、有 hard upper bound 的 reference data？是 → 可評估完整抓取與 client-side pagination。
-  3. 是否為單筆 detail？只抓主資源，會增長的 section 分開查。
-  4. 是否為遠端選項？預設 infinite query；只有 bounded dataset 才完整抓取。
-  5. 無法證明資料有小上限時，一律選 server-side pagination。
-
-### TanStack Query
-
-- Server data 使用 TanStack Query；query options 與 query keys 集中在對應的 `dashboard/-queries/` 模組。
-- Route loader/prefetch 與 component query 必須共用相同的參數正規化函式與 query options，避免不同 cache key、重複請求或載入閃爍。
-- 分頁、搜尋、排序或資料夾切換時，若保留上一筆資料不會造成誤操作，使用 `keepPreviousData` 維持畫面穩定。
-- Mutation 成功後，精準 invalidate 或更新相關 query cache；不可用整頁 reload 代替 cache 一致性。
-- Dashboard 導覽與 server data 使用同一套 stale-while-revalidate cache policy：Router route cache 與 TanStack Query 必須對齊短期 `staleTime`，並保留足夠的 `gcTime` 供返回已瀏覽頁面直接使用。資料過期後應先渲染 last-known-good cache、再背景重新驗證；只有首次進入、cache miss 或無法安全顯示舊資料時才使用 capability `pendingView`。Dashboard shell 不可用全域 `isLoading` 強制以 skeleton 蓋掉已快取的 `<Outlet />`，否則會破壞 Router 的 background stale reload。
-
-### React 與 Zustand
-
-- Local、短生命週期且只服務單一 component subtree 的語意狀態可使用 `useState` 或 `useReducer`。不要為了「零 re-render」改成難以維護的 imperative DOM。
-- 跨多個 dashboard component 的暫態互動狀態才使用既有 Zustand store。Component 應訂閱最小 selector；避免無條件訂閱整個 store。
-- 不可在 URL、TanStack Query、Zustand 與 local state 同時保存同一份可推導資料。衍生值以 selector、`useMemo` 或純函式計算。
-- 表單依需求選擇 controlled 或 uncontrolled；優先考量驗證、可讀性與局部更新成本，不採用一律禁止 state 的規則。
-
-### Visual Editor 與 React 渲染效能規範（避免無謂 Re-render 與畫面閃爍）
-
-- **禁止「用 `useEffect` 同步狀態」的反模式（State Synchronization Anti-pattern）**：
-  - 禁止在 `useEffect` 中讀取 Prop、Query 或 State A 來呼叫 State B 的 `setState`；這會導致不必要的二次渲染（Render 1 → Effect → Render 2）並極易造成狀態連鎖反應、死循環或畫面閃爍。
-  - 可從現有 State／Query／Search 推導出的值，一律在 render 流程中透過純運算或 `useMemo` 計算，不可建立第二個 `useState` + `useEffect` 去同步。
-  - 使用者主動操作帶來的連鎖狀態更新，應直接在**事件處理常式（Event Handler / Action Callback）** 內一次性完成，不要透過 `useEffect` 監聽狀態變化做被動轉發。
-- **`useEffect` 僅用於真正的外部副作用（External Side Effects Only）**：
-  - `useEffect` 僅能用於：`window.addEventListener`、DOM ResizeObserver、Iframe `postMessage` 橋接、全域快捷鍵與清理計時器。
-  - 若需在特定模式切換時做單次校準，必須配合 `useRef` 做精準的轉變守衛（例如 `!prevModeRef.current && isMode`），禁止在日常 render 或依賴更新時無防護地反覆呼叫 `setState`。
-- **Query 快取更新優先採用精準樂觀更新（Targeted Cache Updates）**：
-  - 局部單筆變更（如 Viewport 寬度同步、名稱修改、單筆狀態變更）優先使用 `queryClient.setQueryData` 直接更新快取，避免無差別呼叫 `invalidateQueries({ queryKey: [...all()] })` 導致畫面上所有無關組件集體重抓重繪與閃爍。
-- **高頻畫布操作（Pan／Zoom／Resize）維持 Ref + RAF 架構**：
-  - Pointer move、drag、canvas 縮放與寬度拉伸等高頻事件，即時數值一律記錄於 `useRef`，透過 `requestAnimationFrame` 直接驅動 transform 或局部 style。
-  - 僅在互動結束（`PointerUp` / `commit`）時將最終語意值提交至 React State 或 URL Search，避免在 60fps 互動中觸發大型 React subtree 重算。
-
-## 4. Database、D1 與資產一致性
-
-- Drizzle schema 置於 `src/db/*.schema.ts`，並由 `src/db/schema.ts` 統一 export。
-- Better Auth schema 優先透過 `pnpm auth:update` 產生，不手動改寫 generated auth schema，除非已確認 generator 無法表達需求。
-- Schema 變更後使用 `pnpm db:generate` 建立新 migration。不可修改已套用的歷史 migration 來假裝完成升級。
-- 本機 migration 使用 `pnpm db:migrate:dev`；production migration 必須取得使用者明確同意。
-- 所有一般資產與資料夾查詢必須尊重 `deletedAt` soft-delete 條件。若更動刪除流程，需同時考慮 D1 visibility、R2 archive/cleanup、失敗補償與重試後的一致性。
-- 資產上傳必須保留檔案數量、大小、extension/MIME、magic number、SVG 內容與 folder existence 驗證。不可僅靠副檔名或 browser 提供的 MIME。
-- D1/R2 批次操作必須有上限並分批執行；避免無界 `Promise.all`、過長 transaction 或一次載入完整大型資料集。跨項目的 fan-out 用 `pLimit(DB_FANOUT_CONCURRENCY)`（`src/lib/db/concurrency.ts`）包起來，不要裸寫 `Promise.all(items.map(...))`。
-
-### D1／SQLite 的硬限制
-
-這三條都實測過，而且都不是讀程式碼看得出來的。踩到時錯誤訊息會被 Drizzle 的 `Failed query:` 包住，要把 SQL 直接丟給 `wrangler d1 execute --local` 才看得到真正的原因。
-
-**1. LIKE／GLOB pattern 上限 50 位元組**
-
-超過就是 `LIKE or GLOB pattern too complex`。單位是**位元組不是字元**：中文一字三位元組，所以搜尋 17 個中文字就會爆，不是 49 個英文字母。
-
-- **前綴比對**（子樹查詢）不可用 `like(col, prefix + "%")`。改用半開區間 `gte(col, prefix)` + `lt(col, upperBound)`，沒有長度限制且能吃索引。範例見 `asset-folder.dal.ts` 的 `startsWithPrefix`。`/uuid/uuid/%` 是 76 位元組，資料夾一巢狀就必爆。
-- **包含比對**（使用者搜尋）一律經過 `containsPattern()`（`src/lib/db/like-pattern.ts`），它會依位元組截斷且不切斷多位元組字元。不可自行拼 `` `%${term}%` ``。
-
-**2. 每個 statement 最多 100 個綁定參數**
-
-超過就是 `too many SQL variables`。多列 insert 綁的是「列數 × 欄位數」，所以分批要**依欄位數推算**，不是固定列數 —— 用 `chunkForInsert(rows, columnCount)`（`src/lib/product/dal/d1-batch.ts`）。18 欄的表一次只能 5 列，2 欄的關聯表可以 50 列。照抄別處的固定值是這裡最容易犯的錯。
-
-**3. `env.DATABASE.batch()` 整批只算一次 subrequest**
-
-所以多筆寫入務必收進一次 `batch()`，而不是迴圈逐筆 `await`。反過來說，寫入的 statement 數量不會吃掉 subrequest 預算，真正會隨資料量膨脹的是 R2 呼叫（封存一個檔案要 `get` + `put` + `delete` 三次）。
-
-### 批次操作的規模上限
-
-- 使用者**選了幾個**用 Zod 擋（現行上限 100）。但**展開後影響幾個**（資料夾的子孫）Zod 擋不到 —— 它在任何 DB 存取之前就跑完了，不可能知道某個資料夾底下有五千個檔案。
-- 展開後的上限必須在 handler 裡檢查，位置是**解析完子孫之後、第一次寫入之前**。太晚檢查的後果是 D1 軟刪除已完成、R2 封存做到一半被中斷，檔案在 UI 消失但實體還在。
-- 上限值取自 `bulkOperationLimits()`（`src/lib/db/operation-limits.ts`），依 `cms.config.ts` 的 `cloudflare.plan` 決定。Cloudflare 沒有 runtime API 可以查方案，只能宣告。
-- 調高上限前要有真實部署的量測。subrequest 通常不是最先耗盡的資源，串流檔案內容吃掉的 CPU 時間才是。
-
-### Commerce 模組邊界
-
-Medusa 的每個模組是可以各自部署的服務，所以模組之間**不能有資料庫層級的外鍵**。這份 schema 照抄了那條界線，理由不只是致敬：
-
-- **同模組內用真的外鍵，跨模組只用 `text` 欄位。** `carts.regionId`、`inventoryLevels.locationId`、`fulfillments.locationId` 都是純文字。關聯宣告在 `link.schema.ts`。
-- **因此每個 `*.schema.ts` 都不 import 另一個 `*.schema.ts`。** 這順便讓 schema 層永遠不可能製造 import cycle —— 也就是 `Cannot access 'X' before initialization` 那一類 bug 的來源。破壞這條界線就是把那個風險放回來。
-- **link table 沒有 cascade。** 沒有外鍵，SQLite 就不會幫你刪。刪產品時必須自己刪 `product_sales_channels`、`product_variant_price_sets` 等等，沒有別的東西會做。
-- **link table 也沒有 referential integrity。** 讀取時要 join 後丟掉對不到的列，不能相信那一列指向的東西還在。
-- 共用欄位群組在 `src/db/columns.ts`（`timestamps`、`metadata()`、`providerData()`）。`product.schema.ts` 早於它們，仍是逐欄寫開，不需要回頭改。
-- 金額一律是幣別最小單位的 `integer`；稅率與百分比是 `real`（`taxRates.rate` 的 8.25 代表 8.25%，不是 0.0825）；尺寸重量是 `real`。
-- **totals 一律不落地**（Medusa 全部標成 computed）。唯一例外是 `orderSummaries.totals`：去年開的發票不能用今年的稅率重算。
-- `orders.displayId`、`orderChangeActions.ordering` 在 Medusa 是 Postgres sequence。D1 沒有 sequence，必須由 DAL 指派，而且要在同一個 `batch()` 裡。
-- `apiKeys.token` 與 `invites.token` 存的是 **hash**，不是 token 本身。顯示一律用 `apiKeys.redacted`。
-- Line item 是**快照不是指標**：`cartLineItems` / `orderLineItems` 把 title、SKU、價格複製進去。商品改名或刪除後，購物車與訂單顯示的內容不能跟著變。地址同理（`cartAddresses`、`orderAddresses`、`fulfillmentAddresses` 各自一張表）。
-
-### 聚合資料必須原子寫入，且完成完整 round-trip
-
-- 一個使用者動作若會建立或更新同一聚合根下的多張表（例如 Promotion + application method + campaign + budget + rules），所有 statements 必須組成**同一次** D1 `batch()`。不得先建立主記錄、再逐筆 `await insert` 關聯資料；中途失敗不能留下半套可見資料。
-- 可編輯資料必須完成 `create → read DTO → edit defaults → update → detail display` 的 round-trip。任何 action 接受的欄位，都必須由 detail query/DTO 讀回；編輯器未呈現的既有欄位必須原值保留，不得用 `[]`、空字串或 `undefined` 靜默覆蓋。
-- 新增複合功能時，驗證至少包含：建立後詳情可見、重新開啟編輯值仍存在、只改一個無關欄位不會清除其他資料，以及 batch 中任一 statement 失敗時不留下部分資料。
-- DAL 負責聚合寫入與關聯讀取；DTO／mapper 負責輸出形狀。View 不得自行補出 DAL 沒有讀回的預設值來假裝資料存在。
-
-## 5. UI、樣式與可存取性
-
-- 優先重用 `src/components/ui/`、既有 feature component 與 `cn()`，不要在 view 中複製一套基礎按鈕、dialog、table 或 form control。
-- 樣式使用 Tailwind CSS v4 與 `src/styles.css` 的共享規則。跨頁或 breakpoint-sensitive 的視覺規則應有單一來源。
-- 修改 shared UI primitive 前先檢查所有使用處；只影響單一 feature 的行為應留在該 feature 內。
-- 新 UI 必須保留 keyboard 操作、focus 狀態、可辨識 label、loading/error/empty state 與現有 responsive 行為。
-- 動畫應尊重 reduced motion，且不得用延遲或遮罩掩蓋真正的 loading、layout shift 或資料同步問題。
-- Light／Dark 主題切換時，所有 theme token 對應的顏色、背景、邊框與陰影必須直接替換，不得播放 `transition-colors` 或 `transition-all` 的漸變。Dashboard 的共用 `ThemeProvider` 必須維持 `disableTransitionOnChange`；一般 hover、focus、active 等互動 transition 可以保留，不可為修正主題切換而逐一移除元件的正常回饋動畫或在 feature 加局部補丁。
-- Toolbar、segmented control 與其他深色 control surface 的 active／selected 狀態，必須使用 shared semantic token 與具名 primitive variant，不可在 feature 內硬編碼 zinc、灰色或白色。深色主題的 active 底色應比父層 surface **明顯亮一階但仍維持中深灰**，搭配高對比前景、細緻亮邊、頂部內側高光、底部暗邊與短距離陰影，形成可辨識的立體選取感；不得亮成接近白色的孤立色塊，也不得與 toolbar 同色而失去選取辨識度。Light theme 必須提供相應的淺灰 token，並維持相同的層級關係、keyboard focus 與 disabled 語意。現有基準為 `toolbarActive` variant 與 `--toolbar-active-*` tokens，後續同類控制應直接沿用或集中調整它們。
-- 尺寸、比例、角度、間距與其他可連續調整的視覺數值 control，必須同時支援直接鍵盤輸入與按住數值左右拖曳（scrub）調整；單擊需可進入輸入狀態，拖曳需使用明確的 `cursor-ew-resize`、合理 step、min／max 邊界、Pointer Capture，並保留 Enter commit、Escape cancel 與可辨識的 accessible label。這類 control 一律沿用 `ScrubbableNumberInput` 或其後續共用替代，不得在 feature 內重寫 pointer delta。價格、庫存、稅率等商務數字不因本規則自動套用 scrub，除非其產品互動另有明確需求。
-- **Sidebar 與可調整寬度面板的持久化與防跳版（Zero Layout Shift / Anti-CLS）**：
-  - 可調整寬度的 Sidebar / Panel 必須使用 **Cookie + SSR Loader** 傳遞初始寬度，嚴禁僅在 Client `useEffect` 或 `useState(() => localStorage.getItem(...))` 中非同步或在 hydration 後讀取並更新寬度，這會導致頁面初次載入或重新整理時產生視覺跳動（Layout Shift / CLS）。
-  - **持久化寫入規範（On Resize Finish）**：當使用者拖曳結束或雙擊重置寬度時，必須**同步寫入 Cookie**（`SameSite=Lax; max-age=31536000; path=/`）與 **localStorage**，確保後續 SSR 請求能第一時間從 Request Headers 取得寬度。
-  - **SSR 渲染規範（Zero CLS Hydration）**：
-    1. Server Loader / ServerFn 透過 `getRequest().headers.get("cookie")` 解析 Cookie 中的寬度值（並經過 min/max 邊界驗證與 fallback 處理），作為 context / loader data 回傳。
-    2. Server 渲染的初始 HTML 必須直接帶有該寬度（例如 `style={{ width: `${leftPanelWidth}px` }}`）。
-    3. Client 端以傳入的 initial width 初始化 React state，確保 **初始 HTML 與 Hydration 狀態 100% 吻合，達到「進頁面前即決定寬度、零 UI 閃爍跳動」** 的流暢體驗。
-
-### 任何 UI 修改前必須完成 primitive／Fields preflight
-
-- 動手寫 JSX 或 class 前，必須先搜尋 `src/components/ui/`，確認是否已有對應 primitive；再搜尋 `src/components/form/`、`FormField` union 與 `FieldsRenderer`，確認是否已有對應 field type 或 renderer。不得先照畫面拼完，再事後補查共用層。
-- Dialog、Sheet、Drawer、Alert Dialog、route fullscreen、Table、footer actions 與 keyboard hint 等結構，還必須檢查既有共用 wrapper（例如 `RouteFullscreenSurface`、`DialogFooterActions`、`Table`、`Kbd`）；feature 不得重建它們已經負責的 shell、語意、互動或樣式。
-- 多選後出現在畫面底部的浮動批次工具列一律使用 `src/components/ui/command-bar.tsx` 的 `CommandBar`。Feature 只提供 selection value、clear handler、secondary actions 與 primary action；fixed position、surface、動畫、separator、Tooltip、Kbd、destructive 與 responsive 樣式由 `CommandBar` 擁有，不得再建立 Assets 專用的 float 盒模型。
-- 所有 editable control 必須先使用 `FormField` contract。一般表單交給 `FieldsRenderer`；Table cell 等特殊版面應使用 `FieldsRenderer` 共用的底層 control renderer。若現有共用層尚未支援，先擴充可重用的 field type／control renderer，不得直接在 feature 內另寫一份輸入控制。
-- 找不到合適 primitive 時，實作前必須在程式註解或工作說明中明確寫出「現有 primitive 為什麼不適用」以及新抽象的重用邊界；不得只因 class 比較快寫就建立平行組件。
-- Feature class 只負責 layout、responsive placement，以及功能特有的狀態組合。顏色、盒模型、control height、圓角、邊框、陰影、focus、invalid 與 disabled 狀態必須由 primitive、shared token 或具名 variant 擁有。
-- preflight 完成後才可修改 UI；交付前再反向搜尋本次新增的原生 interactive element 與 surface class，確認沒有繞過已存在的 primitive／Fields contract。
-
-### 缺少 primitive 時優先引入 shadcn／Radix，而不是自己手寫
-
-- preflight 找不到現成 primitive 時，下一步是查 shadcn/ui 是否已有對應組件（`components.json` 已設定 `new-york` 樣式、`zinc` base、lucide icons），有就引入到 `src/components/ui/`，不要自己從 `div` 開始拼。
-- 選擇順序固定為：既有 primitive → shadcn 組件（其底層多為 Radix UI）→ 直接使用 Radix primitive → 最後才手寫。手寫必須在註解寫出前三層為什麼都不適用。
-  - 理由是 keyboard 導航、focus trap、`aria-*` 關係、portal 定位與 composition 這些行為，手寫版本通常只覆蓋到「看起來對」的部分。這些是 Radix 已經解決過的問題。
-  - 帶互動語意的東西尤其不得手寫：dropdown、popover、tooltip、dialog、select、combobox、tabs、accordion、switch、slider、context menu。
-- **引入的 shadcn 原始碼必須立刻改寫成符合本專案規則，不可原樣保留。** 具體是：
-  - surface 相關的 class（背景、邊框、圓角、陰影、focus ring、invalid、disabled）改為引用 `fieldControlVariants` 或對應的 shared token，不得保留 shadcn 預設那份複製的 class 字串。
-  - 縮排、命名與 import 排序跟隨專案既有檔案，不保留上游的 4 空白縮排。
-  - 用不到的 sub-component 直接刪掉；不要留一整包沒人用的 export。
-- 這條規則的由來是 `input-group.tsx`：引入時原樣保留了 shadcn 的 `rounded-md border shadow-xs`，於是它跟 `Input` 的 `rounded-md-plus` 對不起來。兩個呼叫端各自在外面補 `bg-background rounded-md-plus` 和 `bg-transparent` 把它拉回來 —— 那些補丁就是「引入時沒改寫」的帳單。
-
-### Handle 欄位一律使用 handleField
-
-- 任何 handle／slug 欄位都必須用 `src/components/form/handle-field.ts` 的 `handleField()`，不可在 view 裡自己寫一份 `{ type: "input", name: "handle" }`。呼叫端只提供 `value`、`derivedFrom`、`error`、`colSpan`。
-- 前綴 `/`、label、`labelHint` 與 `(Optional)` 標記屬於這個定義。handle 是 URL 片段，欄位就該長得像 URL 片段。
-- 前綴是裝飾，不是資料：它由 `InputGroupAddon` 畫出來，永遠不會進入送出的 value。唯讀顯示（`EditCard` 的 `displayValue`）則用 `` `/${handle}` `` 保持一致。
-- 需要新的靜態前後綴（貨幣代碼、單位）時，在 `InputFormField` 用既有的 `prefix`／`suffix` 就好，不要為單一頁面另包一層 input。
-
-### 頁面捲動由 Dashboard 外殼負責,功能頁不自己開捲動區
-
-- `dashboard.tsx` 的 `#dashboard-content` 是固定視窗高度且 `overflow-hidden`,底下包住 `<Outlet />` 的那一層是**唯一**的捲動容器(`h-full min-h-0 overflow-y-auto p-4`)。所有頁面因此都能往下捲。
-- **功能頁不得自己在最外層加 `overflow-y-auto` 或 `h-screen`**,那會變成兩層捲軸。頁面只管內容,高度自然長。
-- **Assets 是唯一不捲的頁面,而且它不需要例外處理**:它的卡片是 `h-content`（`100lvh - 5.5rem`），剛好等於捲動容器扣掉自身 `p-4` 之後的高度,所以填滿、不溢出、不出現捲軸。改動這兩個數字任一個都要一起看。
-- 卡片內部需要捲動的區域（Assets 的檔案清單、圖片挑選面板）自己開 `overflow-y-auto`，那是區域捲動，跟頁面捲動是兩件事。
-- 這條的由來:商品詳情頁長出第五張卡之後,超出視窗的部分完全點不到也捲不到 —— 外殼 `overflow-hidden` 把它裁掉了,而沒有任何一層負責捲。
-
-### 左右分欄一律使用 PageSplitLayout
-
-- 任何「主內容 + 右側資訊欄」的頁面都必須使用 `dashboard/-components/layout/page-split-layout` 的 `PageSplitLayout`，不可自己寫 `flex` + 欄寬。分切的尺寸屬於這個組件：外層 `flex w-full items-start gap-4`、內容欄 `min-w-0 flex-1`、側欄 `w-md shrink-0`。
-- 這條規則的由來是實際漂移：Assets 用 `w-md`，分類詳情頁用 `lg:w-80`，兩個畫面單獨看都正常，並排才看得出來不一樣。
-- **`PageSplitLayout` 只管欄寬，不管高度，也不設 cross-axis 對齊。** 鎖定視窗高度是 Assets 獨有的行為，而且由它自己的卡片負責（`h-content`／`min-h-content`）；把高度或 `items-*` 放進這個組件，等於把那個行為交給每一個分欄頁。
-- **側欄寬度以 Assets 為準（`w-md`）**。要改寬度就改這個組件，讓所有分欄頁一起變，不可為單一頁面覆寫。
-- 內容欄必須保留 `min-w-0`。少了它，欄內一張寬表格會把側欄擠出畫面，而不是在自己的捲動區內捲動。
-- **1280px 以下預設改為單欄。** `PageSplitLayout` 使用 `grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto]`；側欄在窄於 `xl` 時是 `w-full` 並排到主內容下方，`xl` 起才套用共用 clamp 寬度。Feature 不得自行選另一個 breakpoint 或重複 responsive class。
-- **Assets 是唯一不堆疊的例外。** Assets 的 explorer 卡是 `h-content`（一個視窗高），側欄落到下方會完全離開目前 viewport，因此 Assets index 與 matching skeleton 必須傳 `stackBelow1280={false}`，維持左右兩欄。其他分欄頁不得關閉堆疊。
-- 分欄頁的 `pendingView` 也必須用同一個組件畫出兩欄（見「pendingView 必須畫出整個頁面的外框」）。
-
-### 唯讀資訊卡一律使用 EditCard
-
-- 詳情頁上「標籤 ／ 值」形式的資訊區塊一律使用 `dashboard/-components/edit-card` 的 `EditCard`，不可自己拼 `CardWrapper` + `<dl>` 或 grid。它已經擁有列的分隔線、label 與值的欄寬比例、`max-sm` 的斷點行為與 header 的動作選單；重拼一份就會在其中某一項上漂移。
-- 欄位用 `EditCardField` 宣告：`value` 是可編輯的原始值，`displayValue` 是畫面要顯示的內容（已解析的名稱、格式化後的日期，或 `value` 表達不了的連結）。兩者都省略時該列顯示 `-`。
-- **編輯入口只能有一個。** 卡片的編輯行為依該 collection 的架構二選一：
-  - 編輯是路由的 collection（`edit.view`）傳 `onEdit`，由它導向該路由。
-  - 沒有路由編輯頁的設定類畫面（例如 Profile）傳 `onSave`，走內建的 `EditDialog`。
-  - 兩者都不傳就是唯讀卡，`EditCard` 不會渲染那顆 `…`，避免出現一顆打開後沒有東西可做的選單。
-  - 不可同時傳兩者，那會讓同一筆記錄有兩條編輯路徑 —— 正是 capability 契約禁止的事。
-- 狀態徽章之類的 header 裝飾走 `headerActions`，排在 `…` 之前；不要為了放徽章而在卡片外面另外做一列標題。
-
-### Title 與 Name 跟隨資源的正式語意
-
-- UI 欄位名稱必須跟隨該資源 schema／DTO 的正式欄位語意，不可只依畫面偏好互換 `Title` 與 `Name`。
-- 內容、可銷售項目或有展示標題的資源使用 `Title`，例如 Product、Product Variant、Inventory Item、Collection。
-- 身分、分類或設定型實體使用 `Name`，例如 Category、Sales Channel、Stock Location、Customer。
-- 同一資源的表格欄名、表單 label、排序選項、搜尋說明與空狀態文案必須使用一致名稱；不可讓 `title` 在其中一處顯示為 `Name`，或讓 `name` 顯示為 `Title`。
-- 特殊流程若因使用者語意需要不同文案，必須在該 feature 註解或工作說明中交代理由，不可只為視覺偏好改名；資料欄位本身仍維持 schema／DTO 的正式名稱。
-
-### 縮圖是圖庫的第一張，由 DAL 推導
-
-- `products.thumbnailAssetId` 與 `productVariants.thumbnailAssetId` **不是客戶端可以指定的欄位**，它們已經從 `updateProductInputSchema`／`createProductInputSchema` 移除。想換縮圖就把那張圖拖到第一個。
-- 推導寫在 `productDal.setAssets()` 裡，跟 `rank` 同一次寫入。**不可在呼叫端算 `assetIds[0]`** —— 這條規則的由來就是它曾經被複製在建立精靈和 Media 編輯兩個地方，第三條寫入路徑（variant 圖片、匯入）遲早會忘掉其中一個。
-- 這跟 Medusa 不同是有原因的：Medusa 的 `thumbnail` 是裸 URL，可以是不在 gallery 裡的圖，所以它必須是獨立欄位。我們的 schema 把它做成 `assets.id` 的外鍵，縮圖本來就一定是 gallery 的一員，用順序表達就少一個概念。
-- 欄位保留而不是每次 join 取 rank 0：前台每一筆商品都會讀它。它是衍生資料，但衍生的地方只有一處。
-- 圖片排序一律使用 `components/asset/sortable-asset-grid` 的 `SortableAssetGrid`，排序邏輯用 `reorderAssets()`。往前拖與往後拖落點不同，那是它有測試的原因。
-- **排序只在編輯介面提供**。詳情頁的 Media 卡是唯讀的，跟同頁其他卡片一致；它只用第一格的徽章「回報」目前的縮圖。
-
-### Variant SKU 由 server 的單一 policy 產生
-
-- SKU 屬於 Variant，不屬於 Product；沒有 options 的商品也會為 Default Variant 產生 SKU。
-- SKU policy 一律宣告在 `cms.config.ts` 的 `products.sku`，支援 `{product}`、`{variant}`、`{options}`、`{index}`、`{random}`。建立商品、單獨新增 Variant 與未來匯入流程必須共用 `lib/product/sku.ts`，不可在 client 或各 handler 自行拼字串。
-- Client 有提供非空 SKU 時保留原值；只有空白時才自動產生。商品、option 或 variant 改名後不可回頭重算既有 SKU，避免外部系統與歷史訂單的識別碼漂移。
-- 自動產生必須在 server 執行並處理碰撞；先嘗試 pattern，重複時加入固定寬度流水號。`product_variants_active_sku_unique` 仍是併發情境的最終保證。
-
-### Metadata 是公開的逃生口，不是私密欄位
-
-- **所有 record 詳情頁都必須包含 Metadata。** 只要 collection 宣告了 `detail.view`，該 view 就必須渲染共用 `MetadataCard`，並在 collection 的 `pages.metadata` 提供獨立 editor；Settings 與 Global collection、主資源與具有獨立詳情頁的子資源都適用，不得因目前 metadata 為空而省略。若既有資料模型尚未支援 metadata，應沿著 schema → DAL → DTO/mapper → validation → server function/action → query → detail/editor 的既有架構補齊，不可用前端假資料、空卡片或 feature-local state 代替。
-- `metadata` 存的是核心 schema 沒有建模、由商店自行定義的 key/value。它的設計目的就是**跨到前台** —— Medusa 的 store API 對 product-categories 預設就吐 metadata，products 雖不在預設欄位裡但也不在 `disallowedStoreFields`，前台可用 `?fields=+metadata` 取得。因此**絕不可放 API key、成本價、合約條款或任何個資**。
-- 值一律以字串儲存。從輸入內容猜型別比不猜更糟：`01234` 會維持字串而 `1234` 會靜默變成數字，同一個郵遞區號或 SKU 的意義就取決於它的位數。需要真正型別的資料屬於真正的欄位。
-- 編輯器一律使用 `metadata` field type 與 `MetadataField`，不可在 feature 內另寫一份 key/value 表單。它以 JSON 物件字串傳輸，理由與 `option-values` 相同：`FormFieldValue` 沒有物件成員，為單一 field type 擴充它會波及其他所有型別。
-- 詳情頁的摘要一律使用 `MetadataCard`（只有標題、key 數徽章與開啟鈕）。內容不攤在卡片上：一筆記錄可能有數十組,會蓋過真正描述該記錄的區塊。它不是 `EditCard` —— `EditCard` 依已知欄位清單渲染 label／值，metadata 的 key 是商店自己放的。
-- Metadata 必須維持「摘要卡片＋獨立 metadata editor」的單一入口。一般 details／edit form 不得再次渲染 metadata fields，也不得在一般儲存 payload 帶入空 metadata；否則未顯示的資料會被意外清空。子資源（例如 Variant）使用帶 child id 的 metadata route，並以 `returnTo` 回到原本子資源詳情頁。
-- 詳情頁多張卡片共用同一個 editor 時，卡片的 edit action 必須帶入受驗證的 section，並在 editor 掛載後捲到對應 field group；不可讓 Media、Pricing、Inventory 等入口全部落在表單頂部。共用 field wrapper 提供穩定的 `field-<name>-wrapper` 錨點，禁止用 label 文字或 DOM 順序定位。
-- Product Attributes 是商品層級的預設摘要，只在 Product 詳情頁顯示。Variant 詳情頁不得重複顯示 Attributes 卡片；Variant Edit 可保留尺寸與重量欄位，僅作為該 Variant 對產品預設值的覆寫。
-- Variant Pricing 使用獨立的 spreadsheet editor：直接重用共用 `DataGrid`，一列代表 Variant、支援幣別各一欄。Pricing 不得混入一般 Variant Edit，也不得另外重做 table/input 樣式；獨立 action 只送 prices，避免其他 Variant 欄位被覆寫。
-- Spreadsheet 工作區可以滿版，但少量欄位時 DataGrid 必須保持內容寬度（`w-auto`＋欄位最小寬度），不可把兩三欄平均拉伸到整個 viewport；幣別增加超過可視寬度後才使用水平捲動。
-- 輸入必須經 `metadataInputSchema`（key 與值長度、最多 50 組）。這個欄位由商店控制，沒有上限的話單一記錄就能塞進任意大的 payload，而之後每次讀取都要搬運它。
-
-### 每個 capability 都要宣告 prefetch，包含 `pages`
-
-- **只要 view 會 `useQuery`，該 capability 就必須有 `prefetch`，而且參數要跟 view 完全一致。** 少了它，畫面會出現兩層 loading：route 等 lazy chunk 一個、view 自己的 `isPending` 又一個。使用者看到的是兩顆轉圈。
-- 這條最常漏的是 `pages`。`index`／`detail` 因為列表明顯會抓資料，通常記得寫；子頁看起來「只是一張表單」，但它同樣要讀那筆記錄。商品的五個子頁一度全部沒宣告，直接開 `/dashboard/products/<id>/variant` 就會看到兩顆 spinner。
-- **view 需要幾個 query 就 prefetch 幾個。** 變體編輯頁除了商品本身還要 `currencyQueries.store()`（每個店面幣別一個價格欄位），少一個就少不了那顆 spinner。
-- 參數必須跟 view 正規化後的結果一模一樣，否則 loader 準備的是另一個 cache entry，view 仍然會重抓 —— 這也是列表頁一律用同一個 `normalize*ListParams` 的原因。
-- `prefetch` 一律 `void queryClient.prefetchQuery(...)` 不要 `await`：導覽不該被資料擋住，chunk 載入的時間本來就會蓋掉大部分等待。
-- 剩下的那一顆 skeleton 是 route 等 lazy chunk，那是應該存在的，用 `pendingView` 畫出頁面外框而不是換成 spinner。
-- **間接的查詢也算。** 欄位自己會抓資料：`folder-select` 會讀整棵資料夾樹、商品建立精靈的 Organize 步驟會讀 collections／taxonomy／option library。看 view 有沒有寫 `useQuery` 不夠，要看它渲染的 `fields` 裡有哪些 field type。
-- 只用 `useQueryClient` 做 invalidate 的 view **不需要** prefetch —— 它沒有讀取。稽核時別把兩者搞混。
-- **route-backed 頁面的 loading 必須由 capability `pendingView` 選擇符合實頁的 skeleton；「找不到記錄」一律用 `RouteSurfaceMessage`。** 兩者都要沿用同一個 `RouteFullscreenSurface`，不可自己寫第二層 `fixed inset-0` 置中遮罩；否則從 pending／message 切到真正表單時會像「視窗打開、關閉、又打開」。
-
-### 記錄的附屬頁面走 `pages`，不是 query param
-
-- 一筆記錄若有主編輯表單以外的頁面（metadata、指派商品、拖曳排序），在 collection 的 `pages` 宣告，網址是 `/dashboard/<slug>/<id>/<key>`。**不可用 `?section` 之類的 query param 在同一個頁面裡切換表單** —— 那會讓 URL 不再描述畫面，而那條路由會長成一個 switch。
-- `pages` 與 `edit` 同層，不掛在 `detail` 底下：一個 collection 可以有附屬頁面卻沒有詳情頁（Assets 就是有 `edit` 沒有 `detail`）。把它藏在 `detail` 裡會讓那種 collection 平白無法宣告子頁。
-- 具名 capability 與 `pages` 的分界是「框架有沒有參與」：
-  - `index`、`create`、`preview`、`detail`、`edit` 框架要參與 —— 它渲染 Create 按鈕、解析 Edit row action、決定表單關閉後回到哪一層。這五個固定，不可增減。
-  - `pages` 框架只負責掛載，內容意義由 view 自己負責。要新增這類頁面時加進 `pages`，**不要為它新增第六個 capability**。
-- `edit` 是 `$id` 底下的靜態片段，所以它是保留的 page key；`assertCollectionsAreAddressable` 會在 `createCMSConfig` 就擋下來，而不是讓那個頁面靜默消失。
-- **每個附屬頁面只送出自己的欄位。** 共用一個提交路徑會讓沒出現在該表單裡的欄位以 `undefined` 送出，而 `undefined` 與「清空」無法區分 —— 編輯一般欄位就會把 metadata 清掉。各自走各自的 action adapter。
-- 附屬頁面的卡片自己導頁（`MetadataCard` 收 `slug` + `id` 自行推出 URL），與 `CollectionCreateButton` 一致。詳情頁不傳 handler：那等於每個 collection 各自重述一次框架已經擁有的 URL。
-
-### 詳情頁不重複顯示記錄名稱
-
-- 詳情頁不做「返回鍵 + 記錄名稱 + 徽章」的頁面標題列。Collection／group 層級由 `findBreadcrumbsFromCollections` 從 URL slug 推導；動態 record 名稱則由 collection config 的 `detail.breadcrumb`／`pages[key].breadcrumb` resolver 取得，匹配 route 的 loader data 逐層組合。View 不得再透過 hook、Zustand、context 或 effect 發布全域 breadcrumb。
-- Breadcrumb 最後一項代表目前頁面，必須使用 `BreadcrumbPage` 並帶 `aria-current="page"`，不可渲染成可點擊自己的連結；前面項目使用 `BreadcrumbLink`。分隔符一律使用 `BreadcrumbSeparator`，長路徑交由共用 `BreadcrumbCollapse` 收合與截斷，不可由單一頁面自行拼 icon 或另一套 breadcrumb。
-- `/dashboard/settings/**` 已由持續顯示的 Settings sidebar 表達所在區域，內容區 Breadcrumb 不得再以前置 `Settings` 重複同一層；路徑直接從目前 collection（例如 `Users`、`Profile`）開始，後續再接 record 與附屬頁名稱。
-- 返回上一層靠麵包屑，不另外放返回鍵。狀態徽章放進資訊卡的 `headerActions`。
-
-### 表格與既有 primitive 的重用界線
-
-- Dashboard 的 resource list、詳情頁關聯資料表與 selector table，一律先使用共用 `DataTableCard` 及其既有 toolbar contract（`filters`、`searchPlaceholder`、`sortOptions`、`toolbarLeading`、selection、pagination、row actions）。若 `/dashboard/products` 等既有頁面已具備相同資料型別的 filters、sort options 或 table controls，必須抽成該 feature 的共用 config／hook 供其他頁面重用；不得在 Settings 或詳情頁另做外觀相似的 Card、toolbar、Add filter、Search、Sort 或 Pagination。
-- 需要讓管理員客製列表欄位時，使用 `DataTableCard.columnConfigurationKey` 啟用共用的 Medusa-style column configuration：toolbar 顯示 Adjustments menu、可切換欄位顯示、拖曳 header 排序、Reset columns，並以該 key 持久化使用者選擇。持久化的權威來源必須是 `user_table_views`，以登入者 `user_id + table_key + view name` 隔離；`localStorage` 只能作為離線或 API／migration 暫時不可用時的 last-known-good fallback，不可作為唯一資料來源。Feature 不得自己建立另一套欄位選單、DnD 或儲存 API；utility column 以 `column.fixed = true` 保持顯示且禁止拖曳，非文字 header 必須提供 `column.label`。Products table 固定啟用 key `products`，Thumbnail 與 row actions 維持固定欄位。
-  - **任何重用 Product Card／Product resource columns 的頁面都不可預設顯示所有欄位。** `/dashboard/products`、Sales Channel 詳情的 Products Card、Add-products selector 與其他嵌入式 Product table 必須重用 `PRODUCT_TABLE_COLUMNS`，並使用相同的 `columnConfigurationKey="products"` 與 loader-prefetched `initialColumnConfiguration`。預設只顯示 Thumbnail、Product、Collection、Sales Channels、Variants、Status、Updated；Handle、Created、Type、Discountable、Weight、Metadata keys 等次要欄位必須維持 `defaultVisible = false`，只供使用者從 Column Settings 主動開啟。不可因為 selector、detail card 或 `hideHeader` 模式沒有傳 configuration key，就把完整 column array 全部展開；任一 Product Card 調整顯示或排序後，其他 Product Card 必須透過同一筆 `user_table_views` 設定互通。
-  - 啟用資料庫欄位配置的 route 必須在 loader prefetch 中 `await queryClient.ensureQueryData(tableViewQueries.detail(tableKey))`，view 使用同一 query key 並將結果傳入 `initialColumnConfiguration`。不得等到 `useEffect`／首次 paint 後才套用遠端順序，造成 table 欄位跳動；localStorage 同步初始化只負責 API 失敗的 fallback。
-  - `DataTableCard` toolbar 的 Column、Sort、Filter 等 dropdown 必須使用同一套 compact menu 尺寸：trigger 使用 `variant="cardHeader" size="xs"`；content 沿用 `DropdownMenuContent` 預設 `min-w-[8rem] p-1`，不可為單一 menu 任意放大；label、item、checkbox item 統一 `text-xs`、`px-2/py-1.5` 節奏（checkbox 為 indicator 保留 `pl-8`）；footer action 使用 `DropdownMenuItem`，不可在 menu 裡嵌入另一套 Button 尺寸。圖示沿用 dropdown primitive 的預設 `size-4`，只有狀態 dot／kbd 等語意圖示可使用既定例外。
-  - Column Settings 應同時提供主要欄位與有管理價值的次要欄位；次要欄位使用 `column.defaultVisible = false`，只出現在選單且首次／Reset 後維持隱藏，不能為了增加選項改變既有預設 table。新增欄位後，舊 View 未記錄的新次要欄位也必須維持隱藏。欄位項目區固定 `max-h-56 overflow-y-auto overscroll-contain`，只有清單捲動，標題與 Reset 必須保持可見；不可讓大量欄位把整個 popup 撐出 viewport。
-- **任何列與欄的資料都必須用 `src/components/ui/table.tsx` 的 `Table` 系列**，不可用 `div` + `flex-1` 拼一張看起來像表格的東西。這條不只適用於列表頁：表單或 wizard 裡的表格（例如商品建立的變體矩陣）同樣適用。列表頁另外還要包在 `DataTableCard` 裡，那是額外要求，不是替代。
-  - `flex-1` 拼出來的欄寬只是「看起來對齊」，欄位一多或內容一長就會各列不同寬；而且沒有 table 語意，螢幕閱讀器讀不出列與欄的關係。
-  - `TableHead` 與 `TableCell` 已經有 `px-4` 與 `[&:has([role=checkbox])]:pr-0`，不要再自己補 `pl-4` 之類的 padding。
-- **Table 的預設密度是固定格式，不由 feature 自行決定。** `TableHead` 與 `TableRow` 統一為 `h-12`，`TableCell` 統一使用 primitive 的 `px-4 py-1.5`；feature 不得用 `h-*`、`min-h-*` 或 `py-*` 改寫一般資料列。若產品真的需要 compact／comfortable 密度，必須先在 `Table` primitive 建立具名 variant，並讓 header、row、cell 一起切換，不可只縮其中一層。
-- Checkbox、文字、Badge、Switch 與 row actions 都必須放進同一套 `TableHead`／`TableRow`／`TableCell` 結構；欄寬只由 column contract 或對應的 head/cell class 決定，禁止為單一頁面建立另一套 table row 盒模型。
-- **同一張 `DataTableCard` 的一般資料欄必須使用一致的欄寬策略。** Thumbnail、checkbox、status actions 等 utility columns 可使用固定窄寬；其餘同層資料欄若沒有明確的資訊層級差異，應使用相同比例（例如同為 `w-1/5`），不可混用未指定寬度、`w-64`、`w-32` 造成任意伸縮。可能過長的文字要在 cell 內使用 `truncate`，不能讓內容反向撐大欄位。只有欄位本身確實需要不同閱讀空間時才能配置不同寬度，且 header 與 cell 必須透過同一個 column `className` 同步。
-  - Products table 的既定資訊層級是：Thumbnail `w-10`；Product 與 Sales Channels 各 `w-[24%]`；Collection `w-[16%]`；Variants 與 Status 各 `w-32 min-w-32 whitespace-nowrap`；Updated `w-36 min-w-36 whitespace-nowrap`；row actions 由 `DataTableCard` 固定 `w-16`。不可再改成全部等寬，也不可移除寬度讓內容自行決定版面。固定資訊欄在窄畫面不得換行或縮到小於 `min-w-*`；空間不足交給 `DataTableCard` 的既有橫向 scroll viewport。Updated 必須顯示，因為這張表提供 Updated 排序；可排序但看不到排序依據屬於不完整的 table contract。
-- **`DataTableCard` 的 Product／Variant 資源縮圖以本專案 Variants table 的欄位格式為準，尺寸與圖片模式對齊 Medusa Dashboard `Thumbnail`。** 縮圖必須是獨立、無標題的 `w-10` column，圖片 cell 使用 `w-6` 對齊容器；Product／Title 欄只顯示文字，不可把圖片塞進 Product／Title cell。圖片使用共用 `ImageSmBlock` 的 `w-6 h-8`（24×32px）、`object-cover object-center`，盒模型固定 `rounded-[4px]`、border、component background 與 overflow hidden。Medusa 的 `rounded` 實際為 4px；不可改用本專案的 `rounded-sm`（目前 token 為 6px），也不得自行改成 `size-8` 正方形或 feature-specific thumbnail wrapper。無圖片時仍保留相同 `w-6` 對齊容器並置中顯示 `size-4` placeholder icon。其他 Table Card 只要呈現相同 Product／Variant identity，也重用這套 column contract 與 primitive；若需要不同密度，先在共用 thumbnail primitive 建立具名 size variant，不得由單一頁面覆寫。
-- **Table 中所有狀態語意一律使用 `src/components/ui/status-badge.tsx` 的 `StatusBadge`，並指定 `variant="plain"`。** 樣式固定為小色點加文字，不得在單一 table 改用實心 `Badge`、只有文字或自行拼色點。顏色語意統一：green 表示有效／已發布／啟用／True，grey 表示草稿／停用／False，amber 表示等待或警告，red 表示封存或錯誤，blue 表示資訊型範圍（例如 Global）。一般資料標籤（選項值、檔案格式、貨幣代碼）不是狀態，繼續使用一般 `Badge`。Card header 的狀態可使用 `StatusBadge` 預設帶底色 variant，不受 table 的 `plain` 限制。
-- **一般 Dashboard Card（包含 Table Card）一律使用 `h-auto`；Table 使用固定 page size。** Card 高度由內容自然撐開，不得用 `ResizeObserver`、`window.innerHeight` 或 Card 可用高度動態改寫 page size。
-  - Server-side 分頁的 `limit` 只能來自穩定的 route search、使用者明確選擇的 rows-per-page，或該 feature 的固定預設；視窗縮放、sidebar 展開與 Card layout 變化不得改寫 URL `limit` 或觸發新的資料請求。
-  - `DataTableCard` 統一擁有 `h-auto`；feature 不得用 `h-full`、`h-content`、`flex-1` 或 `min-h-*` 改寫一般列表 Card 的高度。資料超過固定 page size 時交給 pagination。
-  - Assets 頁面的 Explorer、Properties 與 matching skeleton 是唯一 Card 高度例外，維持目前的 `h-content`／`min-h-content`，因為它們需要填滿同一個可用畫面並分配 Folders、Assets 與屬性面板空間；Assets 固定每頁 15 筆，其 query normalization、fallback pagination 與 server default 必須使用同一個 `15`。
-  - Fullscreen create／edit／selector 由 `RouteFullscreenSurface` 管理滿版高度，不套用 Card 的 `h-auto` 規則。已一次載入完整資料集的 client-side selector 可以依內部 viewport 切分可見 rows，但只能影響本地 page size，不得同步成 server query `limit` 或觸發重新抓取。
-  - 不具分頁語意且資料量有明確小上限的 form matrix／ranking table 不切頁；它仍使用相同 Table primitive，超出容器時在既有 scroll region 內捲動。
-- **不要重新推導 primitive 已經擁有的盒模型。** 圓角、邊框、內距、字級屬於 primitive；新組件只帶自己的顏色與裝飾。需要新外觀時在該 primitive 加一個具名 variant，不要在旁邊蓋一個尺寸相同的新組件 —— 那樣 primitive 改了它不會跟著改。
-  - `Tip` 是這樣做的：盒模型來自 `Alert` 的 `muted` variant，surface 顏色與其他 card fields 一樣來自 `fieldControlVariants({ variant: "card" })`；它自己只負責左側導軌與 `role="note"`（`Alert` 預設 `role="alert"` 會打斷螢幕閱讀器，提示不該這樣）。
-
-### 批次與矩陣編輯一律使用 DataGrid
-
-- Variant、Inventory、Price 等「列與欄本身就是編輯介面」的批次／矩陣編輯，一律使用 `src/components/ui/data-grid.tsx` 的 `DataGrid` 系列，不可在 feature 內重複 table、cell input、focus ring 或 boolean cell 的 class。一般資源列表仍使用 `DataTableCard`；`DataGrid` 不取代列表頁的搜尋、filter、pagination 與 row actions contract。
-  - Product Variants 的批次價格與庫存沿用同一個 `ProductVariantsBulkEditor`、`RouteFormModal`、`DialogFooterActions` 與 `DataGrid`：價格矩陣為 Variant × Store Currency，庫存矩陣為 Variant × Available quantity；Variants card 只提供進入這兩個 route editor 的 action，不得另做 feature-specific modal/table。提交必須驗證所有 variant 都屬於目前 product，價格只接受 Store 已啟用 currency，未追蹤庫存的 variant 顯示唯讀 `Not tracked` 且不送出數量。
-- DataGrid 的可編輯文字、數字與價格欄位使用 `DataGridInput`：靜止時是透明背景、無獨立輸入框外殼的 cell；focus 時由 primitive 顯示 `1.5px`、`blue-500/50`、`ring-inset` 的藍色半透明邊線。Feature 不得用一般 `Input` 的 card variant 塞進 cell，也不得自行覆寫另一種 focus 色、寬度或陰影。
-- Boolean 欄位使用 `DataGridBooleanCell` 並置中承載共用 `Checkbox`；純顯示值使用 `DataGridReadonlyCell` 與 muted text。不要用 disabled input 假裝唯讀，也不要把 checkbox 的定位與 focus surface 分散到各 feature。
-- DataGrid 必須保留真正的 table 語意，並由 `DataGridHeader`、`DataGridHead`、`DataGridBody`、`DataGridRow`、`DataGridCell` 組成。欄位超出容器時在 grid 自己的 scroll region 水平捲動；長矩陣垂直捲動時表頭保持可見。欄寬由 head/cell contract 決定，不用 `div + flex-1` 模擬欄位。
-- 欄位集合、disabled 條件、驗證與提交形狀由 feature 的真實資料模型決定。參考 Medusa 或其他產品時只移植目前後端能完整讀寫的行為；不得為了視覺一致加入 schema、DTO、server function 與 DAL 尚未支援的欄位。需要新欄位時先完成整條資料契約，再接進 DataGrid。
-- DataGrid 的 shared primitive 擁有密度、cell padding、背景、分隔線、focus、readonly、disabled 與 boolean placement。Feature 只提供欄位順序、語意 label、寬度需求、值與 change handler；跨兩個以上 DataGrid 的視覺改動必須回到 primitive，不可逐頁修補。
-
-### 視窗內容與 Fields 單一來源
-
-- 所有 Dialog、Sheet、Drawer、Alert Dialog 或其他開啟式視窗，只要包含表單或可編輯資料，其欄位內容都必須由 `fields` 設定提供，使用既有 `FormField`／`FieldConfig` 型別並交由 `FieldsRenderer` 渲染。
-- Route-backed create／edit wizard 只要已採用 fields-driven 區塊，也套用同一規則；`Input`、`Textarea`、`Select`、Switch 設定卡與表單內提示都必須宣告為 `FormField`，不可在 feature view 旁邊再硬寫一份 JSX。
-- **`/dashboard/products/create` 的 Organize step 維持兩欄 fields grid，但 `Discountable` Switch 必須設定 `colSpan: 2`、獨占完整一列。** `FieldsRenderer` 必須把 `colSpan: 2` 實際映射為 `grid-column: 1 / -1`，使欄位跨滿目前 responsive grid 的所有欄；不可只加一個未驗證實際 computed grid placement 的 utility class，也不可寫死為只在特定 breakpoint／固定欄數成立的寬度。Collection、Type、Tags、Categories、Sales Channels 等 picker 繼續使用 `colSpan: 1` 成對排列；不可讓帶說明文字的 Discountable panel 只塞在半欄並與 Collection 並排，也不可為了達成滿寬在 `StepOrganize` 寫 feature-specific wrapper/class。欄位排列的單一來源是 `productOrganizationFields`，由 `FieldsRenderer` 依 `colSpan` 渲染。
-- **多欄 fields grid 中的長文字 `textarea` 預設必須占滿整列。** `/dashboard/products/create` Details step 的 Title、Subtitle、Handle 使用三個 `colSpan: 1` 欄位；Description 必須使用 `colSpan: 2` 的「滿列」語意，由 `FieldsRenderer` 映射為 `grid-column: 1 / -1`。不可同時宣告 `colSpan: 1` 再用 `sm:col-span-3`、feature `className` 或 wrapper 嘗試覆蓋，因為 fields contract 與 CSS placement 會互相衝突。只有產品明確要求短版 textarea 與另一欄並排時，才可宣告單欄並在規則或設計稿中說明。
-- 同一資源的 Create／Edit 若共用兩個以上相同語意欄位，不得在兩個 view 內各自維護 `fields={[...]}`。必須抽到該 feature 自己的 `config/<resource>-form-fields.ts`，由單一 factory 回傳 `FormField[]`；Create／Edit 只能傳入初始值、可選項或明確的 mode 差異。
-- form-fields config 只負責欄位 contract、文案、排列與初始值映射，不得匯入 query、server function、action 或 mutation。提交與資料載入仍留在對應 view／action 邊界，避免 config 反向承擔流程責任。
-- 不同工作流程不得為了共用而硬合併。例如多步驟 Create Wizard 與簡單 Edit 表單若欄位結構、狀態模型不同，應各自保留；只有實際重複的欄位群才抽成 feature-local factory。
-- `fields` 是視窗內表單內容的單一真實來源，必須包含欄位名稱、label、type、初始值、placeholder、options、required、validation 與版面資訊；視窗 component 只負責標題、說明、開關狀態、submit action 與整體 layout。
-- 不可直接在個別 Dialog 或 Sheet 內硬寫 `Input`、`Textarea`、`Select`、`PhoneInput` 或其他資料欄位。若現有 `FieldsRenderer` 不支援需求，應新增可重用的 field type 與對應 renderer，再由 `fields` 宣告使用。
-- `type: "switch"` 的 control、label、description 與 panel 盒模型由共用 `SwitchField` 負責，feature 只提供 boolean value 並處理 change；不得為不同功能各自拼一個 Switch 卡片。
-- fields-driven 表單中的說明提示使用 `type: "tip"`，由 `FieldsRenderer` 轉交共用 `Tip`；純展示且不屬於 fields-driven 區塊的提示仍可直接使用 `Tip`，不需要偽裝成可提交欄位。
-- 同一欄位不可同時存在於 `fields` 與視窗 component 的 hard-coded JSX，避免預設值、驗證、disabled 狀態與提交名稱發生漂移。
-- 純預覽、圖片裁切畫布、操作按鈕與不承載表單資料的視覺工具不需要偽裝成 field；但其中任何可提交的輸入仍必須回到 `fields` 與 renderer 體系。
-
-### 共用功能視窗架構
-
-- 功能頁面不得自行建立一份 Dialog、Sheet 或 Alert Dialog。頁面與操作按鈕只負責準備 `title`、`description`、`fields`、`action`、`onSuccess` 與必要的 button labels，再寫入對應的 feature store 並開啟視窗。
-- 視窗資料流固定為：`頁面／按鈕 → set*Data(...) → 對應 Zustand store → Dashboard 全域共用視窗 → FieldsRenderer／功能內容 → action`。不得跳過 store 建立平行的 local modal state 與重複視窗實作。
-- 新增一律走建立頁路由（見「新增資源一律是路由」），`CreateDialog` 與 `useCreateStore` 已移除，不得再引入同類的建立視窗；一般編輯統一使用 `useEditStore` 與 `EditDialog`；刪除或需要使用者確認的操作統一使用 `useInfoStore`、`setInfoData` 與 `InfoAlert`。
-- 資產專用操作沿用既有邊界：Edit 的 `Folder` 與 Name／Alt 等欄位相同，屬於目前 active item，必須顯示該 Asset 的 `folderId` 或 Folder 的 `parentId`；切換左側 item 時 fields 必須重新掛載並顯示該 item 自己的值。多選 Float Move 才是把全部選取項目移到單一共同目的地，仍使用 `AssetMoveDialog`。圖片處理使用 `AssetPostProcessDialog`。預覽使用 `/dashboard/assets/view?assetId=...` 路由；單選與複選編輯都使用 `/dashboard/assets/$id/edit`，並共用 `AssetEditSurface`。複選清單必須序列化在 `?editItems`，由 route 重新批次讀取，不得依賴 explorer 的 Zustand selection，也不得重新加入 `AssetBulkEditDialog`／Bulk Edit store 或 Preview Dialog。
-- Edit 不得另外建立 `Location` section、selection-level destination、`Keep current location` 或獨立 Move 按鈕；Folder 必須是 `generateEditFields(activeItem)` 內的一般 `folder-select` field。每個 `AssetEditItem` 保存自己的 `locationId`，其中 folder id 表示該 item 的父資料夾、`null` 表示 Root；底部 Save 一次提交所有 item 各自的 Metadata 與 location，後端在同一個 D1 batch 原子更新。被選取的 Folder ids 必須透過 `excludedIds` 排除於 FolderSelect；循環移動、父子同選、目的地重名，以及 Folder 同時重新命名與移動後的 effective path，必須在任何 D1 statement 執行前完成驗證。
-- Assets table 每列 `…` 選單不提供 Move；單筆位置變更由 Edit 的 Folder field 負責，多選共同目的地由 Float Move 負責，拖放 Move 維持快速路徑。不得重新把單筆 `AssetMoveDialog` 接回 table row menu。
-- Asset library 使用 soft delete，因此資料庫的 `ON DELETE CASCADE` 不會替 Product media 清理關聯。刪除 Asset／含 Asset 的 Folder 前，server 必須在展開完整 selection 後檢查 active Product 與 Variant 引用；有引用時第一步只回傳影響數量與範例名稱，必須由共用確認視窗取得明確的 `detachReferences` 二次確認。確認後在同一個 D1 batch 刪除 `product_assets`／`product_variant_assets`、依剩餘 rank 重算 Product／Variant thumbnail、更新 affected records，再 soft-delete Asset；不可級聯刪除 Product／Variant，也不可只靠讀取端隱藏壞圖。R2 封存接續既有流程，client 成功後必須同步 invalidate Assets、Products 與 Product Variants query families。
-- Assets 編輯路由的 `$id` 代表目前右側正在編輯的項目；切換左側項目時使用 `replace` 更新 `$id`，選取集合仍由 `editItems` 保存。Server 必須以單次 assets query 加單次 folders query 批次載入，不可為每個 tile 各發一個 detail request。
-- 共用視窗只能在 `src/routes/_backend/dashboard.tsx` 的 Dashboard layout 掛載一次，功能頁不得再次 mount 相同視窗。新增共用視窗時，也必須在 layout 集中 lazy-load 與掛載。
-- 刪除操作不得由頁面或 action menu 直接呼叫 delete server function。必須先透過 `InfoAlert` 顯示目標、影響範圍與不可復原提示，再由確認按鈕提交 hidden fields 與 delete action。
-- Create、Edit、Delete／Info 等 store 在視窗關閉或 action 成功後必須重設 open、fields、action、callbacks 與暫存資料，避免下一個頁面開啟時沿用前一次視窗內容。
-- 若新頁面需要編輯或刪除，只能提供該頁面的 fields 與 action；不可複製 `EditDialog`、`InfoAlert` 或其 footer、loading、toast、error handling 邏輯。
-- Create 介面的外框、分隔線與內容欄位一律取自 `src/components/dialog/create-surface.ts` 的 `createSurface`，不得手抄 class 字串。建立頁沒有 Radix Dialog context，無法直接用 `DialogHeaderActions`，但仍必須共用同一份 token — 這正是兩邊分隔線曾經走樣的原因：header 的切線在 light mode 是 `border-b-[0.5px]`，在 dark mode 改用 `shadow-elevation-modal-header` 且 `border-none`，手抄很容易只抄到一半。
-- Create 介面的底部按鈕一律使用 `DialogFooterActions`。次要的提交動作（例如「Save as draft」）走 `additionalActions` 收進主按鈕的下拉，不可在 footer 並排第三顆按鈕。
-- `DialogFooterActions` 統一擁有滿寬與右對齊規則；Cancel 在 Save 左側，整組固定靠 footer 右側。Feature 不得再傳 `w-full`、`ml-auto`、`justify-end` 或自行建立 footer button wrapper 來修正位置。
-- Route-backed 的滿版介面一律使用 `RouteFullscreenSurface`，由它統一 `fixed inset-0`、外框、header、Close 與 `esc` 樣式。`RouteFormModal` 與 Assets Preview 都只能組合這個 surface，不可各自複製滿版 shell。
-
-### 列表頁統一使用 DataTableCard
-
-- 任何「資源清單」頁面（Products、Collections、Options、未來的 Orders、Customers 等）都必須使用 `dashboard/-components/data-table-card` 的 `DataTableCard`，不可自行拼一份 `CardWrapper` + `Table`。
-- 版面固定為三段，順序不可調換：
-  - **Header**：只放 `label`、`description` 與主要操作按鈕（通常是 Create）；搜尋、filter、排序不得放在 Header。
-  - **Toolbar**：只要頁面提供搜尋、filter 或排序，就統一渲染在 Header 下方、Table 上方的 `DataTableToolbar`。Add filter 與 active filter chips 放左側；右側固定依序為 Search → Column Settings → Sort，沒有提供的 control 才略過。頁面不得自行交換順序、選擇另一個位置或重建一列 controls。
-  - **Table**：欄位由 `columns` 宣告，每欄提供 `key`、`header`、`cell` 與可選 `className`；`className` 會同時套到 `TableHead` 與 `TableCell`，欄寬才會對齊。
-- **Footer**：結果筆數與分頁由 `DataTablePagination` 提供；只要 feature 傳入 pagination，footer 與 First／Previous／Next／Last 四個切頁按鈕就必須持續顯示。位於第一頁、最後一頁或只有一頁時，對應按鈕只設為 disabled，不可隱藏整個 pagination。
-- 每列的操作一律收進尾端的 `RowActionsMenu`（`…` 按鈕），透過 `rowActions` 回傳 `RowAction[]`。不可在列上並排多顆圖示按鈕，否則資源長出第三、第四個操作時版面會崩。刪除類操作標記 `destructive: true`，會自動排到分隔線之後並套用警示色。
-- Loading、error、empty 三種狀態由 `DataTableCard` 統一處理並在卡片內置中；表格本身維持靠上。頁面只負責傳 `isPending`、`errorMessage`、`onRetry`、`emptyTitle`、`emptyDescription`，不可自己再寫一套分支。
-- `DataTableCard` 的主要操作若已放在 Header（例如右上角 Create），empty state 不得再次渲染同一顆按鈕。空內容統一採 compact 樣式：小型提示圖示、標題與說明置中；唯一操作入口保留在 Header，避免同一卡片出現兩個相同 Create。
-- **這三種狀態有高度下限，取自 `DATA_TABLE_STATE_HEIGHT`**（`noRecords` 150px、`noResults` 400px）。是下限不是固定值：compact empty state 使用約 16px 的提示圖示，較長文案或在地化內容仍可自然撐高；沒有下限則空的 section 會縮成文案剛好的高度，掛在詳情頁上忽高忽低。
-- 「資源本來就是空的」與「查詢把資料濾光了」是兩種狀態，高度不同。查詢無結果用**較高**的那個，因為它是使用者打字時出現的 —— 每按一鍵就把卡片縮到 150px 會讓頁面跳動。判斷由 `DataTableEmptyState` 自己讀 route 決定，不由頁面傳入。
-- `DataTableCard` 本身不讀 route：搜尋、排序、分頁與空狀態各自是會讀 route 的**兄弟組件**。這個界線讓卡片可以在沒有 router 的測試裡渲染，加東西時不要把 `useSearch` 放回卡片本體。
-- 搜尋詞、排序與頁碼寫入 route 的 `q`、`sortBy`／`sortOrder`、`page` search param，不放 component state；換搜尋詞或改排序時 `page` 會被清掉，避免停在超出範圍的頁數。
-- 排序透過 `sortOptions` 提供，由 `DataTableSort` 渲染成 header 的下拉（與 Assets card 相同的 `BarsArrowDownIcon`），再選一次同一欄位即翻轉方向。`sortBy` 的可用值由 `dashboardSearchSchema` 定義，各資源在自己的 `normalize*ListParams` 裡對應到實際欄位名。
-- 表格的首尾欄位左右各補到 `pl-6`／`pr-6`，與 `CardHeader` 的 `px-6` 對齊。`Table` 的 cell 預設是 `px-4`，直接使用會比標題少 8px。這個補償寫在 `DataTableCard` 內，頁面不需要也不應該自己處理。
-- 欄位內容盡量用摘要而非展開全部資料（例如顯示「4 values」而不是列出四個 badge），細節留給編輯視窗或詳情頁。
-- Card header 的主要操作按鈕統一使用 `variant="form"` 與 `size="xs"`，與 Assets card 的 Create 按鈕同高同色。Toolbar 內的 Add filter、排序與其他次要工具使用 `variant="cardHeader"`；搜尋使用共用 `DataTableSearch`。
-- 需要新的共用能力（欄位排序、批次選取、篩選 chip）時，加在 `DataTableCard` 上讓所有列表頁一起受益，不可只在單一頁面實作。
-- 所有列表的 Add filter 一律使用 `dashboard/-components/data-table-card/data-table-filters.tsx` 的 `DataTableFilters`，並優先透過 `DataTableCard.filters` 宣告 filter definitions；不得在 feature 內重做 Add filter、active filter chips、Clear all，亦不得新增單一列表專用的 filter primitive。filter 值必須保存於 route search，切換時清除 `page`，並在 server／DAL 分頁前生效。沒有真實可用的 filter 時不可放一顆空的 Add filter。
-
-### 新增資源一律是路由，不是從頁面狀態開啟的視窗
-
-- 建立頁一律是 collection config 的 `create.view`，由框架渲染在 `/dashboard/<slug>/create`。**沒有第二種建立機制** —— 不得用 `useCreateStore` + `setCreateData` 開一個建立視窗。
-- 建立頁一律填滿視窗（`RouteFormModal` 組合 `RouteFullscreenSurface` 的 `fixed inset-0`），不做側邊抽屜。欄位少的表單靠 `createSurface.content` 的 `max-w-3xl mx-auto` 收窄內容欄，卡片本身仍是滿版 —— 讓所有建立介面的外框一致，只有內容寬度隨表單變化。
-- 為什麼不留 dialog 那條路：共用視窗是「框架拿著 fields 幫你渲染」，config 因此被迫要裝 `fields`、`action`、要 invalidate 的 query key，還要泛型才能讓取值函式有型別。建立頁是一個 view 的話，那些它自己做就好，config 只需要一行。
-- 欄位很少的建立頁用 `RouteFormPage`：宣告 `fields` 與 `action` 即可，外殼、submit、footer 由它提供。有步驟或自訂版面的（例如商品 wizard）直接用 `RouteFormModal` 自己組 header／footer。
-- 關閉一律是 `useRouteModalClose()`，不可寫死路徑，也不可用 `history.back()`。列表在底下維持掛載，所以關閉不會重抓資料；`replace` 讓 Back 不會退回已放棄的表單。
-- 預設關閉到父路由。**從別處開啟時，由開啟方傳 `?returnTo`** —— 例如從某個選項的頁面開商品建立頁，關閉應該回到那個選項而不是商品列表。
-  - 用 URL 而不是 `history.back()`：建立頁是可以直接貼網址開啟的，重新整理之後「上一頁」就變成別的東西，而可分享、可重新整理正是它做成路由的理由。
-  - `returnTo` 必須經 `toDashboardReturnTo()` 收斂。它是唯一一個由 URL 控制、而且會變成導頁目的地的參數，所以只接受 `/dashboard` 開頭的站內路徑，絕對網址與 `//host` 一律丟棄。
-- **從別的資源開啟建立頁時，預填與返回是一組的。** 開啟方同時傳 `?seed<Thing>Id`（要預先套用什麼）與 `?returnTo`（關閉回哪裡）；只傳其中一個，作者不是要重新挑一次剛剛看的東西，就是被丟到一個沒去過的列表。
-  - 預填一律叫 `seed*`：它是**起點不是鎖定**，目標頁的既有控制項仍然可以改或移除它。
-  - 套用的 hook 要滿足三件事，缺一個都會出錯：沒有該參數就完全不動作；等關聯資料載入完才套用（例如選項的值還沒到就套，會生出一條空的變體軸）；**只套用一次**，否則查詢 refetch 會把作者剛移除的東西加回去。`use-seeded-option.ts` 是範例，測試也照這三條寫。
-- 唯二的例外：
-  - **刪除**維持 `InfoAlert`。那是確認不是表單，沒有會遺失的輸入，也沒有值得存在的 URL。
-  - 一個 collection 若有多種建立形式（Assets 的資料夾與上傳），由同一個建立頁讀 `?variant` 決定，不是兩條路由也不是退回 dialog。目標資料夾同樣走 search param（`?folderId`），所以「上傳到這個資料夾」是可以分享的連結。
-- Create 按鈕的樣式與導航由 `CollectionCreateButton` 統一決定（`variant="form"`、`size="xs"`）；頁面只傳 collection 自己的平面 `slug`，不得自己組按鈕、傳 sidebar parent 或手寫 create URL。
-
-### Fields 視覺基準
-
-- `src/components/ui/input.tsx` 的目前 field variant 是所有表單控制項的唯一視覺基準。`Textarea`、`SelectTrigger`、`PhoneInput`、`FolderSelectField`、`UploadField`、`OptionValuesField` 與未來新增的 field type，都必須與 `Input` 使用相同的背景色、文字色、placeholder、外框、圓角、陰影與高度節奏。
-- 視覺一致性必須涵蓋全部狀態：default、hover、focus-visible、aria-invalid、disabled、light mode 與 dark mode；不可只讓靜止畫面看起來相似。
-- Fields 在視窗、Card 或其他容器內不得自行覆寫另一套 border、shadow、background 或 focus ring。若產品需要新的外觀，先在 shared field primitive 建立具名 variant，再讓所有相關 field type 共用。
-- 不可把 `Input` 的完整 class 字串複製到各 field component。共用的 field-control tokens 或 variant 應集中在 shared style utility／UI primitive，確保日後修改 `Input` 時其他 fields 不會漂移。
-- Label、說明、錯誤訊息與欄位間距可以依 field type 調整，但實際可輸入或可選擇的 control surface 必須維持 `Input` 視覺語言。
-
-## 6. TypeScript 與程式碼品質
-
-### 禁止 any
-
-- 專案採 strict TypeScript，`src/` 內**不得出現 `any`**，包含 `: any`、`as any`、`<any>`、`any[]`、`Record<string, any>`。唯一例外是 generated files（`routeTree.gen.ts`、`worker-configuration.d.ts`），那些不手改。
-- `any` 不是型別，是關閉型別檢查。它讓錯誤延後到 runtime 才爆，而且通常爆在離原因很遠的地方。
-- 遇到型別對不上時，**先追根因，不要用 `any` 讓它閉嘴**。實際案例：`server/auth/helpers.ts` 的 `as any` 曾同時掩蓋四個真問題——`CloudflareBindings` 與產生的 `Env` 不相容、`role` 型別被放寬成 `string`、serverFn 回傳不可序列化的 `Response`、以及連鎖造成的 `unknown`。移除 `as any` 後才全部浮現。
-
-替代做法，依序考慮：
-
-1. **不寫註記**：多數情況 TypeScript 推導得出來。先刪掉再看 `tsc` 有沒有意見。
-2. **從函式庫推導**：用 `Parameters<>`、`ComponentProps<>`、`Awaited<ReturnType<>>` 取得型別，函式庫升級會自動跟上。例：`FirstFieldRefTarget`、dnd-kit 的 `DragEventOf<>`。
-3. **對外邊界用 `unknown` 再驗證**：request body、`JSON.parse` 結果、第三方回應一律 `unknown`，經 Zod 或既有 validation helper 縮窄後才使用。
-4. **具名的窄轉型**：真的需要轉型時，轉到**具體型別**而不是 `any`，例如 `as RefObject<HTMLInputElement>`、`as Env & { CF_PAGES?: string }`。並在旁邊寫一行註解說明為什麼型別系統看不出來。
-5. **修正型別來源**：若是自家型別定義錯了（過度 required、union 少一型），改定義，不要在使用端補救。
-
-- 若真的無法避免（例如函式庫型別有缺陷），必須在該行留下註解說明原因與追蹤依據（issue 連結或版本），並限縮到最小範圍。
-
-### 其他
-
-- 使用既有 alias：`@/*`、`@queries/*`、`@views/*`。同一模組內維持一致 import 方式。
-- 遵守 `.editorconfig`：UTF-8、LF、2 spaces、檔尾 newline。
-- 修正需求時只清理觸及範圍內的型別與重複邏輯，不順手重構整個舊模組。
-- Error log 不可包含 secret、OTP、完整 token、敏感 request body 或不必要的個資。
-
-## 7. 驗證與交付
-
-### 絕對不要用 git 還原未提交的檔案
-
-- **禁止對工作區檔案執行 `git checkout -- <file>`、`git restore <file>`、`git stash`、`git reset --hard`。** 這個專案長期有大量未提交的變更,這些指令會把它們無聲刪除,且沒有 reflog 可救。
-- 需要「撤銷剛才的實驗性修改」時,用 Edit 把那次修改改回去 —— 你知道自己剛寫了什麼,不需要問 git。
-- 需要臨時改檔案做實驗(例如驗證某個測試會不會紅)時,先把原始內容記在腦中或另存一份,改完再用 Edit 還原。
-- 這條是實際踩過兩次的帳:一次是 reindent 腳本比對錯 `return (`,一次是為了重現 HMR 錯誤而 `git checkout` 了六個檔案,把兩輪的工作全部清掉。第二次只能靠 `dist/` 的建置產物逐段還原 —— server 端的 Vite 輸出未壓縮且保留註解,所以救得回來,但這是運氣,不是流程。
-
-依修改風險執行最小充分驗證：
-
-1. TypeScript：`pnpm exec tsc --noEmit`
-2. `any` 檢查：`grep -rn ": any\|as any\|<any>" src --include=*.ts --include=*.tsx | grep -v routeTree.gen.ts` 必須無輸出
-3. 測試：`pnpm test`（有相關測試或修改核心邏輯時）
-4. Production build：`pnpm build`（修改 route、SSR、Cloudflare binding、lazy import 或 build config 時）
-5. Schema：`pnpm db:generate` 並檢查新 migration（修改 schema 時）
-6. UI：實際檢查目標 route 的 loading、error、empty、responsive 與 keyboard flow
-
-### 表單內的按鈕必須明確標示 type
-
-- `Button` 已把預設值改成 `type="button"`。HTML 原本的預設是 `submit`，導致建立頁的 Close 按鈕會送出空表單、跳出驗證錯誤 —— 使用者看到的是「關閉就報錯」。
-- **要送出的按鈕必須自己寫 `type="submit"`**，不可依賴預設值。`DialogFooterActions`、`SubmitButton`、`InfoAlert` 都已經是這樣。
-- `asChild` 時不套用預設值：那會把 `type` 加到別人的元素上（例如 `<a>`），那個屬性在那裡沒有意義。
-- 回歸測試在 `src/components/ui/button.test.tsx`。
-
-### 防護與修復必須做負向測試
-
-「跑起來沒報錯」不等於「有效」。加了守門機制或修了 bug，就要證明它在**該擋的時候真的會擋**，否則等於沒加：
-
-- 加防護後，故意製造違規輸入，確認它被拒絕。做過的例子：bundle secret 檢查（把 env 讀進共用 config，確認 build 失敗並中斷）、Import Protection（建 `.server.ts` 從 client 匯入，確認 build 報出完整 import chain）。
-- 修查詢後，除了確認新寫法不報錯，還要**與舊寫法比對結果**。把 LIKE 換成範圍比較時，用一個舊寫法還能執行的短前綴跑兩次，確認回傳的列數一致——只證明「不報錯」可能是條件寫錯導致查不到任何東西。
-- 負向測試若沒失敗，先懷疑測試本身。實際發生過：把 `process.env` 提到模組層想模擬洩漏，檢查卻通過——因為那個常數只被 server-only 函式引用，被 tree-shake 掉了，根本沒洩漏。換成真的會進 client 的路徑才重現。
-- 測完務必還原，並確認 `git diff` 乾淨、`routeTree.gen.ts` 沒有殘留、測試資料已從 D1 清除。
-
-### 追查 runtime 問題時
-
-- 錯誤訊息被框架包住時（Drizzle 的 `Failed query:`、TanStack 的 `Server Fn Error!`），要取得底層原因：把 SQL 直接丟給 `wrangler d1 execute --local`，或在 catch 裡印出 `error.cause`。照著外層訊息猜會走錯方向。
-- 只在編輯原始碼後才發生、冷啟動正常的問題，屬於模組圖／HMR 類，不是邏輯錯誤。見「cms.config 的模組圖」一節。
-- 提出假設後要能證偽。這輪曾誤判 barrel 是 TDZ 的成因，拆掉後問題依舊；真正的線索來自完整的 dev server log（裡面有並行重新求值的模組清單）。沒有 runtime 證據就不要宣稱找到根因。
-
-交付時說明：
-
-- 實際修改了哪些檔案與行為。
-- 執行了哪些驗證，以及結果。
-- 未執行的驗證、既有錯誤或仍存在的風險。
-
-不可為了讓檢查通過而關閉 strict 選項、移除安全驗證、吞掉錯誤、擴大 ignore 範圍或修改無關檔案。
+所有 path 必須經 `safeThemeFilePathSchema` 或等價的集中驗證，不可直接相信 client path。
+
+### 4.2 Workspace 是 mutable，Revision 是 immutable
+
+必須維持：
+
+```text
+Theme Workspace Files
+        ↓ freeze
+Immutable Theme Source Revision
+        ↓
+Build
+```
+
+Build 不可直接讀取 mutable working files。
+
+一旦 build 綁定 `sourceRevisionId`：
+
+- build input 不得 fallback 回目前 workspace。
+- revision bytes 不得被覆寫。
+- compiler identity / input hash 一旦 freeze 不得漂移。
+- retry 必須重用相同 immutable input，或建立新的 build。
+
+### 4.3 OCC
+
+Theme workspace mutation 必須保留 optimistic concurrency control。
+
+至少使用：
+
+- per-file version / identity guard
+- `expectedSourceGeneration`
+- theme ownership guard：`storefrontId + themeId`
+- server-side conflict response
+
+遇到 remote generation conflict：
+
+- 不可 silent last-write-wins。
+- client 必須 reload / accept remote / resolve conflict。
+- AI agent 也必須遵守同一條 OCC 邊界。
+
+### 4.4 Starter Theme
+
+Starter theme 必須是**真的可以 build 的 React theme source**，不是 preview-only mock。
+
+`morph.theme.json` 是 Theme source metadata / capability manifest，可用於：
+
+- entry file
+- component mapping
+- `componentRef`
+- source path
+- visual editor capability metadata
+- future AI agent context
+
+Manifest 不得變成另一份 presentation SSOT。
+
+---
+
+## 5. Visual Editor = Source Code 的 GUI
+
+Visual Editor 是獨立 authoring surface，正式 route 目前使用：
+
+```text
+/store/$storefrontId/themes/$themeId/editor
+```
+
+它不是 Dashboard collection page。
+
+### 5.1 Editor shell
+
+Editor 應維持：
+
+```text
+Left: structure / template / section navigation
+Center: isolated storefront preview
+Right: selected element inspector
+Code Mode: Monaco / source workspace
+```
+
+Editor 不複製 Dashboard sidebar / breadcrumb framework。
+
+Dashboard 的 `Customize theme` 應以新分頁開啟，並使用 `noopener noreferrer`。
+
+### 5.2 Visual editing 的基本資料流
+
+可視化 style 修改應遵循：
+
+```text
+Select preview node
+      ↓
+Resolve data-morph-node / source location
+      ↓
+Parse source AST
+      ↓
+Safe source patch
+      ↓
+Update local workspace
+      ↓
+Save with OCC
+      ↓
+Preview refresh
+```
+
+Canvas 不得只更新 React local state 或 Page Document 來假裝 source 已改。
+
+### 5.3 `data-morph-*` metadata
+
+Theme component 可以使用：
+
+- `data-morph-section`
+- `data-morph-node`
+- `data-morph-element`
+
+其中 `data-morph-node` 應在同一 source file 內保持唯一，作為 Visual Editor 定位穩定節點的主要方式。
+
+AI 產生的新 component 若希望完整支援 Visual Editor，應盡可能輸出穩定的 Morph metadata。
+
+沒有 Morph metadata 的合法 React component仍可以 build / runtime 執行，只是 visual editability 降低；不得因此阻止 Code Mode 的自由度。
+
+### 5.4 AST 安全邊界
+
+Visual Editor 只能在 transformer 能證明安全時自動 patch source。
+
+例如：
+
+- 靜態字串 `className="..."` 可以修改。
+- 可定位的 literal/default prop 可以修改。
+- `className={complexExpression(...)}` 不應被 regex 粗暴覆寫。
+- 無法安全修改時，Inspector 應顯示 unsupported / code-only，或導向 Code Workspace。
+
+禁止用 regex 當作通用 TSX parser。
+
+### 5.5 Visual → Code / Code → Visual 必須雙向收斂
+
+目標行為：
+
+```text
+Canvas 修改
+→ source 改變
+→ Monaco 看到相同 source
+
+Monaco 修改
+→ source save
+→ parser 重新解析
+→ Canvas / Inspector 反映可解析的新結果
+```
+
+不得建立 Editor 專屬的第二份 component state 作為長期 persisted source。
+
+---
+
+## 6. Page / Template Content Authoring
+
+Content 修改與 source 修改是兩種不同 mutation。
+
+### 6.1 Content-only mutation
+
+例如：
+
+- Hero heading
+- description
+- image
+- CTA
+- SEO
+- product / collection reference
+- section ordering
+
+應更新 versioned Page / Template Document。
+
+Content-only change **不需要重新 build Theme**。
+
+### 6.2 Presentation mutation
+
+例如：
+
+- font size class
+- grid layout
+- responsive breakpoint
+- new component
+- animation
+- custom Canvas/WebGL logic
+
+應更新 Theme Source，並在 production release 前建立新的 successful build。
+
+### 6.3 Runtime composition
+
+Production storefront 必須能組合：
+
+```text
+Theme Build Artifact
+        +
+Published Page / Template Document
+        +
+Current Commerce DTO
+        ↓
+Rendered Storefront
+```
+
+不得把所有 page content bake 進 theme build，否則改一句文案都會要求重新 build。
+
+---
+
+## 7. Theme Build Plane
+
+Build 是 engineering pipeline，不是普通 CMS content save。
+
+### 7.1 Build identity
+
+Theme Build 必須永久綁定：
+
+- `storefrontId`
+- `themeId`
+- `sourceRevisionId`
+- `inputHash`
+- `compilerId`
+- `compilerVersion`
+
+Build state：
+
+```text
+queued → building → succeeded
+                  ↘ failed
+```
+
+不可把 failed build 標記成 publishable。
+
+### 7.2 Build source
+
+Materializer 只能從 immutable revision 重建 virtual filesystem。
+
+禁止：
+
+```text
+build → current mutable theme files
+```
+
+必須：
+
+```text
+build → immutable sourceRevisionId → snapshot
+```
+
+### 7.3 Sandbox
+
+不可信 Theme / AI source 必須在隔離 build environment 執行。
+
+Cloudflare Sandbox / Container build 至少要維持：
+
+- CPU / duration bound
+- source file count limit
+- source bytes limit
+- output file count limit
+- output bytes limit
+- workspace path containment
+- dependency allowlist
+- pinned build toolchain
+- no production D1 credential
+- no Better Auth secret
+- no R2 credential passed into user code
+- no unrestricted environment access
+
+Theme source 不可在 Morph request Worker 中 `eval`。
+
+### 7.4 Dependencies
+
+Theme package dependencies 必須經平台 dependency policy。
+
+AI 不得自行加入任意 npm dependency 並直接 production build。
+
+新增 dependency capability 時要：
+
+1. 加入 allowlist。
+2. 固定 / 管理版本。
+3. 評估 bundle size、license、安全與 Cloudflare runtime compatibility。
+4. 加 negative test。
+
+### 7.5 Artifact
+
+Build 成功後輸出 immutable artifacts，保存到 R2 或正式 artifact backend。
+
+Artifact manifest 必須是 serve allowlist，Preview / Runtime 不得接受任意 path 讀取 R2 prefix。
+
+Artifact 寫入成功後才可 finalize build succeeded。
+
+---
+
+## 8. Preview
+
+Morph 可以同時存在兩種 Preview，但用途必須清楚。
+
+### 8.1 Live Authoring Preview
+
+目的：快速回饋 workspace / document 編輯。
+
+可以使用 browser compiler、dev runtime 或其他低延遲方式。
+
+它不是 production proof。
+
+### 8.2 Immutable Build Preview
+
+目的：驗證真正的 source revision + compiler + artifact。
+
+必須：
+
+- 只 serve `succeeded` build。
+- 綁定 immutable `buildId`。
+- 使用 capability token 或正式 session authorization。
+- iframe 與 Dashboard 隔離。
+- 防 path traversal。
+- 只 serve manifest allowlist file。
+- 正確 CSP / MIME / `nosniff`。
+- preview token 不得等同 production deploy credential。
+
+Human publish 應以 successful immutable build 為基礎，而不是只看 live preview。
+
+---
+
+## 9. Storefront Release 與 Production Runtime
+
+這是 Morph 最重要的 production boundary。
+
+### 9.1 Release model
+
+長期正式模型應是 immutable Storefront Release，例如：
+
+```text
+StorefrontRelease
+├─ id
+├─ storefrontId
+├─ themeId
+├─ themeBuildId
+├─ sourceRevisionId
+├─ template/page revision references
+├─ createdBy
+├─ createdAt
+└─ metadata
+```
+
+Storefront 再持有：
+
+```text
+activeReleaseId
+```
+
+Content-only publish 可以建立一個新 Release，但重用相同 successful `themeBuildId`。
+
+Presentation/source publish 必須引用對應 source revision 的 successful build。
+
+### 9.2 Atomic activation
+
+Production 切版的核心應是：
+
+```text
+activeReleaseId: old → new
+```
+
+必須是經 authorization 與 OCC 保護的原子操作。
+
+不得先切 published source，再晚一點才產生 artifact。
+
+### 9.3 現行 publish path 的遷移規則
+
+在 `StorefrontRelease` 尚未完整落地前：
+
+- 既有 `publishedSourceRevisionId`、template `publishedRevisionId`、`releaseGeneration` 可以作 compatibility path。
+- 不可基於 compatibility path 再建立第二套 production router。
+- 新 production runtime 工作必須朝 immutable release 收斂。
+- migration 必須保留 rollback 與既有 published state。
+
+### 9.4 Production Edge Router
+
+目標請求流程：
+
+```text
+Request hostname
+      ↓
+Resolve Storefront
+      ↓
+Resolve activeRelease
+      ↓
+Resolve immutable Theme Build Artifact
+      ↓
+Resolve published Page / Template content
+      ↓
+Resolve public Commerce DTO
+      ↓
+Serve / render Storefront
+```
+
+Control Plane failure 不應讓已發布 storefront 下線。
+
+Build Plane failure 不應影響上一個 active release。
+
+---
+
+## 10. AI Authoring / AI Code Agent
+
+AI 是 author，不是 production operator。
+
+### 10.1 AI 可以做什麼
+
+AI 可以在受控 authoring workflow：
+
+- 讀取 Theme source snapshot / workspace
+- 新增 React component
+- 修改 TSX / Tailwind / CSS
+- 建立 GSAP / Canvas / WebGL / Three/R3F implementation
+- 更新 `morph.theme.json`
+- 修改 safe Page / Template content
+- 產生 code patch
+- 執行 bounded repair loop
+- 建立 AI source revision
+- request sandbox build
+- 顯示 preview / diff / diagnostics
+
+### 10.2 AI 不可以做什麼
+
+AI 不可：
+
+- 直接改 production artifact
+- 直接切 active release
+- 直接 deploy production
+- 直接執行 production migration
+- 讀 production secrets
+- 直接取得 raw Better Auth session secret
+- 繞過 dependency policy
+- 關閉 build resource limits
+- 關閉 authorization / OCC
+- 把 failed build publish
+- 自行提升權限
+
+### 10.3 AI Code workflow
+
+正式目標：
+
+```text
+User Prompt
+   ↓
+AI reads scoped source/context
+   ↓
+Proposed file operations / patch
+   ↓
+Validate paths + dependency policy
+   ↓
+Apply to authoring workspace with OCC
+   ↓
+Create immutable source revision
+   ↓
+Sandbox build
+   ↓
+Immutable preview
+   ↓
+Human approval
+   ↓
+Release activation
+```
+
+AI repair loop 每次都必須 bounded，不可無限 retry。
+
+### 10.4 AI 與 Page Document
+
+AI 不需要被限制成只能輸出 section schema。
+
+但若任務只是改文案、asset、SEO、commerce reference 或 ordering，優先修改 Page / Template Document，不必修改 code。
+
+判斷原則：
+
+```text
+Content/assembly change → Document
+Presentation/runtime change → Source
+```
+
+---
+
+## 11. Interactive Experience
+
+Canvas、WebGL、Three.js、R3F、GSAP、Mapbox、scroll story 等不是特殊旁路。
+
+它們是正常 Theme Source capability。
+
+AI / developer 可以建立真正的 React implementation，但仍必須遵守：
+
+- sandbox build
+- dependency policy
+- runtime performance budget
+- lazy loading
+- asset budget
+- reduced motion
+- mobile fallback
+- WebGL unavailable fallback
+- error state
+- cleanup / dispose
+- no unbounded render loop
+- no production secret access
+
+可以建立 reusable preset / component library，但 preset 是**加速 authoring 的 product layer**，不是限制所有頁面只能使用 preset。
+
+---
+
+## 12. Dashboard Routing 與 CMS Navigation
+
+`src/routes/` 使用 TanStack Router file-based routing。
+
+Dashboard 頁面的唯一 registry：
+
+```text
+src/cms.config.ts
+→ dashboard/-collections/**
+→ dynamic dashboard route
+→ dashboard/-views/**
+```
+
+### 12.1 Dashboard collection
+
+- 不可為單一 collection 再新增會蓋掉 `$slug` 的平行 static route。
+- 新功能優先延伸 existing collection capability：`index`、`create`、`preview`、`detail`、`edit`。
+- `-components`、`-queries`、`-views`、`-collections` 是 route-internal module。
+- route search params 必須經 schema 驗證。
+- 可分享、可返回、影響 dataset 的 state 應放 URL，不放 component-only state。
+
+### 12.2 Visual Editor 例外
+
+`/store/$storefrontId/themes/$themeId/editor` 是獨立 top-level authoring route，因此可以使用自己的 file route / pathless layout。
+
+但仍必須：
+
+- TanStack file routing
+- validated search
+- authentication
+- loader / query prefetch
+- pending / error state
+- 不手改 `routeTree.gen.ts`
+
+---
+
+## 13. Server Function、Authorization 與 Actor
+
+- Server function 所有 external input 必須使用 Zod 或集中 validation。
+- 權限必須在 server 端。
+- 登入與 session 由 Better Auth / existing helper 提供，不自行解析 auth cookie。
+- `createdBy`、`updatedBy`、`uploadedBy` 等 actor 必須來自 verified session，不能相信 client user id。
+- Theme / Storefront operation 必須同時驗證 `storefrontId` 與 `themeId` ownership。
+- Client hidden button 不是 authorization。
+- Preview capability token 只能授予 preview 能力，不可被當作 general admin token。
+
+---
+
+## 14. DAL、DTO、Service、Storage Boundary
+
+責任分工：
+
+```text
+Route / Component
+   ↓
+TanStack Query / Server Function
+   ↓
+Authorization + Validation
+   ↓
+Service / Use Case Coordination
+   ↓
+DAL or Storage Contract
+   ↓
+D1 / R2 / Cloudflare service
+```
+
+### 14.1 DAL
+
+DAL 負責：
+
+- database query
+- aggregate write
+- atomic guard
+- ownership filtering
+- relation read
+- D1-specific SQL when required
+
+### 14.2 Service
+
+Service 負責跨 storage / build / artifact 的 workflow coordination。
+
+例如 Theme Build 不應把：
+
+- revision storage
+- build runner
+- artifact store
+- build lifecycle
+
+全部耦合進同一個 D1 DAL。
+
+### 14.3 Storage abstraction
+
+如果 domain 已存在 storage contract：
+
+- server function 不應直接知道 backend 是 D1、R2 或 future backend。
+- composition root 集中選擇 implementation。
+- 不建立相同用途的第二套 storage interface。
+
+---
+
+## 15. Drizzle、Raw SQL 與 Cloudflare D1
+
+Drizzle 是主要 ORM，但**不是所有操作都必須硬塞進 Drizzle API**。
+
+以下情況可以使用 `env.DATABASE.prepare()` / `batch()`：
+
+- atomic precondition guard
+- CAS / OCC
+- D1-specific transaction-like batch orchestration
+- ORM 無法可靠表達的 SQLite / D1 primitive
+- 需要把 guard 與 mutation 放進同一個 D1 batch
+
+原則：
+
+- raw SQL 必須集中在 DAL / storage backend。
+- 不可從 component / server function 散落直接 SQL。
+- query 參數必須 bind，不拼接不可信輸入。
+- 有可能使用 Drizzle 清楚完成的普通 CRUD，優先用 Drizzle。
+
+### 15.1 D1 LIKE / GLOB
+
+D1 / SQLite LIKE / GLOB pattern 有 byte 限制。
+
+- prefix subtree query 不使用超長 `LIKE prefix%`，優先半開區間 `gte(prefix)` + `lt(upperBound)`。
+- user contains search 使用集中 `containsPattern()`，不可自行拼 `%${term}%`。
+
+### 15.2 Binding parameter limit
+
+每 statement 的 binding 數量有限。
+
+Multi-row insert 必須依：
+
+```text
+row count × bound column count
+```
+
+計算 chunk，不可照抄固定 batch size。
+
+沿用既有 `chunkForInsert()` 等 helper。
+
+### 15.3 D1 batch
+
+同一 aggregate 的多 statement mutation 應盡量收進同一 `env.DATABASE.batch()`，避免部分寫入。
+
+Atomic precondition guard 與實際 mutation 必須屬於同一次 logical write。
+
+---
+
+## 16. Commerce Module Boundary
+
+Morph 保留 Medusa-style module ownership。
+
+- 同 module 可以有真正 DB FK。
+- 跨 commerce module 優先使用 id / link table，不建立 schema import cycle。
+- `*.schema.ts` 不應為跨模組 relation 隨意 import 其他 module schema。
+- link table 沒有 FK cascade 時，delete workflow 必須自行處理。
+- read 時不可無條件相信 cross-module link 仍有效。
+- 金額使用 currency minor unit integer。
+- 稅率 / 百分比依現有 schema convention。
+- totals 通常 computed；歷史 order snapshot 除外。
+- API key / invite token 保存 hash，不存 plaintext token。
+- Cart / Order line item 是歷史快照，不應因商品後續改名或刪除而失真。
+
+---
+
+## 17. Aggregate Write 與 Round-trip
+
+一個使用者動作若更新同一 aggregate root 的多張表：
+
+- 必須盡量原子寫入。
+- 不可先 create root 再逐筆 await relation insert。
+- 任何 action 可編輯欄位都必須能由 detail query / DTO 讀回。
+- edit form 不可因未呈現欄位而用空陣列 / 空字串覆蓋既有值。
+
+複合功能至少驗證：
+
+1. create 後 detail 可見。
+2. reopen edit 值仍存在。
+3. 只改無關欄位不會清掉其他資料。
+4. batch 中任一 statement fail 不留下 partially visible aggregate。
+
+---
+
+## 18. Query、Pagination 與 URL State
+
+會持續成長的 collection：
+
+- Products
+- Orders
+- Customers
+- Assets
+- Inventory
+- Promotions
+- logs
+- 其他無可靠 hard upper bound 的資料
+
+預設 server-side pagination。
+
+URL 應是可分享 dataset state 的 SSOT：
+
+- `q`
+- sort
+- page
+- filter
+- folder
+- route modal return target
+
+TanStack Query key 必須集中，不在 view 手寫重複 key。
+
+---
+
+## 19. UI 與 Shared Primitive
+
+- 優先使用 `src/components/ui/` 與現有 feature/shared component。
+- 修改 shared primitive 前先搜尋全部使用處。
+- 不在 feature 重做 Dialog、Table、CommandBar、Route fullscreen、form field 等已存在 primitive。
+- Field control 視覺應以 shared Input / field primitive 為基準。
+- keyboard、focus、label、loading、error、empty、responsive 必須保留。
+- reduced motion 必須被尊重。
+- 主題切換應避免全頁 transition 造成閃色 / 漸變。
+- 需要新的共用 interaction 時優先在 shared primitive 擴充，而不是單頁 copy。
+
+### 19.1 Resizable panel
+
+會持久化寬度的 Editor / Dashboard panel：
+
+- SSR initial width 使用 Cookie。
+- client 可以同步保存 localStorage。
+- 初始 HTML 與 hydration state 必須一致，避免 CLS。
+- resize control 使用 Pointer Capture 與 min/max guard。
+
+### 19.2 Continuous numeric control
+
+視覺 editor 的連續值，例如尺寸、間距、角度：
+
+- 支援 keyboard input。
+- 可提供 scrub interaction。
+- 優先沿用 `ScrubbableNumberInput`。
+- 保留 min/max / step / Enter / Escape / accessible label。
+
+---
+
+## 20. DataTable / Resource List
+
+資源清單頁優先沿用既有 `DataTableCard`、`DataTableToolbar`、`DataTablePagination`、`RowActionsMenu` 與 filter primitives。
+
+不得在單一 feature 重新拼一套：
+
+```text
+Card + search + filter + table + pagination
+```
+
+會影響 dataset 的搜尋、排序、分頁與 filter 應保存於 route search params。
+
+---
+
+## 21. Create / Edit Route
+
+Dashboard 新增資源預設是 route-backed form，而不是靠頁面 local state 開啟不可分享的建立 dialog。
+
+- create 使用 collection `create.view`
+- route form close 沿用 existing helper
+- cross-resource create 使用 safe `returnTo`
+- seed data 使用明確 `seed*` search param
+- destructive confirmation 可以保留 Alert Dialog
+
+如果 existing feature 已有經驗證的另一種 pattern，先確認架構再遷移，不做半套雙軌。
+
+---
+
+## 22. TypeScript 與 Code Quality
+
+- `src/` 採 strict TypeScript。
+- 不使用 `any` 逃避型別問題；generated files 除外。
+- external JSON / DB JSON / manifest 先視為 `unknown`，再 validate / narrow。
+- 不重複定義 domain DTO。
+- 共享型別應靠近 domain boundary。
+- 不因測試方便把 production private invariant 暴露成 public API。
+- 對 impossible state 使用 explicit error，不 silent fallback 成看似成功的資料。
+
+---
+
+## 23. Security
+
+所有新 feature 都要考慮：
+
+- authentication
+- authorization
+- tenant / storefront ownership
+- path traversal
+- HTML / rich text injection
+- SSRF
+- dependency supply-chain
+- untrusted source execution
+- preview token scope
+- production secret isolation
+- D1 / R2 object ownership
+- rate limiting / bounded work
+- auditability
+- rollback
+
+Theme code 與 AI code 一律視為不可信 source。
+
+---
+
+## 24. Testing
+
+每個 capability 至少按風險覆蓋：
+
+- happy path
+- invalid input
+- unauthorized
+- ownership mismatch
+- concurrent update / OCC
+- storage failure
+- partial failure
+- rollback / previous version preservation
+- loading / empty / error state
+- production build
+
+Theme / Build 相關額外測試：
+
+- unsafe path
+- duplicate source path
+- empty revision
+- multiple entry files
+- compiler identity mismatch
+- input hash mismatch
+- failed sandbox
+- timeout
+- dependency deny
+- artifact persistence failure
+- preview token mismatch
+- manifest path not allowed
+- build from immutable revision only
+- CAS loser 不得把 winner 標成 failed
+
+Visual Editor 額外測試：
+
+- `data-morph-node` duplicate
+- static class patch
+- dynamic class reject
+- source conflict
+- Canvas → source
+- source → Inspector parse
+
+---
+
+## 25. CI 與完成條件
+
+正常程式修改完成前至少執行：
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+不能因為其中一項「應該沒問題」而直接宣稱完成。
+
+GitHub CI / local validation 若尚未實際執行或無法取得結果，必須明確說「未驗證」，不可推測通過。
+
+---
+
+## 26. Migration 原則
+
+架構轉換時：
+
+- 不建立新舊 framework 長期並存。
+- 先建立 compatibility adapter，再逐步搬 caller。
+- 舊資料需要 migration / fallback 時要明確定義 sunset。
+- 任何 production state migration 都要有 rollback。
+- 不可為了新架構直接丟棄既有 published storefront state。
+
+### 26.1 Morph 目前的主要收斂方向
+
+目前新 storefront 工作應優先朝以下架構收斂：
+
+```text
+Theme Source Workspace
+        ↓
+Visual AST Editor / Monaco / AI Code Agent
+        ↓
+Immutable Source Revision
+        ↓
+Sandbox Build
+        ↓
+Immutable R2 Artifact
+        ↓
+Storefront Release
+        ↓
+Edge Runtime
+```
+
+內容資料則走：
+
+```text
+Page / Template Draft
+        ↓
+Immutable Content Revision
+        ↓
+Publish
+        ↓
+Storefront Release
+```
+
+最後由 Runtime 組合：
+
+```text
+Theme Artifact
++ Published Content
++ Commerce DTO
+= Storefront
+```
+
+**禁止重新把 Morph 收斂回「所有 presentation 都由 Page Section Schema 產生」的架構。**
