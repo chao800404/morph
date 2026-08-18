@@ -94,8 +94,8 @@ describe("publish storefront theme template input schema", () => {
 
     expect(publishStorefrontThemeTemplateInputSchema.parse(valid)).toEqual(valid);
 
-    // Missing sourceRevisionId
-    expect(() =>
+    // Content-only publish may omit source/build IDs and reuse the active release.
+    expect(
       publishStorefrontThemeTemplateInputSchema.parse({
         storefrontId: "11111111-1111-4111-8111-111111111111",
         themeId: "22222222-2222-4222-8222-222222222222",
@@ -104,7 +104,9 @@ describe("publish storefront theme template input schema", () => {
         expectedDraftGeneration: 1,
         expectedReleaseGeneration: 1,
       }),
-    ).toThrow();
+    ).toMatchObject({
+      expectedDraftRevisionId: "55555555-5555-4555-8555-555555555555",
+    });
 
     // Missing expectedDraftRevisionId
     expect(() =>

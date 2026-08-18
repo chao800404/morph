@@ -6,6 +6,7 @@ export type StorefrontReleaseDTO = {
   themeId: string;
   sourceRevisionId: string;
   themeBuildId: string;
+  contentPublicationId: string | null;
   status: StorefrontReleaseStatus;
   metadata: Record<string, unknown> | null;
   createdBy: string | null;

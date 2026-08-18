@@ -12,6 +12,7 @@ function mapReleaseRowToDTO(
     themeId: row.themeId,
     sourceRevisionId: row.sourceRevisionId,
     themeBuildId: row.themeBuildId,
+    contentPublicationId: row.contentPublicationId,
     status: row.status,
     metadata: row.metadata,
     createdBy: row.createdBy,
@@ -63,7 +64,7 @@ export const storefrontReleaseDal = {
         and(
           eq(storefrontReleases.id, storefront.activeReleaseId),
           eq(storefrontReleases.storefrontId, storefrontId),
-          eq(storefrontReleases.status, "active"),
+          eq(storefrontReleases.status, "available"),
           isNull(storefrontReleases.deletedAt),
         ),
       )

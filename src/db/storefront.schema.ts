@@ -12,7 +12,12 @@ import type { JsonValue } from "./json";
 
 export type StorefrontStatus = "draft" | "published" | "disabled";
 export type StorefrontThemeStatus = "draft" | "published" | "archived";
-export type StorefrontReleaseStatus = "active" | "superseded";
+/** Release lifecycle is independent from the production pointer. */
+export type StorefrontReleaseStatus = "available" | "invalidated";
+export type StorefrontContentPublicationItemType =
+  | "template"
+  | "page"
+  | "navigation";
 export type StorefrontPageStatus = "draft" | "published" | "archived";
 export type StorefrontDomainStatus = "pending" | "active" | "failed";
 export type StorefrontCommentThreadStatus = "open" | "resolved" | "archived";
@@ -128,7 +133,10 @@ export const storefrontThemes = sqliteTable(
   ],
 );
 
-/** JSON templates are rendered by registered, schema-validated sections. */
+/**
+ * Versioned content/assembly document whose componentRef values reference
+ * components implemented by the code-backed Theme Source.
+ */
 export const storefrontThemeTemplates = sqliteTable(
   "storefront_theme_templates",
   {
@@ -382,7 +390,13 @@ export const storefrontThemeFiles = sqliteTable(
   ],
 );
 
-/** Snapshot revision of a theme workspace (supporting rollback, AI history, and publishing). */
+/**
+ * Snapshot revision of a theme workspace (supporting rollback, AI history,
+ * and publishing).
+ *
+ * @deprecated Compatibility snapshot. The target storage is D1 revision
+ * metadata plus immutable, content-addressed source blobs in R2.
+ */
 export const storefrontThemeRevisions = sqliteTable(
   "storefront_theme_revisions",
   {
@@ -394,6 +408,7 @@ export const storefrontThemeRevisions = sqliteTable(
       .notNull()
       .references(() => storefrontThemes.id, { onDelete: "cascade" }),
     revisionNumber: integer("revision_number").notNull(),
+    sourceGeneration: integer("source_generation"),
     message: text("message"),
     source: text("source").notNull().default("manual"), // "manual" | "ai" | "publish" | "rollback"
     snapshot: text("snapshot", { mode: "json" })
@@ -486,14 +501,18 @@ export const storefrontReleases = sqliteTable(
       .references(() => storefrontThemes.id, { onDelete: "cascade" }),
     sourceRevisionId: text("source_revision_id")
       .notNull()
-      .references(() => storefrontThemeRevisions.id, { onDelete: "cascade" }),
+      .references(() => storefrontThemeRevisions.id, { onDelete: "restrict" }),
     themeBuildId: text("theme_build_id")
       .notNull()
-      .references(() => storefrontThemeBuilds.id, { onDelete: "cascade" }),
+      .references(() => storefrontThemeBuilds.id, { onDelete: "restrict" }),
+    contentPublicationId: text("content_publication_id").references(
+      () => storefrontContentPublications.id,
+      { onDelete: "restrict" },
+    ),
     status: text("status")
       .$type<StorefrontReleaseStatus>()
       .notNull()
-      .default("active"),
+      .default("available"),
     metadata: metadata(),
     createdBy: text("created_by"),
     ...timestamps,
@@ -514,6 +533,55 @@ export const storefrontReleases = sqliteTable(
     ),
     index("storefront_releases_theme_build_idx").on(
       table.themeBuildId,
+      table.deletedAt,
+    ),
+  ],
+);
+
+/** Immutable set of published content revisions selected by a release. */
+export const storefrontContentPublications = sqliteTable(
+  "storefront_content_publications",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    createdBy: text("created_by"),
+    metadata: metadata(),
+    ...timestamps,
+  },
+  (table) => [
+    index("storefront_content_publications_storefront_idx").on(
+      table.storefrontId,
+      table.deletedAt,
+    ),
+  ],
+);
+
+/** Revision references captured by one immutable content publication. */
+export const storefrontContentPublicationItems = sqliteTable(
+  "storefront_content_publication_items",
+  {
+    id: text("id").primaryKey(),
+    publicationId: text("publication_id")
+      .notNull()
+      .references(() => storefrontContentPublications.id, {
+        onDelete: "cascade",
+      }),
+    itemType: text("item_type").$type<StorefrontContentPublicationItemType>().notNull(),
+    contentId: text("content_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    metadata: metadata(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_content_publication_items_unique").on(
+      table.publicationId,
+      table.itemType,
+      table.contentId,
+    ),
+    index("storefront_content_publication_items_revision_idx").on(
+      table.revisionId,
       table.deletedAt,
     ),
   ],

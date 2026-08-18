@@ -486,8 +486,8 @@ export function VisualEditorShell({
   const commentThreads = commentsQuery.data?.data ?? [];
   const publishMutation = useMutation({
     mutationFn: (variables: {
-      sourceRevisionId: string;
-      themeBuildId: string;
+      sourceRevisionId?: string;
+      themeBuildId?: string;
       expectedDraftRevisionId: string;
       expectedDraftGeneration: number;
       expectedReleaseGeneration: number;
@@ -1238,26 +1238,34 @@ export function VisualEditorShell({
     }
 
     if (
-      !activeBuildPreview ||
-      activeBuildPreview.status !== "succeeded" ||
-      activeBuildSourceGeneration === null
+      activeBuildPreview &&
+      (activeBuildPreview.status !== "succeeded" ||
+        activeBuildSourceGeneration === null)
     ) {
-      toast.error(
-        "Cannot publish: create a successful Build Preview for the current source first.",
-      );
+      toast.error("Cannot publish: the selected Build Preview is not ready.");
       return;
     }
 
-    if (activeBuildSourceGeneration !== currentGeneration) {
+    if (
+      activeBuildPreview &&
+      activeBuildSourceGeneration !== currentGeneration
+    ) {
       toast.error(
         "Cannot publish: source changed after the last build. Build Preview again before publishing.",
       );
       return;
     }
 
+    if (!activeBuildPreview && !context.theme.activeRelease) {
+      toast.error(
+        "Cannot publish: create a successful Build Preview before the first release.",
+      );
+      return;
+    }
+
     await publishMutation.mutateAsync({
-      sourceRevisionId: activeBuildPreview.sourceRevisionId,
-      themeBuildId: activeBuildPreview.id,
+      sourceRevisionId: activeBuildPreview?.sourceRevisionId,
+      themeBuildId: activeBuildPreview?.id,
       expectedDraftRevisionId: publishDraftRevisionId,
       expectedDraftGeneration: publishDraftGeneration,
       expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,

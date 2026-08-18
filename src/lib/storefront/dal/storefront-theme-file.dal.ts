@@ -66,11 +66,12 @@ function prepareRevisionInsert(args: {
   source: "manual" | "ai" | "publish" | "rollback";
   createdBy?: string | null;
   now: string;
+  sourceGeneration?: number;
 }) {
   return env.DATABASE.prepare(`
     INSERT INTO storefront_theme_revisions (
       id, storefront_id, theme_id, revision_number, message, source,
-      snapshot, created_by, created_at, updated_at
+      snapshot, source_generation, created_by, created_at, updated_at
     )
     SELECT
       ?1, ?2, ?3,
@@ -96,13 +97,14 @@ function prepareRevisionInsert(args: {
           ORDER BY path
         )
       ), json('[]')),
-      ?6, ?7, ?7
+      ?6, ?7, ?8, ?8
   `).bind(
     args.revisionId,
     args.storefrontId,
     args.themeId,
     args.message,
     args.source,
+    args.sourceGeneration ?? null,
     args.createdBy ?? null,
     args.now,
   );
@@ -723,6 +725,7 @@ export const storefrontThemeFileDal = {
         source: options.source ?? "manual",
         createdBy: options.createdBy,
         now,
+        sourceGeneration: options.expectedSourceGeneration,
       }),
     ];
 
@@ -757,6 +760,7 @@ export const storefrontThemeFileDal = {
       storefrontId: created.storefrontId,
       themeId: created.themeId,
       revisionNumber: created.revisionNumber,
+      sourceGeneration: created.sourceGeneration,
       message: created.message,
       source: created.source as "manual" | "ai" | "publish" | "rollback",
       snapshot: (created.snapshot ?? []) as Array<{
@@ -818,6 +822,7 @@ export const storefrontThemeFileDal = {
       storefrontId: row.storefrontId,
       themeId: row.themeId,
       revisionNumber: row.revisionNumber,
+      sourceGeneration: row.sourceGeneration,
       message: row.message,
       source: row.source as "manual" | "ai" | "publish" | "rollback",
       snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
@@ -966,6 +971,7 @@ export const storefrontThemeFileDal = {
       storefrontId: revision.storefrontId,
       themeId: revision.themeId,
       revisionNumber: revision.revisionNumber,
+      sourceGeneration: revision.sourceGeneration,
       message: revision.message,
       source: revision.source as "manual" | "ai" | "publish" | "rollback",
       snapshot: (revision.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],

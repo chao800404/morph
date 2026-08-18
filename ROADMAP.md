@@ -200,7 +200,8 @@ Edge Runtime
 
 目前主要缺口：
 
-- 正式 Storefront Release entity / active release pointer
+- StorefrontRelease 已具備 base entity、`activeReleaseId`、build/source identity validation、OCC activation foundation；尚未完成 production runtime
+- content publication snapshot、content-only build reuse、release rollback / history UI
 - production edge storefront router
 - custom domain → active release → artifact serving
 - Theme artifact + Page Document + Commerce DTO runtime composition
@@ -405,8 +406,7 @@ StorefrontRelease
 ├─ themeId
 ├─ themeBuildId
 ├─ sourceRevisionId
-├─ template revision references
-├─ page revision references / publish snapshot
+├─ contentPublicationId
 ├─ createdBy
 ├─ createdAt
 └─ metadata
@@ -447,12 +447,14 @@ New Published Content Revisions
 ## Deliverables
 
 - `storefront_releases` data model
+- `storefront_content_publications` + immutable revision references
 - active release pointer
 - release generation / OCC
 - release creation service
 - verify succeeded build
 - verify sourceRevision ↔ build identity
 - content revision snapshot / references
+- content-only publish reuses the active succeeded build
 - atomic activation
 - previous release rollback
 - release history

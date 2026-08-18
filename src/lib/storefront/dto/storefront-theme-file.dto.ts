@@ -25,6 +25,7 @@ export type StorefrontThemeRevisionDTO = {
   storefrontId: string;
   themeId: string;
   revisionNumber: number;
+  sourceGeneration?: number | null;
   message: string | null;
   source: "manual" | "ai" | "publish" | "rollback";
   snapshot: Array<{

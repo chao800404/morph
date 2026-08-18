@@ -16,8 +16,9 @@ export const reorderStorefrontThemeSectionsInputSchema =
 export const publishStorefrontThemeTemplateInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
-    sourceRevisionId: z.string().uuid(),
-    themeBuildId: z.string().uuid(),
+    // Content-only publishes reuse the active release's immutable build.
+    sourceRevisionId: z.string().uuid().optional(),
+    themeBuildId: z.string().uuid().optional(),
     expectedDraftRevisionId: z.string().uuid(),
     expectedDraftGeneration: z.number().int().min(1),
     expectedReleaseGeneration: z.number().int().min(1),

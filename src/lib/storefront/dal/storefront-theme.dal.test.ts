@@ -97,6 +97,7 @@ beforeEach(() => {
       storefront_id text NOT NULL,
       theme_id text NOT NULL,
       revision_number integer NOT NULL,
+      source_generation integer,
       message text,
       source text,
       snapshot text,
@@ -146,9 +147,44 @@ beforeEach(() => {
       theme_id text NOT NULL,
       source_revision_id text NOT NULL,
       theme_build_id text NOT NULL,
+      content_publication_id text,
       status text NOT NULL,
       metadata text,
       created_by text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_pages (
+      id text PRIMARY KEY NOT NULL,
+      storefront_id text NOT NULL,
+      title text NOT NULL,
+      handle text NOT NULL,
+      status text NOT NULL,
+      draft_revision_id text,
+      published_revision_id text,
+      created_by text NOT NULL,
+      metadata text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_content_publications (
+      id text PRIMARY KEY NOT NULL,
+      storefront_id text NOT NULL,
+      created_by text,
+      metadata text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_content_publication_items (
+      id text PRIMARY KEY NOT NULL,
+      publication_id text NOT NULL,
+      item_type text NOT NULL,
+      content_id text NOT NULL,
+      revision_id text NOT NULL,
+      metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       deleted_at text
@@ -262,7 +298,7 @@ describe("storefront theme DAL", () => {
       theme_id: "theme-a",
       source_revision_id: "22222222-2222-4222-8222-222222222222",
       theme_build_id: "33333333-3333-4333-8333-333333333333",
-      status: "active",
+      status: "available",
     });
   });
 

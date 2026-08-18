@@ -60,6 +60,7 @@ beforeEach(() => {
       storefront_id text NOT NULL,
       theme_id text NOT NULL,
       revision_number integer NOT NULL,
+      source_generation integer,
       message text,
       source text DEFAULT 'manual' NOT NULL,
       snapshot text NOT NULL,
@@ -721,5 +722,4 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(finalInDb?.errorMessage).toBeNull();
   });
 });
-
 

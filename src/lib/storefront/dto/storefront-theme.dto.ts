@@ -11,12 +11,18 @@ export interface StorefrontThemeEditorDTO {
     name: string;
     domain: string | null;
     status: StorefrontStatus;
+    activeReleaseId: string | null;
   };
   theme: {
     id: string;
     name: string;
     status: StorefrontThemeStatus;
     releaseGeneration: number;
+    activeRelease: {
+      id: string;
+      sourceRevisionId: string;
+      themeBuildId: string;
+    } | null;
   };
   templates: Array<{
     id: string;

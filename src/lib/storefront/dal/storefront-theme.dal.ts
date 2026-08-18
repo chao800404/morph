@@ -5,10 +5,12 @@ import {
   storefrontThemes,
   storefrontThemeTemplates,
   storefrontThemeTemplateRevisions,
+  storefrontThemeRevisions,
   storefrontThemeBuilds,
   storefrontReleases,
 } from "@/db/storefront.schema";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 import { and, asc, eq, isNull, max } from "drizzle-orm";
 
@@ -479,6 +481,7 @@ export const storefrontThemeDal = {
         storefrontName: storefronts.name,
         storefrontDomain: storefronts.domain,
         storefrontStatus: storefronts.status,
+        activeReleaseId: storefronts.activeReleaseId,
         themeId: storefrontThemes.id,
         themeName: storefrontThemes.name,
         themeStatus: storefrontThemes.status,
@@ -497,6 +500,26 @@ export const storefrontThemeDal = {
       .limit(1);
 
     if (!context) return null;
+
+    const [activeRelease] = context.activeReleaseId
+      ? await db
+          .select({
+            id: storefrontReleases.id,
+            sourceRevisionId: storefrontReleases.sourceRevisionId,
+            themeBuildId: storefrontReleases.themeBuildId,
+          })
+          .from(storefrontReleases)
+          .where(
+            and(
+              eq(storefrontReleases.id, context.activeReleaseId),
+              eq(storefrontReleases.storefrontId, storefrontId),
+              eq(storefrontReleases.themeId, themeId),
+              eq(storefrontReleases.status, "available"),
+              isNull(storefrontReleases.deletedAt),
+            ),
+          )
+          .limit(1)
+      : [];
 
     const templateRows = await db
       .select({
@@ -570,12 +593,14 @@ export const storefrontThemeDal = {
         name: context.storefrontName,
         domain: context.storefrontDomain,
         status: context.storefrontStatus,
+        activeReleaseId: context.activeReleaseId,
       },
       theme: {
         id: context.themeId,
         name: context.themeName,
         status: context.themeStatus,
         releaseGeneration: context.themeReleaseGeneration ?? 1,
+        activeRelease: activeRelease ?? null,
       },
       templates,
     };
@@ -903,11 +928,11 @@ export const storefrontThemeDal = {
     storefrontId: string;
     themeId: string;
     templateId: string;
-    sourceRevisionId: string;
+    sourceRevisionId?: string;
     expectedDraftRevisionId: string;
     expectedDraftGeneration: number;
     expectedReleaseGeneration: number;
-    themeBuildId: string;
+    themeBuildId?: string;
     createdBy?: string;
   }) {
     const db = await getDb();
@@ -918,6 +943,7 @@ export const storefrontThemeDal = {
         draftGeneration: storefrontThemeTemplates.draftGeneration,
         publishedSourceRevisionId: storefrontThemes.publishedSourceRevisionId,
         releaseGeneration: storefrontThemes.releaseGeneration,
+        sourceGeneration: storefrontThemes.sourceGeneration,
         activeReleaseId: storefronts.activeReleaseId,
       })
       .from(storefrontThemeTemplates)
@@ -940,6 +966,52 @@ export const storefrontThemeDal = {
 
     if (!template) return null;
 
+    const [activeRelease] = template.activeReleaseId
+      ? await db
+          .select({
+            id: storefrontReleases.id,
+            sourceRevisionId: storefrontReleases.sourceRevisionId,
+            themeBuildId: storefrontReleases.themeBuildId,
+            sourceGeneration: storefrontThemeRevisions.sourceGeneration,
+          })
+          .from(storefrontReleases)
+          .innerJoin(
+            storefrontThemeRevisions,
+            eq(
+              storefrontReleases.sourceRevisionId,
+              storefrontThemeRevisions.id,
+            ),
+          )
+          .where(
+            and(
+              eq(storefrontReleases.id, template.activeReleaseId),
+              eq(storefrontReleases.storefrontId, data.storefrontId),
+              eq(storefrontReleases.themeId, data.themeId),
+              eq(storefrontReleases.status, "available"),
+              isNull(storefrontReleases.deletedAt),
+            ),
+          )
+          .limit(1)
+      : [];
+    const sourceRevisionId =
+      data.sourceRevisionId ?? activeRelease?.sourceRevisionId;
+    const themeBuildId = data.themeBuildId ?? activeRelease?.themeBuildId;
+    if (
+      !data.sourceRevisionId &&
+      activeRelease?.sourceGeneration !== null &&
+      activeRelease?.sourceGeneration !== undefined &&
+      activeRelease.sourceGeneration !== template.sourceGeneration
+    ) {
+      throw new Error(
+        "PUBLISH_BUILD_NOT_READY: Theme source changed after the active release. Build Preview is required before publishing.",
+      );
+    }
+    if (!sourceRevisionId || !themeBuildId) {
+      throw new Error(
+        "PUBLISH_BUILD_NOT_READY: No succeeded Build Preview is available for this storefront theme.",
+      );
+    }
+
     const [build] = await db
       .select({
         sourceRevisionId: storefrontThemeBuilds.sourceRevisionId,
@@ -950,7 +1022,7 @@ export const storefrontThemeDal = {
       .from(storefrontThemeBuilds)
       .where(
         and(
-          eq(storefrontThemeBuilds.id, data.themeBuildId),
+          eq(storefrontThemeBuilds.id, themeBuildId),
           eq(storefrontThemeBuilds.storefrontId, data.storefrontId),
           eq(storefrontThemeBuilds.themeId, data.themeId),
           isNull(storefrontThemeBuilds.deletedAt),
@@ -960,21 +1032,21 @@ export const storefrontThemeDal = {
 
     if (!build) {
       throw new Error(
-        `PUBLISH_BUILD_NOT_FOUND: Theme build "${data.themeBuildId}" was not found for this storefront theme.`,
+        `PUBLISH_BUILD_NOT_FOUND: Theme build "${themeBuildId}" was not found for this storefront theme.`,
       );
     }
     if (build.status !== "succeeded") {
       throw new Error(
-        `PUBLISH_BUILD_NOT_READY: Theme build "${data.themeBuildId}" is not succeeded (status: ${build.status}).`,
+        `PUBLISH_BUILD_NOT_READY: Theme build "${themeBuildId}" is not succeeded (status: ${build.status}).`,
       );
     }
     if (
-      build.sourceRevisionId !== data.sourceRevisionId ||
+      build.sourceRevisionId !== sourceRevisionId ||
       !build.artifactPrefix ||
       !build.manifestJson
     ) {
       throw new Error(
-        `PUBLISH_BUILD_MISMATCH: Theme build "${data.themeBuildId}" is not bound to source revision "${data.sourceRevisionId}" or has no immutable artifact.`,
+        `PUBLISH_BUILD_MISMATCH: Theme build "${themeBuildId}" is not bound to source revision "${sourceRevisionId}" or has no immutable artifact.`,
       );
     }
 
@@ -998,35 +1070,24 @@ export const storefrontThemeDal = {
     const now = new Date().toISOString();
     const templateUnchanged =
       template.draftRevisionId === template.publishedRevisionId;
-    const sourceUnchanged =
-      template.publishedSourceRevisionId === data.sourceRevisionId;
-    const [activeRelease] = template.activeReleaseId
-      ? await db
-          .select({
-            id: storefrontReleases.id,
-            sourceRevisionId: storefrontReleases.sourceRevisionId,
-            themeBuildId: storefrontReleases.themeBuildId,
-          })
-          .from(storefrontReleases)
-          .where(
-            and(
-              eq(storefrontReleases.id, template.activeReleaseId),
-              eq(storefrontReleases.storefrontId, data.storefrontId),
-              eq(storefrontReleases.themeId, data.themeId),
-              eq(storefrontReleases.status, "active"),
-              isNull(storefrontReleases.deletedAt),
-            ),
-          )
-          .limit(1)
-      : [];
+    const sourceUnchanged = template.publishedSourceRevisionId === sourceRevisionId;
     const unchanged =
       templateUnchanged &&
       sourceUnchanged &&
-      activeRelease?.sourceRevisionId === data.sourceRevisionId &&
-      activeRelease?.themeBuildId === data.themeBuildId;
+      activeRelease?.sourceRevisionId === sourceRevisionId &&
+      activeRelease?.themeBuildId === themeBuildId;
     const releaseId = unchanged
       ? (activeRelease?.id ?? null)
       : crypto.randomUUID();
+    const contentPublication = unchanged
+      ? null
+      : await storefrontContentPublicationDal.createForTheme({
+          storefrontId: data.storefrontId,
+          themeId: data.themeId,
+          templateId: data.templateId,
+          templateRevisionId: data.expectedDraftRevisionId,
+          createdBy: data.createdBy,
+        });
 
     const statements = [
       env.DATABASE.prepare(`
@@ -1059,7 +1120,7 @@ export const storefrontThemeDal = {
         data.expectedDraftRevisionId,
         data.expectedDraftGeneration,
         data.expectedReleaseGeneration,
-        data.sourceRevisionId,
+        sourceRevisionId,
       ),
     ];
 
@@ -1095,7 +1156,7 @@ export const storefrontThemeDal = {
           UPDATE storefront_themes
           SET published_source_revision_id = ?1, release_generation = release_generation + 1, updated_at = ?2
           WHERE id = ?3 AND storefront_id = ?4 AND deleted_at IS NULL
-        `).bind(data.sourceRevisionId, now, data.themeId, data.storefrontId),
+        `).bind(sourceRevisionId, now, data.themeId, data.storefrontId),
       );
     }
 
@@ -1104,27 +1165,18 @@ export const storefrontThemeDal = {
         env.DATABASE.prepare(`
           INSERT INTO storefront_releases (
             id, storefront_id, theme_id, source_revision_id, theme_build_id,
-            status, created_by, created_at, updated_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?7)
+            content_publication_id, status, created_by, created_at, updated_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'available', ?7, ?8, ?8)
         `).bind(
           releaseId,
           data.storefrontId,
           data.themeId,
-          data.sourceRevisionId,
-          data.themeBuildId,
+          sourceRevisionId,
+          themeBuildId,
+          contentPublication?.id ?? null,
           data.createdBy ?? null,
           now,
         ),
-      );
-      statements.push(
-        env.DATABASE.prepare(`
-          UPDATE storefront_releases
-          SET status = 'superseded', updated_at = ?1
-          WHERE storefront_id = ?2
-            AND id <> ?3
-            AND status = 'active'
-            AND deleted_at IS NULL
-        `).bind(now, data.storefrontId, releaseId),
       );
       statements.push(
         env.DATABASE.prepare(`
@@ -1173,7 +1225,7 @@ export const storefrontThemeDal = {
 
     return {
       revisionId: data.expectedDraftRevisionId,
-      sourceRevisionId: data.sourceRevisionId,
+      sourceRevisionId,
       draftGeneration: templateUnchanged
         ? (template.draftGeneration ?? 1)
         : (template.draftGeneration ?? 1) + 1,

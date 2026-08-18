@@ -59,6 +59,7 @@ beforeEach(() => {
       storefront_id text NOT NULL,
       theme_id text NOT NULL,
       revision_number integer NOT NULL,
+      source_generation integer,
       message text,
       source text,
       snapshot text NOT NULL,
