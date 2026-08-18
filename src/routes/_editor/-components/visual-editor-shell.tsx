@@ -1272,6 +1272,13 @@ export function VisualEditorShell({
   const handleBuildPreview = useCallback(async () => {
     if (isBuildPending) return;
 
+    if (themeFiles.length === 0) {
+      toast.error(
+        "Cannot build preview: initialize starter theme files in Code Workspace first.",
+      );
+      return;
+    }
+
     if (
       monacoDirtyFiles.length > 0 ||
       useThemeWorkspaceStore.getState().hasUnsavedEdits(workspaceScope)
@@ -1413,6 +1420,7 @@ export function VisualEditorShell({
     context.theme.id,
     isBuildPending,
     monacoDirtyFiles,
+    themeFiles,
     workspaceScope,
   ]);
 
@@ -2826,10 +2834,14 @@ export function VisualEditorShell({
             type="button"
             variant="outline"
             size="xs"
-            disabled={isBuildPending}
+            disabled={isBuildPending || themeFiles.length === 0}
             className="gap-1.5 max-sm:hidden"
             onClick={handleBuildPreview}
-            title="Compile and bundle theme into immutable R2 preview build"
+            title={
+              themeFiles.length === 0
+                ? "Initialize starter theme files in Code Workspace before building"
+                : "Compile and bundle theme into immutable R2 preview build"
+            }
           >
             {isBuildPending ? (
               <LoaderCircle className="size-3.5 animate-spin text-primary" />

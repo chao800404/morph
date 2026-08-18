@@ -166,6 +166,18 @@ describe("storefront theme file DAL", () => {
     ).rejects.toThrow("expectedSourceGeneration is required");
   });
 
+  it("rejects an empty workspace instead of creating an unusable revision", async () => {
+    await expect(
+      storefrontThemeFileDal.createRevision("storefront-a", "theme-a", {
+        expectedSourceGeneration: 1,
+      }),
+    ).rejects.toThrow("EMPTY_THEME_WORKSPACE");
+
+    await expect(
+      storefrontThemeFileDal.listRevisions("storefront-a", "theme-a"),
+    ).resolves.toEqual([]);
+  });
+
   it("freezes source revision without incrementing source_generation and guards with OCC", async () => {
     // Save a file so source_generation becomes 2
     await storefrontThemeFileDal.saveFilesBatch(

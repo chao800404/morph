@@ -699,6 +699,13 @@ export const storefrontThemeFileDal = {
       throw new Error("Theme not found or does not belong to storefront");
     }
 
+    const workspaceFiles = await this.listFiles(storefrontId, themeId);
+    if (workspaceFiles.length === 0) {
+      throw new Error(
+        "EMPTY_THEME_WORKSPACE: Initialize starter theme files before creating a source revision.",
+      );
+    }
+
     const now = new Date().toISOString();
     const revisionId = crypto.randomUUID();
 
