@@ -60,6 +60,7 @@ beforeEach(() => {
       domain text,
       status text NOT NULL,
       active_theme_id text,
+      active_release_id text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -126,6 +127,32 @@ beforeEach(() => {
       created_at text NOT NULL,
       published_at text
     );
+    CREATE TABLE storefront_theme_builds (
+      id text PRIMARY KEY NOT NULL,
+      storefront_id text NOT NULL,
+      theme_id text NOT NULL,
+      source_revision_id text NOT NULL,
+      status text NOT NULL,
+      artifact_prefix text,
+      manifest_json text,
+      created_by text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_releases (
+      id text PRIMARY KEY NOT NULL,
+      storefront_id text NOT NULL,
+      theme_id text NOT NULL,
+      source_revision_id text NOT NULL,
+      theme_build_id text NOT NULL,
+      status text NOT NULL,
+      metadata text,
+      created_by text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
   `);
 
   drizzle(sqlite, { schema: storefrontSchema });
@@ -137,6 +164,8 @@ beforeEach(() => {
     VALUES ('storefront-a', 'channel-a', 'Store A', 'active', 'now', 'now');
     INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, release_generation, created_at, updated_at)
     VALUES ('theme-a', 'storefront-a', 'Default Theme', 'draft', 1, 1, 'now', 'now');
+    INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, created_at, updated_at)
+    VALUES ('33333333-3333-4333-8333-333333333333', 'storefront-a', 'theme-a', '22222222-2222-4222-8222-222222222222', 'succeeded', 'themes/theme-a/builds/build-a', '{}', 'now', 'now');
   `);
 });
 
@@ -198,6 +227,7 @@ describe("storefront theme DAL", () => {
         themeId: "theme-a",
         templateId: "template-a",
         sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
         expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
         expectedDraftGeneration: 1,
         expectedReleaseGeneration: 1,
@@ -210,6 +240,29 @@ describe("storefront theme DAL", () => {
       templateUnchanged: false,
       sourceUnchanged: false,
       unchanged: false,
+    });
+
+    const storefront = sqlite
+      .prepare("SELECT active_release_id FROM storefronts WHERE id = ?")
+      .get("storefront-a") as { active_release_id: string | null };
+    expect(storefront.active_release_id).toBeTruthy();
+    const release = sqlite
+      .prepare(
+        "SELECT storefront_id, theme_id, source_revision_id, theme_build_id, status FROM storefront_releases WHERE id = ?",
+      )
+      .get(storefront.active_release_id) as {
+      storefront_id: string;
+      theme_id: string;
+      source_revision_id: string;
+      theme_build_id: string;
+      status: string;
+    };
+    expect(release).toEqual({
+      storefront_id: "storefront-a",
+      theme_id: "theme-a",
+      source_revision_id: "22222222-2222-4222-8222-222222222222",
+      theme_build_id: "33333333-3333-4333-8333-333333333333",
+      status: "active",
     });
   });
 
@@ -241,6 +294,7 @@ describe("storefront theme DAL", () => {
       themeId: "theme-a",
       templateId: "template-a",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
       expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
       expectedDraftGeneration: 1,
       expectedReleaseGeneration: 1,
@@ -297,6 +351,7 @@ describe("storefront theme DAL", () => {
         themeId: "theme-a",
         templateId: "template-a",
         sourceRevisionId: "99999999-9999-4999-8999-999999999999",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
         expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
         expectedDraftGeneration: 1,
         expectedReleaseGeneration: 1,
@@ -310,6 +365,7 @@ describe("storefront theme DAL", () => {
         themeId: "theme-a",
         templateId: "template-a",
         sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
         expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
         expectedDraftGeneration: 1,
         expectedReleaseGeneration: 99,
@@ -346,6 +402,7 @@ describe("storefront theme DAL", () => {
         themeId: "theme-a",
         templateId: "template-a",
         sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
         expectedDraftRevisionId: "33333333-3333-4333-8333-333333333333",
         expectedDraftGeneration: 1,
         expectedReleaseGeneration: 1,

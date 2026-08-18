@@ -5,6 +5,8 @@ import {
   storefrontThemes,
   storefrontThemeTemplates,
   storefrontThemeTemplateRevisions,
+  storefrontThemeBuilds,
+  storefrontReleases,
 } from "@/db/storefront.schema";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
@@ -905,6 +907,7 @@ export const storefrontThemeDal = {
     expectedDraftRevisionId: string;
     expectedDraftGeneration: number;
     expectedReleaseGeneration: number;
+    themeBuildId: string;
     createdBy?: string;
   }) {
     const db = await getDb();
@@ -915,6 +918,7 @@ export const storefrontThemeDal = {
         draftGeneration: storefrontThemeTemplates.draftGeneration,
         publishedSourceRevisionId: storefrontThemes.publishedSourceRevisionId,
         releaseGeneration: storefrontThemes.releaseGeneration,
+        activeReleaseId: storefronts.activeReleaseId,
       })
       .from(storefrontThemeTemplates)
       .innerJoin(
@@ -935,6 +939,44 @@ export const storefrontThemeDal = {
       .limit(1);
 
     if (!template) return null;
+
+    const [build] = await db
+      .select({
+        sourceRevisionId: storefrontThemeBuilds.sourceRevisionId,
+        status: storefrontThemeBuilds.status,
+        artifactPrefix: storefrontThemeBuilds.artifactPrefix,
+        manifestJson: storefrontThemeBuilds.manifestJson,
+      })
+      .from(storefrontThemeBuilds)
+      .where(
+        and(
+          eq(storefrontThemeBuilds.id, data.themeBuildId),
+          eq(storefrontThemeBuilds.storefrontId, data.storefrontId),
+          eq(storefrontThemeBuilds.themeId, data.themeId),
+          isNull(storefrontThemeBuilds.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!build) {
+      throw new Error(
+        `PUBLISH_BUILD_NOT_FOUND: Theme build "${data.themeBuildId}" was not found for this storefront theme.`,
+      );
+    }
+    if (build.status !== "succeeded") {
+      throw new Error(
+        `PUBLISH_BUILD_NOT_READY: Theme build "${data.themeBuildId}" is not succeeded (status: ${build.status}).`,
+      );
+    }
+    if (
+      build.sourceRevisionId !== data.sourceRevisionId ||
+      !build.artifactPrefix ||
+      !build.manifestJson
+    ) {
+      throw new Error(
+        `PUBLISH_BUILD_MISMATCH: Theme build "${data.themeBuildId}" is not bound to source revision "${data.sourceRevisionId}" or has no immutable artifact.`,
+      );
+    }
 
     const [revision] = await db
       .select({ document: storefrontThemeTemplateRevisions.document })
@@ -958,7 +1000,33 @@ export const storefrontThemeDal = {
       template.draftRevisionId === template.publishedRevisionId;
     const sourceUnchanged =
       template.publishedSourceRevisionId === data.sourceRevisionId;
-    const unchanged = templateUnchanged && sourceUnchanged;
+    const [activeRelease] = template.activeReleaseId
+      ? await db
+          .select({
+            id: storefrontReleases.id,
+            sourceRevisionId: storefrontReleases.sourceRevisionId,
+            themeBuildId: storefrontReleases.themeBuildId,
+          })
+          .from(storefrontReleases)
+          .where(
+            and(
+              eq(storefrontReleases.id, template.activeReleaseId),
+              eq(storefrontReleases.storefrontId, data.storefrontId),
+              eq(storefrontReleases.themeId, data.themeId),
+              eq(storefrontReleases.status, "active"),
+              isNull(storefrontReleases.deletedAt),
+            ),
+          )
+          .limit(1)
+      : [];
+    const unchanged =
+      templateUnchanged &&
+      sourceUnchanged &&
+      activeRelease?.sourceRevisionId === data.sourceRevisionId &&
+      activeRelease?.themeBuildId === data.themeBuildId;
+    const releaseId = unchanged
+      ? (activeRelease?.id ?? null)
+      : crypto.randomUUID();
 
     const statements = [
       env.DATABASE.prepare(`
@@ -1021,13 +1089,51 @@ export const storefrontThemeDal = {
       );
     }
 
-    statements.push(
-      env.DATABASE.prepare(`
-        UPDATE storefront_themes
-        SET published_source_revision_id = ?1, release_generation = release_generation + 1, updated_at = ?2
-        WHERE id = ?3 AND storefront_id = ?4 AND deleted_at IS NULL
-      `).bind(data.sourceRevisionId, now, data.themeId, data.storefrontId),
-    );
+    if (!unchanged) {
+      statements.push(
+        env.DATABASE.prepare(`
+          UPDATE storefront_themes
+          SET published_source_revision_id = ?1, release_generation = release_generation + 1, updated_at = ?2
+          WHERE id = ?3 AND storefront_id = ?4 AND deleted_at IS NULL
+        `).bind(data.sourceRevisionId, now, data.themeId, data.storefrontId),
+      );
+    }
+
+    if (!unchanged) {
+      statements.push(
+        env.DATABASE.prepare(`
+          INSERT INTO storefront_releases (
+            id, storefront_id, theme_id, source_revision_id, theme_build_id,
+            status, created_by, created_at, updated_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?7)
+        `).bind(
+          releaseId,
+          data.storefrontId,
+          data.themeId,
+          data.sourceRevisionId,
+          data.themeBuildId,
+          data.createdBy ?? null,
+          now,
+        ),
+      );
+      statements.push(
+        env.DATABASE.prepare(`
+          UPDATE storefront_releases
+          SET status = 'superseded', updated_at = ?1
+          WHERE storefront_id = ?2
+            AND id <> ?3
+            AND status = 'active'
+            AND deleted_at IS NULL
+        `).bind(now, data.storefrontId, releaseId),
+      );
+      statements.push(
+        env.DATABASE.prepare(`
+          UPDATE storefronts
+          SET active_release_id = ?1, updated_at = ?2
+          WHERE id = ?3 AND deleted_at IS NULL
+        `).bind(releaseId, now, data.storefrontId),
+      );
+    }
 
     try {
       await env.DATABASE.batch(statements);
@@ -1071,7 +1177,9 @@ export const storefrontThemeDal = {
       draftGeneration: templateUnchanged
         ? (template.draftGeneration ?? 1)
         : (template.draftGeneration ?? 1) + 1,
-      releaseGeneration: (template.releaseGeneration ?? 1) + 1,
+      releaseGeneration: unchanged
+        ? (template.releaseGeneration ?? 1)
+        : (template.releaseGeneration ?? 1) + 1,
       templateUnchanged,
       sourceUnchanged,
       unchanged,

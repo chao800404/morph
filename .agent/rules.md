@@ -107,6 +107,35 @@ Page / Theme 不得複製可變 commerce 權威值成第二份可編輯資料。
 
 頁面應保存 record reference 或 query configuration，production runtime 再讀取目前 request context 下的公開 Commerce DTO。
 
+### 2.4 Theme Storage Policy
+
+Theme code 的 storage boundary 必須固定，不可因為目前使用的 service、DAL 或 agent 實作方便而改回 schema-first 或把 customer code 放進 Morph Core。
+
+```text
+Mutable Theme Workspace
+        → D1
+
+Immutable Source Revision
+        → D1 revision metadata
+        → R2 immutable, content-addressed source blobs
+
+Build Artifact
+        → R2
+
+Release / activeReleaseId
+        → D1
+```
+
+具體責任如下：
+
+- `storefront_theme_files` 是目前可編輯的 mutable Theme Workspace；AI、Code Editor、Monaco 與 Visual Editor 都只能透過既有 workspace／OCC 邊界修改這份資料。
+- `storefront_theme_revisions`（或等價 revision metadata store）只保存 immutable source revision metadata、manifest、generation、actor 與時間。Revision 的完整 source bytes 必須存成 R2 content-addressed blobs，例如 `theme-source/{sha256}`；不可把 mutable workspace 當成 revision 的 fallback。
+- Theme source revision 的 manifest 應由 path 對應到 immutable blob digest。相同 bytes 應可去重，revision 建立後不得覆寫既有 blob。
+- `storefront_theme_builds`（或等價 build metadata store）保存 build identity、狀態、compiler、diagnostics 與 artifact metadata；成功的 `index.html`、JS、CSS、圖片、字型與其他 build output 必須存到 R2，例如 `themes/{themeId}/builds/{buildId}/`。
+- `StorefrontRelease`、`activeReleaseId` 與 release activation／OCC metadata 必須存於 D1。Production runtime 只能從 active release resolve immutable Theme Build Artifact 與 published content revision。
+- Theme workspace source、source blobs、assets 與 build artifacts 不得寫回 Morph GitHub repository，也不得寫入 Morph Core 的 Worker bundle 或部署原始碼。GitHub／Worker 只保存 Morph Core、平台程式與 bootstrap starter source。
+- 目前若仍有 D1 snapshot 或 compatibility path，必須明確視為 migration／compatibility implementation，不能因此新增第二套 source、revision 或 production runtime SSOT。
+
 ---
 
 ## 3. 核心工作原則
@@ -190,6 +219,10 @@ Theme workspace mutation 必須保留 optimistic concurrency control。
 ### 4.4 Starter Theme
 
 Starter theme 必須是**真的可以 build 的 React theme source**，不是 preview-only mock。
+
+Starter Theme 是建立新 Theme 時使用的 bootstrap seed，不是任何 customer Theme 的 runtime dependency，也不是所有 storefront 共用的 Morph Core component implementation。建立 Theme 時可以從 repository 內的 starter source directory 複製檔案進入 D1 Theme Workspace；複製完成後，Theme A、Theme B 與後續 AI／Code Editor 修改的都是各自 workspace 的 copy。
+
+不得讓 customer Theme runtime 直接 import Morph Core 的 starter component，也不得因為 starter source 更新而自動改寫既有 Theme Workspace。Starter source 可以存在 Morph GitHub repository，但 customer-generated source 必須遵守 2.4 的 D1／R2 storage boundary。
 
 `morph.theme.json` 是 Theme source metadata / capability manifest，可用於：
 

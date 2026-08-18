@@ -155,6 +155,16 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           error: "TEMPLATE_DRAFT_CONFLICT",
         });
       }
+      if (
+        message.includes("PUBLISH_BUILD_NOT_FOUND") ||
+        message.includes("PUBLISH_BUILD_NOT_READY") ||
+        message.includes("PUBLISH_BUILD_MISMATCH")
+      ) {
+        return fail(
+          "Publish requires a succeeded Build Preview bound to the selected source revision.",
+          { error: "PUBLISH_BUILD_NOT_READY" },
+        );
+      }
       return failure(
         "Publish storefront theme template error",
         error,

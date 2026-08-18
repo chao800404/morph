@@ -12,6 +12,7 @@ import type { JsonValue } from "./json";
 
 export type StorefrontStatus = "draft" | "published" | "disabled";
 export type StorefrontThemeStatus = "draft" | "published" | "archived";
+export type StorefrontReleaseStatus = "active" | "superseded";
 export type StorefrontPageStatus = "draft" | "published" | "archived";
 export type StorefrontDomainStatus = "pending" | "active" | "failed";
 export type StorefrontCommentThreadStatus = "open" | "resolved" | "archived";
@@ -45,6 +46,10 @@ export const storefronts = sqliteTable(
     // Kept as an explicit link rather than inferred from a published theme.
     // It is populated after the theme row is created during initialization.
     activeThemeId: text("active_theme_id"),
+    // Immutable release selected by the production storefront runtime.
+    // Kept as a plain id here to avoid a circular table declaration; the
+    // release DAL validates ownership and existence before activation.
+    activeReleaseId: text("active_release_id"),
     preferences: metadata(),
     ...timestamps,
   },
@@ -463,6 +468,52 @@ export const storefrontThemeBuilds = sqliteTable(
     ),
     index("storefront_theme_builds_status_idx").on(
       table.status,
+      table.deletedAt,
+    ),
+  ],
+);
+
+/** Immutable production composition of a theme source revision and build artifact. */
+export const storefrontReleases = sqliteTable(
+  "storefront_releases",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    sourceRevisionId: text("source_revision_id")
+      .notNull()
+      .references(() => storefrontThemeRevisions.id, { onDelete: "cascade" }),
+    themeBuildId: text("theme_build_id")
+      .notNull()
+      .references(() => storefrontThemeBuilds.id, { onDelete: "cascade" }),
+    status: text("status")
+      .$type<StorefrontReleaseStatus>()
+      .notNull()
+      .default("active"),
+    metadata: metadata(),
+    createdBy: text("created_by"),
+    ...timestamps,
+  },
+  (table) => [
+    index("storefront_releases_storefront_status_idx").on(
+      table.storefrontId,
+      table.status,
+      table.deletedAt,
+    ),
+    index("storefront_releases_theme_idx").on(
+      table.themeId,
+      table.deletedAt,
+    ),
+    index("storefront_releases_source_revision_idx").on(
+      table.sourceRevisionId,
+      table.deletedAt,
+    ),
+    index("storefront_releases_theme_build_idx").on(
+      table.themeBuildId,
       table.deletedAt,
     ),
   ],

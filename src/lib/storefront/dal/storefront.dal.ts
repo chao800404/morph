@@ -152,6 +152,7 @@ export const storefrontDal = {
       domain: row.domain,
       status: row.status,
       activeThemeId: row.activeThemeId,
+      activeReleaseId: row.activeReleaseId,
       preferences: parsedPreferences.success
         ? parsedPreferences.data
         : storefrontPreferencesSchema.parse({}),

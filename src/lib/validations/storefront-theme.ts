@@ -17,6 +17,7 @@ export const publishStorefrontThemeTemplateInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
     sourceRevisionId: z.string().uuid(),
+    themeBuildId: z.string().uuid(),
     expectedDraftRevisionId: z.string().uuid(),
     expectedDraftGeneration: z.number().int().min(1),
     expectedReleaseGeneration: z.number().int().min(1),

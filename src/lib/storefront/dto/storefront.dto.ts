@@ -15,6 +15,7 @@ export interface StorefrontDTO {
   domain: string | null;
   status: StorefrontStatus;
   activeThemeId: string | null;
+  activeReleaseId: string | null;
   preferences: StorefrontPreferencesDTO;
 }
 

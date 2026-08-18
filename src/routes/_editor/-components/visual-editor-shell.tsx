@@ -487,6 +487,7 @@ export function VisualEditorShell({
   const publishMutation = useMutation({
     mutationFn: (variables: {
       sourceRevisionId: string;
+      themeBuildId: string;
       expectedDraftRevisionId: string;
       expectedDraftGeneration: number;
       expectedReleaseGeneration: number;
@@ -498,6 +499,7 @@ export function VisualEditorShell({
           themeId: context.theme.id,
           templateId: activeTemplate.id,
           sourceRevisionId: variables.sourceRevisionId,
+          themeBuildId: variables.themeBuildId,
           expectedDraftRevisionId: variables.expectedDraftRevisionId,
           expectedDraftGeneration: variables.expectedDraftGeneration,
           expectedReleaseGeneration: variables.expectedReleaseGeneration,
@@ -665,6 +667,8 @@ export function VisualEditorShell({
   const [previewMode, setPreviewMode] = useState<"live" | "build">("live");
   const [activeBuildPreview, setActiveBuildPreview] =
     useState<StorefrontThemeBuildDTO | null>(null);
+  const [activeBuildSourceGeneration, setActiveBuildSourceGeneration] =
+    useState<number | null>(null);
   const [activePreviewToken, setActivePreviewToken] = useState<string | null>(
     null,
   );
@@ -1233,32 +1237,35 @@ export function VisualEditorShell({
       return;
     }
 
-    // Freeze current working files into a distinct Source Revision with OCC
-    const freezeResult = await createStorefrontThemeRevision({
-      data: {
-        storefrontId: context.storefront.id,
-        themeId: context.theme.id,
-        expectedSourceGeneration: currentGeneration,
-        message: "Published Theme Source",
-        source: "publish",
-      },
-    });
-
-    if (!freezeResult.success || !freezeResult.data?.id) {
+    if (
+      !activeBuildPreview ||
+      activeBuildPreview.status !== "succeeded" ||
+      activeBuildSourceGeneration === null
+    ) {
       toast.error(
-        freezeResult.message || "Failed to snapshot source files before publish",
+        "Cannot publish: create a successful Build Preview for the current source first.",
+      );
+      return;
+    }
+
+    if (activeBuildSourceGeneration !== currentGeneration) {
+      toast.error(
+        "Cannot publish: source changed after the last build. Build Preview again before publishing.",
       );
       return;
     }
 
     await publishMutation.mutateAsync({
-      sourceRevisionId: freezeResult.data.id,
+      sourceRevisionId: activeBuildPreview.sourceRevisionId,
+      themeBuildId: activeBuildPreview.id,
       expectedDraftRevisionId: publishDraftRevisionId,
       expectedDraftGeneration: publishDraftGeneration,
       expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
     });
   }, [
     activeTemplate,
+    activeBuildPreview,
+    activeBuildSourceGeneration,
     context.storefront.id,
     context.theme.id,
     handleUnifiedSaveFile,
@@ -1399,6 +1406,7 @@ export function VisualEditorShell({
 
         setActiveBuildPreview(build);
         setActivePreviewToken(token);
+        setActiveBuildSourceGeneration(currentGeneration);
         setPreviewMode("build");
         toast.success(
           `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
