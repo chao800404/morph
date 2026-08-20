@@ -16,6 +16,17 @@ The primary agent should handle:
 
 The primary agent may implement critical or tightly coupled code itself when delegation would increase risk or coordination cost.
 
+## Critical invariants
+
+Never:
+- bypass authentication, authorization, ownership checks, OCC/CAS, or data-integrity guards
+- create a parallel architecture, framework, storage contract, auth path, or publish path when an existing one should be extended
+- manually modify generated files
+- deploy production, run remote migrations, or mutate remote production resources unless explicitly requested
+- claim tests, typecheck, build, or validation passed unless they were actually run
+
+These invariants apply to both the primary agent and every delegated subagent. Detailed domain-specific rules remain in `.agents/rules/` and must be loaded as applicable.
+
 ## Delegation
 
 Prefer the project-scoped `implementer` custom agent for clear and bounded implementation work. It is configured as GPT-5.6 Luna with medium reasoning.
