@@ -4,6 +4,7 @@ import {
   storefrontContentPublicationItems,
   storefrontContentPublications,
   storefrontPages,
+  storefrontPageRevisions,
   storefrontThemeTemplateRevisions,
   storefrontThemeTemplates,
 } from "@/db/storefront.schema";
@@ -51,6 +52,51 @@ export const storefrontContentPublicationDal = {
     }
   },
 
+  /**
+   * Validates the immutable content set before a release can become active.
+   * Polymorphic revision references are checked here because SQLite cannot
+   * express a conditional foreign key for template/page/navigation rows.
+   */
+  async assertValidForRelease(data: {
+    storefrontId: string;
+    publicationId: string;
+  }): Promise<void> {
+    const db = await getDb();
+    const [publication] = await db
+      .select({ id: storefrontContentPublications.id })
+      .from(storefrontContentPublications)
+      .where(
+        and(
+          eq(storefrontContentPublications.id, data.publicationId),
+          eq(storefrontContentPublications.storefrontId, data.storefrontId),
+          isNull(storefrontContentPublications.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!publication) {
+      throw new Error(
+        "CONTENT_PUBLICATION_INVALID: Publication is missing, deleted, or belongs to another storefront.",
+      );
+    }
+
+    const items = await db
+      .select()
+      .from(storefrontContentPublicationItems)
+      .where(eq(storefrontContentPublicationItems.publicationId, data.publicationId));
+    if (
+      items.some(
+        (item) =>
+          item.deletedAt !== null ||
+          !item.contentId.trim() ||
+          !item.revisionId.trim() ||
+          !["template", "page", "navigation"].includes(item.itemType),
+      )
+    ) {
+      throw new Error(
+        "CONTENT_PUBLICATION_INVALID: Publication contains an invalid or deleted content reference.",
+      );
+    }
+  },
   async resolveForTheme(data: {
     storefrontId: string;
     themeId: string;

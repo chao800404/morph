@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
+import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import {
   storefrontReleases,
   storefrontThemeBuilds,
@@ -113,6 +114,7 @@ export const storefrontReleaseDal = {
         buildStatus: storefrontThemeBuilds.status,
         artifactPrefix: storefrontThemeBuilds.artifactPrefix,
         manifestJson: storefrontThemeBuilds.manifestJson,
+        contentPublicationId: storefrontReleases.contentPublicationId,
       })
       .from(storefrontReleases)
       .innerJoin(
@@ -133,11 +135,22 @@ export const storefrontReleaseDal = {
       !target ||
       target.buildStatus !== "succeeded" ||
       !target.artifactPrefix ||
-      !target.manifestJson
+      !target.manifestJson ||
+      !target.contentPublicationId
     ) {
       throw new Error(
-        "RELEASE_NOT_ACTIVATABLE: Release must reference an available release with a succeeded immutable build artifact.",
+        "RELEASE_NOT_ACTIVATABLE: Release must reference an available release with a succeeded immutable build artifact and ContentPublication.",
       );
+    }
+
+    try {
+      await storefrontContentPublicationDal.assertValidForRelease({
+        storefrontId: data.storefrontId,
+        publicationId: target.contentPublicationId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error("RELEASE_NOT_ACTIVATABLE: " + message);
     }
 
     const expected = data.expectedActiveReleaseId ?? "";
@@ -161,6 +174,13 @@ export const storefrontReleaseDal = {
               AND b.artifact_prefix IS NOT NULL
               AND b.manifest_json IS NOT NULL
               AND b.deleted_at IS NULL
+              AND r.content_publication_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM storefront_content_publications p
+                WHERE p.id = r.content_publication_id
+                  AND p.storefront_id = r.storefront_id
+                  AND p.deleted_at IS NULL
+              )
           ) THEN 1 ELSE json('') END AS ok
         `).bind(data.storefrontId, expected, data.releaseId),
         env.DATABASE.prepare(`

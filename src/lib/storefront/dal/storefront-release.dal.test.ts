@@ -57,6 +57,19 @@ beforeEach(() => {
       manifest_json text,
       deleted_at text
     );
+    CREATE TABLE storefront_content_publications (
+      id text PRIMARY KEY,
+      storefront_id text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_content_publication_items (
+      id text PRIMARY KEY,
+      publication_id text NOT NULL,
+      item_type text NOT NULL,
+      content_id text NOT NULL,
+      revision_id text NOT NULL,
+      deleted_at text
+    );
     CREATE TABLE storefront_releases (
       id text PRIMARY KEY,
       storefront_id text NOT NULL,
@@ -77,16 +90,18 @@ beforeEach(() => {
   );
   sqlite.exec(`
     INSERT INTO storefronts (id, active_release_id, updated_at) VALUES ('storefront-a', NULL, '2026-01-01');
+    INSERT INTO storefront_content_publications (id, storefront_id)
+      VALUES ('publication-a', 'storefront-a'), ('publication-b', 'storefront-a');
     INSERT INTO storefront_theme_builds
       (id, status, artifact_prefix, manifest_json)
     VALUES
       ('build-a', 'succeeded', 'themes/a', '{}'),
       ('build-b', 'succeeded', 'themes/b', '{}');
     INSERT INTO storefront_releases
-      (id, storefront_id, theme_id, source_revision_id, theme_build_id, status, created_at, updated_at)
+      (id, storefront_id, theme_id, source_revision_id, theme_build_id, content_publication_id, status, created_at, updated_at)
     VALUES
-      ('11111111-1111-4111-8111-111111111111', 'storefront-a', 'theme-a', 'source-a', 'build-a', 'available', '2026-01-01', '2026-01-01'),
-      ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 'source-b', 'build-b', 'available', '2026-01-02', '2026-01-02');
+      ('11111111-1111-4111-8111-111111111111', 'storefront-a', 'theme-a', 'source-a', 'build-a', 'publication-a', 'available', '2026-01-01', '2026-01-01'),
+      ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 'source-b', 'build-b', 'publication-b', 'available', '2026-01-02', '2026-01-02');
   `);
 });
 
@@ -117,6 +132,20 @@ describe("storefront release DAL", () => {
         .get() as { active_release_id: string }).active_release_id,
     ).toBe("22222222-2222-4222-8222-222222222222");
   });
+
+  it("rejects a legacy release without ContentPublication", async () => {
+    sqlite.exec(
+      "UPDATE storefront_releases SET content_publication_id = NULL WHERE id = '22222222-2222-4222-8222-222222222222'",
+    );
+    await expect(
+      storefrontReleaseDal.activateRelease({
+        storefrontId: "storefront-a",
+        releaseId: "22222222-2222-4222-8222-222222222222",
+        expectedActiveReleaseId: null,
+      }),
+    ).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
+  });
+
 
   it("rejects a stale expected active release", async () => {
     sqlite.exec(
