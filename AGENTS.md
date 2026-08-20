@@ -35,4 +35,4 @@ After a subagent completes implementation:
 
 ## Repository rules
 
-Before modifying Morph, read and follow `.agents/rules/morph.md`. It is the authoritative engineering and architecture rule set for this repository.
+Before modifying Morph, read and follow all Markdown rule files under `.agents/rules/`. Together they are the authoritative engineering and architecture rule set for this repository.
