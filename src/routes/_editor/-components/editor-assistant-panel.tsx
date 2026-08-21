@@ -124,6 +124,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
 
   return (
     <aside
+      data-editor-inspector-panel
       style={style}
       className={cn(
         "m-3 ml-0 grid min-h-0 shrink-0 grid-cols-1 overflow-hidden rounded-xl border bg-component shadow-lg max-md:hidden",
@@ -164,7 +165,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               tab === "comments" ? "Create comment group" : "New agent session"
             }
             title={
-              tab === "comments" ? "Create comment group (+)" : "New agent session"
+              tab === "comments"
+                ? "Create comment group (+)"
+                : "New agent session"
             }
             onClick={tab === "comments" ? onCreateCommentGroup : undefined}
           >

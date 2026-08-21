@@ -59,12 +59,16 @@ export function getComponentFilePath(
         const manifest = JSON.parse(manifestFile.content);
 
         // A. If componentRef is specified e.g. "hero.editorial", check manifest.components[componentRef]
-        if (componentRef && manifest.components && typeof manifest.components === "object") {
+        if (
+          componentRef &&
+          manifest.components &&
+          typeof manifest.components === "object"
+        ) {
           const compConfig = manifest.components[componentRef];
           const sourcePath =
             typeof compConfig === "string"
               ? compConfig
-              : compConfig?.source ?? compConfig?.path;
+              : (compConfig?.source ?? compConfig?.path);
           if (sourcePath && themeFiles.some((f) => f.path === sourcePath)) {
             return sourcePath;
           }
@@ -73,11 +77,12 @@ export function getComponentFilePath(
         // B. Check structured `manifest.sections` object mapping
         if (manifest.sections && typeof manifest.sections === "object") {
           const sectionConfig =
-            manifest.sections[normalizedType] ?? manifest.sections[strippedType];
+            manifest.sections[normalizedType] ??
+            manifest.sections[strippedType];
           const sourcePath =
             typeof sectionConfig === "string"
               ? sectionConfig
-              : sectionConfig?.source ?? sectionConfig?.path;
+              : (sectionConfig?.source ?? sectionConfig?.path);
           if (sourcePath && themeFiles.some((f) => f.path === sourcePath)) {
             return sourcePath;
           }
@@ -86,8 +91,16 @@ export function getComponentFilePath(
         // C. Check `manifest.components` array
         if (Array.isArray(manifest.components)) {
           const match = manifest.components.find(
-            (c: { name: string; path?: string; source?: string; id?: string }) => {
-              if (componentRef && (c.id === componentRef || c.name === componentRef)) {
+            (c: {
+              name: string;
+              path?: string;
+              source?: string;
+              id?: string;
+            }) => {
+              if (
+                componentRef &&
+                (c.id === componentRef || c.name === componentRef)
+              ) {
                 return true;
               }
               const name = (c.name || "").toLowerCase().replace(/-/g, "");
@@ -150,7 +163,8 @@ function walk(node: any, visitor: (node: any) => void) {
   visitor(node);
 
   for (const key of Object.keys(node)) {
-    if (key === "loc" || key === "comments" || key === "openingElement") continue;
+    if (key === "loc" || key === "comments" || key === "openingElement")
+      continue;
     const value = node[key];
     if (Array.isArray(value)) {
       for (const child of value) {
@@ -177,7 +191,10 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
 
     walk(ast, (node) => {
       // 1. Extract default props from parameter destructuring (AssignmentPattern)
-      if (node.type === "AssignmentPattern" && node.left?.type === "Identifier") {
+      if (
+        node.type === "AssignmentPattern" &&
+        node.left?.type === "Identifier"
+      ) {
         const propName = node.left.name;
         if (node.right?.type === "StringLiteral") {
           defaultProps[propName] = node.right.value;
@@ -220,7 +237,10 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
           | undefined;
 
         for (const attr of openingElement.attributes) {
-          if (attr.type === "JSXAttribute" && attr.name?.type === "JSXIdentifier") {
+          if (
+            attr.type === "JSXAttribute" &&
+            attr.name?.type === "JSXIdentifier"
+          ) {
             const attrName = attr.name.name;
 
             if (attrName === "data-morph-node" && attr.value) {
@@ -271,8 +291,8 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
 
         const isSelfClosing = Boolean(
           openingElement.selfClosing ||
-            node.selfClosing ||
-            node.type === "JSXSelfClosingElement",
+          node.selfClosing ||
+          node.type === "JSXSelfClosingElement",
         );
 
         const primaryKey = morphNodeId || morphElementName;
@@ -381,10 +401,14 @@ export function patchComponentDefaultProp(
           node.type === "FunctionExpression") &&
         isMatchingComponent
       ) {
-        const fn = node.type === "ExportDefaultDeclaration" ? node.declaration : node;
+        const fn =
+          node.type === "ExportDefaultDeclaration" ? node.declaration : node;
         if (fn && Array.isArray(fn.params)) {
           for (const param of fn.params) {
-            if (param.type === "ObjectPattern" && Array.isArray(param.properties)) {
+            if (
+              param.type === "ObjectPattern" &&
+              Array.isArray(param.properties)
+            ) {
               for (const prop of param.properties) {
                 if (
                   prop.type === "ObjectProperty" &&
@@ -414,9 +438,17 @@ export function patchComponentDefaultProp(
       }
     });
 
-    if (targetNode && typeof targetNode.start === "number" && typeof targetNode.end === "number") {
+    if (
+      targetNode &&
+      typeof targetNode.start === "number" &&
+      typeof targetNode.end === "number"
+    ) {
       const replacement = JSON.stringify(newValue);
-      return sourceCode.slice(0, targetNode.start) + replacement + sourceCode.slice(targetNode.end);
+      return (
+        sourceCode.slice(0, targetNode.start) +
+        replacement +
+        sourceCode.slice(targetNode.end)
+      );
     }
   } catch {}
 
@@ -765,7 +797,9 @@ const TAILWIND_COLOR_MAP: Record<string, string> = {
 /**
  * Parses background color hex from Tailwind className string.
  */
-export function parseTailwindBackgroundColor(className?: string): string | null {
+export function parseTailwindBackgroundColor(
+  className?: string,
+): string | null {
   if (!className) return null;
   const arbitraryMatch = className.match(/\bbg-\[(#\w{3,8}|rgba?\(.+?\))\]/);
   if (arbitraryMatch) {
@@ -775,6 +809,24 @@ export function parseTailwindBackgroundColor(className?: string): string | null 
     if (new RegExp(`\\b${token}\\b`).test(className)) {
       return hex;
     }
+  }
+  return null;
+}
+
+const TAILWIND_TEXT_COLOR_MAP: Record<string, string> = Object.fromEntries(
+  Object.entries(TAILWIND_COLOR_MAP).map(([token, color]) => [
+    token.replace(/^bg-/, "text-"),
+    color,
+  ]),
+);
+
+/** Parses text color hex from a Tailwind className string. */
+export function parseTailwindTextColor(className?: string): string | null {
+  if (!className) return null;
+  const arbitraryMatch = className.match(/\btext-\[(#\w{3,8}|rgba?\(.+?\))\]/);
+  if (arbitraryMatch) return arbitraryMatch[1];
+  for (const [token, hex] of Object.entries(TAILWIND_TEXT_COLOR_MAP)) {
+    if (new RegExp("\\b" + token + "\\b").test(className)) return hex;
   }
   return null;
 }
@@ -796,18 +848,103 @@ const TAILWIND_RADIUS_MAP: Record<string, number> = {
  */
 export function parseTailwindBorderRadius(className?: string): number | null {
   if (!className) return null;
-  const arbitraryMatch = className.match(/\brounded-\[(\d+)(?:px)?\]/);
+  const arbitraryMatch = className.match(
+    /(?:^|\s)(?:[a-z0-9-]+:)*rounded-\[(-?\d+(?:\.\d+)?)(?:px)?\](?=\s|$)/i,
+  );
   if (arbitraryMatch) {
-    return parseInt(arbitraryMatch[1], 10);
+    return Number.parseFloat(arbitraryMatch[1]);
   }
   const tokenMatch = className.match(
-    /\brounded-(none|sm|md|lg|xl|2xl|3xl|full)\b/,
+    /(?:^|\s)(?:[a-z0-9-]+:)*rounded-(none|sm|md|lg|xl|2xl|3xl|full)(?=\s|$)/,
   );
   if (tokenMatch && TAILWIND_RADIUS_MAP[tokenMatch[1]] !== undefined) {
     return TAILWIND_RADIUS_MAP[tokenMatch[1]];
   }
-  if (/\brounded\b/.test(className)) {
+  if (/(?:^|\s)(?:[a-z0-9-]+:)*rounded(?=\s|$)/.test(className)) {
     return TAILWIND_RADIUS_MAP.DEFAULT;
+  }
+  return null;
+}
+
+export type TailwindBorderRadii = {
+  all: number | null;
+  topLeft: number | null;
+  topRight: number | null;
+  bottomRight: number | null;
+  bottomLeft: number | null;
+};
+
+function parseTailwindCornerRadius(
+  className: string,
+  corner: "tl" | "tr" | "br" | "bl",
+): number | null {
+  const arbitraryMatch = className.match(
+    new RegExp(`\\brounded-${corner}-\\[(-?\\d+(?:\\.\\d+)?)(?:px)?\\]`),
+  );
+  if (arbitraryMatch) return Number.parseFloat(arbitraryMatch[1]);
+  const tokenMatch = className.match(
+    new RegExp(`\\brounded-${corner}-(none|sm|md|lg|xl|2xl|3xl|full)\\b`),
+  );
+  return tokenMatch && TAILWIND_RADIUS_MAP[tokenMatch[1]] !== undefined
+    ? TAILWIND_RADIUS_MAP[tokenMatch[1]]
+    : null;
+}
+
+export function parseTailwindBorderRadii(
+  className?: string,
+): TailwindBorderRadii {
+  const source = className ?? "";
+  const all = parseTailwindBorderRadius(source);
+  return {
+    all,
+    topLeft: parseTailwindCornerRadius(source, "tl") ?? all,
+    topRight: parseTailwindCornerRadius(source, "tr") ?? all,
+    bottomRight: parseTailwindCornerRadius(source, "br") ?? all,
+    bottomLeft: parseTailwindCornerRadius(source, "bl") ?? all,
+  };
+}
+
+export function parseTailwindBorderWidth(className?: string): number | null {
+  if (!className) return null;
+  const arbitraryMatch = className.match(
+    /(?:^|\s)(?:[a-z0-9-]+:)*border-\[(-?\d+(?:\.\d+)?)px\](?=\s|$)/i,
+  );
+  if (arbitraryMatch) return Number.parseFloat(arbitraryMatch[1]);
+  const namedMatch = className.match(
+    /(?:^|\s)(?:[a-z0-9-]+:)*border(?:-(0|2|4|8))?(?=\s|$)/,
+  );
+  if (!namedMatch) return null;
+  return namedMatch[1] ? Number.parseInt(namedMatch[1], 10) : 1;
+}
+
+export function parseTailwindBorderStyle(className?: string): string | null {
+  if (!className) return null;
+  return (
+    className.match(
+      /(?:^|\s)(?:[a-z0-9-]+:)*border-(solid|dashed|dotted|double|hidden|none)(?=\s|$)/,
+    )?.[1] ?? null
+  );
+}
+
+const TAILWIND_BORDER_COLOR_MAP: Record<string, string> = Object.fromEntries(
+  Object.entries(TAILWIND_COLOR_MAP).map(([token, color]) => [
+    token.replace(/^bg-/, "border-"),
+    color,
+  ]),
+);
+
+export function parseTailwindBorderColor(className?: string): string | null {
+  if (!className) return null;
+  const arbitraryMatch = className.match(
+    /(?:^|\s)(?:[a-z0-9-]+:)*border-\[((?:#(?:[0-9a-f]{3,8})|(?:rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color)\(.+?\)))\](?=\s|$)/i,
+  );
+  if (arbitraryMatch) return arbitraryMatch[1];
+  for (const [token, color] of Object.entries(TAILWIND_BORDER_COLOR_MAP)) {
+    if (
+      new RegExp(`(?:^|\\s)(?:[a-z0-9-]+:)*${token}(?=\\s|$)`).test(className)
+    ) {
+      return color;
+    }
   }
   return null;
 }

@@ -12,6 +12,8 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("font-serif")).toBe("font-family");
     expect(classifyTailwindUtility("font-bold")).toBe("font-weight");
     expect(classifyTailwindUtility("text-center")).toBe("text-align");
+    expect(classifyTailwindUtility("text-stone-900")).toBe("text-color");
+    expect(classifyTailwindUtility("text-[#123456]")).toBe("text-color");
     expect(classifyTailwindUtility("leading-[1.2]")).toBe("line-height");
     expect(classifyTailwindUtility("leading-tight")).toBe("line-height");
     expect(classifyTailwindUtility("p-8")).toBe("padding");
@@ -23,8 +25,22 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("py-12")).toBe("padding-y");
     expect(classifyTailwindUtility("bg-white")).toBe("background");
     expect(classifyTailwindUtility("bg-[#123456]")).toBe("background");
+    expect(
+      classifyTailwindUtility(
+        "bg-[linear-gradient(90deg,_#fafaf9_0%,_#1c1917_100%)]",
+      ),
+    ).toBe("background");
     expect(classifyTailwindUtility("rounded-2xl")).toBe("border-radius");
     expect(classifyTailwindUtility("rounded-[16px]")).toBe("border-radius");
+    expect(classifyTailwindUtility("rounded-tl-[4px]")).toBe(
+      "border-radius-top-left",
+    );
+    expect(classifyTailwindUtility("rounded-br-xl")).toBe(
+      "border-radius-bottom-right",
+    );
+    expect(classifyTailwindUtility("border-[2px]")).toBe("border-width");
+    expect(classifyTailwindUtility("border-dashed")).toBe("border-style");
+    expect(classifyTailwindUtility("border-[#123456]")).toBe("border-color");
     expect(classifyTailwindUtility("object-cover")).toBe("object-fit");
     expect(classifyTailwindUtility("object-top-right")).toBe("object-position");
     expect(classifyTailwindUtility("object-[35%_20%]")).toBe("object-position");
@@ -51,7 +67,8 @@ describe("tailwind-token-engine", () => {
   });
 
   it("preserves responsive and state variants when updating base classes", () => {
-    const original = "text-4xl md:text-6xl lg:text-8xl hover:text-red-500 font-bold";
+    const original =
+      "text-4xl md:text-6xl lg:text-8xl hover:text-red-500 font-bold";
 
     // Update base font size
     const updatedBase = patchTailwindClasses(original, {
@@ -96,11 +113,40 @@ describe("tailwind-token-engine", () => {
     expect(patched).toBe("p-8 bg-white");
   });
 
-  it("never guesses ambiguous arbitrary utilities as editable presentation slots", () => {
-    expect(classifyTailwindUtility("text-[#ff0000]")).toBe("other");
-    expect(classifyTailwindUtility("bg-[url(https://example.com/a:b.png)]")).toBe("other");
+  it("recognizes explicit text colors without guessing unrelated arbitrary utilities", () => {
+    expect(classifyTailwindUtility("text-[#ff0000]")).toBe("text-color");
+    expect(
+      classifyTailwindUtility("bg-[url(https://example.com/a:b.png)]"),
+    ).toBe("other");
     expect(classifyTailwindUtility("font-[700]")).toBe("font-weight");
     expect(classifyTailwindUtility("font-[var(--brand-font)]")).toBe("other");
+  });
+
+  it("replaces text color without changing font size or state variants", () => {
+    expect(
+      patchTailwindClasses("text-stone-900 text-4xl hover:text-red-500", {
+        property: "text-color",
+        value: "text-[#123456]",
+      }),
+    ).toBe("text-[#123456] text-4xl hover:text-red-500");
+  });
+
+  it("replaces solid and gradient background paints without accumulating utilities", () => {
+    const gradient = "bg-[linear-gradient(90deg,_#fafaf9_0%,_#1c1917_100%)]";
+
+    expect(
+      patchTailwindClasses("relative bg-white px-4", {
+        property: "background",
+        value: gradient,
+      }),
+    ).toBe(`relative ${gradient} px-4`);
+
+    expect(
+      patchTailwindClasses(`relative ${gradient} px-4`, {
+        property: "background",
+        value: "bg-[#d8d0c3]",
+      }),
+    ).toBe("relative bg-[#d8d0c3] px-4");
   });
 
   it("parses arbitrary variants and arbitrary values containing colons", () => {
@@ -139,20 +185,47 @@ describe("tailwind-token-engine", () => {
       property: "object-fit",
       value: "object-contain",
     });
-    expect(updated).toBe("object-contain aspect-video md:object-top object-left");
+    expect(updated).toBe(
+      "object-contain aspect-video md:object-top object-left",
+    );
 
     const responsive = patchTailwindClasses(updated, {
       property: "object-position",
       value: "object-bottom-right",
       targetVariants: ["md"],
     });
-    expect(responsive).toBe("object-contain aspect-video md:object-bottom-right object-left");
+    expect(responsive).toBe(
+      "object-contain aspect-video md:object-bottom-right object-left",
+    );
 
     const aspect = patchTailwindClasses(responsive, {
       property: "aspect-ratio",
       value: "aspect-[4/3]",
     });
-    expect(aspect).toBe("object-contain aspect-[4/3] md:object-bottom-right object-left");
+    expect(aspect).toBe(
+      "object-contain aspect-[4/3] md:object-bottom-right object-left",
+    );
+  });
+
+  it("patches border and individual corner families independently", () => {
+    const original =
+      "border border-solid border-stone-200 rounded-[8px] rounded-tl-[4px]";
+    const width = patchTailwindClasses(original, {
+      property: "border-width",
+      value: "border-[3px]",
+    });
+    const color = patchTailwindClasses(width, {
+      property: "border-color",
+      value: "border-[#123456]",
+    });
+    const corner = patchTailwindClasses(color, {
+      property: "border-radius-top-left",
+      value: "rounded-tl-[12px]",
+    });
+
+    expect(corner).toBe(
+      "border-[3px] border-solid border-[#123456] rounded-[8px] rounded-tl-[12px]",
+    );
   });
   it("classifies and replaces Figma-style layout property families independently", () => {
     const classes =
@@ -170,6 +243,7 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("rotate-[5deg]")).toBe("rotate");
     expect(classifyTailwindUtility("opacity-[0.8]")).toBe("opacity");
     expect(classifyTailwindUtility("overflow-hidden")).toBe("overflow");
+    expect(classifyTailwindUtility("bg-clip-text")).toBe("background-clip");
 
     expect(
       patchTailwindClasses(classes, {
@@ -178,5 +252,4 @@ describe("tailwind-token-engine", () => {
       }),
     ).toContain("w-[640px]");
   });
-
 });

@@ -164,6 +164,216 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.queryByText("Action Button")).toBeNull();
   });
 
+  it("shows fill controls for text and commits text color only after editing finishes", () => {
+    const onPreviewSelectionStyle = vi.fn();
+    const onUpdateThemeFileStyle = vi.fn(
+      (
+        _filePath: string,
+        _elementName: string,
+        _updater: (previous: string) => string,
+      ) => 3,
+    );
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[
+          {
+            id: "file-hero",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: "src/components/Hero.tsx",
+            content:
+              'export function Hero() { return <section data-morph-node="section" className="bg-white"><h1 data-morph-node="heading" className="font-serif text-stone-900 text-[48px]">Heading</h1></section>; }',
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "heading",
+          tagName: "h1",
+          nodeId: "heading",
+          elementKey: "heading",
+          fieldKey: "heading",
+        })}
+        onPreviewSelectionStyle={onPreviewSelectionStyle}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Fills & Background" }),
+    ).toBeTruthy();
+    const textColorInput = screen.getByRole("textbox", {
+      name: "Text color value",
+    }) as HTMLInputElement;
+    expect(textColorInput.value).toBe("#1c1917");
+    expect(
+      screen.getByRole("button", { name: "Open Text color picker" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Open Background color picker" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("Theme palette")).toBeNull();
+
+    fireEvent.focus(textColorInput);
+    fireEvent.input(textColorInput, { target: { value: "#123456" } });
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { color: "#123456" },
+      "heading",
+    );
+    expect(onUpdateThemeFileStyle).not.toHaveBeenCalled();
+
+    fireEvent.blur(textColorInput);
+    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(1);
+    const updater = onUpdateThemeFileStyle.mock.calls[0]?.[2];
+    expect(updater?.("font-serif text-stone-900 text-[48px]")).toBe(
+      "font-serif text-[#123456] text-[48px]",
+    );
+
+    const gradient = "linear-gradient(90deg, #1c1917 0%, #d8d0c3 100%)";
+    fireEvent.focus(textColorInput);
+    fireEvent.input(textColorInput, { target: { value: gradient } });
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      {
+        color: "transparent",
+        "background-image": gradient,
+        "background-clip": "text",
+        "-webkit-background-clip": "text",
+      },
+      "heading",
+    );
+    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(1);
+
+    fireEvent.blur(textColorInput);
+    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(2);
+    const gradientUpdater = onUpdateThemeFileStyle.mock.calls[1]?.[2];
+    const gradientClasses = gradientUpdater?.(
+      "font-serif text-[#123456] text-[48px]",
+    );
+    expect(gradientClasses).toContain("text-transparent");
+    expect(gradientClasses).toContain("bg-clip-text");
+    expect(gradientClasses).toContain(
+      "bg-[linear-gradient(90deg,_#1c1917_0%,_#d8d0c3_100%)]",
+    );
+  });
+
+  it("removes text and background color utilities from the selected source element", () => {
+    const onPreviewSelectionStyle = vi.fn();
+    const onUpdateThemeFileStyle = vi.fn(
+      (
+        _filePath: string,
+        _elementName: string,
+        _updater: (previous: string) => string,
+      ) => 4,
+    );
+    const themeFile = (content: string) => ({
+      id: "file-hero",
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      path: "src/components/Hero.tsx",
+      content,
+      mimeType: "text/typescript",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    });
+    const selection = selectionDescriptor({
+      kind: "heading",
+      tagName: "h1",
+      nodeId: "heading",
+      elementKey: "heading",
+      fieldKey: "heading",
+      computed: {
+        color: "rgb(28, 25, 23)",
+        backgroundColor: "rgb(255, 255, 255)",
+      },
+    });
+    const { rerender } = render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[
+          themeFile(
+            'export function Hero() { return <section data-morph-node="section" className=""><h1 data-morph-node="heading" className="font-serif text-stone-900 bg-white text-[48px]">Heading</h1></section>; }',
+          ),
+        ]}
+        selection={selection}
+        activeComputedStyleRevision={1}
+        onPreviewSelectionStyle={onPreviewSelectionStyle}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Text color picker" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove Text color" }));
+
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      {
+        color: "",
+        "background-image": "",
+        "background-clip": "",
+        "-webkit-background-clip": "",
+      },
+      "heading",
+    );
+    const textUpdater = onUpdateThemeFileStyle.mock.calls[0]?.[2];
+    expect(textUpdater?.("font-serif text-stone-900 text-[48px]")).toBe(
+      "font-serif text-[48px]",
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Background color picker" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove Background color" }),
+    );
+
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { "background-color": "", "background-image": "" },
+      "heading",
+    );
+    const backgroundUpdater = onUpdateThemeFileStyle.mock.calls[1]?.[2];
+    expect(backgroundUpdater?.("bg-white px-4")).toBe("px-4");
+
+    rerender(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[
+          themeFile(
+            'export function Hero() { return <section data-morph-node="section" className=""><h1 data-morph-node="heading" className="font-serif text-[48px]">Heading</h1></section>; }',
+          ),
+        ]}
+        selection={selection}
+        activeComputedStyleRevision={4}
+        onPreviewSelectionStyle={onPreviewSelectionStyle}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />,
+    );
+
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: "Text color value",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("");
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: "Background color value",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("");
+  });
+
   it("shows section content when the section itself is selected", () => {
     render(
       <EditorStyleInspector
@@ -322,11 +532,46 @@ describe("EditorStyleInspector selection content", () => {
     expect(paddingInput.closest("form")?.parentElement?.className).toContain(
       "h-8",
     );
+    const paddingLabel = screen.getByText("Padding");
+    expect(paddingLabel.parentElement).toBe(
+      paddingInput.closest("form")?.parentElement,
+    );
+    expect(paddingLabel.className).toContain("text-xs");
+    expect(paddingLabel.className).not.toContain("text-[10px]");
+    const expandPaddingButton = screen.getByRole("button", {
+      name: "Expand individual padding sides",
+    });
+    expect(expandPaddingButton.parentElement).toBe(
+      paddingInput.closest("form")?.parentElement?.parentElement,
+    );
+    expect(expandPaddingButton.parentElement).not.toBe(
+      paddingInput.closest("form")?.parentElement,
+    );
+    expect(
+      screen.queryByRole("spinbutton", { name: "Top padding" }),
+    ).toBeNull();
+
+    fireEvent.click(expandPaddingButton);
+
+    expect(
+      screen
+        .getByRole("button", {
+          name: "Collapse individual padding sides",
+        })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("spinbutton", { name: "Top padding" }),
+    ).not.toBeNull();
+    expect(
+      screen.getByRole("spinbutton", {
+        name: "Section padding in pixels",
+      }),
+    ).toBe(paddingInput);
 
     changeNumber("Section padding in pixels", "64");
     changeNumber("Heading font size", "60");
     changeNumber("Line height multiplier", "1.4");
-    fireEvent.click(screen.getByRole("button", { name: /Border & Radius/i }));
     const radiusInput = screen.getByRole("spinbutton", {
       name: "Corner radius",
     });
@@ -472,6 +717,122 @@ describe("EditorStyleInspector selection content", () => {
     expect(
       screen.getByRole("textbox", { name: "Add Tailwind CSS class" }),
     ).toBeTruthy();
+  });
+
+  it("edits border controls and expands independent corner radii", () => {
+    const onPreviewSelectionStyle = vi.fn();
+    const onUpdateThemeFileStyle = vi.fn(
+      (
+        _filePath: string,
+        _elementName: string,
+        _updater: (previous: string) => string,
+      ) => 6,
+    );
+    const sourceClasses =
+      "border-[2px] border-dashed border-[#d8d0c3] rounded-[8px] rounded-tl-[4px]";
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", {})}
+        themeFiles={[
+          {
+            id: "file-hero",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: "src/components/Hero.tsx",
+            content: `export function Hero() { return <section data-morph-node="section" className="${sourceClasses}">Hero</section>; }`,
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "section",
+          tagName: "section",
+          isSection: true,
+          sectionComputed: {
+            borderTopWidth: "2px",
+            borderTopStyle: "dashed",
+            borderTopColor: "rgb(216, 208, 195)",
+            borderRadius: "8px",
+            borderTopLeftRadius: "4px",
+          },
+        })}
+        onPreviewSelectionStyle={onPreviewSelectionStyle}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />,
+    );
+
+    expect(
+      screen
+        .getByRole("button", { name: "Border & Radius" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+
+    const borderWidth = screen.getByRole("spinbutton", {
+      name: "Border width",
+    }) as HTMLInputElement;
+    expect(borderWidth.value).toBe("2");
+    expect(
+      screen.getByRole("combobox", { name: "Border style" }).textContent,
+    ).toContain("dashed");
+    const borderColor = screen.getByRole("textbox", {
+      name: "Color color value",
+    }) as HTMLInputElement;
+    expect(borderColor.value).toBe("#d8d0c3");
+
+    fireEvent.input(borderColor, { target: { value: "#292524" } });
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { "border-color": "#292524" },
+      "section",
+    );
+    expect(onUpdateThemeFileStyle).not.toHaveBeenCalled();
+    fireEvent.blur(borderColor);
+    const colorUpdater = onUpdateThemeFileStyle.mock.calls.at(-1)?.[2];
+    expect(colorUpdater?.(sourceClasses)).toContain("border-[#292524]");
+    onUpdateThemeFileStyle.mockClear();
+
+    fireEvent.focus(borderWidth);
+    fireEvent.change(borderWidth, { target: { value: "3" } });
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { "border-width": "3px" },
+      "section",
+    );
+    expect(onUpdateThemeFileStyle).not.toHaveBeenCalled();
+    fireEvent.blur(borderWidth);
+    const widthUpdater = onUpdateThemeFileStyle.mock.calls.at(-1)?.[2];
+    expect(widthUpdater?.(sourceClasses)).toContain("border-[3px]");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Expand individual corner radii",
+      }),
+    );
+    const topLeft = screen.getByRole("spinbutton", {
+      name: "Top left corner radius",
+    }) as HTMLInputElement;
+    expect(topLeft.value).toBe("4");
+    expect(
+      screen.getByRole("spinbutton", { name: "Top right corner radius" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("spinbutton", { name: "Bottom left corner radius" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("spinbutton", { name: "Bottom right corner radius" }),
+    ).toBeTruthy();
+
+    fireEvent.focus(topLeft);
+    fireEvent.change(topLeft, { target: { value: "12" } });
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { "border-top-left-radius": "12px" },
+      "section",
+    );
+    fireEvent.blur(topLeft);
+    const cornerUpdater = onUpdateThemeFileStyle.mock.calls.at(-1)?.[2];
+    expect(cornerUpdater?.(sourceClasses)).toContain("rounded-tl-[12px]");
   });
 
   it("uses an allowlisted module profile and commits sizing only after input completes", () => {

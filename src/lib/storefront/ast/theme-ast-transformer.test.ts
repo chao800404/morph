@@ -48,11 +48,19 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(meta.elements.heading).toBeDefined();
     expect(meta.elements.heading.elementName).toBe("heading");
     expect(meta.elements.heading.tag).toBe("h1");
-    expect(meta.elements.heading.className).toBe("mt-6 font-serif text-6xl text-stone-950");
+    expect(meta.elements.heading.className).toBe(
+      "mt-6 font-serif text-6xl text-stone-950",
+    );
     expect(meta.elements.heading.location.line).toBe(18);
-    expect(meta.elements.heading.startOffset).toBeLessThan(meta.elements.heading.endOffset);
-    expect(meta.elements.heading.openingStartOffset).toBeLessThan(meta.elements.heading.openingEndOffset);
-    expect(meta.elements.heading.openingEndOffset).toBeLessThan(meta.elements.heading.endOffset);
+    expect(meta.elements.heading.startOffset).toBeLessThan(
+      meta.elements.heading.endOffset,
+    );
+    expect(meta.elements.heading.openingStartOffset).toBeLessThan(
+      meta.elements.heading.openingEndOffset,
+    );
+    expect(meta.elements.heading.openingEndOffset).toBeLessThan(
+      meta.elements.heading.endOffset,
+    );
   });
 
   it("patches default prop values using AST offsets without breaking quotes", () => {
@@ -69,7 +77,9 @@ describe("theme-ast-transformer (TSX AST)", () => {
     const updated = patchElementClassName(SAMPLE_HERO_CODE, "heading", (prev) =>
       prev.replace("text-6xl", "text-8xl"),
     );
-    expect(updated).toContain('className="mt-6 font-serif text-8xl text-stone-950"');
+    expect(updated).toContain(
+      'className="mt-6 font-serif text-8xl text-stone-950"',
+    );
   });
 
   it("replaces Tailwind utility classes accurately", () => {
@@ -128,11 +138,17 @@ describe("theme-ast-transformer (TSX AST)", () => {
         );
       }
     `;
-    const res = patchElementClassNameResult(selfClosingCode, "image", () => "size-full object-cover");
+    const res = patchElementClassNameResult(
+      selfClosingCode,
+      "image",
+      () => "size-full object-cover",
+    );
     expect(res.editable).toBe(true);
     expect(res.code).toContain('className="size-full object-cover"');
     // Ensure it didn't inject inside the closing `/>` as `/<className>`
-    expect(res.code).toMatch(/<img[\s\S]*className="size-full object-cover"[\s\S]*\/>/);
+    expect(res.code).toMatch(
+      /<img[\s\S]*className="size-full object-cover"[\s\S]*\/>/,
+    );
     const reParsed = parseComponentSource(res.code);
     expect(reParsed.parseOk).toBe(true);
     expect(reParsed.elements.image.className).toBe("size-full object-cover");
@@ -151,13 +167,21 @@ describe("theme-ast-transformer (TSX AST)", () => {
           },
         }),
       },
-      { path: "src/components/Hero.tsx", content: "export default () => null;" },
-      { path: "src/components/CustomBanner.tsx", content: "export default () => null;" },
+      {
+        path: "src/components/Hero.tsx",
+        content: "export default () => null;",
+      },
+      {
+        path: "src/components/CustomBanner.tsx",
+        content: "export default () => null;",
+      },
       { path: "src/pages/index.tsx", content: "export default () => null;" },
     ];
 
     expect(getComponentFilePath("hero", files)).toBe("src/components/Hero.tsx");
-    expect(getComponentFilePath("custom-banner", files)).toBe("src/components/CustomBanner.tsx");
+    expect(getComponentFilePath("custom-banner", files)).toBe(
+      "src/components/CustomBanner.tsx",
+    );
     // Should return null (CMS-only) rather than falling back to index.tsx!
     expect(getComponentFilePath("editorial-intro", files)).toBeNull();
   });
@@ -178,8 +202,12 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(parseTailwindFontSize("no-size-here")).toBeNull();
 
     // Font families
-    expect(parseTailwindFontFamily("text-xl font-serif text-white")).toBe("serif");
-    expect(parseTailwindFontFamily("text-xl font-sans tracking-tight")).toBe("sans");
+    expect(parseTailwindFontFamily("text-xl font-serif text-white")).toBe(
+      "serif",
+    );
+    expect(parseTailwindFontFamily("text-xl font-sans tracking-tight")).toBe(
+      "sans",
+    );
     expect(parseTailwindFontFamily("font-mono text-sm")).toBe("mono");
 
     // Font weights
@@ -201,7 +229,11 @@ describe("theme-ast-transformer (TSX AST)", () => {
       parseTailwindLineHeight,
       parseTailwindPadding,
       parseTailwindBackgroundColor,
+      parseTailwindBorderColor,
+      parseTailwindBorderRadii,
       parseTailwindBorderRadius,
+      parseTailwindBorderStyle,
+      parseTailwindBorderWidth,
     } = await import("./theme-ast-transformer");
 
     // Complex clamp font size
@@ -228,7 +260,9 @@ describe("theme-ast-transformer (TSX AST)", () => {
     // Padding
     expect(parseTailwindPadding("p-[80px] bg-black")).toEqual({ all: 80 });
     expect(parseTailwindPadding("py-20 px-6")).toEqual({ y: 80, x: 24 });
-    expect(parseTailwindPadding("pt-[40px] pb-[60px] pl-[20px] pr-[30px]")).toEqual({
+    expect(
+      parseTailwindPadding("pt-[40px] pb-[60px] pl-[20px] pr-[30px]"),
+    ).toEqual({
       top: 40,
       bottom: 60,
       left: 20,
@@ -236,18 +270,42 @@ describe("theme-ast-transformer (TSX AST)", () => {
     });
 
     // Background
-    expect(parseTailwindBackgroundColor("bg-[#123456] text-white")).toBe("#123456");
-    expect(parseTailwindBackgroundColor("bg-stone-100 text-stone-900")).toBe("#f5f5f4");
+    expect(parseTailwindBackgroundColor("bg-[#123456] text-white")).toBe(
+      "#123456",
+    );
+    expect(parseTailwindBackgroundColor("bg-stone-100 text-stone-900")).toBe(
+      "#f5f5f4",
+    );
 
     // Border radius
-    expect(parseTailwindBorderRadius("rounded-[16px] overflow-hidden")).toBe(16);
+    expect(parseTailwindBorderRadius("rounded-[16px] overflow-hidden")).toBe(
+      16,
+    );
     expect(parseTailwindBorderRadius("rounded-2xl shadow-lg")).toBe(16);
     expect(parseTailwindBorderRadius("rounded-full")).toBe(9999);
+    expect(
+      parseTailwindBorderRadii("rounded-[8px] rounded-tl-[4px] rounded-br-xl"),
+    ).toEqual({
+      all: 8,
+      topLeft: 4,
+      topRight: 8,
+      bottomRight: 12,
+      bottomLeft: 8,
+    });
+    expect(parseTailwindBorderWidth("border-[3px] border-solid")).toBe(3);
+    expect(parseTailwindBorderStyle("border-[3px] border-dashed")).toBe(
+      "dashed",
+    );
+    expect(parseTailwindBorderColor("border-[#123456]")).toBe("#123456");
+    expect(parseTailwindBorderColor("border-stone-100")).toBe("#f5f5f4");
   });
 
   it("extracts stable data-morph-node IDs and enables precise multi-node patching", async () => {
-    const { parseComponentSource, patchElementClassNameResult, getComponentFilePath } =
-      await import("./theme-ast-transformer");
+    const {
+      parseComponentSource,
+      patchElementClassNameResult,
+      getComponentFilePath,
+    } = await import("./theme-ast-transformer");
 
     const multiNodeSource = `
 export function MultiCard() {
@@ -272,8 +330,12 @@ export function MultiCard() {
       () => "text-3xl font-bold",
     );
     expect(patchRes.editable).toBe(true);
-    expect(patchRes.code).toContain('data-morph-node="card-title-2" data-morph-element="heading" className="text-3xl font-bold"');
-    expect(patchRes.code).toContain('data-morph-node="card-title-1" data-morph-element="heading" className="text-xl"');
+    expect(patchRes.code).toContain(
+      'data-morph-node="card-title-2" data-morph-element="heading" className="text-3xl font-bold"',
+    );
+    expect(patchRes.code).toContain(
+      'data-morph-node="card-title-1" data-morph-element="heading" className="text-xl"',
+    );
 
     // Test componentRef manifest resolution
     const files = [
@@ -290,7 +352,11 @@ export function MultiCard() {
       { path: "src/components/HeroVideo.tsx", content: "" },
     ];
 
-    expect(getComponentFilePath("hero", files, "hero.editorial")).toBe("src/components/HeroEditorial.tsx");
-    expect(getComponentFilePath("hero", files, "hero.video")).toBe("src/components/HeroVideo.tsx");
+    expect(getComponentFilePath("hero", files, "hero.editorial")).toBe(
+      "src/components/HeroEditorial.tsx",
+    );
+    expect(getComponentFilePath("hero", files, "hero.video")).toBe(
+      "src/components/HeroVideo.tsx",
+    );
   });
 });

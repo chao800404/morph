@@ -1,0 +1,44 @@
+.morph-gradient-picker [id^="rbgcp-inputs-wrap"] {
+  align-items: center;
+  column-gap: 6px !important;
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding-top: 12px !important;
+  row-gap: 6px;
+}
+
+.morph-gradient-picker [id^="rbgcp-inputs-wrap"] > div {
+  min-width: 0;
+  position: relative;
+  width: auto !important;
+}
+
+.morph-gradient-picker
+  [id^="rbgcp-inputs-wrap"]
+  > div:first-child {
+  grid-column: 1 / -1;
+}
+
+.morph-gradient-picker [id^="rbgcp-inputs-wrap"] input {
+  box-sizing: border-box;
+  font-variant-numeric: tabular-nums;
+  padding: 0 7px 0 23px !important;
+  text-align: right !important;
+}
+
+.morph-gradient-picker
+  [id^="rbgcp-inputs-wrap"]
+  > div:first-child
+  input {
+  padding-left: 39px !important;
+}
+
+.morph-gradient-picker [id^="rbgcp-inputs-wrap"] > div > div {
+  inset-inline-start: 8px;
+  line-height: 1;
+  margin: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}

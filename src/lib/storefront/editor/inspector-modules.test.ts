@@ -16,7 +16,7 @@ describe("resolveInspectorModules", () => {
   it("exposes content and typography for a heading", () => {
     expect(resolveInspectorModules({ tagName: "h1" })).toContainEqual("content");
     expect(resolveInspectorModules({ tagName: "h1" })).toEqual(expect.arrayContaining([
-      "content", "typography", "sizing", "spacing", "appearance", "border", "effects",
+      "content", "typography", "sizing", "spacing", "appearance", "fill", "border", "effects",
     ]));
   });
 

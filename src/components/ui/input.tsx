@@ -1,11 +1,7 @@
 import { cn } from "@/lib/utils";
 import { cva, VariantProps } from "class-variance-authority";
 import * as React from "react";
-import {
-  fieldControlDensity,
-  fieldControlVariants,
-  focusRing,
-} from "./field-control";
+import { fieldControlDensity, fieldControlVariants } from "./field-control";
 
 const inputVariants = cva(
   cn(
@@ -21,7 +17,6 @@ const inputVariants = cva(
         card: fieldControlVariants({ variant: "card" }),
         bare: cn(
           "border-0 bg-transparent text-foreground shadow-none outline-none",
-          focusRing,
           "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50",
         ),
       },

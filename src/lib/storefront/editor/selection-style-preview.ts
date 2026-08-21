@@ -9,8 +9,19 @@ const ALLOWED_SELECTION_STYLE_PROPERTIES = new Set([
   "padding-right",
   "font-size",
   "line-height",
+  "border-width",
+  "border-style",
+  "border-color",
   "border-radius",
+  "border-top-left-radius",
+  "border-top-right-radius",
+  "border-bottom-right-radius",
+  "border-bottom-left-radius",
+  "color",
   "background-color",
+  "background-image",
+  "background-clip",
+  "-webkit-background-clip",
   "text-align",
   "font-family",
   "font-weight",
@@ -40,6 +51,23 @@ const ALLOWED_SELECTION_STYLE_PROPERTIES = new Set([
   "align-items",
   "justify-content",
 ]);
+
+const PAINT_ONLY_SELECTION_STYLE_PROPERTIES = new Set([
+  "color",
+  "border-color",
+  "background-color",
+  "background-image",
+  "background-clip",
+  "-webkit-background-clip",
+]);
+
+export function selectionStylePreviewNeedsOverlayUpdate(
+  styles: Record<string, string>,
+) {
+  return Object.keys(styles).some(
+    (property) => !PAINT_ONLY_SELECTION_STYLE_PROPERTIES.has(property),
+  );
+}
 
 type InlineStyleSnapshot = {
   value: string;

@@ -104,8 +104,8 @@ export function resolveInspectorModules(
   const parentDisplay = styleValue(parentStyle, "display");
   const isMedia = ["img", "image", "video", "audio", "svg", "picture", "iframe"].includes(tag) ||
     ["image", "media"].includes(kind) || role === "img";
-  const isText = ["h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "blockquote", "text"].includes(tag) ||
-    ["heading", "text", "paragraph"].includes(kind);
+  const isText = ["h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "blockquote", "code", "pre", "text"].includes(tag) ||
+    ["heading", "text", "paragraph", "rich-text", "label", "blockquote", "code"].includes(kind);
   const isInteractive = ["a", "button", "input", "select", "textarea", "option"].includes(tag) ||
     ["button", "link", "input", "form-control"].includes(kind) ||
     ["button", "link", "textbox", "checkbox", "radio", "switch"].includes(role);
@@ -128,7 +128,7 @@ export function resolveInspectorModules(
   add("sizing", "spacing");
   add("position");
   add("appearance");
-  if (isMedia || isContainer || styleValue(style, "background-color") !== "" || styleValue(style, "background-image") !== "") add("fill");
+  if (isMedia || isContainer || isText || styleValue(style, "background-color") !== "" || styleValue(style, "background-image") !== "") add("fill");
   add("border", "effects");
   if (isInteractive) add("interaction");
   if (tag === "img" || tag === "input" || tag === "textarea" || tag === "select" || role === "img") add("accessibility");

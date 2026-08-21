@@ -85,12 +85,18 @@ import {
 
 
 import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
-import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
+import {
+  toWorkspaceKey,
+  useThemeWorkspaceStore,
+} from "@/lib/storefront/store/theme-workspace-store";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { EditorAssistantPanel } from "./editor-assistant-panel";
-import { isLatestStyleRevision, shouldAcceptStyleAck } from "./style-revision";
+import {
+  isLatestStyleRevision,
+  shouldRevealPreviewForStyleAck,
+} from "./style-revision";
 import {
   isSelectionKind,
   type EditorSelectionDescriptor,
@@ -348,6 +354,10 @@ export function VisualEditorShell({
 
   const [previewRevision, setPreviewRevision] = useState(0);
   const [loadedPreviewKey, setLoadedPreviewKey] = useState<string | null>(null);
+  const [previewFrameReady, setPreviewFrameReady] = useState<{
+    key: string;
+    sequence: number;
+  } | null>(null);
   const [previewContentSize, setPreviewContentSize] = useState<{
     key: string;
     height: number;
@@ -766,6 +776,9 @@ export function VisualEditorShell({
   ]);
 
   const workspaceFiles = useThemeWorkspaceStore((state) => state.files);
+  const activeWorkspaceKey = useThemeWorkspaceStore(
+    (state) => state.activeWorkspaceKey,
+  );
   const setActiveWorkspace = useThemeWorkspaceStore((state) => state.setActiveWorkspace);
   const hydrateWorkspace = useThemeWorkspaceStore((state) => state.hydrateFromQuery);
   const updateWorkspaceLocal = useThemeWorkspaceStore((state) => state.updateLocalContent);
@@ -813,6 +826,15 @@ export function VisualEditorShell({
       })),
     [themeFiles, workspaceFiles],
   );
+  const workspaceKey = toWorkspaceKey(
+    context.storefront.id,
+    context.theme.id,
+  );
+  const isWorkspaceReadyForPreview =
+    themeFilesQuery.isSuccess &&
+    themeFiles.length > 0 &&
+    activeWorkspaceKey === workspaceKey &&
+    themeFiles.every((file) => workspaceFiles[file.path] !== undefined);
 
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
@@ -857,6 +879,42 @@ export function VisualEditorShell({
     },
     [],
   );
+  const initialPreviewSyncRef = useRef<{
+    key: string;
+    readySequence: number;
+    styleRevision: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (
+      !previewKey ||
+      previewFrameReady?.key !== previewKey ||
+      !isWorkspaceReadyForPreview ||
+      effectiveThemeFiles.length === 0 ||
+      (initialPreviewSyncRef.current?.key === previewKey &&
+        initialPreviewSyncRef.current.readySequence === previewFrameReady.sequence)
+    ) {
+      return;
+    }
+
+    const styleRevision = postPreviewThemeFiles(
+      effectiveThemeFiles.map((file) => ({
+        path: file.path,
+        content: file.content,
+      })),
+    );
+    initialPreviewSyncRef.current = {
+      key: previewKey,
+      readySequence: previewFrameReady.sequence,
+      styleRevision,
+    };
+  }, [
+    effectiveThemeFiles,
+    isWorkspaceReadyForPreview,
+    postPreviewThemeFiles,
+    previewFrameReady,
+    previewKey,
+  ]);
 
   const getScopedOpKey = useCallback(
     (filePath: string) =>
@@ -1813,7 +1871,6 @@ export function VisualEditorShell({
           ? current
           : { key: previewKey, height },
       );
-      setLoadedPreviewKey(previewKey);
     };
 
     window.addEventListener("message", handlePreviewMessage);
@@ -1835,11 +1892,40 @@ export function VisualEditorShell({
         typeof message === "object" &&
         message !== null &&
         "type" in message &&
-        message.type === "morph:storefront-preview-theme-files-applied" &&
+        message.type === "morph:storefront-preview-ready"
+      ) {
+        setPreviewFrameReady((current) => ({
+          key: previewKey,
+          sequence: current?.key === previewKey ? current.sequence + 1 : 1,
+        }));
+        return;
+      }
+      if (
+        event.origin === window.location.origin &&
+        event.source === previewIframeRef.current?.contentWindow &&
+        typeof message === "object" &&
+        message !== null &&
+        "type" in message &&
+        (message.type === "morph:storefront-preview-theme-files-applied" ||
+          message.type === "morph:storefront-preview-theme-files-failed") &&
         "styleRevision" in message &&
         typeof message.styleRevision === "number"
       ) {
-        if (!shouldAcceptStyleAck(message.styleRevision, latestStyleRevisionRef.current)) return;
+        const initialPreviewSync = initialPreviewSyncRef.current;
+        if (
+          initialPreviewSync?.key !== previewKey ||
+          !shouldRevealPreviewForStyleAck(
+            message.styleRevision,
+            latestStyleRevisionRef.current,
+            initialPreviewSync.styleRevision,
+          )
+        ) {
+          return;
+        }
+        setLoadedPreviewKey(previewKey);
+        if (message.type === "morph:storefront-preview-theme-files-failed") {
+          return;
+        }
         latestAppliedStyleRevisionRef.current = message.styleRevision;
         previewIframeRef.current?.contentWindow?.postMessage(
           {

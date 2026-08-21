@@ -22,13 +22,17 @@ import {
   getComponentFilePath,
   parseComponentSource,
   parseTailwindBackgroundColor,
-  parseTailwindBorderRadius,
+  parseTailwindBorderColor,
+  parseTailwindBorderRadii,
+  parseTailwindBorderStyle,
+  parseTailwindBorderWidth,
   parseTailwindFontFamily,
   parseTailwindFontSizeDetailed,
   parseTailwindFontWeight,
   parseTailwindLineHeight,
   parseTailwindPadding,
   parseTailwindTextAlign,
+  parseTailwindTextColor,
   type ComponentElementMeta,
 } from "@/lib/storefront/ast/theme-ast-transformer";
 import {
@@ -52,12 +56,27 @@ import {
   Palette,
   Sliders,
   Type,
-  Unlink,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { RxPadding } from "react-icons/rx";
 import { InspectorColorField } from "./style-inspector/inspector-color-field";
+import {
+  isGradientPaint,
+  paintPreviewStyles,
+  parseTailwindBackgroundPaint,
+  parseTailwindTextGradient,
+  patchTailwindTextPaint,
+  textPaintPreviewStyles,
+  toBackgroundPaintUtility,
+  toBorderColorUtility,
+} from "./style-inspector/inspector-paint-utils";
 import { InspectorModuleCard as InspectorGroup } from "./style-inspector/inspector-module-card";
 import { InspectorSelectControl } from "./style-inspector/inspector-select-control";
+import { InspectorDisclosureField } from "./style-inspector/inspector-disclosure-field";
+import {
+  BorderRadiusInspectorModule,
+  type BorderRadiusCorner,
+} from "./style-inspector/border-radius-inspector-module";
 import {
   AppearanceInspectorModule,
   LayoutInspectorModule,
@@ -128,6 +147,41 @@ const THEME_PALETTE_COLORS = [
   { label: "White", value: "#ffffff", preview: "bg-white border-stone-200" },
   { label: "Black", value: "#000000", preview: "bg-black border-stone-800" },
 ];
+
+const BORDER_RADIUS_CORNER_CONFIG = {
+  topLeft: {
+    cssProperty: "border-top-left-radius",
+    property: "border-radius-top-left",
+    utility: "rounded-tl",
+    optimisticKey: "borderRadiusTopLeft",
+  },
+  topRight: {
+    cssProperty: "border-top-right-radius",
+    property: "border-radius-top-right",
+    utility: "rounded-tr",
+    optimisticKey: "borderRadiusTopRight",
+  },
+  bottomRight: {
+    cssProperty: "border-bottom-right-radius",
+    property: "border-radius-bottom-right",
+    utility: "rounded-br",
+    optimisticKey: "borderRadiusBottomRight",
+  },
+  bottomLeft: {
+    cssProperty: "border-bottom-left-radius",
+    property: "border-radius-bottom-left",
+    utility: "rounded-bl",
+    optimisticKey: "borderRadiusBottomLeft",
+  },
+} as const satisfies Record<
+  Exclude<BorderRadiusCorner, "all">,
+  {
+    cssProperty: string;
+    property: PatchTailwindOptions["property"];
+    utility: string;
+    optimisticKey: string;
+  }
+>;
 
 function parsePx(value?: string | null): number | null {
   if (!value) return null;
@@ -243,7 +297,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const activeComputedStyle = selection?.computed;
   const activeSectionComputedStyle = selection?.sectionComputed;
 
-  const [paddingLinked, setPaddingLinked] = useState(true);
+  const [paddingExpanded, setPaddingExpanded] = useState(false);
   const [sectionsExpanded, setSectionsExpanded] = useState({
     content: true,
     flow: true,
@@ -253,7 +307,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     layout: true,
     typography: true,
     fills: true,
-    borders: false,
+    borders: true,
     tailwind: false,
   });
 
@@ -367,6 +421,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // Code as SSOT: derive style values from the source code AST
   const targetClassName = targetElementMeta?.className || "";
   const sectionClassName = sectionElementMeta?.className || "";
+  const hasResolvedContainerSource = isSelectedNode
+    ? Boolean(targetElementMeta)
+    : Boolean(sectionElementMeta);
+  const hasResolvedTextSource = Boolean(targetElementMeta);
 
   const fontSizeDetailed = parseTailwindFontSizeDetailed(targetClassName);
   const isComplexFontSize = fontSizeDetailed.type === "complex";
@@ -465,17 +523,111 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       ? effectivePaddingTop
       : sourcePaddingAll);
 
-  const effectiveBgColor =
-    optimisticValue("backgroundColor") ??
-    computedColorToHex(containerComputedStyle?.backgroundColor) ??
-    parseTailwindBackgroundColor(containerClassName) ??
-    props.backgroundColor ??
-    "#fafaf9";
+  const computedBackgroundImage = containerComputedStyle?.backgroundImage;
+  const sourceTextGradient = parseTailwindTextGradient(targetClassName);
+  const containerTextGradient = parseTailwindTextGradient(containerClassName);
+  const sourceBackgroundPaint = !containerTextGradient
+    ? (parseTailwindBackgroundPaint(containerClassName) ??
+      parseTailwindBackgroundColor(containerClassName))
+    : null;
+  const sourceTextPaint =
+    sourceTextGradient ?? parseTailwindTextColor(targetClassName);
+  const effectiveBackgroundPaint =
+    optimisticValue("backgroundPaint") ??
+    sourceBackgroundPaint ??
+    (hasResolvedContainerSource
+      ? ""
+      : ((!containerTextGradient &&
+        computedBackgroundImage &&
+        computedBackgroundImage !== "none"
+          ? computedBackgroundImage
+          : undefined) ??
+        computedColorToHex(containerComputedStyle?.backgroundColor) ??
+        props.backgroundColor ??
+        "#fafaf9"));
+  const effectiveTextPaint =
+    optimisticValue("textPaint") ??
+    sourceTextPaint ??
+    (hasResolvedTextSource
+      ? ""
+      : (computedColorToHex(activeComputedStyle?.color) ??
+        props.textColor ??
+        "#1c1917"));
+  const sourceBorderRadii = parseTailwindBorderRadii(containerClassName);
+  const computedBorderRadius = parsePx(containerComputedStyle?.borderRadius);
+  const sourceCornerValues = [
+    sourceBorderRadii.topLeft,
+    sourceBorderRadii.topRight,
+    sourceBorderRadii.bottomRight,
+    sourceBorderRadii.bottomLeft,
+  ];
+  const commonSourceCornerRadius =
+    sourceCornerValues.every(
+      (value) => value !== null && value === sourceCornerValues[0],
+    ) && sourceCornerValues[0] !== null
+      ? sourceCornerValues[0]
+      : null;
   const effectiveBorderRadius =
     optimisticNumber("borderRadius") ??
-    parsePx(containerComputedStyle?.borderRadius) ??
-    parseTailwindBorderRadius(containerClassName) ??
-    (typeof props.borderRadius === "number" ? props.borderRadius : 0);
+    sourceBorderRadii.all ??
+    commonSourceCornerRadius ??
+    (hasResolvedContainerSource
+      ? 0
+      : (computedBorderRadius ??
+        (typeof props.borderRadius === "number" ? props.borderRadius : 0)));
+  const resolveCornerRadius = (
+    optimisticKey: string,
+    sourceValue: number | null,
+    computedKey: string,
+  ) =>
+    optimisticNumber(optimisticKey) ??
+    sourceValue ??
+    (hasResolvedContainerSource
+      ? 0
+      : (parsePx(containerComputedStyle?.[computedKey]) ??
+        computedBorderRadius ??
+        effectiveBorderRadius));
+  const effectiveBorderRadii = {
+    all: effectiveBorderRadius,
+    topLeft: resolveCornerRadius(
+      "borderRadiusTopLeft",
+      sourceBorderRadii.topLeft,
+      "borderTopLeftRadius",
+    ),
+    topRight: resolveCornerRadius(
+      "borderRadiusTopRight",
+      sourceBorderRadii.topRight,
+      "borderTopRightRadius",
+    ),
+    bottomRight: resolveCornerRadius(
+      "borderRadiusBottomRight",
+      sourceBorderRadii.bottomRight,
+      "borderBottomRightRadius",
+    ),
+    bottomLeft: resolveCornerRadius(
+      "borderRadiusBottomLeft",
+      sourceBorderRadii.bottomLeft,
+      "borderBottomLeftRadius",
+    ),
+  };
+  const effectiveBorderWidth =
+    optimisticNumber("borderWidth") ??
+    parseTailwindBorderWidth(containerClassName) ??
+    (hasResolvedContainerSource
+      ? 0
+      : (parsePx(containerComputedStyle?.borderTopWidth) ?? 0));
+  const effectiveBorderStyle =
+    optimisticValue("borderStyle") ??
+    parseTailwindBorderStyle(containerClassName) ??
+    (hasResolvedContainerSource
+      ? "solid"
+      : (containerComputedStyle?.borderTopStyle ?? "solid"));
+  const effectiveBorderColor =
+    optimisticValue("borderColor") ??
+    parseTailwindBorderColor(containerClassName) ??
+    (hasResolvedContainerSource
+      ? ""
+      : (computedColorToHex(containerComputedStyle?.borderTopColor) ?? ""));
   const inspectorIdentity =
     section.id + ":" + targetElement + ":" + activeViewport;
   const inspectorIdentityRef = useRef(inspectorIdentity);
@@ -1253,28 +1405,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         >
           <div className="space-y-3">
             {/* Padding */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">Padding</span>
-                <button
-                  type="button"
-                  onClick={() => setPaddingLinked(!paddingLinked)}
-                  className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                  title={
-                    paddingLinked ? "Unlink padding sides" : "Link padding"
-                  }
-                >
-                  {paddingLinked ? (
-                    <Link className="size-3" />
-                  ) : (
-                    <Unlink className="size-3" />
-                  )}
-                </button>
-              </div>
-
-              {paddingLinked ? (
-                <div className="flex h-8 min-w-0 items-center gap-2 rounded-md border bg-background px-2">
-                  <span className="text-[10px] text-muted-foreground">All</span>
+            <InspectorDisclosureField
+              id="padding-side-controls"
+              expanded={paddingExpanded}
+              onExpandedChange={setPaddingExpanded}
+              expandLabel="Expand individual padding sides"
+              collapseLabel="Collapse individual padding sides"
+              icon={<RxPadding className="size-4" aria-hidden="true" />}
+              field={
+                <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border bg-background px-2 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
+                  <span className="text-xs text-muted-foreground">Padding</span>
                   <ScrubbableNumberInput
                     value={effectivePaddingAll}
                     min={0}
@@ -1319,131 +1459,129 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     inputClassName="h-6 text-xs text-right font-mono"
                   />
                 </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
-                    <span className="text-[10px] text-muted-foreground">T</span>
-                    <ScrubbableNumberInput
-                      value={effectivePaddingTop}
-                      min={0}
-                      max={160}
-                      step={4}
-                      suffix="px"
-                      disabled={disabled || sourceStyleLocked}
-                      ariaLabel="Top padding"
-                      onValuePreview={(val) =>
-                        previewContainerStyle({ "padding-top": `${val}px` })
-                      }
-                      onValueChange={(val) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath)
-                          handleFieldChange("paddingTop", val);
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "padding-top",
-                              value: `pt-[${val}px]`,
-                            }),
-                          { paddingTop: val },
-                        );
-                      }}
-                      className="h-7 min-w-0 flex-1 justify-end gap-1"
-                      inputClassName="h-5 text-xs text-right font-mono"
-                    />
-                  </div>
-                  <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
-                    <span className="text-[10px] text-muted-foreground">B</span>
-                    <ScrubbableNumberInput
-                      value={effectivePaddingBottom}
-                      min={0}
-                      max={160}
-                      step={4}
-                      suffix="px"
-                      disabled={disabled || sourceStyleLocked}
-                      ariaLabel="Bottom padding"
-                      onValuePreview={(val) =>
-                        previewContainerStyle({ "padding-bottom": `${val}px` })
-                      }
-                      onValueChange={(val) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath)
-                          handleFieldChange("paddingBottom", val);
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "padding-bottom",
-                              value: `pb-[${val}px]`,
-                            }),
-                          { paddingBottom: val },
-                        );
-                      }}
-                      className="h-7 min-w-0 flex-1 justify-end gap-1"
-                      inputClassName="h-5 text-xs text-right font-mono"
-                    />
-                  </div>
-                  <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
-                    <span className="text-[10px] text-muted-foreground">L</span>
-                    <ScrubbableNumberInput
-                      value={effectivePaddingLeft}
-                      min={0}
-                      max={160}
-                      step={4}
-                      suffix="px"
-                      disabled={disabled || sourceStyleLocked}
-                      ariaLabel="Left padding"
-                      onValuePreview={(val) =>
-                        previewContainerStyle({ "padding-left": `${val}px` })
-                      }
-                      onValueChange={(val) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath)
-                          handleFieldChange("paddingLeft", val);
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "padding-left",
-                              value: `pl-[${val}px]`,
-                            }),
-                          { paddingLeft: val },
-                        );
-                      }}
-                      className="h-7 min-w-0 flex-1 justify-end gap-1"
-                      inputClassName="h-5 text-xs text-right font-mono"
-                    />
-                  </div>
-                  <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
-                    <span className="text-[10px] text-muted-foreground">R</span>
-                    <ScrubbableNumberInput
-                      value={effectivePaddingRight}
-                      min={0}
-                      max={160}
-                      step={4}
-                      suffix="px"
-                      disabled={disabled || sourceStyleLocked}
-                      ariaLabel="Right padding"
-                      onValuePreview={(val) =>
-                        previewContainerStyle({ "padding-right": `${val}px` })
-                      }
-                      onValueChange={(val) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath)
-                          handleFieldChange("paddingRight", val);
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "padding-right",
-                              value: `pr-[${val}px]`,
-                            }),
-                          { paddingRight: val },
-                        );
-                      }}
-                      className="h-7 min-w-0 flex-1 justify-end gap-1"
-                      inputClassName="h-5 text-xs text-right font-mono"
-                    />
-                  </div>
+              }
+            >
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
+                  <span className="text-xs text-muted-foreground">T</span>
+                  <ScrubbableNumberInput
+                    value={effectivePaddingTop}
+                    min={0}
+                    max={160}
+                    step={4}
+                    suffix="px"
+                    disabled={disabled || sourceStyleLocked}
+                    ariaLabel="Top padding"
+                    onValuePreview={(val) =>
+                      previewContainerStyle({ "padding-top": `${val}px` })
+                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath) handleFieldChange("paddingTop", val);
+                      patchContainerStyle(
+                        (prev) =>
+                          patchTailwindClasses(prev, {
+                            property: "padding-top",
+                            value: `pt-[${val}px]`,
+                          }),
+                        { paddingTop: val },
+                      );
+                    }}
+                    className="h-7 min-w-0 flex-1 justify-end gap-1"
+                    inputClassName="h-5 text-xs text-right font-mono"
+                  />
                 </div>
-              )}
-            </div>
+                <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
+                  <span className="text-xs text-muted-foreground">B</span>
+                  <ScrubbableNumberInput
+                    value={effectivePaddingBottom}
+                    min={0}
+                    max={160}
+                    step={4}
+                    suffix="px"
+                    disabled={disabled || sourceStyleLocked}
+                    ariaLabel="Bottom padding"
+                    onValuePreview={(val) =>
+                      previewContainerStyle({ "padding-bottom": `${val}px` })
+                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath)
+                        handleFieldChange("paddingBottom", val);
+                      patchContainerStyle(
+                        (prev) =>
+                          patchTailwindClasses(prev, {
+                            property: "padding-bottom",
+                            value: `pb-[${val}px]`,
+                          }),
+                        { paddingBottom: val },
+                      );
+                    }}
+                    className="h-7 min-w-0 flex-1 justify-end gap-1"
+                    inputClassName="h-5 text-xs text-right font-mono"
+                  />
+                </div>
+                <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
+                  <span className="text-xs text-muted-foreground">L</span>
+                  <ScrubbableNumberInput
+                    value={effectivePaddingLeft}
+                    min={0}
+                    max={160}
+                    step={4}
+                    suffix="px"
+                    disabled={disabled || sourceStyleLocked}
+                    ariaLabel="Left padding"
+                    onValuePreview={(val) =>
+                      previewContainerStyle({ "padding-left": `${val}px` })
+                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath) handleFieldChange("paddingLeft", val);
+                      patchContainerStyle(
+                        (prev) =>
+                          patchTailwindClasses(prev, {
+                            property: "padding-left",
+                            value: `pl-[${val}px]`,
+                          }),
+                        { paddingLeft: val },
+                      );
+                    }}
+                    className="h-7 min-w-0 flex-1 justify-end gap-1"
+                    inputClassName="h-5 text-xs text-right font-mono"
+                  />
+                </div>
+                <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
+                  <span className="text-xs text-muted-foreground">R</span>
+                  <ScrubbableNumberInput
+                    value={effectivePaddingRight}
+                    min={0}
+                    max={160}
+                    step={4}
+                    suffix="px"
+                    disabled={disabled || sourceStyleLocked}
+                    ariaLabel="Right padding"
+                    onValuePreview={(val) =>
+                      previewContainerStyle({ "padding-right": `${val}px` })
+                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath)
+                        handleFieldChange("paddingRight", val);
+                      patchContainerStyle(
+                        (prev) =>
+                          patchTailwindClasses(prev, {
+                            property: "padding-right",
+                            value: `pr-[${val}px]`,
+                          }),
+                        { paddingRight: val },
+                      );
+                    }}
+                    className="h-7 min-w-0 flex-1 justify-end gap-1"
+                    inputClassName="h-5 text-xs text-right font-mono"
+                  />
+                </div>
+              </div>
+            </InspectorDisclosureField>
 
             {/* Alignment */}
             <div className="flex items-center justify-between">
@@ -1703,62 +1841,83 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           onToggle={() => toggleSection("fills")}
         >
           <div className="space-y-3">
-            {/* Quick Palette Chips */}
-            <div>
-              <label className="text-[10px] text-muted-foreground">
-                Theme Palette
-              </label>
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                {THEME_PALETTE_COLORS.map((item) => (
-                  <button
-                    key={item.value}
-                    type="button"
-                    onClick={() => {
-                      if (sourceStyleLocked) return;
-                      previewContainerStyle({
-                        "background-color": item.value,
-                      });
-                      if (!componentPath)
-                        handleFieldChange("backgroundColor", item.value);
-                      patchContainerStyle(
-                        (prev) =>
-                          patchTailwindClasses(prev, {
-                            property: "background-color",
-                            value: `bg-[${item.value}]`,
-                          }),
-                        { backgroundColor: item.value },
-                      );
-                    }}
-                    className={cn(
-                      "size-6 rounded-md border shadow-xs transition-transform hover:scale-110",
-                      item.preview,
-                      effectiveBgColor === item.value &&
-                        "ring-2 ring-primary ring-offset-1",
-                    )}
-                    title={item.label}
-                  />
-                ))}
-              </div>
-            </div>
+            {visibleModules.has("typography") && (
+              <InspectorColorField
+                label="Text"
+                value={effectiveTextPaint}
+                disabled={disabled || sourceStyleLocked}
+                allowGradient
+                onPreview={(value) =>
+                  previewStyle(
+                    textPaintPreviewStyles(value, effectiveTextPaint),
+                  )
+                }
+                onCommit={(value) => {
+                  if (!componentPath && !isGradientPaint(value)) {
+                    handleFieldChange("textColor", value);
+                  }
+                  patchStyle(
+                    (prev) =>
+                      patchTailwindTextPaint(prev, value, targetVariants),
+                    { textPaint: value },
+                  );
+                }}
+                onClear={() => {
+                  previewStyle({
+                    color: "",
+                    "background-image": "",
+                    "background-clip": "",
+                    "-webkit-background-clip": "",
+                  });
+                  if (!componentPath) handleFieldChange("textColor", undefined);
+                  patchStyle(
+                    (prev) => patchTailwindTextPaint(prev, "", targetVariants),
+                    { textPaint: "" },
+                  );
+                }}
+                palette={THEME_PALETTE_COLORS}
+              />
+            )}
 
             <InspectorColorField
-              label="Fill"
-              value={effectiveBgColor}
+              label="Background"
+              value={effectiveBackgroundPaint}
               disabled={disabled || sourceStyleLocked}
+              allowGradient
               onPreview={(value) => {
-                previewContainerStyle({ "background-color": value });
+                previewContainerStyle(paintPreviewStyles(value));
               }}
               onCommit={(value) => {
-                if (!componentPath) handleFieldChange("backgroundColor", value);
+                if (!componentPath && !isGradientPaint(value)) {
+                  handleFieldChange("backgroundColor", value);
+                }
                 patchContainerStyle(
                   (prev) =>
                     patchTailwindClasses(prev, {
-                      property: "background-color",
-                      value: "bg-[" + value + "]",
+                      property: "background",
+                      value: toBackgroundPaintUtility(value),
                     }),
-                  { backgroundColor: value },
+                  { backgroundPaint: value },
                 );
               }}
+              onClear={() => {
+                previewContainerStyle({
+                  "background-color": "",
+                  "background-image": "",
+                });
+                if (!componentPath) {
+                  handleFieldChange("backgroundColor", undefined);
+                }
+                patchContainerStyle(
+                  (prev) =>
+                    patchTailwindClasses(prev, {
+                      property: "background",
+                      value: "",
+                    }),
+                  { backgroundPaint: "" },
+                );
+              }}
+              palette={THEME_PALETTE_COLORS}
             />
           </div>
         </InspectorGroup>
@@ -1766,44 +1925,104 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
       {/* 5. Borders & Corners */}
       {visibleModules.has("border") && (
-        <InspectorGroup
-          title="Border & Radius"
-          icon={<Paintbrush className="size-3.5" />}
+        <BorderRadiusInspectorModule
           expanded={sectionsExpanded.borders}
           onToggle={() => toggleSection("borders")}
-        >
-          <div className="space-y-3">
-            <div className="flex h-8 min-w-0 items-center justify-between rounded-md border bg-background px-2">
-              <span className="text-[10px] text-muted-foreground">Radius</span>
-              <ScrubbableNumberInput
-                value={effectiveBorderRadius}
-                min={0}
-                max={48}
-                step={2}
-                suffix="px"
-                disabled={disabled || sourceStyleLocked}
-                ariaLabel="Corner radius"
-                onValuePreview={(val) =>
-                  previewContainerStyle({ "border-radius": `${val}px` })
-                }
-                onValueChange={(val) => {
-                  if (sourceStyleLocked) return;
-                  if (!componentPath) handleFieldChange("borderRadius", val);
-                  patchContainerStyle(
-                    (prev) =>
-                      patchTailwindClasses(prev, {
-                        property: "border-radius",
-                        value: `rounded-[${val}px]`,
+          disabled={disabled || sourceStyleLocked}
+          borderWidth={effectiveBorderWidth}
+          borderStyle={String(effectiveBorderStyle)}
+          borderColor={String(effectiveBorderColor)}
+          radius={effectiveBorderRadii}
+          palette={THEME_PALETTE_COLORS}
+          onBorderWidthPreview={(value) =>
+            previewContainerStyle({ "border-width": `${value}px` })
+          }
+          onBorderWidthCommit={(value) => {
+            if (!componentPath) handleFieldChange("borderWidth", value);
+            commitContainerProperty(
+              "border-width",
+              `border-[${value}px]`,
+              "borderWidth",
+              value,
+            );
+          }}
+          onBorderStyleChange={(value) => {
+            previewContainerStyle({ "border-style": value });
+            commitContainerProperty(
+              "border-style",
+              `border-${value}`,
+              "borderStyle",
+              value,
+            );
+          }}
+          onBorderColorPreview={(value) =>
+            previewContainerStyle({ "border-color": value })
+          }
+          onBorderColorCommit={(value) =>
+            commitContainerProperty(
+              "border-color",
+              toBorderColorUtility(value),
+              "borderColor",
+              value,
+            )
+          }
+          onBorderColorClear={() => {
+            previewContainerStyle({ "border-color": "" });
+            commitContainerProperty("border-color", "", "borderColor", "");
+          }}
+          onRadiusPreview={(corner, value) => {
+            if (corner === "all") {
+              previewContainerStyle({ "border-radius": `${value}px` });
+              return;
+            }
+            previewContainerStyle({
+              [BORDER_RADIUS_CORNER_CONFIG[corner].cssProperty]: `${value}px`,
+            });
+          }}
+          onRadiusCommit={(corner, value) => {
+            if (!componentPath && corner === "all") {
+              handleFieldChange("borderRadius", value);
+            }
+            if (corner === "all") {
+              patchContainerStyle(
+                (previous) =>
+                  (
+                    [
+                      "border-radius-top-left",
+                      "border-radius-top-right",
+                      "border-radius-bottom-right",
+                      "border-radius-bottom-left",
+                    ] as const
+                  ).reduce(
+                    (className, property) =>
+                      patchTailwindClasses(className, {
+                        property,
+                        value: "",
                       }),
-                    { borderRadius: val },
-                  );
-                }}
-                className="h-7 min-w-0 flex-1 justify-end gap-1"
-                inputClassName="h-6 text-xs text-right font-mono"
-              />
-            </div>
-          </div>
-        </InspectorGroup>
+                    patchTailwindClasses(previous, {
+                      property: "border-radius",
+                      value: `rounded-[${value}px]`,
+                    }),
+                  ),
+                {
+                  borderRadius: value,
+                  borderRadiusTopLeft: value,
+                  borderRadiusTopRight: value,
+                  borderRadiusBottomRight: value,
+                  borderRadiusBottomLeft: value,
+                },
+              );
+              return;
+            }
+            const config = BORDER_RADIUS_CORNER_CONFIG[corner];
+            commitContainerProperty(
+              config.property,
+              `${config.utility}-[${value}px]`,
+              config.optimisticKey,
+              value,
+            );
+          }}
+        />
       )}
     </div>
   );

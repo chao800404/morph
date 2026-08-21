@@ -20,6 +20,7 @@ export function InspectorModuleCard({
 }: InspectorModuleCardProps) {
   return (
     <section
+      data-inspector-module={title}
       className={cn(
         "relative rounded-xl border bg-background shadow-xs focus-within:z-20",
         className,

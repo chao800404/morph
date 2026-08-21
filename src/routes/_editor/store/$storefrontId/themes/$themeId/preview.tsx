@@ -17,6 +17,7 @@ import { createSelectionOverlaySettler } from "@/lib/storefront/editor/selection
 import {
   createSelectionStylePreview,
   SELECTION_STYLE_APPLIED_EVENT,
+  selectionStylePreviewNeedsOverlayUpdate,
 } from "@/lib/storefront/editor/selection-style-preview";
 
 const PREVIEW_GEOMETRY_MUTATION_MESSAGES = new Set([
@@ -130,11 +131,11 @@ function ReadyStorefrontPreview({
     sourceGeneration,
     applicationKey: styleRevision,
     onStylesApplied: (application: ThemeCompilerApplication) => {
-      if (
-        application.didApplySource &&
-        typeof application.applicationKey === "number"
-      ) {
-        acknowledgeStyleRevision(application.applicationKey);
+      if (typeof application.applicationKey === "number") {
+        acknowledgeStyleRevision(
+          application.applicationKey,
+          application.didApplySource,
+        );
       }
     },
   });
@@ -146,11 +147,14 @@ function ReadyStorefrontPreview({
           data-storefront-compiler-diagnostics="true"
           className="fixed top-3 right-3 z-[2147483647] max-w-md rounded-lg border border-amber-500/40 bg-amber-950/90 p-3 text-xs text-amber-200 shadow-xl backdrop-blur-sm"
         >
-          <div className="font-semibold text-amber-300">Theme Compile Diagnostic</div>
+          <div className="font-semibold text-amber-300">
+            Theme Compile Diagnostic
+          </div>
           <div className="mt-1 space-y-1">
             {diagnostics.slice(0, 3).map((d, i) => (
               <div key={i} className="truncate">
-                {d.filePath ? `${d.filePath}: ` : ""}{d.message}
+                {d.filePath ? `${d.filePath}: ` : ""}
+                {d.message}
               </div>
             ))}
           </div>
@@ -222,24 +226,38 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
           latestRequestedStyleRevisionRef.current = message.styleRevision;
           setStyleRevision(message.styleRevision);
         }
-        if ("sourceGeneration" in message && typeof message.sourceGeneration === "number") {
+        if (
+          "sourceGeneration" in message &&
+          typeof message.sourceGeneration === "number"
+        ) {
           setSourceGeneration(message.sourceGeneration);
         }
       }
     };
 
     window.addEventListener("message", handleThemeFileMessage);
+    window.parent.postMessage(
+      { type: "morph:storefront-preview-ready" },
+      window.location.origin,
+    );
     return () => window.removeEventListener("message", handleThemeFileMessage);
   }, []);
 
-  const acknowledgeStyleRevision = useCallback((appliedRevision: number) => {
+  const acknowledgeStyleRevision = useCallback((
+    appliedRevision: number,
+    didApplySource: boolean,
+  ) => {
     if (latestRequestedStyleRevisionRef.current !== appliedRevision) return;
-    window.dispatchEvent(new Event(SELECTION_STYLE_APPLIED_EVENT));
-    document.documentElement.dataset.storefrontStyleRevision =
-      String(appliedRevision);
+    if (didApplySource) {
+      window.dispatchEvent(new Event(SELECTION_STYLE_APPLIED_EVENT));
+      document.documentElement.dataset.storefrontStyleRevision =
+        String(appliedRevision);
+    }
     window.parent.postMessage(
       {
-        type: "morph:storefront-preview-theme-files-applied",
+        type: didApplySource
+          ? "morph:storefront-preview-theme-files-applied"
+          : "morph:storefront-preview-theme-files-failed",
         styleRevision: appliedRevision,
       },
       window.location.origin,
@@ -601,7 +619,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           fieldPath,
           tagName: componentEl.tagName.toLowerCase(),
           role: componentEl.getAttribute("role"),
-          inputType: componentEl instanceof HTMLInputElement ? componentEl.type : null,
+          inputType:
+            componentEl instanceof HTMLInputElement ? componentEl.type : null,
         };
       }
 
@@ -620,59 +639,65 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             ? "blockquote"
             : tag === "code" || tag === "pre"
               ? "code"
-          : tag === "img"
-            ? "image"
-            : tag === "picture"
-              ? "picture"
-              : tag === "svg"
-                ? "svg"
-                : tag === "video"
-                  ? "video"
-                  : tag === "audio"
-                    ? "audio"
-                    : tag === "canvas"
-                      ? "canvas"
-                      : tag === "iframe"
-                        ? "iframe"
-                        : tag === "embed"
-                          ? "embed"
-                          : tag === "nav"
-                            ? "navigation"
-                            : tag === "form"
-                              ? "form"
-                              : tag === "fieldset"
-                                ? "fieldset"
-                                : tag === "textarea"
-                                  ? "textarea"
-                                  : tag === "select"
-                                    ? "select"
-                                    : tag === "option"
-                                      ? "option"
-                                      : tag === "input"
-                                        ? elementEl instanceof HTMLInputElement && elementEl.type === "checkbox"
-                                          ? "checkbox"
-                                          : elementEl instanceof HTMLInputElement && elementEl.type === "radio"
-                                            ? "radio"
-                                            : "input"
-                                        : tag === "ul" || tag === "ol"
-                                          ? "list"
-                                          : tag === "li"
-                                            ? "list-item"
-                                            : tag === "table"
-                                              ? "table"
-                                              : tag === "tr"
-                                                ? "table-row"
-                                                : tag === "td" || tag === "th"
-                                                  ? "table-cell"
-                                                  : tag === "hr"
-                                                    ? "divider"
-            : tag === "a" || tag === "button"
-              ? "action"
-              : tag === "p"
-                ? "description"
-                : tag === "article"
-                  ? "card"
-                  : tag;
+              : tag === "img"
+                ? "image"
+                : tag === "picture"
+                  ? "picture"
+                  : tag === "svg"
+                    ? "svg"
+                    : tag === "video"
+                      ? "video"
+                      : tag === "audio"
+                        ? "audio"
+                        : tag === "canvas"
+                          ? "canvas"
+                          : tag === "iframe"
+                            ? "iframe"
+                            : tag === "embed"
+                              ? "embed"
+                              : tag === "nav"
+                                ? "navigation"
+                                : tag === "form"
+                                  ? "form"
+                                  : tag === "fieldset"
+                                    ? "fieldset"
+                                    : tag === "textarea"
+                                      ? "textarea"
+                                      : tag === "select"
+                                        ? "select"
+                                        : tag === "option"
+                                          ? "option"
+                                          : tag === "input"
+                                            ? elementEl instanceof
+                                                HTMLInputElement &&
+                                              elementEl.type === "checkbox"
+                                              ? "checkbox"
+                                              : elementEl instanceof
+                                                    HTMLInputElement &&
+                                                  elementEl.type === "radio"
+                                                ? "radio"
+                                                : "input"
+                                            : tag === "ul" || tag === "ol"
+                                              ? "list"
+                                              : tag === "li"
+                                                ? "list-item"
+                                                : tag === "table"
+                                                  ? "table"
+                                                  : tag === "tr"
+                                                    ? "table-row"
+                                                    : tag === "td" ||
+                                                        tag === "th"
+                                                      ? "table-cell"
+                                                      : tag === "hr"
+                                                        ? "divider"
+                                                        : tag === "a" ||
+                                                            tag === "button"
+                                                          ? "action"
+                                                          : tag === "p"
+                                                            ? "description"
+                                                            : tag === "article"
+                                                              ? "card"
+                                                              : tag;
 
         const fieldKey =
           elementEl.dataset.storefrontField ??
@@ -695,7 +720,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           fieldPath,
           tagName: tag,
           role: elementEl.getAttribute("role"),
-          inputType: elementEl instanceof HTMLInputElement ? elementEl.type : null,
+          inputType:
+            elementEl instanceof HTMLInputElement ? elementEl.type : null,
         };
       }
 
@@ -952,7 +978,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           window.getComputedStyle(selectable.element),
         );
         const parentComputedStyle = selectionStyleSnapshot(
-          window.getComputedStyle(selectable.element.parentElement ?? selectable.element),
+          window.getComputedStyle(
+            selectable.element.parentElement ?? selectable.element,
+          ),
         );
         const sectionComputedStyle = selectionStyleSnapshot(
           window.getComputedStyle(selectable.section ?? selectable.element),
@@ -971,8 +999,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             nodeId: morphNodeId,
             elementKey: selectable.elementKey,
             fieldKey: selectable.fieldKey,
-              field: selectable.fieldKey ?? selectable.elementKey,
-              ...selectionMetadata(selectable),
+            field: selectable.fieldKey ?? selectable.elementKey,
+            ...selectionMetadata(selectable),
             styleRevision: Number(
               document.documentElement.dataset.storefrontStyleRevision ?? 0,
             ),
@@ -1026,7 +1054,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         );
         if (sectionEl) {
           selectedElement = sectionEl;
-          selectedElement.setAttribute("data-storefront-editor-selected", "true");
+          selectedElement.setAttribute(
+            "data-storefront-editor-selected",
+            "true",
+          );
           selectedItem = resolveSelectable(sectionEl);
         } else {
           selectedItem = null;
@@ -1105,19 +1136,19 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         const previewTarget =
           targetKey === "section" || targetKey === "root"
             ? (selectedItem.section ?? selectedItem.element)
-            : scope.querySelector<HTMLElement>(
+            : (scope.querySelector<HTMLElement>(
                 `[data-morph-node="${CSS.escape(targetKey)}"], [data-morph-element="${CSS.escape(targetKey)}"], [data-storefront-field="${CSS.escape(targetKey)}"]`,
               ) ??
               (selectedItem.elementKey === targetKey ||
               selectedItem.element.dataset.morphNode === targetKey
                 ? selectedItem.element
-                : null);
+                : null));
         if (!previewTarget) return;
-        selectionStylePreview.apply(
-          previewTarget,
-          event.data.styles as Record<string, string>,
-        );
-        positionOverlays();
+        const previewStyles = event.data.styles as Record<string, string>;
+        selectionStylePreview.apply(previewTarget, previewStyles);
+        if (selectionStylePreviewNeedsOverlayUpdate(previewStyles)) {
+          positionOverlays();
+        }
         return;
       }
 
@@ -1126,7 +1157,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
-      if (event.data.type === "morph:storefront-preview-request-selection-style") {
+      if (
+        event.data.type === "morph:storefront-preview-request-selection-style"
+      ) {
         if (overlaySettler?.isFrozen()) rebindSelectedElement();
         if (selectedItem?.sectionId) {
           const computedStyle = selectionStyleSnapshot(
@@ -1138,7 +1171,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             ),
           );
           const sectionComputedStyle = selectionStyleSnapshot(
-            window.getComputedStyle(selectedItem.section ?? selectedItem.element),
+            window.getComputedStyle(
+              selectedItem.section ?? selectedItem.element,
+            ),
           );
           window.parent.postMessage(
             {

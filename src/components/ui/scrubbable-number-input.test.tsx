@@ -23,6 +23,8 @@ describe("ScrubbableNumberInput", () => {
     expect(classNames).toEqual(
       expect.arrayContaining(["bg-transparent", "shadow-none", "border-0"]),
     );
+    expect(classNames).not.toContain("focus-visible:ring-[3px]");
+    expect(classNames).not.toContain("focus-visible:ring-ring/50");
     expect(classNames).not.toContain("bg-background");
     expect(classNames).not.toContain("shadow-xs");
     expect(classNames).not.toContain("dark:bg-input/30");
@@ -165,6 +167,66 @@ describe("ScrubbableNumberInput", () => {
     expect(onValueChange).toHaveBeenLastCalledWith(110);
   });
 
+  it("keeps accumulating movement while the pointer is locked at a screen edge", () => {
+    const onValuePreview = vi.fn();
+    const onValueChange = vi.fn();
+    render(
+      <ScrubbableNumberInput
+        value={100}
+        min={25}
+        max={200}
+        step={1}
+        scrubPixelsPerStep={2}
+        ariaLabel="Canvas zoom percentage"
+        onValuePreview={onValuePreview}
+        onValueChange={onValueChange}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Canvas zoom percentage",
+    });
+    Object.defineProperty(input, "setPointerCapture", { value: vi.fn() });
+    Object.defineProperty(input, "requestPointerLock", {
+      value: vi.fn(() => {
+        Object.defineProperty(document, "pointerLockElement", {
+          configurable: true,
+          value: input,
+        });
+      }),
+    });
+    Object.defineProperty(document, "exitPointerLock", {
+      configurable: true,
+      value: vi.fn(() => {
+        Object.defineProperty(document, "pointerLockElement", {
+          configurable: true,
+          value: null,
+        });
+      }),
+    });
+
+    fireEvent.pointerDown(input, {
+      button: 0,
+      pointerId: 1,
+      clientX: 100,
+    });
+    fireEvent.pointerMove(input, {
+      pointerId: 1,
+      clientX: 100,
+      movementX: 10,
+    });
+    fireEvent.pointerMove(input, {
+      pointerId: 1,
+      clientX: 100,
+      movementX: 10,
+    });
+    fireEvent.pointerUp(input, { pointerId: 1, clientX: 100 });
+
+    expect(onValuePreview).toHaveBeenLastCalledWith(110);
+    expect(onValueChange).toHaveBeenLastCalledWith(110);
+    expect(document.pointerLockElement).toBeNull();
+  });
+
   it("does not overwrite an active typed draft when value props update", () => {
     const onValueChange = vi.fn();
     const { rerender } = render(
@@ -176,7 +238,9 @@ describe("ScrubbableNumberInput", () => {
         onValueChange={onValueChange}
       />,
     );
-    const input = screen.getByRole("spinbutton", { name: "Canvas zoom percentage" });
+    const input = screen.getByRole("spinbutton", {
+      name: "Canvas zoom percentage",
+    });
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "125" } });
     rerender(

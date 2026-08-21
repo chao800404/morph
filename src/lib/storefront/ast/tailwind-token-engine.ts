@@ -3,6 +3,7 @@ export type TailwindPropertyFamily =
   | "font-family"
   | "font-weight"
   | "text-align"
+  | "text-color"
   | "line-height"
   | "padding"
   | "padding-top"
@@ -13,7 +14,15 @@ export type TailwindPropertyFamily =
   | "padding-y"
   | "background"
   | "background-color"
+  | "background-clip"
+  | "border-width"
+  | "border-style"
+  | "border-color"
   | "border-radius"
+  | "border-radius-top-left"
+  | "border-radius-top-right"
+  | "border-radius-bottom-right"
+  | "border-radius-bottom-left"
   | "object-fit"
   | "object-position"
   | "aspect-ratio"
@@ -45,19 +54,41 @@ export interface PatchTailwindOptions {
 }
 
 const FONT_SIZE_NAMES = new Set([
-  "text-xs", "text-sm", "text-base", "text-lg", "text-xl",
-  "text-2xl", "text-3xl", "text-4xl", "text-5xl",
-  "text-6xl", "text-7xl", "text-8xl", "text-9xl",
+  "text-xs",
+  "text-sm",
+  "text-base",
+  "text-lg",
+  "text-xl",
+  "text-2xl",
+  "text-3xl",
+  "text-4xl",
+  "text-5xl",
+  "text-6xl",
+  "text-7xl",
+  "text-8xl",
+  "text-9xl",
 ]);
 
 const FONT_WEIGHT_NAMES = new Set([
-  "font-thin", "font-extralight", "font-light", "font-normal",
-  "font-medium", "font-semibold", "font-bold", "font-extrabold", "font-black",
+  "font-thin",
+  "font-extralight",
+  "font-light",
+  "font-normal",
+  "font-medium",
+  "font-semibold",
+  "font-bold",
+  "font-extrabold",
+  "font-black",
 ]);
 
 const FONT_FAMILY_NAMES = new Set(["font-sans", "font-serif", "font-mono"]);
 const TEXT_ALIGN_NAMES = new Set([
-  "text-left", "text-center", "text-right", "text-justify", "text-start", "text-end",
+  "text-left",
+  "text-center",
+  "text-right",
+  "text-justify",
+  "text-start",
+  "text-end",
 ]);
 const LINE_HEIGHT_PATTERN =
   /^leading-(none|tight|snug|normal|relaxed|loose|\d+(?:\.\d+)?|\[.+\])$/;
@@ -70,16 +101,28 @@ const PADDING_X_PATTERN = /^px-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const PADDING_Y_PATTERN = /^py-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const BORDER_RADIUS_PATTERN =
   /^rounded(?:-(?:none|sm|md|lg|xl|2xl|3xl|full|\[.+\]))?$/;
+const BORDER_RADIUS_TOP_LEFT_PATTERN =
+  /^rounded-tl-(?:none|sm|md|lg|xl|2xl|3xl|full|\[.+\])$/;
+const BORDER_RADIUS_TOP_RIGHT_PATTERN =
+  /^rounded-tr-(?:none|sm|md|lg|xl|2xl|3xl|full|\[.+\])$/;
+const BORDER_RADIUS_BOTTOM_RIGHT_PATTERN =
+  /^rounded-br-(?:none|sm|md|lg|xl|2xl|3xl|full|\[.+\])$/;
+const BORDER_RADIUS_BOTTOM_LEFT_PATTERN =
+  /^rounded-bl-(?:none|sm|md|lg|xl|2xl|3xl|full|\[.+\])$/;
+const BORDER_STYLE_PATTERN =
+  /^border-(?:solid|dashed|dotted|double|hidden|none)$/;
 const OBJECT_FIT_PATTERN = /^object-(?:contain|cover|fill|none|scale-down)$/;
 const OBJECT_POSITION_PATTERN =
   /^object-(?:center|top|right|bottom|left|top-right|top-left|bottom-right|bottom-left|\[.+\])$/;
-const ASPECT_RATIO_PATTERN =
-  /^aspect-(?:auto|square|video|\[.+\])$/;
-const DISPLAY_PATTERN = /^(?:block|inline-block|inline|flex|inline-flex|grid|inline-grid|hidden)$/;
+const ASPECT_RATIO_PATTERN = /^aspect-(?:auto|square|video|\[.+\])$/;
+const DISPLAY_PATTERN =
+  /^(?:block|inline-block|inline|flex|inline-flex|grid|inline-grid|hidden)$/;
 const FLEX_DIRECTION_PATTERN = /^flex-(?:row|row-reverse|col|col-reverse)$/;
 const GAP_PATTERN = /^gap-(?:\d+(?:\.\d+)?|\[.+\])$/;
-const WIDTH_PATTERN = /^w-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
-const HEIGHT_PATTERN = /^h-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
+const WIDTH_PATTERN =
+  /^w-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
+const HEIGHT_PATTERN =
+  /^h-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
 const POSITION_PATTERN = /^(?:static|relative|absolute|fixed|sticky)$/;
 const TOP_PATTERN = /^-?top-(?:auto|full|\d+(?:\.\d+)?|\[.+\])$/;
 const LEFT_PATTERN = /^-?left-(?:auto|full|\d+(?:\.\d+)?|\[.+\])$/;
@@ -87,6 +130,7 @@ const Z_INDEX_PATTERN = /^-?z-(?:auto|\d+|\[.+\])$/;
 const ROTATE_PATTERN = /^-?rotate-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const OPACITY_PATTERN = /^opacity-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const OVERFLOW_PATTERN = /^overflow-(?:auto|hidden|clip|visible|scroll)$/;
+const BACKGROUND_CLIP_PATTERN = /^bg-clip-(?:border|padding|content|text)$/;
 
 function arbitraryValue(utility: string, prefix: string): string | null {
   const start = `${prefix}-[`;
@@ -96,7 +140,11 @@ function arbitraryValue(utility: string, prefix: string): string | null {
 
 function looksLikeCssLengthExpression(value: string): boolean {
   const normalized = value.trim().toLowerCase();
-  if (/^-?\d*\.?\d+(px|rem|em|vw|vh|vmin|vmax|ch|ex|cm|mm|in|pt|pc|%)$/.test(normalized)) {
+  if (
+    /^-?\d*\.?\d+(px|rem|em|vw|vh|vmin|vmax|ch|ex|cm|mm|in|pt|pc|%)$/.test(
+      normalized,
+    )
+  ) {
     return true;
   }
   if (/^(calc|min|max|clamp)\(/.test(normalized)) return true;
@@ -113,10 +161,18 @@ function looksLikeFontWeight(value: string): boolean {
 function looksLikeBackgroundColor(value: string): boolean {
   const normalized = value.trim().toLowerCase();
   if (/^(color:)/.test(normalized)) return true;
-  if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(normalized)) return true;
-  if (/^(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color)\(/.test(normalized)) return true;
-  if (/^var\(--(?:color|brand|surface|background|bg)-/.test(normalized)) return true;
+  if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(normalized))
+    return true;
+  if (/^(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color)\(/.test(normalized))
+    return true;
+  if (/^var\(--(?:color|brand|surface|background|bg)-/.test(normalized))
+    return true;
   return false;
+}
+
+function looksLikeBackgroundImage(value: string): boolean {
+  const normalized = value.trim().toLowerCase().replaceAll("_", " ");
+  return /^(?:linear|radial)-gradient\(/.test(normalized);
 }
 
 export function classifyTailwindUtility(
@@ -124,7 +180,18 @@ export function classifyTailwindUtility(
 ): TailwindPropertyFamily {
   if (FONT_SIZE_NAMES.has(utility)) return "font-size";
   const textArbitrary = arbitraryValue(utility, "text");
-  if (textArbitrary && looksLikeCssLengthExpression(textArbitrary)) return "font-size";
+  if (textArbitrary && looksLikeCssLengthExpression(textArbitrary))
+    return "font-size";
+  if (textArbitrary && looksLikeBackgroundColor(textArbitrary))
+    return "text-color";
+  if (
+    /^text-(?:transparent|current|black|white)$/.test(utility) ||
+    /^text-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}$/.test(
+      utility,
+    )
+  ) {
+    return "text-color";
+  }
 
   if (FONT_FAMILY_NAMES.has(utility)) return "font-family";
   if (FONT_WEIGHT_NAMES.has(utility)) return "font-weight";
@@ -143,8 +210,12 @@ export function classifyTailwindUtility(
 
   const bgArbitrary = arbitraryValue(utility, "bg");
   if (bgArbitrary) {
-    return looksLikeBackgroundColor(bgArbitrary) ? "background" : "other";
+    return looksLikeBackgroundColor(bgArbitrary) ||
+      looksLikeBackgroundImage(bgArbitrary)
+      ? "background"
+      : "other";
   }
+  if (BACKGROUND_CLIP_PATTERN.test(utility)) return "background-clip";
   if (
     /^bg-(?:transparent|current|black|white)$/.test(utility) ||
     /^bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}$/.test(
@@ -154,7 +225,30 @@ export function classifyTailwindUtility(
     return "background";
   }
 
+  if (BORDER_RADIUS_TOP_LEFT_PATTERN.test(utility))
+    return "border-radius-top-left";
+  if (BORDER_RADIUS_TOP_RIGHT_PATTERN.test(utility))
+    return "border-radius-top-right";
+  if (BORDER_RADIUS_BOTTOM_RIGHT_PATTERN.test(utility))
+    return "border-radius-bottom-right";
+  if (BORDER_RADIUS_BOTTOM_LEFT_PATTERN.test(utility))
+    return "border-radius-bottom-left";
   if (BORDER_RADIUS_PATTERN.test(utility)) return "border-radius";
+  if (BORDER_STYLE_PATTERN.test(utility)) return "border-style";
+  const borderArbitrary = arbitraryValue(utility, "border");
+  if (borderArbitrary) {
+    if (looksLikeCssLengthExpression(borderArbitrary)) return "border-width";
+    if (looksLikeBackgroundColor(borderArbitrary)) return "border-color";
+  }
+  if (/^border(?:-(?:0|2|4|8))?$/.test(utility)) return "border-width";
+  if (
+    /^border-(?:transparent|current|black|white)$/.test(utility) ||
+    /^border-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}$/.test(
+      utility,
+    )
+  ) {
+    return "border-color";
+  }
   if (OBJECT_FIT_PATTERN.test(utility)) return "object-fit";
   if (OBJECT_POSITION_PATTERN.test(utility)) return "object-position";
   if (ASPECT_RATIO_PATTERN.test(utility)) return "aspect-ratio";
@@ -251,7 +345,9 @@ export function tokenizeTailwindClasses(className?: string): TailwindToken[] {
 }
 
 function areVariantsEqual(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((variant, index) => variant === b[index]);
+  return (
+    a.length === b.length && a.every((variant, index) => variant === b[index])
+  );
 }
 
 function normalizeReplacementUtility(value: string): string {
@@ -273,9 +369,12 @@ export function patchTailwindClasses(
   for (const token of tokens) {
     const isSameFamily =
       token.propertyFamily === options.property ||
-      ((token.propertyFamily === "background" || token.propertyFamily === "background-color") &&
-        (options.property === "background" || options.property === "background-color"));
-    const matches = isSameFamily && areVariantsEqual(token.variants, targetVariants);
+      ((token.propertyFamily === "background" ||
+        token.propertyFamily === "background-color") &&
+        (options.property === "background" ||
+          options.property === "background-color"));
+    const matches =
+      isSameFamily && areVariantsEqual(token.variants, targetVariants);
 
     if (!matches) {
       result.push(token);

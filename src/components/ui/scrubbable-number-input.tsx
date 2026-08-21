@@ -51,11 +51,25 @@ export function ScrubbableNumberInput({
   const skipNextBlurCommitRef = useRef(false);
   const scrubOriginRef = useRef<{
     pointerId: number;
-    pointerX: number;
+    lastPointerX: number;
+    accumulatedPixels: number;
     value: number;
     nextValue: number;
     moved: boolean;
   } | null>(null);
+
+  const releasePointerLock = () => {
+    if (document.pointerLockElement === inputRef.current) {
+      document.exitPointerLock?.();
+    }
+  };
+
+  useEffect(
+    () => () => {
+      releasePointerLock();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (isEditingRef.current) return;
@@ -104,11 +118,27 @@ export function ScrubbableNumberInput({
     event.currentTarget.setPointerCapture(event.pointerId);
     scrubOriginRef.current = {
       pointerId: event.pointerId,
-      pointerX: event.clientX,
+      lastPointerX: event.clientX,
+      accumulatedPixels: 0,
       value,
       nextValue: value,
       moved: false,
     };
+
+    try {
+      const pointerLockRequest = event.currentTarget.requestPointerLock?.();
+      if (pointerLockRequest) {
+        void pointerLockRequest
+          .then(() => {
+            if (!scrubOriginRef.current) releasePointerLock();
+          })
+          .catch(() => {
+            // Pointer capture remains the fallback when lock is unavailable.
+          });
+      }
+    } catch {
+      // Older browsers may throw synchronously; pointer capture still works.
+    }
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLInputElement>) => {
@@ -116,8 +146,14 @@ export function ScrubbableNumberInput({
     if (!origin || origin.pointerId !== event.pointerId) return;
     event.stopPropagation();
 
+    const movementX =
+      document.pointerLockElement === event.currentTarget
+        ? event.movementX
+        : event.clientX - origin.lastPointerX;
+    origin.lastPointerX = event.clientX;
+    origin.accumulatedPixels += movementX;
     const deltaSteps = Math.round(
-      (event.clientX - origin.pointerX) / scrubPixelsPerStep,
+      origin.accumulatedPixels / scrubPixelsPerStep,
     );
     if (!origin.moved && deltaSteps === 0) return;
 
@@ -138,6 +174,7 @@ export function ScrubbableNumberInput({
     if (!origin || origin.pointerId !== event.pointerId) return;
     event.stopPropagation();
     scrubOriginRef.current = null;
+    releasePointerLock();
 
     if (origin.moved) {
       onValuePreview?.(origin.nextValue);
@@ -155,6 +192,7 @@ export function ScrubbableNumberInput({
     if (!origin || origin.pointerId !== event.pointerId) return;
     event.stopPropagation();
     scrubOriginRef.current = null;
+    releasePointerLock();
     setDraftValue(String(origin.value));
     (onValuePreview ?? onValueChange)(origin.value);
     isEditingRef.current = false;
@@ -200,7 +238,9 @@ export function ScrubbableNumberInput({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
         aria-label={ariaLabel}
-        title={disabled ? undefined : "Drag horizontally to adjust, or click to type"}
+        title={
+          disabled ? undefined : "Drag horizontally to adjust, or click to type"
+        }
         className={cn(
           "appearance-none text-center tabular-nums [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden",
           disabled

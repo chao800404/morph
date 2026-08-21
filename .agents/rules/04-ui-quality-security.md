@@ -29,6 +29,19 @@
 - 優先沿用 `ScrubbableNumberInput`。
 - 保留 min/max / step / Enter / Escape / accessible label。
 
+### 19.3 Inspector field disclosure
+
+Inspector 的 Input 或 Select 若有分軸、進階或其他延伸值：
+
+- 如 Padding 這類單一數值列，欄位名稱必須放在主要 Input 外框內，不得另外占用一列標題。
+- 同一 Inspector module 的欄位名稱必須使用相同 typography token；不得混用 `text-xs` 與硬編碼 `text-[10px]` 造成相鄰標籤大小不一。
+- 展開控制必須放在主要欄位同一列的最右側，並作為主要 Input / Select 外框之外、緊鄰欄位的獨立 trailing action；不得塞進欄位外框內，也不得分離到欄位標題列。
+- 點擊後，延伸值應緊接在主要欄位下方向下展開；主要欄位保持可見。
+- 展開按鈕必須提供 `aria-expanded`、`aria-controls` 與明確 accessible label。
+- 不得在 Select trigger 等互動元素內巢狀另一個 button；應使用同一欄位容器中的相鄰 trailing action。
+- 展開／收合只屬於暫時 UI state，不得因此寫入 domain/source；延伸欄位仍遵循 preview during edit、commit on completion。
+- 相同 disclosure affordance 出現兩次以上時應抽成共用 Inspector primitive，不在各模組各自重做。
+
 ---
 
 ## 20. DataTable / Resource List
