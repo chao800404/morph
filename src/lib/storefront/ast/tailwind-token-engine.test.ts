@@ -25,6 +25,11 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("bg-[#123456]")).toBe("background");
     expect(classifyTailwindUtility("rounded-2xl")).toBe("border-radius");
     expect(classifyTailwindUtility("rounded-[16px]")).toBe("border-radius");
+    expect(classifyTailwindUtility("object-cover")).toBe("object-fit");
+    expect(classifyTailwindUtility("object-top-right")).toBe("object-position");
+    expect(classifyTailwindUtility("object-[35%_20%]")).toBe("object-position");
+    expect(classifyTailwindUtility("aspect-video")).toBe("aspect-ratio");
+    expect(classifyTailwindUtility("aspect-[4/3]")).toBe("aspect-ratio");
     expect(classifyTailwindUtility("shadow-lg")).toBe("other");
   });
 
@@ -127,4 +132,51 @@ describe("tailwind-token-engine", () => {
     expect(updated).toContain("bg-[url(https://example.com/a:b.png)]");
     expect(updated).toContain("text-[88px]");
   });
+
+  it("replaces media utilities without accumulating duplicates", () => {
+    const original = "object-cover aspect-video md:object-top object-left";
+    const updated = patchTailwindClasses(original, {
+      property: "object-fit",
+      value: "object-contain",
+    });
+    expect(updated).toBe("object-contain aspect-video md:object-top object-left");
+
+    const responsive = patchTailwindClasses(updated, {
+      property: "object-position",
+      value: "object-bottom-right",
+      targetVariants: ["md"],
+    });
+    expect(responsive).toBe("object-contain aspect-video md:object-bottom-right object-left");
+
+    const aspect = patchTailwindClasses(responsive, {
+      property: "aspect-ratio",
+      value: "aspect-[4/3]",
+    });
+    expect(aspect).toBe("object-contain aspect-[4/3] md:object-bottom-right object-left");
+  });
+  it("classifies and replaces Figma-style layout property families independently", () => {
+    const classes =
+      "flex flex-col gap-[12px] w-[320px] h-[180px] relative top-[8px] left-[4px] z-[2] rotate-[5deg] opacity-[0.8] overflow-hidden";
+
+    expect(classifyTailwindUtility("flex")).toBe("display");
+    expect(classifyTailwindUtility("flex-col")).toBe("flex-direction");
+    expect(classifyTailwindUtility("gap-[12px]")).toBe("gap");
+    expect(classifyTailwindUtility("w-[320px]")).toBe("width");
+    expect(classifyTailwindUtility("h-[180px]")).toBe("height");
+    expect(classifyTailwindUtility("relative")).toBe("position");
+    expect(classifyTailwindUtility("top-[8px]")).toBe("top");
+    expect(classifyTailwindUtility("left-[4px]")).toBe("left");
+    expect(classifyTailwindUtility("z-[2]")).toBe("z-index");
+    expect(classifyTailwindUtility("rotate-[5deg]")).toBe("rotate");
+    expect(classifyTailwindUtility("opacity-[0.8]")).toBe("opacity");
+    expect(classifyTailwindUtility("overflow-hidden")).toBe("overflow");
+
+    expect(
+      patchTailwindClasses(classes, {
+        property: "width",
+        value: "w-[640px]",
+      }),
+    ).toContain("w-[640px]");
+  });
+
 });

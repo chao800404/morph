@@ -73,6 +73,7 @@ import {
 import {
   createStorefrontThemeRevision,
   getStorefrontThemeFile,
+  initStorefrontStarterTheme,
   saveStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import {
@@ -89,6 +90,11 @@ import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { EditorAssistantPanel } from "./editor-assistant-panel";
+import { isLatestStyleRevision, shouldAcceptStyleAck } from "./style-revision";
+import {
+  isSelectionKind,
+  type EditorSelectionDescriptor,
+} from "@/lib/storefront/editor/selection-taxonomy";
 import { EditorCanvasComments } from "./editor-canvas-comments";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { EditorPathNavigator } from "./editor-path-navigator";
@@ -693,15 +699,13 @@ export function VisualEditorShell({
     [],
   );
 
-  const [activeElementKey, setActiveElementKey] = useState<string | null>(null);
-  const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
-  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
-  const [activeComputedStyle, setActiveComputedStyle] = useState<
-    Record<string, string> | null
-  >(null);
-  const [activeSectionComputedStyle, setActiveSectionComputedStyle] = useState<
-    Record<string, string> | null
-  >(null);
+  const [activeSelection, setActiveSelection] =
+    useState<EditorSelectionDescriptor | null>(null);
+  const previewSelectionSectionSyncRef = useRef<string | null>(null);
+  const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
+    useState(0);
+  const latestStyleRevisionRef = useRef(0);
+  const latestAppliedStyleRevisionRef = useRef(0);
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
 
 
@@ -710,6 +714,56 @@ export function VisualEditorShell({
   });
   const themeFiles = themeFilesQuery.data?.files ?? EMPTY_THEME_FILES;
   const themeTree = themeFilesQuery.data?.tree ?? EMPTY_THEME_TREE;
+  const starterInitAttemptRef = useRef<string | null>(null);
+  const starterInitMutation = useMutation({
+    mutationFn: async () => {
+      const result = await initStorefrontStarterTheme({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      return result.data;
+    },
+    onSuccess: async (data) => {
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(
+        data.sourceGeneration,
+        {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+        },
+      );
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(
+          context.storefront.id,
+          context.theme.id,
+        ).queryKey,
+      });
+      setPreviewRevision((revision) => revision + 1);
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to initialize theme source workspace",
+      );
+    },
+  });
+
+  useEffect(() => {
+    if (!themeFilesQuery.isSuccess || themeFiles.length > 0) return;
+    const workspaceKey = `${context.storefront.id}:${context.theme.id}`;
+    if (starterInitAttemptRef.current === workspaceKey) return;
+    starterInitAttemptRef.current = workspaceKey;
+    starterInitMutation.mutate();
+  }, [
+    context.storefront.id,
+    context.theme.id,
+    starterInitMutation,
+    themeFiles.length,
+    themeFilesQuery.isSuccess,
+  ]);
 
   const workspaceFiles = useThemeWorkspaceStore((state) => state.files);
   const setActiveWorkspace = useThemeWorkspaceStore((state) => state.setActiveWorkspace);
@@ -763,6 +817,46 @@ export function VisualEditorShell({
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const fileRevisionRef = useRef<Map<string, number>>(new Map());
+  const previewIframeRef = useRef<HTMLIFrameElement>(null);
+  const previewSelectionStyle = useCallback(
+    (styles: Record<string, string>, targetElement: string) => {
+      previewIframeRef.current?.contentWindow?.postMessage(
+        {
+          type: "morph:storefront-preview-update-selection-style",
+          styles,
+          targetElement,
+        },
+        window.location.origin,
+      );
+    },
+    [],
+  );
+  const previewSelectionField = useCallback(
+    (fieldKey: string, fieldPath: string | null, value: string) => {
+      previewIframeRef.current?.contentWindow?.postMessage(
+        {
+          type: "morph:storefront-preview-update-selection-field",
+          fieldKey,
+          fieldPath,
+          value,
+        },
+        window.location.origin,
+      );
+    },
+    [],
+  );
+  const postPreviewThemeFiles = useCallback(
+    (files: Array<{ path: string; content: string }>) => {
+      const styleRevision = latestStyleRevisionRef.current + 1;
+      latestStyleRevisionRef.current = styleRevision;
+      previewIframeRef.current?.contentWindow?.postMessage(
+        { type: "morph:storefront-preview-update-theme-files", files, styleRevision },
+        window.location.origin,
+      );
+      return styleRevision;
+    },
+    [],
+  );
 
   const getScopedOpKey = useCallback(
     (filePath: string) =>
@@ -1033,10 +1127,8 @@ export function VisualEditorShell({
 
       updateWorkspaceLocal(filePath, content, workspaceScope);
 
-      previewIframeRef.current?.contentWindow?.postMessage(
-        {
-          type: "morph:storefront-preview-update-theme-files",
-          files: themeFiles.map((file) => ({
+      postPreviewThemeFiles(
+        themeFiles.map((file) => ({
             path: file.path,
             content:
               useThemeWorkspaceStore
@@ -1046,8 +1138,6 @@ export function VisualEditorShell({
                   workspaceScope.themeId,
                 )[file.path]?.localContent ?? file.content,
           })),
-        },
-        window.location.origin,
       );
 
       const nextRevision = (fileRevisionRef.current.get(opKey) ?? 0) + 1;
@@ -1062,12 +1152,6 @@ export function VisualEditorShell({
         return null;
       }
 
-      requestAnimationFrame(() => {
-        previewIframeRef.current?.contentWindow?.postMessage(
-          { type: "morph:storefront-preview-request-selection-style" },
-          window.location.origin,
-        );
-      });
       return result.file;
     },
     [
@@ -1076,6 +1160,7 @@ export function VisualEditorShell({
       themeFiles,
       updateWorkspaceLocal,
       workspaceScope,
+      postPreviewThemeFiles,
     ],
   );
 
@@ -1099,10 +1184,8 @@ export function VisualEditorShell({
         if (!workspace.hasActiveConflictsOrErrors(workspaceScope)) {
           workspace.acceptRemoteGeneration(undefined, workspaceScope);
         }
-        previewIframeRef.current?.contentWindow?.postMessage(
-          {
-            type: "morph:storefront-preview-update-theme-files",
-            files: themeFiles.flatMap((file) => {
+        postPreviewThemeFiles(
+          themeFiles.flatMap((file) => {
               const current = useThemeWorkspaceStore
                 .getState()
                 .getWorkspaceFiles(
@@ -1113,8 +1196,6 @@ export function VisualEditorShell({
                 ? [{ path: file.path, content: current.localContent }]
                 : [];
             }),
-          },
-          window.location.origin,
         );
         toast.info(`Reloaded remote state of ${filePath}`);
         return;
@@ -1480,10 +1561,8 @@ export function VisualEditorShell({
       if (updatedContent !== currentSource) {
         updateWorkspaceLocal(filePath, updatedContent, workspaceScope);
 
-        previewIframeRef.current?.contentWindow?.postMessage(
-          {
-            type: "morph:storefront-preview-update-theme-files",
-            files: themeFiles.map((file) => ({
+        const styleRevision = postPreviewThemeFiles(
+          themeFiles.map((file) => ({
               path: file.path,
               content:
                 file.path === filePath
@@ -1494,17 +1573,8 @@ export function VisualEditorShell({
                         workspaceScope.storefrontId,
                         workspaceScope.themeId,
                       )[file.path]?.localContent ?? file.content,
-            })),
-          },
-          window.location.origin,
+          })),
         );
-
-        requestAnimationFrame(() => {
-          previewIframeRef.current?.contentWindow?.postMessage(
-            { type: "morph:storefront-preview-request-selection-style" },
-            window.location.origin,
-          );
-        });
 
         // Debounce save to database (300ms)
         const opKey = getScopedOpKey(filePath);
@@ -1529,6 +1599,7 @@ export function VisualEditorShell({
 
         pendingSaveTimersRef.current.set(opKey, newTimer);
         markWorkspaceDebouncing(filePath, workspaceScope);
+        return styleRevision;
       }
     },
     [
@@ -1536,6 +1607,7 @@ export function VisualEditorShell({
       markWorkspaceDebouncing,
       saveThemeFileSequentially,
       themeFiles,
+      postPreviewThemeFiles,
       updateWorkspaceLocal,
       workspaceScope,
     ],
@@ -1560,7 +1632,6 @@ export function VisualEditorShell({
     }
   }, [normalWidthSessionKey]);
 
-  const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
   const previewWidthRef = useRef(previewWidth);
   const previewFrameHeightRef = useRef(previewFrameHeight);
@@ -1759,6 +1830,27 @@ export function VisualEditorShell({
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
       const message = event.data;
       if (
+        event.origin === window.location.origin &&
+        event.source === previewIframeRef.current?.contentWindow &&
+        typeof message === "object" &&
+        message !== null &&
+        "type" in message &&
+        message.type === "morph:storefront-preview-theme-files-applied" &&
+        "styleRevision" in message &&
+        typeof message.styleRevision === "number"
+      ) {
+        if (!shouldAcceptStyleAck(message.styleRevision, latestStyleRevisionRef.current)) return;
+        latestAppliedStyleRevisionRef.current = message.styleRevision;
+        previewIframeRef.current?.contentWindow?.postMessage(
+          {
+            type: "morph:storefront-preview-request-selection-style",
+            styleRevision: message.styleRevision,
+          },
+          window.location.origin,
+        );
+        return;
+      }
+      if (
         event.origin !== window.location.origin ||
         event.source !== previewIframeRef.current?.contentWindow ||
         typeof message !== "object" ||
@@ -1771,47 +1863,74 @@ export function VisualEditorShell({
       ) {
         return;
       }
+      const responseStyleRevision =
+        "styleRevision" in message && typeof message.styleRevision === "number"
+          ? message.styleRevision
+          : 0;
+      if (!isLatestStyleRevision(responseStyleRevision, latestStyleRevisionRef.current)) return;
       const sectionId = message.sectionId;
       const nodeId =
-        "nodeId" in message && typeof message.nodeId === "string"
-          ? message.nodeId
-          : null;
+        "nodeId" in message && typeof message.nodeId === "string" ? message.nodeId.slice(0, 200) : null;
       const elementKey =
-        "elementKey" in message && typeof message.elementKey === "string"
-          ? message.elementKey
-          : null;
+        "elementKey" in message && typeof message.elementKey === "string" ? message.elementKey.slice(0, 200) : null;
       const fieldKey =
         "fieldKey" in message && typeof message.fieldKey === "string"
-          ? message.fieldKey
-          : "field" in message && typeof message.field === "string"
-            ? message.field
-            : null;
+          ? message.fieldKey.slice(0, 200)
+          : "field" in message && typeof message.field === "string" ? message.field.slice(0, 200) : null;
+      const fieldPath =
+        "fieldPath" in message && typeof message.fieldPath === "string" ? message.fieldPath.slice(0, 500) : fieldKey;
+      const tagName =
+        "tagName" in message && typeof message.tagName === "string" ? message.tagName.slice(0, 100) : null;
+      const role =
+        "role" in message && typeof message.role === "string" ? message.role.slice(0, 100) : null;
+      const inputType =
+        "inputType" in message && typeof message.inputType === "string" ? message.inputType.slice(0, 100) : null;
+      const selectionKind =
+        "kind" in message && typeof message.kind === "string" && isSelectionKind(message.kind)
+          ? message.kind : "custom";
+      const className =
+        "className" in message && typeof message.className === "string" && message.className.length <= 20_000
+          ? message.className : "";
+      const selectionIsSection =
+        "isSection" in message && typeof message.isSection === "boolean" ? message.isSection : false;
       const computedStyle =
-        "computedStyle" in message &&
-        typeof message.computedStyle === "object" &&
-        message.computedStyle !== null
-          ? (message.computedStyle as Record<string, string>)
-          : null;
-
-      setActiveNodeId(nodeId);
-      setActiveElementKey(elementKey);
-      setActiveFieldKey(fieldKey);
+        "computedStyle" in message && typeof message.computedStyle === "object" && message.computedStyle !== null
+          ? (message.computedStyle as Record<string, string>) : null;
+      const parentComputedStyle =
+        "parentComputedStyle" in message && typeof message.parentComputedStyle === "object" && message.parentComputedStyle !== null
+          ? (message.parentComputedStyle as Record<string, string>) : null;
       const sectionComputedStyle =
-        "sectionComputedStyle" in message &&
-        typeof message.sectionComputedStyle === "object" &&
-        message.sectionComputedStyle !== null
-          ? (message.sectionComputedStyle as Record<string, string>)
-          : null;
+        "sectionComputedStyle" in message && typeof message.sectionComputedStyle === "object" && message.sectionComputedStyle !== null
+          ? (message.sectionComputedStyle as Record<string, string>) : null;
+      const inspectorOverride =
+        "inspectorOverride" in message && typeof message.inspectorOverride === "string" && message.inspectorOverride.length <= 1_000
+          ? message.inspectorOverride : null;
+      const componentType =
+        activeTemplate?.document.sections.find((section) => section.id === sectionId)?.type ?? "custom";
 
-      setActiveComputedStyle(computedStyle);
-      setActiveSectionComputedStyle(sectionComputedStyle);
+      setActiveSelection({
+        kind: selectionKind, componentType, tagName, role, inputType, nodeId, elementKey,
+        fieldKey, fieldPath, className, isSection: selectionIsSection,
+        computed: computedStyle, parentComputed: parentComputedStyle,
+        sectionComputed: sectionComputedStyle, inspectorOverride,
+      });
+      setActiveComputedStyleRevision(responseStyleRevision);
 
+      if (sectionId !== search.section) {
+        previewSelectionSectionSyncRef.current = sectionId;
+      }
       onSearchChange({ section: sectionId });
     };
 
     window.addEventListener("message", handlePreviewSelection);
     return () => window.removeEventListener("message", handlePreviewSelection);
-  }, [activeTemplate, isSelectionMode, onSearchChange, previewKey]);
+  }, [
+    activeTemplate,
+    isSelectionMode,
+    onSearchChange,
+    previewKey,
+    search.section,
+  ]);
 
   const syncPreviewSection = useCallback(() => {
     previewIframeRef.current?.contentWindow?.postMessage(
@@ -1822,6 +1941,24 @@ export function VisualEditorShell({
       window.location.origin,
     );
   }, [search.section]);
+
+  const handleSectionsSearchChange = useCallback(
+    (next: Partial<StorefrontThemeEditorSearch>) => {
+      if (next.section !== undefined) {
+        previewSelectionSectionSyncRef.current = null;
+        setActiveSelection(null);
+        previewIframeRef.current?.contentWindow?.postMessage(
+          {
+            type: "morph:storefront-preview-set-section",
+            sectionId: next.section ?? null,
+          },
+          window.location.origin,
+        );
+      }
+      onSearchChange(next);
+    },
+    [onSearchChange],
+  );
 
   const syncPreviewSectionOrder = useCallback((sectionIds: string[]) => {
     previewIframeRef.current?.contentWindow?.postMessage(
@@ -1962,8 +2099,12 @@ export function VisualEditorShell({
 
   useEffect(() => {
     if (!previewKey) return;
+    if (previewSelectionSectionSyncRef.current === search.section) {
+      previewSelectionSectionSyncRef.current = null;
+      return;
+    }
     syncPreviewSection();
-  }, [previewKey, syncPreviewSection]);
+  }, [previewKey, search.section, syncPreviewSection]);
 
   const syncPreviewSelectionMode = useCallback(() => {
     previewIframeRef.current?.contentWindow?.postMessage(
@@ -2917,7 +3058,7 @@ export function VisualEditorShell({
             style={{ width: `${leftPanelWidth}px` }}
             context={context}
             search={search}
-            onSearchChange={onSearchChange}
+            onSearchChange={handleSectionsSearchChange}
             onSectionOrderChange={syncPreviewSectionOrder}
             onSaveStateChange={setDraftSaveState}
             onReorderSections={handleReorderSections}
@@ -3315,13 +3456,12 @@ export function VisualEditorShell({
           onSelectCommentThread={handleSelectCommentThread}
           previewWidth={previewWidth}
           themeFiles={effectiveThemeFiles}
-          activeNodeId={activeNodeId}
-          activeElementKey={activeElementKey}
-          activeFieldKey={activeFieldKey}
-          activeComputedStyle={activeComputedStyle}
-          activeSectionComputedStyle={activeSectionComputedStyle}
+          selection={activeSelection}
+          activeComputedStyleRevision={activeComputedStyleRevision}
           activeViewport={search.viewport}
           onUpdateThemeFileStyle={handleUpdateThemeFileStyle}
+          onPreviewSelectionStyle={previewSelectionStyle}
+          onPreviewSelectionField={previewSelectionField}
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}
           onJumpToCode={handleJumpToCode}

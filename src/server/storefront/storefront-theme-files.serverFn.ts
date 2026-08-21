@@ -59,8 +59,16 @@ export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
         data.themeId,
         context.user?.id,
       );
+      const sourceGeneration = await themeSourceStore.getSourceGeneration(
+        data.storefrontId,
+        data.themeId,
+      );
       const tree = buildFileTree(files);
-      return ok("Starter theme initialized", { files, tree });
+      return ok("Starter theme initialized", {
+        files,
+        tree,
+        sourceGeneration: sourceGeneration ?? 1,
+      });
     } catch (error) {
       return failure(
         "Init starter theme error",

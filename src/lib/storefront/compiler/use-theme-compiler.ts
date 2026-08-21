@@ -6,12 +6,20 @@ import type {
   ThemeCompilerResult,
 } from "./theme-compiler.types";
 
+export type ThemeCompilerApplication = {
+  files: ThemeCompilerFile[];
+  applicationKey?: number;
+  didApplySource: boolean;
+};
+
 type UseThemeCompilerOptions = {
   themeId?: string;
   storefrontId?: string;
   sourceGeneration?: number;
   debounceMs?: number;
   autoInjectStyles?: boolean;
+  applicationKey?: number;
+  onStylesApplied?: (application: ThemeCompilerApplication) => void;
 };
 
 /**
@@ -28,6 +36,8 @@ export function useThemeCompiler(
     sourceGeneration,
     debounceMs = 120,
     autoInjectStyles = true,
+    applicationKey,
+    onStylesApplied,
   } = options;
 
   const [result, setResult] = useState<ThemeCompilerResult | null>(null);
@@ -35,6 +45,8 @@ export function useThemeCompiler(
   const [diagnostics, setDiagnostics] = useState<ThemeCompilerDiagnostic[]>([]);
   const latestFilesRef = useRef(themeFiles);
   latestFilesRef.current = themeFiles;
+  const onStylesAppliedRef = useRef(onStylesApplied);
+  onStylesAppliedRef.current = onStylesApplied;
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -43,10 +55,11 @@ export function useThemeCompiler(
     let isCancelled = false;
 
     const timer = setTimeout(async () => {
+      const filesToCompile = latestFilesRef.current;
       setIsCompiling(true);
       try {
         const compileResult = await themeCompilerManager.compile({
-          files: latestFilesRef.current,
+          files: filesToCompile,
           themeId,
           storefrontId,
           sourceGeneration,
@@ -60,6 +73,11 @@ export function useThemeCompiler(
         if (autoInjectStyles) {
           injectThemeStyles(compileResult.css);
         }
+        onStylesAppliedRef.current?.({
+          files: filesToCompile,
+          applicationKey,
+          didApplySource: compileResult.success,
+        });
       } catch (err: any) {
         if (isCancelled) return;
         const fallback = themeCompilerManager.getLastKnownGood(themeId);
@@ -72,6 +90,11 @@ export function useThemeCompiler(
         if (fallback?.css && autoInjectStyles) {
           injectThemeStyles(fallback.css);
         }
+        onStylesAppliedRef.current?.({
+          files: filesToCompile,
+          applicationKey,
+          didApplySource: false,
+        });
       } finally {
         if (!isCancelled) {
           setIsCompiling(false);
@@ -83,7 +106,15 @@ export function useThemeCompiler(
       isCancelled = true;
       clearTimeout(timer);
     };
-  }, [themeFiles, themeId, storefrontId, sourceGeneration, debounceMs, autoInjectStyles]);
+  }, [
+    themeFiles,
+    themeId,
+    storefrontId,
+    sourceGeneration,
+    debounceMs,
+    autoInjectStyles,
+    applicationKey,
+  ]);
 
   return {
     result,

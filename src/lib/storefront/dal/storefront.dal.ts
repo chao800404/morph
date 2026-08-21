@@ -16,6 +16,7 @@ import {
   isUpgradeableStarterHomeDocument,
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
+import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
 export const DEFAULT_STOREFRONT_THEME_ID =
@@ -124,6 +125,19 @@ async function ensureStarterHomeDocument(
     .where(eq(storefrontThemes.id, themeId));
 }
 
+async function ensureStarterThemeWorkspace(
+  storefrontId: string,
+  themeId: string,
+): Promise<void> {
+  const existingFiles = await storefrontThemeFileDal.listFiles(
+    storefrontId,
+    themeId,
+  );
+  if (existingFiles.length === 0) {
+    await storefrontThemeFileDal.initStarterTheme(storefrontId, themeId);
+  }
+}
+
 /**
  * Creates the minimum editable website graph for a storefront channel.
  *
@@ -203,6 +217,7 @@ export const storefrontDal = {
 
     if (existing?.activeThemeId) {
       await ensureStarterHomeDocument(db, existing.activeThemeId);
+      await ensureStarterThemeWorkspace(existing.id, existing.activeThemeId);
       return;
     }
 
@@ -276,5 +291,6 @@ export const storefrontDal = {
       .where(eq(storefronts.id, storefrontId));
 
     await ensureStarterHomeDocument(db, themeId);
+    await ensureStarterThemeWorkspace(storefrontId, themeId);
   },
 };

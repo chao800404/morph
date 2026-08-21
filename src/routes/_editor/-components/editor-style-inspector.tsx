@@ -10,6 +10,13 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { TailwindClassTokenInput } from "./tailwind-class-token-input";
+import {
+  getFieldPathValue,
+  setFieldPathValue,
+  type EditorSelectionDescriptor,
+} from "@/lib/storefront/editor/selection-taxonomy";
+import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
 import {
   findSourceLocation,
   getComponentFilePath,
@@ -22,9 +29,11 @@ import {
   parseTailwindLineHeight,
   parseTailwindPadding,
   parseTailwindTextAlign,
+  type ComponentElementMeta,
 } from "@/lib/storefront/ast/theme-ast-transformer";
 import {
   patchTailwindClasses as patchTailwindClassesBase,
+  tokenizeTailwindClasses,
   type PatchTailwindOptions,
 } from "@/lib/storefront/ast/tailwind-token-engine";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
@@ -35,8 +44,6 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
-  ChevronDown,
-  ChevronUp,
   Code2,
   Image as ImageIcon,
   LayoutGrid,
@@ -47,7 +54,16 @@ import {
   Type,
   Unlink,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { InspectorColorField } from "./style-inspector/inspector-color-field";
+import { InspectorModuleCard as InspectorGroup } from "./style-inspector/inspector-module-card";
+import { InspectorSelectControl } from "./style-inspector/inspector-select-control";
+import {
+  AppearanceInspectorModule,
+  LayoutInspectorModule,
+  PositionInspectorModule,
+  SizingInspectorModule,
+} from "./style-inspector/box-style-modules";
 
 type EditorSection =
   StorefrontThemeEditorDTO["templates"][number]["document"]["sections"][number];
@@ -55,16 +71,22 @@ type EditorSection =
 type EditorStyleInspectorProps = {
   section: EditorSection;
   themeFiles?: StorefrontThemeFileDTO[];
-  activeNodeId?: string | null;
-  activeElementKey?: string | null;
-  activeFieldKey?: string | null;
-  activeComputedStyle?: Record<string, string> | null;
-  activeSectionComputedStyle?: Record<string, string> | null;
+  selection?: EditorSelectionDescriptor | null;
+  activeComputedStyleRevision?: number;
   activeViewport?: "desktop" | "tablet" | "mobile";
   onUpdateThemeFileStyle?: (
     filePath: string,
     elementName: string,
     updater: (prevClasses: string) => string,
+  ) => number | void;
+  onPreviewSelectionStyle?: (
+    styles: Record<string, string>,
+    targetElement: string,
+  ) => void;
+  onPreviewSelectionField?: (
+    fieldKey: string,
+    fieldPath: string | null,
+    value: string,
   ) => void;
   onPropsChange: (next: Record<string, unknown>) => void;
   onToggleEnabled?: (enabled: boolean) => void;
@@ -73,16 +95,39 @@ type EditorStyleInspectorProps = {
 };
 
 const THEME_PALETTE_COLORS = [
-  { label: "Stone 50", value: "#fafaf9", preview: "bg-[#fafaf9] border-stone-200" },
-  { label: "Stone 100", value: "#f5f5f4", preview: "bg-[#f5f5f4] border-stone-300" },
-  { label: "Cream", value: "#d8d0c3", preview: "bg-[#d8d0c3] border-stone-400" },
-  { label: "Warm Tan", value: "#b7ad9d", preview: "bg-[#b7ad9d] border-stone-500" },
-  { label: "Stone 800", value: "#292524", preview: "bg-[#292524] border-stone-700" },
-  { label: "Stone 900", value: "#1c1917", preview: "bg-[#1c1917] border-stone-800" },
+  {
+    label: "Stone 50",
+    value: "#fafaf9",
+    preview: "bg-[#fafaf9] border-stone-200",
+  },
+  {
+    label: "Stone 100",
+    value: "#f5f5f4",
+    preview: "bg-[#f5f5f4] border-stone-300",
+  },
+  {
+    label: "Cream",
+    value: "#d8d0c3",
+    preview: "bg-[#d8d0c3] border-stone-400",
+  },
+  {
+    label: "Warm Tan",
+    value: "#b7ad9d",
+    preview: "bg-[#b7ad9d] border-stone-500",
+  },
+  {
+    label: "Stone 800",
+    value: "#292524",
+    preview: "bg-[#292524] border-stone-700",
+  },
+  {
+    label: "Stone 900",
+    value: "#1c1917",
+    preview: "bg-[#1c1917] border-stone-800",
+  },
   { label: "White", value: "#ffffff", preview: "bg-white border-stone-200" },
   { label: "Black", value: "#000000", preview: "bg-black border-stone-800" },
 ];
-
 
 function parsePx(value?: string | null): number | null {
   if (!value) return null;
@@ -152,29 +197,64 @@ function computedColorToHex(value?: string | null): string | null {
     .join("")}`;
 }
 
+/**
+ * Resolve the class string shown by the inspector without losing the
+ * distinction between a selected source node with no classes and a node that
+ * was not resolved. A resolved node is authoritative, including an empty
+ * className; only unresolved nodes may fall back to section/document props.
+ */
+export function resolveStyleInspectorClassName(
+  targetMeta: ComponentElementMeta | undefined,
+  sectionClassName: string,
+  activeClassName?: string | null,
+  propsClassName?: unknown,
+  propsCustomClass?: unknown,
+): string {
+  if (targetMeta) return targetMeta.className;
+  if (activeClassName !== null && activeClassName !== undefined) {
+    return activeClassName;
+  }
+  if (sectionClassName) return sectionClassName;
+  if (typeof propsClassName === "string") return propsClassName;
+  if (typeof propsCustomClass === "string") return propsCustomClass;
+  return "";
+}
+
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   themeFiles,
-  activeNodeId,
-  activeElementKey,
-  activeFieldKey,
-  activeComputedStyle,
-  activeSectionComputedStyle,
+  selection,
+  activeComputedStyleRevision = 0,
   activeViewport = "mobile",
   onUpdateThemeFileStyle,
+  onPreviewSelectionStyle,
+  onPreviewSelectionField,
   onPropsChange,
   onToggleEnabled,
   onJumpToCode,
   disabled = false,
 }: EditorStyleInspectorProps) {
+  const activeNodeId = selection?.nodeId;
+  const activeElementKey = selection?.elementKey;
+  const activeFieldKey = selection?.fieldKey;
+  const activeFieldPath = selection?.fieldPath;
+  const activeClassName = selection?.className;
+  const activeSelectionIsSection = selection?.isSection;
+  const activeComputedStyle = selection?.computed;
+  const activeSectionComputedStyle = selection?.sectionComputed;
+
   const [paddingLinked, setPaddingLinked] = useState(true);
   const [sectionsExpanded, setSectionsExpanded] = useState({
     content: true,
+    flow: true,
+    sizing: true,
+    position: true,
+    appearance: true,
     layout: true,
     typography: true,
     fills: true,
     borders: false,
-    tailwind: true,
+    tailwind: false,
   });
 
   const toggleSection = (key: keyof typeof sectionsExpanded) => {
@@ -184,10 +264,26 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const [localProps, setLocalProps] = useState<Record<string, any>>(
     () => (section.props as Record<string, any>) ?? {},
   );
+  const localPropsRef = useRef(localProps);
+  const optimisticStyleRef = useRef<{
+    key: string;
+    revision: number;
+    values: Record<string, string | number>;
+  }>({ key: "", revision: 0, values: {} });
 
   useEffect(() => {
-    setLocalProps((section.props as Record<string, any>) ?? {});
+    const next = (section.props as Record<string, any>) ?? {};
+    localPropsRef.current = next;
+    setLocalProps(next);
   }, [section.id]);
+  useEffect(() => {
+    if (
+      optimisticStyleRef.current.revision > 0 &&
+      activeComputedStyleRevision >= optimisticStyleRef.current.revision
+    ) {
+      optimisticStyleRef.current = { key: "", revision: 0, values: {} };
+    }
+  }, [activeComputedStyleRevision]);
 
   const componentPath = getComponentFilePath(
     section.type,
@@ -196,6 +292,35 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
   const targetElement = activeNodeId || activeElementKey || "heading";
   const props = localProps;
+  const selectedField = activeFieldKey ?? activeElementKey;
+  const isSelectedNode = activeSelectionIsSection === false;
+  const selectedKind = selection?.kind ?? "custom";
+  const showField = (...keys: string[]) =>
+    !isSelectedNode ||
+    keys.includes(selectedField ?? "") ||
+    (activeFieldPath
+      ? keys.includes(activeFieldPath.split(".").pop() ?? "")
+      : false);
+  const fieldValue = (key: string): unknown =>
+    activeFieldPath && activeFieldPath.endsWith("." + key)
+      ? getFieldPathValue(props, activeFieldPath)
+      : props[key];
+  const nestedFieldPath = (key: string): string | null => {
+    if (!activeFieldPath || !activeFieldPath.includes(".") || !isSelectedNode)
+      return null;
+    const prefix = activeFieldPath.slice(0, activeFieldPath.lastIndexOf("."));
+    return prefix + "." + key;
+  };
+  const selectedFieldValue = (key: string): unknown => {
+    const path = nestedFieldPath(key);
+    return path ? getFieldPathValue(props, path) : props[key];
+  };
+  const optimisticValue = (key: string): number | string | undefined =>
+    optimisticStyleRef.current.values[key];
+  const optimisticNumber = (key: string): number | undefined => {
+    const value = optimisticStyleRef.current.values[key];
+    return typeof value === "number" ? value : undefined;
+  };
 
   const componentFile = themeFiles?.find((f) => f.path === componentPath);
   const parsedMeta = componentFile?.content
@@ -204,15 +329,40 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const targetElementMeta =
     (activeNodeId ? parsedMeta?.nodeMap[activeNodeId] : undefined) ??
     parsedMeta?.elements[targetElement] ??
-    parsedMeta?.elements["heading"];
+    (activeSelectionIsSection === false
+      ? undefined
+      : parsedMeta?.elements["heading"]);
   const sectionElementMeta =
     parsedMeta?.elements["section"] ?? parsedMeta?.elements["root"];
 
   const isDynamicClassName = Boolean(
     targetElementMeta?.classNameOffsets?.isExpression,
   );
+  const isDomOnlyNestedTarget =
+    activeSelectionIsSection === false && !targetElementMeta;
   const hasSyntaxError = parsedMeta ? !parsedMeta.parseOk : false;
-  const sourceStyleLocked = hasSyntaxError || isDynamicClassName;
+  const sourceStyleLocked =
+    hasSyntaxError || isDynamicClassName || isDomOnlyNestedTarget;
+  const visibleModules = new Set(
+    resolveInspectorModules({
+      kind: selectedKind,
+      isSection: activeSelectionIsSection === true,
+      tagName: selection?.tagName ?? undefined,
+      role: selection?.role ?? undefined,
+      inputType: selection?.inputType ?? undefined,
+      computedStyle: activeComputedStyle ?? undefined,
+      parentComputedStyle: selection?.parentComputed ?? undefined,
+      contentFieldBinding: activeFieldPath,
+      sourceEditability: {
+        className: Boolean(
+          componentPath && targetElementMeta?.classNameOffsets,
+        ),
+        style: !componentFile,
+        dynamic: sourceStyleLocked,
+      },
+      override: selection?.inspectorOverride,
+    }),
+  );
 
   // Code as SSOT: derive style values from the source code AST
   const targetClassName = targetElementMeta?.className || "";
@@ -225,6 +375,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
   const computedFontSizeNum = parsePx(activeComputedStyle?.fontSize);
   const effectiveFontSize =
+    optimisticNumber("fontSize") ??
     computedFontSizeNum ??
     (fontSizeDetailed.type === "exact"
       ? fontSizeDetailed.value
@@ -233,12 +384,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         : 48);
 
   const effectiveFontFamily =
+    optimisticValue("fontFamily") ??
     computedFontFamilyKind(activeComputedStyle?.fontFamily) ??
     parseTailwindFontFamily(targetClassName) ??
     props.fontFamily ??
     "serif";
 
   const effectiveFontWeight =
+    optimisticValue("fontWeight") ??
     computedFontWeightKind(activeComputedStyle?.fontWeight) ??
     parseTailwindFontWeight(targetClassName) ??
     props.fontWeight ??
@@ -246,16 +399,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
   const computedAlign = activeComputedStyle?.textAlign;
   const effectiveTextAlign =
-    computedAlign === "left" ||
+    optimisticValue("textAlign") ??
+    (computedAlign === "left" ||
     computedAlign === "center" ||
     computedAlign === "right" ||
     computedAlign === "justify" ||
     computedAlign === "start" ||
     computedAlign === "end"
       ? computedAlign
-      : parseTailwindTextAlign(targetClassName) ?? props.textAlign ?? "left";
+      : (parseTailwindTextAlign(targetClassName) ?? props.textAlign ?? "left"));
 
   const effectiveLineHeight =
+    optimisticNumber("lineHeight") ??
     computedLineHeightRatio(
       activeComputedStyle?.lineHeight,
       activeComputedStyle?.fontSize,
@@ -263,56 +418,87 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     parseTailwindLineHeight(targetClassName) ??
     (typeof props.lineHeight === "number" ? props.lineHeight : 1.1);
 
-  const sourcePadding = parseTailwindPadding(sectionClassName);
-  const computedPaddingTop = parsePx(activeSectionComputedStyle?.paddingTop);
-  const computedPaddingBottom = parsePx(activeSectionComputedStyle?.paddingBottom);
-  const computedPaddingLeft = parsePx(activeSectionComputedStyle?.paddingLeft);
-  const computedPaddingRight = parsePx(activeSectionComputedStyle?.paddingRight);
+  const containerClassName = isSelectedNode
+    ? targetClassName
+    : sectionClassName;
+  const containerComputedStyle = isSelectedNode
+    ? activeComputedStyle
+    : activeSectionComputedStyle;
+  const sourcePadding = parseTailwindPadding(containerClassName);
+  const computedPaddingTop = parsePx(containerComputedStyle?.paddingTop);
+  const computedPaddingBottom = parsePx(containerComputedStyle?.paddingBottom);
+  const computedPaddingLeft = parsePx(containerComputedStyle?.paddingLeft);
+  const computedPaddingRight = parsePx(containerComputedStyle?.paddingRight);
   const sourcePaddingAll =
     sourcePadding.all ??
     (typeof props.padding === "number" ? props.padding : 48);
 
   const effectivePaddingTop =
-    computedPaddingTop ?? sourcePadding.top ?? sourcePadding.y ?? sourcePaddingAll;
+    optimisticNumber("paddingTop") ??
+    computedPaddingTop ??
+    sourcePadding.top ??
+    sourcePadding.y ??
+    sourcePaddingAll;
   const effectivePaddingBottom =
+    optimisticNumber("paddingBottom") ??
     computedPaddingBottom ??
     sourcePadding.bottom ??
     sourcePadding.y ??
     sourcePaddingAll;
   const effectivePaddingLeft =
+    optimisticNumber("paddingLeft") ??
     computedPaddingLeft ??
     sourcePadding.left ??
     sourcePadding.x ??
     (typeof props.paddingLeft === "number" ? props.paddingLeft : 24);
   const effectivePaddingRight =
+    optimisticNumber("paddingRight") ??
     computedPaddingRight ??
     sourcePadding.right ??
     sourcePadding.x ??
     (typeof props.paddingRight === "number" ? props.paddingRight : 24);
   const effectivePaddingAll =
-    effectivePaddingTop === effectivePaddingBottom &&
+    optimisticNumber("paddingAll") ??
+    (effectivePaddingTop === effectivePaddingBottom &&
     effectivePaddingTop === effectivePaddingLeft &&
     effectivePaddingTop === effectivePaddingRight
       ? effectivePaddingTop
-      : sourcePaddingAll;
+      : sourcePaddingAll);
 
   const effectiveBgColor =
-    computedColorToHex(activeSectionComputedStyle?.backgroundColor) ??
-    parseTailwindBackgroundColor(sectionClassName) ??
+    optimisticValue("backgroundColor") ??
+    computedColorToHex(containerComputedStyle?.backgroundColor) ??
+    parseTailwindBackgroundColor(containerClassName) ??
     props.backgroundColor ??
     "#fafaf9";
-
   const effectiveBorderRadius =
-    parsePx(activeSectionComputedStyle?.borderRadius) ??
-    parseTailwindBorderRadius(sectionClassName) ??
+    optimisticNumber("borderRadius") ??
+    parsePx(containerComputedStyle?.borderRadius) ??
+    parseTailwindBorderRadius(containerClassName) ??
     (typeof props.borderRadius === "number" ? props.borderRadius : 0);
+  const inspectorIdentity =
+    section.id + ":" + targetElement + ":" + activeViewport;
+  const inspectorIdentityRef = useRef(inspectorIdentity);
+  useEffect(() => {
+    if (inspectorIdentityRef.current === inspectorIdentity) return;
+    inspectorIdentityRef.current = inspectorIdentity;
+    optimisticStyleRef.current = {
+      key: inspectorIdentity,
+      revision: 0,
+      values: {},
+    };
+  }, [inspectorIdentity]);
 
-  const effectiveRawClassName =
-    targetClassName ||
-    sectionClassName ||
-    props.className ||
-    props.customClass ||
-    "";
+  const effectiveRawClassName = resolveStyleInspectorClassName(
+    targetElementMeta,
+    sectionClassName,
+    activeClassName,
+    props.className,
+    props.customClass,
+  );
+  const tailwindClassCount = tokenizeTailwindClasses(
+    effectiveRawClassName,
+  ).length;
 
   const targetVariants =
     activeViewport === "desktop"
@@ -322,10 +508,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         : [];
 
   const patchTailwindClasses = useCallback(
-    (
-      current: string,
-      options: Omit<PatchTailwindOptions, "targetVariants">,
-    ) =>
+    (current: string, options: Omit<PatchTailwindOptions, "targetVariants">) =>
       patchTailwindClassesBase(current, {
         ...options,
         targetVariants,
@@ -333,41 +516,126 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     [activeViewport],
   );
 
+  const containerTargetElement = isSelectedNode
+    ? targetElement
+    : parsedMeta?.elements["section"]
+      ? "section"
+      : parsedMeta?.elements["root"]
+        ? "root"
+        : targetElement;
+  const previewStyle = useCallback(
+    (styles: Record<string, string>) =>
+      onPreviewSelectionStyle?.(styles, targetElement),
+    [onPreviewSelectionStyle, targetElement],
+  );
+  const previewContainerStyle = useCallback(
+    (styles: Record<string, string>) =>
+      onPreviewSelectionStyle?.(styles, containerTargetElement),
+    [containerTargetElement, onPreviewSelectionStyle],
+  );
+
   const patchStyle = useCallback(
-    (updater: (prevClasses: string) => string) => {
+    (
+      updater: (prevClasses: string) => string,
+      optimistic?: Record<string, string | number>,
+    ) => {
       if (!componentPath || sourceStyleLocked) return;
-      onUpdateThemeFileStyle?.(componentPath, targetElement, updater);
+      const revision = onUpdateThemeFileStyle?.(
+        componentPath,
+        targetElement,
+        updater,
+      );
+      if (optimistic) {
+        optimisticStyleRef.current = {
+          key: section.id + ":" + targetElement + ":" + activeViewport,
+          revision:
+            typeof revision === "number"
+              ? revision
+              : activeComputedStyleRevision + 1,
+          values: { ...optimisticStyleRef.current.values, ...optimistic },
+        };
+      }
     },
-    [componentPath, targetElement, onUpdateThemeFileStyle, sourceStyleLocked],
+    [
+      activeComputedStyleRevision,
+      activeViewport,
+      componentPath,
+      onUpdateThemeFileStyle,
+      section.id,
+      sourceStyleLocked,
+      targetElement,
+    ],
   );
 
   const patchContainerStyle = useCallback(
-    (updater: (prevClasses: string) => string) => {
+    (
+      updater: (prevClasses: string) => string,
+      optimistic?: Record<string, string | number>,
+    ) => {
       if (!componentPath || sourceStyleLocked) return;
-      const targetKey = parsedMeta?.elements["section"]
-        ? "section"
-        : (parsedMeta?.elements["root"] ? "root" : targetElement);
-      onUpdateThemeFileStyle?.(componentPath, targetKey, updater);
+      const revision = onUpdateThemeFileStyle?.(
+        componentPath,
+        containerTargetElement,
+        updater,
+      );
+      if (optimistic) {
+        optimisticStyleRef.current = {
+          key: section.id + ":" + containerTargetElement + ":" + activeViewport,
+          revision:
+            typeof revision === "number"
+              ? revision
+              : activeComputedStyleRevision + 1,
+          values: { ...optimisticStyleRef.current.values, ...optimistic },
+        };
+      }
     },
     [
       componentPath,
-      parsedMeta,
-      targetElement,
+      activeComputedStyleRevision,
+      activeViewport,
+      containerTargetElement,
       onUpdateThemeFileStyle,
       sourceStyleLocked,
+      section.id,
     ],
+  );
+
+  const commitContainerProperty = useCallback(
+    (
+      property: PatchTailwindOptions["property"],
+      utility: string,
+      optimisticKey: string,
+      optimisticValue: string | number,
+    ) => {
+      patchContainerStyle(
+        (previous) =>
+          patchTailwindClasses(previous, { property, value: utility }),
+        { [optimisticKey]: optimisticValue },
+      );
+    },
+    [patchContainerStyle, patchTailwindClasses],
   );
 
   const handleFieldChange = useCallback(
     (field: string, value: unknown) => {
-      const next = {
-        ...props,
-        [field]: value,
-      };
+      const currentProps = localPropsRef.current;
+      const next = activeFieldPath?.endsWith("." + field)
+        ? setFieldPathValue(currentProps, activeFieldPath, value)
+        : { ...currentProps, [field]: value };
+      localPropsRef.current = next;
       setLocalProps(next);
       onPropsChange(next);
     },
-    [props, onPropsChange],
+    [activeFieldPath, onPropsChange],
+  );
+  const handleNestedFieldChange = useCallback(
+    (path: string, value: unknown) => {
+      const next = setFieldPathValue(localPropsRef.current, path, value);
+      localPropsRef.current = next;
+      setLocalProps(next);
+      onPropsChange(next);
+    },
+    [onPropsChange],
   );
 
   return (
@@ -381,7 +649,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             </span>
             <div>
               <h4 className="font-semibold text-foreground text-xs leading-none capitalize">
-                {section.type.replace(/-/g, " ")}
+                {(isSelectedNode ? selectedKind : section.type).replace(
+                  /-/g,
+                  " ",
+                )}
               </h4>
               <p className="text-[10px] text-muted-foreground mt-0.5 font-mono">
                 {section.id.slice(0, 16)}...
@@ -417,9 +688,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               title={`Open ${componentPath} in Monaco Code Editor`}
             >
               <Code2 className="size-3.5 text-primary shrink-0" />
-              <span className="truncate">
-                Edit in Code ({targetElement})
-              </span>
+              <span className="truncate">Edit in Code ({targetElement})</span>
               <span className="ml-auto font-mono text-[10px] text-muted-foreground truncate max-w-28">
                 {componentPath.split("/").pop()}
               </span>
@@ -427,7 +696,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           ) : (
             <div className="w-full flex items-center justify-between rounded-md border border-dashed px-2 py-1 text-[11px] text-muted-foreground">
               <span>Section has no source file</span>
-              <span className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded">CMS-only</span>
+              <span className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded">
+                CMS-only
+              </span>
             </div>
           )}
         </div>
@@ -438,9 +709,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive flex items-start gap-2.5 shadow-xs">
           <AlertTriangle className="size-4 shrink-0 mt-0.5 text-destructive" />
           <div className="space-y-1">
-            <div className="font-semibold text-xs leading-none">TSX Syntax Errors in Source</div>
+            <div className="font-semibold text-xs leading-none">
+              TSX Syntax Errors in Source
+            </div>
             <p className="text-[11px] opacity-90 leading-relaxed">
-              {componentPath?.split("/").pop()} contains syntax errors. Visual style patching is paused until syntax is resolved in Code mode.
+              {componentPath?.split("/").pop()} contains syntax errors. Visual
+              style patching is paused until syntax is resolved in Code mode.
             </p>
           </div>
         </div>
@@ -451,485 +725,879 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
           <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
           <div className="space-y-1">
-            <div className="font-semibold text-xs leading-none">Code-Controlled ClassName ({targetElement})</div>
+            <div className="font-semibold text-xs leading-none">
+              Code-Controlled ClassName ({targetElement})
+            </div>
             <p className="text-[11px] opacity-90 leading-relaxed">
-              This element uses a dynamic expression (e.g. <code>cn(...)</code>). Direct style patching is disabled to protect component logic.
+              This element uses a dynamic expression (e.g. <code>cn(...)</code>
+              ). Direct style patching is disabled to protect component logic.
             </p>
           </div>
         </div>
       )}
 
-      {/* 1. Content & Text Fields */}
-      <InspectorGroup
-        title="Content & Fields"
-        icon={<Sliders className="size-3.5" />}
-        expanded={sectionsExpanded.content}
-        onToggle={() => toggleSection("content")}
-      >
-        <div className="space-y-3">
-          {"eyebrow" in props && (
-            <InspectorField
-              label="Eyebrow / Subtitle"
-              isFocused={activeFieldKey === "eyebrow"}
-            >
-              <Input
-                value={props.eyebrow ?? ""}
-                onChange={(e) => handleFieldChange("eyebrow", e.target.value)}
-                disabled={disabled}
-                placeholder="Eyebrow text..."
-                className="h-8 text-xs"
-              />
-            </InspectorField>
-          )}
-
-          {"label" in props && (
-            <InspectorField
-              label="Label"
-              isFocused={activeFieldKey === "label"}
-            >
-              <Input
-                value={props.label ?? ""}
-                onChange={(e) => handleFieldChange("label", e.target.value)}
-                disabled={disabled}
-                placeholder="Section label..."
-                className="h-8 text-xs"
-              />
-            </InspectorField>
-          )}
-
-          {"heading" in props && (
-            <InspectorField
-              label="Heading"
-              isFocused={activeFieldKey === "heading"}
-            >
-              <Textarea
-                rows={2}
-                value={props.heading ?? ""}
-                onChange={(e) => handleFieldChange("heading", e.target.value)}
-                disabled={disabled}
-                placeholder="Main headline..."
-                className="min-h-16 text-xs resize-none"
-              />
-            </InspectorField>
-          )}
-
-          {"description" in props && (
-            <InspectorField
-              label="Description"
-              isFocused={activeFieldKey === "description"}
-            >
-              <Textarea
-                rows={3}
-                value={props.description ?? ""}
-                onChange={(e) =>
-                  handleFieldChange("description", e.target.value)
+      {/* Advanced source classes */}
+      {visibleModules.has("source-style") && (
+        <InspectorGroup
+          title={`Tailwind CSS Classes · ${tailwindClassCount}`}
+          icon={<Code2 className="size-3.5" />}
+          expanded={sectionsExpanded.tailwind}
+          onToggle={() => toggleSection("tailwind")}
+        >
+          <div className="space-y-2">
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              {isDomOnlyNestedTarget
+                ? "Tailwind utility classes read from the selected rendered component. This DOM-only target has no editable source."
+                : targetElementMeta
+                  ? "Direct Tailwind utility classes applied to the selected source component."
+                  : "Direct Tailwind utility classes applied to this section container."}
+            </p>
+            <TailwindClassTokenInput
+              value={effectiveRawClassName}
+              onValueChange={(nextClasses) => {
+                if (sourceStyleLocked) return;
+                if (componentPath) {
+                  patchStyle(() => nextClasses);
+                } else {
+                  handleFieldChange("className", nextClasses);
                 }
-                disabled={disabled}
-                placeholder="Body description..."
-                className="min-h-20 text-xs resize-none"
-              />
-            </InspectorField>
-          )}
+              }}
+              disabled={disabled || sourceStyleLocked}
+              placeholder="e.g. py-24 bg-stone-900"
+            />
+          </div>
+        </InspectorGroup>
+      )}
 
-          {"body" in props && (
-            <InspectorField
-              label="Body text"
-              isFocused={activeFieldKey === "body"}
-            >
-              <Textarea
-                rows={3}
-                value={props.body ?? ""}
-                onChange={(e) => handleFieldChange("body", e.target.value)}
-                disabled={disabled}
-                placeholder="Section body text..."
-                className="min-h-20 text-xs resize-none"
-              />
-            </InspectorField>
-          )}
-
-          {"actionLabel" in props && (
-            <div
-              className={cn(
-                "space-y-2 rounded-lg border p-2.5 transition-all",
-                activeFieldKey === "actionLabel" ||
-                  activeFieldKey === "actionHref" ||
-                  activeElementKey === "action"
-                  ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
-                  : "bg-muted/20",
-              )}
-            >
-              <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                <Link className="size-3 text-muted-foreground" />
-                <span>Action Button</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] text-muted-foreground">
-                    Label
-                  </label>
-                  <Input
-                    value={props.actionLabel ?? ""}
-                    onChange={(e) =>
-                      handleFieldChange("actionLabel", e.target.value)
+      {/* 1. Content & Text Fields */}
+      {(visibleModules.has("content") || visibleModules.has("media")) && (
+        <InspectorGroup
+          title="Content & Fields"
+          icon={<Sliders className="size-3.5" />}
+          expanded={sectionsExpanded.content}
+          onToggle={() => toggleSection("content")}
+        >
+          <div className="space-y-3">
+            {isSelectedNode &&
+              activeFieldPath &&
+              selectedField &&
+              ![
+                "heading",
+                "description",
+                "body",
+                "label",
+                "eyebrow",
+                "actionLabel",
+                "actionHref",
+                "imageSrc",
+                "imageAlt",
+                "imagePosition",
+              ].includes(selectedField) &&
+              (typeof fieldValue(selectedField) === "object" &&
+              fieldValue(selectedField) !== null ? (
+                Object.entries(
+                  fieldValue(selectedField) as Record<string, unknown>,
+                )
+                  .filter(
+                    ([, value]) =>
+                      value === null ||
+                      ["string", "number", "boolean"].includes(typeof value),
+                  )
+                  .map(([key, value]) => (
+                    <InspectorField key={key} label={key.replace(/[-_]/g, " ")}>
+                      <Input
+                        defaultValue={String(value ?? "")}
+                        onInput={(e) =>
+                          onPreviewSelectionField?.(
+                            key,
+                            activeFieldPath + "." + key,
+                            e.currentTarget.value,
+                          )
+                        }
+                        onBlur={(e) =>
+                          handleNestedFieldChange(
+                            activeFieldPath + "." + key,
+                            e.currentTarget.value,
+                          )
+                        }
+                        disabled={disabled}
+                        className="h-8 text-xs"
+                      />
+                    </InspectorField>
+                  ))
+              ) : (
+                <InspectorField label={selectedField.replace(/[-_]/g, " ")}>
+                  <Textarea
+                    rows={3}
+                    defaultValue={String(fieldValue(selectedField) ?? "")}
+                    onInput={(e) =>
+                      onPreviewSelectionField?.(
+                        selectedField,
+                        activeFieldPath,
+                        e.currentTarget.value,
+                      )
+                    }
+                    onBlur={(e) =>
+                      handleFieldChange(selectedField, e.currentTarget.value)
                     }
                     disabled={disabled}
-                    placeholder="Button text"
-                    className="h-7 text-xs"
+                    className="min-h-16 resize-none text-xs"
                   />
-                </div>
-                <div>
-                  <label className="text-[10px] text-muted-foreground">
-                    Link URL
-                  </label>
-                  <Input
-                    value={props.actionHref ?? ""}
-                    onChange={(e) =>
-                      handleFieldChange("actionHref", e.target.value)
-                    }
-                    disabled={disabled}
-                    placeholder="/collections/all"
-                    className="h-7 text-xs font-mono"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {"imageSrc" in props && (
-            <div
-              className={cn(
-                "space-y-2 rounded-lg border p-2.5 transition-all",
-                activeFieldKey === "imageSrc" ||
-                  activeFieldKey === "imageAlt" ||
-                  activeElementKey === "image"
-                  ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
-                  : "bg-muted/20",
-              )}
-            >
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                  <ImageIcon className="size-3 text-muted-foreground" />
-                  <span>Media Image</span>
-                </span>
-                {"imagePosition" in props && (
-                  <Select
-                    value={props.imagePosition ?? "center"}
-                    onValueChange={(val) =>
-                      handleFieldChange("imagePosition", val)
-                    }
-                    disabled={disabled}
-                  >
-                    <SelectTrigger className="h-6 w-24 text-[10px]">
-                      <SelectValue placeholder="Position" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="center">Center</SelectItem>
-                      <SelectItem value="top">Top</SelectItem>
-                      <SelectItem value="bottom">Bottom</SelectItem>
-                      <SelectItem value="left">Left</SelectItem>
-                      <SelectItem value="right">Right</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
-              </div>
-              <Input
-                value={props.imageSrc ?? ""}
-                onChange={(e) => handleFieldChange("imageSrc", e.target.value)}
-                disabled={disabled}
-                placeholder="Image URL path..."
-                className="h-7 text-xs font-mono"
-              />
-              {"imageAlt" in props && (
+                </InspectorField>
+              ))}
+            {showField("eyebrow") && "eyebrow" in props && (
+              <InspectorField
+                label="Eyebrow / Subtitle"
+                isFocused={activeFieldKey === "eyebrow"}
+              >
                 <Input
-                  value={props.imageAlt ?? ""}
-                  onChange={(e) =>
-                    handleFieldChange("imageAlt", e.target.value)
+                  defaultValue={props.eyebrow ?? ""}
+                  onInput={(e) =>
+                    onPreviewSelectionField?.(
+                      "eyebrow",
+                      nestedFieldPath("eyebrow"),
+                      e.currentTarget.value,
+                    )
+                  }
+                  onBlur={(e) =>
+                    handleFieldChange("eyebrow", e.currentTarget.value)
                   }
                   disabled={disabled}
-                  placeholder="Alt text description"
-                  className="h-7 text-xs"
+                  placeholder="Eyebrow text..."
+                  className="h-8 text-xs"
                 />
+              </InspectorField>
+            )}
+
+            {showField("label") && "label" in props && (
+              <InspectorField
+                label="Label"
+                isFocused={activeFieldKey === "label"}
+              >
+                <Input
+                  defaultValue={props.label ?? ""}
+                  onInput={(e) =>
+                    onPreviewSelectionField?.(
+                      "label",
+                      nestedFieldPath("label"),
+                      e.currentTarget.value,
+                    )
+                  }
+                  onBlur={(e) =>
+                    handleFieldChange("label", e.currentTarget.value)
+                  }
+                  disabled={disabled}
+                  placeholder="Section label..."
+                  className="h-8 text-xs"
+                />
+              </InspectorField>
+            )}
+
+            {showField("heading") && "heading" in props && (
+              <InspectorField
+                label="Heading"
+                isFocused={activeFieldKey === "heading"}
+              >
+                <Textarea
+                  rows={2}
+                  defaultValue={props.heading ?? ""}
+                  onInput={(e) =>
+                    onPreviewSelectionField?.(
+                      "heading",
+                      nestedFieldPath("heading"),
+                      e.currentTarget.value,
+                    )
+                  }
+                  onBlur={(e) =>
+                    handleFieldChange("heading", e.currentTarget.value)
+                  }
+                  disabled={disabled}
+                  placeholder="Main headline..."
+                  className="min-h-16 text-xs resize-none"
+                />
+              </InspectorField>
+            )}
+
+            {showField("description", "body") && "description" in props && (
+              <InspectorField
+                label="Description"
+                isFocused={activeFieldKey === "description"}
+              >
+                <Textarea
+                  rows={3}
+                  defaultValue={props.description ?? ""}
+                  onInput={(e) =>
+                    onPreviewSelectionField?.(
+                      "description",
+                      nestedFieldPath("description"),
+                      e.currentTarget.value,
+                    )
+                  }
+                  onBlur={(e) =>
+                    handleFieldChange("description", e.currentTarget.value)
+                  }
+                  disabled={disabled}
+                  placeholder="Body description..."
+                  className="min-h-20 text-xs resize-none"
+                />
+              </InspectorField>
+            )}
+
+            {showField("body", "description") && "body" in props && (
+              <InspectorField
+                label="Body text"
+                isFocused={activeFieldKey === "body"}
+              >
+                <Textarea
+                  rows={3}
+                  defaultValue={props.body ?? ""}
+                  onInput={(e) =>
+                    onPreviewSelectionField?.(
+                      "body",
+                      nestedFieldPath("body"),
+                      e.currentTarget.value,
+                    )
+                  }
+                  onBlur={(e) =>
+                    handleFieldChange("body", e.currentTarget.value)
+                  }
+                  disabled={disabled}
+                  placeholder="Section body text..."
+                  className="min-h-20 text-xs resize-none"
+                />
+              </InspectorField>
+            )}
+
+            {showField("actionLabel", "actionHref", "action") &&
+              "actionLabel" in props && (
+                <div
+                  className={cn(
+                    "space-y-2 rounded-lg border p-2.5 transition-all",
+                    activeFieldKey === "actionLabel" ||
+                      activeFieldKey === "actionHref" ||
+                      activeElementKey === "action"
+                      ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
+                      : "bg-muted/20",
+                  )}
+                >
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                    <Link className="size-3 text-muted-foreground" />
+                    <span>Action Button</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">
+                        Label
+                      </label>
+                      <Input
+                        defaultValue={props.actionLabel ?? ""}
+                        onInput={(e) =>
+                          onPreviewSelectionField?.(
+                            "actionLabel",
+                            nestedFieldPath("actionLabel"),
+                            e.currentTarget.value,
+                          )
+                        }
+                        onBlur={(e) =>
+                          handleFieldChange(
+                            "actionLabel",
+                            e.currentTarget.value,
+                          )
+                        }
+                        disabled={disabled}
+                        placeholder="Button text"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">
+                        Link URL
+                      </label>
+                      <Input
+                        defaultValue={props.actionHref ?? ""}
+                        onBlur={(e) =>
+                          handleFieldChange("actionHref", e.currentTarget.value)
+                        }
+                        disabled={disabled}
+                        placeholder="/collections/all"
+                        className="h-7 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
               )}
-            </div>
-          )}
-        </div>
-      </InspectorGroup>
+
+            {showField("imageSrc", "imageAlt", "imagePosition", "image") &&
+              selectedFieldValue("imageSrc") !== undefined && (
+                <div
+                  className={cn(
+                    "space-y-2 rounded-lg border p-2.5 transition-all",
+                    activeFieldKey === "imageSrc" ||
+                      activeFieldKey === "imageAlt" ||
+                      activeElementKey === "image"
+                      ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
+                      : "bg-muted/20",
+                  )}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                      <ImageIcon className="size-3 text-muted-foreground" />
+                      <span>Media Image</span>
+                    </span>
+                    {selectedFieldValue("imagePosition") !== undefined && (
+                      <Select
+                        value={String(
+                          selectedFieldValue("imagePosition") ?? "center",
+                        )}
+                        onValueChange={(val) => {
+                          previewStyle({ "object-position": val });
+                          nestedFieldPath("imagePosition")
+                            ? handleNestedFieldChange(
+                                nestedFieldPath("imagePosition")!,
+                                val,
+                              )
+                            : handleFieldChange("imagePosition", val);
+                          patchStyle((prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "object-position",
+                              value: "object-" + val,
+                            }),
+                          );
+                        }}
+                        disabled={disabled}
+                      >
+                        <SelectTrigger className="h-6 w-24 text-[10px]">
+                          <SelectValue placeholder="Position" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="center">Center</SelectItem>
+                          <SelectItem value="top">Top</SelectItem>
+                          <SelectItem value="bottom">Bottom</SelectItem>
+                          <SelectItem value="left">Left</SelectItem>
+                          <SelectItem value="right">Right</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                  <Input
+                    defaultValue={String(selectedFieldValue("imageSrc") ?? "")}
+                    onBlur={(e) =>
+                      nestedFieldPath("imageSrc")
+                        ? handleNestedFieldChange(
+                            nestedFieldPath("imageSrc")!,
+                            e.currentTarget.value,
+                          )
+                        : handleFieldChange("imageSrc", e.currentTarget.value)
+                    }
+                    disabled={disabled}
+                    placeholder="Image URL path..."
+                    className="h-7 text-xs font-mono"
+                  />
+                  {selectedFieldValue("imageAlt") !== undefined && (
+                    <Input
+                      defaultValue={String(
+                        selectedFieldValue("imageAlt") ?? "",
+                      )}
+                      onInput={(e) =>
+                        onPreviewSelectionField?.(
+                          "imageAlt",
+                          nestedFieldPath("imageAlt"),
+                          e.currentTarget.value,
+                        )
+                      }
+                      onBlur={(e) =>
+                        nestedFieldPath("imageAlt")
+                          ? handleNestedFieldChange(
+                              nestedFieldPath("imageAlt")!,
+                              e.currentTarget.value,
+                            )
+                          : handleFieldChange("imageAlt", e.currentTarget.value)
+                      }
+                      disabled={disabled}
+                      placeholder="Alt text description"
+                      className="h-7 text-xs"
+                    />
+                  )}
+                  {visibleModules.has("media") && (
+                    <div className="grid grid-cols-2 gap-2 border-t pt-2">
+                      <InspectorSelectControl
+                        label="Fit"
+                        ariaLabel="Object fit"
+                        value={
+                          targetClassName.includes("object-contain")
+                            ? "contain"
+                            : targetClassName.includes("object-fill")
+                              ? "fill"
+                              : targetClassName.includes("object-none")
+                                ? "none"
+                                : targetClassName.includes("object-scale-down")
+                                  ? "scale-down"
+                                  : "cover"
+                        }
+                        options={[
+                          "cover",
+                          "contain",
+                          "fill",
+                          "none",
+                          "scale-down",
+                        ]}
+                        formatOption={(value) =>
+                          value === "scale-down"
+                            ? "Scale down"
+                            : value.charAt(0).toUpperCase() + value.slice(1)
+                        }
+                        onValueChange={(value) => {
+                          previewStyle({ "object-fit": value });
+                          patchStyle((prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "object-fit",
+                              value: "object-" + value,
+                            }),
+                          );
+                        }}
+                        disabled={disabled || sourceStyleLocked}
+                      />
+                      <InspectorSelectControl
+                        label="Ratio"
+                        ariaLabel="Aspect ratio"
+                        value={
+                          targetClassName.match(/aspect-\[([^\]]+)\]/)?.[1] ??
+                          "auto"
+                        }
+                        options={["auto", "1/1", "4/3", "4/5", "16/9"]}
+                        formatOption={(value) =>
+                          value === "auto"
+                            ? "Auto"
+                            : value === "1/1"
+                              ? "Square"
+                              : value.replace("/", ":")
+                        }
+                        onValueChange={(value) => {
+                          previewStyle({
+                            "aspect-ratio":
+                              value === "auto"
+                                ? "auto"
+                                : value.replace("/", " / "),
+                          });
+                          patchStyle((prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "aspect-ratio",
+                              value:
+                                value === "auto"
+                                  ? "aspect-auto"
+                                  : "aspect-[" + value + "]",
+                            }),
+                          );
+                        }}
+                        disabled={disabled || sourceStyleLocked}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+          </div>
+        </InspectorGroup>
+      )}
+
+      {visibleModules.has("layout") ? (
+        <LayoutInspectorModule
+          expanded={sectionsExpanded.flow}
+          onToggle={() => toggleSection("flow")}
+          computed={containerComputedStyle}
+          disabled={disabled || sourceStyleLocked || !componentFile}
+          onPreview={previewContainerStyle}
+          onCommit={commitContainerProperty}
+        />
+      ) : null}
+
+      {visibleModules.has("sizing") ? (
+        <SizingInspectorModule
+          expanded={sectionsExpanded.sizing}
+          onToggle={() => toggleSection("sizing")}
+          computed={containerComputedStyle}
+          disabled={disabled || sourceStyleLocked || !componentFile}
+          onPreview={previewContainerStyle}
+          onCommit={commitContainerProperty}
+        />
+      ) : null}
+
+      {visibleModules.has("position") ? (
+        <PositionInspectorModule
+          expanded={sectionsExpanded.position}
+          onToggle={() => toggleSection("position")}
+          computed={containerComputedStyle}
+          disabled={disabled || sourceStyleLocked || !componentFile}
+          onPreview={previewContainerStyle}
+          onCommit={commitContainerProperty}
+        />
+      ) : null}
+
+      {visibleModules.has("appearance") ? (
+        <AppearanceInspectorModule
+          expanded={sectionsExpanded.appearance}
+          onToggle={() => toggleSection("appearance")}
+          computed={containerComputedStyle}
+          disabled={disabled || sourceStyleLocked || !componentFile}
+          onPreview={previewContainerStyle}
+          onCommit={commitContainerProperty}
+        />
+      ) : null}
 
       {/* 2. Layout & Spacing (Figma style) */}
-      <InspectorGroup
-        title="Layout & Spacing"
-        icon={<LayoutGrid className="size-3.5" />}
-        expanded={sectionsExpanded.layout}
-        onToggle={() => toggleSection("layout")}
-      >
-        <div className="space-y-3">
-          {/* Padding */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Padding</span>
-              <button
-                type="button"
-                onClick={() => setPaddingLinked(!paddingLinked)}
-                className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                title={paddingLinked ? "Unlink padding sides" : "Link padding"}
-              >
-                {paddingLinked ? (
-                  <Link className="size-3" />
-                ) : (
-                  <Unlink className="size-3" />
-                )}
-              </button>
-            </div>
+      {visibleModules.has("spacing") && (
+        <InspectorGroup
+          title="Layout & Spacing"
+          icon={<LayoutGrid className="size-3.5" />}
+          expanded={sectionsExpanded.layout}
+          onToggle={() => toggleSection("layout")}
+        >
+          <div className="space-y-3">
+            {/* Padding */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">Padding</span>
+                <button
+                  type="button"
+                  onClick={() => setPaddingLinked(!paddingLinked)}
+                  className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                  title={
+                    paddingLinked ? "Unlink padding sides" : "Link padding"
+                  }
+                >
+                  {paddingLinked ? (
+                    <Link className="size-3" />
+                  ) : (
+                    <Unlink className="size-3" />
+                  )}
+                </button>
+              </div>
 
-            {paddingLinked ? (
-              <div className="flex items-center gap-2 rounded-lg border bg-background px-2.5 py-1.5">
-                <span className="text-[11px] text-muted-foreground">All</span>
-                <ScrubbableNumberInput
-                  value={effectivePaddingAll}
-                  min={0}
-                  max={160}
-                  step={4}
-                  suffix="px"
-                  disabled={disabled || sourceStyleLocked}
-                  ariaLabel="Section padding in pixels"
-                  onValueChange={(val) => {
-                    if (sourceStyleLocked) return;
-                    if (!componentPath) handleFieldChange("padding", val);
-                    patchContainerStyle((prev) =>
-                      patchTailwindClasses(
-                        patchTailwindClasses(
+              {paddingLinked ? (
+                <div className="flex h-8 min-w-0 items-center gap-2 rounded-md border bg-background px-2">
+                  <span className="text-[10px] text-muted-foreground">All</span>
+                  <ScrubbableNumberInput
+                    value={effectivePaddingAll}
+                    min={0}
+                    max={160}
+                    step={4}
+                    suffix="px"
+                    disabled={disabled || sourceStyleLocked}
+                    ariaLabel="Section padding in pixels"
+                    onValuePreview={(val) =>
+                      previewContainerStyle({
+                        "padding-top": `${val}px`,
+                        "padding-bottom": `${val}px`,
+                        "padding-left": `${val}px`,
+                        "padding-right": `${val}px`,
+                      })
+                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath) handleFieldChange("padding", val);
+                      patchContainerStyle(
+                        (prev) =>
                           patchTailwindClasses(
                             patchTailwindClasses(
-                              patchTailwindClasses(prev, {
-                                property: "padding",
-                                value: `p-[${val}px]`,
-                              }),
-                              { property: "padding-top", value: "" },
+                              patchTailwindClasses(
+                                patchTailwindClasses(
+                                  patchTailwindClasses(prev, {
+                                    property: "padding",
+                                    value: `p-[${val}px]`,
+                                  }),
+                                  { property: "padding-top", value: "" },
+                                ),
+                                { property: "padding-bottom", value: "" },
+                              ),
+                              { property: "padding-left", value: "" },
                             ),
-                            { property: "padding-bottom", value: "" },
+                            { property: "padding-right", value: "" },
                           ),
-                          { property: "padding-left", value: "" },
-                        ),
-                        { property: "padding-right", value: "" },
-                      ),
+                        { paddingAll: val },
+                      );
+                    }}
+                    className="h-7 min-w-0 flex-1 justify-end gap-1"
+                    inputClassName="h-6 text-xs text-right font-mono"
+                  />
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
+                    <span className="text-[10px] text-muted-foreground">T</span>
+                    <ScrubbableNumberInput
+                      value={effectivePaddingTop}
+                      min={0}
+                      max={160}
+                      step={4}
+                      suffix="px"
+                      disabled={disabled || sourceStyleLocked}
+                      ariaLabel="Top padding"
+                      onValuePreview={(val) =>
+                        previewContainerStyle({ "padding-top": `${val}px` })
+                      }
+                      onValueChange={(val) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath)
+                          handleFieldChange("paddingTop", val);
+                        patchContainerStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "padding-top",
+                              value: `pt-[${val}px]`,
+                            }),
+                          { paddingTop: val },
+                        );
+                      }}
+                      className="h-7 min-w-0 flex-1 justify-end gap-1"
+                      inputClassName="h-5 text-xs text-right font-mono"
+                    />
+                  </div>
+                  <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
+                    <span className="text-[10px] text-muted-foreground">B</span>
+                    <ScrubbableNumberInput
+                      value={effectivePaddingBottom}
+                      min={0}
+                      max={160}
+                      step={4}
+                      suffix="px"
+                      disabled={disabled || sourceStyleLocked}
+                      ariaLabel="Bottom padding"
+                      onValuePreview={(val) =>
+                        previewContainerStyle({ "padding-bottom": `${val}px` })
+                      }
+                      onValueChange={(val) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath)
+                          handleFieldChange("paddingBottom", val);
+                        patchContainerStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "padding-bottom",
+                              value: `pb-[${val}px]`,
+                            }),
+                          { paddingBottom: val },
+                        );
+                      }}
+                      className="h-7 min-w-0 flex-1 justify-end gap-1"
+                      inputClassName="h-5 text-xs text-right font-mono"
+                    />
+                  </div>
+                  <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
+                    <span className="text-[10px] text-muted-foreground">L</span>
+                    <ScrubbableNumberInput
+                      value={effectivePaddingLeft}
+                      min={0}
+                      max={160}
+                      step={4}
+                      suffix="px"
+                      disabled={disabled || sourceStyleLocked}
+                      ariaLabel="Left padding"
+                      onValuePreview={(val) =>
+                        previewContainerStyle({ "padding-left": `${val}px` })
+                      }
+                      onValueChange={(val) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath)
+                          handleFieldChange("paddingLeft", val);
+                        patchContainerStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "padding-left",
+                              value: `pl-[${val}px]`,
+                            }),
+                          { paddingLeft: val },
+                        );
+                      }}
+                      className="h-7 min-w-0 flex-1 justify-end gap-1"
+                      inputClassName="h-5 text-xs text-right font-mono"
+                    />
+                  </div>
+                  <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
+                    <span className="text-[10px] text-muted-foreground">R</span>
+                    <ScrubbableNumberInput
+                      value={effectivePaddingRight}
+                      min={0}
+                      max={160}
+                      step={4}
+                      suffix="px"
+                      disabled={disabled || sourceStyleLocked}
+                      ariaLabel="Right padding"
+                      onValuePreview={(val) =>
+                        previewContainerStyle({ "padding-right": `${val}px` })
+                      }
+                      onValueChange={(val) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath)
+                          handleFieldChange("paddingRight", val);
+                        patchContainerStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "padding-right",
+                              value: `pr-[${val}px]`,
+                            }),
+                          { paddingRight: val },
+                        );
+                      }}
+                      className="h-7 min-w-0 flex-1 justify-end gap-1"
+                      inputClassName="h-5 text-xs text-right font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Alignment */}
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Alignment</span>
+              <div className="flex items-center rounded-lg border bg-muted/30 p-0.5">
+                <Button
+                  type="button"
+                  variant={
+                    effectiveTextAlign === "left" ? "secondary" : "ghost"
+                  }
+                  size="icon"
+                  className="size-6 shadow-none"
+                  disabled={disabled || sourceStyleLocked}
+                  onClick={() => {
+                    if (sourceStyleLocked) return;
+                    previewStyle({ "text-align": "left" });
+                    if (!componentPath) handleFieldChange("textAlign", "left");
+                    patchStyle(
+                      (prev) =>
+                        patchTailwindClasses(prev, {
+                          property: "text-align",
+                          value: "text-left",
+                        }),
+                      { textAlign: "left" },
                     );
                   }}
-                  className="h-6 flex-1"
-                  inputClassName="h-6 text-xs text-right font-mono"
-                />
+                >
+                  <AlignLeft className="size-3" />
+                </Button>
+                <Button
+                  type="button"
+                  variant={
+                    effectiveTextAlign === "center" ? "secondary" : "ghost"
+                  }
+                  size="icon"
+                  className="size-6 shadow-none"
+                  disabled={disabled || sourceStyleLocked}
+                  onClick={() => {
+                    if (sourceStyleLocked) return;
+                    previewStyle({ "text-align": "center" });
+                    if (!componentPath)
+                      handleFieldChange("textAlign", "center");
+                    patchStyle(
+                      (prev) =>
+                        patchTailwindClasses(prev, {
+                          property: "text-align",
+                          value: "text-center",
+                        }),
+                      { textAlign: "center" },
+                    );
+                  }}
+                >
+                  <AlignCenter className="size-3" />
+                </Button>
+                <Button
+                  type="button"
+                  variant={
+                    effectiveTextAlign === "right" ? "secondary" : "ghost"
+                  }
+                  size="icon"
+                  className="size-6 shadow-none"
+                  disabled={disabled || sourceStyleLocked}
+                  onClick={() => {
+                    if (sourceStyleLocked) return;
+                    previewStyle({ "text-align": "right" });
+                    if (!componentPath) handleFieldChange("textAlign", "right");
+                    patchStyle(
+                      (prev) =>
+                        patchTailwindClasses(prev, {
+                          property: "text-align",
+                          value: "text-right",
+                        }),
+                      { textAlign: "right" },
+                    );
+                  }}
+                >
+                  <AlignRight className="size-3" />
+                </Button>
               </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex items-center gap-1.5 rounded-lg border bg-background px-2 py-1">
-                  <span className="text-[10px] text-muted-foreground">T</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingTop}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Top padding"
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath) handleFieldChange("paddingTop", val);
-                      patchContainerStyle((prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "padding-top",
-                          value: `pt-[${val}px]`,
-                        }),
-                      );
-                    }}
-                    className="h-5 flex-1"
-                    inputClassName="h-5 text-xs text-right font-mono"
-                  />
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg border bg-background px-2 py-1">
-                  <span className="text-[10px] text-muted-foreground">B</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingBottom}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Bottom padding"
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath)
-                        handleFieldChange("paddingBottom", val);
-                      patchContainerStyle((prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "padding-bottom",
-                          value: `pb-[${val}px]`,
-                        }),
-                      );
-                    }}
-                    className="h-5 flex-1"
-                    inputClassName="h-5 text-xs text-right font-mono"
-                  />
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg border bg-background px-2 py-1">
-                  <span className="text-[10px] text-muted-foreground">L</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingLeft}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Left padding"
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath)
-                        handleFieldChange("paddingLeft", val);
-                      patchContainerStyle((prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "padding-left",
-                          value: `pl-[${val}px]`,
-                        }),
-                      );
-                    }}
-                    className="h-5 flex-1"
-                    inputClassName="h-5 text-xs text-right font-mono"
-                  />
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg border bg-background px-2 py-1">
-                  <span className="text-[10px] text-muted-foreground">R</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingRight}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Right padding"
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath)
-                        handleFieldChange("paddingRight", val);
-                      patchContainerStyle((prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "padding-right",
-                          value: `pr-[${val}px]`,
-                        }),
-                      );
-                    }}
-                    className="h-5 flex-1"
-                    inputClassName="h-5 text-xs text-right font-mono"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Alignment */}
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">Alignment</span>
-            <div className="flex items-center rounded-lg border bg-muted/30 p-0.5">
-              <Button
-                type="button"
-                variant={effectiveTextAlign === "left" ? "secondary" : "ghost"}
-                size="icon"
-                className="size-6 shadow-none"
-                disabled={disabled || sourceStyleLocked}
-                onClick={() => {
-                  if (sourceStyleLocked) return;
-                  if (!componentPath) handleFieldChange("textAlign", "left");
-                  patchStyle((prev) =>
-                    patchTailwindClasses(prev, {
-                      property: "text-align",
-                      value: "text-left",
-                    }),
-                  );
-                }}
-              >
-                <AlignLeft className="size-3" />
-              </Button>
-              <Button
-                type="button"
-                variant={effectiveTextAlign === "center" ? "secondary" : "ghost"}
-                size="icon"
-                className="size-6 shadow-none"
-                disabled={disabled || sourceStyleLocked}
-                onClick={() => {
-                  if (sourceStyleLocked) return;
-                  if (!componentPath) handleFieldChange("textAlign", "center");
-                  patchStyle((prev) =>
-                    patchTailwindClasses(prev, {
-                      property: "text-align",
-                      value: "text-center",
-                    }),
-                  );
-                }}
-              >
-                <AlignCenter className="size-3" />
-              </Button>
-              <Button
-                type="button"
-                variant={effectiveTextAlign === "right" ? "secondary" : "ghost"}
-                size="icon"
-                className="size-6 shadow-none"
-                disabled={disabled || sourceStyleLocked}
-                onClick={() => {
-                  if (sourceStyleLocked) return;
-                  if (!componentPath) handleFieldChange("textAlign", "right");
-                  patchStyle((prev) =>
-                    patchTailwindClasses(prev, {
-                      property: "text-align",
-                      value: "text-right",
-                    }),
-                  );
-                }}
-              >
-                <AlignRight className="size-3" />
-              </Button>
             </div>
           </div>
-        </div>
-      </InspectorGroup>
+        </InspectorGroup>
+      )}
 
       {/* 3. Typography */}
-      <InspectorGroup
-        title="Typography"
-        icon={<Type className="size-3.5" />}
-        expanded={sectionsExpanded.typography}
-        onToggle={() => toggleSection("typography")}
-      >
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[10px] text-muted-foreground">Font</label>
-              <Select
+      {visibleModules.has("typography") && (
+        <InspectorGroup
+          title="Typography"
+          icon={<Type className="size-3.5" />}
+          expanded={sectionsExpanded.typography}
+          onToggle={() => toggleSection("typography")}
+        >
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <InspectorSelectControl
+                label="Font"
+                ariaLabel="Font family"
                 value={effectiveFontFamily}
+                options={["serif", "sans", "mono"]}
+                formatOption={(value) =>
+                  value === "serif"
+                    ? "Serif (Editorial)"
+                    : value === "sans"
+                      ? "Sans-serif (Modern)"
+                      : "Monospace"
+                }
                 onValueChange={(val) => {
                   if (sourceStyleLocked) return;
+                  previewStyle({
+                    "font-family":
+                      val === "sans"
+                        ? "ui-sans-serif, system-ui, sans-serif"
+                        : val === "mono"
+                          ? "ui-monospace, monospace"
+                          : "ui-serif, Georgia, serif",
+                  });
                   if (!componentPath) handleFieldChange("fontFamily", val);
-                  patchStyle((prev) =>
-                    patchTailwindClasses(prev, {
-                      property: "font-family",
-                      value: `font-${val}`,
-                    }),
+                  patchStyle(
+                    (prev) =>
+                      patchTailwindClasses(prev, {
+                        property: "font-family",
+                        value: `font-${val}`,
+                      }),
+                    { fontFamily: val },
                   );
                 }}
                 disabled={disabled || sourceStyleLocked}
-              >
-                <SelectTrigger className="h-7 text-xs">
-                  <SelectValue placeholder="Font family" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="serif">Serif (Editorial)</SelectItem>
-                  <SelectItem value="sans">Sans-serif (Modern)</SelectItem>
-                  <SelectItem value="mono">Monospace</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="text-[10px] text-muted-foreground">Weight</label>
-              <Select
+              />
+              <InspectorSelectControl
+                label="Weight"
+                ariaLabel="Font weight"
                 value={effectiveFontWeight}
+                options={["300", "normal", "medium", "bold"]}
+                formatOption={(value) =>
+                  value === "300"
+                    ? "Light (300)"
+                    : value === "normal"
+                      ? "Regular (400)"
+                      : value === "medium"
+                        ? "Medium (500)"
+                        : "Bold (700)"
+                }
                 onValueChange={(val) => {
                   if (sourceStyleLocked) return;
+                  previewStyle({
+                    "font-weight":
+                      val === "300"
+                        ? "300"
+                        : val === "normal"
+                          ? "400"
+                          : val === "medium"
+                            ? "500"
+                            : "700",
+                  });
                   if (!componentPath) handleFieldChange("fontWeight", val);
                   const weightClass =
                     val === "300"
@@ -939,274 +1607,207 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         : val === "medium"
                           ? "font-medium"
                           : "font-bold";
-                  patchStyle((prev) =>
-                    patchTailwindClasses(prev, {
-                      property: "font-weight",
-                      value: weightClass,
-                    }),
+                  patchStyle(
+                    (prev) =>
+                      patchTailwindClasses(prev, {
+                        property: "font-weight",
+                        value: weightClass,
+                      }),
+                    { fontWeight: val },
                   );
                 }}
                 disabled={disabled || sourceStyleLocked}
-              >
-                <SelectTrigger className="h-7 text-xs">
-                  <SelectValue placeholder="Weight" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="300">Light (300)</SelectItem>
-                  <SelectItem value="normal">Regular (400)</SelectItem>
-                  <SelectItem value="medium">Medium (500)</SelectItem>
-                  <SelectItem value="bold">Bold (700)</SelectItem>
-                </SelectContent>
-              </Select>
+              />
             </div>
-          </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <div className="flex items-center justify-between rounded-lg border bg-background px-2.5 py-1">
-              <span className="text-[11px] text-muted-foreground">Size</span>
-              {isComplexFontSize ? (
-                <span
-                  className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground truncate max-w-[80px]"
-                  title={`Controlled in code: ${complexFontSizeRaw}`}
-                >
-                  Custom
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex h-8 min-w-0 items-center justify-between rounded-md border bg-background px-2">
+                <span className="text-[10px] text-muted-foreground">Size</span>
+                {isComplexFontSize ? (
+                  <span
+                    className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground truncate max-w-[80px]"
+                    title={`Controlled in code: ${complexFontSizeRaw}`}
+                  >
+                    Custom
+                  </span>
+                ) : (
+                  <ScrubbableNumberInput
+                    value={effectiveFontSize}
+                    min={12}
+                    max={120}
+                    step={2}
+                    suffix="px"
+                    disabled={disabled || sourceStyleLocked}
+                    ariaLabel="Heading font size"
+                    onValuePreview={(val) =>
+                      previewStyle({ "font-size": `${val}px` })
+                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      if (!componentPath) handleFieldChange("fontSize", val);
+                      patchStyle(
+                        (prev) =>
+                          patchTailwindClasses(prev, {
+                            property: "font-size",
+                            value: `text-[${val}px]`,
+                          }),
+                        { fontSize: val },
+                      );
+                    }}
+                    className="h-6 w-16"
+                    inputClassName="h-6 text-xs text-right font-mono"
+                  />
+                )}
+              </div>
+              <div className="flex h-8 min-w-0 items-center justify-between rounded-md border bg-background px-2">
+                <span className="text-[10px] text-muted-foreground">
+                  Line H
                 </span>
-              ) : (
                 <ScrubbableNumberInput
-                  value={effectiveFontSize}
-                  min={12}
-                  max={120}
-                  step={2}
-                  suffix="px"
+                  value={effectiveLineHeight}
+                  min={0.8}
+                  max={2.5}
+                  step={0.05}
                   disabled={disabled || sourceStyleLocked}
-                  ariaLabel="Heading font size"
+                  ariaLabel="Line height multiplier"
+                  onValuePreview={(val) =>
+                    previewStyle({ "line-height": String(val) })
+                  }
                   onValueChange={(val) => {
                     if (sourceStyleLocked) return;
-                    if (!componentPath) handleFieldChange("fontSize", val);
-                    patchStyle((prev) =>
-                      patchTailwindClasses(prev, {
-                        property: "font-size",
-                        value: `text-[${val}px]`,
-                      }),
+                    if (!componentPath) handleFieldChange("lineHeight", val);
+                    patchStyle(
+                      (prev) =>
+                        patchTailwindClasses(prev, {
+                          property: "line-height",
+                          value: `leading-[${val}]`,
+                        }),
+                      { lineHeight: val },
                     );
                   }}
                   className="h-6 w-16"
                   inputClassName="h-6 text-xs text-right font-mono"
                 />
-              )}
+              </div>
             </div>
-            <div className="flex items-center justify-between rounded-lg border bg-background px-2.5 py-1">
-              <span className="text-[11px] text-muted-foreground">Line H</span>
+          </div>
+        </InspectorGroup>
+      )}
+
+      {/* 4. Fills & Background */}
+      {visibleModules.has("fill") && (
+        <InspectorGroup
+          title="Fills & Background"
+          icon={<Palette className="size-3.5" />}
+          expanded={sectionsExpanded.fills}
+          onToggle={() => toggleSection("fills")}
+        >
+          <div className="space-y-3">
+            {/* Quick Palette Chips */}
+            <div>
+              <label className="text-[10px] text-muted-foreground">
+                Theme Palette
+              </label>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {THEME_PALETTE_COLORS.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => {
+                      if (sourceStyleLocked) return;
+                      previewContainerStyle({
+                        "background-color": item.value,
+                      });
+                      if (!componentPath)
+                        handleFieldChange("backgroundColor", item.value);
+                      patchContainerStyle(
+                        (prev) =>
+                          patchTailwindClasses(prev, {
+                            property: "background-color",
+                            value: `bg-[${item.value}]`,
+                          }),
+                        { backgroundColor: item.value },
+                      );
+                    }}
+                    className={cn(
+                      "size-6 rounded-md border shadow-xs transition-transform hover:scale-110",
+                      item.preview,
+                      effectiveBgColor === item.value &&
+                        "ring-2 ring-primary ring-offset-1",
+                    )}
+                    title={item.label}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <InspectorColorField
+              label="Fill"
+              value={effectiveBgColor}
+              disabled={disabled || sourceStyleLocked}
+              onPreview={(value) => {
+                previewContainerStyle({ "background-color": value });
+              }}
+              onCommit={(value) => {
+                if (!componentPath) handleFieldChange("backgroundColor", value);
+                patchContainerStyle(
+                  (prev) =>
+                    patchTailwindClasses(prev, {
+                      property: "background-color",
+                      value: "bg-[" + value + "]",
+                    }),
+                  { backgroundColor: value },
+                );
+              }}
+            />
+          </div>
+        </InspectorGroup>
+      )}
+
+      {/* 5. Borders & Corners */}
+      {visibleModules.has("border") && (
+        <InspectorGroup
+          title="Border & Radius"
+          icon={<Paintbrush className="size-3.5" />}
+          expanded={sectionsExpanded.borders}
+          onToggle={() => toggleSection("borders")}
+        >
+          <div className="space-y-3">
+            <div className="flex h-8 min-w-0 items-center justify-between rounded-md border bg-background px-2">
+              <span className="text-[10px] text-muted-foreground">Radius</span>
               <ScrubbableNumberInput
-                value={effectiveLineHeight}
-                min={0.8}
-                max={2.5}
-                step={0.05}
+                value={effectiveBorderRadius}
+                min={0}
+                max={48}
+                step={2}
+                suffix="px"
                 disabled={disabled || sourceStyleLocked}
-                ariaLabel="Line height multiplier"
+                ariaLabel="Corner radius"
+                onValuePreview={(val) =>
+                  previewContainerStyle({ "border-radius": `${val}px` })
+                }
                 onValueChange={(val) => {
                   if (sourceStyleLocked) return;
-                  if (!componentPath) handleFieldChange("lineHeight", val);
-                  patchStyle((prev) =>
-                    patchTailwindClasses(prev, {
-                      property: "line-height",
-                      value: `leading-[${val}]`,
-                    }),
+                  if (!componentPath) handleFieldChange("borderRadius", val);
+                  patchContainerStyle(
+                    (prev) =>
+                      patchTailwindClasses(prev, {
+                        property: "border-radius",
+                        value: `rounded-[${val}px]`,
+                      }),
+                    { borderRadius: val },
                   );
                 }}
-                className="h-6 w-16"
+                className="h-7 min-w-0 flex-1 justify-end gap-1"
                 inputClassName="h-6 text-xs text-right font-mono"
               />
             </div>
           </div>
-        </div>
-      </InspectorGroup>
-
-      {/* 4. Fills & Background */}
-      <InspectorGroup
-        title="Fills & Background"
-        icon={<Palette className="size-3.5" />}
-        expanded={sectionsExpanded.fills}
-        onToggle={() => toggleSection("fills")}
-      >
-        <div className="space-y-3">
-          {/* Quick Palette Chips */}
-          <div>
-            <label className="text-[10px] text-muted-foreground">
-              Theme Palette
-            </label>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {THEME_PALETTE_COLORS.map((item) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  onClick={() => {
-                    if (sourceStyleLocked) return;
-                    if (!componentPath)
-                      handleFieldChange("backgroundColor", item.value);
-                    patchContainerStyle((prev) =>
-                      patchTailwindClasses(prev, {
-                        property: "background-color",
-                        value: `bg-[${item.value}]`,
-                      }),
-                    );
-                  }}
-                  className={cn(
-                    "size-6 rounded-md border shadow-xs transition-transform hover:scale-110",
-                    item.preview,
-                    effectiveBgColor === item.value &&
-                      "ring-2 ring-primary ring-offset-1",
-                  )}
-                  title={item.label}
-                />
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
-            <Input
-              type="text"
-              value={effectiveBgColor}
-              onChange={(e) => {
-                if (sourceStyleLocked) return;
-                const val = e.target.value;
-                if (!componentPath) handleFieldChange("backgroundColor", val);
-                patchContainerStyle((prev) =>
-                  patchTailwindClasses(prev, {
-                    property: "background-color",
-                    value: `bg-[${val}]`,
-                  }),
-                );
-              }}
-              disabled={disabled || sourceStyleLocked}
-              placeholder="#ffffff"
-              className="h-7 text-xs font-mono"
-            />
-            <input
-              type="color"
-              value={
-                effectiveBgColor.startsWith("#") ? effectiveBgColor : "#fafaf9"
-              }
-              onChange={(e) => {
-                if (sourceStyleLocked) return;
-                const val = e.target.value;
-                if (!componentPath) handleFieldChange("backgroundColor", val);
-                patchContainerStyle((prev) =>
-                  patchTailwindClasses(prev, {
-                    property: "background-color",
-                    value: `bg-[${val}]`,
-                  }),
-                );
-              }}
-              disabled={disabled || sourceStyleLocked}
-              className="size-7 cursor-pointer rounded border p-0.5 bg-transparent"
-            />
-          </div>
-        </div>
-      </InspectorGroup>
-
-      {/* 5. Borders & Corners */}
-      <InspectorGroup
-        title="Border & Radius"
-        icon={<Paintbrush className="size-3.5" />}
-        expanded={sectionsExpanded.borders}
-        onToggle={() => toggleSection("borders")}
-      >
-        <div className="space-y-3">
-          <div className="flex items-center justify-between rounded-lg border bg-background px-2.5 py-1">
-            <span className="text-[11px] text-muted-foreground">Radius</span>
-            <ScrubbableNumberInput
-              value={effectiveBorderRadius}
-              min={0}
-              max={48}
-              step={2}
-              suffix="px"
-              disabled={disabled || sourceStyleLocked}
-              ariaLabel="Corner radius"
-              onValueChange={(val) => {
-                if (sourceStyleLocked) return;
-                if (!componentPath) handleFieldChange("borderRadius", val);
-                patchContainerStyle((prev) =>
-                  patchTailwindClasses(prev, {
-                    property: "border-radius",
-                    value: `rounded-[${val}px]`,
-                  }),
-                );
-              }}
-              className="h-6 w-20"
-              inputClassName="h-6 text-xs text-right font-mono"
-            />
-          </div>
-        </div>
-      </InspectorGroup>
-
-      {/* 6. Tailwind CSS Classes */}
-      <InspectorGroup
-        title="Tailwind CSS Classes"
-        icon={<Code2 className="size-3.5" />}
-        expanded={sectionsExpanded.tailwind}
-        onToggle={() => toggleSection("tailwind")}
-      >
-        <div className="space-y-2">
-          <p className="text-[11px] text-muted-foreground leading-relaxed">
-            Direct Tailwind utility classes applied to this section container.
-          </p>
-          <Textarea
-            value={effectiveRawClassName}
-            onChange={(e) => {
-              if (sourceStyleLocked) return;
-              const nextClasses = e.target.value;
-              if (componentPath) {
-                patchStyle(() => nextClasses);
-              } else {
-                handleFieldChange("className", nextClasses);
-              }
-            }}
-            disabled={disabled || sourceStyleLocked}
-            placeholder="e.g. py-24 bg-stone-900 text-white rounded-2xl shadow-xl"
-            rows={3}
-            className="font-mono text-xs resize-none"
-          />
-        </div>
-      </InspectorGroup>
+        </InspectorGroup>
+      )}
     </div>
   );
 });
-
-function InspectorGroup({
-  title,
-  icon,
-  expanded,
-  onToggle,
-  children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  expanded: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-xl border bg-background overflow-hidden shadow-xs">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between px-3 py-2.5 text-xs font-medium text-foreground hover:bg-accent/40"
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground">{icon}</span>
-          <span>{title}</span>
-        </div>
-        {expanded ? (
-          <ChevronUp className="size-3.5 text-muted-foreground" />
-        ) : (
-          <ChevronDown className="size-3.5 text-muted-foreground" />
-        )}
-      </button>
-      {expanded && <div className="border-t px-3 py-3">{children}</div>}
-    </div>
-  );
-}
 
 function InspectorField({
   label,

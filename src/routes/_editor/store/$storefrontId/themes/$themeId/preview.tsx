@@ -4,11 +4,62 @@ import { storefrontThemePreviewSearchSchema } from "@/lib/validations/storefront
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
 
 import { storefrontThemeFileQueries } from "../../../../-queries/storefront-theme-files.queries";
-import { useThemeCompiler } from "@/lib/storefront/compiler/use-theme-compiler";
+import {
+  type ThemeCompilerApplication,
+  useThemeCompiler,
+} from "@/lib/storefront/compiler/use-theme-compiler";
+import { selectionKindFromElement } from "@/lib/storefront/editor/selection-taxonomy";
+import { createSelectionOverlaySettler } from "@/lib/storefront/editor/selection-overlay-settler";
+import {
+  createSelectionStylePreview,
+  SELECTION_STYLE_APPLIED_EVENT,
+} from "@/lib/storefront/editor/selection-style-preview";
+
+const PREVIEW_GEOMETRY_MUTATION_MESSAGES = new Set([
+  "morph:storefront-preview-update-theme-files",
+  "morph:storefront-preview-update-section-props",
+  "morph:storefront-preview-set-section-order",
+]);
+
+function selectionStyleSnapshot(computed: CSSStyleDeclaration) {
+  return {
+    fontSize: computed.fontSize,
+    lineHeight: computed.lineHeight,
+    fontFamily: computed.fontFamily,
+    fontWeight: computed.fontWeight,
+    textAlign: computed.textAlign,
+    paddingTop: computed.paddingTop,
+    paddingBottom: computed.paddingBottom,
+    paddingLeft: computed.paddingLeft,
+    paddingRight: computed.paddingRight,
+    backgroundColor: computed.backgroundColor,
+    backgroundImage: computed.backgroundImage,
+    borderRadius: computed.borderRadius,
+    display: computed.display,
+    flexDirection: computed.flexDirection,
+    gap: computed.gap,
+    width: computed.width,
+    height: computed.height,
+    minWidth: computed.minWidth,
+    maxWidth: computed.maxWidth,
+    minHeight: computed.minHeight,
+    maxHeight: computed.maxHeight,
+    boxSizing: computed.boxSizing,
+    position: computed.position,
+    top: computed.top,
+    left: computed.left,
+    zIndex: computed.zIndex,
+    opacity: computed.opacity,
+    overflow: computed.overflow,
+    transform: computed.transform,
+    alignItems: computed.alignItems,
+    justifyContent: computed.justifyContent,
+  };
+}
 
 export const Route = createFileRoute(
   "/_editor/store/$storefrontId/themes/$themeId/preview",
@@ -64,14 +115,28 @@ function ReadyStorefrontPreview({
     (candidate) => candidate.id === templateId,
   );
   const previewDocument = usePreviewDocument(template?.document);
-  const { themeFiles: previewThemeFiles, sourceGeneration } =
-    usePreviewThemeFiles(context.storefront.id, context.theme.id);
+  const {
+    themeFiles: previewThemeFiles,
+    sourceGeneration,
+    styleRevision,
+    acknowledgeStyleRevision,
+  } = usePreviewThemeFiles(context.storefront.id, context.theme.id);
 
-  // Phase 4A: Unified Theme Compiler pipeline for Preview runtime
+  // Source may render immediately because transient inline styles bridge the
+  // compile window. The revision is acknowledged only after CSS is injected.
   const { diagnostics, hasErrors } = useThemeCompiler(previewThemeFiles, {
     themeId: context.theme.id,
     storefrontId: context.storefront.id,
     sourceGeneration,
+    applicationKey: styleRevision,
+    onStylesApplied: (application: ThemeCompilerApplication) => {
+      if (
+        application.didApplySource &&
+        typeof application.applicationKey === "number"
+      ) {
+        acknowledgeStyleRevision(application.applicationKey);
+      }
+    },
   });
 
   return (
@@ -112,8 +177,12 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
   const [sourceGeneration, setSourceGeneration] = useState<number | undefined>(
     undefined,
   );
+  const [styleRevision, setStyleRevision] = useState<number | undefined>();
+  const latestRequestedStyleRevisionRef = useRef<number | undefined>(undefined);
+  const hasReceivedEditorFilesRef = useRef(false);
 
   useEffect(() => {
+    if (hasReceivedEditorFilesRef.current) return;
     if (fileQuery.data?.files) {
       setThemeFiles(fileQuery.data.files);
     }
@@ -140,9 +209,19 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
         "files" in message &&
         Array.isArray(message.files)
       ) {
+        hasReceivedEditorFilesRef.current = true;
         setThemeFiles(
           message.files as Array<{ path: string; content: string }>,
         );
+        if (
+          "styleRevision" in message &&
+          typeof message.styleRevision === "number" &&
+          Number.isSafeInteger(message.styleRevision) &&
+          message.styleRevision >= 0
+        ) {
+          latestRequestedStyleRevisionRef.current = message.styleRevision;
+          setStyleRevision(message.styleRevision);
+        }
         if ("sourceGeneration" in message && typeof message.sourceGeneration === "number") {
           setSourceGeneration(message.sourceGeneration);
         }
@@ -153,7 +232,26 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
     return () => window.removeEventListener("message", handleThemeFileMessage);
   }, []);
 
-  return { themeFiles, sourceGeneration };
+  const acknowledgeStyleRevision = useCallback((appliedRevision: number) => {
+    if (latestRequestedStyleRevisionRef.current !== appliedRevision) return;
+    window.dispatchEvent(new Event(SELECTION_STYLE_APPLIED_EVENT));
+    document.documentElement.dataset.storefrontStyleRevision =
+      String(appliedRevision);
+    window.parent.postMessage(
+      {
+        type: "morph:storefront-preview-theme-files-applied",
+        styleRevision: appliedRevision,
+      },
+      window.location.origin,
+    );
+  }, []);
+
+  return {
+    themeFiles,
+    sourceGeneration,
+    styleRevision,
+    acknowledgeStyleRevision,
+  };
 }
 
 function usePreviewDocument(document: StorefrontPageDocument | undefined) {
@@ -279,7 +377,6 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       boxShadow: "0 0 0 3px hsl(217 91% 60% / 0.18)",
       boxSizing: "border-box",
       borderRadius: "3px",
-      transition: "all 0.04s ease-out",
     });
 
     const selectedLabel = document.createElement("span");
@@ -310,7 +407,6 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       background: "hsl(217 91% 60% / 0.08)",
       boxSizing: "border-box",
       borderRadius: "3px",
-      transition: "all 0.04s ease-out",
     });
 
     const hoverLabel = document.createElement("span");
@@ -338,6 +434,28 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       elementKey: string | null;
       fieldKey: string | null;
       field: string | null;
+      fieldPath: string | null;
+      tagName: string;
+      role: string | null;
+      inputType: string | null;
+    };
+
+    const selectionMetadata = (item: SelectableInfo) => {
+      const kind = selectionKindFromElement({
+        component: item.type,
+        morphElement: item.elementKey,
+        tagName: item.tagName,
+        role: item.role,
+        inputType: item.inputType,
+        isSection: item.element === item.section,
+      });
+      return {
+        kind,
+        tagName: item.tagName,
+        role: item.role,
+        inputType: item.inputType,
+        fieldPath: item.fieldPath,
+      };
     };
 
     let hoveredItem: SelectableInfo | null = null;
@@ -345,6 +463,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     let selectedElement: HTMLElement | null = null;
     let selectedSectionId: string | null = null;
     let selectionEnabled = false;
+    const selectionStylePreview = createSelectionStylePreview();
+    let overlaySettler: ReturnType<
+      typeof createSelectionOverlaySettler
+    > | null = null;
     let panGesture: {
       pointerId: number;
       startScreenX: number;
@@ -402,30 +524,45 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     ): SelectableInfo | null => {
       if (!(target instanceof HTMLElement)) return null;
 
-      // 0. Prioritize Morph element identity annotations (data-morph-element)
-      const morphEl = target.closest<HTMLElement>("[data-morph-element]");
+      // 0. Prefer the nearest AST-backed Morph identity annotation.
+      const morphEl = target.closest<HTMLElement>(
+        "[data-morph-node], [data-morph-element]",
+      );
       if (morphEl) {
         const sectionEl = morphEl.closest<HTMLElement>(
           "[data-storefront-section-id], [data-morph-section]",
         );
-        const elementKey = morphEl.dataset.morphElement!;
+        const nodeId = morphEl.dataset.morphNode ?? null;
+        const elementKey = morphEl.dataset.morphElement ?? null;
         const fieldKey =
           morphEl.dataset.storefrontField ??
-          (elementKey === "action"
-            ? "actionLabel"
-            : elementKey === "image"
-              ? "imageSrc"
-              : elementKey);
+          (elementKey
+            ? elementKey === "action"
+              ? "actionLabel"
+              : elementKey === "image"
+                ? "imageSrc"
+                : elementKey
+            : null);
+        const fieldPath = morphEl.dataset.storefrontFieldPath ?? fieldKey;
+        const selectableType =
+          elementKey ?? nodeId ?? morphEl.tagName.toLowerCase();
 
         return {
           element: morphEl,
           section: sectionEl,
-          sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
-          type: elementKey,
-          label: elementKey.charAt(0).toUpperCase() + elementKey.slice(1),
+          sectionId:
+            sectionEl?.dataset.storefrontSectionId ??
+            sectionEl?.dataset.morphSection ??
+            null,
+          type: selectableType,
+          label: getComponentDisplayName(selectableType),
           elementKey,
           fieldKey,
           field: fieldKey,
+          fieldPath,
+          tagName: morphEl.tagName.toLowerCase(),
+          role: morphEl.getAttribute("role"),
+          inputType: morphEl instanceof HTMLInputElement ? morphEl.type : null,
         };
       }
 
@@ -441,6 +578,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           componentEl.dataset.storefrontComponent ??
           componentEl.tagName.toLowerCase();
         const fieldKey = componentEl.dataset.storefrontField ?? null;
+        const fieldPath = componentEl.dataset.storefrontFieldPath ?? fieldKey;
         const elementKey =
           componentEl.dataset.morphElement ??
           (compType === "heading" ||
@@ -460,12 +598,16 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           elementKey,
           fieldKey,
           field: fieldKey ?? elementKey,
+          fieldPath,
+          tagName: componentEl.tagName.toLowerCase(),
+          role: componentEl.getAttribute("role"),
+          inputType: componentEl instanceof HTMLInputElement ? componentEl.type : null,
         };
       }
 
       // 2. Standard interactive & typography sub-elements
       const elementEl = target.closest<HTMLElement>(
-        "h1, h2, h3, h4, p, img, a, button, input, article",
+        "h1, h2, h3, h4, h5, h6, p, blockquote, code, pre, img, picture, svg, video, audio, canvas, iframe, embed, map, a, button, nav, details, summary, form, fieldset, input, textarea, select, option, ul, ol, li, table, thead, tbody, tfoot, tr, td, th, hr, article",
       );
       if (elementEl) {
         const sectionEl = elementEl.closest<HTMLElement>(
@@ -474,8 +616,56 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         const tag = elementEl.tagName.toLowerCase();
         const compType = tag.startsWith("h")
           ? "heading"
+          : tag === "blockquote"
+            ? "blockquote"
+            : tag === "code" || tag === "pre"
+              ? "code"
           : tag === "img"
             ? "image"
+            : tag === "picture"
+              ? "picture"
+              : tag === "svg"
+                ? "svg"
+                : tag === "video"
+                  ? "video"
+                  : tag === "audio"
+                    ? "audio"
+                    : tag === "canvas"
+                      ? "canvas"
+                      : tag === "iframe"
+                        ? "iframe"
+                        : tag === "embed"
+                          ? "embed"
+                          : tag === "nav"
+                            ? "navigation"
+                            : tag === "form"
+                              ? "form"
+                              : tag === "fieldset"
+                                ? "fieldset"
+                                : tag === "textarea"
+                                  ? "textarea"
+                                  : tag === "select"
+                                    ? "select"
+                                    : tag === "option"
+                                      ? "option"
+                                      : tag === "input"
+                                        ? elementEl instanceof HTMLInputElement && elementEl.type === "checkbox"
+                                          ? "checkbox"
+                                          : elementEl instanceof HTMLInputElement && elementEl.type === "radio"
+                                            ? "radio"
+                                            : "input"
+                                        : tag === "ul" || tag === "ol"
+                                          ? "list"
+                                          : tag === "li"
+                                            ? "list-item"
+                                            : tag === "table"
+                                              ? "table"
+                                              : tag === "tr"
+                                                ? "table-row"
+                                                : tag === "td" || tag === "th"
+                                                  ? "table-cell"
+                                                  : tag === "hr"
+                                                    ? "divider"
             : tag === "a" || tag === "button"
               ? "action"
               : tag === "p"
@@ -491,6 +681,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             : compType === "image"
               ? "imageSrc"
               : compType);
+        const fieldPath = elementEl.dataset.storefrontFieldPath ?? fieldKey;
 
         return {
           element: elementEl,
@@ -501,6 +692,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           elementKey: compType,
           fieldKey,
           field: fieldKey,
+          fieldPath,
+          tagName: tag,
+          role: elementEl.getAttribute("role"),
+          inputType: elementEl instanceof HTMLInputElement ? elementEl.type : null,
         };
       }
 
@@ -519,6 +714,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           elementKey: null,
           fieldKey: null,
           field: null,
+          fieldPath: null,
+          tagName: section.tagName.toLowerCase(),
+          role: section.getAttribute("role"),
+          inputType: null,
         };
       }
 
@@ -532,8 +731,16 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
-      // 1. Position Persistent Selected Overlay
-      if (selectedItem?.element && document.body.contains(selectedItem.element)) {
+      // Keep the last stable selected geometry while live authoring replaces
+      // the selected DOM node. The settled pass below rebinds its identity and
+      // measures the final element once.
+      if (selectedItem && overlaySettler?.isFrozen()) {
+        selectedOverlay.style.display = "block";
+        selectedLabel.textContent = selectedItem.label;
+      } else if (
+        selectedItem?.element &&
+        document.body.contains(selectedItem.element)
+      ) {
         const sBounds = selectedItem.element.getBoundingClientRect();
         selectedOverlay.style.display = "block";
         selectedOverlay.style.left = `${sBounds.left}px`;
@@ -562,6 +769,75 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         hoverOverlay.style.display = "none";
       }
     };
+
+    const findCurrentSelectedElement = (): HTMLElement | null => {
+      if (!selectedItem) return null;
+
+      const section = selectedItem.sectionId
+        ? document.querySelector<HTMLElement>(
+            `[data-storefront-section-id="${CSS.escape(selectedItem.sectionId)}"], [data-morph-section="${CSS.escape(selectedItem.sectionId)}"]`,
+          )
+        : null;
+      if (selectedItem.element === selectedItem.section) return section;
+
+      const scope = section ?? document;
+      const nodeId = selectedItem.element.dataset.morphNode;
+      if (nodeId) {
+        const node = scope.querySelector<HTMLElement>(
+          `[data-morph-node="${CSS.escape(nodeId)}"]`,
+        );
+        if (node) return node;
+      }
+
+      if (selectedItem.fieldPath) {
+        const field = scope.querySelector<HTMLElement>(
+          `[data-storefront-field-path="${CSS.escape(selectedItem.fieldPath)}"]`,
+        );
+        if (field) return field;
+      }
+
+      const morphElement = selectedItem.element.dataset.morphElement;
+      if (morphElement) {
+        const element = scope.querySelector<HTMLElement>(
+          `[data-morph-element="${CSS.escape(morphElement)}"]`,
+        );
+        if (element) return element;
+      }
+
+      if (selectedItem.fieldKey) {
+        const field = scope.querySelector<HTMLElement>(
+          `[data-storefront-field="${CSS.escape(selectedItem.fieldKey)}"]`,
+        );
+        if (field) return field;
+      }
+
+      return document.body.contains(selectedItem.element)
+        ? selectedItem.element
+        : null;
+    };
+
+    const rebindSelectedElement = () => {
+      const nextElement = findCurrentSelectedElement();
+      selectedElement?.removeAttribute("data-storefront-editor-selected");
+      if (!nextElement) {
+        selectedElement = null;
+        selectedItem = null;
+        return;
+      }
+
+      selectedElement = nextElement;
+      selectedElement.dataset.storefrontEditorSelected = "true";
+      selectedItem = resolveSelectable(nextElement);
+    };
+
+    const rebindAndPositionSelectedOverlay = () => {
+      rebindSelectedElement();
+      positionOverlays();
+    };
+
+    overlaySettler = createSelectionOverlaySettler(
+      rebindAndPositionSelectedOverlay,
+    );
 
     const handlePointerMove = (event: PointerEvent) => {
       if (!selectionEnabled && panGesture?.pointerId === event.pointerId) {
@@ -672,31 +948,15 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       positionOverlays();
 
       if (selectable.sectionId) {
-        const computed = window.getComputedStyle(selectable.element);
-        const sectionComputed = window.getComputedStyle(
-          selectable.section ?? selectable.element,
+        const computedStyle = selectionStyleSnapshot(
+          window.getComputedStyle(selectable.element),
         );
-        const computedStyle = {
-          fontSize: computed.fontSize,
-          lineHeight: computed.lineHeight,
-          fontFamily: computed.fontFamily,
-          fontWeight: computed.fontWeight,
-          textAlign: computed.textAlign,
-          paddingTop: computed.paddingTop,
-          paddingBottom: computed.paddingBottom,
-          paddingLeft: computed.paddingLeft,
-          paddingRight: computed.paddingRight,
-          backgroundColor: computed.backgroundColor,
-          borderRadius: computed.borderRadius,
-        };
-        const sectionComputedStyle = {
-          paddingTop: sectionComputed.paddingTop,
-          paddingBottom: sectionComputed.paddingBottom,
-          paddingLeft: sectionComputed.paddingLeft,
-          paddingRight: sectionComputed.paddingRight,
-          backgroundColor: sectionComputed.backgroundColor,
-          borderRadius: sectionComputed.borderRadius,
-        };
+        const parentComputedStyle = selectionStyleSnapshot(
+          window.getComputedStyle(selectable.element.parentElement ?? selectable.element),
+        );
+        const sectionComputedStyle = selectionStyleSnapshot(
+          window.getComputedStyle(selectable.section ?? selectable.element),
+        );
 
         const morphNodeId =
           selectable.element.getAttribute("data-morph-node") ||
@@ -711,8 +971,17 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             nodeId: morphNodeId,
             elementKey: selectable.elementKey,
             fieldKey: selectable.fieldKey,
-            field: selectable.fieldKey ?? selectable.elementKey,
+              field: selectable.fieldKey ?? selectable.elementKey,
+              ...selectionMetadata(selectable),
+            styleRevision: Number(
+              document.documentElement.dataset.storefrontStyleRevision ?? 0,
+            ),
+            className: selectable.element.getAttribute("class") ?? "",
+            isSection: selectable.element === selectable.section,
+            inspectorOverride:
+              selectable.element.dataset.morphInspector ?? null,
             computedStyle,
+            parentComputedStyle,
             sectionComputedStyle,
           },
           window.location.origin,
@@ -774,16 +1043,102 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         event.source !== window.parent ||
         typeof event.data !== "object" ||
         event.data === null ||
-        !("type" in event.data)
+        !("type" in event.data) ||
+        typeof event.data.type !== "string"
       ) {
         return;
       }
 
+      if (
+        event.data.type === "morph:storefront-preview-update-selection-field" &&
+        "fieldKey" in event.data &&
+        typeof event.data.fieldKey === "string" &&
+        event.data.fieldKey.length <= 100 &&
+        "value" in event.data &&
+        typeof event.data.value === "string" &&
+        event.data.value.length <= 10_000 &&
+        selectedItem
+      ) {
+        const scope = selectedItem.section ?? document;
+        const fieldPath =
+          "fieldPath" in event.data && typeof event.data.fieldPath === "string"
+            ? event.data.fieldPath
+            : null;
+        const target =
+          (fieldPath
+            ? scope.querySelector<HTMLElement>(
+                `[data-storefront-field-path="${CSS.escape(fieldPath)}"]`,
+              )
+            : null) ??
+          scope.querySelector<HTMLElement>(
+            `[data-storefront-field="${CSS.escape(event.data.fieldKey)}"]`,
+          ) ??
+          (selectedItem.fieldKey === event.data.fieldKey
+            ? selectedItem.element
+            : null);
+        if (!target) return;
+        if (event.data.fieldKey === "imageSrc") {
+          target.setAttribute("src", event.data.value);
+        } else if (event.data.fieldKey === "imageAlt") {
+          target.setAttribute("alt", event.data.value);
+        } else if (event.data.fieldKey === "actionHref") {
+          target.setAttribute("href", event.data.value);
+        } else {
+          target.textContent = event.data.value;
+        }
+        positionOverlays();
+        return;
+      }
+
+      if (
+        event.data.type === "morph:storefront-preview-update-selection-style" &&
+        "styles" in event.data &&
+        typeof event.data.styles === "object" &&
+        event.data.styles !== null &&
+        "targetElement" in event.data &&
+        typeof event.data.targetElement === "string" &&
+        event.data.targetElement.length <= 100 &&
+        selectedItem?.element
+      ) {
+        const targetKey = event.data.targetElement;
+        const scope = selectedItem.section ?? document;
+        const previewTarget =
+          targetKey === "section" || targetKey === "root"
+            ? (selectedItem.section ?? selectedItem.element)
+            : scope.querySelector<HTMLElement>(
+                `[data-morph-node="${CSS.escape(targetKey)}"], [data-morph-element="${CSS.escape(targetKey)}"], [data-storefront-field="${CSS.escape(targetKey)}"]`,
+              ) ??
+              (selectedItem.elementKey === targetKey ||
+              selectedItem.element.dataset.morphNode === targetKey
+                ? selectedItem.element
+                : null);
+        if (!previewTarget) return;
+        selectionStylePreview.apply(
+          previewTarget,
+          event.data.styles as Record<string, string>,
+        );
+        positionOverlays();
+        return;
+      }
+
+      if (PREVIEW_GEOMETRY_MUTATION_MESSAGES.has(event.data.type)) {
+        overlaySettler?.freezeUntilSettled();
+        return;
+      }
+
       if (event.data.type === "morph:storefront-preview-request-selection-style") {
+        if (overlaySettler?.isFrozen()) rebindSelectedElement();
         if (selectedItem?.sectionId) {
-          const computed = window.getComputedStyle(selectedItem.element);
-          const sectionComputed = window.getComputedStyle(
-            selectedItem.section ?? selectedItem.element,
+          const computedStyle = selectionStyleSnapshot(
+            window.getComputedStyle(selectedItem.element),
+          );
+          const parentComputedStyle = selectionStyleSnapshot(
+            window.getComputedStyle(
+              selectedItem.element.parentElement ?? selectedItem.element,
+            ),
+          );
+          const sectionComputedStyle = selectionStyleSnapshot(
+            window.getComputedStyle(selectedItem.section ?? selectedItem.element),
           );
           window.parent.postMessage(
             {
@@ -797,27 +1152,17 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
               elementKey: selectedItem.elementKey,
               fieldKey: selectedItem.fieldKey,
               field: selectedItem.fieldKey ?? selectedItem.elementKey,
-              computedStyle: {
-                fontSize: computed.fontSize,
-                lineHeight: computed.lineHeight,
-                fontFamily: computed.fontFamily,
-                fontWeight: computed.fontWeight,
-                textAlign: computed.textAlign,
-                paddingTop: computed.paddingTop,
-                paddingBottom: computed.paddingBottom,
-                paddingLeft: computed.paddingLeft,
-                paddingRight: computed.paddingRight,
-                backgroundColor: computed.backgroundColor,
-                borderRadius: computed.borderRadius,
-              },
-              sectionComputedStyle: {
-                paddingTop: sectionComputed.paddingTop,
-                paddingBottom: sectionComputed.paddingBottom,
-                paddingLeft: sectionComputed.paddingLeft,
-                paddingRight: sectionComputed.paddingRight,
-                backgroundColor: sectionComputed.backgroundColor,
-                borderRadius: sectionComputed.borderRadius,
-              },
+              ...selectionMetadata(selectedItem),
+              styleRevision: Number(
+                document.documentElement.dataset.storefrontStyleRevision ?? 0,
+              ),
+              className: selectedItem.element.getAttribute("class") ?? "",
+              isSection: selectedItem.element === selectedItem.section,
+              inspectorOverride:
+                selectedItem.element.dataset.morphInspector ?? null,
+              computedStyle,
+              parentComputedStyle,
+              sectionComputedStyle,
             },
             window.location.origin,
           );
@@ -875,6 +1220,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     window.addEventListener("scroll", positionOverlays, true);
     window.addEventListener("resize", positionOverlays);
     window.addEventListener("message", handleEditorMessage);
+    window.addEventListener(
+      SELECTION_STYLE_APPLIED_EVENT,
+      selectionStylePreview.restore,
+    );
 
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown, true);
@@ -889,6 +1238,12 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       window.removeEventListener("scroll", positionOverlays, true);
       window.removeEventListener("resize", positionOverlays);
       window.removeEventListener("message", handleEditorMessage);
+      window.removeEventListener(
+        SELECTION_STYLE_APPLIED_EVENT,
+        selectionStylePreview.restore,
+      );
+      selectionStylePreview.restore();
+      overlaySettler?.cancel();
       document.documentElement.removeAttribute(
         "data-storefront-editor-selection-enabled",
       );

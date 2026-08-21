@@ -5,7 +5,6 @@ import {
   type PointerEvent,
   useEffect,
   useRef,
-  useState,
 } from "react";
 import { Input } from "./input";
 
@@ -46,8 +45,10 @@ export function ScrubbableNumberInput({
   onValuePreview,
   onValueChange,
 }: ScrubbableNumberInputProps) {
-  const [draftValue, setDraftValue] = useState(() => String(value));
   const inputRef = useRef<HTMLInputElement>(null);
+  const draftValueRef = useRef(String(value));
+  const isEditingRef = useRef(false);
+  const skipNextBlurCommitRef = useRef(false);
   const scrubOriginRef = useRef<{
     pointerId: number;
     pointerX: number;
@@ -56,10 +57,19 @@ export function ScrubbableNumberInput({
     moved: boolean;
   } | null>(null);
 
-  useEffect(() => setDraftValue(String(value)), [value]);
+  useEffect(() => {
+    if (isEditingRef.current) return;
+    draftValueRef.current = String(value);
+    if (inputRef.current) inputRef.current.value = String(value);
+  }, [value]);
+
+  const setDraftValue = (nextValue: string) => {
+    draftValueRef.current = nextValue;
+    if (inputRef.current) inputRef.current.value = nextValue;
+  };
 
   const commitDraft = () => {
-    const parsed = Number(draftValue);
+    const parsed = Number(draftValueRef.current);
     if (!Number.isFinite(parsed)) {
       setDraftValue(String(value));
       return;
@@ -67,12 +77,12 @@ export function ScrubbableNumberInput({
 
     const nextValue = clamp(parsed, min, max);
     setDraftValue(String(nextValue));
+    onValuePreview?.(nextValue);
     onValueChange(nextValue);
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    commitDraft();
     inputRef.current?.blur();
   };
 
@@ -80,11 +90,15 @@ export function ScrubbableNumberInput({
     if (event.key !== "Escape") return;
     event.preventDefault();
     setDraftValue(String(value));
+    onValuePreview?.(value);
+    skipNextBlurCommitRef.current = true;
+    isEditingRef.current = false;
     inputRef.current?.blur();
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLInputElement>) => {
     if (disabled || event.button !== 0) return;
+    isEditingRef.current = true;
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -126,7 +140,9 @@ export function ScrubbableNumberInput({
     scrubOriginRef.current = null;
 
     if (origin.moved) {
+      onValuePreview?.(origin.nextValue);
       onValueChange(origin.nextValue);
+      isEditingRef.current = false;
       return;
     }
 
@@ -141,6 +157,7 @@ export function ScrubbableNumberInput({
     scrubOriginRef.current = null;
     setDraftValue(String(origin.value));
     (onValuePreview ?? onValueChange)(origin.value);
+    isEditingRef.current = false;
   };
 
   return (
@@ -157,9 +174,26 @@ export function ScrubbableNumberInput({
         max={max}
         step={step}
         disabled={disabled}
-        value={draftValue}
-        onChange={(event) => setDraftValue(event.target.value)}
-        onBlur={commitDraft}
+        defaultValue={value}
+        onFocus={() => {
+          isEditingRef.current = true;
+        }}
+        onChange={(event) => {
+          isEditingRef.current = true;
+          draftValueRef.current = event.target.value;
+          const parsed = Number(event.target.value);
+          if (event.target.value.trim() !== "" && Number.isFinite(parsed)) {
+            onValuePreview?.(clamp(parsed, min, max));
+          }
+        }}
+        onBlur={() => {
+          if (skipNextBlurCommitRef.current) {
+            skipNextBlurCommitRef.current = false;
+            return;
+          }
+          commitDraft();
+          isEditingRef.current = false;
+        }}
         onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}

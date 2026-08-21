@@ -7,6 +7,42 @@ import { storefrontReleaseDal } from "./storefront-release.dal";
 
 let sqlite: Database.Database;
 
+const targetReleaseId = "22222222-2222-4222-8222-222222222222";
+const validDocument = JSON.stringify({ version: 1, sections: [] });
+
+function insertValidPublicationItems() {
+  sqlite.prepare(
+    "INSERT INTO storefront_themes (id, storefront_id) VALUES (?, ?)",
+  ).run("theme-a", "storefront-a");
+  sqlite.prepare(
+    "INSERT INTO storefront_theme_templates (id, theme_id) VALUES (?, ?)",
+  ).run("template-a", "theme-a");
+  sqlite.prepare(
+    "INSERT INTO storefront_theme_template_revisions (id, template_id, document) VALUES (?, ?, ?)",
+  ).run("template-revision-a", "template-a", validDocument);
+  sqlite.prepare(
+    "INSERT INTO storefront_pages (id, storefront_id) VALUES (?, ?)",
+  ).run("page-a", "storefront-a");
+  sqlite.prepare(
+    "INSERT INTO storefront_page_revisions (id, page_id, document) VALUES (?, ?, ?)",
+  ).run("page-revision-a", "page-a", validDocument);
+  sqlite.exec(`
+    INSERT INTO storefront_content_publication_items
+      (id, publication_id, item_type, content_id, revision_id)
+    VALUES
+      ('item-template-a', 'publication-b', 'template', 'template-a', 'template-revision-a'),
+      ('item-page-a', 'publication-b', 'page', 'page-a', 'page-revision-a');
+  `);
+}
+
+async function activateTarget() {
+  return storefrontReleaseDal.activateRelease({
+    storefrontId: "storefront-a",
+    releaseId: targetReleaseId,
+    expectedActiveReleaseId: null,
+  });
+}
+
 vi.mock("cloudflare:workers", () => ({
   env: {
     DATABASE: {
@@ -56,6 +92,31 @@ beforeEach(() => {
       artifact_prefix text,
       manifest_json text,
       deleted_at text
+    );
+    CREATE TABLE storefront_themes (
+      id text PRIMARY KEY,
+      storefront_id text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_theme_templates (
+      id text PRIMARY KEY,
+      theme_id text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_theme_template_revisions (
+      id text PRIMARY KEY,
+      template_id text NOT NULL,
+      document text NOT NULL
+    );
+    CREATE TABLE storefront_pages (
+      id text PRIMARY KEY,
+      storefront_id text NOT NULL,
+      deleted_at text
+    );
+    CREATE TABLE storefront_page_revisions (
+      id text PRIMARY KEY,
+      page_id text NOT NULL,
+      document text NOT NULL
     );
     CREATE TABLE storefront_content_publications (
       id text PRIMARY KEY,
@@ -120,17 +181,14 @@ describe("storefront release DAL", () => {
   });
 
   it("activates a release with an OCC-protected atomic pointer switch", async () => {
-    const activated = await storefrontReleaseDal.activateRelease({
-      storefrontId: "storefront-a",
-      releaseId: "22222222-2222-4222-8222-222222222222",
-      expectedActiveReleaseId: null,
-    });
-    expect(activated.id).toBe("22222222-2222-4222-8222-222222222222");
+    insertValidPublicationItems();
+    const activated = await activateTarget();
+    expect(activated.id).toBe(targetReleaseId);
     expect(
       (sqlite
         .prepare("SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'")
         .get() as { active_release_id: string }).active_release_id,
-    ).toBe("22222222-2222-4222-8222-222222222222");
+    ).toBe(targetReleaseId);
   });
 
   it("rejects a legacy release without ContentPublication", async () => {
@@ -144,6 +202,67 @@ describe("storefront release DAL", () => {
         expectedActiveReleaseId: null,
       }),
     ).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
+  });
+
+  it.each([
+    [
+      "missing",
+      "UPDATE storefront_releases SET content_publication_id = 'missing' WHERE id = '22222222-2222-4222-8222-222222222222'",
+    ],
+    [
+      "deleted",
+      "UPDATE storefront_content_publications SET deleted_at = '2026-01-03' WHERE id = 'publication-b'",
+    ],
+    [
+      "cross-storefront",
+      "UPDATE storefront_content_publications SET storefront_id = 'storefront-b' WHERE id = 'publication-b'",
+    ],
+  ])("rejects a %s ContentPublication", async (_case, sql) => {
+    sqlite.exec(sql);
+    await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
+  });
+
+  it("rejects a missing content revision", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_content_publication_items
+        (id, publication_id, item_type, content_id, revision_id)
+      VALUES ('item-missing', 'publication-b', 'page', 'page-missing', 'revision-missing');
+    `);
+    await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
+  });
+
+  it("rejects a deleted content owner", async () => {
+    insertValidPublicationItems();
+    sqlite.exec(
+      "UPDATE storefront_pages SET deleted_at = '2026-01-03' WHERE id = 'page-a'",
+    );
+    await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
+  });
+
+  it("rejects a cross-storefront content owner", async () => {
+    insertValidPublicationItems();
+    sqlite.exec(`
+      INSERT INTO storefronts (id, updated_at) VALUES ('storefront-b', '2026-01-03');
+      UPDATE storefront_themes SET storefront_id = 'storefront-b' WHERE id = 'theme-a';
+    `);
+    await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
+  });
+
+  it("rejects a malformed content snapshot", async () => {
+    insertValidPublicationItems();
+    sqlite.prepare(
+      "UPDATE storefront_theme_template_revisions SET document = ? WHERE id = ?",
+    ).run(JSON.stringify({ version: 2, sections: [] }), "template-revision-a");
+    await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
+  });
+
+  it("rejects unsupported navigation publication items", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_content_publication_items
+        (id, publication_id, item_type, content_id, revision_id)
+      VALUES ('item-navigation', 'publication-b', 'navigation', 'nav-a', 'nav-revision-a');
+    `);
+    await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
   });
 
 

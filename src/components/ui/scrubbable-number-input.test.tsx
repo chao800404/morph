@@ -50,6 +50,86 @@ describe("ScrubbableNumberInput", () => {
     expect(onValueChange).toHaveBeenLastCalledWith(200);
   });
 
+  it("previews typed values without committing until editing completes", () => {
+    const onValuePreview = vi.fn();
+    const onValueChange = vi.fn();
+    render(
+      <ScrubbableNumberInput
+        value={100}
+        min={25}
+        max={200}
+        ariaLabel="Canvas zoom percentage"
+        onValuePreview={onValuePreview}
+        onValueChange={onValueChange}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Canvas zoom percentage",
+    });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "125" } });
+
+    expect((input as HTMLInputElement).value).toBe("125");
+    expect(onValuePreview).toHaveBeenLastCalledWith(125);
+    expect(onValueChange).not.toHaveBeenCalled();
+
+    fireEvent.blur(input);
+
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+    expect(onValueChange).toHaveBeenLastCalledWith(125);
+  });
+
+  it("commits a typed value exactly once when the form is submitted", () => {
+    const onValueChange = vi.fn();
+    render(
+      <ScrubbableNumberInput
+        value={100}
+        min={25}
+        max={200}
+        ariaLabel="Canvas zoom percentage"
+        onValuePreview={vi.fn()}
+        onValueChange={onValueChange}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Canvas zoom percentage",
+    });
+    input.focus();
+    fireEvent.change(input, { target: { value: "125" } });
+    fireEvent.submit(input.closest("form")!);
+
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+    expect(onValueChange).toHaveBeenLastCalledWith(125);
+  });
+
+  it("restores the live preview without committing when Escape is pressed", () => {
+    const onValuePreview = vi.fn();
+    const onValueChange = vi.fn();
+    render(
+      <ScrubbableNumberInput
+        value={100}
+        min={25}
+        max={200}
+        ariaLabel="Canvas zoom percentage"
+        onValuePreview={onValuePreview}
+        onValueChange={onValueChange}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Canvas zoom percentage",
+    });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "125" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect((input as HTMLInputElement).value).toBe("100");
+    expect(onValuePreview).toHaveBeenLastCalledWith(100);
+    expect(onValueChange).not.toHaveBeenCalled();
+  });
+
   it("previews horizontal scrubbing and commits the final value", () => {
     const onValuePreview = vi.fn();
     const onValueChange = vi.fn();
@@ -83,5 +163,31 @@ describe("ScrubbableNumberInput", () => {
 
     expect(onValuePreview).toHaveBeenLastCalledWith(110);
     expect(onValueChange).toHaveBeenLastCalledWith(110);
+  });
+
+  it("does not overwrite an active typed draft when value props update", () => {
+    const onValueChange = vi.fn();
+    const { rerender } = render(
+      <ScrubbableNumberInput
+        value={100}
+        min={25}
+        max={200}
+        ariaLabel="Canvas zoom percentage"
+        onValueChange={onValueChange}
+      />,
+    );
+    const input = screen.getByRole("spinbutton", { name: "Canvas zoom percentage" });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "125" } });
+    rerender(
+      <ScrubbableNumberInput
+        value={100}
+        min={25}
+        max={200}
+        ariaLabel="Canvas zoom percentage"
+        onValueChange={onValueChange}
+      />,
+    );
+    expect((input as HTMLInputElement).value).toBe("125");
   });
 });

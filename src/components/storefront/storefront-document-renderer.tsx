@@ -235,7 +235,9 @@ function renderSection(
         <Principles
           key={section.id}
           sectionId={section.id}
+          componentRef={section.componentRef}
           rawProps={rawProps}
+          themeFiles={themeFiles}
           {...(parsedData as any)}
         />
       );
@@ -518,14 +520,19 @@ function CategoryShowcase({
             href={item.href ?? "#"}
             data-storefront-component="collection-item"
             data-storefront-field="items"
+            data-storefront-field-path={`items.${index}`}
             className="group block border-t border-stone-700 pt-4 lg:border-t-0 lg:pt-0"
           >
             <div className="aspect-[4/5] overflow-hidden bg-stone-800">
-              <img
-                src={
+                <img
+                  data-storefront-component="image"
+                  data-storefront-field="imageSrc"
+                  data-storefront-field-path={`items.${index}.imageSrc`}
+                  src={
                   item.imageSrc ??
                   "/static/storefront/theme-preview-default.png"
                 }
+                data-storefront-field-alt={`items.${index}.imageAlt`}
                 alt={item.imageAlt ?? "Collection item"}
                 style={{
                   objectPosition: (item.imagePosition as any) ?? "center",
@@ -538,12 +545,16 @@ function CategoryShowcase({
               <div>
                 <h3
                   data-storefront-component="title"
+                  data-storefront-field="title"
+                  data-storefront-field-path={`items.${index}.title`}
                   className="font-serif text-2xl"
                 >
                   {item.title ?? "Collection"}
                 </h3>
                 <p
                   data-storefront-component="caption"
+                  data-storefront-field="caption"
+                  data-storefront-field-path={`items.${index}.caption`}
                   className="mt-2 max-w-xs text-sm leading-6 text-stone-400"
                 >
                   {item.caption ?? ""}
@@ -641,59 +652,120 @@ function ImageWithText({
 
 function Principles({
   sectionId,
+  componentRef,
   rawProps,
+  themeFiles,
   items,
 }: {
   sectionId: string;
+  componentRef?: string | null;
   rawProps?: Record<string, any>;
+  themeFiles?: Array<{ path: string; content: string }>;
   items?: Array<{
     number?: string | null;
     title?: string | null;
     body?: string | null;
   }> | null;
 }) {
-  const customStyle = resolveSectionStyle(rawProps ?? {});
-  const customClass = rawProps?.className ?? rawProps?.customClass;
+  const componentPath =
+    getComponentFilePath("principles", themeFiles, componentRef ?? undefined) ??
+    "src/components/Principles.tsx";
+  const principlesFile = themeFiles?.find((f) => f.path === componentPath);
+  const principlesAst = principlesFile?.content
+    ? parseComponentSource(principlesFile.content)
+    : null;
+  const customStyle = principlesFile
+    ? undefined
+    : resolveSectionStyle(rawProps ?? {});
+  const customClass = principlesFile
+    ? undefined
+    : (rawProps?.className ?? rawProps?.customClass);
   const displayItems = items ?? [];
+
+  const sectionClassName =
+    principlesAst?.elements["section"]?.className ??
+    principlesAst?.elements["root"]?.className ??
+    "bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]";
+  const labelClassName =
+    principlesAst?.elements.label?.className ??
+    "mb-14 text-xs font-medium uppercase tracking-[0.22em] text-stone-500";
+  const gridClassName =
+    principlesAst?.elements.grid?.className ??
+    "grid border-t border-stone-300 lg:grid-cols-3";
+  const cardClassName =
+    principlesAst?.elements["principle-card"]?.className ??
+    "border-b border-stone-300 py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-0 lg:last:border-r-0";
+  const numberClassName =
+    principlesAst?.elements.number?.className ?? "text-xs text-stone-400";
+  const titleClassName =
+    principlesAst?.elements.title?.className ??
+    "mt-12 font-serif text-3xl tracking-tight text-stone-950";
+  const bodyClassName =
+    principlesAst?.elements.body?.className ??
+    "mt-4 max-w-sm text-sm leading-6 text-stone-600";
 
   return (
     <section
       data-storefront-section-id={sectionId}
       data-storefront-section-type="principles"
-      data-morph-source-file="src/pages/index.tsx"
+      data-morph-source-file={componentPath}
       data-morph-component="Principles"
+      data-morph-component-ref={componentRef ?? "principles.default"}
+      data-morph-node={principlesAst?.elements.section?.nodeId}
       style={customStyle}
-      className={cn(
-        "bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]",
-        customClass,
-      )}
+      className={cn(sectionClassName, customClass)}
     >
       <p
         data-storefront-component="label"
-        className="mb-14 text-xs font-medium uppercase tracking-[0.22em] text-stone-500"
+        data-morph-node={principlesAst?.elements.label?.nodeId}
+        data-morph-element="label"
+        className={labelClassName}
       >
         Why we choose differently
       </p>
-      <div className="grid border-t border-stone-300 lg:grid-cols-3">
+      <div
+        data-storefront-component="grid"
+        data-morph-node={principlesAst?.elements.grid?.nodeId}
+        data-morph-element="grid"
+        className={gridClassName}
+      >
         {displayItems.map((item, idx) => (
           <article
             key={item.number ?? idx}
             data-storefront-component="principle-item"
             data-storefront-field="items"
-            className="border-b border-stone-300 py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-0 lg:last:border-r-0"
+            data-storefront-field-path={`items.${idx}`}
+            data-morph-node={principlesAst?.elements["principle-card"]?.nodeId}
+            data-morph-element="principle-card"
+            className={cardClassName}
           >
-            <span className="text-xs text-stone-400">
+            <span
+              data-storefront-component="number"
+              data-storefront-field="number"
+              data-storefront-field-path={`items.${idx}.number`}
+              data-morph-node={principlesAst?.elements.number?.nodeId}
+              data-morph-element="number"
+              className={numberClassName}
+            >
               {item.number ?? `0${idx + 1}`}
             </span>
             <h3
               data-storefront-component="title"
-              className="mt-12 font-serif text-3xl tracking-tight text-stone-950"
+              data-storefront-field="title"
+              data-storefront-field-path={`items.${idx}.title`}
+              data-morph-node={principlesAst?.elements.title?.nodeId}
+              data-morph-element="title"
+              className={titleClassName}
             >
               {item.title ?? ""}
             </h3>
             <p
               data-storefront-component="body"
-              className="mt-4 max-w-sm text-sm leading-6 text-stone-600"
+              data-storefront-field="body"
+              data-storefront-field-path={`items.${idx}.body`}
+              data-morph-node={principlesAst?.elements.body?.nodeId}
+              data-morph-element="body"
+              className={bodyClassName}
             >
               {item.body ?? ""}
             </p>

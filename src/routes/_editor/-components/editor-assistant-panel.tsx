@@ -22,6 +22,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { EditorStyleInspector } from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
+import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 
 type EditorAssistantPanelProps = {
   context: StorefrontThemeEditorDTO;
@@ -30,16 +31,22 @@ type EditorAssistantPanelProps = {
   className?: string;
   isCommentMode?: boolean;
   themeFiles?: StorefrontThemeFileDTO[];
-  activeNodeId?: string | null;
-  activeElementKey?: string | null;
-  activeFieldKey?: string | null;
-  activeComputedStyle?: Record<string, string> | null;
-  activeSectionComputedStyle?: Record<string, string> | null;
+  selection?: EditorSelectionDescriptor | null;
+  activeComputedStyleRevision?: number;
   activeViewport?: StorefrontThemeEditorSearch["viewport"];
   onUpdateThemeFileStyle?: (
     filePath: string,
     elementName: string,
     updater: (prevClasses: string) => string,
+  ) => void;
+  onPreviewSelectionStyle?: (
+    styles: Record<string, string>,
+    targetElement: string,
+  ) => void;
+  onPreviewSelectionField?: (
+    fieldKey: string,
+    fieldPath: string | null,
+    value: string,
   ) => void;
   commentFilter?: "open" | "resolved";
   onCommentFilterChange?: (filter: "open" | "resolved") => void;
@@ -76,13 +83,12 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onSelectCommentThread,
   previewWidth,
   themeFiles,
-  activeNodeId,
-  activeElementKey,
-  activeFieldKey,
-  activeComputedStyle,
-  activeSectionComputedStyle,
+  selection,
+  activeComputedStyleRevision,
   activeViewport,
   onUpdateThemeFileStyle,
+  onPreviewSelectionStyle,
+  onPreviewSelectionField,
   onSectionPropsChange,
   onSectionToggleEnabled,
   onJumpToCode,
@@ -228,13 +234,12 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               key={selectedSection.id}
               section={selectedSection}
               themeFiles={themeFiles}
-              activeNodeId={activeNodeId}
-              activeElementKey={activeElementKey}
-              activeFieldKey={activeFieldKey}
-              activeComputedStyle={activeComputedStyle}
-              activeSectionComputedStyle={activeSectionComputedStyle}
+              selection={selection}
+              activeComputedStyleRevision={activeComputedStyleRevision}
               activeViewport={activeViewport ?? search.viewport}
               onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+              onPreviewSelectionStyle={onPreviewSelectionStyle}
+              onPreviewSelectionField={onPreviewSelectionField}
               onPropsChange={(nextProps) =>
                 onSectionPropsChange?.(selectedSection.id, nextProps)
               }

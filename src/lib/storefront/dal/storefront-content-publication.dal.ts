@@ -7,12 +7,14 @@ import {
   storefrontPageRevisions,
   storefrontThemeTemplateRevisions,
   storefrontThemeTemplates,
+  storefrontThemes,
 } from "@/db/storefront.schema";
 import type {
   StorefrontContentPublicationDTO,
   StorefrontContentPublicationItemDTO,
 } from "@/lib/storefront/dto/storefront-content-publication.dto";
 import { and, eq, isNull } from "drizzle-orm";
+import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 
 export type StorefrontContentPublicationDraft = StorefrontContentPublicationDTO;
 
@@ -80,21 +82,64 @@ export const storefrontContentPublicationDal = {
     }
 
     const items = await db
-      .select()
+      .select({
+        id: storefrontContentPublicationItems.id,
+        itemType: storefrontContentPublicationItems.itemType,
+        contentId: storefrontContentPublicationItems.contentId,
+        revisionId: storefrontContentPublicationItems.revisionId,
+        deletedAt: storefrontContentPublicationItems.deletedAt,
+      })
       .from(storefrontContentPublicationItems)
       .where(eq(storefrontContentPublicationItems.publicationId, data.publicationId));
-    if (
-      items.some(
-        (item) =>
-          item.deletedAt !== null ||
-          !item.contentId.trim() ||
-          !item.revisionId.trim() ||
-          !["template", "page", "navigation"].includes(item.itemType),
-      )
-    ) {
-      throw new Error(
-        "CONTENT_PUBLICATION_INVALID: Publication contains an invalid or deleted content reference.",
-      );
+    for (const item of items) {
+      if (item.deletedAt !== null || !item.contentId.trim() || !item.revisionId.trim()) {
+        throw new Error("CONTENT_PUBLICATION_INVALID: Publication contains an invalid or deleted content reference.");
+      }
+
+      let document: unknown;
+      if (item.itemType === "template") {
+        const [revision] = await db
+          .select({ document: storefrontThemeTemplateRevisions.document })
+          .from(storefrontThemeTemplateRevisions)
+          .innerJoin(storefrontThemeTemplates, eq(storefrontThemeTemplateRevisions.templateId, storefrontThemeTemplates.id))
+          .innerJoin(storefrontThemes, eq(storefrontThemeTemplates.themeId, storefrontThemes.id))
+          .where(and(
+            eq(storefrontThemeTemplateRevisions.id, item.revisionId),
+            eq(storefrontThemeTemplateRevisions.templateId, item.contentId),
+            eq(storefrontThemes.storefrontId, data.storefrontId),
+            isNull(storefrontThemeTemplates.deletedAt),
+            isNull(storefrontThemes.deletedAt),
+          ))
+          .limit(1);
+        document = revision?.document;
+      } else if (item.itemType === "page") {
+        const [revision] = await db
+          .select({ document: storefrontPageRevisions.document })
+          .from(storefrontPageRevisions)
+          .innerJoin(storefrontPages, eq(storefrontPageRevisions.pageId, storefrontPages.id))
+          .where(and(
+            eq(storefrontPageRevisions.id, item.revisionId),
+            eq(storefrontPageRevisions.pageId, item.contentId),
+            eq(storefrontPages.storefrontId, data.storefrontId),
+            isNull(storefrontPages.deletedAt),
+          ))
+          .limit(1);
+        document = revision?.document;
+      } else {
+        throw new Error("CONTENT_PUBLICATION_INVALID: Navigation publication items are not supported.");
+      }
+
+      let parsedDocument = document;
+      if (typeof parsedDocument === "string") {
+        try {
+          parsedDocument = JSON.parse(parsedDocument) as unknown;
+        } catch {
+          throw new Error("CONTENT_PUBLICATION_INVALID: Publication contains a missing or malformed content snapshot.");
+        }
+      }
+      if (parsedDocument === undefined || !storefrontPageDocumentSchema.safeParse(parsedDocument).success) {
+        throw new Error("CONTENT_PUBLICATION_INVALID: Publication contains a missing or malformed content snapshot.");
+      }
     }
   },
   async resolveForTheme(data: {

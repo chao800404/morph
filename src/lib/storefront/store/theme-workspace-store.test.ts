@@ -216,6 +216,37 @@ describe("ThemeWorkspaceStore", () => {
     expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(false);
   });
 
+  it("accepts the generation created by its own starter initialization", () => {
+    const scope = { storefrontId: "store-a", themeId: "theme-a" };
+    const store = useThemeWorkspaceStore.getState();
+
+    store.hydrateFromQuery("store-a", "theme-a", [], 1);
+    store.acceptRemoteGeneration(2, scope);
+    store.hydrateFromQuery(
+      "store-a",
+      "theme-a",
+      [
+        {
+          id: "principles-file",
+          storefrontId: "store-a",
+          themeId: "theme-a",
+          path: "src/components/Principles.tsx",
+          content: "export default function Principles() {}",
+          mimeType: "text/typescript",
+          isEntry: false,
+          version: 1,
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      ],
+      2,
+    );
+
+    expect(store.getAcceptedSourceGeneration(scope)).toBe(2);
+    expect(store.getObservedSourceGeneration(scope)).toBe(2);
+    expect(store.hasRemoteSourceChanged(scope)).toBe(false);
+  });
+
   it("acceptRemoteWorkspace accepts remote generation and resolves conflict states", () => {
     const scope = { storefrontId: "store-a", themeId: "theme-a" };
     const store = useThemeWorkspaceStore.getState();

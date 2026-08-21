@@ -455,8 +455,9 @@ New Published Content Revisions
 - legacy `sourceGeneration` fail-closed
 - source/build identity validation
 - rollback activation service with history query and OCC
+- release activation fail-closed ContentPublication/revision/document validation
 - revision retention guard for ContentPublication references
-- 0045 → 0046 → 0047 migration regression coverage
+- 0045 → 0049 migration regression coverage, including trustworthy active legacy backfill
 
 待完成：
 

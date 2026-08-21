@@ -280,7 +280,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       }
       return res.data;
     },
-    onSuccess: async () => {
+    onSuccess: async (data) => {
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(
+        data.sourceGeneration,
+        workspaceScope,
+      );
       toast.success("Starter theme workspace initialized");
       await queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId).queryKey,

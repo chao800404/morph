@@ -14,6 +14,21 @@ export type TailwindPropertyFamily =
   | "background"
   | "background-color"
   | "border-radius"
+  | "object-fit"
+  | "object-position"
+  | "aspect-ratio"
+  | "display"
+  | "flex-direction"
+  | "gap"
+  | "width"
+  | "height"
+  | "position"
+  | "top"
+  | "left"
+  | "z-index"
+  | "rotate"
+  | "opacity"
+  | "overflow"
   | "other";
 
 export interface TailwindToken {
@@ -55,6 +70,23 @@ const PADDING_X_PATTERN = /^px-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const PADDING_Y_PATTERN = /^py-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const BORDER_RADIUS_PATTERN =
   /^rounded(?:-(?:none|sm|md|lg|xl|2xl|3xl|full|\[.+\]))?$/;
+const OBJECT_FIT_PATTERN = /^object-(?:contain|cover|fill|none|scale-down)$/;
+const OBJECT_POSITION_PATTERN =
+  /^object-(?:center|top|right|bottom|left|top-right|top-left|bottom-right|bottom-left|\[.+\])$/;
+const ASPECT_RATIO_PATTERN =
+  /^aspect-(?:auto|square|video|\[.+\])$/;
+const DISPLAY_PATTERN = /^(?:block|inline-block|inline|flex|inline-flex|grid|inline-grid|hidden)$/;
+const FLEX_DIRECTION_PATTERN = /^flex-(?:row|row-reverse|col|col-reverse)$/;
+const GAP_PATTERN = /^gap-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const WIDTH_PATTERN = /^w-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
+const HEIGHT_PATTERN = /^h-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
+const POSITION_PATTERN = /^(?:static|relative|absolute|fixed|sticky)$/;
+const TOP_PATTERN = /^-?top-(?:auto|full|\d+(?:\.\d+)?|\[.+\])$/;
+const LEFT_PATTERN = /^-?left-(?:auto|full|\d+(?:\.\d+)?|\[.+\])$/;
+const Z_INDEX_PATTERN = /^-?z-(?:auto|\d+|\[.+\])$/;
+const ROTATE_PATTERN = /^-?rotate-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const OPACITY_PATTERN = /^opacity-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const OVERFLOW_PATTERN = /^overflow-(?:auto|hidden|clip|visible|scroll)$/;
 
 function arbitraryValue(utility: string, prefix: string): string | null {
   const start = `${prefix}-[`;
@@ -123,6 +155,21 @@ export function classifyTailwindUtility(
   }
 
   if (BORDER_RADIUS_PATTERN.test(utility)) return "border-radius";
+  if (OBJECT_FIT_PATTERN.test(utility)) return "object-fit";
+  if (OBJECT_POSITION_PATTERN.test(utility)) return "object-position";
+  if (ASPECT_RATIO_PATTERN.test(utility)) return "aspect-ratio";
+  if (DISPLAY_PATTERN.test(utility)) return "display";
+  if (FLEX_DIRECTION_PATTERN.test(utility)) return "flex-direction";
+  if (GAP_PATTERN.test(utility)) return "gap";
+  if (WIDTH_PATTERN.test(utility)) return "width";
+  if (HEIGHT_PATTERN.test(utility)) return "height";
+  if (POSITION_PATTERN.test(utility)) return "position";
+  if (TOP_PATTERN.test(utility)) return "top";
+  if (LEFT_PATTERN.test(utility)) return "left";
+  if (Z_INDEX_PATTERN.test(utility)) return "z-index";
+  if (ROTATE_PATTERN.test(utility)) return "rotate";
+  if (OPACITY_PATTERN.test(utility)) return "opacity";
+  if (OVERFLOW_PATTERN.test(utility)) return "overflow";
   return "other";
 }
 
