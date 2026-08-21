@@ -92,7 +92,11 @@ import {
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
-import { EditorAssistantPanel } from "./editor-assistant-panel";
+import {
+  EditorAssistantPanel,
+  type EditorAssistantPanelTab,
+} from "./editor-assistant-panel";
+import { resolveStylesSelectionTransition } from "./editor-styles-selection-mode";
 import {
   isLatestStyleRevision,
   shouldRevealPreviewForStyleAck,
@@ -367,6 +371,10 @@ export function VisualEditorShell({
   );
   const [isPanning, setIsPanning] = useState(false);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [assistantPanelTab, setAssistantPanelTab] =
+    useState<EditorAssistantPanelTab>("chat");
+  const previousAssistantPanelTabRef = useRef<EditorAssistantPanelTab>("chat");
+  const autoEnabledSelectionForStylesRef = useRef(false);
   const [draftSaveState, setDraftSaveState] = useState<
     "idle" | "saving" | "error"
   >("idle");
@@ -384,6 +392,24 @@ export function VisualEditorShell({
   } | null>(null);
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [isWidthLocked, setIsWidthLocked] = useState(true);
+
+  useEffect(() => {
+    const previousTab = previousAssistantPanelTabRef.current;
+    const transition = resolveStylesSelectionTransition({
+      previousTab,
+      nextTab: assistantPanelTab,
+      selectionMode: isSelectionMode,
+      commentMode: isCommentMode,
+      autoEnabled: autoEnabledSelectionForStylesRef.current,
+    });
+
+    autoEnabledSelectionForStylesRef.current = transition.autoEnabled;
+    if (transition.selectionMode !== isSelectionMode) {
+      setIsSelectionMode(transition.selectionMode);
+    }
+
+    previousAssistantPanelTabRef.current = assistantPanelTab;
+  }, [assistantPanelTab, isCommentMode, isSelectionMode]);
 
   const activeTemplate = resolveEditorTemplate(context, search);
   const queryClient = useQueryClient();
@@ -2004,8 +2030,8 @@ export function VisualEditorShell({
 
       if (sectionId !== search.section) {
         previewSelectionSectionSyncRef.current = sectionId;
+        onSearchChange({ section: sectionId });
       }
-      onSearchChange({ section: sectionId });
     };
 
     window.addEventListener("message", handlePreviewSelection);
@@ -3467,6 +3493,7 @@ export function VisualEditorShell({
             onSearchChange={onSearchChange}
             isSelectionMode={isSelectionMode}
             onSelectionModeChange={(enabled) => {
+              autoEnabledSelectionForStylesRef.current = false;
               setIsSelectionMode(enabled);
               if (enabled && isCommentMode) {
                 handleExitCommentMode();
@@ -3474,6 +3501,7 @@ export function VisualEditorShell({
             }}
             isCommentMode={isCommentMode}
             onCommentModeChange={(enabled) => {
+              autoEnabledSelectionForStylesRef.current = false;
               if (enabled) {
                 setIsCommentMode(true);
                 setIsSelectionMode(false);
@@ -3551,6 +3579,7 @@ export function VisualEditorShell({
           onSectionPropsChange={handleSectionPropsChange}
           onSectionToggleEnabled={handleSectionToggleEnabled}
           onJumpToCode={handleJumpToCode}
+          onTabChange={setAssistantPanelTab}
         />
 
         <EditorSmallScreenNotice />

@@ -64,7 +64,10 @@ type EditorAssistantPanelProps = {
   ) => void;
   onSectionToggleEnabled?: (sectionId: string, enabled: boolean) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
+  onTabChange?: (tab: EditorAssistantPanelTab) => void;
 };
+
+export type EditorAssistantPanelTab = "chat" | "styles" | "comments";
 
 export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   context,
@@ -92,14 +95,19 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onSectionPropsChange,
   onSectionToggleEnabled,
   onJumpToCode,
+  onTabChange,
 }: EditorAssistantPanelProps) {
-  const [tab, setTab] = useState<"chat" | "styles" | "comments">("chat");
+  const [tab, setTab] = useState<EditorAssistantPanelTab>("chat");
   const activeTemplate = resolveEditorTemplate(context, search);
   const sections = activeTemplate?.document.sections ?? [];
   const selectedSection = sections.find(
     (section) => section.id === search.section,
   );
   const initialSectionRef = useRef(search.section);
+
+  useEffect(() => {
+    onTabChange?.(tab);
+  }, [onTabChange, tab]);
 
   // Auto-switch to comments tab when switching to Comment Mode
   useEffect(() => {
@@ -234,7 +242,6 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         <ScrollArea className="min-h-0">
           {selectedSection ? (
             <EditorStyleInspector
-              key={selectedSection.id}
               section={selectedSection}
               themeFiles={themeFiles}
               selection={selection}

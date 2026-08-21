@@ -179,7 +179,29 @@ function walk(node: any, visitor: (node: any) => void) {
 /**
  * Parses a TSX component source and extracts default props, morph elements, and diagnostics.
  */
-export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
+type ParsedComponentSourceCacheEntry = {
+  sourceCode: string;
+  parsed: ParsedComponentMeta;
+};
+
+const parsedComponentSourceCache = new Map<
+  string,
+  ParsedComponentSourceCacheEntry
+>();
+const MAX_PARSED_COMPONENT_SOURCE_CACHE_ENTRIES = 100;
+
+export function parseComponentSource(
+  sourceCode: string,
+  sourceIdentity = "",
+): ParsedComponentMeta {
+  // Selection changes are high-frequency, while the source file usually stays
+  // unchanged. Keep only the latest derived result for each source identity so
+  // repeated edits cannot retain every historical source string and AST.
+  const cached = sourceIdentity
+    ? parsedComponentSourceCache.get(sourceIdentity)
+    : undefined;
+  if (cached?.sourceCode === sourceCode) return cached.parsed;
+
   const defaultProps: Record<string, string> = {};
   const elements: Record<string, ComponentElementMeta> = {};
   const nodeMap: Record<string, ComponentElementMeta> = {};
@@ -353,13 +375,26 @@ export function parseComponentSource(sourceCode: string): ParsedComponentMeta {
     );
   }
 
-  return {
+  const parsed = {
     defaultProps,
     elements,
     nodeMap,
     parseOk,
     diagnostics,
   };
+
+  if (sourceIdentity) {
+    parsedComponentSourceCache.set(sourceIdentity, { sourceCode, parsed });
+    if (
+      parsedComponentSourceCache.size >
+      MAX_PARSED_COMPONENT_SOURCE_CACHE_ENTRIES
+    ) {
+      const oldestKey = parsedComponentSourceCache.keys().next().value;
+      if (oldestKey) parsedComponentSourceCache.delete(oldestKey);
+    }
+  }
+
+  return parsed;
 }
 
 /**

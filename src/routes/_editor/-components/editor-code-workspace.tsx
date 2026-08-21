@@ -89,6 +89,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 }: EditorCodeWorkspaceProps) {
   const queryClient = useQueryClient();
   const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
 
   // Find initial active file (default to Hero.tsx or index.tsx)
   const defaultFile = useMemo(() => {
@@ -105,7 +106,19 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [openTabs, setOpenTabs] = useState<string[]>([
     jumpLocation?.filePath ?? defaultFile?.path ?? "src/components/Hero.tsx",
   ]);
-  const workspaceFiles = useThemeWorkspaceStore((state) => state.files);
+  const workspaceScope = useMemo(
+    () => ({ storefrontId, themeId }),
+    [storefrontId, themeId],
+  );
+  const activeFileDirty = useThemeWorkspaceStore((state) =>
+    Boolean(state.files[activeFilePath]?.dirty),
+  );
+  const activeFileConflict = useThemeWorkspaceStore(
+    (state) => state.files[activeFilePath]?.conflict,
+  );
+  const activeServerContent = useThemeWorkspaceStore(
+    (state) => state.files[activeFilePath]?.serverContent ?? null,
+  );
   const updateWorkspaceLocal = useThemeWorkspaceStore((state) => state.updateLocalContent);
   const markWorkspaceSaving = useThemeWorkspaceStore((state) => state.markSaving);
   const markWorkspaceSaved = useThemeWorkspaceStore((state) => state.markSaved);
@@ -114,15 +127,14 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
-  const prevDirtyPathsRef = useRef<string[]>([]);
-
-  const workspaceScope = useMemo(
-    () => ({
-      storefrontId,
-      themeId,
-    }),
-    [storefrontId, themeId],
+  const [dirtyPaths, setDirtyPaths] = useState<string[]>(() =>
+    useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
   );
+  const draftContentsRef = useRef<Record<string, string>>({});
+  const draftDirtyRef = useRef<Record<string, boolean>>({});
+  const draftRevisionRef = useRef<Record<string, number>>({});
+  const combinedDirtyPathsRef = useRef(dirtyPaths);
+  const suppressModelChangeRef = useRef(false);
 
   useEffect(() => {
     if (initialActiveFilePath) {
@@ -176,8 +188,87 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     return files.find((f) => f.path === activeFilePath);
   }, [files, activeFilePath]);
 
-  const currentEditorContent =
-    workspaceFiles[activeFilePath]?.localContent ?? activeFile?.content ?? "";
+  const getFileBaseline = useCallback(
+    (path: string) => {
+      const workspaceFile = useThemeWorkspaceStore.getState().files[path];
+      return (
+        workspaceFile?.serverContent ??
+        files.find((file) => file.path === path)?.content ??
+        ""
+      );
+    },
+    [files],
+  );
+
+  const getInitialEditorContent = useCallback(
+    (path: string) => {
+      if (draftContentsRef.current[path] !== undefined) {
+        return draftContentsRef.current[path];
+      }
+      const workspaceFile = useThemeWorkspaceStore.getState().files[path];
+      return (
+        workspaceFile?.localContent ??
+        files.find((file) => file.path === path)?.content ??
+        ""
+      );
+    },
+    [files],
+  );
+
+  const getCurrentEditorContent = useCallback(
+    (path: string) => {
+      if (draftContentsRef.current[path] !== undefined) {
+        return draftContentsRef.current[path];
+      }
+      if (path === activeFilePath) {
+        const modelContent = editorRef.current?.getModel?.()?.getValue?.();
+        if (typeof modelContent === "string") return modelContent;
+      }
+      return getInitialEditorContent(path);
+    },
+    [activeFilePath, getInitialEditorContent],
+  );
+
+  const syncCombinedDirtyPaths = useCallback(
+    (storePaths: string[]) => {
+      const localPaths = Object.entries(draftDirtyRef.current)
+        .filter(([, dirty]) => dirty)
+        .map(([path]) => path);
+      const next = [...storePaths, ...localPaths.filter((path) => !storePaths.includes(path))];
+      const previous = combinedDirtyPathsRef.current;
+      if (
+        next.length === previous.length &&
+        next.every((path, index) => path === previous[index])
+      ) {
+        return;
+      }
+      combinedDirtyPathsRef.current = next;
+      setDirtyPaths(next);
+      onDirtyFilesChange?.(next);
+    },
+    [onDirtyFilesChange],
+  );
+
+  useEffect(() => {
+    const model = editorRef.current?.getModel?.();
+    if (
+      !model ||
+      activeFileDirty ||
+      draftDirtyRef.current[activeFilePath] ||
+      activeServerContent === null
+    ) {
+      return;
+    }
+    if (model.getValue() === activeServerContent) return;
+
+    // Remote reloads and successful saves update the model only at the
+    // source boundary. Never replace an in-progress transient draft.
+    suppressModelChangeRef.current = true;
+    model.setValue(activeServerContent);
+    suppressModelChangeRef.current = false;
+    draftContentsRef.current[activeFilePath] = activeServerContent;
+    draftDirtyRef.current[activeFilePath] = false;
+  }, [activeFileDirty, activeFilePath, activeServerContent]);
 
   const saveMutation = useMutation({
     mutationFn: async ({
@@ -186,6 +277,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }: {
       path: string;
       content: string;
+      draftRevision: number;
     }) => {
       markWorkspaceSaving(path, workspaceScope);
       if (onSaveFile) return onSaveFile(path, content);
@@ -239,9 +331,20 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       }
       return res.data;
     },
-    onSuccess: (saved) => {
+    onSuccess: (saved, variables) => {
       if (!saved) return;
+      const isLatestDraft =
+        (draftRevisionRef.current[saved.path] ?? 0) ===
+          variables.draftRevision &&
+        draftContentsRef.current[saved.path] === variables.content;
+      if (isLatestDraft) {
+        draftDirtyRef.current[saved.path] = false;
+        draftContentsRef.current[saved.path] = variables.content;
+      }
       markWorkspaceSaved(saved, workspaceScope);
+      syncCombinedDirtyPaths(
+        useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+      );
       queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
       });
@@ -298,29 +401,55 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleContentChange = (value?: string) => {
     if (value === undefined) return;
-    updateWorkspaceLocal(activeFilePath, value, workspaceScope);
+    if (suppressModelChangeRef.current) return;
+
+    const path = activeFilePath;
+    draftContentsRef.current[path] = value;
+    draftRevisionRef.current[path] =
+      (draftRevisionRef.current[path] ?? 0) + 1;
+    const isDirty = value !== getFileBaseline(path);
+    const wasDirty =
+      draftDirtyRef.current[path] ??
+      Boolean(useThemeWorkspaceStore.getState().files[path]?.dirty);
+
+    // Monaco owns the transient buffer. Keep the global workspace untouched
+    // until Save; only the semantic dirty-path summary is updated here.
+    if (isDirty !== wasDirty) {
+      draftDirtyRef.current[path] = isDirty;
+      syncCombinedDirtyPaths(
+        useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+      );
+    }
   };
 
   useEffect(() => {
-    const dirty = Object.values(workspaceFiles)
-      .filter((file) => file.dirty)
-      .map((file) => file.path);
-    const prev = prevDirtyPathsRef.current;
-    if (
-      dirty.length !== prev.length ||
-      dirty.some((p, i) => p !== prev[i])
-    ) {
-      prevDirtyPathsRef.current = dirty;
-      onDirtyFilesChange?.(dirty);
-    }
-  }, [workspaceFiles, onDirtyFilesChange]);
+    syncCombinedDirtyPaths(
+      useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+    );
+
+    return useThemeWorkspaceStore.subscribe(() => {
+      const next = useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope);
+      syncCombinedDirtyPaths(next);
+    });
+  }, [syncCombinedDirtyPaths, workspaceScope]);
+
+  const dirtyPathSet = useMemo(() => new Set(dirtyPaths), [dirtyPaths]);
 
   const handleSaveCurrentFile = useCallback(() => {
     if (!activeFilePath || saveMutation.isPending) return;
-    const content =
-      workspaceFiles[activeFilePath]?.localContent ?? activeFile?.content ?? "";
-    saveMutation.mutate({ path: activeFilePath, content });
-  }, [activeFilePath, activeFile, workspaceFiles, saveMutation]);
+    const content = getCurrentEditorContent(activeFilePath);
+    const draftRevision = draftRevisionRef.current[activeFilePath] ?? 0;
+    // Save is the source/workspace boundary: sync the complete transient
+    // Monaco model exactly once before invoking the existing OCC mutation.
+    updateWorkspaceLocal(activeFilePath, content, workspaceScope);
+    saveMutation.mutate({ path: activeFilePath, content, draftRevision });
+  }, [
+    activeFilePath,
+    getCurrentEditorContent,
+    saveMutation,
+    updateWorkspaceLocal,
+    workspaceScope,
+  ]);
 
   // Keyboard shortcut Ctrl+S / Cmd+S
   useEffect(() => {
@@ -343,7 +472,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleCloseTab = (path: string, event: React.MouseEvent) => {
     event.stopPropagation();
-    if (workspaceFiles[path]?.dirty) {
+    const workspaceFile = useThemeWorkspaceStore.getState().files[path];
+    if (workspaceFile?.dirty || draftDirtyRef.current[path]) {
       const confirmed = window.confirm(
         `File "${path}" has unsaved changes. Discard changes and close tab?`,
       );
@@ -351,7 +481,24 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
     const nextTabs = openTabs.filter((p) => p !== path);
     setOpenTabs(nextTabs);
+    const baseline = getFileBaseline(path);
+    delete draftContentsRef.current[path];
+    delete draftDirtyRef.current[path];
+    delete draftRevisionRef.current[path];
+    syncCombinedDirtyPaths(
+      useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+    );
     discardWorkspaceLocal(path, workspaceScope);
+
+    const models = monacoRef.current?.editor?.getModels?.() ?? [];
+    for (const model of models) {
+      const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
+      if (modelPath === path || modelPath.endsWith(`/${path}`)) {
+        suppressModelChangeRef.current = true;
+        model.setValue(baseline);
+        suppressModelChangeRef.current = false;
+      }
+    }
 
     if (activeFilePath === path) {
       setActiveFilePath(nextTabs[nextTabs.length - 1] ?? "");
@@ -397,7 +544,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
 
     const isActive = activeFilePath === node.path;
-    const isDirty = Boolean(workspaceFiles[node.path]?.dirty);
+    const isDirty = dirtyPathSet.has(node.path);
 
     return (
       <div
@@ -479,7 +626,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             {openTabs.map((path) => {
               const name = path.split("/").pop() ?? path;
               const isActive = activeFilePath === path;
-              const isDirty = Boolean(workspaceFiles[path]?.dirty);
+              const isDirty = dirtyPathSet.has(path);
 
               return (
                 <div
@@ -517,7 +664,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               onClick={handleSaveCurrentFile}
               disabled={
                 saveMutation.isPending ||
-                !workspaceFiles[activeFilePath]?.dirty ||
+                !(activeFileDirty || dirtyPathSet.has(activeFilePath)) ||
                 Boolean(externalConflictFiles?.[activeFilePath])
               }
               className="h-7 gap-1.5 text-xs font-medium"
@@ -534,13 +681,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         </div>
 
         {/* Conflict Resolution Banner */}
-        {workspaceFiles[activeFilePath]?.conflict ? (
+        {activeFileConflict ? (
           <div className="flex items-center justify-between border-b bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
             <div className="flex items-center gap-2">
               <span className="font-semibold">Conflict:</span>
               <span>
-                {workspaceFiles[activeFilePath]?.conflict?.remoteExists
-                  ? `Server conflict (v${workspaceFiles[activeFilePath]?.conflict?.remoteVersion}). Reload remote or explicitly overwrite.`
+                {activeFileConflict.remoteExists
+                  ? `Server conflict (v${activeFileConflict.remoteVersion}). Reload remote or explicitly overwrite.`
                   : "This file was deleted remotely. Reload the deletion or explicitly recreate it."}
               </span>
             </div>
@@ -576,10 +723,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               height="100%"
               path={activeFilePath}
               language={getLanguage(activeFilePath)}
-              value={currentEditorContent}
+              defaultValue={getInitialEditorContent(activeFilePath)}
               onChange={handleContentChange}
-              onMount={(editor) => {
+              onMount={(editor, monaco) => {
                 editorRef.current = editor;
+                monacoRef.current = monaco;
                 if (jumpLocation?.line && jumpLocation.filePath === activeFilePath) {
                   editor.revealPositionInCenter({
                     lineNumber: jumpLocation.line,

@@ -28,6 +28,16 @@
 - 可提供 scrub interaction。
 - 優先沿用 `ScrubbableNumberInput`。
 - 保留 min/max / step / Enter / Escape / accessible label。
+- CSS 長度欄位應使用共用的 length control，並依 property 提供合法單位切換；
+  Width / Height 可提供 `Auto`，Padding / Radius 不得提供 CSS 不支援的 `Auto`。
+- Width、Height、Padding 與 Radius 的 source utility 單位是 Inspector 的顯示
+  authoritative value；computed style 解析出的 px 只能作為無法解析舊 utility 時的 fallback，
+  不得在重新 selection、measurement 或 render 時把 `%`、`rem`、`em`、`vw`、`vh`
+  回朔成 px。
+- 切換單位或 `Auto` 是一次已確認的操作：先同步更新 Live View，再只提交一次 source
+  patch。數值 scrub / typing 期間仍只 preview，於 pointer up、blur 或 Enter 才 commit。
+- 分邊 Padding 與分角 Radius 展開後必須沿用同一個 length control 與相同單位規則，
+  不得各自建立不同的輸入與同步機制。
 
 ### 19.3 Inspector field disclosure
 

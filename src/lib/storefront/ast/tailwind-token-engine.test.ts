@@ -227,6 +227,22 @@ describe("tailwind-token-engine", () => {
       "border-[3px] border-solid border-[#123456] rounded-[8px] rounded-tl-[12px]",
     );
   });
+  it("patches min and max sizing families independently", () => {
+    const original =
+      "w-[100px] h-auto min-w-[12rem] min-h-0 max-w-xl max-h-[80vh]";
+    const minWidth = patchTailwindClasses(original, {
+      property: "min-width",
+      value: "min-w-[16rem]",
+    });
+    const maxHeight = patchTailwindClasses(minWidth, {
+      property: "max-height",
+      value: "max-h-none",
+    });
+
+    expect(maxHeight).toBe(
+      "w-[100px] h-auto min-w-[16rem] min-h-0 max-w-xl max-h-none",
+    );
+  });
   it("classifies and replaces Figma-style layout property families independently", () => {
     const classes =
       "flex flex-col gap-[12px] w-[320px] h-[180px] relative top-[8px] left-[4px] z-[2] rotate-[5deg] opacity-[0.8] overflow-hidden";

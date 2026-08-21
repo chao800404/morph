@@ -1,13 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { TailwindClassTokenInput } from "./tailwind-class-token-input";
@@ -71,8 +65,19 @@ import {
   toBorderColorUtility,
 } from "./style-inspector/inspector-paint-utils";
 import { InspectorModuleCard as InspectorGroup } from "./style-inspector/inspector-module-card";
-import { InspectorSelectControl } from "./style-inspector/inspector-select-control";
+import {
+  InspectorSelectContent,
+  InspectorSelectControl,
+  InspectorSelectItem,
+  InspectorSelectTrigger,
+} from "./style-inspector/inspector-select-control";
 import { InspectorDisclosureField } from "./style-inspector/inspector-disclosure-field";
+import { inspectorControlSurface } from "./style-inspector/inspector-control-surface";
+import {
+  InspectorLengthControl,
+  inspectorLengthUtility,
+  resolveInspectorLength,
+} from "./style-inspector/inspector-length-control";
 import {
   BorderRadiusInspectorModule,
   type BorderRadiusCorner,
@@ -299,6 +304,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
   const [paddingExpanded, setPaddingExpanded] = useState(false);
   const [sectionsExpanded, setSectionsExpanded] = useState({
+    design: true,
     content: true,
     flow: true,
     sizing: true,
@@ -378,7 +384,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
   const componentFile = themeFiles?.find((f) => f.path === componentPath);
   const parsedMeta = componentFile?.content
-    ? parseComponentSource(componentFile.content)
+    ? parseComponentSource(componentFile.content, componentFile.path)
     : null;
   const targetElementMeta =
     (activeNodeId ? parsedMeta?.nodeMap[activeNodeId] : undefined) ??
@@ -479,6 +485,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const containerClassName = isSelectedNode
     ? targetClassName
     : sectionClassName;
+  const targetVariants =
+    activeViewport === "desktop"
+      ? ["lg"]
+      : activeViewport === "tablet"
+        ? ["md"]
+        : [];
   const containerComputedStyle = isSelectedNode
     ? activeComputedStyle
     : activeSectionComputedStyle;
@@ -522,6 +534,64 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     effectivePaddingTop === effectivePaddingRight
       ? effectivePaddingTop
       : sourcePaddingAll);
+  const effectivePaddingLengths = {
+    all: resolveInspectorLength({
+      className: containerClassName,
+      sources: [{ property: "padding", prefix: "p" }],
+      targetVariants,
+      computedValue: containerComputedStyle?.paddingTop,
+      optimisticValue: optimisticValue("paddingAll"),
+      fallbackValue: effectivePaddingAll,
+    }),
+    top: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "padding-top", prefix: "pt" },
+        { property: "padding-y", prefix: "py" },
+        { property: "padding", prefix: "p" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.paddingTop,
+      optimisticValue: optimisticValue("paddingTop"),
+      fallbackValue: effectivePaddingTop,
+    }),
+    bottom: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "padding-bottom", prefix: "pb" },
+        { property: "padding-y", prefix: "py" },
+        { property: "padding", prefix: "p" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.paddingBottom,
+      optimisticValue: optimisticValue("paddingBottom"),
+      fallbackValue: effectivePaddingBottom,
+    }),
+    left: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "padding-left", prefix: "pl" },
+        { property: "padding-x", prefix: "px" },
+        { property: "padding", prefix: "p" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.paddingLeft,
+      optimisticValue: optimisticValue("paddingLeft"),
+      fallbackValue: effectivePaddingLeft,
+    }),
+    right: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "padding-right", prefix: "pr" },
+        { property: "padding-x", prefix: "px" },
+        { property: "padding", prefix: "p" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.paddingRight,
+      optimisticValue: optimisticValue("paddingRight"),
+      fallbackValue: effectivePaddingRight,
+    }),
+  };
 
   const computedBackgroundImage = containerComputedStyle?.backgroundImage;
   const sourceTextGradient = parseTailwindTextGradient(targetClassName);
@@ -610,12 +680,74 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       "borderBottomLeftRadius",
     ),
   };
+  const effectiveBorderRadiusLengths = {
+    all: resolveInspectorLength({
+      className: containerClassName,
+      sources: [{ property: "border-radius", prefix: "rounded" }],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderRadius,
+      optimisticValue: optimisticValue("borderRadius"),
+      fallbackValue: effectiveBorderRadii.all,
+    }),
+    topLeft: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "border-radius-top-left", prefix: "rounded-tl" },
+        { property: "border-radius", prefix: "rounded" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderTopLeftRadius,
+      optimisticValue: optimisticValue("borderRadiusTopLeft"),
+      fallbackValue: effectiveBorderRadii.topLeft,
+    }),
+    topRight: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "border-radius-top-right", prefix: "rounded-tr" },
+        { property: "border-radius", prefix: "rounded" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderTopRightRadius,
+      optimisticValue: optimisticValue("borderRadiusTopRight"),
+      fallbackValue: effectiveBorderRadii.topRight,
+    }),
+    bottomRight: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "border-radius-bottom-right", prefix: "rounded-br" },
+        { property: "border-radius", prefix: "rounded" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderBottomRightRadius,
+      optimisticValue: optimisticValue("borderRadiusBottomRight"),
+      fallbackValue: effectiveBorderRadii.bottomRight,
+    }),
+    bottomLeft: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "border-radius-bottom-left", prefix: "rounded-bl" },
+        { property: "border-radius", prefix: "rounded" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderBottomLeftRadius,
+      optimisticValue: optimisticValue("borderRadiusBottomLeft"),
+      fallbackValue: effectiveBorderRadii.bottomLeft,
+    }),
+  };
   const effectiveBorderWidth =
     optimisticNumber("borderWidth") ??
     parseTailwindBorderWidth(containerClassName) ??
     (hasResolvedContainerSource
       ? 0
       : (parsePx(containerComputedStyle?.borderTopWidth) ?? 0));
+  const effectiveBorderWidthLength = resolveInspectorLength({
+    className: containerClassName,
+    sources: [{ property: "border-width", prefix: "border" }],
+    targetVariants,
+    computedValue: containerComputedStyle?.borderTopWidth,
+    optimisticValue: optimisticValue("borderWidth"),
+    fallbackValue: effectiveBorderWidth,
+  });
   const effectiveBorderStyle =
     optimisticValue("borderStyle") ??
     parseTailwindBorderStyle(containerClassName) ??
@@ -651,13 +783,6 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const tailwindClassCount = tokenizeTailwindClasses(
     effectiveRawClassName,
   ).length;
-
-  const targetVariants =
-    activeViewport === "desktop"
-      ? ["lg"]
-      : activeViewport === "tablet"
-        ? ["md"]
-        : [];
 
   const patchTailwindClasses = useCallback(
     (current: string, options: Omit<PatchTailwindOptions, "targetVariants">) =>
@@ -1218,16 +1343,26 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         }}
                         disabled={disabled}
                       >
-                        <SelectTrigger className="h-6 w-24 text-[10px]">
+                        <InspectorSelectTrigger className="h-7 w-24">
                           <SelectValue placeholder="Position" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="center">Center</SelectItem>
-                          <SelectItem value="top">Top</SelectItem>
-                          <SelectItem value="bottom">Bottom</SelectItem>
-                          <SelectItem value="left">Left</SelectItem>
-                          <SelectItem value="right">Right</SelectItem>
-                        </SelectContent>
+                        </InspectorSelectTrigger>
+                        <InspectorSelectContent>
+                          <InspectorSelectItem value="center">
+                            Center
+                          </InspectorSelectItem>
+                          <InspectorSelectItem value="top">
+                            Top
+                          </InspectorSelectItem>
+                          <InspectorSelectItem value="bottom">
+                            Bottom
+                          </InspectorSelectItem>
+                          <InspectorSelectItem value="left">
+                            Left
+                          </InspectorSelectItem>
+                          <InspectorSelectItem value="right">
+                            Right
+                          </InspectorSelectItem>
+                        </InspectorSelectContent>
                       </Select>
                     )}
                   </div>
@@ -1351,679 +1486,733 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </InspectorGroup>
       )}
 
-      {visibleModules.has("layout") ? (
-        <LayoutInspectorModule
-          expanded={sectionsExpanded.flow}
-          onToggle={() => toggleSection("flow")}
-          computed={containerComputedStyle}
-          disabled={disabled || sourceStyleLocked || !componentFile}
-          onPreview={previewContainerStyle}
-          onCommit={commitContainerProperty}
-        />
-      ) : null}
-
-      {visibleModules.has("sizing") ? (
-        <SizingInspectorModule
-          expanded={sectionsExpanded.sizing}
-          onToggle={() => toggleSection("sizing")}
-          computed={containerComputedStyle}
-          disabled={disabled || sourceStyleLocked || !componentFile}
-          onPreview={previewContainerStyle}
-          onCommit={commitContainerProperty}
-        />
-      ) : null}
-
-      {visibleModules.has("position") ? (
-        <PositionInspectorModule
-          expanded={sectionsExpanded.position}
-          onToggle={() => toggleSection("position")}
-          computed={containerComputedStyle}
-          disabled={disabled || sourceStyleLocked || !componentFile}
-          onPreview={previewContainerStyle}
-          onCommit={commitContainerProperty}
-        />
-      ) : null}
-
-      {visibleModules.has("appearance") ? (
-        <AppearanceInspectorModule
-          expanded={sectionsExpanded.appearance}
-          onToggle={() => toggleSection("appearance")}
-          computed={containerComputedStyle}
-          disabled={disabled || sourceStyleLocked || !componentFile}
-          onPreview={previewContainerStyle}
-          onCommit={commitContainerProperty}
-        />
-      ) : null}
-
-      {/* 2. Layout & Spacing (Figma style) */}
-      {visibleModules.has("spacing") && (
+      {(
+        [
+          "layout",
+          "sizing",
+          "position",
+          "appearance",
+          "spacing",
+          "typography",
+          "fill",
+          "border",
+        ] as const
+      ).some((module) => visibleModules.has(module)) ? (
         <InspectorGroup
-          title="Layout & Spacing"
-          icon={<LayoutGrid className="size-3.5" />}
-          expanded={sectionsExpanded.layout}
-          onToggle={() => toggleSection("layout")}
+          title="Design"
+          icon={<Sliders className="size-3.5" />}
+          expanded={sectionsExpanded.design}
+          onToggle={() => toggleSection("design")}
+          contentClassName="p-0"
+          groupChildren
         >
-          <div className="space-y-3">
-            {/* Padding */}
-            <InspectorDisclosureField
-              id="padding-side-controls"
-              expanded={paddingExpanded}
-              onExpandedChange={setPaddingExpanded}
-              expandLabel="Expand individual padding sides"
-              collapseLabel="Collapse individual padding sides"
-              icon={<RxPadding className="size-4" aria-hidden="true" />}
-              field={
-                <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border bg-background px-2 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
-                  <span className="text-xs text-muted-foreground">Padding</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingAll}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Section padding in pixels"
-                    onValuePreview={(val) =>
-                      previewContainerStyle({
-                        "padding-top": `${val}px`,
-                        "padding-bottom": `${val}px`,
-                        "padding-left": `${val}px`,
-                        "padding-right": `${val}px`,
-                      })
-                    }
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath) handleFieldChange("padding", val);
-                      patchContainerStyle(
-                        (prev) =>
-                          patchTailwindClasses(
+          {visibleModules.has("layout") ? (
+            <LayoutInspectorModule
+              expanded={sectionsExpanded.flow}
+              onToggle={() => toggleSection("flow")}
+              computed={containerComputedStyle}
+              disabled={disabled || sourceStyleLocked || !componentFile}
+              onPreview={previewContainerStyle}
+              onCommit={commitContainerProperty}
+            />
+          ) : null}
+
+          {visibleModules.has("sizing") ? (
+            <SizingInspectorModule
+              expanded={sectionsExpanded.sizing}
+              onToggle={() => toggleSection("sizing")}
+              computed={containerComputedStyle}
+              sourceClassName={containerClassName}
+              targetVariants={targetVariants}
+              optimisticWidth={optimisticValue("width")}
+              optimisticHeight={optimisticValue("height")}
+              optimisticMinWidth={optimisticValue("minWidth")}
+              optimisticMinHeight={optimisticValue("minHeight")}
+              optimisticMaxWidth={optimisticValue("maxWidth")}
+              optimisticMaxHeight={optimisticValue("maxHeight")}
+              disabled={disabled || sourceStyleLocked || !componentFile}
+              onPreview={previewContainerStyle}
+              onCommit={commitContainerProperty}
+            />
+          ) : null}
+
+          {visibleModules.has("position") ? (
+            <PositionInspectorModule
+              expanded={sectionsExpanded.position}
+              onToggle={() => toggleSection("position")}
+              computed={containerComputedStyle}
+              disabled={disabled || sourceStyleLocked || !componentFile}
+              onPreview={previewContainerStyle}
+              onCommit={commitContainerProperty}
+            />
+          ) : null}
+
+          {visibleModules.has("appearance") ? (
+            <AppearanceInspectorModule
+              expanded={sectionsExpanded.appearance}
+              onToggle={() => toggleSection("appearance")}
+              computed={containerComputedStyle}
+              disabled={disabled || sourceStyleLocked || !componentFile}
+              onPreview={previewContainerStyle}
+              onCommit={commitContainerProperty}
+            />
+          ) : null}
+
+          {/* 2. Layout & Spacing (Figma style) */}
+          {visibleModules.has("spacing") && (
+            <InspectorGroup
+              title="Layout & Spacing"
+              icon={<LayoutGrid className="size-3.5" />}
+              expanded={sectionsExpanded.layout}
+              onToggle={() => toggleSection("layout")}
+            >
+              <div className="space-y-3">
+                {/* Padding */}
+                <InspectorDisclosureField
+                  id="padding-side-controls"
+                  expanded={paddingExpanded}
+                  onExpandedChange={setPaddingExpanded}
+                  expandLabel="Expand individual padding sides"
+                  collapseLabel="Collapse individual padding sides"
+                  icon={<RxPadding className="size-4" aria-hidden="true" />}
+                  field={
+                    <InspectorLengthControl
+                      label="Padding"
+                      ariaLabel="Section padding"
+                      value={effectivePaddingLengths.all}
+                      computedValue={containerComputedStyle?.paddingTop}
+                      min={0}
+                      max={10_000}
+                      step={4}
+                      disabled={disabled || sourceStyleLocked}
+                      onPreview={(cssValue) =>
+                        previewContainerStyle({
+                          "padding-top": cssValue,
+                          "padding-bottom": cssValue,
+                          "padding-left": cssValue,
+                          "padding-right": cssValue,
+                        })
+                      }
+                      onCommit={(cssValue, numericValue) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath && numericValue !== null) {
+                          handleFieldChange("padding", numericValue);
+                        }
+                        patchContainerStyle(
+                          (prev) =>
                             patchTailwindClasses(
                               patchTailwindClasses(
                                 patchTailwindClasses(
-                                  patchTailwindClasses(prev, {
-                                    property: "padding",
-                                    value: `p-[${val}px]`,
-                                  }),
-                                  { property: "padding-top", value: "" },
+                                  patchTailwindClasses(
+                                    patchTailwindClasses(prev, {
+                                      property: "padding",
+                                      value: inspectorLengthUtility(
+                                        "p",
+                                        cssValue,
+                                      ),
+                                    }),
+                                    { property: "padding-top", value: "" },
+                                  ),
+                                  { property: "padding-bottom", value: "" },
                                 ),
-                                { property: "padding-bottom", value: "" },
+                                { property: "padding-left", value: "" },
                               ),
-                              { property: "padding-left", value: "" },
+                              { property: "padding-right", value: "" },
                             ),
-                            { property: "padding-right", value: "" },
-                          ),
-                        { paddingAll: val },
-                      );
-                    }}
-                    className="h-7 min-w-0 flex-1 justify-end gap-1"
-                    inputClassName="h-6 text-xs text-right font-mono"
-                  />
-                </div>
-              }
-            >
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
-                  <span className="text-xs text-muted-foreground">T</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingTop}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Top padding"
-                    onValuePreview={(val) =>
-                      previewContainerStyle({ "padding-top": `${val}px` })
-                    }
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath) handleFieldChange("paddingTop", val);
-                      patchContainerStyle(
-                        (prev) =>
-                          patchTailwindClasses(prev, {
-                            property: "padding-top",
-                            value: `pt-[${val}px]`,
-                          }),
-                        { paddingTop: val },
-                      );
-                    }}
-                    className="h-7 min-w-0 flex-1 justify-end gap-1"
-                    inputClassName="h-5 text-xs text-right font-mono"
-                  />
-                </div>
-                <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
-                  <span className="text-xs text-muted-foreground">B</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingBottom}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Bottom padding"
-                    onValuePreview={(val) =>
-                      previewContainerStyle({ "padding-bottom": `${val}px` })
-                    }
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath)
-                        handleFieldChange("paddingBottom", val);
-                      patchContainerStyle(
-                        (prev) =>
-                          patchTailwindClasses(prev, {
-                            property: "padding-bottom",
-                            value: `pb-[${val}px]`,
-                          }),
-                        { paddingBottom: val },
-                      );
-                    }}
-                    className="h-7 min-w-0 flex-1 justify-end gap-1"
-                    inputClassName="h-5 text-xs text-right font-mono"
-                  />
-                </div>
-                <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
-                  <span className="text-xs text-muted-foreground">L</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingLeft}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Left padding"
-                    onValuePreview={(val) =>
-                      previewContainerStyle({ "padding-left": `${val}px` })
-                    }
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath) handleFieldChange("paddingLeft", val);
-                      patchContainerStyle(
-                        (prev) =>
-                          patchTailwindClasses(prev, {
-                            property: "padding-left",
-                            value: `pl-[${val}px]`,
-                          }),
-                        { paddingLeft: val },
-                      );
-                    }}
-                    className="h-7 min-w-0 flex-1 justify-end gap-1"
-                    inputClassName="h-5 text-xs text-right font-mono"
-                  />
-                </div>
-                <div className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-background px-2">
-                  <span className="text-xs text-muted-foreground">R</span>
-                  <ScrubbableNumberInput
-                    value={effectivePaddingRight}
-                    min={0}
-                    max={160}
-                    step={4}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Right padding"
-                    onValuePreview={(val) =>
-                      previewContainerStyle({ "padding-right": `${val}px` })
-                    }
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      if (!componentPath)
-                        handleFieldChange("paddingRight", val);
-                      patchContainerStyle(
-                        (prev) =>
-                          patchTailwindClasses(prev, {
-                            property: "padding-right",
-                            value: `pr-[${val}px]`,
-                          }),
-                        { paddingRight: val },
-                      );
-                    }}
-                    className="h-7 min-w-0 flex-1 justify-end gap-1"
-                    inputClassName="h-5 text-xs text-right font-mono"
-                  />
-                </div>
-              </div>
-            </InspectorDisclosureField>
-
-            {/* Alignment */}
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Alignment</span>
-              <div className="flex items-center rounded-lg border bg-muted/30 p-0.5">
-                <Button
-                  type="button"
-                  variant={
-                    effectiveTextAlign === "left" ? "secondary" : "ghost"
+                          {
+                            paddingAll: cssValue,
+                            paddingTop: cssValue,
+                            paddingBottom: cssValue,
+                            paddingLeft: cssValue,
+                            paddingRight: cssValue,
+                          },
+                        );
+                      }}
+                      className="flex-1"
+                    />
                   }
-                  size="icon"
-                  className="size-6 shadow-none"
-                  disabled={disabled || sourceStyleLocked}
-                  onClick={() => {
-                    if (sourceStyleLocked) return;
-                    previewStyle({ "text-align": "left" });
-                    if (!componentPath) handleFieldChange("textAlign", "left");
-                    patchStyle(
-                      (prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "text-align",
-                          value: "text-left",
-                        }),
-                      { textAlign: "left" },
-                    );
-                  }}
                 >
-                  <AlignLeft className="size-3" />
-                </Button>
-                <Button
-                  type="button"
-                  variant={
-                    effectiveTextAlign === "center" ? "secondary" : "ghost"
-                  }
-                  size="icon"
-                  className="size-6 shadow-none"
-                  disabled={disabled || sourceStyleLocked}
-                  onClick={() => {
-                    if (sourceStyleLocked) return;
-                    previewStyle({ "text-align": "center" });
-                    if (!componentPath)
-                      handleFieldChange("textAlign", "center");
-                    patchStyle(
-                      (prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "text-align",
-                          value: "text-center",
-                        }),
-                      { textAlign: "center" },
-                    );
-                  }}
-                >
-                  <AlignCenter className="size-3" />
-                </Button>
-                <Button
-                  type="button"
-                  variant={
-                    effectiveTextAlign === "right" ? "secondary" : "ghost"
-                  }
-                  size="icon"
-                  className="size-6 shadow-none"
-                  disabled={disabled || sourceStyleLocked}
-                  onClick={() => {
-                    if (sourceStyleLocked) return;
-                    previewStyle({ "text-align": "right" });
-                    if (!componentPath) handleFieldChange("textAlign", "right");
-                    patchStyle(
-                      (prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "text-align",
-                          value: "text-right",
-                        }),
-                      { textAlign: "right" },
-                    );
-                  }}
-                >
-                  <AlignRight className="size-3" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        </InspectorGroup>
-      )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <InspectorLengthControl
+                      label="T"
+                      ariaLabel="Top padding"
+                      value={effectivePaddingLengths.top}
+                      computedValue={containerComputedStyle?.paddingTop}
+                      min={0}
+                      max={10_000}
+                      step={4}
+                      disabled={disabled || sourceStyleLocked}
+                      onPreview={(cssValue) =>
+                        previewContainerStyle({ "padding-top": cssValue })
+                      }
+                      onCommit={(cssValue, numericValue) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath && numericValue !== null) {
+                          handleFieldChange("paddingTop", numericValue);
+                        }
+                        patchContainerStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "padding-top",
+                              value: inspectorLengthUtility("pt", cssValue),
+                            }),
+                          { paddingTop: cssValue },
+                        );
+                      }}
+                    />
+                    <InspectorLengthControl
+                      label="B"
+                      ariaLabel="Bottom padding"
+                      value={effectivePaddingLengths.bottom}
+                      computedValue={containerComputedStyle?.paddingBottom}
+                      min={0}
+                      max={10_000}
+                      step={4}
+                      disabled={disabled || sourceStyleLocked}
+                      onPreview={(cssValue) =>
+                        previewContainerStyle({ "padding-bottom": cssValue })
+                      }
+                      onCommit={(cssValue, numericValue) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath && numericValue !== null) {
+                          handleFieldChange("paddingBottom", numericValue);
+                        }
+                        patchContainerStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "padding-bottom",
+                              value: inspectorLengthUtility("pb", cssValue),
+                            }),
+                          { paddingBottom: cssValue },
+                        );
+                      }}
+                    />
+                    <InspectorLengthControl
+                      label="L"
+                      ariaLabel="Left padding"
+                      value={effectivePaddingLengths.left}
+                      computedValue={containerComputedStyle?.paddingLeft}
+                      min={0}
+                      max={10_000}
+                      step={4}
+                      disabled={disabled || sourceStyleLocked}
+                      onPreview={(cssValue) =>
+                        previewContainerStyle({ "padding-left": cssValue })
+                      }
+                      onCommit={(cssValue, numericValue) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath && numericValue !== null) {
+                          handleFieldChange("paddingLeft", numericValue);
+                        }
+                        patchContainerStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "padding-left",
+                              value: inspectorLengthUtility("pl", cssValue),
+                            }),
+                          { paddingLeft: cssValue },
+                        );
+                      }}
+                    />
+                    <InspectorLengthControl
+                      label="R"
+                      ariaLabel="Right padding"
+                      value={effectivePaddingLengths.right}
+                      computedValue={containerComputedStyle?.paddingRight}
+                      min={0}
+                      max={10_000}
+                      step={4}
+                      disabled={disabled || sourceStyleLocked}
+                      onPreview={(cssValue) =>
+                        previewContainerStyle({ "padding-right": cssValue })
+                      }
+                      onCommit={(cssValue, numericValue) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath && numericValue !== null) {
+                          handleFieldChange("paddingRight", numericValue);
+                        }
+                        patchContainerStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "padding-right",
+                              value: inspectorLengthUtility("pr", cssValue),
+                            }),
+                          { paddingRight: cssValue },
+                        );
+                      }}
+                    />
+                  </div>
+                </InspectorDisclosureField>
 
-      {/* 3. Typography */}
-      {visibleModules.has("typography") && (
-        <InspectorGroup
-          title="Typography"
-          icon={<Type className="size-3.5" />}
-          expanded={sectionsExpanded.typography}
-          onToggle={() => toggleSection("typography")}
-        >
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
-              <InspectorSelectControl
-                label="Font"
-                ariaLabel="Font family"
-                value={effectiveFontFamily}
-                options={["serif", "sans", "mono"]}
-                formatOption={(value) =>
-                  value === "serif"
-                    ? "Serif (Editorial)"
-                    : value === "sans"
-                      ? "Sans-serif (Modern)"
-                      : "Monospace"
-                }
-                onValueChange={(val) => {
-                  if (sourceStyleLocked) return;
-                  previewStyle({
-                    "font-family":
-                      val === "sans"
-                        ? "ui-sans-serif, system-ui, sans-serif"
-                        : val === "mono"
-                          ? "ui-monospace, monospace"
-                          : "ui-serif, Georgia, serif",
-                  });
-                  if (!componentPath) handleFieldChange("fontFamily", val);
-                  patchStyle(
-                    (prev) =>
-                      patchTailwindClasses(prev, {
-                        property: "font-family",
-                        value: `font-${val}`,
-                      }),
-                    { fontFamily: val },
-                  );
-                }}
-                disabled={disabled || sourceStyleLocked}
-              />
-              <InspectorSelectControl
-                label="Weight"
-                ariaLabel="Font weight"
-                value={effectiveFontWeight}
-                options={["300", "normal", "medium", "bold"]}
-                formatOption={(value) =>
-                  value === "300"
-                    ? "Light (300)"
-                    : value === "normal"
-                      ? "Regular (400)"
-                      : value === "medium"
-                        ? "Medium (500)"
-                        : "Bold (700)"
-                }
-                onValueChange={(val) => {
-                  if (sourceStyleLocked) return;
-                  previewStyle({
-                    "font-weight":
-                      val === "300"
-                        ? "300"
-                        : val === "normal"
-                          ? "400"
-                          : val === "medium"
-                            ? "500"
-                            : "700",
-                  });
-                  if (!componentPath) handleFieldChange("fontWeight", val);
-                  const weightClass =
-                    val === "300"
-                      ? "font-light"
-                      : val === "normal"
-                        ? "font-normal"
-                        : val === "medium"
-                          ? "font-medium"
-                          : "font-bold";
-                  patchStyle(
-                    (prev) =>
-                      patchTailwindClasses(prev, {
-                        property: "font-weight",
-                        value: weightClass,
-                      }),
-                    { fontWeight: val },
-                  );
-                }}
-                disabled={disabled || sourceStyleLocked}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex h-8 min-w-0 items-center justify-between rounded-md border bg-background px-2">
-                <span className="text-[10px] text-muted-foreground">Size</span>
-                {isComplexFontSize ? (
-                  <span
-                    className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground truncate max-w-[80px]"
-                    title={`Controlled in code: ${complexFontSizeRaw}`}
-                  >
-                    Custom
+                {/* Alignment */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">
+                    Alignment
                   </span>
-                ) : (
-                  <ScrubbableNumberInput
-                    value={effectiveFontSize}
-                    min={12}
-                    max={120}
-                    step={2}
-                    suffix="px"
-                    disabled={disabled || sourceStyleLocked}
-                    ariaLabel="Heading font size"
-                    onValuePreview={(val) =>
-                      previewStyle({ "font-size": `${val}px` })
+                  <div className="flex items-center rounded-lg border bg-muted/30 p-0.5">
+                    <Button
+                      type="button"
+                      variant={
+                        effectiveTextAlign === "left" ? "secondary" : "ghost"
+                      }
+                      size="icon"
+                      className="size-6 shadow-none"
+                      disabled={disabled || sourceStyleLocked}
+                      onClick={() => {
+                        if (sourceStyleLocked) return;
+                        previewStyle({ "text-align": "left" });
+                        if (!componentPath)
+                          handleFieldChange("textAlign", "left");
+                        patchStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "text-align",
+                              value: "text-left",
+                            }),
+                          { textAlign: "left" },
+                        );
+                      }}
+                    >
+                      <AlignLeft className="size-3" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={
+                        effectiveTextAlign === "center" ? "secondary" : "ghost"
+                      }
+                      size="icon"
+                      className="size-6 shadow-none"
+                      disabled={disabled || sourceStyleLocked}
+                      onClick={() => {
+                        if (sourceStyleLocked) return;
+                        previewStyle({ "text-align": "center" });
+                        if (!componentPath)
+                          handleFieldChange("textAlign", "center");
+                        patchStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "text-align",
+                              value: "text-center",
+                            }),
+                          { textAlign: "center" },
+                        );
+                      }}
+                    >
+                      <AlignCenter className="size-3" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={
+                        effectiveTextAlign === "right" ? "secondary" : "ghost"
+                      }
+                      size="icon"
+                      className="size-6 shadow-none"
+                      disabled={disabled || sourceStyleLocked}
+                      onClick={() => {
+                        if (sourceStyleLocked) return;
+                        previewStyle({ "text-align": "right" });
+                        if (!componentPath)
+                          handleFieldChange("textAlign", "right");
+                        patchStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "text-align",
+                              value: "text-right",
+                            }),
+                          { textAlign: "right" },
+                        );
+                      }}
+                    >
+                      <AlignRight className="size-3" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </InspectorGroup>
+          )}
+
+          {/* 3. Typography */}
+          {visibleModules.has("typography") && (
+            <InspectorGroup
+              title="Typography"
+              icon={<Type className="size-3.5" />}
+              expanded={sectionsExpanded.typography}
+              onToggle={() => toggleSection("typography")}
+            >
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <InspectorSelectControl
+                    label="Font"
+                    ariaLabel="Font family"
+                    value={effectiveFontFamily}
+                    options={["serif", "sans", "mono"]}
+                    formatOption={(value) =>
+                      value === "serif"
+                        ? "Serif (Editorial)"
+                        : value === "sans"
+                          ? "Sans-serif (Modern)"
+                          : "Monospace"
                     }
                     onValueChange={(val) => {
                       if (sourceStyleLocked) return;
-                      if (!componentPath) handleFieldChange("fontSize", val);
+                      previewStyle({
+                        "font-family":
+                          val === "sans"
+                            ? "ui-sans-serif, system-ui, sans-serif"
+                            : val === "mono"
+                              ? "ui-monospace, monospace"
+                              : "ui-serif, Georgia, serif",
+                      });
+                      if (!componentPath) handleFieldChange("fontFamily", val);
                       patchStyle(
                         (prev) =>
                           patchTailwindClasses(prev, {
-                            property: "font-size",
-                            value: `text-[${val}px]`,
+                            property: "font-family",
+                            value: `font-${val}`,
                           }),
-                        { fontSize: val },
+                        { fontFamily: val },
                       );
                     }}
-                    className="h-6 w-16"
-                    inputClassName="h-6 text-xs text-right font-mono"
+                    disabled={disabled || sourceStyleLocked}
+                  />
+                  <InspectorSelectControl
+                    label="Weight"
+                    ariaLabel="Font weight"
+                    value={effectiveFontWeight}
+                    options={["300", "normal", "medium", "bold"]}
+                    formatOption={(value) =>
+                      value === "300"
+                        ? "Light (300)"
+                        : value === "normal"
+                          ? "Regular (400)"
+                          : value === "medium"
+                            ? "Medium (500)"
+                            : "Bold (700)"
+                    }
+                    onValueChange={(val) => {
+                      if (sourceStyleLocked) return;
+                      previewStyle({
+                        "font-weight":
+                          val === "300"
+                            ? "300"
+                            : val === "normal"
+                              ? "400"
+                              : val === "medium"
+                                ? "500"
+                                : "700",
+                      });
+                      if (!componentPath) handleFieldChange("fontWeight", val);
+                      const weightClass =
+                        val === "300"
+                          ? "font-light"
+                          : val === "normal"
+                            ? "font-normal"
+                            : val === "medium"
+                              ? "font-medium"
+                              : "font-bold";
+                      patchStyle(
+                        (prev) =>
+                          patchTailwindClasses(prev, {
+                            property: "font-weight",
+                            value: weightClass,
+                          }),
+                        { fontWeight: val },
+                      );
+                    }}
+                    disabled={disabled || sourceStyleLocked}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div
+                    className={cn(
+                      inspectorControlSurface,
+                      "flex h-8 min-w-0 items-center justify-between px-2 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                    )}
+                  >
+                    <span className="text-[10px] text-muted-foreground">
+                      Size
+                    </span>
+                    {isComplexFontSize ? (
+                      <span
+                        className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground truncate max-w-[80px]"
+                        title={`Controlled in code: ${complexFontSizeRaw}`}
+                      >
+                        Custom
+                      </span>
+                    ) : (
+                      <ScrubbableNumberInput
+                        value={effectiveFontSize}
+                        min={12}
+                        max={120}
+                        step={2}
+                        suffix="px"
+                        disabled={disabled || sourceStyleLocked}
+                        ariaLabel="Heading font size"
+                        onValuePreview={(val) =>
+                          previewStyle({ "font-size": `${val}px` })
+                        }
+                        onValueChange={(val) => {
+                          if (sourceStyleLocked) return;
+                          if (!componentPath)
+                            handleFieldChange("fontSize", val);
+                          patchStyle(
+                            (prev) =>
+                              patchTailwindClasses(prev, {
+                                property: "font-size",
+                                value: `text-[${val}px]`,
+                              }),
+                            { fontSize: val },
+                          );
+                        }}
+                        className="h-6 w-16"
+                        inputClassName="h-6 text-xs text-right font-mono"
+                      />
+                    )}
+                  </div>
+                  <div
+                    className={cn(
+                      inspectorControlSurface,
+                      "flex h-8 min-w-0 items-center justify-between px-2 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                    )}
+                  >
+                    <span className="text-[10px] text-muted-foreground">
+                      Line H
+                    </span>
+                    <ScrubbableNumberInput
+                      value={effectiveLineHeight}
+                      min={0.8}
+                      max={2.5}
+                      step={0.05}
+                      disabled={disabled || sourceStyleLocked}
+                      ariaLabel="Line height multiplier"
+                      onValuePreview={(val) =>
+                        previewStyle({ "line-height": String(val) })
+                      }
+                      onValueChange={(val) => {
+                        if (sourceStyleLocked) return;
+                        if (!componentPath)
+                          handleFieldChange("lineHeight", val);
+                        patchStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "line-height",
+                              value: `leading-[${val}]`,
+                            }),
+                          { lineHeight: val },
+                        );
+                      }}
+                      className="h-6 w-16"
+                      inputClassName="h-6 text-xs text-right font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+            </InspectorGroup>
+          )}
+
+          {/* 4. Fills & Background */}
+          {visibleModules.has("fill") && (
+            <InspectorGroup
+              title="Fills & Background"
+              icon={<Palette className="size-3.5" />}
+              expanded={sectionsExpanded.fills}
+              onToggle={() => toggleSection("fills")}
+            >
+              <div className="space-y-3">
+                {visibleModules.has("typography") && (
+                  <InspectorColorField
+                    label="Text"
+                    value={effectiveTextPaint}
+                    disabled={disabled || sourceStyleLocked}
+                    allowGradient
+                    onPreview={(value) =>
+                      previewStyle(
+                        textPaintPreviewStyles(value, effectiveTextPaint),
+                      )
+                    }
+                    onCommit={(value) => {
+                      if (!componentPath && !isGradientPaint(value)) {
+                        handleFieldChange("textColor", value);
+                      }
+                      patchStyle(
+                        (prev) =>
+                          patchTailwindTextPaint(prev, value, targetVariants),
+                        { textPaint: value },
+                      );
+                    }}
+                    onClear={() => {
+                      previewStyle({
+                        color: "",
+                        "background-image": "",
+                        "background-clip": "",
+                        "-webkit-background-clip": "",
+                      });
+                      if (!componentPath)
+                        handleFieldChange("textColor", undefined);
+                      patchStyle(
+                        (prev) =>
+                          patchTailwindTextPaint(prev, "", targetVariants),
+                        { textPaint: "" },
+                      );
+                    }}
+                    palette={THEME_PALETTE_COLORS}
                   />
                 )}
-              </div>
-              <div className="flex h-8 min-w-0 items-center justify-between rounded-md border bg-background px-2">
-                <span className="text-[10px] text-muted-foreground">
-                  Line H
-                </span>
-                <ScrubbableNumberInput
-                  value={effectiveLineHeight}
-                  min={0.8}
-                  max={2.5}
-                  step={0.05}
+
+                <InspectorColorField
+                  label="Background"
+                  value={effectiveBackgroundPaint}
                   disabled={disabled || sourceStyleLocked}
-                  ariaLabel="Line height multiplier"
-                  onValuePreview={(val) =>
-                    previewStyle({ "line-height": String(val) })
-                  }
-                  onValueChange={(val) => {
-                    if (sourceStyleLocked) return;
-                    if (!componentPath) handleFieldChange("lineHeight", val);
-                    patchStyle(
+                  allowGradient
+                  onPreview={(value) => {
+                    previewContainerStyle(paintPreviewStyles(value));
+                  }}
+                  onCommit={(value) => {
+                    if (!componentPath && !isGradientPaint(value)) {
+                      handleFieldChange("backgroundColor", value);
+                    }
+                    patchContainerStyle(
                       (prev) =>
                         patchTailwindClasses(prev, {
-                          property: "line-height",
-                          value: `leading-[${val}]`,
+                          property: "background",
+                          value: toBackgroundPaintUtility(value),
                         }),
-                      { lineHeight: val },
+                      { backgroundPaint: value },
                     );
                   }}
-                  className="h-6 w-16"
-                  inputClassName="h-6 text-xs text-right font-mono"
+                  onClear={() => {
+                    previewContainerStyle({
+                      "background-color": "",
+                      "background-image": "",
+                    });
+                    if (!componentPath) {
+                      handleFieldChange("backgroundColor", undefined);
+                    }
+                    patchContainerStyle(
+                      (prev) =>
+                        patchTailwindClasses(prev, {
+                          property: "background",
+                          value: "",
+                        }),
+                      { backgroundPaint: "" },
+                    );
+                  }}
+                  palette={THEME_PALETTE_COLORS}
                 />
               </div>
-            </div>
-          </div>
-        </InspectorGroup>
-      )}
+            </InspectorGroup>
+          )}
 
-      {/* 4. Fills & Background */}
-      {visibleModules.has("fill") && (
-        <InspectorGroup
-          title="Fills & Background"
-          icon={<Palette className="size-3.5" />}
-          expanded={sectionsExpanded.fills}
-          onToggle={() => toggleSection("fills")}
-        >
-          <div className="space-y-3">
-            {visibleModules.has("typography") && (
-              <InspectorColorField
-                label="Text"
-                value={effectiveTextPaint}
-                disabled={disabled || sourceStyleLocked}
-                allowGradient
-                onPreview={(value) =>
-                  previewStyle(
-                    textPaintPreviewStyles(value, effectiveTextPaint),
-                  )
-                }
-                onCommit={(value) => {
-                  if (!componentPath && !isGradientPaint(value)) {
-                    handleFieldChange("textColor", value);
-                  }
-                  patchStyle(
-                    (prev) =>
-                      patchTailwindTextPaint(prev, value, targetVariants),
-                    { textPaint: value },
-                  );
-                }}
-                onClear={() => {
-                  previewStyle({
-                    color: "",
-                    "background-image": "",
-                    "background-clip": "",
-                    "-webkit-background-clip": "",
-                  });
-                  if (!componentPath) handleFieldChange("textColor", undefined);
-                  patchStyle(
-                    (prev) => patchTailwindTextPaint(prev, "", targetVariants),
-                    { textPaint: "" },
-                  );
-                }}
-                palette={THEME_PALETTE_COLORS}
-              />
-            )}
-
-            <InspectorColorField
-              label="Background"
-              value={effectiveBackgroundPaint}
+          {/* 5. Borders & Corners */}
+          {visibleModules.has("border") && (
+            <BorderRadiusInspectorModule
+              expanded={sectionsExpanded.borders}
+              onToggle={() => toggleSection("borders")}
               disabled={disabled || sourceStyleLocked}
-              allowGradient
-              onPreview={(value) => {
-                previewContainerStyle(paintPreviewStyles(value));
-              }}
-              onCommit={(value) => {
-                if (!componentPath && !isGradientPaint(value)) {
-                  handleFieldChange("backgroundColor", value);
-                }
-                patchContainerStyle(
-                  (prev) =>
-                    patchTailwindClasses(prev, {
-                      property: "background",
-                      value: toBackgroundPaintUtility(value),
-                    }),
-                  { backgroundPaint: value },
-                );
-              }}
-              onClear={() => {
-                previewContainerStyle({
-                  "background-color": "",
-                  "background-image": "",
-                });
-                if (!componentPath) {
-                  handleFieldChange("backgroundColor", undefined);
-                }
-                patchContainerStyle(
-                  (prev) =>
-                    patchTailwindClasses(prev, {
-                      property: "background",
-                      value: "",
-                    }),
-                  { backgroundPaint: "" },
-                );
-              }}
+              borderWidth={effectiveBorderWidthLength}
+              borderStyle={String(effectiveBorderStyle)}
+              borderColor={String(effectiveBorderColor)}
+              radius={effectiveBorderRadiusLengths}
               palette={THEME_PALETTE_COLORS}
+              onBorderWidthPreview={(cssValue) =>
+                previewContainerStyle({ "border-width": cssValue })
+              }
+              onBorderWidthCommit={(cssValue, numericValue) => {
+                if (!componentPath && numericValue !== null) {
+                  handleFieldChange("borderWidth", numericValue);
+                }
+                commitContainerProperty(
+                  "border-width",
+                  inspectorLengthUtility("border", cssValue),
+                  "borderWidth",
+                  cssValue,
+                );
+              }}
+              onBorderStyleChange={(value) => {
+                previewContainerStyle({ "border-style": value });
+                commitContainerProperty(
+                  "border-style",
+                  `border-${value}`,
+                  "borderStyle",
+                  value,
+                );
+              }}
+              onBorderColorPreview={(value) =>
+                previewContainerStyle({ "border-color": value })
+              }
+              onBorderColorCommit={(value) =>
+                commitContainerProperty(
+                  "border-color",
+                  toBorderColorUtility(value),
+                  "borderColor",
+                  value,
+                )
+              }
+              onBorderColorClear={() => {
+                previewContainerStyle({ "border-color": "" });
+                commitContainerProperty("border-color", "", "borderColor", "");
+              }}
+              onRadiusPreview={(corner, cssValue) => {
+                if (corner === "all") {
+                  previewContainerStyle({ "border-radius": cssValue });
+                  return;
+                }
+                previewContainerStyle({
+                  [BORDER_RADIUS_CORNER_CONFIG[corner].cssProperty]: cssValue,
+                });
+              }}
+              onRadiusCommit={(corner, cssValue, numericValue) => {
+                if (
+                  !componentPath &&
+                  corner === "all" &&
+                  numericValue !== null
+                ) {
+                  handleFieldChange("borderRadius", numericValue);
+                }
+                if (corner === "all") {
+                  patchContainerStyle(
+                    (previous) =>
+                      (
+                        [
+                          "border-radius-top-left",
+                          "border-radius-top-right",
+                          "border-radius-bottom-right",
+                          "border-radius-bottom-left",
+                        ] as const
+                      ).reduce(
+                        (className, property) =>
+                          patchTailwindClasses(className, {
+                            property,
+                            value: "",
+                          }),
+                        patchTailwindClasses(previous, {
+                          property: "border-radius",
+                          value: inspectorLengthUtility("rounded", cssValue),
+                        }),
+                      ),
+                    {
+                      borderRadius: cssValue,
+                      borderRadiusTopLeft: cssValue,
+                      borderRadiusTopRight: cssValue,
+                      borderRadiusBottomRight: cssValue,
+                      borderRadiusBottomLeft: cssValue,
+                    },
+                  );
+                  return;
+                }
+                const config = BORDER_RADIUS_CORNER_CONFIG[corner];
+                commitContainerProperty(
+                  config.property,
+                  inspectorLengthUtility(config.utility, cssValue),
+                  config.optimisticKey,
+                  cssValue,
+                );
+              }}
             />
-          </div>
+          )}
         </InspectorGroup>
-      )}
-
-      {/* 5. Borders & Corners */}
-      {visibleModules.has("border") && (
-        <BorderRadiusInspectorModule
-          expanded={sectionsExpanded.borders}
-          onToggle={() => toggleSection("borders")}
-          disabled={disabled || sourceStyleLocked}
-          borderWidth={effectiveBorderWidth}
-          borderStyle={String(effectiveBorderStyle)}
-          borderColor={String(effectiveBorderColor)}
-          radius={effectiveBorderRadii}
-          palette={THEME_PALETTE_COLORS}
-          onBorderWidthPreview={(value) =>
-            previewContainerStyle({ "border-width": `${value}px` })
-          }
-          onBorderWidthCommit={(value) => {
-            if (!componentPath) handleFieldChange("borderWidth", value);
-            commitContainerProperty(
-              "border-width",
-              `border-[${value}px]`,
-              "borderWidth",
-              value,
-            );
-          }}
-          onBorderStyleChange={(value) => {
-            previewContainerStyle({ "border-style": value });
-            commitContainerProperty(
-              "border-style",
-              `border-${value}`,
-              "borderStyle",
-              value,
-            );
-          }}
-          onBorderColorPreview={(value) =>
-            previewContainerStyle({ "border-color": value })
-          }
-          onBorderColorCommit={(value) =>
-            commitContainerProperty(
-              "border-color",
-              toBorderColorUtility(value),
-              "borderColor",
-              value,
-            )
-          }
-          onBorderColorClear={() => {
-            previewContainerStyle({ "border-color": "" });
-            commitContainerProperty("border-color", "", "borderColor", "");
-          }}
-          onRadiusPreview={(corner, value) => {
-            if (corner === "all") {
-              previewContainerStyle({ "border-radius": `${value}px` });
-              return;
-            }
-            previewContainerStyle({
-              [BORDER_RADIUS_CORNER_CONFIG[corner].cssProperty]: `${value}px`,
-            });
-          }}
-          onRadiusCommit={(corner, value) => {
-            if (!componentPath && corner === "all") {
-              handleFieldChange("borderRadius", value);
-            }
-            if (corner === "all") {
-              patchContainerStyle(
-                (previous) =>
-                  (
-                    [
-                      "border-radius-top-left",
-                      "border-radius-top-right",
-                      "border-radius-bottom-right",
-                      "border-radius-bottom-left",
-                    ] as const
-                  ).reduce(
-                    (className, property) =>
-                      patchTailwindClasses(className, {
-                        property,
-                        value: "",
-                      }),
-                    patchTailwindClasses(previous, {
-                      property: "border-radius",
-                      value: `rounded-[${value}px]`,
-                    }),
-                  ),
-                {
-                  borderRadius: value,
-                  borderRadiusTopLeft: value,
-                  borderRadiusTopRight: value,
-                  borderRadiusBottomRight: value,
-                  borderRadiusBottomLeft: value,
-                },
-              );
-              return;
-            }
-            const config = BORDER_RADIUS_CORNER_CONFIG[corner];
-            commitContainerProperty(
-              config.property,
-              `${config.utility}-[${value}px]`,
-              config.optimisticKey,
-              value,
-            );
-          }}
-        />
-      )}
+      ) : null}
     </div>
   );
 });

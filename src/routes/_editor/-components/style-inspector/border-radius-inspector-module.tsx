@@ -1,9 +1,12 @@
-import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Paintbrush } from "lucide-react";
 import { useState } from "react";
 
 import { InspectorColorField } from "./inspector-color-field";
 import { InspectorDisclosureField } from "./inspector-disclosure-field";
+import {
+  InspectorLengthControl,
+  type InspectorLengthValue,
+} from "./inspector-length-control";
 import { InspectorModuleCard } from "./inspector-module-card";
 import { InspectorSelectControl } from "./inspector-select-control";
 
@@ -18,59 +21,32 @@ type BorderRadiusInspectorModuleProps = {
   expanded: boolean;
   onToggle: () => void;
   disabled: boolean;
-  borderWidth: number;
+  borderWidth: InspectorLengthValue;
   borderStyle: string;
   borderColor: string;
-  radius: Record<BorderRadiusCorner, number>;
+  radius: Record<BorderRadiusCorner, InspectorLengthValue>;
   palette: readonly {
     label: string;
     value: string;
     preview: string;
   }[];
-  onBorderWidthPreview: (value: number) => void;
-  onBorderWidthCommit: (value: number) => void;
+  onBorderWidthPreview: (cssValue: string, numericValue: number | null) => void;
+  onBorderWidthCommit: (cssValue: string, numericValue: number | null) => void;
   onBorderStyleChange: (value: string) => void;
   onBorderColorPreview: (value: string) => void;
   onBorderColorCommit: (value: string) => void;
   onBorderColorClear: () => void;
-  onRadiusPreview: (corner: BorderRadiusCorner, value: number) => void;
-  onRadiusCommit: (corner: BorderRadiusCorner, value: number) => void;
+  onRadiusPreview: (
+    corner: BorderRadiusCorner,
+    cssValue: string,
+    numericValue: number | null,
+  ) => void;
+  onRadiusCommit: (
+    corner: BorderRadiusCorner,
+    cssValue: string,
+    numericValue: number | null,
+  ) => void;
 };
-
-function NumberField({
-  label,
-  ariaLabel,
-  value,
-  disabled,
-  onPreview,
-  onCommit,
-}: {
-  label: string;
-  ariaLabel: string;
-  value: number;
-  disabled: boolean;
-  onPreview: (value: number) => void;
-  onCommit: (value: number) => void;
-}) {
-  return (
-    <div className="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md border bg-background px-2 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
-      <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
-      <ScrubbableNumberInput
-        value={value}
-        min={0}
-        max={999}
-        step={1}
-        suffix="px"
-        disabled={disabled}
-        ariaLabel={ariaLabel}
-        onValuePreview={onPreview}
-        onValueChange={onCommit}
-        className="h-7 min-w-0 flex-1 justify-end gap-1"
-        inputClassName="h-6 min-w-0 text-right font-mono text-xs"
-      />
-    </div>
-  );
-}
 
 export function BorderRadiusInspectorModule({
   expanded,
@@ -101,10 +77,11 @@ export function BorderRadiusInspectorModule({
     >
       <div className="space-y-3">
         <div className="grid grid-cols-2 gap-2">
-          <NumberField
+          <InspectorLengthControl
             label="Border"
             ariaLabel="Border width"
             value={borderWidth}
+            allowedUnits={["px", "rem", "em"]}
             disabled={disabled}
             onPreview={onBorderWidthPreview}
             onCommit={onBorderWidthCommit}
@@ -136,13 +113,18 @@ export function BorderRadiusInspectorModule({
           expandLabel="Expand individual corner radii"
           collapseLabel="Collapse individual corner radii"
           field={
-            <NumberField
+            <InspectorLengthControl
               label="Radius"
               ariaLabel="Corner radius"
               value={radius.all}
               disabled={disabled}
-              onPreview={(value) => onRadiusPreview("all", value)}
-              onCommit={(value) => onRadiusCommit("all", value)}
+              onPreview={(cssValue, numericValue) =>
+                onRadiusPreview("all", cssValue, numericValue)
+              }
+              onCommit={(cssValue, numericValue) =>
+                onRadiusCommit("all", cssValue, numericValue)
+              }
+              className="flex-1"
             />
           }
         >
@@ -155,14 +137,18 @@ export function BorderRadiusInspectorModule({
                 ["BR", "Bottom right corner radius", "bottomRight"],
               ] as const
             ).map(([label, ariaLabel, corner]) => (
-              <NumberField
+              <InspectorLengthControl
                 key={corner}
                 label={label}
                 ariaLabel={ariaLabel}
                 value={radius[corner]}
                 disabled={disabled}
-                onPreview={(value) => onRadiusPreview(corner, value)}
-                onCommit={(value) => onRadiusCommit(corner, value)}
+                onPreview={(cssValue, numericValue) =>
+                  onRadiusPreview(corner, cssValue, numericValue)
+                }
+                onCommit={(cssValue, numericValue) =>
+                  onRadiusCommit(corner, cssValue, numericValue)
+                }
               />
             ))}
           </div>

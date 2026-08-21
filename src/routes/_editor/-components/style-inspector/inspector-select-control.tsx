@@ -5,6 +5,51 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
+import type { ComponentProps } from "react";
+import { inspectorControlSurface } from "./inspector-control-surface";
+
+export function InspectorSelectTrigger({
+  className,
+  size = "sm",
+  ...props
+}: ComponentProps<typeof SelectTrigger>) {
+  return (
+    <SelectTrigger
+      size={size}
+      className={cn(inspectorControlSurface, "min-w-0 text-xs", className)}
+      {...props}
+    />
+  );
+}
+
+export function InspectorSelectContent({
+  className,
+  align = "end",
+  sideOffset = 2,
+  ...props
+}: ComponentProps<typeof SelectContent>) {
+  return (
+    <SelectContent
+      align={align}
+      sideOffset={sideOffset}
+      className={cn("min-w-24", className)}
+      {...props}
+    />
+  );
+}
+
+export function InspectorSelectItem({
+  className,
+  ...props
+}: ComponentProps<typeof SelectItem>) {
+  return (
+    <SelectItem
+      className={cn("min-h-7 py-1 pr-7 pl-2 text-xs [&_svg]:size-3", className)}
+      {...props}
+    />
+  );
+}
 
 type InspectorSelectControlProps = {
   label: string;
@@ -27,28 +72,24 @@ export function InspectorSelectControl({
 }: InspectorSelectControlProps) {
   return (
     <Select value={value} disabled={disabled} onValueChange={onValueChange}>
-      <SelectTrigger
-        size="sm"
-        aria-label={ariaLabel}
-        className="min-w-0 text-xs"
-      >
+      <InspectorSelectTrigger aria-label={ariaLabel}>
         <span
           aria-hidden="true"
-          className="shrink-0 text-[10px] text-muted-foreground"
+          className="shrink-0 text-xs text-muted-foreground"
         >
           {label}
         </span>
         <span className="ml-auto min-w-0 truncate text-right">
           <SelectValue />
         </span>
-      </SelectTrigger>
-      <SelectContent>
+      </InspectorSelectTrigger>
+      <InspectorSelectContent>
         {options.map((option) => (
-          <SelectItem key={option} value={option}>
+          <InspectorSelectItem key={option} value={option}>
             {formatOption(option)}
-          </SelectItem>
+          </InspectorSelectItem>
         ))}
-      </SelectContent>
+      </InspectorSelectContent>
     </Select>
   );
 }

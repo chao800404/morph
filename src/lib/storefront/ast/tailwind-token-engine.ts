@@ -31,6 +31,10 @@ export type TailwindPropertyFamily =
   | "gap"
   | "width"
   | "height"
+  | "min-width"
+  | "min-height"
+  | "max-width"
+  | "max-height"
   | "position"
   | "top"
   | "left"
@@ -123,6 +127,13 @@ const WIDTH_PATTERN =
   /^w-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
 const HEIGHT_PATTERN =
   /^h-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
+const MIN_WIDTH_PATTERN = /^min-w-(?:0|full|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
+const MIN_HEIGHT_PATTERN =
+  /^min-h-(?:0|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
+const MAX_WIDTH_PATTERN =
+  /^max-w-(?:none|full|screen|min|max|fit|prose|3xs|2xs|xs|sm|md|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl|\d+(?:\.\d+)?|\[.+\])$/;
+const MAX_HEIGHT_PATTERN =
+  /^max-h-(?:none|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
 const POSITION_PATTERN = /^(?:static|relative|absolute|fixed|sticky)$/;
 const TOP_PATTERN = /^-?top-(?:auto|full|\d+(?:\.\d+)?|\[.+\])$/;
 const LEFT_PATTERN = /^-?left-(?:auto|full|\d+(?:\.\d+)?|\[.+\])$/;
@@ -257,6 +268,10 @@ export function classifyTailwindUtility(
   if (GAP_PATTERN.test(utility)) return "gap";
   if (WIDTH_PATTERN.test(utility)) return "width";
   if (HEIGHT_PATTERN.test(utility)) return "height";
+  if (MIN_WIDTH_PATTERN.test(utility)) return "min-width";
+  if (MIN_HEIGHT_PATTERN.test(utility)) return "min-height";
+  if (MAX_WIDTH_PATTERN.test(utility)) return "max-width";
+  if (MAX_HEIGHT_PATTERN.test(utility)) return "max-height";
   if (POSITION_PATTERN.test(utility)) return "position";
   if (TOP_PATTERN.test(utility)) return "top";
   if (LEFT_PATTERN.test(utility)) return "left";

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { cn } from "@/lib/utils";
 
+import { inspectorControlSurface } from "./inspector-control-surface";
 import { InspectorColorPickerPopover } from "./inspector-color-picker-popover";
 import {
   isInspectorPaint,
@@ -101,8 +102,8 @@ export function InspectorColorField({
   return (
     <div
       className={cn(
-        "flex h-8 min-w-0 items-center rounded-md border bg-background px-2",
-        "focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+        inspectorControlSurface,
+        "flex h-8 min-w-0 items-center px-2 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
         disabled && "cursor-not-allowed opacity-50",
       )}
     >

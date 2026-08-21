@@ -1,8 +1,15 @@
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import type { PatchTailwindOptions } from "@/lib/storefront/ast/tailwind-token-engine";
+import { cn } from "@/lib/utils";
 import { Box, LayoutGrid, Move, Sparkles } from "lucide-react";
 import { InspectorModuleCard } from "./inspector-module-card";
+import { inspectorControlSurface } from "./inspector-control-surface";
 import { InspectorSelectControl } from "./inspector-select-control";
+import {
+  InspectorLengthControl,
+  inspectorLengthUtility,
+  resolveInspectorLength,
+} from "./inspector-length-control";
 
 type CommitStyle = (
   property: PatchTailwindOptions["property"],
@@ -49,7 +56,12 @@ function NumberControl({
   onChange: (value: number) => void;
 }) {
   return (
-    <div className="flex h-8 min-w-0 items-center gap-1 rounded-md border bg-background px-2 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
+    <div
+      className={cn(
+        inspectorControlSurface,
+        "flex h-8 min-w-0 items-center gap-1 px-2 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+      )}
+    >
       <span className="min-w-4 shrink-0 text-[10px] text-muted-foreground">
         {label}
       </span>
@@ -148,7 +160,68 @@ export function LayoutInspectorModule(props: SharedProps) {
   );
 }
 
-export function SizingInspectorModule(props: SharedProps) {
+export function SizingInspectorModule(
+  props: SharedProps & {
+    sourceClassName: string;
+    targetVariants: readonly string[];
+    optimisticWidth?: string | number;
+    optimisticHeight?: string | number;
+    optimisticMinWidth?: string | number;
+    optimisticMinHeight?: string | number;
+    optimisticMaxWidth?: string | number;
+    optimisticMaxHeight?: string | number;
+  },
+) {
+  const width = resolveInspectorLength({
+    className: props.sourceClassName,
+    sources: [{ property: "width", prefix: "w" }],
+    targetVariants: props.targetVariants,
+    computedValue: props.computed?.width,
+    optimisticValue: props.optimisticWidth,
+    allowAuto: true,
+    autoWhenUnset: true,
+  });
+  const height = resolveInspectorLength({
+    className: props.sourceClassName,
+    sources: [{ property: "height", prefix: "h" }],
+    targetVariants: props.targetVariants,
+    computedValue: props.computed?.height,
+    optimisticValue: props.optimisticHeight,
+    allowAuto: true,
+    autoWhenUnset: true,
+  });
+  const minWidth = resolveInspectorLength({
+    className: props.sourceClassName,
+    sources: [{ property: "min-width", prefix: "min-w" }],
+    targetVariants: props.targetVariants,
+    computedValue: props.computed?.minWidth,
+    optimisticValue: props.optimisticMinWidth,
+  });
+  const minHeight = resolveInspectorLength({
+    className: props.sourceClassName,
+    sources: [{ property: "min-height", prefix: "min-h" }],
+    targetVariants: props.targetVariants,
+    computedValue: props.computed?.minHeight,
+    optimisticValue: props.optimisticMinHeight,
+  });
+  const maxWidth = resolveInspectorLength({
+    className: props.sourceClassName,
+    sources: [{ property: "max-width", prefix: "max-w" }],
+    targetVariants: props.targetVariants,
+    computedValue: props.computed?.maxWidth,
+    optimisticValue: props.optimisticMaxWidth,
+    allowNone: true,
+    noneWhenUnset: true,
+  });
+  const maxHeight = resolveInspectorLength({
+    className: props.sourceClassName,
+    sources: [{ property: "max-height", prefix: "max-h" }],
+    targetVariants: props.targetVariants,
+    computedValue: props.computed?.maxHeight,
+    optimisticValue: props.optimisticMaxHeight,
+    allowNone: true,
+    noneWhenUnset: true,
+  });
   return (
     <InspectorModuleCard
       title="Sizing"
@@ -157,28 +230,116 @@ export function SizingInspectorModule(props: SharedProps) {
       onToggle={props.onToggle}
     >
       <div className="grid grid-cols-2 gap-2">
-        <NumberControl
+        <InspectorLengthControl
           label="W"
           ariaLabel="Element width"
-          value={px(props.computed?.width)}
+          value={width}
+          computedValue={props.computed?.width}
+          allowAuto
           min={0}
           max={10_000}
           disabled={props.disabled}
-          onPreview={(value) => props.onPreview({ width: `${value}px` })}
-          onChange={(value) =>
-            props.onCommit("width", `w-[${value}px]`, "width", value)
+          onPreview={(cssValue) => props.onPreview({ width: cssValue })}
+          onCommit={(cssValue) =>
+            props.onCommit(
+              "width",
+              inspectorLengthUtility("w", cssValue),
+              "width",
+              cssValue,
+            )
           }
         />
-        <NumberControl
+        <InspectorLengthControl
           label="H"
           ariaLabel="Element height"
-          value={px(props.computed?.height)}
+          value={height}
+          computedValue={props.computed?.height}
+          allowAuto
           min={0}
           max={10_000}
           disabled={props.disabled}
-          onPreview={(value) => props.onPreview({ height: `${value}px` })}
-          onChange={(value) =>
-            props.onCommit("height", `h-[${value}px]`, "height", value)
+          onPreview={(cssValue) => props.onPreview({ height: cssValue })}
+          onCommit={(cssValue) =>
+            props.onCommit(
+              "height",
+              inspectorLengthUtility("h", cssValue),
+              "height",
+              cssValue,
+            )
+          }
+        />
+        <InspectorLengthControl
+          label="Min W"
+          ariaLabel="Element minimum width"
+          value={minWidth}
+          computedValue={props.computed?.minWidth}
+          min={0}
+          max={10_000}
+          disabled={props.disabled}
+          onPreview={(cssValue) => props.onPreview({ "min-width": cssValue })}
+          onCommit={(cssValue) =>
+            props.onCommit(
+              "min-width",
+              inspectorLengthUtility("min-w", cssValue),
+              "minWidth",
+              cssValue,
+            )
+          }
+        />
+        <InspectorLengthControl
+          label="Min H"
+          ariaLabel="Element minimum height"
+          value={minHeight}
+          computedValue={props.computed?.minHeight}
+          min={0}
+          max={10_000}
+          disabled={props.disabled}
+          onPreview={(cssValue) => props.onPreview({ "min-height": cssValue })}
+          onCommit={(cssValue) =>
+            props.onCommit(
+              "min-height",
+              inspectorLengthUtility("min-h", cssValue),
+              "minHeight",
+              cssValue,
+            )
+          }
+        />
+        <InspectorLengthControl
+          label="Max W"
+          ariaLabel="Element maximum width"
+          value={maxWidth}
+          computedValue={props.computed?.maxWidth}
+          allowNone
+          min={0}
+          max={10_000}
+          disabled={props.disabled}
+          onPreview={(cssValue) => props.onPreview({ "max-width": cssValue })}
+          onCommit={(cssValue) =>
+            props.onCommit(
+              "max-width",
+              inspectorLengthUtility("max-w", cssValue),
+              "maxWidth",
+              cssValue,
+            )
+          }
+        />
+        <InspectorLengthControl
+          label="Max H"
+          ariaLabel="Element maximum height"
+          value={maxHeight}
+          computedValue={props.computed?.maxHeight}
+          allowNone
+          min={0}
+          max={10_000}
+          disabled={props.disabled}
+          onPreview={(cssValue) => props.onPreview({ "max-height": cssValue })}
+          onCommit={(cssValue) =>
+            props.onCommit(
+              "max-height",
+              inspectorLengthUtility("max-h", cssValue),
+              "maxHeight",
+              cssValue,
+            )
           }
         />
       </div>

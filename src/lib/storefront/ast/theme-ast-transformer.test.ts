@@ -43,6 +43,27 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(meta.defaultProps.heading).toBe("Objects for everyday rituals.");
   });
 
+  it("reuses parsed metadata per source identity and invalidates changed content", () => {
+    const first = parseComponentSource(SAMPLE_HERO_CODE, "components/Hero.tsx");
+    const sameSource = parseComponentSource(
+      SAMPLE_HERO_CODE,
+      "components/Hero.tsx",
+    );
+    const changedSource = parseComponentSource(
+      SAMPLE_HERO_CODE.replace("text-6xl", "text-7xl"),
+      "components/Hero.tsx",
+    );
+    const differentFile = parseComponentSource(
+      SAMPLE_HERO_CODE,
+      "components/Other.tsx",
+    );
+
+    expect(sameSource).toBe(first);
+    expect(changedSource).not.toBe(first);
+    expect(differentFile).not.toBe(first);
+    expect(changedSource.elements.heading.className).toContain("text-7xl");
+  });
+
   it("extracts exact tag name, className, and location across multi-line JSX", () => {
     const meta = parseComponentSource(SAMPLE_HERO_CODE);
     expect(meta.elements.heading).toBeDefined();

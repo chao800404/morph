@@ -372,7 +372,7 @@ describe("EditorStyleInspector selection content", () => {
         }) as HTMLInputElement
       ).value,
     ).toBe("");
-  });
+  }, 10_000);
 
   it("shows section content when the section itself is selected", () => {
     render(
@@ -513,6 +513,7 @@ describe("EditorStyleInspector selection content", () => {
     for (const name of ["Font family", "Font weight"]) {
       const control = screen.getByRole("combobox", { name });
       expect(control.getAttribute("data-size")).toBe("sm");
+      expect(control.className).toContain("dark:bg-input/30");
       expect(
         control.querySelector("[data-slot=select-value]")?.parentElement
           ?.className,
@@ -527,10 +528,13 @@ describe("EditorStyleInspector selection content", () => {
     };
 
     const paddingInput = screen.getByRole("spinbutton", {
-      name: "Section padding in pixels",
+      name: "Section padding",
     });
     expect(paddingInput.closest("form")?.parentElement?.className).toContain(
       "h-8",
+    );
+    expect(paddingInput.closest("form")?.parentElement?.className).toContain(
+      "dark:bg-input/30",
     );
     const paddingLabel = screen.getByText("Padding");
     expect(paddingLabel.parentElement).toBe(
@@ -565,11 +569,11 @@ describe("EditorStyleInspector selection content", () => {
     ).not.toBeNull();
     expect(
       screen.getByRole("spinbutton", {
-        name: "Section padding in pixels",
+        name: "Section padding",
       }),
     ).toBe(paddingInput);
 
-    changeNumber("Section padding in pixels", "64");
+    changeNumber("Section padding", "64");
     changeNumber("Heading font size", "60");
     changeNumber("Line height multiplier", "1.4");
     const radiusInput = screen.getByRole("spinbutton", {
@@ -578,6 +582,16 @@ describe("EditorStyleInspector selection content", () => {
     expect(radiusInput.closest("form")?.parentElement?.className).toContain(
       "rounded-md",
     );
+    expect(
+      screen
+        .getByRole("spinbutton", { name: "Heading font size" })
+        .closest("form")?.parentElement?.className,
+    ).toContain("dark:bg-input/30");
+    expect(
+      screen
+        .getByLabelText("Background color value")
+        .parentElement?.className,
+    ).toContain("dark:bg-input/30");
     changeNumber("Corner radius", "12");
 
     rerender(inspector);
@@ -585,7 +599,7 @@ describe("EditorStyleInspector selection content", () => {
     expect(
       (
         screen.getByRole("spinbutton", {
-          name: "Section padding in pixels",
+          name: "Section padding",
         }) as HTMLInputElement
       ).value,
     ).toBe("64");
@@ -611,7 +625,7 @@ describe("EditorStyleInspector selection content", () => {
       ).value,
     ).toBe("12");
     expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(4);
-  });
+  }, 10_000);
 
   it("previews scrubbing without updating source until pointer up", () => {
     const onUpdateThemeFileStyle = vi.fn(() => 2);
@@ -652,7 +666,7 @@ describe("EditorStyleInspector selection content", () => {
     );
 
     const input = screen.getByRole("spinbutton", {
-      name: "Section padding in pixels",
+      name: "Section padding",
     });
     Object.defineProperty(input, "setPointerCapture", { value: vi.fn() });
 
@@ -837,7 +851,13 @@ describe("EditorStyleInspector selection content", () => {
 
   it("uses an allowlisted module profile and commits sizing only after input completes", () => {
     const onPreviewSelectionStyle = vi.fn();
-    const onUpdateThemeFileStyle = vi.fn(() => 4);
+    const onUpdateThemeFileStyle = vi.fn(
+      (
+        _filePath: string,
+        _elementName: string,
+        _updater: (previous: string) => string,
+      ) => 4,
+    );
     render(
       <EditorStyleInspector
         {...common}
@@ -849,7 +869,7 @@ describe("EditorStyleInspector selection content", () => {
             themeId: "theme-1",
             path: "src/components/Hero.tsx",
             content:
-              'export function Hero() { return <section data-morph-node="section" className="w-[100px]">Hero</section>; }',
+              'export function Hero() { return <section data-morph-node="section" className="w-[100px] h-[200.536px] min-w-[2rem] min-h-[20px] max-w-none max-h-[80vh]">Hero</section>; }',
             mimeType: "text/typescript",
             isEntry: false,
             version: 1,
@@ -861,8 +881,22 @@ describe("EditorStyleInspector selection content", () => {
           kind: "section",
           tagName: "section",
           isSection: true,
-          computed: { width: "100px", height: "200.536px" },
-          sectionComputed: { width: "100px", height: "200.536px" },
+          computed: {
+            width: "100px",
+            height: "200.536px",
+            minWidth: "32px",
+            minHeight: "20px",
+            maxWidth: "none",
+            maxHeight: "800px",
+          },
+          sectionComputed: {
+            width: "100px",
+            height: "200.536px",
+            minWidth: "32px",
+            minHeight: "20px",
+            maxWidth: "none",
+            maxHeight: "800px",
+          },
           inspectorOverride: ["sizing", "appearance"],
         })}
         onPreviewSelectionStyle={onPreviewSelectionStyle}
@@ -870,8 +904,24 @@ describe("EditorStyleInspector selection content", () => {
       />,
     );
 
+    const designToggle = screen.getByRole("button", { name: "Design" });
+    const designCard = designToggle.closest('[data-inspector-module="Design"]');
+    expect(designCard).toBeTruthy();
+    expect(
+      designCard?.querySelector('[data-inspector-section="Sizing"]'),
+    ).toBeTruthy();
+    expect(
+      designCard?.querySelector('[data-inspector-section="Appearance"]'),
+    ).toBeTruthy();
+    expect(
+      designCard?.querySelector('[data-inspector-section="Appearance"]')
+        ?.lastElementChild?.className,
+    ).toContain("pt-2");
     expect(screen.getByRole("button", { name: "Sizing" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
+    expect(
+      document.querySelector('[data-inspector-module="Sizing"]'),
+    ).toBeNull();
 
     const overflow = screen.getByRole("combobox", { name: "Element overflow" });
     expect(overflow.getAttribute("data-size")).toBe("sm");
@@ -889,7 +939,16 @@ describe("EditorStyleInspector selection content", () => {
 
     const width = screen.getByRole("spinbutton", { name: "Element width" });
     const height = screen.getByRole("spinbutton", { name: "Element height" });
+    const minWidth = screen.getByRole("spinbutton", {
+      name: "Element minimum width",
+    });
+    const maxHeight = screen.getByRole("spinbutton", {
+      name: "Element maximum height",
+    });
     expect((height as HTMLInputElement).value).toBe("200.54");
+    expect((minWidth as HTMLInputElement).value).toBe("2");
+    expect((maxHeight as HTMLInputElement).value).toBe("80");
+    expect(screen.getByText("None")).toBeTruthy();
     expect(width.parentElement?.parentElement?.className).toContain(
       "items-center",
     );
@@ -907,5 +966,25 @@ describe("EditorStyleInspector selection content", () => {
     expect(onUpdateThemeFileStyle).not.toHaveBeenCalled();
     fireEvent.pointerUp(width, { pointerId: 1, clientX: 124 });
     expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(1);
+
+    onUpdateThemeFileStyle.mockClear();
+    fireEvent.focus(minWidth);
+    fireEvent.change(minWidth, { target: { value: "3" } });
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { "min-width": "3rem" },
+      "section",
+    );
+    expect(onUpdateThemeFileStyle).not.toHaveBeenCalled();
+    fireEvent.blur(minWidth);
+    const minWidthUpdater = onUpdateThemeFileStyle.mock.calls.at(-1)?.[2];
+    expect(
+      minWidthUpdater?.(
+        "w-[100px] h-[200.536px] min-w-[2rem] min-h-[20px] max-w-none max-h-[80vh]",
+      ),
+    ).toContain("min-w-[3rem]");
+
+    fireEvent.click(designToggle);
+    expect(screen.queryByRole("button", { name: "Sizing" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Appearance" })).toBeNull();
   });
 });

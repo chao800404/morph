@@ -91,6 +91,55 @@ Monaco 修改
 
 不得建立 Editor 專屬的第二份 component state 作為長期 persisted source。
 
+### 5.6 Preview selection 與 Inspector 效能
+
+Preview node selection 是高頻、延遲敏感的 editor interaction，必須保持在
+client-side editor selection state；只有可分享、可還原的語意狀態（例如實際切換
+section / template）才同步到 route search params。
+
+- 點選同一 section 內的不同 node 不得重複觸發相同的 route navigation。
+- 進入 Styles tab 時應啟用 canvas Select Mode；若此模式是由 tab 自動啟用，離開
+  Styles 時才恢復進入前狀態。使用者在 Styles 期間手動切換 toolbar mode 後，必須
+  尊重該選擇，不得由 effect 強制重新啟用或覆寫。
+- Canvas selection outline / overlay 必須先提供即時回饋，不得等待 AST parse、
+  Inspector module render、source save 或 route commit。
+- Inspector 不得因 node 或 section selection 改變而透過 React `key` 整棵
+  unmount / remount；應保留穩定 instance，讓 module 依自身輸入局部更新。
+- 收合或不適用的 Inspector module 不得建立完整 field control tree；內容應在
+  展開且 capability 適用時才 render。
+
+Source AST 是由 Theme Source 推導的資料，不是 selection state：
+
+- AST parse 結果必須以穩定的 source identity（至少包含 file path 與 content / source
+  revision）快取。
+- 同一份 source 內切換 node 必須重用 parse 結果；只有 source identity 改變才失效。
+- 不得為了避免 React render 而建立另一份可漂移的 AST/source truth；cache 只能是
+  可丟棄、可由目前 source 重建的 derived data。
+
+Preview DOM measurement 必須避免 layout thrashing：
+
+- 在同一 interaction frame 內先批次讀取 rect / computed style，再批次更新 overlay DOM。
+- 不得在迴圈或同一熱路徑中交錯 layout-affecting write 與 layout read。
+- computed-style snapshot 只收集目前 selection / Inspector capability 所需資料；不得把
+  source mutation、save 或 preview rebuild 塞進 selection click 的同步熱路徑。
+
+新增或調整 selection / Inspector 熱路徑時，必須用 React Profiler 或 browser
+Performance trace 比較修改前後，並至少覆蓋：同 section node 切換、跨 section 切換、
+source revision 變更後 cache 失效，以及快速連續 selection 的最新值正確性。
+
+Code Mode 的 Monaco 輸入同樣是高頻熱路徑：
+
+- 打字期間由 Monaco model 保存尚未確認的文字，不得把每個 keystroke 的完整檔案內容
+  寫入會讓 Editor shell、檔案樹、Preview 或 Inspector 訂閱的 React state / store slice。
+- dirty 狀態只在 clean → dirty 等語意狀態改變時通知 React；不得因內容每個字元不同而
+  重 render 整個 Code Workspace。
+- 切換檔案時必須保留各 Monaco model 的未儲存內容；關閉並 discard 時則還原該檔案的
+  server/source baseline。
+- Ctrl+S 或明確 Save 才把完整 model content 送入 Theme Source workspace、OCC save 與
+  Live Preview/source-derived UI 收斂流程。隱藏中的 Design Inspector 不得在打字期間重 parse AST。
+- Code Mode 輸入效能回歸至少要覆蓋：連續輸入不逐字通知外層、dirty 只通知一次、切檔保留
+  draft、Save 使用最新 model content，以及 discard 不保留舊 draft。
+
 ---
 
 ## 6. Page / Template Content Authoring

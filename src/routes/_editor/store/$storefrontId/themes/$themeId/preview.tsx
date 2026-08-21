@@ -757,39 +757,48 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
+      // Measure every target before mutating either overlay. Keeping the reads
+      // together avoids a selected-overlay write forcing the following hover
+      // measurement to synchronously recalculate layout.
+      const selectedElementForOverlay = selectedItem?.element ?? null;
+      const selectedBounds =
+        selectedElementForOverlay &&
+        !overlaySettler?.isFrozen() &&
+        document.body.contains(selectedElementForOverlay)
+          ? selectedElementForOverlay.getBoundingClientRect()
+          : null;
+      const hoverElementForOverlay = hoveredItem?.element ?? null;
+      const hoverBounds =
+        hoverElementForOverlay &&
+        document.body.contains(hoverElementForOverlay) &&
+        hoverElementForOverlay !== selectedElementForOverlay
+          ? hoverElementForOverlay.getBoundingClientRect()
+          : null;
+
       // Keep the last stable selected geometry while live authoring replaces
       // the selected DOM node. The settled pass below rebinds its identity and
       // measures the final element once.
       if (selectedItem && overlaySettler?.isFrozen()) {
         selectedOverlay.style.display = "block";
         selectedLabel.textContent = selectedItem.label;
-      } else if (
-        selectedItem?.element &&
-        document.body.contains(selectedItem.element)
-      ) {
-        const sBounds = selectedItem.element.getBoundingClientRect();
+      } else if (selectedItem && selectedBounds) {
         selectedOverlay.style.display = "block";
-        selectedOverlay.style.left = `${sBounds.left}px`;
-        selectedOverlay.style.top = `${sBounds.top}px`;
-        selectedOverlay.style.width = `${sBounds.width}px`;
-        selectedOverlay.style.height = `${sBounds.height}px`;
+        selectedOverlay.style.left = `${selectedBounds.left}px`;
+        selectedOverlay.style.top = `${selectedBounds.top}px`;
+        selectedOverlay.style.width = `${selectedBounds.width}px`;
+        selectedOverlay.style.height = `${selectedBounds.height}px`;
         selectedLabel.textContent = selectedItem.label;
       } else {
         selectedOverlay.style.display = "none";
       }
 
       // 2. Position Hover Overlay (dashed + mask, hidden if hovering over selected item)
-      if (
-        hoveredItem?.element &&
-        document.body.contains(hoveredItem.element) &&
-        hoveredItem.element !== selectedItem?.element
-      ) {
-        const hBounds = hoveredItem.element.getBoundingClientRect();
+      if (hoveredItem && hoverBounds) {
         hoverOverlay.style.display = "block";
-        hoverOverlay.style.left = `${hBounds.left}px`;
-        hoverOverlay.style.top = `${hBounds.top}px`;
-        hoverOverlay.style.width = `${hBounds.width}px`;
-        hoverOverlay.style.height = `${hBounds.height}px`;
+        hoverOverlay.style.left = `${hoverBounds.left}px`;
+        hoverOverlay.style.top = `${hoverBounds.top}px`;
+        hoverOverlay.style.width = `${hoverBounds.width}px`;
+        hoverOverlay.style.height = `${hoverBounds.height}px`;
         hoverLabel.textContent = hoveredItem.label;
       } else {
         hoverOverlay.style.display = "none";
@@ -965,27 +974,35 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       const selectable = resolveSelectable(event.target);
       if (!selectable) return;
 
-      selectedElement?.removeAttribute("data-storefront-editor-selected");
+      // Read the style snapshots before updating selection markers or overlay
+      // DOM so this click does not become a write -> layout read cycle.
+      const computedStyle = selectable.sectionId
+        ? selectionStyleSnapshot(window.getComputedStyle(selectable.element))
+        : null;
+      const parentComputedStyle = selectable.sectionId
+        ? selectionStyleSnapshot(
+            window.getComputedStyle(
+              selectable.element.parentElement ?? selectable.element,
+            ),
+          )
+        : null;
+      const sectionComputedStyle = selectable.sectionId
+        ? selectionStyleSnapshot(
+            window.getComputedStyle(selectable.section ?? selectable.element),
+          )
+        : null;
+      const previousSelectedElement = selectedElement;
       selectedElement = selectable.element;
-      selectedElement.dataset.storefrontEditorSelected = "true";
       selectedItem = selectable;
       selectedSectionId = selectable.sectionId;
 
       positionOverlays();
+      previousSelectedElement?.removeAttribute(
+        "data-storefront-editor-selected",
+      );
+      selectedElement.dataset.storefrontEditorSelected = "true";
 
       if (selectable.sectionId) {
-        const computedStyle = selectionStyleSnapshot(
-          window.getComputedStyle(selectable.element),
-        );
-        const parentComputedStyle = selectionStyleSnapshot(
-          window.getComputedStyle(
-            selectable.element.parentElement ?? selectable.element,
-          ),
-        );
-        const sectionComputedStyle = selectionStyleSnapshot(
-          window.getComputedStyle(selectable.section ?? selectable.element),
-        );
-
         const morphNodeId =
           selectable.element.getAttribute("data-morph-node") ||
           selectable.element.dataset.morphNode ||
