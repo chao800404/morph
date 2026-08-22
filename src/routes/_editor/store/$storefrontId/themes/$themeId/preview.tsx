@@ -19,6 +19,11 @@ import {
   SELECTION_STYLE_APPLIED_EVENT,
   selectionStylePreviewNeedsOverlayUpdate,
 } from "@/lib/storefront/editor/selection-style-preview";
+import {
+  parseEditorToPreviewMessage,
+  postPreviewToEditorMessage,
+  type PreviewStyleSnapshot,
+} from "@/lib/storefront/editor/preview-protocol";
 
 const PREVIEW_GEOMETRY_MUTATION_MESSAGES = new Set([
   "morph:storefront-preview-update-theme-files",
@@ -26,7 +31,9 @@ const PREVIEW_GEOMETRY_MUTATION_MESSAGES = new Set([
   "morph:storefront-preview-set-section-order",
 ]);
 
-function selectionStyleSnapshot(computed: CSSStyleDeclaration) {
+function selectionStyleSnapshot(
+  computed: CSSStyleDeclaration,
+): PreviewStyleSnapshot {
   return {
     fontSize: computed.fontSize,
     lineHeight: computed.lineHeight,
@@ -197,72 +204,49 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
 
   useEffect(() => {
     const handleThemeFileMessage = (event: MessageEvent<unknown>) => {
-      const message = event.data;
-      if (
-        event.origin !== window.location.origin ||
-        event.source !== window.parent ||
-        typeof message !== "object" ||
-        message === null ||
-        !("type" in message)
-      ) {
-        return;
-      }
+      const message =
+        event.origin === window.location.origin &&
+        event.source === window.parent
+          ? parseEditorToPreviewMessage(event.data)
+          : null;
+      if (!message) return;
 
       if (
         message.type === "morph:storefront-preview-update-theme-files" &&
-        "files" in message &&
         Array.isArray(message.files)
       ) {
         hasReceivedEditorFilesRef.current = true;
-        setThemeFiles(
-          message.files as Array<{ path: string; content: string }>,
-        );
-        if (
-          "styleRevision" in message &&
-          typeof message.styleRevision === "number" &&
-          Number.isSafeInteger(message.styleRevision) &&
-          message.styleRevision >= 0
-        ) {
-          latestRequestedStyleRevisionRef.current = message.styleRevision;
-          setStyleRevision(message.styleRevision);
-        }
-        if (
-          "sourceGeneration" in message &&
-          typeof message.sourceGeneration === "number"
-        ) {
+        setThemeFiles(message.files);
+        latestRequestedStyleRevisionRef.current = message.styleRevision;
+        setStyleRevision(message.styleRevision);
+        if (typeof message.sourceGeneration === "number") {
           setSourceGeneration(message.sourceGeneration);
         }
       }
     };
 
     window.addEventListener("message", handleThemeFileMessage);
-    window.parent.postMessage(
-      { type: "morph:storefront-preview-ready" },
-      window.location.origin,
-    );
+    postPreviewToEditorMessage({ type: "morph:storefront-preview-ready" });
     return () => window.removeEventListener("message", handleThemeFileMessage);
   }, []);
 
-  const acknowledgeStyleRevision = useCallback((
-    appliedRevision: number,
-    didApplySource: boolean,
-  ) => {
-    if (latestRequestedStyleRevisionRef.current !== appliedRevision) return;
-    if (didApplySource) {
-      window.dispatchEvent(new Event(SELECTION_STYLE_APPLIED_EVENT));
-      document.documentElement.dataset.storefrontStyleRevision =
-        String(appliedRevision);
-    }
-    window.parent.postMessage(
-      {
+  const acknowledgeStyleRevision = useCallback(
+    (appliedRevision: number, didApplySource: boolean) => {
+      if (latestRequestedStyleRevisionRef.current !== appliedRevision) return;
+      if (didApplySource) {
+        window.dispatchEvent(new Event(SELECTION_STYLE_APPLIED_EVENT));
+        document.documentElement.dataset.storefrontStyleRevision =
+          String(appliedRevision);
+      }
+      postPreviewToEditorMessage({
         type: didApplySource
           ? "morph:storefront-preview-theme-files-applied"
           : "morph:storefront-preview-theme-files-failed",
         styleRevision: appliedRevision,
-      },
-      window.location.origin,
-    );
-  }, []);
+      });
+    },
+    [],
+  );
 
   return {
     themeFiles,
@@ -281,20 +265,15 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
 
   useEffect(() => {
     const handlePreviewMessages = (event: MessageEvent<unknown>) => {
-      const message = event.data;
-      if (
-        event.origin !== window.location.origin ||
-        event.source !== window.parent ||
-        typeof message !== "object" ||
-        message === null ||
-        !("type" in message)
-      ) {
-        return;
-      }
+      const message =
+        event.origin === window.location.origin &&
+        event.source === window.parent
+          ? parseEditorToPreviewMessage(event.data)
+          : null;
+      if (!message) return;
 
       if (
         message.type === "morph:storefront-preview-set-section-order" &&
-        "sectionIds" in message &&
         Array.isArray(message.sectionIds) &&
         message.sectionIds.every((id) => typeof id === "string")
       ) {
@@ -321,14 +300,9 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
 
       if (
         message.type === "morph:storefront-preview-update-section-props" &&
-        "sectionId" in message &&
         typeof message.sectionId === "string"
       ) {
-        const { sectionId, props, enabled } = message as {
-          sectionId: string;
-          props?: Record<string, unknown>;
-          enabled?: boolean;
-        };
+        const { sectionId, props, enabled } = message;
 
         setPreviewDocument((current) => {
           if (!current) return current;
@@ -343,7 +317,7 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
                 props: {
                   ...section.props,
                   ...(props ?? {}),
-                } as Record<string, any>,
+                },
               };
             }),
           };
@@ -368,6 +342,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       html[data-storefront-editor-selection-enabled="true"] [data-storefront-section-id],
       html[data-storefront-editor-selection-enabled="true"] [data-storefront-component] {
         cursor: pointer !important;
+      }
+      html[data-storefront-editor-selection-enabled="true"] [data-storefront-editor-selected][draggable="true"] {
+        cursor: move !important;
       }
       html[data-storefront-editor-pan-enabled="true"],
       html[data-storefront-editor-pan-enabled="true"] body,
@@ -402,6 +379,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       position: "absolute",
       left: "-2px",
       bottom: "100%",
+      display: "inline-flex",
+      alignItems: "baseline",
+      gap: "5px",
       padding: "3px 7px",
       borderRadius: "4px 4px 0 0",
       background: "hsl(217 91% 60%)",
@@ -410,7 +390,19 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       letterSpacing: "0.01em",
       whiteSpace: "nowrap",
     });
+    const selectedLabelName = document.createElement("span");
+    const selectedLabelTag = document.createElement("span");
+    Object.assign(selectedLabelTag.style, {
+      fontFamily:
+        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontSize: "0.86em",
+      fontWeight: "500",
+      opacity: "0.72",
+    });
+    selectedLabel.appendChild(selectedLabelName);
+    selectedLabel.appendChild(selectedLabelTag);
     selectedOverlay.appendChild(selectedLabel);
+
     document.body.appendChild(selectedOverlay);
 
     // 2. Hover Overlay (1.5px dashed border, Light blue transparent mask, Subtle badge)
@@ -432,6 +424,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       position: "absolute",
       left: "-1.5px",
       bottom: "100%",
+      display: "inline-flex",
+      alignItems: "baseline",
+      gap: "4px",
       padding: "2px 6px",
       borderRadius: "3px 3px 0 0",
       background: "hsl(217 91% 60% / 0.85)",
@@ -440,8 +435,33 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       letterSpacing: "0.01em",
       whiteSpace: "nowrap",
     });
+    const hoverLabelName = document.createElement("span");
+    const hoverLabelTag = document.createElement("span");
+    Object.assign(hoverLabelTag.style, {
+      fontFamily:
+        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontSize: "0.86em",
+      fontWeight: "500",
+      opacity: "0.68",
+    });
+    hoverLabel.appendChild(hoverLabelName);
+    hoverLabel.appendChild(hoverLabelTag);
     hoverOverlay.appendChild(hoverLabel);
     document.body.appendChild(hoverOverlay);
+
+    const reorderTargetOverlay = document.createElement("div");
+    reorderTargetOverlay.setAttribute("aria-hidden", "true");
+    Object.assign(reorderTargetOverlay.style, {
+      position: "fixed",
+      zIndex: "2147483647",
+      display: "none",
+      pointerEvents: "none",
+      border: "2px dashed hsl(142 71% 45%)",
+      background: "hsl(142 71% 45% / 0.1)",
+      boxSizing: "border-box",
+      borderRadius: "3px",
+    });
+    document.body.appendChild(reorderTargetOverlay);
 
     type SelectableInfo = {
       element: HTMLElement;
@@ -459,6 +479,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const selectionMetadata = (item: SelectableInfo) => {
+      const sourceElement = item.element.closest<HTMLElement>(
+        "[data-morph-source-file]",
+      );
       const kind = selectionKindFromElement({
         component: item.type,
         morphElement: item.elementKey,
@@ -469,6 +492,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       });
       return {
         kind,
+        sourceFilePath:
+          sourceElement?.dataset.morphSourceFile ??
+          item.section?.dataset.morphSourceFile ??
+          null,
         tagName: item.tagName,
         role: item.role,
         inputType: item.inputType,
@@ -493,6 +520,27 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       captureTarget: Element;
     } | null = null;
     let suppressNextClick = false;
+    let managedDraggableElement: HTMLElement | null = null;
+    let managedDraggableAttribute: string | null = null;
+    let overlayPositionFrame = 0;
+    let reorderGesture: {
+      dragged: HTMLElement;
+      parent: HTMLElement;
+      sectionId: string;
+      sourceFilePath: string;
+      draggedNodeId: string;
+      target: HTMLElement | null;
+      targetNodeId: string | null;
+    } | null = null;
+
+    const updateOverlayLabel = (
+      nameElement: HTMLElement,
+      tagElement: HTMLElement,
+      item: SelectableInfo,
+    ) => {
+      nameElement.textContent = item.label;
+      tagElement.textContent = `<${item.tagName}>`;
+    };
 
     const getComponentDisplayName = (type: string): string => {
       switch (type.toLowerCase()) {
@@ -750,6 +798,107 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       return null;
     };
 
+    const sourceFilePathFor = (element: HTMLElement) =>
+      element.closest<HTMLElement>("[data-morph-source-file]")?.dataset
+        .morphSourceFile ??
+      element.closest<HTMLElement>("[data-storefront-section-id]")?.dataset
+        .morphSourceFile ??
+      null;
+
+    const isUniqueMorphNode = (element: HTMLElement, nodeId: string) => {
+      const sourcePath = sourceFilePathFor(element);
+      if (!sourcePath) return false;
+      const scope =
+        element.closest<HTMLElement>("[data-storefront-section-id]") ??
+        document;
+      return (
+        Array.from(
+          scope.querySelectorAll<HTMLElement>(
+            `[data-morph-node="${CSS.escape(nodeId)}"]`,
+          ),
+        ).filter((candidate) => sourceFilePathFor(candidate) === sourcePath)
+          .length === 1
+      );
+    };
+
+    const reorderIdentity = (element: HTMLElement) => {
+      const nodeId = element.dataset.morphNode;
+      const parent = element.parentElement;
+      const section = element.closest<HTMLElement>(
+        "[data-storefront-section-id]",
+      );
+      const sectionId = section?.dataset.storefrontSectionId;
+      const sourceFilePath = sourceFilePathFor(element);
+      if (
+        !nodeId ||
+        !parent ||
+        !sectionId ||
+        !sourceFilePath ||
+        element === section ||
+        !isUniqueMorphNode(element, nodeId)
+      ) {
+        return null;
+      }
+      return { nodeId, parent, sectionId, sourceFilePath };
+    };
+
+    const restoreManagedDraggable = () => {
+      if (!managedDraggableElement) return;
+      if (managedDraggableAttribute === null) {
+        managedDraggableElement.removeAttribute("draggable");
+      } else {
+        managedDraggableElement.setAttribute(
+          "draggable",
+          managedDraggableAttribute,
+        );
+      }
+      managedDraggableElement = null;
+      managedDraggableAttribute = null;
+    };
+
+    const syncSelectedDraggable = () => {
+      restoreManagedDraggable();
+      if (!selectionEnabled || !selectedElement) return;
+      if (!reorderIdentity(selectedElement)) return;
+      managedDraggableElement = selectedElement;
+      managedDraggableAttribute = selectedElement.getAttribute("draggable");
+      selectedElement.setAttribute("draggable", "true");
+    };
+
+    const directReorderTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement) || !reorderGesture) return null;
+      let candidate: HTMLElement | null = target;
+      while (candidate && candidate.parentElement !== reorderGesture.parent) {
+        candidate = candidate.parentElement;
+      }
+      if (!candidate || candidate === reorderGesture.dragged) return null;
+      const identity = reorderIdentity(candidate);
+      if (
+        !identity ||
+        identity.parent !== reorderGesture.parent ||
+        identity.sectionId !== reorderGesture.sectionId ||
+        identity.sourceFilePath !== reorderGesture.sourceFilePath
+      ) {
+        return null;
+      }
+      return { element: candidate, nodeId: identity.nodeId };
+    };
+
+    const positionReorderTarget = (element: HTMLElement | null) => {
+      if (!element || !document.body.contains(element)) {
+        reorderTargetOverlay.style.display = "none";
+        return;
+      }
+      const rect = element.getBoundingClientRect();
+      Object.assign(reorderTargetOverlay.style, {
+        display: "block",
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+      });
+    };
+
     const positionOverlays = () => {
       if (!selectionEnabled) {
         hoverOverlay.style.display = "none";
@@ -780,14 +929,14 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       // measures the final element once.
       if (selectedItem && overlaySettler?.isFrozen()) {
         selectedOverlay.style.display = "block";
-        selectedLabel.textContent = selectedItem.label;
+        updateOverlayLabel(selectedLabelName, selectedLabelTag, selectedItem);
       } else if (selectedItem && selectedBounds) {
         selectedOverlay.style.display = "block";
         selectedOverlay.style.left = `${selectedBounds.left}px`;
         selectedOverlay.style.top = `${selectedBounds.top}px`;
         selectedOverlay.style.width = `${selectedBounds.width}px`;
         selectedOverlay.style.height = `${selectedBounds.height}px`;
-        selectedLabel.textContent = selectedItem.label;
+        updateOverlayLabel(selectedLabelName, selectedLabelTag, selectedItem);
       } else {
         selectedOverlay.style.display = "none";
       }
@@ -799,10 +948,18 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         hoverOverlay.style.top = `${hoverBounds.top}px`;
         hoverOverlay.style.width = `${hoverBounds.width}px`;
         hoverOverlay.style.height = `${hoverBounds.height}px`;
-        hoverLabel.textContent = hoveredItem.label;
+        updateOverlayLabel(hoverLabelName, hoverLabelTag, hoveredItem);
       } else {
         hoverOverlay.style.display = "none";
       }
+    };
+
+    const schedulePositionOverlays = () => {
+      if (overlayPositionFrame !== 0) return;
+      overlayPositionFrame = requestAnimationFrame(() => {
+        overlayPositionFrame = 0;
+        positionOverlays();
+      });
     };
 
     const findCurrentSelectedElement = (): HTMLElement | null => {
@@ -855,6 +1012,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       const nextElement = findCurrentSelectedElement();
       selectedElement?.removeAttribute("data-storefront-editor-selected");
       if (!nextElement) {
+        restoreManagedDraggable();
         selectedElement = null;
         selectedItem = null;
         return;
@@ -863,6 +1021,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       selectedElement = nextElement;
       selectedElement.dataset.storefrontEditorSelected = "true";
       selectedItem = resolveSelectable(nextElement);
+      syncSelectedDraggable();
     };
 
     const rebindAndPositionSelectedOverlay = () => {
@@ -882,16 +1041,13 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             event.screenY - panGesture.startScreenY,
           ) >= 3;
         event.preventDefault();
-        window.parent.postMessage(
-          {
-            type: "morph:storefront-preview-pointer",
-            phase: "move",
-            pointerId: event.pointerId,
-            screenX: event.screenX,
-            screenY: event.screenY,
-          },
-          window.location.origin,
-        );
+        postPreviewToEditorMessage({
+          type: "morph:storefront-preview-pointer",
+          phase: "move",
+          pointerId: event.pointerId,
+          screenX: event.screenX,
+          screenY: event.screenY,
+        });
         return;
       }
       if (!selectionEnabled) return;
@@ -922,16 +1078,13 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         didMove: false,
         captureTarget: event.target,
       };
-      window.parent.postMessage(
-        {
-          type: "morph:storefront-preview-pointer",
-          phase: "down",
-          pointerId: event.pointerId,
-          screenX: event.screenX,
-          screenY: event.screenY,
-        },
-        window.location.origin,
-      );
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-pointer",
+        phase: "down",
+        pointerId: event.pointerId,
+        screenX: event.screenX,
+        screenY: event.screenY,
+      });
       document.documentElement.setAttribute(
         "data-storefront-editor-panning",
         "true",
@@ -941,16 +1094,13 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     const finishPanGesture = (event: PointerEvent) => {
       if (panGesture?.pointerId !== event.pointerId) return;
       suppressNextClick = panGesture.didMove;
-      window.parent.postMessage(
-        {
-          type: "morph:storefront-preview-pointer",
-          phase: event.type === "pointercancel" ? "cancel" : "up",
-          pointerId: event.pointerId,
-          screenX: event.screenX,
-          screenY: event.screenY,
-        },
-        window.location.origin,
-      );
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-pointer",
+        phase: event.type === "pointercancel" ? "cancel" : "up",
+        pointerId: event.pointerId,
+        screenX: event.screenX,
+        screenY: event.screenY,
+      });
       if (panGesture.captureTarget.hasPointerCapture(event.pointerId)) {
         panGesture.captureTarget.releasePointerCapture(event.pointerId);
       }
@@ -967,6 +1117,12 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           event.stopPropagation();
           suppressNextClick = false;
         }
+        return;
+      }
+      if (suppressNextClick) {
+        event.preventDefault();
+        event.stopPropagation();
+        suppressNextClick = false;
         return;
       }
       event.preventDefault();
@@ -1001,6 +1157,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         "data-storefront-editor-selected",
       );
       selectedElement.dataset.storefrontEditorSelected = "true";
+      syncSelectedDraggable();
 
       if (selectable.sectionId) {
         const morphNodeId =
@@ -1008,29 +1165,25 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           selectable.element.dataset.morphNode ||
           undefined;
 
-        window.parent.postMessage(
-          {
-            type: "morph:storefront-preview-select-section",
-            sectionId: selectable.sectionId,
-            componentType: selectable.type,
-            nodeId: morphNodeId,
-            elementKey: selectable.elementKey,
-            fieldKey: selectable.fieldKey,
-            field: selectable.fieldKey ?? selectable.elementKey,
-            ...selectionMetadata(selectable),
-            styleRevision: Number(
-              document.documentElement.dataset.storefrontStyleRevision ?? 0,
-            ),
-            className: selectable.element.getAttribute("class") ?? "",
-            isSection: selectable.element === selectable.section,
-            inspectorOverride:
-              selectable.element.dataset.morphInspector ?? null,
-            computedStyle,
-            parentComputedStyle,
-            sectionComputedStyle,
-          },
-          window.location.origin,
-        );
+        postPreviewToEditorMessage({
+          type: "morph:storefront-preview-select-section",
+          sectionId: selectable.sectionId,
+          componentType: selectable.type,
+          nodeId: morphNodeId,
+          elementKey: selectable.elementKey,
+          fieldKey: selectable.fieldKey,
+          field: selectable.fieldKey ?? selectable.elementKey,
+          ...selectionMetadata(selectable),
+          styleRevision: Number(
+            document.documentElement.dataset.storefrontStyleRevision ?? 0,
+          ),
+          className: selectable.element.getAttribute("class") ?? "",
+          isSection: selectable.element === selectable.section,
+          inspectorOverride: selectable.element.dataset.morphInspector ?? null,
+          computedStyle,
+          parentComputedStyle,
+          sectionComputedStyle,
+        });
       }
     };
 
@@ -1038,33 +1191,103 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       if (selectionEnabled) return;
       event.preventDefault();
       event.stopPropagation();
-      window.parent.postMessage(
-        { type: "morph:storefront-preview-reset-canvas" },
-        window.location.origin,
-      );
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-reset-canvas",
+      });
     };
 
     const handleDragStart = (event: DragEvent) => {
-      if (!selectionEnabled) event.preventDefault();
+      if (!selectionEnabled || !selectedElement) {
+        event.preventDefault();
+        return;
+      }
+      const identity = reorderIdentity(selectedElement);
+      const dragOrigin =
+        event.target instanceof HTMLElement
+          ? event.target.closest<HTMLElement>("[draggable=true]")
+          : null;
+      if (!identity || dragOrigin !== selectedElement) {
+        event.preventDefault();
+        return;
+      }
+      reorderGesture = {
+        dragged: selectedElement,
+        parent: identity.parent,
+        sectionId: identity.sectionId,
+        sourceFilePath: identity.sourceFilePath,
+        draggedNodeId: identity.nodeId,
+        target: null,
+        targetNodeId: null,
+      };
+      event.dataTransfer?.setData("text/plain", identity.nodeId);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    };
+
+    const handleDragOver = (event: DragEvent) => {
+      if (!reorderGesture) return;
+      const target = directReorderTarget(event.target);
+      if (!target) {
+        reorderGesture.target = null;
+        reorderGesture.targetNodeId = null;
+        positionReorderTarget(null);
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      reorderGesture.target = target.element;
+      reorderGesture.targetNodeId = target.nodeId;
+      positionReorderTarget(target.element);
+    };
+
+    const handleDrop = (event: DragEvent) => {
+      if (!reorderGesture) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const gesture = reorderGesture;
+      const target = directReorderTarget(event.target);
+      reorderGesture = null;
+      positionReorderTarget(null);
+      suppressNextClick = true;
+      if (!target) return;
+
+      const marker = document.createComment("morph-reorder");
+      gesture.dragged.replaceWith(marker);
+      target.element.replaceWith(gesture.dragged);
+      marker.replaceWith(target.element);
+      selectedElement = gesture.dragged;
+      selectedItem = resolveSelectable(gesture.dragged);
+      syncSelectedDraggable();
+      positionOverlays();
+
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-commit-sibling-reorder",
+        sectionId: gesture.sectionId,
+        sourceFilePath: gesture.sourceFilePath,
+        draggedNodeId: gesture.draggedNodeId,
+        targetNodeId: target.nodeId,
+      });
+    };
+
+    const handleDragEnd = () => {
+      reorderGesture = null;
+      positionReorderTarget(null);
     };
 
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
-      window.parent.postMessage(
-        {
-          type: "morph:storefront-preview-wheel",
-          deltaY: event.deltaY,
-          deltaMode: event.deltaMode,
-          ctrlKey: event.ctrlKey,
-          clientX: event.clientX,
-          clientY: event.clientY,
-        },
-        window.location.origin,
-      );
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-wheel",
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        ctrlKey: event.ctrlKey,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
     };
 
     const restoreSelectedSection = () => {
       selectedElement?.removeAttribute("data-storefront-editor-selected");
+      restoreManagedDraggable();
       if (selectionEnabled && selectedSectionId) {
         const sectionEl = document.querySelector<HTMLElement>(
           `[data-storefront-section-id="${CSS.escape(selectedSectionId)}"]`,
@@ -1083,35 +1306,32 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         selectedItem = null;
       }
       positionOverlays();
+      syncSelectedDraggable();
     };
 
     const handleEditorMessage = (event: MessageEvent<unknown>) => {
+      const message =
+        event.origin === window.location.origin &&
+        event.source === window.parent
+          ? parseEditorToPreviewMessage(event.data)
+          : null;
+      if (!message) return;
+
       if (
-        event.origin !== window.location.origin ||
-        event.source !== window.parent ||
-        typeof event.data !== "object" ||
-        event.data === null ||
-        !("type" in event.data) ||
-        typeof event.data.type !== "string"
+        message.type ===
+        "morph:storefront-preview-reset-selection-style-preview"
       ) {
+        selectionStylePreview.restore();
+        positionOverlays();
         return;
       }
 
       if (
-        event.data.type === "morph:storefront-preview-update-selection-field" &&
-        "fieldKey" in event.data &&
-        typeof event.data.fieldKey === "string" &&
-        event.data.fieldKey.length <= 100 &&
-        "value" in event.data &&
-        typeof event.data.value === "string" &&
-        event.data.value.length <= 10_000 &&
+        message.type === "morph:storefront-preview-update-selection-field" &&
         selectedItem
       ) {
         const scope = selectedItem.section ?? document;
-        const fieldPath =
-          "fieldPath" in event.data && typeof event.data.fieldPath === "string"
-            ? event.data.fieldPath
-            : null;
+        const fieldPath = message.fieldPath;
         const target =
           (fieldPath
             ? scope.querySelector<HTMLElement>(
@@ -1119,36 +1339,30 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
               )
             : null) ??
           scope.querySelector<HTMLElement>(
-            `[data-storefront-field="${CSS.escape(event.data.fieldKey)}"]`,
+            `[data-storefront-field="${CSS.escape(message.fieldKey)}"]`,
           ) ??
-          (selectedItem.fieldKey === event.data.fieldKey
+          (selectedItem.fieldKey === message.fieldKey
             ? selectedItem.element
             : null);
         if (!target) return;
-        if (event.data.fieldKey === "imageSrc") {
-          target.setAttribute("src", event.data.value);
-        } else if (event.data.fieldKey === "imageAlt") {
-          target.setAttribute("alt", event.data.value);
-        } else if (event.data.fieldKey === "actionHref") {
-          target.setAttribute("href", event.data.value);
+        if (message.fieldKey === "imageSrc") {
+          target.setAttribute("src", message.value);
+        } else if (message.fieldKey === "imageAlt") {
+          target.setAttribute("alt", message.value);
+        } else if (message.fieldKey === "actionHref") {
+          target.setAttribute("href", message.value);
         } else {
-          target.textContent = event.data.value;
+          target.textContent = message.value;
         }
         positionOverlays();
         return;
       }
 
       if (
-        event.data.type === "morph:storefront-preview-update-selection-style" &&
-        "styles" in event.data &&
-        typeof event.data.styles === "object" &&
-        event.data.styles !== null &&
-        "targetElement" in event.data &&
-        typeof event.data.targetElement === "string" &&
-        event.data.targetElement.length <= 100 &&
+        message.type === "morph:storefront-preview-update-selection-style" &&
         selectedItem?.element
       ) {
-        const targetKey = event.data.targetElement;
+        const targetKey = message.targetElement;
         const scope = selectedItem.section ?? document;
         const previewTarget =
           targetKey === "section" || targetKey === "root"
@@ -1161,7 +1375,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
                 ? selectedItem.element
                 : null));
         if (!previewTarget) return;
-        const previewStyles = event.data.styles as Record<string, string>;
+        const previewStyles = message.styles;
         selectionStylePreview.apply(previewTarget, previewStyles);
         if (selectionStylePreviewNeedsOverlayUpdate(previewStyles)) {
           positionOverlays();
@@ -1169,14 +1383,12 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
-      if (PREVIEW_GEOMETRY_MUTATION_MESSAGES.has(event.data.type)) {
+      if (PREVIEW_GEOMETRY_MUTATION_MESSAGES.has(message.type)) {
         overlaySettler?.freezeUntilSettled();
         return;
       }
 
-      if (
-        event.data.type === "morph:storefront-preview-request-selection-style"
-      ) {
+      if (message.type === "morph:storefront-preview-request-selection-style") {
         if (overlaySettler?.isFrozen()) rebindSelectedElement();
         if (selectedItem?.sectionId) {
           const computedStyle = selectionStyleSnapshot(
@@ -1192,44 +1404,35 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
               selectedItem.section ?? selectedItem.element,
             ),
           );
-          window.parent.postMessage(
-            {
-              type: "morph:storefront-preview-select-section",
-              sectionId: selectedItem.sectionId,
-              componentType: selectedItem.type,
-              nodeId:
-                selectedItem.element.getAttribute("data-morph-node") ||
-                selectedItem.element.dataset.morphNode ||
-                undefined,
-              elementKey: selectedItem.elementKey,
-              fieldKey: selectedItem.fieldKey,
-              field: selectedItem.fieldKey ?? selectedItem.elementKey,
-              ...selectionMetadata(selectedItem),
-              styleRevision: Number(
-                document.documentElement.dataset.storefrontStyleRevision ?? 0,
-              ),
-              className: selectedItem.element.getAttribute("class") ?? "",
-              isSection: selectedItem.element === selectedItem.section,
-              inspectorOverride:
-                selectedItem.element.dataset.morphInspector ?? null,
-              computedStyle,
-              parentComputedStyle,
-              sectionComputedStyle,
-            },
-            window.location.origin,
-          );
+          postPreviewToEditorMessage({
+            type: "morph:storefront-preview-select-section",
+            sectionId: selectedItem.sectionId,
+            componentType: selectedItem.type,
+            nodeId:
+              selectedItem.element.getAttribute("data-morph-node") ||
+              selectedItem.element.dataset.morphNode ||
+              undefined,
+            elementKey: selectedItem.elementKey,
+            fieldKey: selectedItem.fieldKey,
+            field: selectedItem.fieldKey ?? selectedItem.elementKey,
+            ...selectionMetadata(selectedItem),
+            styleRevision: Number(
+              document.documentElement.dataset.storefrontStyleRevision ?? 0,
+            ),
+            className: selectedItem.element.getAttribute("class") ?? "",
+            isSection: selectedItem.element === selectedItem.section,
+            inspectorOverride:
+              selectedItem.element.dataset.morphInspector ?? null,
+            computedStyle,
+            parentComputedStyle,
+            sectionComputedStyle,
+          });
         }
         return;
       }
 
-      if (event.data.type === "morph:storefront-preview-set-selection-mode") {
-        if (
-          !("enabled" in event.data) ||
-          typeof event.data.enabled !== "boolean"
-        ) {
-          return;
-        }
-        selectionEnabled = event.data.enabled;
+      if (message.type === "morph:storefront-preview-set-selection-mode") {
+        selectionEnabled = message.enabled;
         document.documentElement.toggleAttribute(
           "data-storefront-editor-selection-enabled",
           selectionEnabled,
@@ -1244,16 +1447,11 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
-      if (
-        event.data.type !== "morph:storefront-preview-set-section" ||
-        !("sectionId" in event.data) ||
-        (typeof event.data.sectionId !== "string" &&
-          event.data.sectionId !== null)
-      ) {
+      if (message.type !== "morph:storefront-preview-set-section") {
         return;
       }
 
-      selectedSectionId = event.data.sectionId;
+      selectedSectionId = message.sectionId;
       restoreSelectedSection();
     };
 
@@ -1265,12 +1463,15 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     document.addEventListener("click", handleClick, true);
     document.addEventListener("dblclick", handleDoubleClick, true);
     document.addEventListener("dragstart", handleDragStart, true);
+    document.addEventListener("dragover", handleDragOver, true);
+    document.addEventListener("drop", handleDrop, true);
+    document.addEventListener("dragend", handleDragEnd, true);
     document.addEventListener("wheel", handleWheel, {
       capture: true,
       passive: false,
     });
-    window.addEventListener("scroll", positionOverlays, true);
-    window.addEventListener("resize", positionOverlays);
+    window.addEventListener("scroll", schedulePositionOverlays, true);
+    window.addEventListener("resize", schedulePositionOverlays);
     window.addEventListener("message", handleEditorMessage);
     window.addEventListener(
       SELECTION_STYLE_APPLIED_EVENT,
@@ -1286,9 +1487,13 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       document.removeEventListener("click", handleClick, true);
       document.removeEventListener("dblclick", handleDoubleClick, true);
       document.removeEventListener("dragstart", handleDragStart, true);
+      document.removeEventListener("dragover", handleDragOver, true);
+      document.removeEventListener("drop", handleDrop, true);
+      document.removeEventListener("dragend", handleDragEnd, true);
       document.removeEventListener("wheel", handleWheel, true);
-      window.removeEventListener("scroll", positionOverlays, true);
-      window.removeEventListener("resize", positionOverlays);
+      window.removeEventListener("scroll", schedulePositionOverlays, true);
+      window.removeEventListener("resize", schedulePositionOverlays);
+      cancelAnimationFrame(overlayPositionFrame);
       window.removeEventListener("message", handleEditorMessage);
       window.removeEventListener(
         SELECTION_STYLE_APPLIED_EVENT,
@@ -1308,6 +1513,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       style.remove();
       hoverOverlay.remove();
       selectedOverlay.remove();
+      reorderTargetOverlay.remove();
+      restoreManagedDraggable();
       selectedElement?.removeAttribute("data-storefront-editor-selected");
     };
   }, [enabled]);
@@ -1318,23 +1525,19 @@ function usePreviewViewportHeight(initialHeight: number) {
 
   useEffect(() => {
     const handleViewportHeight = (event: MessageEvent<unknown>) => {
+      const message =
+        event.origin === window.location.origin &&
+        event.source === window.parent
+          ? parseEditorToPreviewMessage(event.data)
+          : null;
       if (
-        event.origin !== window.location.origin ||
-        event.source !== window.parent ||
-        typeof event.data !== "object" ||
-        event.data === null ||
-        !("type" in event.data) ||
-        event.data.type !== "morph:storefront-preview-set-viewport-height" ||
-        !("height" in event.data) ||
-        typeof event.data.height !== "number" ||
-        !Number.isFinite(event.data.height) ||
-        event.data.height < 320 ||
-        event.data.height > 2160
-      ) {
+        message?.type !== "morph:storefront-preview-set-viewport-height" ||
+        message.height < 320 ||
+        message.height > 2160
+      )
         return;
-      }
 
-      setViewportHeight(Math.round(event.data.height));
+      setViewportHeight(Math.round(message.height));
     };
 
     window.addEventListener("message", handleViewportHeight);
@@ -1395,13 +1598,10 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
         }
 
         lastPublishedHeight = nextHeight;
-        window.parent.postMessage(
-          {
-            type: "morph:storefront-preview-size",
-            height: nextHeight,
-          },
-          window.location.origin,
-        );
+        postPreviewToEditorMessage({
+          type: "morph:storefront-preview-size",
+          height: nextHeight,
+        });
       });
     };
 
@@ -1411,14 +1611,12 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
     });
     observer.observe(previewRoot);
     const handleSizeRequest = (event: MessageEvent<unknown>) => {
-      if (
+      const message =
         event.origin === window.location.origin &&
-        event.source === window.parent &&
-        typeof event.data === "object" &&
-        event.data !== null &&
-        "type" in event.data &&
-        event.data.type === "morph:storefront-preview-request-size"
-      ) {
+        event.source === window.parent
+          ? parseEditorToPreviewMessage(event.data)
+          : null;
+      if (message?.type === "morph:storefront-preview-request-size") {
         stableFrameCount = 0;
         measureUntilStable();
       }

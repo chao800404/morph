@@ -124,7 +124,7 @@ const DISPLAY_PATTERN =
 const FLEX_DIRECTION_PATTERN = /^flex-(?:row|row-reverse|col|col-reverse)$/;
 const GAP_PATTERN = /^gap-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const WIDTH_PATTERN =
-  /^w-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
+  /^w-(?:auto|full|screen|min|max|fit|px|\d+(?:\.\d+)?|\d+\/\d+|\[.+\])$/;
 const HEIGHT_PATTERN =
   /^h-(?:auto|full|screen|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;
 const MIN_WIDTH_PATTERN = /^min-w-(?:0|full|min|max|fit|\d+(?:\.\d+)?|\[.+\])$/;

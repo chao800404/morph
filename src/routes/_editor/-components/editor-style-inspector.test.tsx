@@ -28,6 +28,7 @@ const selectionDescriptor = (
   role: null,
   inputType: null,
   nodeId: null,
+  sourceFilePath: null,
   elementKey: null,
   fieldKey: null,
   fieldPath: null,

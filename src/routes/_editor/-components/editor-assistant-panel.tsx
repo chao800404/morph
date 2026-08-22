@@ -18,8 +18,9 @@ import {
   SendHorizontal,
   WandSparkles,
 } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { EditorCommentsSidebar } from "./editor-comments-sidebar";
+import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import { EditorStyleInspector } from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
@@ -104,6 +105,40 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
     (section) => section.id === search.section,
   );
   const initialSectionRef = useRef(search.section);
+  const [isStylesPreRendered, setIsStylesPreRendered] = useState(false);
+  const shouldRenderStyles = isStylesPreRendered || tab === "styles";
+
+  useEffect(() => {
+    if (isStylesPreRendered || !selectedSection) return;
+    return scheduleInspectorPreRender(
+      () => setIsStylesPreRendered(true),
+      window,
+    );
+  }, [isStylesPreRendered, selectedSection]);
+
+  useEffect(() => {
+    if (tab === "styles" && !isStylesPreRendered) {
+      setIsStylesPreRendered(true);
+    }
+  }, [isStylesPreRendered, tab]);
+
+  const handleInspectorPropsChange = useCallback(
+    (nextProps: Record<string, unknown>) => {
+      if (selectedSection) {
+        onSectionPropsChange?.(selectedSection.id, nextProps);
+      }
+    },
+    [onSectionPropsChange, selectedSection],
+  );
+
+  const handleInspectorToggleEnabled = useCallback(
+    (enabled: boolean) => {
+      if (selectedSection) {
+        onSectionToggleEnabled?.(selectedSection.id, enabled);
+      }
+    },
+    [onSectionToggleEnabled, selectedSection],
+  );
 
   useEffect(() => {
     onTabChange?.(tab);
@@ -238,8 +273,14 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
             <p className="text-xs">No active template</p>
           </div>
         )
-      ) : (
-        <ScrollArea className="min-h-0">
+      ) : null}
+
+      {shouldRenderStyles ? (
+        <ScrollArea
+          className="min-h-0"
+          hidden={tab !== "styles"}
+          aria-hidden={tab !== "styles"}
+        >
           {selectedSection ? (
             <EditorStyleInspector
               section={selectedSection}
@@ -250,12 +291,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onUpdateThemeFileStyle={onUpdateThemeFileStyle}
               onPreviewSelectionStyle={onPreviewSelectionStyle}
               onPreviewSelectionField={onPreviewSelectionField}
-              onPropsChange={(nextProps) =>
-                onSectionPropsChange?.(selectedSection.id, nextProps)
-              }
-              onToggleEnabled={(enabled) =>
-                onSectionToggleEnabled?.(selectedSection.id, enabled)
-              }
+              onPropsChange={handleInspectorPropsChange}
+              onToggleEnabled={handleInspectorToggleEnabled}
               onJumpToCode={onJumpToCode}
             />
           ) : (
@@ -271,7 +308,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
             </div>
           )}
         </ScrollArea>
-      )}
+      ) : null}
 
       {tab === "chat" ? (
         <div className="space-y-2 p-3 pt-0">

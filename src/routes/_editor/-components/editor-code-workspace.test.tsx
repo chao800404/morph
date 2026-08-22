@@ -6,6 +6,14 @@ import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-the
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 
+vi.mock("./editor-code-language-support", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("./editor-code-language-support")
+  >()),
+  configureThemeTypeScript: vi.fn(),
+  registerTailwindCompletionProvider: vi.fn(() => ({ dispose: vi.fn() })),
+}));
+
 vi.mock("@monaco-editor/react", () => ({
   default: ({
     defaultValue,

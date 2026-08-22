@@ -5,6 +5,7 @@ import {
   patchComponentDefaultProp,
   patchElementClassName,
   patchElementClassNameResult,
+  swapSiblingMorphNodes,
   updateTailwindClass,
 } from "./theme-ast-transformer";
 
@@ -101,6 +102,44 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(updated).toContain(
       'className="mt-6 font-serif text-8xl text-stone-950"',
     );
+  });
+
+  it("swaps two unique direct Morph JSX siblings without reformatting their content", () => {
+    const source = `export default function Example() {
+  return (
+    <div>
+      <h2 data-morph-node="title">Title</h2>
+      <p data-morph-node="body">Body</p>
+    </div>
+  );
+}`;
+    const result = swapSiblingMorphNodes(source, "title", "body");
+
+    expect(result.editable).toBe(true);
+    expect(result.code.indexOf('data-morph-node="body"')).toBeLessThan(
+      result.code.indexOf('data-morph-node="title"'),
+    );
+    expect(result.code).toContain('<h2 data-morph-node="title">Title</h2>');
+  });
+
+  it("rejects Morph nodes that are not direct siblings", () => {
+    const source = `export default function Example() {
+  return <div><div><span data-morph-node="nested" /></div><p data-morph-node="peer" /></div>;
+}`;
+    const result = swapSiblingMorphNodes(source, "nested", "peer");
+
+    expect(result).toMatchObject({ editable: false, reason: "not-siblings" });
+    expect(result.code).toBe(source);
+  });
+
+  it("rejects duplicate Morph node identities", () => {
+    const source = `export default function Example() {
+  return <div><span data-morph-node="item" /><span data-morph-node="item" /><p data-morph-node="peer" /></div>;
+}`;
+    const result = swapSiblingMorphNodes(source, "item", "peer");
+
+    expect(result).toMatchObject({ editable: false, reason: "not-found" });
+    expect(result.code).toBe(source);
   });
 
   it("replaces Tailwind utility classes accurately", () => {

@@ -74,6 +74,14 @@ Visual Editor 只能在 transformer 能證明安全時自動 patch source。
 
 禁止用 regex 當作通用 TSX parser。
 
+Live Preview 的 DOM 排序必須依修改來源分流：
+
+- Section 順序沿用 versioned page/template document 的既有 reorder/CAS 流程。
+- 一般 source DOM 只允許交換同一 source file、同一直接 JSX parent 下，且 `data-morph-node` 可證明唯一的靜態 sibling。
+- `map()` 產生的重複節點、跨 parent、跨檔案、動態 identity 或無法唯一定位的節點不得直接搬移 DOM 後寫回 source；這類排序必須修改對應資料陣列或導向 Code Mode。
+- 拖動期間只允許本地 Live Preview 與落點提示；pointer/drop 完成時最多提交一次 draft source 更新，失敗必須以 workspace source 回復 Preview。
+- 重新編譯或 DOM 替換後必須依穩定 identity 維持原選取節點，不得因 drop 後的 click 事件改選目標節點。
+
 ### 5.5 Visual → Code / Code → Visual 必須雙向收斂
 
 目標行為：
@@ -122,6 +130,14 @@ Preview DOM measurement 必須避免 layout thrashing：
 - 不得在迴圈或同一熱路徑中交錯 layout-affecting write 與 layout read。
 - computed-style snapshot 只收集目前 selection / Inspector capability 所需資料；不得把
   source mutation、save 或 preview rebuild 塞進 selection click 的同步熱路徑。
+- wheel、pointermove 等每秒可觸發多次的 Canvas gesture 必須先合併到每個 animation frame；
+  拖動、捲動與縮放中的暫時 x / y / scale 必須以 ref 保存並透過同一組 Canvas CSS variables
+  直接更新 DOM，不得在任何 gesture 的逐幀路徑呼叫 React state setter 或重 render Editor shell。
+- React state 只在 gesture 結束或短暫 idle 後同步一次最後 transform；cursor、active gesture 等
+  純命令式視覺狀態優先使用 DOM attribute / ref，普通垂直捲動不得每次都讀取
+  iframe / viewport 的 bounding rect，只有依游標定位的 zoom 才能在該 frame 量測必要 geometry。
+- selection overlay 的 scroll / resize 重新定位必須用 animation frame 合併，避免同一 frame 重複
+  `getBoundingClientRect()` 與 overlay style write。
 
 新增或調整 selection / Inspector 熱路徑時，必須用 React Profiler 或 browser
 Performance trace 比較修改前後，並至少覆蓋：同 section node 切換、跨 section 切換、

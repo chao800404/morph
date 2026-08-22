@@ -79,6 +79,10 @@ import {
   resolveInspectorLength,
 } from "./style-inspector/inspector-length-control";
 import {
+  hasInspectorDesignModule,
+  renderInspectorDesignModule,
+} from "./style-inspector/inspector-module-registry";
+import {
   BorderRadiusInspectorModule,
   type BorderRadiusCorner,
 } from "./style-inspector/border-radius-inspector-module";
@@ -345,11 +349,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     }
   }, [activeComputedStyleRevision]);
 
-  const componentPath = getComponentFilePath(
-    section.type,
-    themeFiles,
-    section.componentRef ?? undefined,
-  );
+  const componentPath =
+    (selection?.sourceFilePath &&
+    themeFiles?.some((file) => file.path === selection.sourceFilePath)
+      ? selection.sourceFilePath
+      : null) ??
+    getComponentFilePath(
+      section.type,
+      themeFiles,
+      section.componentRef ?? undefined,
+    );
   const targetElement = activeNodeId || activeElementKey || "heading";
   const props = localProps;
   const selectedField = activeFieldKey ?? activeElementKey;
@@ -1486,18 +1495,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </InspectorGroup>
       )}
 
-      {(
-        [
-          "layout",
-          "sizing",
-          "position",
-          "appearance",
-          "spacing",
-          "typography",
-          "fill",
-          "border",
-        ] as const
-      ).some((module) => visibleModules.has(module)) ? (
+      {hasInspectorDesignModule(visibleModules) ? (
         <InspectorGroup
           title="Design"
           icon={<Sliders className="size-3.5" />}
@@ -1506,7 +1504,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           contentClassName="p-0"
           groupChildren
         >
-          {visibleModules.has("layout") ? (
+          {renderInspectorDesignModule("layout", visibleModules, () => (
             <LayoutInspectorModule
               expanded={sectionsExpanded.flow}
               onToggle={() => toggleSection("flow")}
@@ -1515,9 +1513,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               onPreview={previewContainerStyle}
               onCommit={commitContainerProperty}
             />
-          ) : null}
+          ))}
 
-          {visibleModules.has("sizing") ? (
+          {renderInspectorDesignModule("sizing", visibleModules, () => (
             <SizingInspectorModule
               expanded={sectionsExpanded.sizing}
               onToggle={() => toggleSection("sizing")}
@@ -1534,9 +1532,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               onPreview={previewContainerStyle}
               onCommit={commitContainerProperty}
             />
-          ) : null}
+          ))}
 
-          {visibleModules.has("position") ? (
+          {renderInspectorDesignModule("position", visibleModules, () => (
             <PositionInspectorModule
               expanded={sectionsExpanded.position}
               onToggle={() => toggleSection("position")}
@@ -1545,9 +1543,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               onPreview={previewContainerStyle}
               onCommit={commitContainerProperty}
             />
-          ) : null}
+          ))}
 
-          {visibleModules.has("appearance") ? (
+          {renderInspectorDesignModule("appearance", visibleModules, () => (
             <AppearanceInspectorModule
               expanded={sectionsExpanded.appearance}
               onToggle={() => toggleSection("appearance")}
@@ -1556,10 +1554,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               onPreview={previewContainerStyle}
               onCommit={commitContainerProperty}
             />
-          ) : null}
+          ))}
 
           {/* 2. Layout & Spacing (Figma style) */}
-          {visibleModules.has("spacing") && (
+          {renderInspectorDesignModule("spacing", visibleModules, () => (
             <InspectorGroup
               title="Layout & Spacing"
               icon={<LayoutGrid className="size-3.5" />}
@@ -1829,10 +1827,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 </div>
               </div>
             </InspectorGroup>
-          )}
+          ))}
 
           {/* 3. Typography */}
-          {visibleModules.has("typography") && (
+          {renderInspectorDesignModule("typography", visibleModules, () => (
             <InspectorGroup
               title="Typography"
               icon={<Type className="size-3.5" />}
@@ -2009,10 +2007,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 </div>
               </div>
             </InspectorGroup>
-          )}
+          ))}
 
           {/* 4. Fills & Background */}
-          {visibleModules.has("fill") && (
+          {renderInspectorDesignModule("fill", visibleModules, () => (
             <InspectorGroup
               title="Fills & Background"
               icon={<Palette className="size-3.5" />}
@@ -2102,10 +2100,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 />
               </div>
             </InspectorGroup>
-          )}
+          ))}
 
           {/* 5. Borders & Corners */}
-          {visibleModules.has("border") && (
+          {renderInspectorDesignModule("border", visibleModules, () => (
             <BorderRadiusInspectorModule
               expanded={sectionsExpanded.borders}
               onToggle={() => toggleSection("borders")}
@@ -2210,7 +2208,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 );
               }}
             />
-          )}
+          ))}
         </InspectorGroup>
       ) : null}
     </div>

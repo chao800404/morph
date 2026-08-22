@@ -39,6 +39,7 @@ import {
   Unlock,
 } from "lucide-react";
 import {
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
@@ -82,9 +83,10 @@ import {
   getThemeBuild,
 } from "@/server/storefront/storefront-theme-builds.serverFn";
 
-
-
-import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
+import {
+  patchElementClassNameResult,
+  swapSiblingMorphNodes,
+} from "@/lib/storefront/ast/theme-ast-transformer";
 import {
   toWorkspaceKey,
   useThemeWorkspaceStore,
@@ -101,12 +103,16 @@ import {
   isLatestStyleRevision,
   shouldRevealPreviewForStyleAck,
 } from "./style-revision";
+import { type EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import {
-  isSelectionKind,
-  type EditorSelectionDescriptor,
-} from "@/lib/storefront/editor/selection-taxonomy";
+  parsePreviewSectionProps,
+  parsePreviewToEditorMessage,
+  postEditorToPreviewMessage,
+  type PreviewSectionProps,
+} from "@/lib/storefront/editor/preview-protocol";
 import { EditorCanvasComments } from "./editor-canvas-comments";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
+import { resolveCodeSelectionTarget } from "./editor-code-selection";
 import { EditorPathNavigator } from "./editor-path-navigator";
 import { EditorSectionsPanel } from "./editor-sections-panel";
 import { resolveEditorTemplate } from "./editor-template";
@@ -154,6 +160,7 @@ const DESKTOP_PREVIEW_WIDTH = 1024;
 const CANVAS_TOP_INSET = 48;
 const CANVAS_BOTTOM_INSET = 80;
 const CANVAS_VERTICAL_OVERSCROLL = 200;
+const CANVAS_SCROLL_COMMIT_DELAY_MS = 120;
 
 type CanvasTransform = {
   x: number;
@@ -369,7 +376,6 @@ export function VisualEditorShell({
   const [canvasTransform, setCanvasTransform] = useState<CanvasTransform>(
     initialCanvasTransform,
   );
-  const [isPanning, setIsPanning] = useState(false);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [assistantPanelTab, setAssistantPanelTab] =
     useState<EditorAssistantPanelTab>("chat");
@@ -382,7 +388,9 @@ export function VisualEditorShell({
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
   const [isCommentMode, setIsCommentMode] = useState(false);
-  const [commentFilter, setCommentFilter] = useState<"open" | "resolved">("open");
+  const [commentFilter, setCommentFilter] = useState<"open" | "resolved">(
+    "open",
+  );
   const [activeCommentThreadId, setActiveCommentThreadId] = useState<
     string | null
   >(null);
@@ -422,9 +430,9 @@ export function VisualEditorShell({
     ),
     enabled: Boolean(activeTemplate?.id),
   });
-  const commentGroups = (commentGroupsQuery.data?.success
-    ? commentGroupsQuery.data.data
-    : []) as StorefrontCommentGroupDTO[];
+  const commentGroups = (
+    commentGroupsQuery.data?.success ? commentGroupsQuery.data.data : []
+  ) as StorefrontCommentGroupDTO[];
 
   useEffect(() => {
     if (commentGroups.length === 0) {
@@ -469,7 +477,9 @@ export function VisualEditorShell({
       toast.success("Comment group created");
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "Failed to create group");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to create group",
+      );
     },
   });
 
@@ -744,7 +754,6 @@ export function VisualEditorShell({
   const latestAppliedStyleRevisionRef = useRef(0);
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
 
-
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
   });
@@ -763,13 +772,12 @@ export function VisualEditorShell({
       return result.data;
     },
     onSuccess: async (data) => {
-      useThemeWorkspaceStore.getState().acceptRemoteGeneration(
-        data.sourceGeneration,
-        {
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(data.sourceGeneration, {
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
-        },
-      );
+        });
       await queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.tree(
           context.storefront.id,
@@ -805,15 +813,29 @@ export function VisualEditorShell({
   const activeWorkspaceKey = useThemeWorkspaceStore(
     (state) => state.activeWorkspaceKey,
   );
-  const setActiveWorkspace = useThemeWorkspaceStore((state) => state.setActiveWorkspace);
-  const hydrateWorkspace = useThemeWorkspaceStore((state) => state.hydrateFromQuery);
-  const updateWorkspaceLocal = useThemeWorkspaceStore((state) => state.updateLocalContent);
-  const markWorkspaceDebouncing = useThemeWorkspaceStore((state) => state.markDebouncing);
-  const markWorkspaceSaving = useThemeWorkspaceStore((state) => state.markSaving);
+  const setActiveWorkspace = useThemeWorkspaceStore(
+    (state) => state.setActiveWorkspace,
+  );
+  const hydrateWorkspace = useThemeWorkspaceStore(
+    (state) => state.hydrateFromQuery,
+  );
+  const updateWorkspaceLocal = useThemeWorkspaceStore(
+    (state) => state.updateLocalContent,
+  );
+  const markWorkspaceDebouncing = useThemeWorkspaceStore(
+    (state) => state.markDebouncing,
+  );
+  const markWorkspaceSaving = useThemeWorkspaceStore(
+    (state) => state.markSaving,
+  );
   const markWorkspaceSaved = useThemeWorkspaceStore((state) => state.markSaved);
   const markWorkspaceError = useThemeWorkspaceStore((state) => state.markError);
-  const markWorkspaceConflict = useThemeWorkspaceStore((state) => state.markConflict);
-  const resolveWorkspaceConflict = useThemeWorkspaceStore((state) => state.resolveConflict);
+  const markWorkspaceConflict = useThemeWorkspaceStore(
+    (state) => state.markConflict,
+  );
+  const resolveWorkspaceConflict = useThemeWorkspaceStore(
+    (state) => state.resolveConflict,
+  );
 
   const workspaceScope = useMemo(
     () => ({
@@ -852,10 +874,30 @@ export function VisualEditorShell({
       })),
     [themeFiles, workspaceFiles],
   );
-  const workspaceKey = toWorkspaceKey(
-    context.storefront.id,
-    context.theme.id,
-  );
+  const handleOpenSelectedCode = useCallback(() => {
+    const selectedSection = activeTemplate?.document.sections.find(
+      (section) => section.id === search.section,
+    );
+    const target = resolveCodeSelectionTarget({
+      section: selectedSection ?? null,
+      selection: activeSelection,
+      themeFiles: effectiveThemeFiles,
+    });
+
+    if (target) {
+      handleJumpToCode(target.filePath, target.line, target.column);
+      return;
+    }
+
+    setEditorMode("code");
+  }, [
+    activeSelection,
+    activeTemplate,
+    effectiveThemeFiles,
+    handleJumpToCode,
+    search.section,
+  ]);
+  const workspaceKey = toWorkspaceKey(context.storefront.id, context.theme.id);
   const isWorkspaceReadyForPreview =
     themeFilesQuery.isSuccess &&
     themeFiles.length > 0 &&
@@ -868,28 +910,22 @@ export function VisualEditorShell({
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const previewSelectionStyle = useCallback(
     (styles: Record<string, string>, targetElement: string) => {
-      previewIframeRef.current?.contentWindow?.postMessage(
-        {
-          type: "morph:storefront-preview-update-selection-style",
-          styles,
-          targetElement,
-        },
-        window.location.origin,
-      );
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-update-selection-style",
+        styles,
+        targetElement,
+      });
     },
     [],
   );
   const previewSelectionField = useCallback(
     (fieldKey: string, fieldPath: string | null, value: string) => {
-      previewIframeRef.current?.contentWindow?.postMessage(
-        {
-          type: "morph:storefront-preview-update-selection-field",
-          fieldKey,
-          fieldPath,
-          value,
-        },
-        window.location.origin,
-      );
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-update-selection-field",
+        fieldKey,
+        fieldPath,
+        value,
+      });
     },
     [],
   );
@@ -897,10 +933,11 @@ export function VisualEditorShell({
     (files: Array<{ path: string; content: string }>) => {
       const styleRevision = latestStyleRevisionRef.current + 1;
       latestStyleRevisionRef.current = styleRevision;
-      previewIframeRef.current?.contentWindow?.postMessage(
-        { type: "morph:storefront-preview-update-theme-files", files, styleRevision },
-        window.location.origin,
-      );
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-update-theme-files",
+        files,
+        styleRevision,
+      });
       return styleRevision;
     },
     [],
@@ -918,7 +955,8 @@ export function VisualEditorShell({
       !isWorkspaceReadyForPreview ||
       effectiveThemeFiles.length === 0 ||
       (initialPreviewSyncRef.current?.key === previewKey &&
-        initialPreviewSyncRef.current.readySequence === previewFrameReady.sequence)
+        initialPreviewSyncRef.current.readySequence ===
+          previewFrameReady.sequence)
     ) {
       return;
     }
@@ -1026,64 +1064,65 @@ export function VisualEditorShell({
 
       const nextPromise = previousPromise
         .catch(() => {})
-        .then(async (): Promise<
-          | { status: "saved"; file: StorefrontThemeFileDTO }
-          | { status: "superseded" }
-          | { status: "source-conflict" }
-        > => {
-          const latestQueuedRevision =
-            fileRevisionRef.current.get(fileOpKey) ?? 0;
-          if (targetRevision < latestQueuedRevision) {
-            return { status: "superseded" };
-          }
+        .then(
+          async (): Promise<
+            | { status: "saved"; file: StorefrontThemeFileDTO }
+            | { status: "superseded" }
+            | { status: "source-conflict" }
+          > => {
+            const latestQueuedRevision =
+              fileRevisionRef.current.get(fileOpKey) ?? 0;
+            if (targetRevision < latestQueuedRevision) {
+              return { status: "superseded" };
+            }
 
-          const current = useThemeWorkspaceStore
-            .getState()
-            .getWorkspaceFiles(
-              workspaceScope.storefrontId,
-              workspaceScope.themeId,
-            )[filePath];
-          if (!current) throw new Error(`Workspace file "${filePath}" is missing`);
-          if (current.conflict) throw new Error("File has an unresolved conflict.");
-
-          markWorkspaceSaving(filePath, workspaceScope);
-
-          try {
-            const acceptedGeneration = useThemeWorkspaceStore
+            const current = useThemeWorkspaceStore
               .getState()
-              .getAcceptedSourceGeneration(workspaceScope);
+              .getWorkspaceFiles(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              )[filePath];
+            if (!current)
+              throw new Error(`Workspace file "${filePath}" is missing`);
+            if (current.conflict)
+              throw new Error("File has an unresolved conflict.");
 
-            const res = await saveStorefrontThemeFile({
-              data: {
-                storefrontId: context.storefront.id,
-                themeId: context.theme.id,
-                path: filePath,
-                content: contentToSave,
-                expectedFileId: current.serverExists
-                  ? current.serverFileId ?? undefined
-                  : undefined,
-                expectedVersion: current.serverExists
-                  ? current.serverVersion ?? undefined
-                  : undefined,
-                expectMissing: !current.serverExists,
-                expectedSourceGeneration: acceptedGeneration,
-              },
-            });
+            markWorkspaceSaving(filePath, workspaceScope);
 
-            if (!res.success) {
-              if (res.error === "SOURCE_GENERATION_CONFLICT") {
-                useThemeWorkspaceStore
-                  .getState()
-                  .markDirty(filePath, workspaceScope);
-                await queryClient.invalidateQueries({
-                  queryKey: storefrontThemeFileQueries.tree(
-                    context.storefront.id,
-                    context.theme.id,
-                  ).queryKey,
-                });
-                toast.error(
-                  "Remote source changes detected in this theme.",
-                  {
+            try {
+              const acceptedGeneration = useThemeWorkspaceStore
+                .getState()
+                .getAcceptedSourceGeneration(workspaceScope);
+
+              const res = await saveStorefrontThemeFile({
+                data: {
+                  storefrontId: context.storefront.id,
+                  themeId: context.theme.id,
+                  path: filePath,
+                  content: contentToSave,
+                  expectedFileId: current.serverExists
+                    ? (current.serverFileId ?? undefined)
+                    : undefined,
+                  expectedVersion: current.serverExists
+                    ? (current.serverVersion ?? undefined)
+                    : undefined,
+                  expectMissing: !current.serverExists,
+                  expectedSourceGeneration: acceptedGeneration,
+                },
+              });
+
+              if (!res.success) {
+                if (res.error === "SOURCE_GENERATION_CONFLICT") {
+                  useThemeWorkspaceStore
+                    .getState()
+                    .markDirty(filePath, workspaceScope);
+                  await queryClient.invalidateQueries({
+                    queryKey: storefrontThemeFileQueries.tree(
+                      context.storefront.id,
+                      context.theme.id,
+                    ).queryKey,
+                  });
+                  toast.error("Remote source changes detected in this theme.", {
                     action: {
                       label: "Accept Remote",
                       onClick: () => {
@@ -1095,94 +1134,99 @@ export function VisualEditorShell({
                         );
                       },
                     },
-                  },
-                );
-                return { status: "source-conflict" };
-              }
-
-              if (
-                res.error === "FILE_VERSION_CONFLICT" ||
-                res.error === "VERSION_CONFLICT"
-              ) {
-                const latestRes = await getStorefrontThemeFile({
-                  data: {
-                    storefrontId: context.storefront.id,
-                    themeId: context.theme.id,
-                    path: filePath,
-                  },
-                }).catch(() => null);
-
-                if (latestRes?.success && latestRes.data) {
-                  markWorkspaceConflict(
-                    filePath,
-                    {
-                      kind: current.serverExists ? "modified" : "created",
-                      remoteExists: true,
-                      remoteFileId: latestRes.data.id,
-                      remoteVersion: latestRes.data.version,
-                      remoteContent: latestRes.data.content,
-                    },
-                    workspaceScope,
-                  );
-                } else {
-                  markWorkspaceConflict(
-                    filePath,
-                    {
-                      kind: "deleted",
-                      remoteExists: false,
-                      remoteFileId: null,
-                      remoteVersion: null,
-                      remoteContent: null,
-                    },
-                    workspaceScope,
-                  );
+                  });
+                  return { status: "source-conflict" };
                 }
+
+                if (
+                  res.error === "FILE_VERSION_CONFLICT" ||
+                  res.error === "VERSION_CONFLICT"
+                ) {
+                  const latestRes = await getStorefrontThemeFile({
+                    data: {
+                      storefrontId: context.storefront.id,
+                      themeId: context.theme.id,
+                      path: filePath,
+                    },
+                  }).catch(() => null);
+
+                  if (latestRes?.success && latestRes.data) {
+                    markWorkspaceConflict(
+                      filePath,
+                      {
+                        kind: current.serverExists ? "modified" : "created",
+                        remoteExists: true,
+                        remoteFileId: latestRes.data.id,
+                        remoteVersion: latestRes.data.version,
+                        remoteContent: latestRes.data.content,
+                      },
+                      workspaceScope,
+                    );
+                  } else {
+                    markWorkspaceConflict(
+                      filePath,
+                      {
+                        kind: "deleted",
+                        remoteExists: false,
+                        remoteFileId: null,
+                        remoteVersion: null,
+                        remoteContent: null,
+                      },
+                      workspaceScope,
+                    );
+                  }
+                }
+                throw new Error(res.message);
               }
-              throw new Error(res.message);
-            }
 
-            markWorkspaceSaved(res.data, workspaceScope);
-            queryClient.setQueryData(
-              storefrontThemeFileQueries.tree(
-                context.storefront.id,
-                context.theme.id,
-              ).queryKey,
-              (old: any) => {
-                if (!old?.files) return old;
-                const exists = old.files.some((file: any) => file.path === filePath);
-                return {
-                  ...old,
-                  sourceGeneration: res.data.sourceGeneration ?? old.sourceGeneration,
-                  files: exists
-                    ? old.files.map((file: any) =>
-                        file.path === filePath ? { ...file, ...res.data } : file,
-                      )
-                    : [...old.files, res.data],
-                };
-              },
-            );
-
-            return { status: "saved", file: res.data };
-          } catch (error) {
-            const afterError = useThemeWorkspaceStore
-              .getState()
-              .getWorkspaceFiles(
-                workspaceScope.storefrontId,
-                workspaceScope.themeId,
-              )[filePath];
-            if (
-              afterError?.saveState !== "conflict" &&
-              afterError?.saveState !== "dirty"
-            ) {
-              markWorkspaceError(
-                filePath,
-                error instanceof Error ? error.message : "Save failed",
-                workspaceScope,
+              markWorkspaceSaved(res.data, workspaceScope);
+              queryClient.setQueryData(
+                storefrontThemeFileQueries.tree(
+                  context.storefront.id,
+                  context.theme.id,
+                ).queryKey,
+                (old: any) => {
+                  if (!old?.files) return old;
+                  const exists = old.files.some(
+                    (file: any) => file.path === filePath,
+                  );
+                  return {
+                    ...old,
+                    sourceGeneration:
+                      res.data.sourceGeneration ?? old.sourceGeneration,
+                    files: exists
+                      ? old.files.map((file: any) =>
+                          file.path === filePath
+                            ? { ...file, ...res.data }
+                            : file,
+                        )
+                      : [...old.files, res.data],
+                  };
+                },
               );
+
+              return { status: "saved", file: res.data };
+            } catch (error) {
+              const afterError = useThemeWorkspaceStore
+                .getState()
+                .getWorkspaceFiles(
+                  workspaceScope.storefrontId,
+                  workspaceScope.themeId,
+                )[filePath];
+              if (
+                afterError?.saveState !== "conflict" &&
+                afterError?.saveState !== "dirty"
+              ) {
+                markWorkspaceError(
+                  filePath,
+                  error instanceof Error ? error.message : "Save failed",
+                  workspaceScope,
+                );
+              }
+              throw error;
             }
-            throw error;
-          }
-        });
+          },
+        );
 
       saveQueueRef.current.set(themeOpKey, nextPromise);
       return nextPromise;
@@ -1213,15 +1257,15 @@ export function VisualEditorShell({
 
       postPreviewThemeFiles(
         themeFiles.map((file) => ({
-            path: file.path,
-            content:
-              useThemeWorkspaceStore
-                .getState()
-                .getWorkspaceFiles(
-                  workspaceScope.storefrontId,
-                  workspaceScope.themeId,
-                )[file.path]?.localContent ?? file.content,
-          })),
+          path: file.path,
+          content:
+            useThemeWorkspaceStore
+              .getState()
+              .getWorkspaceFiles(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              )[file.path]?.localContent ?? file.content,
+        })),
       );
 
       const nextRevision = (fileRevisionRef.current.get(opKey) ?? 0) + 1;
@@ -1232,7 +1276,10 @@ export function VisualEditorShell({
         content,
         nextRevision,
       );
-      if (result.status === "superseded" || result.status === "source-conflict") {
+      if (
+        result.status === "superseded" ||
+        result.status === "source-conflict"
+      ) {
         return null;
       }
 
@@ -1245,6 +1292,81 @@ export function VisualEditorShell({
       updateWorkspaceLocal,
       workspaceScope,
       postPreviewThemeFiles,
+    ],
+  );
+
+  const handleSwapThemeFileSiblings = useCallback(
+    async (filePath: string, draggedNodeId: string, targetNodeId: string) => {
+      const currentSource =
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath]?.localContent ??
+        themeFiles.find((file) => file.path === filePath)?.content;
+      if (!currentSource) {
+        toast.error(`Cannot reorder: source file ${filePath} is unavailable.`);
+        return;
+      }
+
+      const result = swapSiblingMorphNodes(
+        currentSource,
+        draggedNodeId,
+        targetNodeId,
+      );
+      if (!result.editable) {
+        const message =
+          result.reason === "not-siblings"
+            ? "Only unique elements under the same source parent can be reordered."
+            : result.reason === "parse-error"
+              ? `Cannot reorder because ${filePath} contains a syntax error.`
+              : "This rendered element cannot be mapped to one unique source sibling.";
+        toast.warning(message);
+        postPreviewThemeFiles(
+          themeFiles.map((file) => ({
+            path: file.path,
+            content:
+              useThemeWorkspaceStore
+                .getState()
+                .getWorkspaceFiles(
+                  workspaceScope.storefrontId,
+                  workspaceScope.themeId,
+                )[file.path]?.localContent ?? file.content,
+          })),
+        );
+        return;
+      }
+
+      try {
+        await handleUnifiedSaveFile(filePath, result.code);
+      } catch (error) {
+        updateWorkspaceLocal(filePath, currentSource, workspaceScope);
+        postPreviewThemeFiles(
+          themeFiles.map((file) => ({
+            path: file.path,
+            content:
+              file.path === filePath
+                ? currentSource
+                : (useThemeWorkspaceStore
+                    .getState()
+                    .getWorkspaceFiles(
+                      workspaceScope.storefrontId,
+                      workspaceScope.themeId,
+                    )[file.path]?.localContent ?? file.content),
+          })),
+        );
+        toast.error(
+          `Failed to reorder source elements: ${error instanceof Error ? error.message : "Save failed"}`,
+        );
+      }
+    },
+    [
+      handleUnifiedSaveFile,
+      postPreviewThemeFiles,
+      themeFiles,
+      updateWorkspaceLocal,
+      workspaceScope,
     ],
   );
 
@@ -1270,16 +1392,16 @@ export function VisualEditorShell({
         }
         postPreviewThemeFiles(
           themeFiles.flatMap((file) => {
-              const current = useThemeWorkspaceStore
-                .getState()
-                .getWorkspaceFiles(
-                  workspaceScope.storefrontId,
-                  workspaceScope.themeId,
-                )[file.path];
-              return current
-                ? [{ path: file.path, content: current.localContent }]
-                : [];
-            }),
+            const current = useThemeWorkspaceStore
+              .getState()
+              .getWorkspaceFiles(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              )[file.path];
+            return current
+              ? [{ path: file.path, content: current.localContent }]
+              : [];
+          }),
         );
         toast.info(`Reloaded remote state of ${filePath}`);
         return;
@@ -1287,10 +1409,9 @@ export function VisualEditorShell({
 
       const local = useThemeWorkspaceStore
         .getState()
-        .getWorkspaceFiles(
-          workspaceScope.storefrontId,
-          workspaceScope.themeId,
-        )[filePath]?.localContent;
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        filePath
+      ]?.localContent;
       if (local === undefined) return;
       toast.info(`Applying local version of ${filePath}...`);
       await handleUnifiedSaveFile(filePath, local);
@@ -1319,7 +1440,9 @@ export function VisualEditorShell({
         .getState()
         .hasActiveConflictsOrErrors(workspaceScope)
     ) {
-      toast.error("Cannot publish: resolve source conflicts/save errors first.");
+      toast.error(
+        "Cannot publish: resolve source conflicts/save errors first.",
+      );
       return;
     }
 
@@ -1340,7 +1463,9 @@ export function VisualEditorShell({
       1;
 
     const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
-    for (const [opKey, timer] of Array.from(pendingSaveTimersRef.current.entries())) {
+    for (const [opKey, timer] of Array.from(
+      pendingSaveTimersRef.current.entries(),
+    )) {
       if (opKey.startsWith(scopedPrefix)) {
         clearTimeout(timer);
         pendingSaveTimersRef.current.delete(opKey);
@@ -1395,7 +1520,10 @@ export function VisualEditorShell({
     // Verify with server that no remote changes occurred behind user's back
     const refreshed = await themeFilesQuery.refetch();
     const serverGeneration = refreshed.data?.sourceGeneration;
-    if (typeof serverGeneration === "number" && serverGeneration !== currentGeneration) {
+    if (
+      typeof serverGeneration === "number" &&
+      serverGeneration !== currentGeneration
+    ) {
       toast.error(
         "Cannot publish: remote source changes detected. Please reload/review files before publishing.",
       );
@@ -1523,7 +1651,6 @@ export function VisualEditorShell({
         return;
       }
 
-
       let build: StorefrontThemeBuildDTO = buildResult.data;
 
       // Poll getThemeBuild if build was queued or building
@@ -1551,7 +1678,8 @@ export function VisualEditorShell({
       }
 
       if (build.status === "succeeded") {
-        let token = (buildResult.data as StorefrontThemeBuildPreviewDTO).previewToken;
+        let token = (buildResult.data as StorefrontThemeBuildPreviewDTO)
+          .previewToken;
         if (!token) {
           const tokenResult = await getPreviewBuildToken({
             data: {
@@ -1564,7 +1692,6 @@ export function VisualEditorShell({
             token = tokenResult.data.token;
           }
         }
-
 
         if (!token) {
           toast.error("Build succeeded but preview capability token missing.");
@@ -1594,8 +1721,6 @@ export function VisualEditorShell({
     } finally {
       setIsBuildPending(false);
     }
-
-
   }, [
     context.storefront.id,
     context.theme.id,
@@ -1604,7 +1729,6 @@ export function VisualEditorShell({
     themeFiles,
     workspaceScope,
   ]);
-
 
   const handleUpdateThemeFileStyle = useCallback(
     (
@@ -1647,16 +1771,16 @@ export function VisualEditorShell({
 
         const styleRevision = postPreviewThemeFiles(
           themeFiles.map((file) => ({
-              path: file.path,
-              content:
-                file.path === filePath
-                  ? updatedContent
-                  : useThemeWorkspaceStore
-                      .getState()
-                      .getWorkspaceFiles(
-                        workspaceScope.storefrontId,
-                        workspaceScope.themeId,
-                      )[file.path]?.localContent ?? file.content,
+            path: file.path,
+            content:
+              file.path === filePath
+                ? updatedContent
+                : (useThemeWorkspaceStore
+                    .getState()
+                    .getWorkspaceFiles(
+                      workspaceScope.storefrontId,
+                      workspaceScope.themeId,
+                    )[file.path]?.localContent ?? file.content),
           })),
         );
 
@@ -1672,13 +1796,15 @@ export function VisualEditorShell({
 
         const newTimer = setTimeout(() => {
           pendingSaveTimersRef.current.delete(opKey);
-          saveThemeFileSequentially(filePath, updatedContent, nextRevision).catch(
-            (err) => {
-              toast.error(
-                `Failed to save source file ${filePath}: ${err.message}`,
-              );
-            },
-          );
+          saveThemeFileSequentially(
+            filePath,
+            updatedContent,
+            nextRevision,
+          ).catch((err) => {
+            toast.error(
+              `Failed to save source file ${filePath}: ${err.message}`,
+            );
+          });
         }, 300);
 
         pendingSaveTimersRef.current.set(opKey, newTimer);
@@ -1721,6 +1847,8 @@ export function VisualEditorShell({
   const previewFrameHeightRef = useRef(previewFrameHeight);
   const canvasTransformRef = useRef(canvasTransform);
   const canvasRenderFrameRef = useRef(0);
+  const canvasTransformCommitTimerRef = useRef(0);
+  const canvasViewportHeightRef = useRef(0);
   const previewWidthRenderFrameRef = useRef(0);
   const panOriginRef = useRef<{
     pointerId: number;
@@ -1738,6 +1866,46 @@ export function VisualEditorShell({
     scale: number;
   } | null>(null);
 
+  const applyCanvasTransformToDom = useCallback(
+    (transform: CanvasTransform) => {
+      const viewport = canvasViewportRef.current;
+      if (!viewport) return;
+
+      viewport.style.setProperty("--morph-canvas-x", `${transform.x}px`);
+      viewport.style.setProperty("--morph-canvas-y", `${transform.y}px`);
+      viewport.style.setProperty(
+        "--morph-canvas-scale",
+        String(transform.scale),
+      );
+      viewport.style.setProperty(
+        "--morph-canvas-half-width",
+        `${(previewWidthRef.current * transform.scale) / 2}px`,
+      );
+      viewport.style.setProperty(
+        "--morph-canvas-scaled-height",
+        `${previewFrameHeightRef.current * transform.scale}px`,
+      );
+    },
+    [],
+  );
+
+  const scheduleCanvasTransformCommit = useCallback(() => {
+    if (canvasTransformCommitTimerRef.current !== 0) {
+      window.clearTimeout(canvasTransformCommitTimerRef.current);
+    }
+    canvasTransformCommitTimerRef.current = window.setTimeout(() => {
+      canvasTransformCommitTimerRef.current = 0;
+      const current = canvasTransformRef.current;
+      setCanvasTransform((previous) =>
+        previous.x === current.x &&
+        previous.y === current.y &&
+        previous.scale === current.scale
+          ? previous
+          : current,
+      );
+    }, CANVAS_SCROLL_COMMIT_DELAY_MS);
+  }, []);
+
   const scheduleCanvasTransform = useCallback(
     (
       action: CanvasTransform | ((current: CanvasTransform) => CanvasTransform),
@@ -1745,7 +1913,9 @@ export function VisualEditorShell({
       const current = canvasTransformRef.current;
       const requested = typeof action === "function" ? action(current) : action;
       const viewportHeight =
-        canvasViewportRef.current?.getBoundingClientRect().height ?? 0;
+        canvasViewportHeightRef.current ||
+        canvasViewportRef.current?.clientHeight ||
+        0;
       const next =
         viewportHeight > 0
           ? clampCanvasTransform(
@@ -1754,34 +1924,50 @@ export function VisualEditorShell({
               previewFrameHeightRef.current,
             )
           : requested;
-      if (
+      const didChange = !(
         next.x === current.x &&
         next.y === current.y &&
         next.scale === current.scale
-      ) {
-        return;
-      }
+      );
+      if (!didChange) return;
 
       canvasTransformRef.current = next;
+      if (canvasTransformCommitTimerRef.current !== 0) {
+        window.clearTimeout(canvasTransformCommitTimerRef.current);
+        canvasTransformCommitTimerRef.current = 0;
+      }
       if (canvasRenderFrameRef.current !== 0) return;
 
       canvasRenderFrameRef.current = requestAnimationFrame(() => {
         canvasRenderFrameRef.current = 0;
-        setCanvasTransform(canvasTransformRef.current);
+        applyCanvasTransformToDom(canvasTransformRef.current);
+        scheduleCanvasTransformCommit();
       });
     },
-    [],
+    [applyCanvasTransformToDom, scheduleCanvasTransformCommit],
+  );
+
+  const scheduleCanvasScroll = useCallback(
+    (deltaY: number) => {
+      scheduleCanvasTransform((current) => ({
+        ...current,
+        y: current.y - deltaY,
+      }));
+    },
+    [scheduleCanvasTransform],
   );
 
   const centerCanvasOnThread = useCallback(
     (thread: StorefrontCommentThreadDTO, frameHeight: number) => {
       if (typeof thread.positionY !== "number") return;
       scheduleCanvasTransform((current) => {
-        const viewportHeight =
-          canvasViewportRef.current?.getBoundingClientRect().height ?? 800;
+        const viewportHeight = canvasViewportHeightRef.current || 800;
         const pinYInFrame = (thread.positionY / 100) * frameHeight;
         const centeredY =
-          viewportHeight / 2 - CANVAS_TOP_INSET - pinYInFrame * current.scale - 40;
+          viewportHeight / 2 -
+          CANVAS_TOP_INSET -
+          pinYInFrame * current.scale -
+          40;
 
         return {
           ...current,
@@ -1816,7 +2002,9 @@ export function VisualEditorShell({
     const viewport = canvasViewportRef.current;
     if (!viewport || typeof ResizeObserver === "undefined") return;
 
-    const observer = new ResizeObserver(() => {
+    canvasViewportHeightRef.current = viewport.clientHeight;
+    const observer = new ResizeObserver(([entry]) => {
+      canvasViewportHeightRef.current = entry?.contentRect.height ?? 0;
       scheduleCanvasTransform((current) => current);
     });
     observer.observe(viewport);
@@ -1846,6 +2034,7 @@ export function VisualEditorShell({
     () => () => {
       cancelAnimationFrame(canvasRenderFrameRef.current);
       cancelAnimationFrame(previewWidthRenderFrameRef.current);
+      window.clearTimeout(canvasTransformCommitTimerRef.current);
     },
     [],
   );
@@ -1874,24 +2063,14 @@ export function VisualEditorShell({
     if (!previewKey) return;
 
     const handlePreviewMessage = (event: MessageEvent<unknown>) => {
-      if (
-        event.origin !== window.location.origin ||
-        event.source !== previewIframeRef.current?.contentWindow ||
-        typeof event.data !== "object" ||
-        event.data === null ||
-        !("type" in event.data) ||
-        event.data.type !== "morph:storefront-preview-size" ||
-        !("height" in event.data) ||
-        typeof event.data.height !== "number" ||
-        !Number.isFinite(event.data.height)
-      ) {
-        return;
-      }
+      const message =
+        event.origin === window.location.origin &&
+        event.source === previewIframeRef.current?.contentWindow
+          ? parsePreviewToEditorMessage(event.data)
+          : null;
+      if (message?.type !== "morph:storefront-preview-size") return;
 
-      const height = Math.min(
-        30_000,
-        Math.max(320, Math.ceil(event.data.height)),
-      );
+      const height = Math.min(30_000, Math.max(320, Math.ceil(message.height)));
       setPreviewContentSize((current) =>
         current?.key === previewKey && Math.abs(current.height - height) < 1
           ? current
@@ -1900,10 +2079,9 @@ export function VisualEditorShell({
     };
 
     window.addEventListener("message", handlePreviewMessage);
-    previewIframeRef.current?.contentWindow?.postMessage(
-      { type: "morph:storefront-preview-request-size" },
-      window.location.origin,
-    );
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-request-size",
+    });
     return () => window.removeEventListener("message", handlePreviewMessage);
   }, [previewKey]);
 
@@ -1911,15 +2089,23 @@ export function VisualEditorShell({
     if (!previewKey) return;
 
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
-      const message = event.data;
-      if (
+      const message =
         event.origin === window.location.origin &&
-        event.source === previewIframeRef.current?.contentWindow &&
-        typeof message === "object" &&
-        message !== null &&
-        "type" in message &&
-        message.type === "morph:storefront-preview-ready"
-      ) {
+        event.source === previewIframeRef.current?.contentWindow
+          ? parsePreviewToEditorMessage(event.data)
+          : null;
+      if (!message) return;
+
+      if (message.type === "morph:storefront-preview-commit-sibling-reorder") {
+        void handleSwapThemeFileSiblings(
+          message.sourceFilePath,
+          message.draggedNodeId,
+          message.targetNodeId,
+        );
+        return;
+      }
+
+      if (message.type === "morph:storefront-preview-ready") {
         setPreviewFrameReady((current) => ({
           key: previewKey,
           sequence: current?.key === previewKey ? current.sequence + 1 : 1,
@@ -1927,15 +2113,8 @@ export function VisualEditorShell({
         return;
       }
       if (
-        event.origin === window.location.origin &&
-        event.source === previewIframeRef.current?.contentWindow &&
-        typeof message === "object" &&
-        message !== null &&
-        "type" in message &&
-        (message.type === "morph:storefront-preview-theme-files-applied" ||
-          message.type === "morph:storefront-preview-theme-files-failed") &&
-        "styleRevision" in message &&
-        typeof message.styleRevision === "number"
+        message.type === "morph:storefront-preview-theme-files-applied" ||
+        message.type === "morph:storefront-preview-theme-files-failed"
       ) {
         const initialPreviewSync = initialPreviewSyncRef.current;
         if (
@@ -1953,78 +2132,60 @@ export function VisualEditorShell({
           return;
         }
         latestAppliedStyleRevisionRef.current = message.styleRevision;
-        previewIframeRef.current?.contentWindow?.postMessage(
-          {
-            type: "morph:storefront-preview-request-selection-style",
-            styleRevision: message.styleRevision,
-          },
-          window.location.origin,
-        );
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-request-selection-style",
+          styleRevision: message.styleRevision,
+        });
         return;
       }
+      if (message.type !== "morph:storefront-preview-select-section") return;
+
+      const responseStyleRevision = message.styleRevision;
       if (
-        event.origin !== window.location.origin ||
-        event.source !== previewIframeRef.current?.contentWindow ||
-        typeof message !== "object" ||
-        message === null ||
-        !("type" in message) ||
-        message.type !== "morph:storefront-preview-select-section" ||
-        !("sectionId" in message) ||
-        typeof message.sectionId !== "string" ||
-        message.sectionId.length > 100
-      ) {
+        !isLatestStyleRevision(
+          responseStyleRevision,
+          latestStyleRevisionRef.current,
+        )
+      )
         return;
-      }
-      const responseStyleRevision =
-        "styleRevision" in message && typeof message.styleRevision === "number"
-          ? message.styleRevision
-          : 0;
-      if (!isLatestStyleRevision(responseStyleRevision, latestStyleRevisionRef.current)) return;
       const sectionId = message.sectionId;
-      const nodeId =
-        "nodeId" in message && typeof message.nodeId === "string" ? message.nodeId.slice(0, 200) : null;
-      const elementKey =
-        "elementKey" in message && typeof message.elementKey === "string" ? message.elementKey.slice(0, 200) : null;
-      const fieldKey =
-        "fieldKey" in message && typeof message.fieldKey === "string"
-          ? message.fieldKey.slice(0, 200)
-          : "field" in message && typeof message.field === "string" ? message.field.slice(0, 200) : null;
-      const fieldPath =
-        "fieldPath" in message && typeof message.fieldPath === "string" ? message.fieldPath.slice(0, 500) : fieldKey;
-      const tagName =
-        "tagName" in message && typeof message.tagName === "string" ? message.tagName.slice(0, 100) : null;
-      const role =
-        "role" in message && typeof message.role === "string" ? message.role.slice(0, 100) : null;
-      const inputType =
-        "inputType" in message && typeof message.inputType === "string" ? message.inputType.slice(0, 100) : null;
-      const selectionKind =
-        "kind" in message && typeof message.kind === "string" && isSelectionKind(message.kind)
-          ? message.kind : "custom";
-      const className =
-        "className" in message && typeof message.className === "string" && message.className.length <= 20_000
-          ? message.className : "";
-      const selectionIsSection =
-        "isSection" in message && typeof message.isSection === "boolean" ? message.isSection : false;
-      const computedStyle =
-        "computedStyle" in message && typeof message.computedStyle === "object" && message.computedStyle !== null
-          ? (message.computedStyle as Record<string, string>) : null;
-      const parentComputedStyle =
-        "parentComputedStyle" in message && typeof message.parentComputedStyle === "object" && message.parentComputedStyle !== null
-          ? (message.parentComputedStyle as Record<string, string>) : null;
-      const sectionComputedStyle =
-        "sectionComputedStyle" in message && typeof message.sectionComputedStyle === "object" && message.sectionComputedStyle !== null
-          ? (message.sectionComputedStyle as Record<string, string>) : null;
-      const inspectorOverride =
-        "inspectorOverride" in message && typeof message.inspectorOverride === "string" && message.inspectorOverride.length <= 1_000
-          ? message.inspectorOverride : null;
+      const nodeId = message.nodeId ?? null;
+      const sourceFilePath = message.sourceFilePath;
+      const elementKey = message.elementKey;
+      const fieldKey = message.fieldKey ?? message.field;
+      const fieldPath = message.fieldPath ?? fieldKey;
+      const tagName = message.tagName;
+      const role = message.role;
+      const inputType = message.inputType;
+      const selectionKind = message.kind;
+      const className = message.className;
+      const selectionIsSection = message.isSection;
+      const computedStyle = message.computedStyle;
+      const parentComputedStyle = message.parentComputedStyle;
+      const sectionComputedStyle = message.sectionComputedStyle;
+      const inspectorOverride = message.inspectorOverride;
       const componentType =
-        activeTemplate?.document.sections.find((section) => section.id === sectionId)?.type ?? "custom";
+        activeTemplate?.document.sections.find(
+          (section) => section.id === sectionId,
+        )?.type ?? "custom";
 
       setActiveSelection({
-        kind: selectionKind, componentType, tagName, role, inputType, nodeId, elementKey,
-        fieldKey, fieldPath, className, isSection: selectionIsSection,
-        computed: computedStyle, parentComputed: parentComputedStyle,
-        sectionComputed: sectionComputedStyle, inspectorOverride,
+        kind: selectionKind,
+        componentType,
+        tagName,
+        role,
+        inputType,
+        nodeId,
+        sourceFilePath,
+        elementKey,
+        fieldKey,
+        fieldPath,
+        className,
+        isSection: selectionIsSection,
+        computed: computedStyle,
+        parentComputed: parentComputedStyle,
+        sectionComputed: sectionComputedStyle,
+        inspectorOverride,
       });
       setActiveComputedStyleRevision(responseStyleRevision);
 
@@ -2038,20 +2199,21 @@ export function VisualEditorShell({
     return () => window.removeEventListener("message", handlePreviewSelection);
   }, [
     activeTemplate,
+    activeSelection,
+    handleSwapThemeFileSiblings,
+    handleUpdateThemeFileStyle,
     isSelectionMode,
     onSearchChange,
     previewKey,
     search.section,
+    search.viewport,
   ]);
 
   const syncPreviewSection = useCallback(() => {
-    previewIframeRef.current?.contentWindow?.postMessage(
-      {
-        type: "morph:storefront-preview-set-section",
-        sectionId: search.section ?? null,
-      },
-      window.location.origin,
-    );
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-set-section",
+      sectionId: search.section ?? null,
+    });
   }, [search.section]);
 
   const handleSectionsSearchChange = useCallback(
@@ -2059,13 +2221,10 @@ export function VisualEditorShell({
       if (next.section !== undefined) {
         previewSelectionSectionSyncRef.current = null;
         setActiveSelection(null);
-        previewIframeRef.current?.contentWindow?.postMessage(
-          {
-            type: "morph:storefront-preview-set-section",
-            sectionId: next.section ?? null,
-          },
-          window.location.origin,
-        );
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-set-section",
+          sectionId: next.section ?? null,
+        });
       }
       onSearchChange(next);
     },
@@ -2073,30 +2232,20 @@ export function VisualEditorShell({
   );
 
   const syncPreviewSectionOrder = useCallback((sectionIds: string[]) => {
-    previewIframeRef.current?.contentWindow?.postMessage(
-      {
-        type: "morph:storefront-preview-set-section-order",
-        sectionIds,
-      },
-      window.location.origin,
-    );
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-set-section-order",
+      sectionIds,
+    });
   }, []);
 
   const syncPreviewSectionProps = useCallback(
-    (
-      sectionId: string,
-      props?: Record<string, unknown>,
-      enabled?: boolean,
-    ) => {
-      previewIframeRef.current?.contentWindow?.postMessage(
-        {
-          type: "morph:storefront-preview-update-section-props",
-          sectionId,
-          props,
-          enabled,
-        },
-        window.location.origin,
-      );
+    (sectionId: string, props?: PreviewSectionProps, enabled?: boolean) => {
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-update-section-props",
+        sectionId,
+        props,
+        enabled,
+      });
     },
     [],
   );
@@ -2104,7 +2253,8 @@ export function VisualEditorShell({
   const handleSectionPropsChange = useCallback(
     (sectionId: string, nextProps: Record<string, unknown>) => {
       // 1. Instant 0ms visual sync to iframe canvas
-      syncPreviewSectionProps(sectionId, nextProps);
+      const previewProps = parsePreviewSectionProps(nextProps);
+      if (previewProps) syncPreviewSectionProps(sectionId, previewProps);
 
       if (!activeTemplate) return;
       const templateId = activeTemplate.id;
@@ -2219,13 +2369,10 @@ export function VisualEditorShell({
   }, [previewKey, search.section, syncPreviewSection]);
 
   const syncPreviewSelectionMode = useCallback(() => {
-    previewIframeRef.current?.contentWindow?.postMessage(
-      {
-        type: "morph:storefront-preview-set-selection-mode",
-        enabled: isSelectionMode,
-      },
-      window.location.origin,
-    );
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-set-selection-mode",
+      enabled: isSelectionMode,
+    });
   }, [isSelectionMode]);
 
   useEffect(() => {
@@ -2234,13 +2381,10 @@ export function VisualEditorShell({
   }, [previewKey, syncPreviewSelectionMode]);
 
   const syncPreviewViewportHeight = useCallback(() => {
-    previewIframeRef.current?.contentWindow?.postMessage(
-      {
-        type: "morph:storefront-preview-set-viewport-height",
-        height: previewDefaultHeights[search.viewport],
-      },
-      window.location.origin,
-    );
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-set-viewport-height",
+      height: previewDefaultHeights[search.viewport],
+    });
   }, [search.viewport]);
 
   useEffect(() => {
@@ -2267,7 +2411,7 @@ export function VisualEditorShell({
         canvasY: canvasTransformRef.current.y,
         source,
       };
-      setIsPanning(true);
+      canvasViewportRef.current?.setAttribute("data-panning", "true");
     },
     [],
   );
@@ -2309,7 +2453,7 @@ export function VisualEditorShell({
       }
 
       panOriginRef.current = null;
-      setIsPanning(false);
+      canvasViewportRef.current?.removeAttribute("data-panning");
     },
     [],
   );
@@ -2334,21 +2478,20 @@ export function VisualEditorShell({
       const viewport = canvasViewportRef.current;
       if (!viewport) return;
 
-      const bounds = viewport.getBoundingClientRect();
+      const viewportHeight =
+        canvasViewportHeightRef.current || viewport.clientHeight;
       const deltaY = normalizeWheelDelta(
         event.deltaY,
         event.deltaMode,
-        bounds.height,
+        viewportHeight,
       );
 
       if (!event.ctrlKey) {
-        scheduleCanvasTransform((current) => ({
-          ...current,
-          y: current.y - deltaY,
-        }));
+        scheduleCanvasScroll(deltaY);
         return;
       }
 
+      const bounds = viewport.getBoundingClientRect();
       const pointerX = event.clientX - bounds.left - bounds.width / 2;
       const pointerY = event.clientY - bounds.top - bounds.height / 2;
 
@@ -2373,7 +2516,7 @@ export function VisualEditorShell({
         };
       });
     },
-    [scheduleCanvasTransform],
+    [scheduleCanvasScroll, scheduleCanvasTransform],
   );
 
   useEffect(() => {
@@ -2414,22 +2557,21 @@ export function VisualEditorShell({
       const viewport = canvasViewportRef.current;
       const frame = previewIframeRef.current;
       if (!viewport || !frame) return;
-      const viewportBounds = viewport.getBoundingClientRect();
-      const frameBounds = frame.getBoundingClientRect();
+      const viewportHeight =
+        canvasViewportHeightRef.current || viewport.clientHeight;
       const deltaY = normalizeWheelDelta(
         message.deltaY,
         message.deltaMode,
-        viewportBounds.height,
+        viewportHeight,
       );
 
       if (!message.ctrlKey) {
-        scheduleCanvasTransform((current) => ({
-          ...current,
-          y: current.y - deltaY,
-        }));
+        scheduleCanvasScroll(deltaY);
         return;
       }
 
+      const viewportBounds = viewport.getBoundingClientRect();
+      const frameBounds = frame.getBoundingClientRect();
       const pointerX =
         frameBounds.left +
         message.clientX * canvasTransformRef.current.scale -
@@ -2461,7 +2603,7 @@ export function VisualEditorShell({
 
     window.addEventListener("message", handlePreviewWheel);
     return () => window.removeEventListener("message", handlePreviewWheel);
-  }, [previewKey, scheduleCanvasTransform]);
+  }, [previewKey, scheduleCanvasScroll, scheduleCanvasTransform]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -2682,19 +2824,18 @@ export function VisualEditorShell({
   }, [applyPreviewWidth]);
 
   const handleResizePointerDown = useCallback(
-    (edge: "left" | "right") =>
-      (event: ReactPointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0) return;
-        event.stopPropagation();
-        event.currentTarget.setPointerCapture(event.pointerId);
-        resizeOriginRef.current = {
-          pointerId: event.pointerId,
-          pointerX: event.clientX,
-          width: previewWidthRef.current,
-          edge,
-          scale: canvasTransformRef.current.scale,
-        };
-      },
+    (edge: "left" | "right") => (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      resizeOriginRef.current = {
+        pointerId: event.pointerId,
+        pointerX: event.clientX,
+        width: previewWidthRef.current,
+        edge,
+        scale: canvasTransformRef.current.scale,
+      };
+    },
     [],
   );
 
@@ -2818,7 +2959,9 @@ export function VisualEditorShell({
       // 1. Group is the single source of truth for viewport width
       if (targetThread.groupId) {
         setActiveGroupId(targetThread.groupId);
-        const parentGroup = commentGroups.find((g) => g.id === targetThread.groupId);
+        const parentGroup = commentGroups.find(
+          (g) => g.id === targetThread.groupId,
+        );
         if (
           parentGroup &&
           parentGroup.viewportWidth > 0 &&
@@ -2834,13 +2977,10 @@ export function VisualEditorShell({
 
       // 3. Select and highlight section if thread is anchored to a specific section
       if (targetThread.sectionId) {
-        previewIframeRef.current?.contentWindow?.postMessage(
-          {
-            type: "morph:storefront-preview-select-section",
-            sectionId: targetThread.sectionId,
-          },
-          window.location.origin,
-        );
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-set-section",
+          sectionId: targetThread.sectionId,
+        });
       }
     },
     [commentThreads, commentGroups, applyPreviewWidth, centerCanvasOnThread],
@@ -2906,7 +3046,9 @@ export function VisualEditorShell({
                 <Button
                   key={value}
                   type="button"
-                  variant={search.viewport === value ? "toolbarActive" : "ghost"}
+                  variant={
+                    search.viewport === value ? "toolbarActive" : "ghost"
+                  }
                   size="icon"
                   disabled={isWidthLocked}
                   className="size-7"
@@ -2928,7 +3070,11 @@ export function VisualEditorShell({
                 variant={isWidthLocked ? "toolbarActive" : "ghost"}
                 size="icon"
                 className="size-7"
-                aria-label={isWidthLocked ? "Width locked (click to unlock)" : "Width unlocked (click to lock)"}
+                aria-label={
+                  isWidthLocked
+                    ? "Width locked (click to unlock)"
+                    : "Width unlocked (click to lock)"
+                }
                 aria-pressed={isWidthLocked}
                 title={
                   isWidthLocked
@@ -2995,7 +3141,11 @@ export function VisualEditorShell({
                 size="icon"
                 className="size-7 shrink-0"
                 aria-label={isWidthLocked ? "Width locked" : "Width unlocked"}
-                title={isWidthLocked ? "Click to unlock width" : "Click to lock width"}
+                title={
+                  isWidthLocked
+                    ? "Click to unlock width"
+                    : "Click to lock width"
+                }
                 onClick={() => setIsWidthLocked((prev) => !prev)}
               >
                 {isWidthLocked ? (
@@ -3024,7 +3174,7 @@ export function VisualEditorShell({
               variant={editorMode === "code" ? "toolbarActive" : "ghost"}
               size="sm"
               className="h-7 gap-1.5 px-3 text-xs font-medium"
-              onClick={() => setEditorMode("code")}
+              onClick={handleOpenSelectedCode}
             >
               <Code2 className="size-3.5" />
               <span>Code</span>
@@ -3037,7 +3187,8 @@ export function VisualEditorShell({
               (s) => s === "saving",
             );
             const firstThemeError = Object.values(themeFileSaveErrors)[0];
-            const hasError = draftSaveState === "error" || Boolean(firstThemeError);
+            const hasError =
+              draftSaveState === "error" || Boolean(firstThemeError);
             const isSaving =
               draftSaveState === "saving" ||
               isThemeSaving ||
@@ -3129,8 +3280,12 @@ export function VisualEditorShell({
               Object.values(themeFileSaveStatus).some((s) => s === "saving") ||
               Object.values(themeFileSaveErrors).length > 0 ||
               monacoDirtyFiles.length > 0 ||
-              useThemeWorkspaceStore.getState().hasUnsavedEdits(workspaceScope) ||
-              useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors(workspaceScope) ||
+              useThemeWorkspaceStore
+                .getState()
+                .hasUnsavedEdits(workspaceScope) ||
+              useThemeWorkspaceStore
+                .getState()
+                .hasActiveConflictsOrErrors(workspaceScope) ||
               publishMutation.isPending
             }
             onClick={handlePublish}
@@ -3154,7 +3309,9 @@ export function VisualEditorShell({
           initialActiveFilePath={activeCodeFilePath}
           jumpLocation={jumpLocation}
           onResolveConflict={handleResolveConflict}
-          onRefreshPreview={() => setPreviewRevision((revision) => revision + 1)}
+          onRefreshPreview={() =>
+            setPreviewRevision((revision) => revision + 1)
+          }
           onDirtyFilesChange={setMonacoDirtyFiles}
           onSaveFile={handleUnifiedSaveFile}
         />
@@ -3166,15 +3323,15 @@ export function VisualEditorShell({
           editorMode === "design" ? "flex" : "hidden",
         )}
       >
-          <EditorSectionsPanel
-            style={{ width: `${leftPanelWidth}px` }}
-            context={context}
-            search={search}
-            onSearchChange={handleSectionsSearchChange}
-            onSectionOrderChange={syncPreviewSectionOrder}
-            onSaveStateChange={setDraftSaveState}
-            onReorderSections={handleReorderSections}
-          />
+        <EditorSectionsPanel
+          style={{ width: `${leftPanelWidth}px` }}
+          context={context}
+          search={search}
+          onSearchChange={handleSectionsSearchChange}
+          onSectionOrderChange={syncPreviewSectionOrder}
+          onSaveStateChange={setDraftSaveState}
+          onReorderSections={handleReorderSections}
+        />
 
         {/* Left Panel Resizer */}
         <div
@@ -3208,10 +3365,7 @@ export function VisualEditorShell({
         <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden max-md:hidden">
           <div
             ref={canvasViewportRef}
-            className={cn(
-              "relative min-h-0 flex-1 touch-none select-none overflow-hidden cursor-grab",
-              isPanning && "cursor-grabbing",
-            )}
+            className="relative min-h-0 flex-1 touch-none select-none overflow-hidden cursor-grab data-[panning=true]:cursor-grabbing"
             onPointerDown={handleCanvasPointerDown}
             onPointerMove={handleCanvasPointerMove}
             onPointerUp={finishCanvasPan}
@@ -3222,6 +3376,16 @@ export function VisualEditorShell({
             tabIndex={0}
             aria-describedby="storefront-canvas-instructions"
             aria-label="Storefront preview canvas. Use the mouse wheel to scroll, Control plus wheel to zoom, and drag to pan."
+            style={
+              {
+                "--morph-canvas-x": `${canvasTransform.x}px`,
+                "--morph-canvas-y": `${canvasTransform.y}px`,
+                "--morph-canvas-scale": String(canvasTransform.scale),
+                "--morph-canvas-half-width": `${(previewWidth * canvasTransform.scale) / 2}px`,
+                "--morph-canvas-scaled-height": `${previewFrameHeight * canvasTransform.scale}px`,
+                contain: "strict",
+              } as CSSProperties
+            }
           >
             <span id="storefront-canvas-instructions" className="sr-only">
               Use the mouse wheel to scroll the storefront. Hold Control while
@@ -3237,7 +3401,8 @@ export function VisualEditorShell({
               )}
               style={{
                 width: previewWidth,
-                transform: `translate3d(calc(-50% + ${canvasTransform.x}px), ${canvasTransform.y}px, 0) scale(${canvasTransform.scale})`,
+                transform:
+                  "translate3d(calc(-50% + var(--morph-canvas-x)), var(--morph-canvas-y), 0) scale(var(--morph-canvas-scale))",
                 transformOrigin: "top center",
               }}
             >
@@ -3298,15 +3463,18 @@ export function VisualEditorShell({
                       />
                     ) : (
                       <div className="flex size-full flex-1 flex-col items-center justify-center p-8 text-center bg-stone-50 text-stone-700">
-                        <p className="font-medium text-sm">Preview Token Required</p>
+                        <p className="font-medium text-sm">
+                          Preview Token Required
+                        </p>
                         <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-                          Theme build succeeded, but preview capability token is missing. Please ensure THEME_PREVIEW_SECRET is configured.
+                          Theme build succeeded, but preview capability token is
+                          missing. Please ensure THEME_PREVIEW_SECRET is
+                          configured.
                         </p>
                       </div>
                     )}
                   </div>
                 ) : previewUrl ? (
-
                   <iframe
                     ref={previewIframeRef}
                     key={previewKey}
@@ -3320,9 +3488,9 @@ export function VisualEditorShell({
                       syncPreviewViewportHeight();
                       syncPreviewSection();
                       syncPreviewSelectionMode();
-                      previewIframeRef.current?.contentWindow?.postMessage(
+                      postEditorToPreviewMessage(
+                        previewIframeRef.current?.contentWindow,
                         { type: "morph:storefront-preview-request-size" },
-                        window.location.origin,
                       );
                     }}
                   />
@@ -3331,7 +3499,6 @@ export function VisualEditorShell({
                     No template is available for preview.
                   </div>
                 )}
-
 
                 {/* Comment Click Overlay when in Comment Mode & Open tab (disabled in Resolved tab) */}
                 {isCommentMode && commentFilter === "open" ? (
@@ -3344,13 +3511,23 @@ export function VisualEditorShell({
                       if (e.button === 1) {
                         e.preventDefault();
                         e.currentTarget.setPointerCapture(e.pointerId);
-                        beginCanvasPan("canvas", e.pointerId, e.clientX, e.clientY);
+                        beginCanvasPan(
+                          "canvas",
+                          e.pointerId,
+                          e.clientX,
+                          e.clientY,
+                        );
                         return;
                       }
                       e.stopPropagation();
                     }}
                     onPointerMove={(e) => {
-                      moveCanvasPan("canvas", e.pointerId, e.clientX, e.clientY);
+                      moveCanvasPan(
+                        "canvas",
+                        e.pointerId,
+                        e.clientX,
+                        e.clientY,
+                      );
                     }}
                     onPointerUp={(e) => {
                       if (e.button === 1) {
@@ -3443,9 +3620,10 @@ export function VisualEditorShell({
                       tabIndex={0}
                       className="group absolute z-20 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
                       style={{
-                        left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px - ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
-                        top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
-                        bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
+                        left: "clamp(0.75rem, calc(50% + var(--morph-canvas-x) - var(--morph-canvas-half-width)), calc(100% - 0.75rem))",
+                        top: "max(0px, calc(3rem + var(--morph-canvas-y)))",
+                        bottom:
+                          "max(0px, calc(100% - 3rem - var(--morph-canvas-y) - var(--morph-canvas-scaled-height)))",
                       }}
                       title="Drag the page edge to resize the preview symmetrically"
                       onPointerDown={handleResizePointerDown("left")}
@@ -3467,9 +3645,10 @@ export function VisualEditorShell({
                       tabIndex={0}
                       className="group absolute z-20 flex w-5 -translate-x-1/2 cursor-ew-resize touch-none items-center justify-center outline-none"
                       style={{
-                        left: `clamp(0.75rem, calc(50% + ${canvasTransform.x}px + ${(previewWidth * canvasTransform.scale) / 2}px), calc(100% - 0.75rem))`,
-                        top: `max(0px, calc(3rem ${canvasTransform.y >= 0 ? "+" : "-"} ${Math.abs(canvasTransform.y)}px))`,
-                        bottom: `max(0px, calc(100% - 3rem - ${canvasTransform.y + previewFrameHeight * canvasTransform.scale}px))`,
+                        left: "clamp(0.75rem, calc(50% + var(--morph-canvas-x) + var(--morph-canvas-half-width)), calc(100% - 0.75rem))",
+                        top: "max(0px, calc(3rem + var(--morph-canvas-y)))",
+                        bottom:
+                          "max(0px, calc(100% - 3rem - var(--morph-canvas-y) - var(--morph-canvas-scaled-height)))",
                       }}
                       title="Drag the page edge to resize the preview symmetrically"
                       onPointerDown={handleResizePointerDown("right")}
@@ -3617,8 +3796,8 @@ function PreviewSizeControl({
     <div
       className="absolute z-20 flex h-7 -translate-y-full items-center gap-2 rounded-md border bg-popover px-2 text-xs text-popover-foreground shadow-sm outline-none focus-within:ring-2 focus-within:ring-ring hover:bg-accent"
       style={{
-        left: `max(0.5rem, calc(50% + ${canvasTransform.x}px - ${(width * canvasTransform.scale) / 2}px))`,
-        top: `calc(3rem + ${canvasTransform.y}px - 0.5rem)`,
+        left: "max(0.5rem, calc(50% + var(--morph-canvas-x) - var(--morph-canvas-half-width)))",
+        top: "calc(3rem + var(--morph-canvas-y) - 0.5rem)",
       }}
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -3733,9 +3912,15 @@ function EditorControls({
           variant={isCommentMode ? "toolbarActive" : "ghost"}
           size="icon"
           className="size-7 shrink-0"
-          aria-label={isCommentMode ? "Disable comment mode" : "Enable comment mode"}
+          aria-label={
+            isCommentMode ? "Disable comment mode" : "Enable comment mode"
+          }
           aria-pressed={isCommentMode}
-          title={isCommentMode ? "Exit comment mode" : "Click to place comments on the canvas"}
+          title={
+            isCommentMode
+              ? "Exit comment mode"
+              : "Click to place comments on the canvas"
+          }
           onClick={() => onCommentModeChange(!isCommentMode)}
         >
           <MessageCircle />

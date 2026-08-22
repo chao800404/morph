@@ -37,6 +37,7 @@ export type EditorSelectionDescriptor = {
   role: string | null;
   inputType: string | null;
   nodeId: string | null;
+  sourceFilePath: string | null;
   elementKey: string | null;
   fieldKey: string | null;
   fieldPath: string | null;

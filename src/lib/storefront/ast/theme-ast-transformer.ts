@@ -496,6 +496,125 @@ export type PatchClassNameResult = {
   reason?: "not-found" | "dynamic-classname" | "parse-error";
 };
 
+export type SwapSiblingMorphNodesResult = {
+  code: string;
+  editable: boolean;
+  reason?: "parse-error" | "not-found" | "not-siblings" | "same-node";
+};
+
+function staticMorphNodeId(node: any): string | null {
+  if (node?.type !== "JSXElement") return null;
+  for (const attribute of node.openingElement?.attributes ?? []) {
+    if (
+      attribute.type !== "JSXAttribute" ||
+      attribute.name?.type !== "JSXIdentifier" ||
+      attribute.name.name !== "data-morph-node"
+    ) {
+      continue;
+    }
+    if (attribute.value?.type === "StringLiteral") {
+      return attribute.value.value;
+    }
+    if (
+      attribute.value?.type === "JSXExpressionContainer" &&
+      attribute.value.expression?.type === "StringLiteral"
+    ) {
+      return attribute.value.expression.value;
+    }
+  }
+  return null;
+}
+
+/**
+ * Swaps two statically-addressable JSX siblings without reformatting the rest
+ * of the source file. Runtime DOM order is never used as source of truth: the
+ * transformer succeeds only when both unique Morph nodes are direct children
+ * of the same JSX parent in the parsed TSX source.
+ */
+export function swapSiblingMorphNodes(
+  sourceCode: string,
+  firstNodeId: string,
+  secondNodeId: string,
+): SwapSiblingMorphNodesResult {
+  if (firstNodeId === secondNodeId) {
+    return { code: sourceCode, editable: false, reason: "same-node" };
+  }
+
+  try {
+    const ast = parseAst(sourceCode);
+    let firstMatchCount = 0;
+    let secondMatchCount = 0;
+    let siblingPair: { first: any; second: any } | null = null;
+
+    walk(ast, (node) => {
+      if (node.type !== "JSXElement" || !Array.isArray(node.children)) return;
+
+      let first: any = null;
+      let second: any = null;
+      for (const child of node.children) {
+        const childNodeId = staticMorphNodeId(child);
+        if (childNodeId === firstNodeId) {
+          firstMatchCount += 1;
+          first = child;
+        }
+        if (childNodeId === secondNodeId) {
+          secondMatchCount += 1;
+          second = child;
+        }
+      }
+      if (first && second) siblingPair = { first, second };
+    });
+
+    if (firstMatchCount !== 1 || secondMatchCount !== 1) {
+      return { code: sourceCode, editable: false, reason: "not-found" };
+    }
+    const resolvedSiblingPair = siblingPair as {
+      first: any;
+      second: any;
+    } | null;
+    if (!resolvedSiblingPair) {
+      return { code: sourceCode, editable: false, reason: "not-siblings" };
+    }
+
+    const { first, second } = resolvedSiblingPair;
+    const firstStart = first.start ?? -1;
+    const firstEnd = first.end ?? -1;
+    const secondStart = second.start ?? -1;
+    const secondEnd = second.end ?? -1;
+    if (
+      firstStart < 0 ||
+      firstEnd <= firstStart ||
+      secondStart < 0 ||
+      secondEnd <= secondStart
+    ) {
+      return { code: sourceCode, editable: false, reason: "not-found" };
+    }
+
+    const earlier =
+      firstStart < secondStart
+        ? { start: firstStart, end: firstEnd }
+        : { start: secondStart, end: secondEnd };
+    const later =
+      firstStart < secondStart
+        ? { start: secondStart, end: secondEnd }
+        : { start: firstStart, end: firstEnd };
+    const earlierSource = sourceCode.slice(earlier.start, earlier.end);
+    const laterSource = sourceCode.slice(later.start, later.end);
+
+    return {
+      code:
+        sourceCode.slice(0, earlier.start) +
+        laterSource +
+        sourceCode.slice(earlier.end, later.start) +
+        earlierSource +
+        sourceCode.slice(later.end),
+      editable: true,
+    };
+  } catch {
+    return { code: sourceCode, editable: false, reason: "parse-error" };
+  }
+}
+
 /**
  * Patches the className of a specific morph element in component source code using exact AST node offsets.
  */

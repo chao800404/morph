@@ -10,7 +10,7 @@ import {
   initStorefrontStarterTheme,
   saveStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
-import Editor from "@monaco-editor/react";
+import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
@@ -29,6 +29,10 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
+import {
+  configureThemeTypeScript,
+  registerTailwindCompletionProvider,
+} from "./editor-code-language-support";
 
 type EditorCodeWorkspaceProps = {
   storefrontId: string;
@@ -68,6 +72,7 @@ function getFileIcon(filename: string) {
 
 function getLanguage(path: string): string {
   if (path.endsWith(".tsx") || path.endsWith(".ts")) return "typescript";
+  if (path.endsWith(".jsx") || path.endsWith(".js")) return "javascript";
   if (path.endsWith(".css")) return "css";
   if (path.endsWith(".json")) return "json";
   if (path.endsWith(".html")) return "html";
@@ -90,6 +95,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const queryClient = useQueryClient();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
+  const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
 
   // Find initial active file (default to Hero.tsx or index.tsx)
   const defaultFile = useMemo(() => {
@@ -135,6 +141,39 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const draftRevisionRef = useRef<Record<string, number>>({});
   const combinedDirtyPathsRef = useRef(dirtyPaths);
   const suppressModelChangeRef = useRef(false);
+
+  const handleEditorWillMount = useCallback((monaco: Monaco) => {
+    configureThemeTypeScript(monaco);
+  }, []);
+
+  const handleEditorDidMount = useCallback<OnMount>(
+    (editor, monaco) => {
+      editorRef.current = editor;
+      monacoRef.current = monaco;
+      completionProviderRef.current?.dispose();
+      completionProviderRef.current = registerTailwindCompletionProvider(monaco);
+      if (jumpLocation?.line && jumpLocation.filePath === activeFilePath) {
+        editor.revealPositionInCenter({
+          lineNumber: jumpLocation.line,
+          column: jumpLocation.column ?? 1,
+        });
+        editor.setPosition({
+          lineNumber: jumpLocation.line,
+          column: jumpLocation.column ?? 1,
+        });
+        editor.focus();
+      }
+    },
+    [activeFilePath, jumpLocation],
+  );
+
+  useEffect(
+    () => () => {
+      completionProviderRef.current?.dispose();
+      completionProviderRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (initialActiveFilePath) {
@@ -725,21 +764,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               language={getLanguage(activeFilePath)}
               defaultValue={getInitialEditorContent(activeFilePath)}
               onChange={handleContentChange}
-              onMount={(editor, monaco) => {
-                editorRef.current = editor;
-                monacoRef.current = monaco;
-                if (jumpLocation?.line && jumpLocation.filePath === activeFilePath) {
-                  editor.revealPositionInCenter({
-                    lineNumber: jumpLocation.line,
-                    column: jumpLocation.column ?? 1,
-                  });
-                  editor.setPosition({
-                    lineNumber: jumpLocation.line,
-                    column: jumpLocation.column ?? 1,
-                  });
-                  editor.focus();
-                }
-              }}
+              beforeMount={handleEditorWillMount}
+              onMount={handleEditorDidMount}
               theme="vs-dark"
               options={{
                 fontSize: 13,
@@ -752,6 +778,12 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                 wordWrap: "on",
                 automaticLayout: true,
                 padding: { top: 12, bottom: 12 },
+                quickSuggestions: {
+                  other: true,
+                  comments: false,
+                  strings: true,
+                },
+                suggestOnTriggerCharacters: true,
               }}
             />
           ) : (
