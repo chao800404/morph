@@ -1,7 +1,10 @@
 import { renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { type PreviewMessageChannel } from "@/lib/storefront/editor/preview-protocol";
-import { useLivePreviewMessageBridge } from "./use-live-preview-message-bridge";
+import {
+  useLivePreviewMessageBridge,
+  useStableLivePreviewSession,
+} from "./use-live-preview-message-bridge";
 
 const firstChannel: PreviewMessageChannel = {
   targetOrigin: "https://editor.example.com",
@@ -49,5 +52,37 @@ describe("useLivePreviewMessageBridge", () => {
         },
       } as MessageEvent<unknown>),
     ).toEqual({ type: "morph:storefront-preview-ready" });
+  });
+});
+
+describe("useStableLivePreviewSession", () => {
+  it("keeps the iframe session stable across background context refetches", () => {
+    const { result, rerender } = renderHook(
+      ({
+        workspaceKey,
+        previewSession,
+      }: {
+        workspaceKey: string;
+        previewSession: string;
+      }) => useStableLivePreviewSession(workspaceKey, previewSession),
+      {
+        initialProps: {
+          workspaceKey: "store-1:theme-1",
+          previewSession: firstChannel.previewSession,
+        },
+      },
+    );
+
+    rerender({
+      workspaceKey: "store-1:theme-1",
+      previewSession: nextChannel.previewSession,
+    });
+    expect(result.current).toBe(firstChannel.previewSession);
+
+    rerender({
+      workspaceKey: "store-1:theme-2",
+      previewSession: nextChannel.previewSession,
+    });
+    expect(result.current).toBe(nextChannel.previewSession);
   });
 });

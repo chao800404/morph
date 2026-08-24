@@ -6,6 +6,20 @@ import {
 } from "@/lib/storefront/editor/preview-protocol";
 import { type RefObject, useCallback, useRef } from "react";
 
+export function useStableLivePreviewSession(
+  workspaceKey: string,
+  previewSession: string,
+) {
+  const sessionRef = useRef({ workspaceKey, previewSession });
+  if (
+    sessionRef.current.workspaceKey !== workspaceKey ||
+    !sessionRef.current.previewSession
+  ) {
+    sessionRef.current = { workspaceKey, previewSession };
+  }
+  return sessionRef.current.previewSession;
+}
+
 export function useLivePreviewMessageBridge(
   channel: PreviewMessageChannel,
   previewIframeRef: RefObject<HTMLIFrameElement | null>,

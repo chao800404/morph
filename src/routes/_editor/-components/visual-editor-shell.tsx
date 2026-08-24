@@ -123,7 +123,10 @@ import {
   buildLivePreviewUrl,
   resolveLivePreviewSecurity,
 } from "@/lib/storefront/editor/live-preview-security";
-import { useLivePreviewMessageBridge } from "./use-live-preview-message-bridge";
+import {
+  useLivePreviewMessageBridge,
+  useStableLivePreviewSession,
+} from "./use-live-preview-message-bridge";
 import { EditorCanvasComments } from "./editor-canvas-comments";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { resolveCodeSelectionTarget } from "./editor-code-selection";
@@ -771,11 +774,16 @@ export function VisualEditorShell({
       .VITE_STOREFRONT_LIVE_PREVIEW_ORIGIN,
     executionMode: LIVE_PREVIEW_EXECUTION_MODE,
   });
+  const livePreviewWorkspaceKey = `${context.storefront.id}:${context.theme.id}`;
+  const stablePreviewSession = useStableLivePreviewSession(
+    livePreviewWorkspaceKey,
+    context.previewChannel?.sessionId ?? "",
+  );
   const livePreviewChannel = {
     targetOrigin: livePreviewSecurity.enabled
       ? livePreviewSecurity.previewOrigin
       : context.previewChannel?.editorOrigin ?? "",
-    previewSession: context.previewChannel?.sessionId ?? "",
+    previewSession: stablePreviewSession,
   };
   const previewUrl =
     activeTemplate && livePreviewSecurity.enabled
@@ -786,7 +794,7 @@ export function VisualEditorShell({
           templateId: activeTemplate.id,
           viewportHeight: DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
           editorOrigin: context.previewChannel?.editorOrigin ?? "",
-          previewSession: context.previewChannel?.sessionId ?? "",
+          previewSession: stablePreviewSession,
         })
       : null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
