@@ -113,13 +113,17 @@ import {
   shouldRevealPreviewForStyleAck,
 } from "./style-revision";
 import { type EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
+import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
   parsePreviewSectionProps,
-  parsePreviewToEditorMessage,
-  postEditorToPreviewMessage,
   type PreviewSelectionRestoreTarget,
   type PreviewSectionProps,
 } from "@/lib/storefront/editor/preview-protocol";
+import {
+  buildLivePreviewUrl,
+  resolveLivePreviewSecurity,
+} from "@/lib/storefront/editor/live-preview-security";
+import { useLivePreviewMessageBridge } from "./use-live-preview-message-bridge";
 import { EditorCanvasComments } from "./editor-canvas-comments";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { resolveCodeSelectionTarget } from "./editor-code-selection";
@@ -203,6 +207,10 @@ const previewDefaultHeights = {
 } as const;
 
 const DEFAULT_PREVIEW_VIEWPORT_HEIGHT = previewDefaultHeights.desktop;
+// The current Live Preview parses Theme Source into the compatibility renderer;
+// it does not execute the user's JavaScript bundle. Switching this to
+// "user-code" intentionally fails closed until an isolated origin is configured.
+const LIVE_PREVIEW_EXECUTION_MODE = "compatibility-renderer" as const;
 const MIN_CANVAS_SCALE = 0.25;
 const MAX_CANVAS_SCALE = 2;
 const CANVAS_SCALE_STEP = 0.1;
@@ -757,9 +765,30 @@ export function VisualEditorShell({
     [activeTemplate?.id, enqueueTemplateMutation, updatePropsMutation],
   );
 
-  const previewUrl = activeTemplate
-    ? `/store/${encodeURIComponent(context.storefront.id)}/themes/${encodeURIComponent(context.theme.id)}/preview?templateId=${encodeURIComponent(activeTemplate.id)}&viewportHeight=${DEFAULT_PREVIEW_VIEWPORT_HEIGHT}`
-    : null;
+  const livePreviewSecurity = resolveLivePreviewSecurity({
+    editorOrigin: context.previewChannel?.editorOrigin ?? "",
+    configuredPreviewOrigin: import.meta.env
+      .VITE_STOREFRONT_LIVE_PREVIEW_ORIGIN,
+    executionMode: LIVE_PREVIEW_EXECUTION_MODE,
+  });
+  const livePreviewChannel = {
+    targetOrigin: livePreviewSecurity.enabled
+      ? livePreviewSecurity.previewOrigin
+      : context.previewChannel?.editorOrigin ?? "",
+    previewSession: context.previewChannel?.sessionId ?? "",
+  };
+  const previewUrl =
+    activeTemplate && livePreviewSecurity.enabled
+      ? buildLivePreviewUrl({
+          previewOrigin: livePreviewSecurity.previewOrigin,
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          templateId: activeTemplate.id,
+          viewportHeight: DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
+          editorOrigin: context.previewChannel?.editorOrigin ?? "",
+          previewSession: context.previewChannel?.sessionId ?? "",
+        })
+      : null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
   const isPreviewLoading =
     previewKey !== null && loadedPreviewKey !== previewKey;
@@ -982,6 +1011,10 @@ export function VisualEditorShell({
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const fileRevisionRef = useRef<Map<string, number>>(new Map());
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
+  const {
+    parseMessage: parseLivePreviewMessage,
+    postMessage: postEditorToPreviewMessage,
+  } = useLivePreviewMessageBridge(livePreviewChannel, previewIframeRef);
   const arrayItemReorderHandlerRef = useRef<
     (
       sectionId: string,
@@ -2279,11 +2312,7 @@ export function VisualEditorShell({
     if (!previewKey) return;
 
     const handlePreviewMessage = (event: MessageEvent<unknown>) => {
-      const message =
-        event.origin === window.location.origin &&
-        event.source === previewIframeRef.current?.contentWindow
-          ? parsePreviewToEditorMessage(event.data)
-          : null;
+      const message = parseLivePreviewMessage(event);
       if (message?.type !== "morph:storefront-preview-size") return;
 
       const height = Math.min(30_000, Math.max(320, Math.ceil(message.height)));
@@ -2299,22 +2328,19 @@ export function VisualEditorShell({
       type: "morph:storefront-preview-request-size",
     });
     return () => window.removeEventListener("message", handlePreviewMessage);
-  }, [previewKey]);
+  }, [parseLivePreviewMessage, previewKey]);
 
   useEffect(() => {
     if (!previewKey) return;
 
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
-      const message =
-        event.origin === window.location.origin &&
-        event.source === previewIframeRef.current?.contentWindow
-          ? parsePreviewToEditorMessage(event.data)
-          : null;
+      const message = parseLivePreviewMessage(event);
       if (!message) return;
 
       if (
         message.type === "morph:storefront-preview-commit-array-item-reorder"
       ) {
+        reportAuthenticatedUserActivity();
         arrayItemReorderHandlerRef.current(
           message.sectionId,
           message.draggedFieldPath,
@@ -2324,6 +2350,7 @@ export function VisualEditorShell({
       }
 
       if (message.type === "morph:storefront-preview-commit-sibling-reorder") {
+        reportAuthenticatedUserActivity();
         void handleSwapThemeFileSiblings(
           message.sourceFilePath,
           message.draggedNodeId,
@@ -2366,6 +2393,7 @@ export function VisualEditorShell({
         return;
       }
       if (message.type !== "morph:storefront-preview-select-section") return;
+      reportAuthenticatedUserActivity();
 
       const responseStyleRevision = message.styleRevision;
       if (
@@ -2904,28 +2932,9 @@ export function VisualEditorShell({
     if (!previewKey) return;
 
     const handlePreviewWheel = (event: MessageEvent<unknown>) => {
-      const message = event.data;
-      if (
-        event.origin !== window.location.origin ||
-        event.source !== previewIframeRef.current?.contentWindow ||
-        typeof message !== "object" ||
-        message === null ||
-        !("type" in message) ||
-        message.type !== "morph:storefront-preview-wheel" ||
-        !("deltaY" in message) ||
-        typeof message.deltaY !== "number" ||
-        !Number.isFinite(message.deltaY) ||
-        !("deltaMode" in message) ||
-        typeof message.deltaMode !== "number" ||
-        !("ctrlKey" in message) ||
-        typeof message.ctrlKey !== "boolean" ||
-        !("clientX" in message) ||
-        typeof message.clientX !== "number" ||
-        !("clientY" in message) ||
-        typeof message.clientY !== "number"
-      ) {
-        return;
-      }
+      const message = parseLivePreviewMessage(event);
+      if (message?.type !== "morph:storefront-preview-wheel") return;
+      reportAuthenticatedUserActivity();
 
       const viewport = canvasViewportRef.current;
       const frame = previewIframeRef.current;
@@ -2976,22 +2985,19 @@ export function VisualEditorShell({
 
     window.addEventListener("message", handlePreviewWheel);
     return () => window.removeEventListener("message", handlePreviewWheel);
-  }, [previewKey, scheduleCanvasScroll, scheduleCanvasTransform]);
+  }, [
+    parseLivePreviewMessage,
+    previewKey,
+    scheduleCanvasScroll,
+    scheduleCanvasTransform,
+  ]);
 
   useEffect(() => {
     if (!previewKey) return;
 
     const handlePreviewCanvasGesture = (event: MessageEvent<unknown>) => {
-      const message = event.data;
-      if (
-        event.origin !== window.location.origin ||
-        event.source !== previewIframeRef.current?.contentWindow ||
-        typeof message !== "object" ||
-        message === null ||
-        !("type" in message)
-      ) {
-        return;
-      }
+      const message = parseLivePreviewMessage(event);
+      if (!message) return;
 
       if (message.type === "morph:storefront-preview-reset-canvas") {
         resetCanvas();
@@ -3017,6 +3023,7 @@ export function VisualEditorShell({
       ) {
         return;
       }
+      reportAuthenticatedUserActivity();
 
       if (message.phase === "down") {
         beginCanvasPan(
@@ -3040,7 +3047,14 @@ export function VisualEditorShell({
     window.addEventListener("message", handlePreviewCanvasGesture);
     return () =>
       window.removeEventListener("message", handlePreviewCanvasGesture);
-  }, [beginCanvasPan, endCanvasPan, moveCanvasPan, previewKey, resetCanvas]);
+  }, [
+    beginCanvasPan,
+    endCanvasPan,
+    moveCanvasPan,
+    parseLivePreviewMessage,
+    previewKey,
+    resetCanvas,
+  ]);
 
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3850,7 +3864,11 @@ export function VisualEditorShell({
                     key={previewKey}
                     src={previewUrl}
                     title={`${activeTemplate?.name ?? context.theme.name} storefront preview`}
-                    sandbox="allow-same-origin allow-scripts"
+                    sandbox={
+                      livePreviewSecurity.enabled
+                        ? livePreviewSecurity.sandbox
+                        : undefined
+                    }
                     referrerPolicy="same-origin"
                     scrolling="no"
                     className="block size-full border-0 bg-stone-50"
@@ -3864,6 +3882,10 @@ export function VisualEditorShell({
                       );
                     }}
                   />
+                ) : !livePreviewSecurity.enabled ? (
+                  <div className="flex size-full items-center justify-center p-6 text-center text-sm text-destructive">
+                    Live Preview is unavailable: {livePreviewSecurity.reason}.
+                  </div>
                 ) : (
                   <div className="flex size-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
                     No template is available for preview.

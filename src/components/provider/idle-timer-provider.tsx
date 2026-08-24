@@ -1,11 +1,12 @@
 import authClient from "@/auth/authClient";
+import { AUTHENTICATED_USER_ACTIVITY_EVENT } from "@/lib/auth/idle-activity";
 import { useNavigate } from "@tanstack/react-router";
 import { createAuthClient } from "better-auth/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  IIdleTimer,
-  PresenceType,
   IdleTimerProvider as Provider,
+  type IIdleTimer,
+  type PresenceType,
 } from "react-idle-timer";
 import { toast } from "sonner";
 import {
@@ -17,6 +18,8 @@ import {
 } from "../ui/alert-dialog";
 
 const { useSession } = createAuthClient();
+export const AUTH_IDLE_TIMER_CHANNEL = "morph-auth-session";
+export const AUTH_IDLE_TIMER_SYNC_INTERVAL_MS = 1_000;
 
 /**
  * Props for the IdleTimerProvider component
@@ -43,6 +46,7 @@ export const IdleTimerProvider = ({
   const { data: session } = useSession();
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
+  const idleTimerRef = useRef<IIdleTimer>(null!);
 
   // Control whether onAction should execute
   const shouldResetRef = useRef(false);
@@ -55,7 +59,9 @@ export const IdleTimerProvider = ({
     }
   };
 
-  const onIdle = () => {
+  const onIdle = (_event?: Event, idleTimer?: IIdleTimer) => {
+    if (idleTimer && !idleTimer.isLeader()) return;
+
     // User is completely idle, perform logout
     if (process.env.NODE_ENV === "development") {
       console.log("🚪 User idle timeout - logging out");
@@ -106,16 +112,39 @@ export const IdleTimerProvider = ({
     shouldResetRef.current = false;
   };
 
+  useEffect(() => {
+    const handleAuthenticatedUserActivity = () => {
+      idleTimerRef.current?.reset();
+      shouldResetRef.current = false;
+      setOpen(false);
+    };
+
+    window.addEventListener(
+      AUTHENTICATED_USER_ACTIVITY_EVENT,
+      handleAuthenticatedUserActivity,
+    );
+    return () =>
+      window.removeEventListener(
+        AUTHENTICATED_USER_ACTIVITY_EVENT,
+        handleAuthenticatedUserActivity,
+      );
+  }, []);
+
   if (!publicURL) return <>{children}</>;
 
   return (
     <Provider
+      ref={idleTimerRef}
       timeout={1000 * 60 * timeout}
       promptBeforeIdle={1000 * 60 * promptBeforeIdle}
       onPresenceChange={onPresenceChange}
       onPrompt={onPrompt}
       onIdle={onIdle}
       onAction={onAction}
+      crossTab
+      name={AUTH_IDLE_TIMER_CHANNEL}
+      syncTimers={AUTH_IDLE_TIMER_SYNC_INTERVAL_MS}
+      leaderElection
       disabled={!session?.user || !enabled}
     >
       <AlertDialog open={open}>

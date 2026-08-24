@@ -1,6 +1,8 @@
 import { TopLoader } from "@/components/top-loader/top-loader";
+import { IdleTimerProvider } from "@/components/provider/idle-timer-provider";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
+import { getConfig } from "@/server/get-config";
 import { getSession } from "@/server/auth/getSession";
 import {
   createFileRoute,
@@ -22,13 +24,23 @@ export const Route = createFileRoute("/_editor")({
 });
 
 function EditorLayout() {
+  const { publicURL } = Route.useRouteContext();
+  const config = getConfig().client;
+
   return (
     <ThemeProvider disableTransitionOnChange>
-      <TopLoader ignoreSearchOnly />
-      <div className="min-h-svh bg-background text-foreground">
-        <Outlet />
-      </div>
-      <Toaster />
+      <IdleTimerProvider
+        publicURL={publicURL}
+        enabled={config.auth?.autoLogout?.enabled ?? true}
+        timeout={config.auth?.autoLogout?.timeout ?? 30}
+        promptBeforeIdle={config.auth?.autoLogout?.promptBeforeIdle ?? 25}
+      >
+        <TopLoader ignoreSearchOnly />
+        <div className="min-h-svh bg-background text-foreground">
+          <Outlet />
+        </div>
+        <Toaster />
+      </IdleTimerProvider>
     </ThemeProvider>
   );
 }

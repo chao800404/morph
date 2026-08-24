@@ -37,6 +37,21 @@ describe("Inspector length controls", () => {
     ).toEqual({ unit: "rem", value: -2 });
   });
 
+  it("resolves responsive Margin Auto utilities", () => {
+    expect(
+      resolveInspectorLength({
+        className: "m-[12px] md:m-auto",
+        sources: [{ property: "margin", prefix: "m" }],
+        targetVariants: ["md"],
+        computedValue: "0px",
+        allowAuto: true,
+      }),
+    ).toEqual({ unit: "auto", value: null });
+
+    expect(inspectorLengthUtility("m", "auto")).toBe("m-auto");
+    expect(inspectorLengthUtility("ml", "auto")).toBe("ml-auto");
+  });
+
   it("uses Auto for unset sizing and gives optimistic edits priority", () => {
     expect(
       resolveInspectorLength({

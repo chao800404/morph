@@ -20,7 +20,7 @@ import {
   selectionStylePreviewNeedsOverlayUpdate,
 } from "@/lib/storefront/editor/selection-style-preview";
 import {
-  parseEditorToPreviewMessage,
+  parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
   type PreviewSelectionRestoreTarget,
   type PreviewStyleSnapshot,
@@ -33,7 +33,7 @@ const PREVIEW_GEOMETRY_MUTATION_MESSAGES = new Set([
   "morph:storefront-preview-set-section-order",
 ]);
 
-function selectionStyleSnapshot(
+export function selectionStyleSnapshot(
   computed: CSSStyleDeclaration,
 ): PreviewStyleSnapshot {
   return {
@@ -46,9 +46,21 @@ function selectionStyleSnapshot(
     paddingBottom: computed.paddingBottom,
     paddingLeft: computed.paddingLeft,
     paddingRight: computed.paddingRight,
+    marginTop: computed.marginTop,
+    marginBottom: computed.marginBottom,
+    marginLeft: computed.marginLeft,
+    marginRight: computed.marginRight,
+    color: computed.color,
     backgroundColor: computed.backgroundColor,
     backgroundImage: computed.backgroundImage,
     borderRadius: computed.borderRadius,
+    borderTopLeftRadius: computed.borderTopLeftRadius,
+    borderTopRightRadius: computed.borderTopRightRadius,
+    borderBottomRightRadius: computed.borderBottomRightRadius,
+    borderBottomLeftRadius: computed.borderBottomLeftRadius,
+    borderTopWidth: computed.borderTopWidth,
+    borderTopStyle: computed.borderTopStyle,
+    borderTopColor: computed.borderTopColor,
     display: computed.display,
     flexDirection: computed.flexDirection,
     gap: computed.gap,
@@ -232,11 +244,7 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
 
   useEffect(() => {
     const handleThemeFileMessage = (event: MessageEvent<unknown>) => {
-      const message =
-        event.origin === window.location.origin &&
-        event.source === window.parent
-          ? parseEditorToPreviewMessage(event.data)
-          : null;
+      const message = parseEditorToPreviewWindowEvent(event);
       if (!message) return;
 
       if (
@@ -293,11 +301,7 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
 
   useEffect(() => {
     const handlePreviewMessages = (event: MessageEvent<unknown>) => {
-      const message =
-        event.origin === window.location.origin &&
-        event.source === window.parent
-          ? parseEditorToPreviewMessage(event.data)
-          : null;
+      const message = parseEditorToPreviewWindowEvent(event);
       if (!message) return;
 
       if (
@@ -1669,11 +1673,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const handleEditorMessage = (event: MessageEvent<unknown>) => {
-      const message =
-        event.origin === window.location.origin &&
-        event.source === window.parent
-          ? parseEditorToPreviewMessage(event.data)
-          : null;
+      const message = parseEditorToPreviewWindowEvent(event);
       if (!message) return;
 
       if (
@@ -1903,11 +1903,7 @@ function usePreviewViewportHeight(initialHeight: number) {
 
   useEffect(() => {
     const handleViewportHeight = (event: MessageEvent<unknown>) => {
-      const message =
-        event.origin === window.location.origin &&
-        event.source === window.parent
-          ? parseEditorToPreviewMessage(event.data)
-          : null;
+      const message = parseEditorToPreviewWindowEvent(event);
       if (
         message?.type !== "morph:storefront-preview-set-viewport-height" ||
         message.height < 320 ||
@@ -1989,11 +1985,7 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
     });
     observer.observe(previewRoot);
     const handleSizeRequest = (event: MessageEvent<unknown>) => {
-      const message =
-        event.origin === window.location.origin &&
-        event.source === window.parent
-          ? parseEditorToPreviewMessage(event.data)
-          : null;
+      const message = parseEditorToPreviewWindowEvent(event);
       if (message?.type === "morph:storefront-preview-request-size") {
         stableFrameCount = 0;
         measureUntilStable();

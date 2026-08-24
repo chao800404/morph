@@ -128,7 +128,15 @@ export function resolveInspectorModules(
   add("sizing", "spacing");
   add("position");
   add("appearance");
-  if (isMedia || isContainer || isText || styleValue(style, "background-color") !== "" || styleValue(style, "background-image") !== "") add("fill");
+  if (
+    isMedia ||
+    isContainer ||
+    isText ||
+    styleValue(style, "backgroundColor") !== "" ||
+    styleValue(style, "backgroundImage") !== ""
+  ) {
+    add("fill");
+  }
   add("border", "effects");
   if (isInteractive) add("interaction");
   if (tag === "img" || tag === "input" || tag === "textarea" || tag === "select" || role === "img") add("accessibility");
@@ -151,4 +159,3 @@ export function resolveInspectorModules(
 
   return modules;
 }
-

@@ -57,23 +57,52 @@ describe("storefront theme editor search", () => {
 describe("storefront theme preview search", () => {
   it("requires an exact template identity and bounded viewport height", () => {
     const templateId = crypto.randomUUID();
+    const previewSession = crypto.randomUUID();
+    const editorOrigin = "https://editor.example.com";
 
     expect(
       storefrontThemePreviewSearchSchema.parse({
         templateId,
         viewportHeight: "900",
+        editorOrigin,
+        previewSession,
       }),
-    ).toEqual({ templateId, viewportHeight: 900 });
+    ).toEqual({
+      templateId,
+      viewportHeight: 900,
+      editorOrigin,
+      previewSession,
+    });
     expect(() =>
       storefrontThemePreviewSearchSchema.parse({
         templateId: "index",
         viewportHeight: 900,
+        editorOrigin,
+        previewSession,
       }),
     ).toThrow();
     expect(() =>
       storefrontThemePreviewSearchSchema.parse({
         templateId,
         viewportHeight: 30_000,
+        editorOrigin,
+        previewSession,
+      }),
+    ).toThrow();
+    expect(() =>
+      storefrontThemePreviewSearchSchema.parse({
+        templateId,
+        viewportHeight: 900,
+        editorOrigin: "https://editor.example.com/path",
+        previewSession,
+      }),
+    ).toThrow();
+    expect(() =>
+      storefrontThemePreviewSearchSchema.parse({
+        templateId,
+        viewportHeight: 900,
+        editorOrigin,
+        previewSession: "predictable-session",
       }),
     ).toThrow();
   });

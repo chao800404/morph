@@ -5,6 +5,7 @@ import {
 } from "@/lib/storefront/ast/theme-ast-transformer";
 import { cn } from "@/lib/utils";
 import { z } from "zod";
+import { renderSafeThemeComponent } from "./safe-theme-component-renderer";
 
 type StorefrontSection = StorefrontPageDocument["sections"][number];
 
@@ -217,6 +218,36 @@ function renderSection(
   const rawProps = (section.props ?? {}) as Record<string, any>;
   const parsed = schema ? schema.safeParse(rawProps) : null;
   const parsedData = parsed?.success ? parsed.data : rawProps;
+  const componentPath = getComponentFilePath(
+    section.type,
+    themeFiles,
+    section.componentRef ?? undefined,
+  );
+  const componentFile = componentPath
+    ? themeFiles?.find((file) => file.path === componentPath)
+    : null;
+
+  if (componentPath && componentFile && themeFiles) {
+    const rendered = renderSafeThemeComponent({
+      files: themeFiles,
+      sourcePath: componentPath,
+      props: parsedData as Record<string, unknown>,
+      section: {
+        sectionId: section.id,
+        sectionType: section.type,
+        componentRef: section.componentRef,
+      },
+    });
+    if (rendered.success) return rendered.node;
+    return (
+      <ThemeComponentDiagnostic
+        key={section.id}
+        section={section}
+        sourcePath={componentPath}
+        diagnostics={rendered.diagnostics}
+      />
+    );
+  }
 
   switch (section.type) {
     case "hero":
@@ -282,6 +313,32 @@ function renderSection(
   }
 }
 
+function ThemeComponentDiagnostic({
+  section,
+  sourcePath,
+  diagnostics,
+}: {
+  section: StorefrontSection;
+  sourcePath: string;
+  diagnostics: string[];
+}) {
+  return (
+    <section
+      data-storefront-section-id={section.id}
+      data-storefront-section-type={section.type}
+      data-morph-source-file={sourcePath}
+      data-storefront-theme-component-diagnostic
+      className="border border-amber-300 bg-amber-50 px-6 py-8 text-amber-950"
+    >
+      <p className="font-semibold">Theme component preview unavailable</p>
+      <p className="mt-2 text-sm">
+        {diagnostics[0] ??
+          "The component uses syntax that is not supported by the safe Design preview."}
+      </p>
+    </section>
+  );
+}
+
 function StorefrontHero({
   sectionId,
   componentRef,
@@ -335,6 +392,8 @@ function StorefrontHero({
     heroAst?.elements["heading"]?.className ||
     "mt-6 font-serif text-[clamp(3.25rem,7vw,7rem)] leading-[0.88] tracking-[-0.055em] text-stone-950";
 
+  const contentClassName = heroAst?.elements["content"]?.className || "max-w-xl";
+
   const descriptionClassName =
     heroAst?.elements["description"]?.className ||
     "mt-7 max-w-md text-base leading-7 text-stone-600";
@@ -382,7 +441,11 @@ function StorefrontHero({
       className={cn(sectionClassName, customClass)}
     >
       <div className="flex items-center px-[clamp(1.75rem,6vw,6rem)] py-20">
-        <div className="max-w-xl">
+        <div
+          data-morph-node={heroAst?.elements["content"]?.nodeId}
+          data-morph-element="content"
+          className={contentClassName}
+        >
           <p
             data-storefront-component="eyebrow"
             data-storefront-field="eyebrow"

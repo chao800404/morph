@@ -32,6 +32,18 @@ describe("resolveInspectorModules", () => {
     expect(input).toEqual(expect.arrayContaining(["content", "interaction", "accessibility"]));
   });
 
+  it("exposes fill when a generic interactive element has computed paint", () => {
+    expect(
+      resolveInspectorModules({
+        tagName: "button",
+        computedStyle: {
+          backgroundColor: "rgb(28, 25, 23)",
+          backgroundImage: "none",
+        },
+      }),
+    ).toContain("fill");
+  });
+
   it("always exposes position mode while the UI can gate X and Y by computed position", () => {
     expect(resolveInspectorModules({ tagName: "div", computedStyle: { position: "absolute" } }))
       .toContain("position");
@@ -78,4 +90,3 @@ describe("resolveInspectorModules", () => {
     })).toEqual(["media", "sizing"]);
   });
 });
-

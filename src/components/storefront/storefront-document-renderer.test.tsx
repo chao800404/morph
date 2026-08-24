@@ -70,6 +70,47 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
     ).toHaveLength(1);
   });
 
+  it("applies a saved Hero content wrapper class from the latest theme source", () => {
+    const hero = STARTER_THEME_FILES.find(
+      (file) => file.path === "src/components/Hero.tsx",
+    );
+    expect(hero).toBeDefined();
+    const themeFiles = STARTER_THEME_FILES.map((file) =>
+      file.path === "src/components/Hero.tsx"
+        ? {
+            ...file,
+            content:
+              hero?.content.replace(
+                '<div className="max-w-xl">',
+                '<div data-morph-node="hero-content" data-morph-element="content" className="max-w-xl p-24 bg-black">',
+              ) ?? file.content,
+          }
+        : file,
+    );
+    const document: StorefrontPageDocument = {
+      version: 1,
+      sections: [
+        {
+          id: "hero-1",
+          type: "hero",
+          componentRef: "hero.default",
+          enabled: true,
+          props: {},
+        },
+      ],
+    };
+
+    const { container } = render(
+      <StorefrontDocumentRenderer document={document} themeFiles={themeFiles} />,
+    );
+    const content = container.querySelector('[data-morph-node="hero-content"]');
+    expect(content?.getAttribute("data-morph-node")).toBe("hero-content");
+    expect(content?.getAttribute("data-morph-element")).toBe("content");
+    expect(content?.className).toContain("max-w-xl");
+    expect(content?.className).toContain("p-24");
+    expect(content?.className).toContain("bg-black");
+  });
+
   it("renders component-local instance classes for only the matching item", () => {
     const principles = STARTER_THEME_FILES.find(
       (file) => file.path === "src/components/Principles.tsx",
@@ -135,5 +176,203 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
         ?.className,
     ).not.toContain("text-[54px]");
     expect(title?.className).not.toContain("data-storefront-section-id");
+  });
+
+  it("renders a newly code-authored annotated node and keeps it Design-addressable", () => {
+    const hero = STARTER_THEME_FILES.find(
+      (file) => file.path === "src/components/Hero.tsx",
+    );
+    const themeFiles = STARTER_THEME_FILES.map((file) =>
+      file.path === "src/components/Hero.tsx"
+        ? {
+            ...file,
+            content:
+              hero?.content.replace(
+                '<div className="max-w-xl">',
+                `<div className="max-w-xl">
+          <div
+            data-morph-node="hero-notice"
+            data-morph-element="notice"
+            className="mb-4 rounded-md bg-amber-100 px-4 py-2"
+          >
+            Code-authored notice
+          </div>`,
+              ) ?? file.content,
+          }
+        : file,
+    );
+    const document: StorefrontPageDocument = {
+      version: 1,
+      sections: [
+        {
+          id: "hero-1",
+          type: "hero",
+          componentRef: "hero.default",
+          enabled: true,
+          props: {},
+        },
+      ],
+    };
+
+    const { container } = render(
+      <StorefrontDocumentRenderer document={document} themeFiles={themeFiles} />,
+    );
+    const notice = container.querySelector('[data-morph-node="hero-notice"]');
+
+    expect(notice?.textContent).toBe("Code-authored notice");
+    expect(notice?.className).toContain("bg-amber-100");
+    expect(notice?.getAttribute("data-storefront-field")).toBe("notice");
+    expect(
+      notice
+        ?.closest("[data-storefront-section-id]")
+        ?.getAttribute("data-storefront-section-id"),
+    ).toBe("hero-1");
+  });
+
+  it("renders a newly imported local component with its own source identity", () => {
+    const hero = STARTER_THEME_FILES.find(
+      (file) => file.path === "src/components/Hero.tsx",
+    );
+    const themeFiles = [
+      ...STARTER_THEME_FILES.map((file) =>
+        file.path === "src/components/Hero.tsx"
+          ? {
+              ...file,
+              content:
+                `import Notice from "./Notice";
+${hero?.content ?? ""}`.replace(
+                  '<div className="max-w-xl">',
+                  `<div className="max-w-xl">
+          <Notice text={heading} />`,
+                ),
+            }
+          : file,
+      ),
+      {
+        path: "src/components/Notice.tsx",
+        content: `export default function Notice({ text }: { text: string }) {
+  return (
+    <aside
+      data-morph-node="notice-root"
+      data-morph-element="notice"
+      className="rounded-lg border p-4"
+    >
+      {text}
+    </aside>
+  );
+}`,
+      },
+    ];
+    const document: StorefrontPageDocument = {
+      version: 1,
+      sections: [
+        {
+          id: "hero-1",
+          type: "hero",
+          componentRef: "hero.default",
+          enabled: true,
+          props: { heading: "Imported component" },
+        },
+      ],
+    };
+
+    const { container } = render(
+      <StorefrontDocumentRenderer document={document} themeFiles={themeFiles} />,
+    );
+    const notice = container.querySelector('[data-morph-node="notice-root"]');
+
+    expect(notice?.textContent).toBe("Imported component");
+    expect(notice?.getAttribute("data-morph-source-file")).toBe(
+      "src/components/Notice.tsx",
+    );
+    expect(
+      notice
+        ?.closest("[data-storefront-section-id]")
+        ?.getAttribute("data-storefront-section-id"),
+    ).toBe("hero-1");
+  });
+
+  it("updates code-authored classes without replacing the selected DOM node", () => {
+    const createFiles = (className: string) =>
+      STARTER_THEME_FILES.map((file) =>
+        file.path === "src/components/Hero.tsx"
+          ? {
+              ...file,
+              content: file.content.replace(
+                '<div className="max-w-xl">',
+                `<div data-morph-node="hero-content" data-morph-element="content" className="${className}">`,
+              ),
+            }
+          : file,
+      );
+    const document: StorefrontPageDocument = {
+      version: 1,
+      sections: [
+        {
+          id: "hero-1",
+          type: "hero",
+          componentRef: "hero.default",
+          enabled: true,
+          props: {},
+        },
+      ],
+    };
+    const { container, rerender } = render(
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={createFiles("max-w-xl bg-white")}
+      />,
+    );
+    const before = container.querySelector(
+      '[data-morph-node="hero-content"]',
+    );
+    before?.setAttribute("data-storefront-editor-selected", "true");
+
+    rerender(
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={createFiles("max-w-xl bg-black")}
+      />,
+    );
+    const after = container.querySelector('[data-morph-node="hero-content"]');
+
+    expect(after).toBe(before);
+    expect(after?.className).toContain("bg-black");
+    expect(after?.getAttribute("data-storefront-editor-selected")).toBe("true");
+  });
+
+  it("fails closed for executable tags instead of silently using a specialized renderer", () => {
+    const themeFiles = STARTER_THEME_FILES.map((file) =>
+      file.path === "src/components/Hero.tsx"
+        ? {
+            ...file,
+            content: `export default function Hero() {
+  return <section data-morph-node="hero-root"><script>unsafe()</script></section>;
+}`,
+          }
+        : file,
+    );
+    const document: StorefrontPageDocument = {
+      version: 1,
+      sections: [
+        {
+          id: "hero-1",
+          type: "hero",
+          componentRef: "hero.default",
+          enabled: true,
+          props: {},
+        },
+      ],
+    };
+
+    const { container } = render(
+      <StorefrontDocumentRenderer document={document} themeFiles={themeFiles} />,
+    );
+
+    expect(container.querySelector("script")).toBeNull();
+    expect(
+      container.querySelector("[data-storefront-theme-component-diagnostic]")
+        ?.textContent,
+    ).toContain("not allowed");
   });
 });

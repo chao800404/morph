@@ -48,6 +48,9 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
       const request = getRequest();
       const cookieHeader = request?.headers?.get("cookie");
       const panelWidths = parseEditorPanelWidths(cookieHeader);
+      const editorOrigin = request
+        ? new URL(request.url).origin
+        : process.env.PUBLIC_URL || "http://localhost:3000";
       const context = await storefrontThemeDal.findEditorContext(
         data.storefrontId,
         data.themeId,
@@ -56,6 +59,10 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
         ? ok("Storefront theme editor fetched", {
             ...context,
             panelWidths,
+            previewChannel: {
+              editorOrigin,
+              sessionId: crypto.randomUUID(),
+            },
           })
         : fail("Storefront theme not found", { error: "NOT_FOUND" });
     } catch (error) {

@@ -79,6 +79,7 @@ import {
   InspectorLengthControl,
   inspectorLengthUtility,
   resolveInspectorLength,
+  type NumericInspectorLengthUnit,
 } from "./style-inspector/inspector-length-control";
 import {
   hasInspectorDesignModule,
@@ -165,6 +166,15 @@ const THEME_PALETTE_COLORS = [
   { label: "White", value: "#ffffff", preview: "bg-white border-stone-200" },
   { label: "Black", value: "#000000", preview: "bg-black border-stone-800" },
 ];
+
+const SPACING_LENGTH_STEPS = {
+  px: 4,
+  "%": 1,
+  rem: 0.25,
+  em: 0.25,
+  vw: 1,
+  vh: 1,
+} satisfies Record<NumericInspectorLengthUnit, number>;
 
 const BORDER_RADIUS_CORNER_CONFIG = {
   topLeft: {
@@ -698,6 +708,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       computedValue: containerComputedStyle?.marginTop,
       optimisticValue: optimisticValue("marginAll"),
       fallbackValue: 0,
+      allowAuto: true,
     }),
     top: resolveInspectorLength({
       className: containerClassName,
@@ -710,6 +721,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       computedValue: containerComputedStyle?.marginTop,
       optimisticValue: optimisticValue("marginTop"),
       fallbackValue: 0,
+      allowAuto: true,
     }),
     bottom: resolveInspectorLength({
       className: containerClassName,
@@ -722,6 +734,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       computedValue: containerComputedStyle?.marginBottom,
       optimisticValue: optimisticValue("marginBottom"),
       fallbackValue: 0,
+      allowAuto: true,
     }),
     left: resolveInspectorLength({
       className: containerClassName,
@@ -734,6 +747,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       computedValue: containerComputedStyle?.marginLeft,
       optimisticValue: optimisticValue("marginLeft"),
       fallbackValue: 0,
+      allowAuto: true,
     }),
     right: resolveInspectorLength({
       className: containerClassName,
@@ -746,6 +760,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       computedValue: containerComputedStyle?.marginRight,
       optimisticValue: optimisticValue("marginRight"),
       fallbackValue: 0,
+      allowAuto: true,
     }),
   };
 
@@ -1716,7 +1731,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.paddingTop}
                             min={0}
                             max={10_000}
-                            step={4}
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({
@@ -1779,7 +1794,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.paddingTop}
                             min={0}
                             max={10_000}
-                            step={4}
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({ "padding-top": cssValue })
@@ -1811,7 +1826,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             }
                             min={0}
                             max={10_000}
-                            step={4}
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({
@@ -1846,7 +1861,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.paddingLeft}
                             min={0}
                             max={10_000}
-                            step={4}
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({
@@ -1878,7 +1893,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.paddingRight}
                             min={0}
                             max={10_000}
-                            step={4}
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({
@@ -1924,7 +1939,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.marginTop}
                             min={-10_000}
                             max={10_000}
-                            step={4}
+                            allowAuto
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({
@@ -1948,7 +1964,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                           patchTailwindClasses(prev, {
                                             property: "margin",
                                             value: inspectorLengthUtility(
-                                              "p",
+                                              "m",
                                               cssValue,
                                             ),
                                           }),
@@ -1984,7 +2000,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.marginTop}
                             min={-10_000}
                             max={10_000}
-                            step={4}
+                            allowAuto
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({ "margin-top": cssValue })
@@ -2014,7 +2031,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.marginBottom}
                             min={-10_000}
                             max={10_000}
-                            step={4}
+                            allowAuto
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({
@@ -2046,7 +2064,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.marginLeft}
                             min={-10_000}
                             max={10_000}
-                            step={4}
+                            allowAuto
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({ "margin-left": cssValue })
@@ -2076,7 +2095,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             computedValue={containerComputedStyle?.marginRight}
                             min={-10_000}
                             max={10_000}
-                            step={4}
+                            allowAuto
+                            steps={SPACING_LENGTH_STEPS}
                             disabled={disabled || sourceStyleLocked}
                             onPreview={(cssValue) =>
                               previewContainerStyle({

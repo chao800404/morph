@@ -61,6 +61,17 @@ AI 產生的新 component 若希望完整支援 Visual Editor，應盡可能輸�
 
 沒有 Morph metadata 的合法 React component仍可以 build / runtime 執行，只是 visual editability 降低；不得因此阻止 Code Mode 的自由度。
 
+### 5.3.1 Code-authored component round-trip
+
+React / TSX / CSS / Tailwind Theme Source 是 Code Mode、Live Preview、Visual Editor 與正式 build 共用的 presentation SSOT。
+
+- 使用者可以在既有 Theme Workspace 中新增合法 component、JSX structure 與 interaction；只要通過 path、dependency、compiler 與 sandbox policy，就必須由既有 source → preview → revision → build pipeline 處理，不得要求先建立另一份 presentation schema。
+- Live Preview 必須反映實際 Theme Source 或由它直接推導的 compiled output。Compatibility／專用 renderer 不得靜默遺失 source 中帶有 `data-morph-*` 的 element、nesting、`className` 或 metadata；暫時仍需 renderer adapter 時，必須透過共用 source mapping 與 contract test 證明 round-trip，不得逐元件硬編碼第二份 UI。
+- 希望由 Design Mode 修改的 JSX node 必須提供靜態、同檔唯一的 `data-morph-node`；`data-morph-element` 只描述 `container`、`heading`、`image`、`action` 等語意，不可取代穩定 node identity。
+- 無法由 AST 證明可安全改寫的 dynamic expression、computed structure 或 runtime-only node 可以正常 build / preview，但 Inspector 必須明確顯示 code-only／unsupported，或回報 bounded diagnostic；不得猜測後覆寫 source。
+- Repeater 的 Design identity 必須同時包含 source node identity、持久 item／instance identity 與完整 field path；不得用 array index 或單一 `data-morph-node` 假裝能唯一識別所有 runtime instance。
+- Code Save 只能更新 mutable draft workspace 與 Live Preview；Immutable Build Preview 必須來自 frozen source revision，Production 只能由明確授權的 Publish／release activation 更新。
+
 ### 5.4 AST 安全邊界
 
 Visual Editor 只能在 transformer 能證明安全時自動 patch source。
@@ -369,6 +380,16 @@ Morph 可以同時存在兩種 Preview，但用途必須清楚。
 - preview token 不得等同 production deploy credential。
 
 Human publish 應以 successful immutable build 為基礎，而不是只看 live preview。
+
+### 8.3 Untrusted Live Preview isolation
+
+一旦 Live Preview 執行使用者可修改的 JavaScript／React component，就必須視為不可信執行環境。
+
+- Production Editor 必須使用明確設定、與 Editor／Dashboard 不同 origin 的 Preview host；缺少或解析失敗時必須 fail closed，不得靜默退回同源可執行 Preview。
+- iframe sandbox 採最小權限。`allow-scripts` 與 `allow-same-origin` 只有在 Preview 確實位於隔離 cross-origin host、功能必需且有 contract test 時才能同時使用；同源 Editor／Preview 禁止此組合。
+- Parent 與 Preview 只能透過既有 bounded protocol 溝通，並驗證精確 origin、`event.source`、message schema、session nonce／preview capability、storefront／theme scope 與單調 source revision；Preview 不得要求 save、build、publish 或權限提升。
+- Preview 不得取得 Better Auth／admin cookie、production secret、D1／R2 credential 或 general admin token。Preview capability 必須 short-lived、purpose-scoped、resource-scoped，且不得被當成 release／deploy credential。
+- 自訂 source 的編譯、dependency resolution 與 artifact creation 必須沿用既有 Sandbox／Container runner、dependency allowlist、path containment 與 resource／network limits；Node `vm` 或 request Worker 內 `eval` 不得被當成 untrusted-code sandbox。
 
 ---
 

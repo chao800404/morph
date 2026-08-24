@@ -6,6 +6,10 @@ import type {
 } from "@/db/storefront.schema";
 
 export interface StorefrontThemeEditorDTO {
+  previewChannel?: {
+    editorOrigin: string;
+    sessionId: string;
+  };
   storefront: {
     id: string;
     name: string;

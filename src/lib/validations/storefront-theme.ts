@@ -52,6 +52,14 @@ export const storefrontThemeEditorSearchSchema = z.object({
 export const storefrontThemePreviewSearchSchema = z.object({
   templateId: z.uuid(),
   viewportHeight: z.coerce.number().int().min(320).max(2160),
+  editorOrigin: z.url().refine((value) => {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      value === url.origin
+    );
+  }),
+  previewSession: z.uuid(),
 });
 
 export type StorefrontThemeEditorSearch = z.infer<

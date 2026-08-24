@@ -90,6 +90,36 @@ describe("createSelectionStylePreview", () => {
     expect(second.style.padding).toBe("40px");
   });
 
+  it("previews Margin values immediately and restores the original styles", () => {
+    const element = document.createElement("div");
+    element.style.setProperty("margin-top", "6px", "important");
+    const preview = createSelectionStylePreview();
+
+    preview.apply(element, {
+      "margin-top": "24px",
+      "margin-bottom": "-8px",
+      "margin-left": "auto",
+      "margin-right": "auto",
+    });
+
+    expect(element.style.getPropertyValue("margin-top")).toBe("24px");
+    expect(element.style.getPropertyPriority("margin-top")).toBe("");
+    expect(element.style.getPropertyValue("margin-bottom")).toBe("-8px");
+    expect(element.style.getPropertyValue("margin-left")).toBe("auto");
+    expect(element.style.getPropertyValue("margin-right")).toBe("auto");
+    expect(
+      selectionStylePreviewNeedsOverlayUpdate({ "margin-top": "24px" }),
+    ).toBe(true);
+
+    preview.restore();
+
+    expect(element.style.getPropertyValue("margin-top")).toBe("6px");
+    expect(element.style.getPropertyPriority("margin-top")).toBe("important");
+    expect(element.style.getPropertyValue("margin-bottom")).toBe("");
+    expect(element.style.getPropertyValue("margin-left")).toBe("");
+    expect(element.style.getPropertyValue("margin-right")).toBe("");
+  });
+
   it("does not remeasure overlays for paint-only previews", () => {
     expect(
       selectionStylePreviewNeedsOverlayUpdate({

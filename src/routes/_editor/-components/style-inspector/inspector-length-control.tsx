@@ -210,6 +210,7 @@ export function InspectorLengthControl({
   min = 0,
   max = 10_000,
   step = 1,
+  steps,
   disabled,
   onPreview,
   onCommit,
@@ -226,6 +227,7 @@ export function InspectorLengthControl({
   min?: number;
   max?: number;
   step?: number;
+  steps?: Partial<Record<NumericInspectorLengthUnit, number>>;
   disabled: boolean;
   onPreview: (cssValue: string, numericValue: number | null) => void;
   onCommit: (cssValue: string, numericValue: number | null) => void;
@@ -254,7 +256,7 @@ export function InspectorLengthControl({
             value={value.value}
             min={min}
             max={max}
-            step={step}
+            step={steps?.[value.unit] ?? step}
             ariaLabel={ariaLabel}
             disabled={disabled}
             onValuePreview={(next) =>

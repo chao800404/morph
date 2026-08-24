@@ -37,6 +37,17 @@ export type PreviewThemeFile = {
   content: string;
 };
 
+export type PreviewMessageChannel = Readonly<{
+  targetOrigin: string;
+  previewSession: string;
+}>;
+
+export type PreviewMessageEventSecurity = Readonly<{
+  expectedOrigin: string;
+  expectedSource: MessageEventSource | null;
+  previewSession: string;
+}>;
+
 export type PreviewStyleSnapshot = Readonly<{
   fontSize: string;
   lineHeight: string;
@@ -47,9 +58,21 @@ export type PreviewStyleSnapshot = Readonly<{
   paddingBottom: string;
   paddingLeft: string;
   paddingRight: string;
+  marginTop: string;
+  marginBottom: string;
+  marginLeft: string;
+  marginRight: string;
+  color: string;
   backgroundColor: string;
   backgroundImage: string;
   borderRadius: string;
+  borderTopLeftRadius: string;
+  borderTopRightRadius: string;
+  borderBottomRightRadius: string;
+  borderBottomLeftRadius: string;
+  borderTopWidth: string;
+  borderTopStyle: string;
+  borderTopColor: string;
   display: string;
   flexDirection: string;
   gap: string;
@@ -201,6 +224,27 @@ function isBoundedString(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.length <= maxLength;
 }
 
+const PREVIEW_SESSION_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isPreviewSession(value: unknown): value is string {
+  return isBoundedString(value, 100) && PREVIEW_SESSION_PATTERN.test(value);
+}
+
+function isExactHttpOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      !url.username &&
+      !url.password &&
+      url.origin === value
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isStringRecord(value: unknown): value is Record<string, string> {
   return (
     isRecord(value) &&
@@ -266,9 +310,21 @@ const PREVIEW_STYLE_SNAPSHOT_KEYS = [
   "paddingBottom",
   "paddingLeft",
   "paddingRight",
+  "marginTop",
+  "marginBottom",
+  "marginLeft",
+  "marginRight",
+  "color",
   "backgroundColor",
   "backgroundImage",
   "borderRadius",
+  "borderTopLeftRadius",
+  "borderTopRightRadius",
+  "borderBottomRightRadius",
+  "borderBottomLeftRadius",
+  "borderTopWidth",
+  "borderTopStyle",
+  "borderTopColor",
   "display",
   "flexDirection",
   "gap",
@@ -541,13 +597,108 @@ export function parsePreviewToEditorMessage(
   }
 }
 
+function hasExpectedPreviewSession(
+  value: unknown,
+  previewSession: string,
+): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    isPreviewSession(value.previewSession) &&
+    isPreviewSession(previewSession) &&
+    value.previewSession === previewSession
+  );
+}
+
+export function parseEditorToPreviewEvent(
+  event: MessageEvent<unknown>,
+  security: PreviewMessageEventSecurity,
+): EditorToPreviewMessage | null {
+  if (
+    event.origin !== security.expectedOrigin ||
+    event.source !== security.expectedSource ||
+    !hasExpectedPreviewSession(event.data, security.previewSession)
+  ) {
+    return null;
+  }
+  return parseEditorToPreviewMessage(event.data);
+}
+
+export function parsePreviewToEditorEvent(
+  event: MessageEvent<unknown>,
+  security: PreviewMessageEventSecurity,
+): PreviewToEditorMessage | null {
+  if (
+    event.origin !== security.expectedOrigin ||
+    event.source !== security.expectedSource ||
+    !hasExpectedPreviewSession(event.data, security.previewSession)
+  ) {
+    return null;
+  }
+  return parsePreviewToEditorMessage(event.data);
+}
+
+export function readPreviewRuntimeChannel(
+  href: string,
+): PreviewMessageChannel | null {
+  try {
+    const url = new URL(href);
+    const targetOrigin = url.searchParams.get("editorOrigin");
+    const previewSession = url.searchParams.get("previewSession");
+    if (
+      !targetOrigin ||
+      !isExactHttpOrigin(targetOrigin) ||
+      !isPreviewSession(previewSession)
+    ) {
+      return null;
+    }
+    return { targetOrigin, previewSession };
+  } catch {
+    return null;
+  }
+}
+
+export function parseEditorToPreviewWindowEvent(
+  event: MessageEvent<unknown>,
+): EditorToPreviewMessage | null {
+  const channel = readPreviewRuntimeChannel(window.location.href);
+  if (!channel) return null;
+  return parseEditorToPreviewEvent(event, {
+    expectedOrigin: channel.targetOrigin,
+    expectedSource: window.parent,
+    previewSession: channel.previewSession,
+  });
+}
+
 export function postEditorToPreviewMessage(
   target: Window | null | undefined,
   message: EditorToPreviewMessage,
+  channel: PreviewMessageChannel,
 ) {
-  target?.postMessage(message, window.location.origin);
+  if (
+    !isExactHttpOrigin(channel.targetOrigin) ||
+    !isPreviewSession(channel.previewSession)
+  ) {
+    return;
+  }
+  target?.postMessage(
+    { ...message, previewSession: channel.previewSession },
+    channel.targetOrigin,
+  );
 }
 
-export function postPreviewToEditorMessage(message: PreviewToEditorMessage) {
-  window.parent.postMessage(message, window.location.origin);
+export function postPreviewToEditorMessage(
+  message: PreviewToEditorMessage,
+  channel = readPreviewRuntimeChannel(window.location.href),
+) {
+  if (
+    !channel ||
+    !isExactHttpOrigin(channel.targetOrigin) ||
+    !isPreviewSession(channel.previewSession)
+  ) {
+    return;
+  }
+  window.parent.postMessage(
+    { ...message, previewSession: channel.previewSession },
+    channel.targetOrigin,
+  );
 }

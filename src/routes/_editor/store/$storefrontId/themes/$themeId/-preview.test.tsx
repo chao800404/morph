@@ -1,5 +1,42 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { resolvePreviewSelectionRestoreElement } from "./preview";
+import {
+  resolvePreviewSelectionRestoreElement,
+  selectionStyleSnapshot,
+} from "./preview";
+
+describe("preview selection style snapshot", () => {
+  it("captures every computed value consumed by Margin, Fill, and Border", () => {
+    const snapshot = selectionStyleSnapshot({
+      marginTop: "24px",
+      marginBottom: "8px",
+      marginLeft: "auto",
+      marginRight: "auto",
+      color: "rgb(28, 25, 23)",
+      borderTopLeftRadius: "2px",
+      borderTopRightRadius: "4px",
+      borderBottomRightRadius: "6px",
+      borderBottomLeftRadius: "8px",
+      borderTopWidth: "1px",
+      borderTopStyle: "solid",
+      borderTopColor: "rgb(120, 113, 108)",
+    } as CSSStyleDeclaration);
+
+    expect(snapshot).toMatchObject({
+      marginTop: "24px",
+      marginBottom: "8px",
+      marginLeft: "auto",
+      marginRight: "auto",
+      color: "rgb(28, 25, 23)",
+      borderTopLeftRadius: "2px",
+      borderTopRightRadius: "4px",
+      borderBottomRightRadius: "6px",
+      borderBottomLeftRadius: "8px",
+      borderTopWidth: "1px",
+      borderTopStyle: "solid",
+      borderTopColor: "rgb(120, 113, 108)",
+    });
+  });
+});
 
 describe("preview selection restore", () => {
   beforeAll(() => {

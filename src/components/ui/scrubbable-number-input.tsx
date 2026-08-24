@@ -12,7 +12,10 @@ type ScrubbableNumberInputProps = {
   value: number;
   min: number;
   max: number;
+  /** Pointer scrub and keyboard-arrow increment. Typed values are not snapped. */
   step?: number;
+  /** Native number-input validity step. Keep "any" for free typed precision. */
+  inputStep?: number | "any";
   scrubPixelsPerStep?: number;
   suffix?: string;
   disabled?: boolean;
@@ -36,6 +39,7 @@ export function ScrubbableNumberInput({
   min,
   max,
   step = 1,
+  inputStep = "any",
   scrubPixelsPerStep = 4,
   suffix,
   disabled = false,
@@ -101,13 +105,29 @@ export function ScrubbableNumberInput({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Escape") return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setDraftValue(String(value));
+      onValuePreview?.(value);
+      skipNextBlurCommitRef.current = true;
+      isEditingRef.current = false;
+      inputRef.current?.blur();
+      return;
+    }
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     event.preventDefault();
-    setDraftValue(String(value));
-    onValuePreview?.(value);
-    skipNextBlurCommitRef.current = true;
-    isEditingRef.current = false;
-    inputRef.current?.blur();
+    const parsed = Number(draftValueRef.current);
+    const origin = Number.isFinite(parsed) ? parsed : value;
+    const direction = event.key === "ArrowUp" ? 1 : -1;
+    const precision = precisionForStep(step);
+    const nextValue = clamp(
+      Number((origin + direction * step).toFixed(precision)),
+      min,
+      max,
+    );
+    isEditingRef.current = true;
+    setDraftValue(String(nextValue));
+    onValuePreview?.(nextValue);
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLInputElement>) => {
@@ -200,6 +220,7 @@ export function ScrubbableNumberInput({
 
   return (
     <form
+      noValidate
       className={cn("flex items-center tabular-nums", className)}
       onSubmit={handleSubmit}
     >
@@ -210,7 +231,7 @@ export function ScrubbableNumberInput({
         inputMode="decimal"
         min={min}
         max={max}
-        step={step}
+        step={inputStep}
         disabled={disabled}
         defaultValue={value}
         onFocus={() => {

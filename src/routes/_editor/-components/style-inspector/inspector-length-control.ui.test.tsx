@@ -60,6 +60,51 @@ describe("InspectorLengthControl", () => {
     expect(onCommit).toHaveBeenCalledWith("24rem", 24);
   });
 
+  it("uses the active unit scrub increment while allowing free typed precision", () => {
+    const onPreview = vi.fn();
+    const onCommit = vi.fn();
+    render(
+      <InspectorLengthControl
+        label="Padding"
+        ariaLabel="Section padding"
+        value={{ unit: "rem", value: 1 }}
+        steps={{
+          px: 4,
+          "%": 1,
+          rem: 0.25,
+          em: 0.25,
+          vw: 1,
+          vh: 1,
+        }}
+        disabled={false}
+        onPreview={onPreview}
+        onCommit={onCommit}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Section padding",
+    }) as HTMLInputElement;
+    expect(input.getAttribute("step")).toBe("any");
+    Object.defineProperty(input, "setPointerCapture", { value: vi.fn() });
+    fireEvent.pointerDown(input, {
+      button: 0,
+      pointerId: 1,
+      clientX: 100,
+    });
+    fireEvent.pointerMove(input, {
+      pointerId: 1,
+      clientX: 104,
+    });
+    fireEvent.pointerUp(input, {
+      pointerId: 1,
+      clientX: 104,
+    });
+
+    expect(onPreview).toHaveBeenLastCalledWith("1.25rem", 1.25);
+    expect(onCommit).toHaveBeenLastCalledWith("1.25rem", 1.25);
+  });
+
   it("switches an automatic size back to a concrete unit", async () => {
     const onPreview = vi.fn();
     const onCommit = vi.fn();
@@ -88,6 +133,42 @@ describe("InspectorLengthControl", () => {
 
     expect(onPreview).toHaveBeenCalledWith("320px", 320);
     expect(onCommit).toHaveBeenCalledWith("320px", 320);
+  });
+
+  it("allows Margin to switch from a length to Auto", async () => {
+    const onPreview = vi.fn();
+    const onCommit = vi.fn();
+    const { rerender } = render(
+      <InspectorLengthControl
+        label="Margin"
+        ariaLabel="Section margin"
+        value={{ unit: "px", value: 24 }}
+        allowAuto
+        disabled={false}
+        onPreview={onPreview}
+        onCommit={onCommit}
+      />,
+    );
+
+    openSelect("Section margin unit");
+    fireEvent.click(await screen.findByRole("option", { name: "Auto" }));
+
+    expect(onPreview).toHaveBeenCalledWith("auto", null);
+    expect(onCommit).toHaveBeenCalledWith("auto", null);
+    rerender(
+      <InspectorLengthControl
+        label="Margin"
+        ariaLabel="Section margin"
+        value={{ unit: "auto", value: null }}
+        allowAuto
+        disabled={false}
+        onPreview={onPreview}
+        onCommit={onCommit}
+      />,
+    );
+    expect(
+      screen.queryByRole("spinbutton", { name: "Section margin" }),
+    ).toBeNull();
   });
 
   it("limits border width units and renders the selected unit as secondary text", async () => {

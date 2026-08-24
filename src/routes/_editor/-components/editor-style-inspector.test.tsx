@@ -783,6 +783,156 @@ describe("EditorStyleInspector selection content", () => {
     ).toBeNull();
   });
 
+  it("stores responsive Margin Auto without changing Padding", async () => {
+    const onUpdateThemeFileStyle = vi.fn(
+      (
+        _filePath: string,
+        _elementName: string,
+        _updater: (previous: string) => string,
+      ) => 2,
+    );
+    const onPreviewSelectionStyle = vi.fn();
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[
+          {
+            id: "file-hero",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: "src/components/Hero.tsx",
+            content:
+              'export function Hero() { return <section data-morph-node="section" className="p-[16px] m-[12px] md:m-[20px]">Hero</section>; }',
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "section",
+          tagName: "section",
+          isSection: true,
+          className: "p-[16px] m-[12px] md:m-[20px]",
+          sectionComputed: {
+            paddingTop: "16px",
+            paddingBottom: "16px",
+            paddingLeft: "16px",
+            paddingRight: "16px",
+            marginTop: "20px",
+            marginBottom: "20px",
+            marginLeft: "20px",
+            marginRight: "20px",
+          },
+        })}
+        activeViewport="tablet"
+        activeComputedStyleRevision={1}
+        onPreviewSelectionStyle={onPreviewSelectionStyle}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />,
+    );
+
+    const marginUnit = screen.getByRole("combobox", {
+      name: "Section margin unit",
+    });
+    fireEvent.keyDown(marginUnit, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: "Auto" }));
+
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      {
+        "margin-top": "auto",
+        "margin-bottom": "auto",
+        "margin-left": "auto",
+        "margin-right": "auto",
+      },
+      "section",
+    );
+    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(1);
+    expect(
+      onUpdateThemeFileStyle.mock.calls[0]?.[2]?.(
+        "p-[16px] m-[12px] md:m-[20px]",
+      ),
+    ).toBe("p-[16px] m-[12px] md:m-auto");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Expand individual margin sides",
+      }),
+    );
+    for (const side of ["Top", "Bottom", "Left", "Right"]) {
+      const unit = screen.getByRole("combobox", {
+        name: `${side} margin unit`,
+      });
+      fireEvent.keyDown(unit, { key: "ArrowDown" });
+      expect(await screen.findByRole("option", { name: "Auto" })).toBeTruthy();
+      fireEvent.keyDown(unit, { key: "Escape" });
+    }
+
+    const paddingUnit = screen.getByRole("combobox", {
+      name: "Section padding unit",
+    });
+    fireEvent.keyDown(paddingUnit, { key: "ArrowDown" });
+    expect(screen.queryByRole("option", { name: "Auto" })).toBeNull();
+  }, 20_000);
+
+  it("shows a standard mt utility from the selected element computed style", () => {
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[
+          {
+            id: "file-hero",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: "src/components/Hero.tsx",
+            content:
+              'export function Hero() { return <section data-morph-node="section"><h1 data-morph-node="heading" className="mt-6">Heading</h1></section>; }',
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "heading",
+          tagName: "h1",
+          nodeId: "heading",
+          elementKey: "heading",
+          fieldKey: "heading",
+          className: "mt-6",
+          computed: {
+            marginTop: "24px",
+            marginBottom: "0px",
+            marginLeft: "0px",
+            marginRight: "0px",
+          },
+        })}
+        activeViewport="desktop"
+        activeComputedStyleRevision={1}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Expand individual margin sides",
+      }),
+    );
+    expect(
+      (screen.getByRole("spinbutton", {
+        name: "Top margin",
+      }) as HTMLInputElement).value,
+    ).toBe("24");
+    expect(
+      (screen.getByRole("spinbutton", {
+        name: "Bottom margin",
+      }) as HTMLInputElement).value,
+    ).toBe("0");
+  });
+
   it("previews scrubbing without updating source until pointer up", () => {
     const onUpdateThemeFileStyle = vi.fn(() => 2);
     const onPreviewSelectionStyle = vi.fn();

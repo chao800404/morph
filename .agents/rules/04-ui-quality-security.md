@@ -115,6 +115,16 @@ Dashboard 新增資源預設是 route-backed form，而不是靠頁面 local sta
 
 Theme code 與 AI code 一律視為不可信 source。
 
+### 23.1 Code authoring 與 Preview security contract
+
+- Code Mode、dependency approval 與 Publish／release activation 必須是可分離的 server-authorized capability；能編輯 Theme source 不代表能新增任意 dependency 或發布 production release。
+- Production Live Preview origin 必須由集中 config／environment schema 驗證，並與 Editor origin 比較；缺少、無效或同源時必須顯示明確 unavailable／configuration error，不得降級成不安全 iframe。
+- Preview message handler 必須同時驗證精確 origin、預期 iframe window、bounded discriminated schema、session nonce／capability、resource scope、payload size 與 revision。不可只靠 client state、模糊 domain suffix 或 message type 字串。
+- Preview response 應套用最小 CSP、`frame-ancestors`、`nosniff` 與 Permissions Policy；允許的 script、style、image、font、connect、form、navigation capability 必須逐項列出，不使用無邊界 wildcard。
+- Preview 與 compiler 不得接收 Editor session、production secret 或 storage credential。需要 storefront data 時只能使用 purpose-scoped、short-lived、read-bounded capability 或公開 DTO。
+- Theme import、build filesystem、network、CPU、duration、memory、source bytes、file count、artifact bytes 與 artifact path 必須 bounded；新增 allowlist dependency 要有 deny test、版本／license／runtime compatibility review。
+- 所有 Preview isolation 變更至少測試：production 缺少 origin fail closed、same-origin reject、允許的 cross-origin、錯誤 origin/source/nonce/revision reject、sandbox token contract、超限 payload reject，以及 Code Save 不會繞過 immutable build／Publish。
+
 ---
 
 ## 24. Testing

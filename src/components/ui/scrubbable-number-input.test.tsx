@@ -52,6 +52,59 @@ describe("ScrubbableNumberInput", () => {
     expect(onValueChange).toHaveBeenLastCalledWith(200);
   });
 
+  it("accepts typed values between scrub increments without native step mismatch", () => {
+    const onValueChange = vi.fn();
+    render(
+      <ScrubbableNumberInput
+        value={28}
+        min={0}
+        max={10_000}
+        step={4}
+        ariaLabel="Section padding"
+        onValueChange={onValueChange}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Section padding",
+    }) as HTMLInputElement;
+    expect(input.getAttribute("step")).toBe("any");
+    input.focus();
+    fireEvent.change(input, { target: { value: "30" } });
+    expect(input.validity.stepMismatch).toBe(false);
+    fireEvent.submit(input.closest("form")!);
+
+    expect(onValueChange).toHaveBeenLastCalledWith(30);
+  });
+
+  it("uses the control increment for arrow keys without snapping typed decimals", () => {
+    const onValuePreview = vi.fn();
+    const onValueChange = vi.fn();
+    render(
+      <ScrubbableNumberInput
+        value={1}
+        min={0}
+        max={100}
+        step={0.25}
+        ariaLabel="Spacing in rem"
+        onValuePreview={onValuePreview}
+        onValueChange={onValueChange}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Spacing in rem",
+    }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "1.3" } });
+    expect(onValuePreview).toHaveBeenLastCalledWith(1.3);
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(input.value).toBe("1.55");
+    expect(onValuePreview).toHaveBeenLastCalledWith(1.55);
+    fireEvent.blur(input);
+
+    expect(onValueChange).toHaveBeenLastCalledWith(1.55);
+  });
+
   it("previews typed values without committing until editing completes", () => {
     const onValuePreview = vi.fn();
     const onValueChange = vi.fn();

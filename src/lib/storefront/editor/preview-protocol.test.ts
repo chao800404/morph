@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  parseEditorToPreviewEvent,
   parseEditorToPreviewMessage,
+  parsePreviewToEditorEvent,
   parsePreviewToEditorMessage,
+  postEditorToPreviewMessage,
   type PreviewStyleSnapshot,
 } from "./preview-protocol";
 
@@ -15,9 +18,21 @@ const styleSnapshot: PreviewStyleSnapshot = {
   paddingBottom: "0px",
   paddingLeft: "0px",
   paddingRight: "0px",
+  marginTop: "24px",
+  marginBottom: "0px",
+  marginLeft: "0px",
+  marginRight: "0px",
+  color: "rgb(28, 25, 23)",
   backgroundColor: "rgba(0, 0, 0, 0)",
   backgroundImage: "none",
   borderRadius: "0px",
+  borderTopLeftRadius: "0px",
+  borderTopRightRadius: "0px",
+  borderBottomRightRadius: "0px",
+  borderBottomLeftRadius: "0px",
+  borderTopWidth: "0px",
+  borderTopStyle: "none",
+  borderTopColor: "rgb(28, 25, 23)",
   display: "block",
   flexDirection: "row",
   gap: "normal",
@@ -143,6 +158,12 @@ describe("preview protocol", () => {
         computedStyle: { ...styleSnapshot, fontSize: 48 },
       }),
     ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...selection,
+        computedStyle: { ...styleSnapshot, marginTop: undefined },
+      }),
+    ).toBeNull();
   });
 
   it("accepts only bounded, distinct sibling reorder identities", () => {
@@ -223,5 +244,94 @@ describe("preview protocol", () => {
         props: { invalid: Number.NaN },
       }),
     ).toBeNull();
+  });
+
+  it("requires the exact origin, source, and preview session", () => {
+    const source = {} as Window;
+    const data = {
+      type: "morph:storefront-preview-request-size",
+      previewSession: "11111111-1111-4111-8111-111111111111",
+    };
+    const event = {
+      origin: "https://preview.example.net",
+      source,
+      data,
+    } as MessageEvent<unknown>;
+    const security = {
+      expectedOrigin: "https://preview.example.net",
+      expectedSource: source,
+      previewSession: "11111111-1111-4111-8111-111111111111",
+    };
+
+    expect(parseEditorToPreviewEvent(event, security)).toEqual({
+      type: "morph:storefront-preview-request-size",
+    });
+    expect(
+      parseEditorToPreviewEvent(event, {
+        ...security,
+        expectedOrigin: "https://attacker.example",
+      }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewEvent(event, {
+        ...security,
+        expectedSource: {} as Window,
+      }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewEvent(event, {
+        ...security,
+        previewSession: "22222222-2222-4222-8222-222222222222",
+      }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewEvent(
+        { ...event, data: { type: data.type } } as MessageEvent<unknown>,
+        security,
+      ),
+    ).toBeNull();
+
+    expect(
+      parsePreviewToEditorEvent(
+        {
+          ...event,
+          data: {
+            type: "morph:storefront-preview-ready",
+            previewSession: data.previewSession,
+          },
+        } as MessageEvent<unknown>,
+        security,
+      ),
+    ).toEqual({ type: "morph:storefront-preview-ready" });
+  });
+
+  it("posts a session-bound message only to the configured origin", () => {
+    const postMessage = vi.fn();
+    postEditorToPreviewMessage(
+      { postMessage } as unknown as Window,
+      { type: "morph:storefront-preview-request-size" },
+      {
+        targetOrigin: "https://preview.example.net",
+        previewSession: "11111111-1111-4111-8111-111111111111",
+      },
+    );
+    expect(postMessage).toHaveBeenCalledWith(
+      {
+        type: "morph:storefront-preview-request-size",
+        previewSession: "11111111-1111-4111-8111-111111111111",
+      },
+      "https://preview.example.net",
+    );
+
+    postMessage.mockClear();
+    postEditorToPreviewMessage(
+      { postMessage } as unknown as Window,
+      { type: "morph:storefront-preview-request-size" },
+      {
+        targetOrigin: "*",
+        previewSession: "11111111-1111-4111-8111-111111111111",
+      },
+    );
+    expect(postMessage).not.toHaveBeenCalled();
   });
 });
