@@ -71,15 +71,33 @@ export type PreviewStyleSnapshot = Readonly<{
   justifyContent: string;
 }>;
 
+export type PreviewSelectionRestoreTarget = Readonly<{
+  sectionId: string;
+  nodeId?: string;
+  fieldPath?: string;
+  elementKey?: string;
+  fieldKey?: string;
+  isSection?: boolean;
+}>;
+
 export type EditorToPreviewMessage =
   | { type: "morph:storefront-preview-request-size" }
   | {
       type: "morph:storefront-preview-request-selection-style";
       styleRevision?: number;
     }
-  | { type: "morph:storefront-preview-set-selection-mode"; enabled: boolean }
+  | {
+      type: "morph:storefront-preview-set-selection-mode";
+      enabled: boolean;
+      restoreTarget?: PreviewSelectionRestoreTarget;
+    }
   | { type: "morph:storefront-preview-set-viewport-height"; height: number }
   | { type: "morph:storefront-preview-set-section"; sectionId: string | null }
+  | {
+      type: "morph:storefront-preview-set-selection-field-path";
+      sectionId: string;
+      fieldPath: string;
+    }
   | { type: "morph:storefront-preview-set-section-order"; sectionIds: string[] }
   | {
       type: "morph:storefront-preview-update-section-props";
@@ -148,6 +166,12 @@ export type PreviewToEditorMessage =
       draggedNodeId: string;
       targetNodeId: string;
     }
+  | {
+      type: "morph:storefront-preview-commit-array-item-reorder";
+      sectionId: string;
+      draggedFieldPath: string;
+      targetFieldPath: string;
+    }
   | { type: "morph:storefront-preview-reset-canvas" }
   | {
       type: "morph:storefront-preview-wheel";
@@ -199,6 +223,37 @@ function isNullableBoundedString(
   maxLength: number,
 ): value is string | null {
   return value === null || isBoundedString(value, maxLength);
+}
+
+function parsePreviewSelectionRestoreTarget(
+  value: unknown,
+): PreviewSelectionRestoreTarget | undefined | null {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || !isBoundedString(value.sectionId, 100)) return null;
+  const identityKeys = ["nodeId", "fieldPath", "elementKey", "fieldKey"] as const;
+  if (
+    !identityKeys.some((key) => value[key] !== undefined) &&
+    value.isSection !== true
+  ) {
+    return null;
+  }
+  if (
+    (value.nodeId !== undefined && !isBoundedString(value.nodeId, 200)) ||
+    (value.fieldPath !== undefined && !isBoundedString(value.fieldPath, 500)) ||
+    (value.elementKey !== undefined && !isBoundedString(value.elementKey, 200)) ||
+    (value.fieldKey !== undefined && !isBoundedString(value.fieldKey, 200)) ||
+    (value.isSection !== undefined && typeof value.isSection !== "boolean")
+  ) {
+    return null;
+  }
+  return {
+    sectionId: value.sectionId,
+    nodeId: value.nodeId,
+    fieldPath: value.fieldPath,
+    elementKey: value.elementKey,
+    fieldKey: value.fieldKey,
+    isSection: value.isSection,
+  };
 }
 
 const PREVIEW_STYLE_SNAPSHOT_KEYS = [
@@ -256,9 +311,16 @@ export function parseEditorToPreviewMessage(
         ? { type: value.type, styleRevision: value.styleRevision }
         : null;
     case "morph:storefront-preview-set-selection-mode":
-      return typeof value.enabled === "boolean"
-        ? { type: value.type, enabled: value.enabled }
-        : null;
+      if (typeof value.enabled !== "boolean") return null;
+      {
+        const restoreTarget = parsePreviewSelectionRestoreTarget(
+          value.restoreTarget,
+        );
+        if (restoreTarget === null) return null;
+        return restoreTarget === undefined
+          ? { type: value.type, enabled: value.enabled }
+          : { type: value.type, enabled: value.enabled, restoreTarget };
+      }
     case "morph:storefront-preview-set-viewport-height":
       return typeof value.height === "number" && Number.isFinite(value.height)
         ? { type: value.type, height: value.height }
@@ -266,6 +328,15 @@ export function parseEditorToPreviewMessage(
     case "morph:storefront-preview-set-section":
       return value.sectionId === null || isBoundedString(value.sectionId, 100)
         ? { type: value.type, sectionId: value.sectionId }
+        : null;
+    case "morph:storefront-preview-set-selection-field-path":
+      return isBoundedString(value.sectionId, 100) &&
+        isBoundedString(value.fieldPath, 500)
+        ? {
+            type: value.type,
+            sectionId: value.sectionId,
+            fieldPath: value.fieldPath,
+          }
         : null;
     case "morph:storefront-preview-set-section-order":
       return Array.isArray(value.sectionIds) &&
@@ -419,6 +490,18 @@ export function parsePreviewToEditorMessage(
             sourceFilePath: value.sourceFilePath,
             draggedNodeId: value.draggedNodeId,
             targetNodeId: value.targetNodeId,
+          }
+        : null;
+    case "morph:storefront-preview-commit-array-item-reorder":
+      return isBoundedString(value.sectionId, 100) &&
+        isBoundedString(value.draggedFieldPath, 500) &&
+        isBoundedString(value.targetFieldPath, 500) &&
+        value.draggedFieldPath !== value.targetFieldPath
+        ? {
+            type: value.type,
+            sectionId: value.sectionId,
+            draggedFieldPath: value.draggedFieldPath,
+            targetFieldPath: value.targetFieldPath,
           }
         : null;
     case "morph:storefront-preview-wheel":

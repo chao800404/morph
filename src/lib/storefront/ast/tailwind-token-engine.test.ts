@@ -23,6 +23,10 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("pr-2")).toBe("padding-right");
     expect(classifyTailwindUtility("px-6")).toBe("padding-x");
     expect(classifyTailwindUtility("py-12")).toBe("padding-y");
+    expect(classifyTailwindUtility("m-[12px]")).toBe("margin");
+    expect(classifyTailwindUtility("-mt-[8px]")).toBe("margin-top");
+    expect(classifyTailwindUtility("mx-6")).toBe("margin-x");
+    expect(parseTailwindToken("md:mr-4").propertyFamily).toBe("margin-right");
     expect(classifyTailwindUtility("bg-white")).toBe("background");
     expect(classifyTailwindUtility("bg-[#123456]")).toBe("background");
     expect(

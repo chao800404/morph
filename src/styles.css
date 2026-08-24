@@ -298,3 +298,13 @@ body {
   line-height: 1.25rem;
   font-weight: 400;
 }
+
+
+@layer components {
+  .monaco-editor .view-lines .view-line span.morph-jsx-tag-0 { color: #ffd700 !important; }
+  .monaco-editor .view-lines .view-line span.morph-jsx-tag-1 { color: #da70d6 !important; }
+  .monaco-editor .view-lines .view-line span.morph-jsx-tag-2 { color: #179fff !important; }
+  .monaco-editor .view-lines .view-line span.morph-jsx-tag-3 { color: #2ecc71 !important; }
+  .monaco-editor .view-lines .view-line span.morph-jsx-tag-4 { color: #ff9d00 !important; }
+  .monaco-editor .view-lines .view-line span.morph-jsx-tag-5 { color: #00d7ff !important; }
+}

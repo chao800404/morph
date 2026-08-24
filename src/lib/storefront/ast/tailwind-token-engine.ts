@@ -12,6 +12,13 @@ export type TailwindPropertyFamily =
   | "padding-right"
   | "padding-x"
   | "padding-y"
+  | "margin"
+  | "margin-top"
+  | "margin-bottom"
+  | "margin-left"
+  | "margin-right"
+  | "margin-x"
+  | "margin-y"
   | "background"
   | "background-color"
   | "background-clip"
@@ -103,6 +110,13 @@ const PADDING_LEFT_PATTERN = /^pl-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const PADDING_RIGHT_PATTERN = /^pr-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const PADDING_X_PATTERN = /^px-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const PADDING_Y_PATTERN = /^py-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const MARGIN_ALL_PATTERN = /^-?m-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const MARGIN_TOP_PATTERN = /^-?mt-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const MARGIN_BOTTOM_PATTERN = /^-?mb-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const MARGIN_LEFT_PATTERN = /^-?ml-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const MARGIN_RIGHT_PATTERN = /^-?mr-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const MARGIN_X_PATTERN = /^-?mx-(?:\d+(?:\.\d+)?|\[.+\])$/;
+const MARGIN_Y_PATTERN = /^-?my-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const BORDER_RADIUS_PATTERN =
   /^rounded(?:-(?:none|sm|md|lg|xl|2xl|3xl|full|\[.+\]))?$/;
 const BORDER_RADIUS_TOP_LEFT_PATTERN =
@@ -218,6 +232,14 @@ export function classifyTailwindUtility(
   if (PADDING_RIGHT_PATTERN.test(utility)) return "padding-right";
   if (PADDING_X_PATTERN.test(utility)) return "padding-x";
   if (PADDING_Y_PATTERN.test(utility)) return "padding-y";
+
+  if (MARGIN_ALL_PATTERN.test(utility)) return "margin";
+  if (MARGIN_TOP_PATTERN.test(utility)) return "margin-top";
+  if (MARGIN_BOTTOM_PATTERN.test(utility)) return "margin-bottom";
+  if (MARGIN_LEFT_PATTERN.test(utility)) return "margin-left";
+  if (MARGIN_RIGHT_PATTERN.test(utility)) return "margin-right";
+  if (MARGIN_X_PATTERN.test(utility)) return "margin-x";
+  if (MARGIN_Y_PATTERN.test(utility)) return "margin-y";
 
   const bgArbitrary = arbitraryValue(utility, "bg");
   if (bgArbitrary) {

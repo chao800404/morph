@@ -103,7 +103,7 @@ export function InspectorColorField({
     <div
       className={cn(
         inspectorControlSurface,
-        "flex h-8 min-w-0 items-center px-2 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+        "flex h-8 min-w-0 items-center pl-2 pr-1 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
         disabled && "cursor-not-allowed opacity-50",
       )}
     >

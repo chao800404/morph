@@ -26,6 +26,17 @@ describe("Inspector length controls", () => {
     ).toEqual({ unit: "em", value: 2 });
   });
 
+  it("preserves a negative margin from the active responsive utility", () => {
+    expect(
+      resolveInspectorLength({
+        className: "m-[4px] md:-m-[2rem]",
+        sources: [{ property: "margin", prefix: "m" }],
+        targetVariants: ["md"],
+        computedValue: "-32px",
+      }),
+    ).toEqual({ unit: "rem", value: -2 });
+  });
+
   it("uses Auto for unset sizing and gives optimistic edits priority", () => {
     expect(
       resolveInspectorLength({

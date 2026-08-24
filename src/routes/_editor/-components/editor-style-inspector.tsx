@@ -2,7 +2,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Select, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { TailwindClassTokenInput } from "./tailwind-class-token-input";
 import {
@@ -44,7 +43,6 @@ import {
   AlignRight,
   Code2,
   Image as ImageIcon,
-  LayoutGrid,
   Link,
   Paintbrush,
   Palette,
@@ -64,7 +62,10 @@ import {
   toBackgroundPaintUtility,
   toBorderColorUtility,
 } from "./style-inspector/inspector-paint-utils";
-import { InspectorModuleCard as InspectorGroup } from "./style-inspector/inspector-module-card";
+import {
+  InspectorModuleCard as InspectorGroup,
+  InspectorModuleStaticSections,
+} from "./style-inspector/inspector-module-card";
 import {
   InspectorSelectContent,
   InspectorSelectControl,
@@ -72,7 +73,8 @@ import {
   InspectorSelectTrigger,
 } from "./style-inspector/inspector-select-control";
 import { InspectorDisclosureField } from "./style-inspector/inspector-disclosure-field";
-import { inspectorControlSurface } from "./style-inspector/inspector-control-surface";
+import { InspectorControlRow } from "./style-inspector/inspector-control-row";
+import { InspectorBreakpointIndicator } from "./style-inspector/inspector-breakpoint-indicator";
 import {
   InspectorLengthControl,
   inspectorLengthUtility,
@@ -92,6 +94,13 @@ import {
   PositionInspectorModule,
   SizingInspectorModule,
 } from "./style-inspector/box-style-modules";
+import {
+  canPatchThemeInstanceStyleClasses,
+  isRepeatedFieldPath,
+  readThemeElementBaseClasses,
+  readThemeInstanceStyleClasses,
+  type ThemeInstanceStyleTarget,
+} from "@/lib/storefront/editor/theme-instance-style-source";
 
 type EditorSection =
   StorefrontThemeEditorDTO["templates"][number]["document"]["sections"][number];
@@ -106,6 +115,7 @@ type EditorStyleInspectorProps = {
     filePath: string,
     elementName: string,
     updater: (prevClasses: string) => string,
+    instanceTarget?: ThemeInstanceStyleTarget,
   ) => number | void;
   onPreviewSelectionStyle?: (
     styles: Record<string, string>,
@@ -117,7 +127,6 @@ type EditorStyleInspectorProps = {
     value: string,
   ) => void;
   onPropsChange: (next: Record<string, unknown>) => void;
-  onToggleEnabled?: (enabled: boolean) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   disabled?: boolean;
 };
@@ -245,6 +254,26 @@ function computedLineHeightRatio(
   return Math.round((line / font) * 100) / 100;
 }
 
+function repeatedItemRootPath(
+  fieldPath: string | null | undefined,
+): string | null {
+  if (!fieldPath) return null;
+  const segments = fieldPath.split(".");
+  const itemIndex = segments.findIndex((segment) => /^\d+$/.test(segment));
+  return itemIndex >= 0 ? segments.slice(0, itemIndex + 1).join(".") : null;
+}
+
+function createMorphItemId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return "morph-" + uuid;
+  return (
+    "morph-" +
+    Date.now().toString(36) +
+    "-" +
+    Math.random().toString(36).slice(2, 10)
+  );
+}
+
 function computedColorToHex(value?: string | null): string | null {
   if (!value) return null;
   const raw = value.trim();
@@ -293,7 +322,6 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onPreviewSelectionStyle,
   onPreviewSelectionField,
   onPropsChange,
-  onToggleEnabled,
   onJumpToCode,
   disabled = false,
 }: EditorStyleInspectorProps) {
@@ -307,6 +335,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const activeSectionComputedStyle = selection?.sectionComputed;
 
   const [paddingExpanded, setPaddingExpanded] = useState(false);
+  const [marginExpanded, setMarginExpanded] = useState(false);
   const [sectionsExpanded, setSectionsExpanded] = useState({
     design: true,
     content: true,
@@ -403,6 +432,49 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       : parsedMeta?.elements["heading"]);
   const sectionElementMeta =
     parsedMeta?.elements["section"] ?? parsedMeta?.elements["root"];
+  const activeRepeatedItemPath = repeatedItemRootPath(activeFieldPath);
+  const activeRepeatedItem = activeRepeatedItemPath
+    ? getFieldPathValue(props, activeRepeatedItemPath)
+    : null;
+  const hasActiveRepeatedBody = Boolean(
+    isSelectedNode &&
+    activeFieldPath?.endsWith(".body") &&
+    activeRepeatedItemPath,
+  );
+  const activeRepeatedItemId =
+    activeRepeatedItem &&
+    typeof activeRepeatedItem === "object" &&
+    typeof (activeRepeatedItem as Record<string, unknown>).id === "string"
+      ? ((activeRepeatedItem as Record<string, unknown>).id as string)
+      : undefined;
+  const instanceStyleTarget = isRepeatedFieldPath(activeFieldPath)
+    ? {
+        sectionId: section.id,
+        fieldPath: activeFieldPath,
+        itemId: activeRepeatedItemId,
+      }
+    : null;
+  const sourceElementName = activeNodeId ?? targetElement;
+  const instanceStyleClassName =
+    instanceStyleTarget && componentFile
+      ? readThemeInstanceStyleClasses(
+          componentFile.content,
+          instanceStyleTarget,
+          sourceElementName,
+        )
+      : null;
+  const editableBaseClassName = componentFile
+    ? readThemeElementBaseClasses(componentFile.content, sourceElementName)
+    : null;
+  const instanceExpressionEditable = Boolean(
+    instanceStyleTarget &&
+    componentFile &&
+    canPatchThemeInstanceStyleClasses(
+      componentFile.content,
+      sourceElementName,
+      instanceStyleTarget,
+    ),
+  );
 
   const isDynamicClassName = Boolean(
     targetElementMeta?.classNameOffsets?.isExpression,
@@ -411,7 +483,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     activeSelectionIsSection === false && !targetElementMeta;
   const hasSyntaxError = parsedMeta ? !parsedMeta.parseOk : false;
   const sourceStyleLocked =
-    hasSyntaxError || isDynamicClassName || isDomOnlyNestedTarget;
+    hasSyntaxError ||
+    (isDynamicClassName && !instanceExpressionEditable) ||
+    isDomOnlyNestedTarget;
   const visibleModules = new Set(
     resolveInspectorModules({
       kind: selectedKind,
@@ -424,7 +498,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       contentFieldBinding: activeFieldPath,
       sourceEditability: {
         className: Boolean(
-          componentPath && targetElementMeta?.classNameOffsets,
+          componentPath &&
+          targetElementMeta?.classNameOffsets &&
+          (!isDynamicClassName || instanceExpressionEditable),
         ),
         style: !componentFile,
         dynamic: sourceStyleLocked,
@@ -434,7 +510,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 
   // Code as SSOT: derive style values from the source code AST
-  const targetClassName = targetElementMeta?.className || "";
+  const targetClassName =
+    instanceStyleClassName ??
+    editableBaseClassName ??
+    targetElementMeta?.className ??
+    "";
   const sectionClassName = sectionElementMeta?.className || "";
   const hasResolvedContainerSource = isSelectedNode
     ? Boolean(targetElementMeta)
@@ -500,6 +580,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       : activeViewport === "tablet"
         ? ["md"]
         : [];
+  const effectiveFontSizeLength = resolveInspectorLength({
+    className: targetClassName,
+    sources: [{ property: "font-size", prefix: "text" }],
+    targetVariants,
+    computedValue: activeComputedStyle?.fontSize,
+    optimisticValue: optimisticValue("fontSize"),
+    fallbackValue: effectiveFontSize,
+  });
   const containerComputedStyle = isSelectedNode
     ? activeComputedStyle
     : activeSectionComputedStyle;
@@ -599,6 +687,65 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       computedValue: containerComputedStyle?.paddingRight,
       optimisticValue: optimisticValue("paddingRight"),
       fallbackValue: effectivePaddingRight,
+    }),
+  };
+
+  const effectiveMarginLengths = {
+    all: resolveInspectorLength({
+      className: containerClassName,
+      sources: [{ property: "margin", prefix: "m" }],
+      targetVariants,
+      computedValue: containerComputedStyle?.marginTop,
+      optimisticValue: optimisticValue("marginAll"),
+      fallbackValue: 0,
+    }),
+    top: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "margin-top", prefix: "mt" },
+        { property: "margin-y", prefix: "my" },
+        { property: "margin", prefix: "m" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.marginTop,
+      optimisticValue: optimisticValue("marginTop"),
+      fallbackValue: 0,
+    }),
+    bottom: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "margin-bottom", prefix: "mb" },
+        { property: "margin-y", prefix: "my" },
+        { property: "margin", prefix: "m" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.marginBottom,
+      optimisticValue: optimisticValue("marginBottom"),
+      fallbackValue: 0,
+    }),
+    left: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "margin-left", prefix: "ml" },
+        { property: "margin-x", prefix: "mx" },
+        { property: "margin", prefix: "m" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.marginLeft,
+      optimisticValue: optimisticValue("marginLeft"),
+      fallbackValue: 0,
+    }),
+    right: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "margin-right", prefix: "mr" },
+        { property: "margin-x", prefix: "mx" },
+        { property: "margin", prefix: "m" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.marginRight,
+      optimisticValue: optimisticValue("marginRight"),
+      fallbackValue: 0,
     }),
   };
 
@@ -770,7 +917,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       ? ""
       : (computedColorToHex(containerComputedStyle?.borderTopColor) ?? ""));
   const inspectorIdentity =
-    section.id + ":" + targetElement + ":" + activeViewport;
+    section.id +
+    ":" +
+    (activeFieldPath ?? "") +
+    ":" +
+    targetElement +
+    ":" +
+    activeViewport;
   const inspectorIdentityRef = useRef(inspectorIdentity);
   useEffect(() => {
     if (inspectorIdentityRef.current === inspectorIdentity) return;
@@ -782,13 +935,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     };
   }, [inspectorIdentity]);
 
-  const effectiveRawClassName = resolveStyleInspectorClassName(
-    targetElementMeta,
-    sectionClassName,
-    activeClassName,
-    props.className,
-    props.customClass,
-  );
+  const effectiveRawClassName =
+    instanceStyleClassName ??
+    resolveStyleInspectorClassName(
+      targetElementMeta,
+      sectionClassName,
+      activeClassName,
+      props.className,
+      props.customClass,
+    );
   const tailwindClassCount = tokenizeTailwindClasses(
     effectiveRawClassName,
   ).length;
@@ -820,6 +975,34 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     [containerTargetElement, onPreviewSelectionStyle],
   );
 
+  const resolveCommittedInstanceStyleTarget = useCallback(():
+    | ThemeInstanceStyleTarget
+    | undefined => {
+    if (!activeFieldPath || !activeRepeatedItemPath) return undefined;
+    const currentItem = getFieldPathValue(
+      localPropsRef.current,
+      activeRepeatedItemPath,
+    );
+    const existingId =
+      currentItem &&
+      typeof currentItem === "object" &&
+      typeof (currentItem as Record<string, unknown>).id === "string"
+        ? ((currentItem as Record<string, unknown>).id as string)
+        : null;
+    const itemId = existingId || createMorphItemId();
+    if (!existingId) {
+      const next = setFieldPathValue(
+        localPropsRef.current,
+        activeRepeatedItemPath + ".id",
+        itemId,
+      );
+      localPropsRef.current = next;
+      setLocalProps(next);
+      onPropsChange(next);
+    }
+    return { sectionId: section.id, fieldPath: activeFieldPath, itemId };
+  }, [activeFieldPath, activeRepeatedItemPath, onPropsChange, section.id]);
+
   const patchStyle = useCallback(
     (
       updater: (prevClasses: string) => string,
@@ -830,6 +1013,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         componentPath,
         targetElement,
         updater,
+        resolveCommittedInstanceStyleTarget(),
       );
       if (optimistic) {
         optimisticStyleRef.current = {
@@ -847,6 +1031,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       activeViewport,
       componentPath,
       onUpdateThemeFileStyle,
+      resolveCommittedInstanceStyleTarget,
       section.id,
       sourceStyleLocked,
       targetElement,
@@ -863,6 +1048,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         componentPath,
         containerTargetElement,
         updater,
+        resolveCommittedInstanceStyleTarget(),
       );
       if (optimistic) {
         optimisticStyleRef.current = {
@@ -881,6 +1067,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       activeViewport,
       containerTargetElement,
       onUpdateThemeFileStyle,
+      resolveCommittedInstanceStyleTarget,
       sourceStyleLocked,
       section.id,
     ],
@@ -945,14 +1132,6 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5">
-            <Switch
-              checked={section.enabled !== false}
-              onCheckedChange={onToggleEnabled}
-              disabled={disabled}
-              aria-label="Toggle section visibility"
-            />
-          </div>
         </div>
 
         {/* Jump to Source Code Bridge */}
@@ -1007,7 +1186,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       )}
 
       {/* Dynamic ClassName (Code-controlled) Banner */}
-      {!hasSyntaxError && isDynamicClassName && (
+      {!hasSyntaxError && isDynamicClassName && !instanceExpressionEditable && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
           <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
           <div className="space-y-1">
@@ -1229,30 +1408,35 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               </InspectorField>
             )}
 
-            {showField("body", "description") && "body" in props && (
-              <InspectorField
-                label="Body text"
-                isFocused={activeFieldKey === "body"}
-              >
-                <Textarea
-                  rows={3}
-                  defaultValue={props.body ?? ""}
-                  onInput={(e) =>
-                    onPreviewSelectionField?.(
-                      "body",
-                      nestedFieldPath("body"),
-                      e.currentTarget.value,
-                    )
-                  }
-                  onBlur={(e) =>
-                    handleFieldChange("body", e.currentTarget.value)
-                  }
-                  disabled={disabled}
-                  placeholder="Section body text..."
-                  className="min-h-20 text-xs resize-none"
-                />
-              </InspectorField>
-            )}
+            {showField("body", "description") &&
+              ("body" in props || hasActiveRepeatedBody) && (
+                <InspectorField
+                  label="Body text"
+                  isFocused={activeFieldKey === "body"}
+                >
+                  <Textarea
+                    rows={3}
+                    defaultValue={String(
+                      hasActiveRepeatedBody
+                        ? (selectedFieldValue("body") ?? "")
+                        : (props.body ?? ""),
+                    )}
+                    onInput={(e) =>
+                      onPreviewSelectionField?.(
+                        "body",
+                        nestedFieldPath("body"),
+                        e.currentTarget.value,
+                      )
+                    }
+                    onBlur={(e) =>
+                      handleFieldChange("body", e.currentTarget.value)
+                    }
+                    disabled={disabled}
+                    placeholder="Section body text..."
+                    className="min-h-20 text-xs resize-none"
+                  />
+                </InspectorField>
+              )}
 
             {showField("actionLabel", "actionHref", "action") &&
               "actionLabel" in props && (
@@ -1496,720 +1680,958 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       )}
 
       {hasInspectorDesignModule(visibleModules) ? (
-        <InspectorGroup
-          title="Design"
-          icon={<Sliders className="size-3.5" />}
-          expanded={sectionsExpanded.design}
-          onToggle={() => toggleSection("design")}
-          contentClassName="p-0"
-          groupChildren
+        <div
+          data-inspector-module="Styles"
+          className="relative rounded-xl bg-background shadow-xs overflow-hidden"
         >
-          {renderInspectorDesignModule("layout", visibleModules, () => (
-            <LayoutInspectorModule
-              expanded={sectionsExpanded.flow}
-              onToggle={() => toggleSection("flow")}
-              computed={containerComputedStyle}
-              disabled={disabled || sourceStyleLocked || !componentFile}
-              onPreview={previewContainerStyle}
-              onCommit={commitContainerProperty}
-            />
-          ))}
-
-          {renderInspectorDesignModule("sizing", visibleModules, () => (
-            <SizingInspectorModule
-              expanded={sectionsExpanded.sizing}
-              onToggle={() => toggleSection("sizing")}
-              computed={containerComputedStyle}
-              sourceClassName={containerClassName}
-              targetVariants={targetVariants}
-              optimisticWidth={optimisticValue("width")}
-              optimisticHeight={optimisticValue("height")}
-              optimisticMinWidth={optimisticValue("minWidth")}
-              optimisticMinHeight={optimisticValue("minHeight")}
-              optimisticMaxWidth={optimisticValue("maxWidth")}
-              optimisticMaxHeight={optimisticValue("maxHeight")}
-              disabled={disabled || sourceStyleLocked || !componentFile}
-              onPreview={previewContainerStyle}
-              onCommit={commitContainerProperty}
-            />
-          ))}
-
-          {renderInspectorDesignModule("position", visibleModules, () => (
-            <PositionInspectorModule
-              expanded={sectionsExpanded.position}
-              onToggle={() => toggleSection("position")}
-              computed={containerComputedStyle}
-              disabled={disabled || sourceStyleLocked || !componentFile}
-              onPreview={previewContainerStyle}
-              onCommit={commitContainerProperty}
-            />
-          ))}
-
-          {renderInspectorDesignModule("appearance", visibleModules, () => (
-            <AppearanceInspectorModule
-              expanded={sectionsExpanded.appearance}
-              onToggle={() => toggleSection("appearance")}
-              computed={containerComputedStyle}
-              disabled={disabled || sourceStyleLocked || !componentFile}
-              onPreview={previewContainerStyle}
-              onCommit={commitContainerProperty}
-            />
-          ))}
-
-          {/* 2. Layout & Spacing (Figma style) */}
-          {renderInspectorDesignModule("spacing", visibleModules, () => (
-            <InspectorGroup
-              title="Layout & Spacing"
-              icon={<LayoutGrid className="size-3.5" />}
-              expanded={sectionsExpanded.layout}
-              onToggle={() => toggleSection("layout")}
-            >
-              <div className="space-y-3">
-                {/* Padding */}
-                <InspectorDisclosureField
-                  id="padding-side-controls"
-                  expanded={paddingExpanded}
-                  onExpandedChange={setPaddingExpanded}
-                  expandLabel="Expand individual padding sides"
-                  collapseLabel="Collapse individual padding sides"
-                  icon={<RxPadding className="size-4" aria-hidden="true" />}
-                  field={
-                    <InspectorLengthControl
-                      label="Padding"
-                      ariaLabel="Section padding"
-                      value={effectivePaddingLengths.all}
-                      computedValue={containerComputedStyle?.paddingTop}
-                      min={0}
-                      max={10_000}
-                      step={4}
-                      disabled={disabled || sourceStyleLocked}
-                      onPreview={(cssValue) =>
-                        previewContainerStyle({
-                          "padding-top": cssValue,
-                          "padding-bottom": cssValue,
-                          "padding-left": cssValue,
-                          "padding-right": cssValue,
-                        })
-                      }
-                      onCommit={(cssValue, numericValue) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath && numericValue !== null) {
-                          handleFieldChange("padding", numericValue);
+          <InspectorBreakpointIndicator viewport={activeViewport} />
+          <InspectorModuleStaticSections>
+            {visibleModules.has("layout") || visibleModules.has("spacing") ? (
+              <LayoutInspectorModule
+                expanded={sectionsExpanded.flow}
+                onToggle={() => toggleSection("flow")}
+                computed={containerComputedStyle}
+                disabled={disabled || sourceStyleLocked || !componentFile}
+                onPreview={previewContainerStyle}
+                onCommit={commitContainerProperty}
+              >
+                {visibleModules.has("spacing") ? (
+                  <div className="space-y-3">
+                    <div className="space-y-3">
+                      {/* Padding */}
+                      <InspectorDisclosureField
+                        id="padding-side-controls"
+                        expanded={paddingExpanded}
+                        onExpandedChange={setPaddingExpanded}
+                        expandLabel="Expand individual padding sides"
+                        collapseLabel="Collapse individual padding sides"
+                        icon={
+                          <RxPadding className="size-4" aria-hidden="true" />
                         }
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(
-                              patchTailwindClasses(
-                                patchTailwindClasses(
+                        field={
+                          <InspectorLengthControl
+                            label="Padding"
+                            ariaLabel="Section padding"
+                            value={effectivePaddingLengths.all}
+                            computedValue={containerComputedStyle?.paddingTop}
+                            min={0}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({
+                                "padding-top": cssValue,
+                                "padding-bottom": cssValue,
+                                "padding-left": cssValue,
+                                "padding-right": cssValue,
+                              })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("padding", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
                                   patchTailwindClasses(
-                                    patchTailwindClasses(prev, {
-                                      property: "padding",
-                                      value: inspectorLengthUtility(
-                                        "p",
-                                        cssValue,
+                                    patchTailwindClasses(
+                                      patchTailwindClasses(
+                                        patchTailwindClasses(
+                                          patchTailwindClasses(prev, {
+                                            property: "padding",
+                                            value: inspectorLengthUtility(
+                                              "p",
+                                              cssValue,
+                                            ),
+                                          }),
+                                          {
+                                            property: "padding-top",
+                                            value: "",
+                                          },
+                                        ),
+                                        {
+                                          property: "padding-bottom",
+                                          value: "",
+                                        },
                                       ),
-                                    }),
-                                    { property: "padding-top", value: "" },
+                                      { property: "padding-left", value: "" },
+                                    ),
+                                    { property: "padding-right", value: "" },
                                   ),
-                                  { property: "padding-bottom", value: "" },
-                                ),
-                                { property: "padding-left", value: "" },
-                              ),
-                              { property: "padding-right", value: "" },
-                            ),
-                          {
-                            paddingAll: cssValue,
-                            paddingTop: cssValue,
-                            paddingBottom: cssValue,
-                            paddingLeft: cssValue,
-                            paddingRight: cssValue,
-                          },
-                        );
-                      }}
-                      className="flex-1"
-                    />
-                  }
-                >
-                  <div className="grid grid-cols-2 gap-2">
-                    <InspectorLengthControl
-                      label="T"
-                      ariaLabel="Top padding"
-                      value={effectivePaddingLengths.top}
-                      computedValue={containerComputedStyle?.paddingTop}
-                      min={0}
-                      max={10_000}
-                      step={4}
-                      disabled={disabled || sourceStyleLocked}
-                      onPreview={(cssValue) =>
-                        previewContainerStyle({ "padding-top": cssValue })
-                      }
-                      onCommit={(cssValue, numericValue) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath && numericValue !== null) {
-                          handleFieldChange("paddingTop", numericValue);
+                                {
+                                  paddingAll: cssValue,
+                                  paddingTop: cssValue,
+                                  paddingBottom: cssValue,
+                                  paddingLeft: cssValue,
+                                  paddingRight: cssValue,
+                                },
+                              );
+                            }}
+                            className="flex-1"
+                          />
                         }
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "padding-top",
-                              value: inspectorLengthUtility("pt", cssValue),
-                            }),
-                          { paddingTop: cssValue },
-                        );
-                      }}
-                    />
-                    <InspectorLengthControl
-                      label="B"
-                      ariaLabel="Bottom padding"
-                      value={effectivePaddingLengths.bottom}
-                      computedValue={containerComputedStyle?.paddingBottom}
-                      min={0}
-                      max={10_000}
-                      step={4}
-                      disabled={disabled || sourceStyleLocked}
-                      onPreview={(cssValue) =>
-                        previewContainerStyle({ "padding-bottom": cssValue })
-                      }
-                      onCommit={(cssValue, numericValue) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath && numericValue !== null) {
-                          handleFieldChange("paddingBottom", numericValue);
-                        }
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "padding-bottom",
-                              value: inspectorLengthUtility("pb", cssValue),
-                            }),
-                          { paddingBottom: cssValue },
-                        );
-                      }}
-                    />
-                    <InspectorLengthControl
-                      label="L"
-                      ariaLabel="Left padding"
-                      value={effectivePaddingLengths.left}
-                      computedValue={containerComputedStyle?.paddingLeft}
-                      min={0}
-                      max={10_000}
-                      step={4}
-                      disabled={disabled || sourceStyleLocked}
-                      onPreview={(cssValue) =>
-                        previewContainerStyle({ "padding-left": cssValue })
-                      }
-                      onCommit={(cssValue, numericValue) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath && numericValue !== null) {
-                          handleFieldChange("paddingLeft", numericValue);
-                        }
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "padding-left",
-                              value: inspectorLengthUtility("pl", cssValue),
-                            }),
-                          { paddingLeft: cssValue },
-                        );
-                      }}
-                    />
-                    <InspectorLengthControl
-                      label="R"
-                      ariaLabel="Right padding"
-                      value={effectivePaddingLengths.right}
-                      computedValue={containerComputedStyle?.paddingRight}
-                      min={0}
-                      max={10_000}
-                      step={4}
-                      disabled={disabled || sourceStyleLocked}
-                      onPreview={(cssValue) =>
-                        previewContainerStyle({ "padding-right": cssValue })
-                      }
-                      onCommit={(cssValue, numericValue) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath && numericValue !== null) {
-                          handleFieldChange("paddingRight", numericValue);
-                        }
-                        patchContainerStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "padding-right",
-                              value: inspectorLengthUtility("pr", cssValue),
-                            }),
-                          { paddingRight: cssValue },
-                        );
-                      }}
-                    />
-                  </div>
-                </InspectorDisclosureField>
-
-                {/* Alignment */}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">
-                    Alignment
-                  </span>
-                  <div className="flex items-center rounded-lg border bg-muted/30 p-0.5">
-                    <Button
-                      type="button"
-                      variant={
-                        effectiveTextAlign === "left" ? "secondary" : "ghost"
-                      }
-                      size="icon"
-                      className="size-6 shadow-none"
-                      disabled={disabled || sourceStyleLocked}
-                      onClick={() => {
-                        if (sourceStyleLocked) return;
-                        previewStyle({ "text-align": "left" });
-                        if (!componentPath)
-                          handleFieldChange("textAlign", "left");
-                        patchStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "text-align",
-                              value: "text-left",
-                            }),
-                          { textAlign: "left" },
-                        );
-                      }}
-                    >
-                      <AlignLeft className="size-3" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={
-                        effectiveTextAlign === "center" ? "secondary" : "ghost"
-                      }
-                      size="icon"
-                      className="size-6 shadow-none"
-                      disabled={disabled || sourceStyleLocked}
-                      onClick={() => {
-                        if (sourceStyleLocked) return;
-                        previewStyle({ "text-align": "center" });
-                        if (!componentPath)
-                          handleFieldChange("textAlign", "center");
-                        patchStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "text-align",
-                              value: "text-center",
-                            }),
-                          { textAlign: "center" },
-                        );
-                      }}
-                    >
-                      <AlignCenter className="size-3" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={
-                        effectiveTextAlign === "right" ? "secondary" : "ghost"
-                      }
-                      size="icon"
-                      className="size-6 shadow-none"
-                      disabled={disabled || sourceStyleLocked}
-                      onClick={() => {
-                        if (sourceStyleLocked) return;
-                        previewStyle({ "text-align": "right" });
-                        if (!componentPath)
-                          handleFieldChange("textAlign", "right");
-                        patchStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "text-align",
-                              value: "text-right",
-                            }),
-                          { textAlign: "right" },
-                        );
-                      }}
-                    >
-                      <AlignRight className="size-3" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </InspectorGroup>
-          ))}
-
-          {/* 3. Typography */}
-          {renderInspectorDesignModule("typography", visibleModules, () => (
-            <InspectorGroup
-              title="Typography"
-              icon={<Type className="size-3.5" />}
-              expanded={sectionsExpanded.typography}
-              onToggle={() => toggleSection("typography")}
-            >
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-2">
-                  <InspectorSelectControl
-                    label="Font"
-                    ariaLabel="Font family"
-                    value={effectiveFontFamily}
-                    options={["serif", "sans", "mono"]}
-                    formatOption={(value) =>
-                      value === "serif"
-                        ? "Serif (Editorial)"
-                        : value === "sans"
-                          ? "Sans-serif (Modern)"
-                          : "Monospace"
-                    }
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      previewStyle({
-                        "font-family":
-                          val === "sans"
-                            ? "ui-sans-serif, system-ui, sans-serif"
-                            : val === "mono"
-                              ? "ui-monospace, monospace"
-                              : "ui-serif, Georgia, serif",
-                      });
-                      if (!componentPath) handleFieldChange("fontFamily", val);
-                      patchStyle(
-                        (prev) =>
-                          patchTailwindClasses(prev, {
-                            property: "font-family",
-                            value: `font-${val}`,
-                          }),
-                        { fontFamily: val },
-                      );
-                    }}
-                    disabled={disabled || sourceStyleLocked}
-                  />
-                  <InspectorSelectControl
-                    label="Weight"
-                    ariaLabel="Font weight"
-                    value={effectiveFontWeight}
-                    options={["300", "normal", "medium", "bold"]}
-                    formatOption={(value) =>
-                      value === "300"
-                        ? "Light (300)"
-                        : value === "normal"
-                          ? "Regular (400)"
-                          : value === "medium"
-                            ? "Medium (500)"
-                            : "Bold (700)"
-                    }
-                    onValueChange={(val) => {
-                      if (sourceStyleLocked) return;
-                      previewStyle({
-                        "font-weight":
-                          val === "300"
-                            ? "300"
-                            : val === "normal"
-                              ? "400"
-                              : val === "medium"
-                                ? "500"
-                                : "700",
-                      });
-                      if (!componentPath) handleFieldChange("fontWeight", val);
-                      const weightClass =
-                        val === "300"
-                          ? "font-light"
-                          : val === "normal"
-                            ? "font-normal"
-                            : val === "medium"
-                              ? "font-medium"
-                              : "font-bold";
-                      patchStyle(
-                        (prev) =>
-                          patchTailwindClasses(prev, {
-                            property: "font-weight",
-                            value: weightClass,
-                          }),
-                        { fontWeight: val },
-                      );
-                    }}
-                    disabled={disabled || sourceStyleLocked}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div
-                    className={cn(
-                      inspectorControlSurface,
-                      "flex h-8 min-w-0 items-center justify-between px-2 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
-                    )}
-                  >
-                    <span className="text-[10px] text-muted-foreground">
-                      Size
-                    </span>
-                    {isComplexFontSize ? (
-                      <span
-                        className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground truncate max-w-[80px]"
-                        title={`Controlled in code: ${complexFontSizeRaw}`}
                       >
-                        Custom
-                      </span>
-                    ) : (
-                      <ScrubbableNumberInput
-                        value={effectiveFontSize}
-                        min={12}
-                        max={120}
-                        step={2}
-                        suffix="px"
-                        disabled={disabled || sourceStyleLocked}
-                        ariaLabel="Heading font size"
-                        onValuePreview={(val) =>
-                          previewStyle({ "font-size": `${val}px` })
+                        <div className="grid grid-cols-2 gap-2">
+                          <InspectorLengthControl
+                            label="T"
+                            ariaLabel="Top padding"
+                            value={effectivePaddingLengths.top}
+                            computedValue={containerComputedStyle?.paddingTop}
+                            min={0}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({ "padding-top": cssValue })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("paddingTop", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(prev, {
+                                    property: "padding-top",
+                                    value: inspectorLengthUtility(
+                                      "pt",
+                                      cssValue,
+                                    ),
+                                  }),
+                                { paddingTop: cssValue },
+                              );
+                            }}
+                          />
+                          <InspectorLengthControl
+                            label="B"
+                            ariaLabel="Bottom padding"
+                            value={effectivePaddingLengths.bottom}
+                            computedValue={
+                              containerComputedStyle?.paddingBottom
+                            }
+                            min={0}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({
+                                "padding-bottom": cssValue,
+                              })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange(
+                                  "paddingBottom",
+                                  numericValue,
+                                );
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(prev, {
+                                    property: "padding-bottom",
+                                    value: inspectorLengthUtility(
+                                      "pb",
+                                      cssValue,
+                                    ),
+                                  }),
+                                { paddingBottom: cssValue },
+                              );
+                            }}
+                          />
+                          <InspectorLengthControl
+                            label="L"
+                            ariaLabel="Left padding"
+                            value={effectivePaddingLengths.left}
+                            computedValue={containerComputedStyle?.paddingLeft}
+                            min={0}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({
+                                "padding-left": cssValue,
+                              })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("paddingLeft", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(prev, {
+                                    property: "padding-left",
+                                    value: inspectorLengthUtility(
+                                      "pl",
+                                      cssValue,
+                                    ),
+                                  }),
+                                { paddingLeft: cssValue },
+                              );
+                            }}
+                          />
+                          <InspectorLengthControl
+                            label="R"
+                            ariaLabel="Right padding"
+                            value={effectivePaddingLengths.right}
+                            computedValue={containerComputedStyle?.paddingRight}
+                            min={0}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({
+                                "padding-right": cssValue,
+                              })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("paddingRight", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(prev, {
+                                    property: "padding-right",
+                                    value: inspectorLengthUtility(
+                                      "pr",
+                                      cssValue,
+                                    ),
+                                  }),
+                                { paddingRight: cssValue },
+                              );
+                            }}
+                          />
+                        </div>
+                      </InspectorDisclosureField>
+
+                      {/* Margin */}
+                      <InspectorDisclosureField
+                        id="margin-side-controls"
+                        expanded={marginExpanded}
+                        onExpandedChange={setMarginExpanded}
+                        expandLabel="Expand individual margin sides"
+                        collapseLabel="Collapse individual margin sides"
+                        icon={
+                          <RxPadding className="size-4" aria-hidden="true" />
                         }
-                        onValueChange={(val) => {
-                          if (sourceStyleLocked) return;
+                        field={
+                          <InspectorLengthControl
+                            label="Margin"
+                            ariaLabel="Section margin"
+                            value={effectiveMarginLengths.all}
+                            computedValue={containerComputedStyle?.marginTop}
+                            min={-10_000}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({
+                                "margin-top": cssValue,
+                                "margin-bottom": cssValue,
+                                "margin-left": cssValue,
+                                "margin-right": cssValue,
+                              })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("margin", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(
+                                    patchTailwindClasses(
+                                      patchTailwindClasses(
+                                        patchTailwindClasses(
+                                          patchTailwindClasses(prev, {
+                                            property: "margin",
+                                            value: inspectorLengthUtility(
+                                              "p",
+                                              cssValue,
+                                            ),
+                                          }),
+                                          { property: "margin-top", value: "" },
+                                        ),
+                                        {
+                                          property: "margin-bottom",
+                                          value: "",
+                                        },
+                                      ),
+                                      { property: "margin-left", value: "" },
+                                    ),
+                                    { property: "margin-right", value: "" },
+                                  ),
+                                {
+                                  marginAll: cssValue,
+                                  marginTop: cssValue,
+                                  marginBottom: cssValue,
+                                  marginLeft: cssValue,
+                                  marginRight: cssValue,
+                                },
+                              );
+                            }}
+                            className="flex-1"
+                          />
+                        }
+                      >
+                        <div className="grid grid-cols-2 gap-2">
+                          <InspectorLengthControl
+                            label="T"
+                            ariaLabel="Top margin"
+                            value={effectiveMarginLengths.top}
+                            computedValue={containerComputedStyle?.marginTop}
+                            min={-10_000}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({ "margin-top": cssValue })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("marginTop", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(prev, {
+                                    property: "margin-top",
+                                    value: inspectorLengthUtility(
+                                      "mt",
+                                      cssValue,
+                                    ),
+                                  }),
+                                { marginTop: cssValue },
+                              );
+                            }}
+                          />
+                          <InspectorLengthControl
+                            label="B"
+                            ariaLabel="Bottom margin"
+                            value={effectiveMarginLengths.bottom}
+                            computedValue={containerComputedStyle?.marginBottom}
+                            min={-10_000}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({
+                                "margin-bottom": cssValue,
+                              })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("marginBottom", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(prev, {
+                                    property: "margin-bottom",
+                                    value: inspectorLengthUtility(
+                                      "mb",
+                                      cssValue,
+                                    ),
+                                  }),
+                                { marginBottom: cssValue },
+                              );
+                            }}
+                          />
+                          <InspectorLengthControl
+                            label="L"
+                            ariaLabel="Left margin"
+                            value={effectiveMarginLengths.left}
+                            computedValue={containerComputedStyle?.marginLeft}
+                            min={-10_000}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({ "margin-left": cssValue })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("marginLeft", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(prev, {
+                                    property: "margin-left",
+                                    value: inspectorLengthUtility(
+                                      "ml",
+                                      cssValue,
+                                    ),
+                                  }),
+                                { marginLeft: cssValue },
+                              );
+                            }}
+                          />
+                          <InspectorLengthControl
+                            label="R"
+                            ariaLabel="Right margin"
+                            value={effectiveMarginLengths.right}
+                            computedValue={containerComputedStyle?.marginRight}
+                            min={-10_000}
+                            max={10_000}
+                            step={4}
+                            disabled={disabled || sourceStyleLocked}
+                            onPreview={(cssValue) =>
+                              previewContainerStyle({
+                                "margin-right": cssValue,
+                              })
+                            }
+                            onCommit={(cssValue, numericValue) => {
+                              if (sourceStyleLocked) return;
+                              if (!componentPath && numericValue !== null) {
+                                handleFieldChange("marginRight", numericValue);
+                              }
+                              patchContainerStyle(
+                                (prev) =>
+                                  patchTailwindClasses(prev, {
+                                    property: "margin-right",
+                                    value: inspectorLengthUtility(
+                                      "mr",
+                                      cssValue,
+                                    ),
+                                  }),
+                                { marginRight: cssValue },
+                              );
+                            }}
+                          />
+                        </div>
+                      </InspectorDisclosureField>
+
+                      {/* Alignment */}
+                      <InspectorControlRow
+                        label="Alignment"
+                        flushTrailing
+                        control={
+                          <div className="flex items-center p-0.5">
+                            <Button
+                              type="button"
+                              aria-label="Align left"
+                              variant={
+                                effectiveTextAlign === "left"
+                                  ? "secondary"
+                                  : "ghost"
+                              }
+                              size="icon"
+                              className="size-6 shadow-none"
+                              disabled={disabled || sourceStyleLocked}
+                              onClick={() => {
+                                if (sourceStyleLocked) return;
+                                previewStyle({ "text-align": "left" });
+                                if (!componentPath)
+                                  handleFieldChange("textAlign", "left");
+                                patchStyle(
+                                  (prev) =>
+                                    patchTailwindClasses(prev, {
+                                      property: "text-align",
+                                      value: "text-left",
+                                    }),
+                                  { textAlign: "left" },
+                                );
+                              }}
+                            >
+                              <AlignLeft className="size-3" />
+                            </Button>
+                            <Button
+                              type="button"
+                              aria-label="Align center"
+                              variant={
+                                effectiveTextAlign === "center"
+                                  ? "secondary"
+                                  : "ghost"
+                              }
+                              size="icon"
+                              className="size-6 shadow-none"
+                              disabled={disabled || sourceStyleLocked}
+                              onClick={() => {
+                                if (sourceStyleLocked) return;
+                                previewStyle({ "text-align": "center" });
+                                if (!componentPath)
+                                  handleFieldChange("textAlign", "center");
+                                patchStyle(
+                                  (prev) =>
+                                    patchTailwindClasses(prev, {
+                                      property: "text-align",
+                                      value: "text-center",
+                                    }),
+                                  { textAlign: "center" },
+                                );
+                              }}
+                            >
+                              <AlignCenter className="size-3" />
+                            </Button>
+                            <Button
+                              type="button"
+                              aria-label="Align right"
+                              variant={
+                                effectiveTextAlign === "right"
+                                  ? "secondary"
+                                  : "ghost"
+                              }
+                              size="icon"
+                              className="size-6 shadow-none"
+                              disabled={disabled || sourceStyleLocked}
+                              onClick={() => {
+                                if (sourceStyleLocked) return;
+                                previewStyle({ "text-align": "right" });
+                                if (!componentPath)
+                                  handleFieldChange("textAlign", "right");
+                                patchStyle(
+                                  (prev) =>
+                                    patchTailwindClasses(prev, {
+                                      property: "text-align",
+                                      value: "text-right",
+                                    }),
+                                  { textAlign: "right" },
+                                );
+                              }}
+                            >
+                              <AlignRight className="size-3" />
+                            </Button>
+                          </div>
+                        }
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </LayoutInspectorModule>
+            ) : null}
+
+            {renderInspectorDesignModule("sizing", visibleModules, () => (
+              <SizingInspectorModule
+                expanded={sectionsExpanded.sizing}
+                onToggle={() => toggleSection("sizing")}
+                computed={containerComputedStyle}
+                sourceClassName={containerClassName}
+                targetVariants={targetVariants}
+                optimisticWidth={optimisticValue("width")}
+                optimisticHeight={optimisticValue("height")}
+                optimisticMinWidth={optimisticValue("minWidth")}
+                optimisticMinHeight={optimisticValue("minHeight")}
+                optimisticMaxWidth={optimisticValue("maxWidth")}
+                optimisticMaxHeight={optimisticValue("maxHeight")}
+                disabled={disabled || sourceStyleLocked || !componentFile}
+                onPreview={previewContainerStyle}
+                onCommit={commitContainerProperty}
+              />
+            ))}
+
+            {renderInspectorDesignModule("position", visibleModules, () => (
+              <PositionInspectorModule
+                expanded={sectionsExpanded.position}
+                onToggle={() => toggleSection("position")}
+                computed={containerComputedStyle}
+                disabled={disabled || sourceStyleLocked || !componentFile}
+                onPreview={previewContainerStyle}
+                onCommit={commitContainerProperty}
+              />
+            ))}
+
+            {renderInspectorDesignModule("appearance", visibleModules, () => (
+              <AppearanceInspectorModule
+                expanded={sectionsExpanded.appearance}
+                onToggle={() => toggleSection("appearance")}
+                computed={containerComputedStyle}
+                disabled={disabled || sourceStyleLocked || !componentFile}
+                onPreview={previewContainerStyle}
+                onCommit={commitContainerProperty}
+              />
+            ))}
+
+            {/* 3. Typography */}
+            {renderInspectorDesignModule("typography", visibleModules, () => (
+              <InspectorGroup
+                title="Typography"
+                icon={<Type className="size-3.5" />}
+                expanded={sectionsExpanded.typography}
+                onToggle={() => toggleSection("typography")}
+              >
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <InspectorSelectControl
+                      label="Font"
+                      ariaLabel="Font family"
+                      value={effectiveFontFamily}
+                      options={["serif", "sans", "mono"]}
+                      formatOption={(value) =>
+                        value === "serif"
+                          ? "Serif (Editorial)"
+                          : value === "sans"
+                            ? "Sans-serif (Modern)"
+                            : "Monospace"
+                      }
+                      onValueChange={(val) => {
+                        if (sourceStyleLocked) return;
+                        previewStyle({
+                          "font-family":
+                            val === "sans"
+                              ? "ui-sans-serif, system-ui, sans-serif"
+                              : val === "mono"
+                                ? "ui-monospace, monospace"
+                                : "ui-serif, Georgia, serif",
+                        });
+                        if (!componentPath)
+                          handleFieldChange("fontFamily", val);
+                        patchStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "font-family",
+                              value: `font-${val}`,
+                            }),
+                          { fontFamily: val },
+                        );
+                      }}
+                      disabled={disabled || sourceStyleLocked}
+                    />
+                    <InspectorSelectControl
+                      label="Weight"
+                      ariaLabel="Font weight"
+                      value={effectiveFontWeight}
+                      options={["300", "normal", "medium", "bold"]}
+                      formatOption={(value) =>
+                        value === "300"
+                          ? "Light (300)"
+                          : value === "normal"
+                            ? "Regular (400)"
+                            : value === "medium"
+                              ? "Medium (500)"
+                              : "Bold (700)"
+                      }
+                      onValueChange={(val) => {
+                        if (sourceStyleLocked) return;
+                        previewStyle({
+                          "font-weight":
+                            val === "300"
+                              ? "300"
+                              : val === "normal"
+                                ? "400"
+                                : val === "medium"
+                                  ? "500"
+                                  : "700",
+                        });
+                        if (!componentPath)
+                          handleFieldChange("fontWeight", val);
+                        const weightClass =
+                          val === "300"
+                            ? "font-light"
+                            : val === "normal"
+                              ? "font-normal"
+                              : val === "medium"
+                                ? "font-medium"
+                                : "font-bold";
+                        patchStyle(
+                          (prev) =>
+                            patchTailwindClasses(prev, {
+                              property: "font-weight",
+                              value: weightClass,
+                            }),
+                          { fontWeight: val },
+                        );
+                      }}
+                      disabled={disabled || sourceStyleLocked}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {isComplexFontSize ? (
+                      <InspectorControlRow
+                        label="Size"
+                        control={
+                          <span
+                            className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground truncate max-w-[80px]"
+                            title={`Controlled in code: ${complexFontSizeRaw}`}
+                          >
+                            Custom
+                          </span>
+                        }
+                      />
+                    ) : (
+                      <InspectorLengthControl
+                        label="Size"
+                        ariaLabel="Heading font size"
+                        value={effectiveFontSizeLength}
+                        computedValue={activeComputedStyle?.fontSize}
+                        allowedUnits={
+                          componentPath ? ["px", "rem", "em"] : ["px"]
+                        }
+                        min={
+                          effectiveFontSizeLength.unit === "px" ? 1 : 0.05
+                        }
+                        max={
+                          effectiveFontSizeLength.unit === "px" ? 240 : 15
+                        }
+                        step={
+                          effectiveFontSizeLength.unit === "px" ? 1 : 0.05
+                        }
+                        disabled={disabled || sourceStyleLocked}
+                        onPreview={(cssValue) =>
+                          previewStyle({ "font-size": cssValue })
+                        }
+                        onCommit={(cssValue, numericValue) => {
+                          if (sourceStyleLocked || numericValue === null) return;
                           if (!componentPath)
-                            handleFieldChange("fontSize", val);
+                            handleFieldChange("fontSize", numericValue);
                           patchStyle(
                             (prev) =>
                               patchTailwindClasses(prev, {
                                 property: "font-size",
-                                value: `text-[${val}px]`,
+                                value: inspectorLengthUtility("text", cssValue),
                               }),
-                            { fontSize: val },
+                            { fontSize: cssValue },
                           );
                         }}
-                        className="h-6 w-16"
-                        inputClassName="h-6 text-xs text-right font-mono"
                       />
                     )}
-                  </div>
-                  <div
-                    className={cn(
-                      inspectorControlSurface,
-                      "flex h-8 min-w-0 items-center justify-between px-2 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
-                    )}
-                  >
-                    <span className="text-[10px] text-muted-foreground">
-                      Line H
-                    </span>
-                    <ScrubbableNumberInput
-                      value={effectiveLineHeight}
-                      min={0.8}
-                      max={2.5}
-                      step={0.05}
-                      disabled={disabled || sourceStyleLocked}
-                      ariaLabel="Line height multiplier"
-                      onValuePreview={(val) =>
-                        previewStyle({ "line-height": String(val) })
+                    <InspectorControlRow
+                      label="Line H"
+                      control={
+                        <ScrubbableNumberInput
+                          value={effectiveLineHeight}
+                          min={0.8}
+                          max={2.5}
+                          step={0.05}
+                          suffix="×"
+                          disabled={disabled || sourceStyleLocked}
+                          ariaLabel="Line height multiplier"
+                          onValuePreview={(val) =>
+                            previewStyle({ "line-height": String(val) })
+                          }
+                          onValueChange={(val) => {
+                            if (sourceStyleLocked) return;
+                            if (!componentPath)
+                              handleFieldChange("lineHeight", val);
+                            patchStyle(
+                              (prev) =>
+                                patchTailwindClasses(prev, {
+                                  property: "line-height",
+                                  value: `leading-[${val}]`,
+                                }),
+                              { lineHeight: val },
+                            );
+                          }}
+                          className="h-7 min-w-0 flex-1 justify-end"
+                          inputClassName="h-7 min-w-0 px-0 text-right font-mono text-xs"
+                        />
                       }
-                      onValueChange={(val) => {
-                        if (sourceStyleLocked) return;
-                        if (!componentPath)
-                          handleFieldChange("lineHeight", val);
-                        patchStyle(
-                          (prev) =>
-                            patchTailwindClasses(prev, {
-                              property: "line-height",
-                              value: `leading-[${val}]`,
-                            }),
-                          { lineHeight: val },
-                        );
-                      }}
-                      className="h-6 w-16"
-                      inputClassName="h-6 text-xs text-right font-mono"
                     />
                   </div>
                 </div>
-              </div>
-            </InspectorGroup>
-          ))}
+              </InspectorGroup>
+            ))}
 
-          {/* 4. Fills & Background */}
-          {renderInspectorDesignModule("fill", visibleModules, () => (
-            <InspectorGroup
-              title="Fills & Background"
-              icon={<Palette className="size-3.5" />}
-              expanded={sectionsExpanded.fills}
-              onToggle={() => toggleSection("fills")}
-            >
-              <div className="space-y-3">
-                {visibleModules.has("typography") && (
+            {/* 4. Fills & Background */}
+            {renderInspectorDesignModule("fill", visibleModules, () => (
+              <InspectorGroup
+                title="Fills & Background"
+                icon={<Palette className="size-3.5" />}
+                expanded={sectionsExpanded.fills}
+                onToggle={() => toggleSection("fills")}
+              >
+                <div className="space-y-3">
+                  {visibleModules.has("typography") && (
+                    <InspectorColorField
+                      label="Text"
+                      value={effectiveTextPaint}
+                      disabled={disabled || sourceStyleLocked}
+                      allowGradient
+                      onPreview={(value) =>
+                        previewStyle(
+                          textPaintPreviewStyles(value, effectiveTextPaint),
+                        )
+                      }
+                      onCommit={(value) => {
+                        if (!componentPath && !isGradientPaint(value)) {
+                          handleFieldChange("textColor", value);
+                        }
+                        patchStyle(
+                          (prev) =>
+                            patchTailwindTextPaint(prev, value, targetVariants),
+                          { textPaint: value },
+                        );
+                      }}
+                      onClear={() => {
+                        previewStyle({
+                          color: "",
+                          "background-image": "",
+                          "background-clip": "",
+                          "-webkit-background-clip": "",
+                        });
+                        if (!componentPath)
+                          handleFieldChange("textColor", undefined);
+                        patchStyle(
+                          (prev) =>
+                            patchTailwindTextPaint(prev, "", targetVariants),
+                          { textPaint: "" },
+                        );
+                      }}
+                      palette={THEME_PALETTE_COLORS}
+                    />
+                  )}
+
                   <InspectorColorField
-                    label="Text"
-                    value={effectiveTextPaint}
+                    label="Background"
+                    value={effectiveBackgroundPaint}
                     disabled={disabled || sourceStyleLocked}
                     allowGradient
-                    onPreview={(value) =>
-                      previewStyle(
-                        textPaintPreviewStyles(value, effectiveTextPaint),
-                      )
-                    }
+                    onPreview={(value) => {
+                      previewContainerStyle(paintPreviewStyles(value));
+                    }}
                     onCommit={(value) => {
                       if (!componentPath && !isGradientPaint(value)) {
-                        handleFieldChange("textColor", value);
+                        handleFieldChange("backgroundColor", value);
                       }
-                      patchStyle(
+                      patchContainerStyle(
                         (prev) =>
-                          patchTailwindTextPaint(prev, value, targetVariants),
-                        { textPaint: value },
+                          patchTailwindClasses(prev, {
+                            property: "background",
+                            value: toBackgroundPaintUtility(value),
+                          }),
+                        { backgroundPaint: value },
                       );
                     }}
                     onClear={() => {
-                      previewStyle({
-                        color: "",
+                      previewContainerStyle({
+                        "background-color": "",
                         "background-image": "",
-                        "background-clip": "",
-                        "-webkit-background-clip": "",
                       });
-                      if (!componentPath)
-                        handleFieldChange("textColor", undefined);
-                      patchStyle(
+                      if (!componentPath) {
+                        handleFieldChange("backgroundColor", undefined);
+                      }
+                      patchContainerStyle(
                         (prev) =>
-                          patchTailwindTextPaint(prev, "", targetVariants),
-                        { textPaint: "" },
+                          patchTailwindClasses(prev, {
+                            property: "background",
+                            value: "",
+                          }),
+                        { backgroundPaint: "" },
                       );
                     }}
                     palette={THEME_PALETTE_COLORS}
                   />
-                )}
+                </div>
+              </InspectorGroup>
+            ))}
 
-                <InspectorColorField
-                  label="Background"
-                  value={effectiveBackgroundPaint}
-                  disabled={disabled || sourceStyleLocked}
-                  allowGradient
-                  onPreview={(value) => {
-                    previewContainerStyle(paintPreviewStyles(value));
-                  }}
-                  onCommit={(value) => {
-                    if (!componentPath && !isGradientPaint(value)) {
-                      handleFieldChange("backgroundColor", value);
-                    }
-                    patchContainerStyle(
-                      (prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "background",
-                          value: toBackgroundPaintUtility(value),
-                        }),
-                      { backgroundPaint: value },
-                    );
-                  }}
-                  onClear={() => {
-                    previewContainerStyle({
-                      "background-color": "",
-                      "background-image": "",
-                    });
-                    if (!componentPath) {
-                      handleFieldChange("backgroundColor", undefined);
-                    }
-                    patchContainerStyle(
-                      (prev) =>
-                        patchTailwindClasses(prev, {
-                          property: "background",
-                          value: "",
-                        }),
-                      { backgroundPaint: "" },
-                    );
-                  }}
-                  palette={THEME_PALETTE_COLORS}
-                />
-              </div>
-            </InspectorGroup>
-          ))}
-
-          {/* 5. Borders & Corners */}
-          {renderInspectorDesignModule("border", visibleModules, () => (
-            <BorderRadiusInspectorModule
-              expanded={sectionsExpanded.borders}
-              onToggle={() => toggleSection("borders")}
-              disabled={disabled || sourceStyleLocked}
-              borderWidth={effectiveBorderWidthLength}
-              borderStyle={String(effectiveBorderStyle)}
-              borderColor={String(effectiveBorderColor)}
-              radius={effectiveBorderRadiusLengths}
-              palette={THEME_PALETTE_COLORS}
-              onBorderWidthPreview={(cssValue) =>
-                previewContainerStyle({ "border-width": cssValue })
-              }
-              onBorderWidthCommit={(cssValue, numericValue) => {
-                if (!componentPath && numericValue !== null) {
-                  handleFieldChange("borderWidth", numericValue);
+            {/* 5. Borders & Corners */}
+            {renderInspectorDesignModule("border", visibleModules, () => (
+              <BorderRadiusInspectorModule
+                expanded={sectionsExpanded.borders}
+                onToggle={() => toggleSection("borders")}
+                disabled={disabled || sourceStyleLocked}
+                borderWidth={effectiveBorderWidthLength}
+                borderStyle={String(effectiveBorderStyle)}
+                borderColor={String(effectiveBorderColor)}
+                radius={effectiveBorderRadiusLengths}
+                palette={THEME_PALETTE_COLORS}
+                onBorderWidthPreview={(cssValue) =>
+                  previewContainerStyle({ "border-width": cssValue })
                 }
-                commitContainerProperty(
-                  "border-width",
-                  inspectorLengthUtility("border", cssValue),
-                  "borderWidth",
-                  cssValue,
-                );
-              }}
-              onBorderStyleChange={(value) => {
-                previewContainerStyle({ "border-style": value });
-                commitContainerProperty(
-                  "border-style",
-                  `border-${value}`,
-                  "borderStyle",
-                  value,
-                );
-              }}
-              onBorderColorPreview={(value) =>
-                previewContainerStyle({ "border-color": value })
-              }
-              onBorderColorCommit={(value) =>
-                commitContainerProperty(
-                  "border-color",
-                  toBorderColorUtility(value),
-                  "borderColor",
-                  value,
-                )
-              }
-              onBorderColorClear={() => {
-                previewContainerStyle({ "border-color": "" });
-                commitContainerProperty("border-color", "", "borderColor", "");
-              }}
-              onRadiusPreview={(corner, cssValue) => {
-                if (corner === "all") {
-                  previewContainerStyle({ "border-radius": cssValue });
-                  return;
-                }
-                previewContainerStyle({
-                  [BORDER_RADIUS_CORNER_CONFIG[corner].cssProperty]: cssValue,
-                });
-              }}
-              onRadiusCommit={(corner, cssValue, numericValue) => {
-                if (
-                  !componentPath &&
-                  corner === "all" &&
-                  numericValue !== null
-                ) {
-                  handleFieldChange("borderRadius", numericValue);
-                }
-                if (corner === "all") {
-                  patchContainerStyle(
-                    (previous) =>
-                      (
-                        [
-                          "border-radius-top-left",
-                          "border-radius-top-right",
-                          "border-radius-bottom-right",
-                          "border-radius-bottom-left",
-                        ] as const
-                      ).reduce(
-                        (className, property) =>
-                          patchTailwindClasses(className, {
-                            property,
-                            value: "",
-                          }),
-                        patchTailwindClasses(previous, {
-                          property: "border-radius",
-                          value: inspectorLengthUtility("rounded", cssValue),
-                        }),
-                      ),
-                    {
-                      borderRadius: cssValue,
-                      borderRadiusTopLeft: cssValue,
-                      borderRadiusTopRight: cssValue,
-                      borderRadiusBottomRight: cssValue,
-                      borderRadiusBottomLeft: cssValue,
-                    },
+                onBorderWidthCommit={(cssValue, numericValue) => {
+                  if (!componentPath && numericValue !== null) {
+                    handleFieldChange("borderWidth", numericValue);
+                  }
+                  commitContainerProperty(
+                    "border-width",
+                    inspectorLengthUtility("border", cssValue),
+                    "borderWidth",
+                    cssValue,
                   );
-                  return;
+                }}
+                onBorderStyleChange={(value) => {
+                  previewContainerStyle({ "border-style": value });
+                  commitContainerProperty(
+                    "border-style",
+                    `border-${value}`,
+                    "borderStyle",
+                    value,
+                  );
+                }}
+                onBorderColorPreview={(value) =>
+                  previewContainerStyle({ "border-color": value })
                 }
-                const config = BORDER_RADIUS_CORNER_CONFIG[corner];
-                commitContainerProperty(
-                  config.property,
-                  inspectorLengthUtility(config.utility, cssValue),
-                  config.optimisticKey,
-                  cssValue,
-                );
-              }}
-            />
-          ))}
-        </InspectorGroup>
+                onBorderColorCommit={(value) =>
+                  commitContainerProperty(
+                    "border-color",
+                    toBorderColorUtility(value),
+                    "borderColor",
+                    value,
+                  )
+                }
+                onBorderColorClear={() => {
+                  previewContainerStyle({ "border-color": "" });
+                  commitContainerProperty(
+                    "border-color",
+                    "",
+                    "borderColor",
+                    "",
+                  );
+                }}
+                onRadiusPreview={(corner, cssValue) => {
+                  if (corner === "all") {
+                    previewContainerStyle({ "border-radius": cssValue });
+                    return;
+                  }
+                  previewContainerStyle({
+                    [BORDER_RADIUS_CORNER_CONFIG[corner].cssProperty]: cssValue,
+                  });
+                }}
+                onRadiusCommit={(corner, cssValue, numericValue) => {
+                  if (
+                    !componentPath &&
+                    corner === "all" &&
+                    numericValue !== null
+                  ) {
+                    handleFieldChange("borderRadius", numericValue);
+                  }
+                  if (corner === "all") {
+                    patchContainerStyle(
+                      (previous) =>
+                        (
+                          [
+                            "border-radius-top-left",
+                            "border-radius-top-right",
+                            "border-radius-bottom-right",
+                            "border-radius-bottom-left",
+                          ] as const
+                        ).reduce(
+                          (className, property) =>
+                            patchTailwindClasses(className, {
+                              property,
+                              value: "",
+                            }),
+                          patchTailwindClasses(previous, {
+                            property: "border-radius",
+                            value: inspectorLengthUtility("rounded", cssValue),
+                          }),
+                        ),
+                      {
+                        borderRadius: cssValue,
+                        borderRadiusTopLeft: cssValue,
+                        borderRadiusTopRight: cssValue,
+                        borderRadiusBottomRight: cssValue,
+                        borderRadiusBottomLeft: cssValue,
+                      },
+                    );
+                    return;
+                  }
+                  const config = BORDER_RADIUS_CORNER_CONFIG[corner];
+                  commitContainerProperty(
+                    config.property,
+                    inspectorLengthUtility(config.utility, cssValue),
+                    config.optimisticKey,
+                    cssValue,
+                  );
+                }}
+              />
+            ))}
+          </InspectorModuleStaticSections>
+        </div>
       ) : null}
     </div>
   );

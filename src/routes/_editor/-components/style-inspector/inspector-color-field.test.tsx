@@ -5,6 +5,25 @@ import { InspectorColorField } from "./inspector-color-field";
 import { resolvePickerPosition } from "./inspector-color-picker-popover";
 
 describe("InspectorColorField", () => {
+  it("matches the trailing padding to the control's vertical spacing", () => {
+    render(
+      <InspectorColorField
+        label="Text"
+        value="#fafaf9"
+        onPreview={vi.fn()}
+        onCommit={vi.fn()}
+      />,
+    );
+
+    const field = screen
+      .getByRole("textbox", { name: "Text color value" })
+      .closest("div");
+    expect(field?.className.split(" ")).toEqual(
+      expect.arrayContaining(["pl-2", "pr-1"]),
+    );
+    expect(field?.className.split(" ")).not.toContain("px-2");
+  });
+
   it("bottom-aligns the picker with its inspector module inside the viewport", () => {
     expect(
       resolvePickerPosition({

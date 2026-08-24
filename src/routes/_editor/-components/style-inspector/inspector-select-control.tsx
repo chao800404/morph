@@ -6,8 +6,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { inspectorControlSurface } from "./inspector-control-surface";
+import { InspectorControlRow } from "./inspector-control-row";
 
 export function InspectorSelectTrigger({
   className,
@@ -59,6 +60,7 @@ type InspectorSelectControlProps = {
   disabled: boolean;
   formatOption?: (value: string) => string;
   onValueChange: (value: string) => void;
+  trailingAction?: ReactNode;
 };
 
 export function InspectorSelectControl({
@@ -69,20 +71,24 @@ export function InspectorSelectControl({
   disabled,
   formatOption = (option) => option,
   onValueChange,
+  trailingAction,
 }: InspectorSelectControlProps) {
   return (
     <Select value={value} disabled={disabled} onValueChange={onValueChange}>
-      <InspectorSelectTrigger aria-label={ariaLabel}>
-        <span
-          aria-hidden="true"
-          className="shrink-0 text-xs text-muted-foreground"
-        >
-          {label}
-        </span>
-        <span className="ml-auto min-w-0 truncate text-right">
-          <SelectValue />
-        </span>
-      </InspectorSelectTrigger>
+      <InspectorControlRow
+        label={label}
+        control={
+          <InspectorSelectTrigger
+            aria-label={ariaLabel}
+            className="h-7 min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+          >
+            <span className="ml-auto min-w-0 truncate text-right">
+              <SelectValue />
+            </span>
+          </InspectorSelectTrigger>
+        }
+        trailingAction={trailingAction}
+      />
       <InspectorSelectContent>
         {options.map((option) => (
           <InspectorSelectItem key={option} value={option}>

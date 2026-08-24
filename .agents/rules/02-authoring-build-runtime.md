@@ -74,11 +74,52 @@ Visual Editor 只能在 transformer 能證明安全時自動 patch source。
 
 禁止用 regex 當作通用 TSX parser。
 
+`map()`／repeater 產生的 runtime instance 必須區分「共用 component
+presentation」與「單一 content instance presentation」：
+
+- `data-morph-node` 只定位 source JSX node；同一 source node 經 `map()` render
+  多次時，不得只靠它識別 runtime instance。
+- 陣列 item 必須有持久且唯一的 `id`。完整
+  `data-storefront-field-path`（例如 `items.2.title`）仍負責 content binding、選取與
+  Preview selection rebind；單一 instance presentation 則必須以 item id 綁定，不能以
+  會因排序改變的 array index 當 style identity。
+- 舊資料缺少 item id 時，只能在使用者確認第一筆 instance style 修改時補上一個 id，
+  並透過既有 versioned Document draft / CAS 流程保存；拖曳 preview、pointer move 或
+  React 暫存 state 不得反覆產生 id。
+- 沒有數字 index 的 style 修改仍 patch 共用 TSX `className`。帶數字 index 的單一
+  instance override 必須留在同一 component source，以靜態
+  `morphInstanceClasses: Record<string, string>` object 保存完整 Tailwind utility
+  字串，key 使用 `<item-id>:<data-morph-node>`。
+- repeater JSX 只可用受支援的簡短查找，例如
+  `cn("shared classes", morphInstanceClasses[\`\${item.id}:principle-title\`])`。
+  object value 必須是 source scanner 可直接看到的完整靜態字串；動態 key 只負責選擇
+  已宣告的靜態 value，不得在 runtime 組合 Tailwind utility。
+- Visual Editor 產生的 instance override 不得寫入 `src/styles/global.css`，不得建立
+  `<Component>.morph.css`，也不得把巨大 arbitrary selector 重複塞入每個 JSX
+  `className`。global stylesheet 只保留真正的 global import、token 與 reset。
+- 只有在 AST 能證明目標位於可識別的 `.map()` callback，且 `className` 是靜態
+  字串、缺省 attribute，或只含靜態字串與受支援 instance lookup 的 `cn(...)` 時，
+  才能自動寫入。其他動態 expression 必須保留 component logic 並導向 Code Mode。
+- 舊的 global / adjacent CSS marker 與舊 arbitrary-variant selector 只可作為遷移輸入；
+  對該 target 再次修改時，應移入 component-local map 並移除舊規則、import 或舊
+  `cn()` argument。
+- Instance override 是 Theme Source presentation；item `id` 只是 content identity。
+  utility 不得存入 Page / Template Document props，也不得只留在 React state 或 iframe
+  inline style。
+- Reorder 必須搬動完整 item（包含 `id`），不得依新 index 重寫 style map key。因此
+  排序後樣式會跟著 item 移動，而不是留在舊位置。
+- 如果 Theme 沒有可安全寫入的 TSX、field path 不完整、item identity 無法持久化，或
+  scope 無法證明唯一，Inspector 必須導向 Code Mode，不得退化成修改全部 item。
+
 Live Preview 的 DOM 排序必須依修改來源分流：
 
 - Section 順序沿用 versioned page/template document 的既有 reorder/CAS 流程。
 - 一般 source DOM 只允許交換同一 source file、同一直接 JSX parent 下，且 `data-morph-node` 可證明唯一的靜態 sibling。
 - `map()` 產生的重複節點、跨 parent、跨檔案、動態 identity 或無法唯一定位的節點不得直接搬移 DOM 後寫回 source；這類排序必須修改對應資料陣列或導向 Code Mode。
+- Repeater item 只有在拖曳節點與落點都提供「陣列 item 根路徑」（例如 `items.0`、`items.2`）、兩者屬於同一 Section 與同一陣列、index 均有效時，才能在 drop 後交換 versioned Section props 中的兩筆資料；`items.0.title` 這類子欄位不得被當作可排序 item root。
+- 陣列 item drop 必須只送出一筆 typed reorder intent，Editor 以目前 Section props 合併尚未提交的 pending props 後做 immutable swap，透過既有 template draft generation CAS 寫入；不得修改共用 JSX source、不得直接發布，也不得讓 Preview DOM 成為資料真相。
+- 可排序節點只能從 selection overlay 標籤內的明確 drag handle 啟動拖放；被選取 DOM 的內容區仍只負責選取與編輯，不得把整張 component surface 設為 draggable，以避免誤觸排序。
+- 拖曳開始後必須顯示可辨識的被拖元件 preview，並一次標示所有通過相同 parent、Section、source 與 array scope 驗證的合法交換目標；目前指向的落點要有更強的獨立狀態，不合法節點不得顯示成可交換。
 - 拖動期間只允許本地 Live Preview 與落點提示；pointer/drop 完成時最多提交一次 draft source 更新，失敗必須以 workspace source 回復 Preview。
 - 重新編譯或 DOM 替換後必須依穩定 identity 維持原選取節點，不得因 drop 後的 click 事件改選目標節點。
 
@@ -145,6 +186,13 @@ source revision 變更後 cache 失效，以及快速連續 selection 的最新�
 
 Code Mode 的 Monaco 輸入同樣是高頻熱路徑：
 
+- Monaco 必須將同一 Theme 的全部來源檔註冊到同一個隔離的 file URI tree，
+  不得只建立目前開啟分頁的 model；否則 TypeScript worker 無法解析合法的相對 import。
+- Browser 內無法直接讀取伺服器 node_modules。Theme 允許清單內的 package 必須由平台提供
+  精確且受管理的 declaration；不得以關閉 semantic diagnostics 或 wildcard module declaration
+  隱藏真正錯誤，正式 build 仍是最終驗證來源。
+- 切換 Theme 或卸載 Code Workspace 時，只能清理該 Theme URI scope 的 Monaco models，
+  並保留目前 Theme 各檔案尚未儲存的 draft 語意。
 - 打字期間由 Monaco model 保存尚未確認的文字，不得把每個 keystroke 的完整檔案內容
   寫入會讓 Editor shell、檔案樹、Preview 或 Inspector 訂閱的 React state / store slice。
 - dirty 狀態只在 clean → dirty 等語意狀態改變時通知 React；不得因內容每個字元不同而

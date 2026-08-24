@@ -227,9 +227,16 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
           expectedSourceGeneration: data.expectedSourceGeneration,
         },
       );
-      return success
-        ? ok("Theme file deleted", { path: data.path })
-        : fail("Failed to delete file", { error: "DELETE_FAILED" });
+      if (!success)
+        return fail("Failed to delete file", { error: "DELETE_FAILED" });
+      const sourceGeneration = await themeSourceStore.getSourceGeneration(
+        data.storefrontId,
+        data.themeId,
+      );
+      return ok("Theme file deleted", {
+        path: data.path,
+        sourceGeneration: sourceGeneration ?? data.expectedSourceGeneration + 1,
+      });
     } catch (error) {
       if (
         error instanceof Error &&
@@ -283,7 +290,9 @@ export const listStorefrontThemeRevisions = createServerFn({ method: "POST" })
     }
   });
 
-export const rollbackStorefrontThemeRevision = createServerFn({ method: "POST" })
+export const rollbackStorefrontThemeRevision = createServerFn({
+  method: "POST",
+})
   .validator((data: unknown) => rollbackThemeRevisionInputSchema.parse(data))
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data, context }) => {

@@ -205,9 +205,7 @@ describe("EditorStyleInspector selection content", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("button", { name: "Fills & Background" }),
-    ).toBeTruthy();
+    expect(screen.getByText("Fills & Background")).toBeTruthy();
     const textColorInput = screen.getByRole("textbox", {
       name: "Text color value",
     }) as HTMLInputElement;
@@ -472,7 +470,7 @@ describe("EditorStyleInspector selection content", () => {
         themeId: "theme-1",
         path: "src/components/Hero.tsx",
         content:
-          'export function Hero() { return <section data-morph-node="section" className="p-[16px] bg-[#ffffff] rounded-[2px]"><h1 data-morph-node="heading" className="font-serif font-normal text-left text-[48px] leading-[1.1]">Heading</h1></section>; }',
+          'export function Hero() { return <section data-morph-node="section" className="p-[16px] m-[12px] bg-[#ffffff] rounded-[2px]"><h1 data-morph-node="heading" className="font-serif font-normal text-left text-[48px] leading-[1.1]">Heading</h1></section>; }',
         mimeType: "text/typescript",
         isEntry: false,
         version: 1,
@@ -480,15 +478,19 @@ describe("EditorStyleInspector selection content", () => {
         updatedAt: "2026-08-20T00:00:00.000Z",
       },
     ];
-    const inspector = (
+    const renderInspector = () => (
       <EditorStyleInspector
         {...common}
-        section={baseSection("hero", { heading: "Heading" })}
+        section={baseSection("hero", {
+          heading: "Heading",
+          className: "m-[12px]",
+        })}
         themeFiles={themeFiles}
         selection={selectionDescriptor({
           kind: "section",
           tagName: "section",
           isSection: true,
+          className: "p-[16px] m-[12px]",
           computed: {
             fontSize: "48px",
             lineHeight: "52.8px",
@@ -498,6 +500,10 @@ describe("EditorStyleInspector selection content", () => {
           },
           sectionComputed: {
             paddingTop: "16px",
+            marginTop: "12px",
+            marginBottom: "12px",
+            marginLeft: "12px",
+            marginRight: "12px",
             paddingBottom: "16px",
             paddingLeft: "16px",
             paddingRight: "16px",
@@ -509,12 +515,14 @@ describe("EditorStyleInspector selection content", () => {
         onUpdateThemeFileStyle={onUpdateThemeFileStyle}
       />
     );
-    const { rerender } = render(inspector);
+    const { rerender } = render(renderInspector());
 
     for (const name of ["Font family", "Font weight"]) {
       const control = screen.getByRole("combobox", { name });
       expect(control.getAttribute("data-size")).toBe("sm");
-      expect(control.className).toContain("dark:bg-input/30");
+      expect(
+        control.closest('[data-slot="inspector-control-row"]')?.className,
+      ).toContain("dark:bg-input/30");
       expect(
         control.querySelector("[data-slot=select-value]")?.parentElement
           ?.className,
@@ -528,30 +536,58 @@ describe("EditorStyleInspector selection content", () => {
       fireEvent.blur(input);
     };
 
+    const marginInput = screen.getByRole("spinbutton", {
+      name: "Section margin",
+    });
+    expect((marginInput as HTMLInputElement).value).toBe("12");
     const paddingInput = screen.getByRole("spinbutton", {
       name: "Section padding",
     });
-    expect(paddingInput.closest("form")?.parentElement?.className).toContain(
-      "h-8",
+    expect(
+      screen.getByRole("combobox", { name: "Heading font size unit" })
+        .textContent,
+    ).toBe("px");
+    expect(
+      screen
+        .getByRole("spinbutton", { name: "Line height multiplier" })
+        .closest("form")?.textContent,
+    ).toContain("×");
+    const displayRow = screen
+      .getByRole("combobox", { name: "Element display" })
+      .closest('[data-slot="inspector-control-row"]');
+    const paddingRow = paddingInput.closest(
+      '[data-slot="inspector-control-row"]',
     );
-    expect(paddingInput.closest("form")?.parentElement?.className).toContain(
-      "dark:bg-input/30",
+    const marginRow = marginInput.closest(
+      '[data-slot="inspector-control-row"]',
     );
+    const alignmentRow = screen
+      .getByText("Alignment")
+      .closest('[data-slot="inspector-control-row"]');
+    for (const row of [displayRow, paddingRow, marginRow, alignmentRow]) {
+      expect(row).toBeTruthy();
+      expect(row?.className.split(" ")).toEqual(
+        expect.arrayContaining(["h-8", "px-2", "border-input"]),
+      );
+      expect(row?.className).not.toMatch(/\bpl-(?:2|4)\b/);
+    }
+    expect(alignmentRow?.className.split(" ")).toContain("pr-0");
+    const alignmentControl = screen.getByRole("button", {
+      name: "Align left",
+    }).parentElement;
+    expect(alignmentControl?.className.split(" ")).not.toEqual(
+      expect.arrayContaining(["rounded-lg", "border", "bg-muted/30"]),
+    );
+    expect(paddingRow?.className).toContain("dark:bg-input/30");
     const paddingLabel = screen.getByText("Padding");
-    expect(paddingLabel.parentElement).toBe(
-      paddingInput.closest("form")?.parentElement,
-    );
+    expect(paddingLabel.parentElement).toBe(paddingRow);
     expect(paddingLabel.className).toContain("text-xs");
     expect(paddingLabel.className).not.toContain("text-[10px]");
     const expandPaddingButton = screen.getByRole("button", {
       name: "Expand individual padding sides",
     });
-    expect(expandPaddingButton.parentElement).toBe(
-      paddingInput.closest("form")?.parentElement?.parentElement,
-    );
-    expect(expandPaddingButton.parentElement).not.toBe(
-      paddingInput.closest("form")?.parentElement,
-    );
+    expect(expandPaddingButton.parentElement).toBe(paddingRow?.parentElement);
+    expect(expandPaddingButton.parentElement).not.toBe(paddingRow);
     expect(
       screen.queryByRole("spinbutton", { name: "Top padding" }),
     ).toBeNull();
@@ -568,11 +604,38 @@ describe("EditorStyleInspector selection content", () => {
     expect(
       screen.getByRole("spinbutton", { name: "Top padding" }),
     ).not.toBeNull();
+    for (const side of ["Top", "Bottom", "Left", "Right"]) {
+      expect(
+        screen.getByRole("spinbutton", { name: `${side} padding` }),
+      ).not.toBeNull();
+    }
+    expect(paddingRow?.parentElement?.className).not.toMatch(
+      /\b(?:border|bg-background|dark:bg-input\/30)\b/,
+    );
     expect(
       screen.getByRole("spinbutton", {
         name: "Section padding",
       }),
     ).toBe(paddingInput);
+    changeNumber("Top padding", "20");
+    changeNumber("Bottom padding", "24");
+    changeNumber("Left padding", "28");
+    changeNumber("Right padding", "32");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Expand individual margin sides",
+      }),
+    );
+    for (const side of ["Top", "Bottom", "Left", "Right"]) {
+      expect(
+        screen.getByRole("spinbutton", { name: `${side} margin` }),
+      ).not.toBeNull();
+    }
+    changeNumber("Top margin", "-20");
+    changeNumber("Bottom margin", "-24");
+    changeNumber("Left margin", "-28");
+    changeNumber("Right margin", "-32");
+    changeNumber("Section margin", "24");
 
     changeNumber("Section padding", "64");
     changeNumber("Heading font size", "60");
@@ -580,22 +643,20 @@ describe("EditorStyleInspector selection content", () => {
     const radiusInput = screen.getByRole("spinbutton", {
       name: "Corner radius",
     });
-    expect(radiusInput.closest("form")?.parentElement?.className).toContain(
-      "rounded-md",
-    );
+    expect(
+      radiusInput.closest('[data-slot="inspector-control-row"]')?.className,
+    ).toContain("rounded-md");
     expect(
       screen
         .getByRole("spinbutton", { name: "Heading font size" })
-        .closest("form")?.parentElement?.className,
+        .closest('[data-slot="inspector-control-row"]')?.className,
     ).toContain("dark:bg-input/30");
     expect(
-      screen
-        .getByLabelText("Background color value")
-        .parentElement?.className,
+      screen.getByLabelText("Background color value").parentElement?.className,
     ).toContain("dark:bg-input/30");
     changeNumber("Corner radius", "12");
 
-    rerender(inspector);
+    rerender(renderInspector());
 
     expect(
       (
@@ -625,8 +686,102 @@ describe("EditorStyleInspector selection content", () => {
         }) as HTMLInputElement
       ).value,
     ).toBe("12");
-    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(4);
-  }, 10_000);
+    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(13);
+  }, 20_000);
+
+  it("switches font size units while keeping line height unitless", async () => {
+    const onUpdateThemeFileStyle = vi.fn(
+      (
+        _filePath: string,
+        _elementName: string,
+        _updater: (previous: string) => string,
+      ) => 2,
+    );
+    const onPreviewSelectionStyle = vi.fn();
+    const renderInspector = () => (
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[
+          {
+            id: "file-hero",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: "src/components/Hero.tsx",
+            content:
+              'export function Hero() { return <section data-morph-node="section"><h1 data-morph-node="heading" className="font-serif text-[48px] leading-[1.1]">Heading</h1></section>; }',
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "heading",
+          tagName: "h1",
+          nodeId: "heading",
+          elementKey: "heading",
+          fieldKey: "heading",
+          computed: {
+            fontSize: "48px",
+            lineHeight: "52.8px",
+          },
+        })}
+        activeViewport="mobile"
+        activeComputedStyleRevision={1}
+        onPreviewSelectionStyle={onPreviewSelectionStyle}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />
+    );
+    const { rerender } = render(renderInspector());
+
+    const unit = screen.getByRole("combobox", {
+      name: "Heading font size unit",
+    });
+    fireEvent.keyDown(unit, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: "rem" }));
+
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { "font-size": "48rem" },
+      "heading",
+    );
+    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(1);
+    expect(
+      onUpdateThemeFileStyle.mock.calls[0]?.[2]?.(
+        "font-serif text-[48px] leading-[1.1]",
+      ),
+    ).toBe("font-serif text-[48rem] leading-[1.1]");
+
+    rerender(renderInspector());
+    expect(
+      screen.getByRole("combobox", { name: "Heading font size unit" })
+        .textContent,
+    ).toBe("rem");
+
+    const sizeInput = screen.getByRole("spinbutton", {
+      name: "Heading font size",
+    });
+    fireEvent.focus(sizeInput);
+    fireEvent.change(sizeInput, { target: { value: "1.5" } });
+    fireEvent.blur(sizeInput);
+    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(2);
+    expect(
+      onUpdateThemeFileStyle.mock.calls[1]?.[2]?.(
+        "font-serif text-[48rem] leading-[1.1]",
+      ),
+    ).toBe("font-serif text-[1.5rem] leading-[1.1]");
+
+    const lineHeight = screen.getByRole("spinbutton", {
+      name: "Line height multiplier",
+    });
+    expect(lineHeight.closest("form")?.textContent).toContain("×");
+    expect(
+      screen.queryByRole("combobox", {
+        name: "Line height multiplier unit",
+      }),
+    ).toBeNull();
+  });
 
   it("previews scrubbing without updating source until pointer up", () => {
     const onUpdateThemeFileStyle = vi.fn(() => 2);
@@ -656,6 +811,10 @@ describe("EditorStyleInspector selection content", () => {
           isSection: true,
           sectionComputed: {
             paddingTop: "16px",
+            marginTop: "12px",
+            marginBottom: "12px",
+            marginLeft: "12px",
+            marginRight: "12px",
             paddingBottom: "16px",
             paddingLeft: "16px",
             paddingRight: "16px",
@@ -780,11 +939,7 @@ describe("EditorStyleInspector selection content", () => {
       />,
     );
 
-    expect(
-      screen
-        .getByRole("button", { name: "Border & Radius" })
-        .getAttribute("aria-expanded"),
-    ).toBe("true");
+    expect(screen.getByText("Border & Radius").closest("button")).toBeNull();
 
     const borderWidth = screen.getByRole("spinbutton", {
       name: "Border width",
@@ -905,28 +1060,21 @@ describe("EditorStyleInspector selection content", () => {
       />,
     );
 
-    const designToggle = screen.getByRole("button", { name: "Design" });
-    const designCard = designToggle.closest('[data-inspector-module="Design"]');
-    expect(designCard).toBeTruthy();
-    expect(
-      designCard?.querySelector('[data-inspector-section="Sizing"]'),
-    ).toBeTruthy();
-    expect(
-      designCard?.querySelector('[data-inspector-section="Appearance"]'),
-    ).toBeTruthy();
-    expect(
-      designCard?.querySelector('[data-inspector-section="Appearance"]')
-        ?.lastElementChild?.className,
-    ).toContain("pt-2");
-    expect(screen.getByRole("button", { name: "Sizing" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
-    expect(
-      document.querySelector('[data-inspector-module="Sizing"]'),
-    ).toBeNull();
-
+    expect(screen.queryByRole("button", { name: "Design" })).toBeNull();
+    expect(screen.getByText("Sizing")).toBeTruthy();
+    expect(screen.getByText("Appearance")).toBeTruthy();
     const overflow = screen.getByRole("combobox", { name: "Element overflow" });
+    const opacityLabel = screen.getByText("Opacity");
+    const overflowLabel = overflow
+      .closest('[data-slot="inspector-control-row"]')
+      ?.querySelector('[data-slot="inspector-control-row-label"]');
+    expect(opacityLabel.className.split(" ")).toContain("text-xs");
+    expect(opacityLabel.className).not.toContain("text-[10px]");
+    expect(overflowLabel?.className.split(" ")).toContain("text-xs");
     expect(overflow.getAttribute("data-size")).toBe("sm");
-    expect(overflow.textContent).toContain("Overflow");
+    expect(
+      overflow.closest('[data-slot="inspector-control-row"]')?.textContent,
+    ).toContain("Overflow");
     expect(overflow.textContent).toContain("visible");
     expect(
       overflow.querySelector("[data-slot=select-value]")?.parentElement
@@ -950,12 +1098,9 @@ describe("EditorStyleInspector selection content", () => {
     expect((minWidth as HTMLInputElement).value).toBe("2");
     expect((maxHeight as HTMLInputElement).value).toBe("80");
     expect(screen.getByText("None")).toBeTruthy();
-    expect(width.parentElement?.parentElement?.className).toContain(
-      "items-center",
-    );
-    expect(width.parentElement?.parentElement?.className).toContain(
-      "rounded-md",
-    );
+    const widthRow = width.closest('[data-slot="inspector-control-row"]');
+    expect(widthRow?.className).toContain("items-center");
+    expect(widthRow?.className).toContain("rounded-md");
 
     Object.defineProperty(width, "setPointerCapture", { value: vi.fn() });
     fireEvent.pointerDown(width, { button: 0, pointerId: 1, clientX: 100 });
@@ -983,9 +1128,202 @@ describe("EditorStyleInspector selection content", () => {
         "w-[100px] h-[200.536px] min-w-[2rem] min-h-[20px] max-w-none max-h-[80vh]",
       ),
     ).toContain("min-w-[3rem]");
+  });
+  it("renders a nested category image field and hides unrelated section fields", () => {
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("category-showcase", {
+          heading: "Collections",
+          items: [
+            { imageSrc: "/one.png", imageAlt: "One", imagePosition: "center" },
+            { imageSrc: "/two.png", imageAlt: "Two", imagePosition: "top" },
+          ],
+        })}
+        selection={selectionDescriptor({
+          kind: "image",
+          tagName: "img",
+          elementKey: "image",
+          fieldKey: "imageSrc",
+          fieldPath: "items.1.imageSrc",
+        })}
+      />,
+    );
+    expect(screen.getByDisplayValue("/two.png")).toBeTruthy();
+    expect(screen.getByDisplayValue("Two")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Collections")).toBeNull();
+    expect(screen.queryByText("Action Button")).toBeNull();
+  });
 
-    fireEvent.click(designToggle);
-    expect(screen.queryByRole("button", { name: "Sizing" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Appearance" })).toBeNull();
+  it("renders and writes a repeated item body field by its exact path", () => {
+    const onPropsChange = vi.fn();
+    const onPreviewSelectionField = vi.fn();
+    render(
+      <EditorStyleInspector
+        {...common}
+        onPropsChange={onPropsChange}
+        onPreviewSelectionField={onPreviewSelectionField}
+        section={baseSection("principles", {
+          items: [
+            { title: "One", body: "First" },
+            { title: "Two", body: "Second" },
+          ],
+        })}
+        selection={selectionDescriptor({
+          kind: "paragraph",
+          tagName: "p",
+          elementKey: "body",
+          fieldKey: "body",
+          fieldPath: "items.1.body",
+        })}
+      />,
+    );
+    const body = screen.getByDisplayValue("Second");
+    fireEvent.input(body, { target: { value: "Changed body" } });
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "body",
+      "items.1.body",
+      "Changed body",
+    );
+    fireEvent.blur(body);
+    expect(onPropsChange).toHaveBeenLastCalledWith({
+      items: [
+        { title: "One", body: "First" },
+        { title: "Two", body: "Changed body" },
+      ],
+    });
+  });
+
+  it("keeps the top-level body field behavior unchanged", () => {
+    const onPropsChange = vi.fn();
+    const onPreviewSelectionField = vi.fn();
+    render(
+      <EditorStyleInspector
+        {...common}
+        onPropsChange={onPropsChange}
+        onPreviewSelectionField={onPreviewSelectionField}
+        section={baseSection("image-with-text", { body: "Section body" })}
+        selection={selectionDescriptor({
+          kind: "paragraph",
+          tagName: "p",
+          elementKey: "body",
+          fieldKey: "body",
+          fieldPath: "body",
+        })}
+      />,
+    );
+    const body = screen.getByDisplayValue("Section body");
+    fireEvent.input(body, { target: { value: "Updated section body" } });
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "body",
+      null,
+      "Updated section body",
+    );
+    fireEvent.blur(body);
+    expect(onPropsChange).toHaveBeenLastCalledWith({
+      body: "Updated section body",
+    });
+  });
+
+  it("does not render a standalone Design accordion while retaining nested design controls", () => {
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading", className: "py-8" })}
+        selection={selectionDescriptor({
+          kind: "section",
+          tagName: "section",
+          isSection: true,
+        })}
+      />,
+    );
+
+    const stylesCard = document.querySelector("[data-inspector-module=Styles]");
+    expect(stylesCard).toBeTruthy();
+    expect(stylesCard?.className).not.toContain("border");
+    expect(stylesCard?.className).toContain("rounded-xl");
+    const sizingCard = stylesCard?.querySelector(
+      "[data-inspector-module=Sizing]",
+    );
+    expect(sizingCard?.className).not.toContain("rounded");
+    expect(sizingCard?.className).toContain("border-b");
+    expect(
+      stylesCard?.querySelector("[data-inspector-module=Sizing]"),
+    ).toBeTruthy();
+    expect(
+      stylesCard?.querySelector('[data-inspector-module="Content & Fields"]'),
+    ).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: /Tailwind CSS Classes/ })
+        .closest("[data-inspector-module=Styles]"),
+    ).toBeNull();
+    expect(screen.queryByText("Layout & Spacing")).toBeNull();
+    expect(screen.getByText("Margin")).toBeTruthy();
+    const layoutOrder = [
+      "Display",
+      "Padding",
+      "Margin",
+      "Alignment",
+      "Sizing",
+    ].map((label) => screen.getByText(label));
+    for (let index = 1; index < layoutOrder.length; index += 1) {
+      expect(
+        layoutOrder[index - 1].compareDocumentPosition(layoutOrder[index]) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+    expect(screen.getByText("Sizing").closest("button")).toBeNull();
+    expect(screen.getByText("Appearance").closest("button")).toBeNull();
+    expect(screen.getByText("Typography").closest("button")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Content & Fields" }),
+    ).toBeTruthy();
+  });
+
+  it("keeps Layout wrapper and spacing controls for heading selections", () => {
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", {
+          heading: "Heading",
+          className: "p-4 m-2",
+        })}
+        selection={selectionDescriptor({
+          kind: "heading",
+          tagName: "h1",
+          nodeId: "heading",
+          elementKey: "heading",
+          fieldKey: "heading",
+          className: "p-4 m-2",
+          computed: { display: "block", color: "rgb(28, 25, 23)" },
+          sectionComputed: {
+            paddingTop: "16px",
+            paddingBottom: "16px",
+            paddingLeft: "16px",
+            paddingRight: "16px",
+          },
+        })}
+      />,
+    );
+    const layout = screen
+      .getByText("Layout")
+      .closest("[data-inspector-module=Layout]");
+    expect(layout).toBeTruthy();
+    expect(layout?.className).toContain("border-b");
+    expect(layout?.querySelector(".border-t")).toBeTruthy();
+    expect(
+      layout?.querySelector('[aria-label="Element display"]'),
+    ).toBeTruthy();
+    expect(
+      layout?.querySelector('[aria-label="Section padding"]'),
+    ).toBeTruthy();
+    expect(layout?.querySelector('[aria-label="Section margin"]')).toBeTruthy();
+    expect(layout?.querySelector('[aria-label="Element width"]')).toBeNull();
+    expect(
+      layout!.compareDocumentPosition(
+        screen.getByText("Sizing").closest("[data-inspector-module=Sizing]")!,
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

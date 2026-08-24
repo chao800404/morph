@@ -18,6 +18,16 @@ describe("InspectorSelectControl", () => {
     );
 
     expect(screen.getByText("Ratio").className.split(" ")).toContain("text-xs");
+    const row = screen
+      .getByRole("combobox", { name: "Aspect ratio" })
+      .closest('[data-slot="inspector-control-row"]');
+    expect(row).not.toBe(
+      screen.getByRole("combobox", { name: "Aspect ratio" }),
+    );
+    expect(
+      row?.querySelector('[data-inspector-control-row-slot="control"]'),
+    ).toBe(screen.getByRole("combobox", { name: "Aspect ratio" }));
+    expect(row?.textContent).toContain("Auto");
 
     fireEvent.keyDown(screen.getByRole("combobox", { name: "Aspect ratio" }), {
       key: "ArrowDown",

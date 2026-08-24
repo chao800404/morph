@@ -186,6 +186,29 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(res.reason).toBe("dynamic-classname");
   });
 
+  it("resolves component-local instance class maps for preview rendering", () => {
+    const source = `
+      const morphInstanceClasses: Record<string, string> = {
+        "card-2:title": "text-[54px] text-red-500",
+      };
+      export default function Cards({ items = [] }) {
+        return items.map((item) => (
+          <h3
+            data-morph-node="title"
+            className={cn("text-3xl", morphInstanceClasses[\`\${item.id}:title\`])}
+          >{item.title}</h3>
+        ));
+      }
+    `;
+    const parsed = parseComponentSource(source);
+
+    expect(parsed.elements.title?.className).toBe("text-3xl");
+    expect(parsed.instanceClasses["card-2:title"]).toBe(
+      "text-[54px] text-red-500",
+    );
+    expect(parsed.elements.title?.classNameOffsets?.isExpression).toBe(true);
+  });
+
   it("patches self-closing JSX elements without existing className without breaking syntax", () => {
     const selfClosingCode = `
       export default function ImageHero() {

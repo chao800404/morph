@@ -24,6 +24,7 @@ import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import { EditorStyleInspector } from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
+import type { ThemeInstanceStyleTarget } from "@/lib/storefront/editor/theme-instance-style-source";
 
 type EditorAssistantPanelProps = {
   context: StorefrontThemeEditorDTO;
@@ -39,7 +40,8 @@ type EditorAssistantPanelProps = {
     filePath: string,
     elementName: string,
     updater: (prevClasses: string) => string,
-  ) => void;
+    instanceTarget?: ThemeInstanceStyleTarget,
+  ) => number | void;
   onPreviewSelectionStyle?: (
     styles: Record<string, string>,
     targetElement: string,
@@ -63,7 +65,6 @@ type EditorAssistantPanelProps = {
     sectionId: string,
     nextProps: Record<string, unknown>,
   ) => void;
-  onSectionToggleEnabled?: (sectionId: string, enabled: boolean) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   onTabChange?: (tab: EditorAssistantPanelTab) => void;
 };
@@ -94,7 +95,6 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onPreviewSelectionStyle,
   onPreviewSelectionField,
   onSectionPropsChange,
-  onSectionToggleEnabled,
   onJumpToCode,
   onTabChange,
 }: EditorAssistantPanelProps) {
@@ -129,15 +129,6 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       }
     },
     [onSectionPropsChange, selectedSection],
-  );
-
-  const handleInspectorToggleEnabled = useCallback(
-    (enabled: boolean) => {
-      if (selectedSection) {
-        onSectionToggleEnabled?.(selectedSection.id, enabled);
-      }
-    },
-    [onSectionToggleEnabled, selectedSection],
   );
 
   useEffect(() => {
@@ -292,7 +283,6 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onPreviewSelectionStyle={onPreviewSelectionStyle}
               onPreviewSelectionField={onPreviewSelectionField}
               onPropsChange={handleInspectorPropsChange}
-              onToggleEnabled={handleInspectorToggleEnabled}
               onJumpToCode={onJumpToCode}
             />
           ) : (

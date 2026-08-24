@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { patchThemeInstanceStyleClasses } from "@/lib/storefront/editor/theme-instance-style-source";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 
 function applyMigration(db: Database.Database, fileName: string) {
@@ -95,11 +96,32 @@ describe("starter Principles source migration", () => {
       )
       .get();
     expect(backfilled).toEqual({
-      content: starterPrinciples?.content,
+      content: expect.any(String),
       mime_type: "text/typescript",
       is_entry: 0,
       version: 1,
     });
+    const migratedSource = (backfilled as { content: string }).content;
+    expect(migratedSource).toContain('data-morph-node="principle-title"');
+    const upgraded = patchThemeInstanceStyleClasses(
+      migratedSource,
+      {
+        sectionId: "starter-principles",
+        fieldPath: "items.1.title",
+        itemId: "principle-thoughtful-sourcing",
+      },
+      "principle-title",
+      () => "text-5xl",
+    );
+    expect(upgraded.editable).toBe(true);
+    expect(upgraded.code).toContain('import { clsx as cn } from "clsx";');
+    expect(upgraded.code).toContain(
+      '"principle-thoughtful-sourcing:principle-title": "text-5xl"',
+    );
+    expect(upgraded.code).toContain(
+      "morphInstanceClasses[`${item.id}:principle-title`]",
+    );
+    expect(upgraded.code).not.toContain("data-storefront-field-path=");
 
     const dawnManifest = JSON.parse(
       (

@@ -1,10 +1,108 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { Monaco } from "@monaco-editor/react";
 import {
+  collectJsxTagSemanticTokens,
+  createJsxTagDecorations,
   configureThemeTypeScript,
+  disposeThemeWorkspaceModels,
+  ensureThemeWorkspaceModels,
+  getThemeModelUri,
   registerTailwindCompletionProvider,
   resolveTailwindCompletionContext,
 } from "./editor-code-language-support";
+
+describe("collectJsxTagSemanticTokens", () => {
+  it("colors matching tags alike and cycles nested depths", () => {
+    const source = ["<main>", "  <section><Card /></section>", "</main>"].join(
+      String.fromCharCode(10),
+    );
+    expect(collectJsxTagSemanticTokens(source)).toEqual([
+      { line: 0, character: 1, length: 4, tokenType: 0 },
+      { line: 1, character: 3, length: 7, tokenType: 1 },
+      { line: 1, character: 12, length: 4, tokenType: 2 },
+      { line: 1, character: 21, length: 7, tokenType: 1 },
+      { line: 2, character: 2, length: 4, tokenType: 0 },
+    ]);
+  });
+
+  it("assigns matching nested Hero tags to visible depth classes", () => {
+    const source = [
+      "<section>",
+      "  <div>",
+      "    <h1>Title</h1>",
+      '    <p><a href="#">Read</a></p>',
+      "  </div>",
+    "</section>",
+    ].join(String.fromCharCode(10));
+    const tokens = collectJsxTagSemanticTokens(source);
+
+    expect(tokens.map(({ tokenType }) => tokenType)).toEqual([
+      0, 1, 2, 2, 2, 3, 3, 2, 1, 0,
+    ]);
+  });
+
+  it("ignores JSX-looking text inside strings and comments", () => {
+    const source = [
+      'const text = "<Fake />"; // <Comment />',
+      "return <Real />;",
+    ].join(String.fromCharCode(10));
+    expect(collectJsxTagSemanticTokens(source)).toEqual([
+      { line: 1, character: 8, length: 4, tokenType: 0 },
+    ]);
+  });
+});
+
+describe("JSX tag decoration CSS", () => {
+  it("scopes all depth colors to Monaco view-line spans with important precedence", () => {
+    const css = readFileSync("src/styles.css", "utf8");
+
+    for (const depth of [0, 1, 2, 3, 4, 5]) {
+      expect(css).toContain(
+        `.monaco-editor .view-lines .view-line span.morph-jsx-tag-${depth}`,
+      );
+    }
+    expect(css.match(/\.monaco-editor \.view-lines \.view-line span\.morph-jsx-tag-[0-5][^}]*!important/g)).toHaveLength(6);
+  });
+});
+
+describe("createJsxTagDecorations", () => {
+  it("uses valid Monaco ranges for first-line and multiline TSX models", () => {
+    const contentListener = { dispose: vi.fn() };
+    const model = {
+      uri: { path: "/morph-theme/store/theme/src/components/Hero.tsx" },
+      getValue: () => ["<main>", "  <Card />", "</main>"].join(String.fromCharCode(10)),
+      onDidChangeContent: () => contentListener,
+    };
+    const deltaDecorations = vi.fn((_oldIds: string[], decorations: Array<{
+      range: {
+        startLineNumber: number;
+        startColumn: number;
+        endLineNumber: number;
+        endColumn: number;
+      };
+    }>) => {
+      for (const decoration of decorations) {
+        expect(decoration.range.startLineNumber).toBeGreaterThanOrEqual(1);
+        expect(decoration.range.startColumn).toBeGreaterThanOrEqual(1);
+        expect(decoration.range.endLineNumber).toBeGreaterThanOrEqual(1);
+        expect(decoration.range.endColumn).toBeGreaterThanOrEqual(1);
+      }
+      return decorations.map((_decoration, index) => String(index));
+    });
+    const editor = {
+      getModel: () => model,
+      deltaDecorations,
+      onDidChangeModel: () => ({ dispose: vi.fn() }),
+    };
+
+    const decorations = createJsxTagDecorations(editor as never);
+
+    expect(deltaDecorations).toHaveBeenCalledTimes(1);
+    expect(deltaDecorations.mock.calls[0][1]).toHaveLength(3);
+    decorations.dispose();
+  });
+});
 
 describe("resolveTailwindCompletionContext", () => {
   it("resolves the active utility inside a JSX className string", () => {
@@ -76,7 +174,73 @@ describe("configureThemeTypeScript", () => {
     expect(setCompilerOptions).toHaveBeenCalledWith(
       expect.objectContaining({ jsx: 1, noEmit: true }),
     );
-    expect(addExtraLib).toHaveBeenCalledOnce();
+    expect(addExtraLib).toHaveBeenCalledTimes(2);
+    expect(addExtraLib).toHaveBeenCalledWith(
+      expect.stringContaining('declare module "clsx"'),
+      "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
+    );
+  });
+});
+
+describe("theme workspace Monaco models", () => {
+  it("uses one isolated file URI tree so relative imports can resolve", () => {
+    expect(
+      getThemeModelUri(
+        { storefrontId: "store 1", themeId: "theme/1" },
+        "src\\pages\\index.tsx",
+      ),
+    ).toBe("file:///morph-theme/store%201/theme%2F1/src/pages/index.tsx");
+  });
+
+  it("preloads every source file once and disposes only the current workspace", () => {
+    const existingModels = new Map<
+      string,
+      { dispose: ReturnType<typeof vi.fn> }
+    >();
+    const createModel = vi.fn(
+      (_content: string, _language: string, uri: { toString(): string }) => {
+        existingModels.set(uri.toString(), { dispose: vi.fn() });
+      },
+    );
+    const monaco = {
+      Uri: {
+        parse: vi.fn((value: string) => ({ toString: () => value })),
+      },
+      editor: {
+        getModel: (uri: { toString(): string }) =>
+          existingModels.get(uri.toString()),
+        getModels: () =>
+          [...existingModels.entries()].map(([value, model]) => ({
+            uri: { toString: () => value },
+            dispose: model.dispose,
+          })),
+        createModel,
+      },
+    } as unknown as Monaco;
+    const scope = { storefrontId: "store-1", themeId: "theme-1" };
+    const files = [
+      { path: "src/pages/index.tsx", content: "export default null" },
+      { path: "src/components/Hero.tsx", content: "export default null" },
+    ];
+
+    ensureThemeWorkspaceModels(monaco, scope, files);
+    ensureThemeWorkspaceModels(monaco, scope, files);
+    expect(createModel).toHaveBeenCalledTimes(2);
+
+    existingModels.set("file:///morph-theme/other/theme/src/index.tsx", {
+      dispose: vi.fn(),
+    });
+    disposeThemeWorkspaceModels(monaco, scope);
+
+    expect(
+      existingModels.get(
+        "file:///morph-theme/store-1/theme-1/src/pages/index.tsx",
+      )?.dispose,
+    ).toHaveBeenCalledOnce();
+    expect(
+      existingModels.get("file:///morph-theme/other/theme/src/index.tsx")
+        ?.dispose,
+    ).not.toHaveBeenCalled();
   });
 });
 
@@ -111,7 +275,9 @@ describe("registerTailwindCompletionProvider", () => {
     } as unknown as Monaco;
 
     registerTailwindCompletionProvider(monaco);
-    expect(monaco.languages.registerCompletionItemProvider).toHaveBeenCalledTimes(2);
+    expect(
+      monaco.languages.registerCompletionItemProvider,
+    ).toHaveBeenCalledTimes(2);
     const line = '<div className="flex bg-st';
     const result = provider!.provideCompletionItems(
       { uri: { path: "/src/Hero.tsx" }, getLineContent: () => line },
@@ -122,6 +288,8 @@ describe("registerTailwindCompletionProvider", () => {
       label: "bg-stone-50",
       insertText: "bg-stone-50",
     });
-    expect(result.suggestions.some(({ label }) => label === "flex")).toBe(false);
+    expect(result.suggestions.some(({ label }) => label === "flex")).toBe(
+      false,
+    );
   });
 });

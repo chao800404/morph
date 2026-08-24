@@ -65,6 +65,34 @@ describe("preview protocol", () => {
     });
   });
 
+  it("accepts bounded selection restore targets and rejects malformed ones", () => {
+    const message = {
+      type: "morph:storefront-preview-set-selection-mode",
+      enabled: true,
+      restoreTarget: {
+        sectionId: "hero",
+        nodeId: "hero-heading",
+        fieldPath: "items.0.heading",
+        elementKey: "heading",
+        fieldKey: "heading",
+        isSection: false,
+      },
+    };
+    expect(parseEditorToPreviewMessage(message)).toEqual(message);
+    expect(
+      parseEditorToPreviewMessage({
+        ...message,
+        restoreTarget: { sectionId: "hero", nodeId: "x".repeat(201) },
+      }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({
+        ...message,
+        restoreTarget: { sectionId: "hero" },
+      }),
+    ).toBeNull();
+  });
+
   it("rejects malformed or unbounded editor messages", () => {
     expect(
       parseEditorToPreviewMessage({
@@ -137,6 +165,45 @@ describe("preview protocol", () => {
       parsePreviewToEditorMessage({
         ...message,
         sourceFilePath: "x".repeat(1_001),
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts only bounded, distinct array item reorder paths", () => {
+    const message = {
+      type: "morph:storefront-preview-commit-array-item-reorder",
+      sectionId: "principles",
+      draggedFieldPath: "items.0",
+      targetFieldPath: "items.2",
+    };
+
+    expect(parsePreviewToEditorMessage(message)).toEqual(message);
+    expect(
+      parsePreviewToEditorMessage({
+        ...message,
+        targetFieldPath: message.draggedFieldPath,
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...message,
+        targetFieldPath: "x".repeat(501),
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts a bounded selection field path restoration", () => {
+    const message = {
+      type: "morph:storefront-preview-set-selection-field-path",
+      sectionId: "principles",
+      fieldPath: "items.0",
+    };
+
+    expect(parseEditorToPreviewMessage(message)).toEqual(message);
+    expect(
+      parseEditorToPreviewMessage({
+        ...message,
+        fieldPath: "x".repeat(501),
       }),
     ).toBeNull();
   });

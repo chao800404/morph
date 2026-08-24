@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import type { PatchTailwindOptions } from "@/lib/storefront/ast/tailwind-token-engine";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,7 @@ type SharedProps = {
   disabled: boolean;
   onPreview: (styles: Record<string, string>) => void;
   onCommit: CommitStyle;
+  children?: ReactNode;
 };
 
 const px = (value?: string) => {
@@ -62,7 +64,7 @@ function NumberControl({
         "flex h-8 min-w-0 items-center gap-1 px-2 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
       )}
     >
-      <span className="min-w-4 shrink-0 text-[10px] text-muted-foreground">
+      <span className="min-w-4 shrink-0 text-xs text-muted-foreground">
         {label}
       </span>
       <ScrubbableNumberInput
@@ -155,6 +157,7 @@ export function LayoutInspectorModule(props: SharedProps) {
             }
           />
         ) : null}
+        {props.children}
       </div>
     </InspectorModuleCard>
   );

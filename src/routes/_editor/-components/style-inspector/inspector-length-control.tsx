@@ -1,6 +1,7 @@
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Select, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import type { ReactNode } from "react";
 import {
   tokenizeTailwindClasses,
   type TailwindPropertyFamily,
@@ -10,10 +11,8 @@ import {
   InspectorSelectItem,
   InspectorSelectTrigger,
 } from "./inspector-select-control";
-import {
-  inspectorControlSegmentSurface,
-  inspectorControlSurface,
-} from "./inspector-control-surface";
+import { inspectorControlSegmentSurface } from "./inspector-control-surface";
+import { InspectorControlRow } from "./inspector-control-row";
 
 export type InspectorLengthUnit =
   | "auto"
@@ -80,15 +79,22 @@ function parseUtilityLength(
   if (utility === `${prefix}-screen`) {
     return { unit: prefix === "h" ? "vh" : "vw", value: 100 };
   }
-  const arbitraryPrefix = `${prefix}-[`;
-  if (utility.startsWith(arbitraryPrefix) && utility.endsWith("]")) {
-    return parseNumericLength(
-      utility.slice(arbitraryPrefix.length, -1).replaceAll("_", " "),
+  const negative = utility.startsWith("-");
+  const normalizedUtility = negative ? utility.slice(1) : utility;
+  const arbitraryPrefix = prefix + "-[";
+  if (
+    normalizedUtility.startsWith(arbitraryPrefix) &&
+    normalizedUtility.endsWith("]")
+  ) {
+    const parsed = parseNumericLength(
+      normalizedUtility.slice(arbitraryPrefix.length, -1).replaceAll("_", " "),
     );
+    if (!parsed || parsed.value === null) return parsed;
+    return negative ? { ...parsed, value: -parsed.value } : parsed;
   }
   const computed = Number.parseFloat(computedValue ?? "");
   return Number.isFinite(computed)
-    ? { unit: "px", value: round(computed) }
+    ? { unit: "px", value: negative ? -round(computed) : round(computed) }
     : null;
 }
 
@@ -207,6 +213,7 @@ export function InspectorLengthControl({
   disabled,
   onPreview,
   onCommit,
+  trailingAction,
   className = "",
 }: {
   label: string;
@@ -222,6 +229,7 @@ export function InspectorLengthControl({
   disabled: boolean;
   onPreview: (cssValue: string, numericValue: number | null) => void;
   onCommit: (cssValue: string, numericValue: number | null) => void;
+  trailingAction?: ReactNode;
   className?: string;
 }) {
   const keywordUnits: InspectorLengthUnit[] = [];
@@ -233,71 +241,69 @@ export function InspectorLengthControl({
   ];
 
   return (
-    <div
-      className={cn(
-        inspectorControlSurface,
-        "flex h-8 min-w-0 items-center gap-1 overflow-hidden pl-2 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30",
-        className,
-      )}
-    >
-      <span className="min-w-4 shrink-0 text-xs text-muted-foreground">
-        {label}
-      </span>
-      {value.value === null ? (
-        <span className="ml-auto min-w-0 flex-1 truncate text-right text-xs text-muted-foreground mr-2">
-          {value.unit === "auto" ? "Auto" : "None"}
-        </span>
-      ) : (
-        <ScrubbableNumberInput
-          value={value.value}
-          min={min}
-          max={max}
-          step={step}
-          ariaLabel={ariaLabel}
+    <InspectorControlRow
+      className={className}
+      label={label}
+      control={
+        value.value === null ? (
+          <span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground mr-2">
+            {value.unit === "auto" ? "Auto" : "None"}
+          </span>
+        ) : (
+          <ScrubbableNumberInput
+            value={value.value}
+            min={min}
+            max={max}
+            step={step}
+            ariaLabel={ariaLabel}
+            disabled={disabled}
+            onValuePreview={(next) =>
+              onPreview(inspectorLengthCss(next, value.unit), next)
+            }
+            onValueChange={(next) =>
+              onCommit(inspectorLengthCss(next, value.unit), next)
+            }
+            className="h-7 min-w-0 flex-1 justify-end"
+            inputClassName="h-7 min-w-0 flex-1 px-0 text-right font-mono text-xs mr-2"
+          />
+        )
+      }
+      unit={
+        <Select
+          value={value.unit}
           disabled={disabled}
-          onValuePreview={(next) =>
-            onPreview(inspectorLengthCss(next, value.unit), next)
-          }
-          onValueChange={(next) =>
-            onCommit(inspectorLengthCss(next, value.unit), next)
-          }
-          className="h-7 min-w-0 flex-1 justify-end"
-          inputClassName="h-7 min-w-0 flex-1 px-0 text-right font-mono text-xs mr-2"
-        />
-      )}
-      <Select
-        value={value.unit}
-        disabled={disabled}
-        onValueChange={(nextValue) => {
-          const nextUnit = nextValue as InspectorLengthUnit;
-          if (nextUnit === "auto" || nextUnit === "none") {
-            onPreview(nextUnit, null);
-            onCommit(nextUnit, null);
-            return;
-          }
-          const next = valueForUnit(value, nextUnit, computedValue);
-          const cssValue = inspectorLengthCss(next, nextUnit);
-          onPreview(cssValue, next);
-          onCommit(cssValue, next);
-        }}
-      >
-        <InspectorSelectTrigger
-          aria-label={`${ariaLabel} unit`}
-          className={cn(
-            "h-7 w-auto min-w-0 shrink-0 gap-0 rounded-none border-0 px-2 text-xs shadow-none [&>svg]:hidden",
-            inspectorControlSegmentSurface,
-          )}
+          onValueChange={(nextValue) => {
+            const nextUnit = nextValue as InspectorLengthUnit;
+            if (nextUnit === "auto" || nextUnit === "none") {
+              onPreview(nextUnit, null);
+              onCommit(nextUnit, null);
+              return;
+            }
+            const next = valueForUnit(value, nextUnit, computedValue);
+            const cssValue = inspectorLengthCss(next, nextUnit);
+            onPreview(cssValue, next);
+            onCommit(cssValue, next);
+          }}
         >
-          <SelectValue>{value.value === null ? "-" : value.unit}</SelectValue>
-        </InspectorSelectTrigger>
-        <InspectorSelectContent className="w-16 min-w-16">
-          {units.map((unit) => (
-            <InspectorSelectItem key={unit} value={unit}>
-              {unit === "auto" ? "Auto" : unit === "none" ? "None" : unit}
-            </InspectorSelectItem>
-          ))}
-        </InspectorSelectContent>
-      </Select>
-    </div>
+          <InspectorSelectTrigger
+            aria-label={`${ariaLabel} unit`}
+            className={cn(
+              "h-7 w-auto min-w-0 shrink-0 gap-0 rounded-none border-0 px-2 text-xs shadow-none [&>svg]:hidden",
+              inspectorControlSegmentSurface,
+            )}
+          >
+            <SelectValue>{value.value === null ? "-" : value.unit}</SelectValue>
+          </InspectorSelectTrigger>
+          <InspectorSelectContent className="w-16 min-w-16">
+            {units.map((unit) => (
+              <InspectorSelectItem key={unit} value={unit}>
+                {unit === "auto" ? "Auto" : unit === "none" ? "None" : unit}
+              </InspectorSelectItem>
+            ))}
+          </InspectorSelectContent>
+        </Select>
+      }
+      trailingAction={trailingAction}
+    />
   );
 }

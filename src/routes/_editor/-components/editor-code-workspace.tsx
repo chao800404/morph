@@ -1,4 +1,10 @@
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { cn } from "@/lib/utils";
@@ -7,6 +13,7 @@ import type {
   StorefrontThemeFileTreeNode,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import {
+  deleteStorefrontThemeFile,
   initStorefrontStarterTheme,
   saveStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -16,6 +23,7 @@ import {
   ChevronDown,
   ChevronRight,
   Code2,
+  Trash2,
   FileCode2,
   FileJson,
   FileText,
@@ -31,8 +39,13 @@ import { toast } from "sonner";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import {
   configureThemeTypeScript,
+  disposeThemeWorkspaceModels,
+  ensureThemeWorkspaceModels,
+  getThemeModelUri,
+  createJsxTagDecorations,
   registerTailwindCompletionProvider,
 } from "./editor-code-language-support";
+import { formatEditorCode } from "./editor-code-formatter";
 
 type EditorCodeWorkspaceProps = {
   storefrontId: string;
@@ -96,6 +109,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
+  const jsxTagDecorationsRef = useRef<{ dispose: () => void } | null>(null);
 
   // Find initial active file (default to Hero.tsx or index.tsx)
   const defaultFile = useMemo(() => {
@@ -125,11 +139,17 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const activeServerContent = useThemeWorkspaceStore(
     (state) => state.files[activeFilePath]?.serverContent ?? null,
   );
-  const updateWorkspaceLocal = useThemeWorkspaceStore((state) => state.updateLocalContent);
-  const markWorkspaceSaving = useThemeWorkspaceStore((state) => state.markSaving);
+  const updateWorkspaceLocal = useThemeWorkspaceStore(
+    (state) => state.updateLocalContent,
+  );
+  const markWorkspaceSaving = useThemeWorkspaceStore(
+    (state) => state.markSaving,
+  );
   const markWorkspaceSaved = useThemeWorkspaceStore((state) => state.markSaved);
   const markWorkspaceError = useThemeWorkspaceStore((state) => state.markError);
-  const discardWorkspaceLocal = useThemeWorkspaceStore((state) => state.discardLocalChanges);
+  const discardWorkspaceLocal = useThemeWorkspaceStore(
+    (state) => state.discardLocalChanges,
+  );
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
@@ -141,17 +161,35 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const draftRevisionRef = useRef<Record<string, number>>({});
   const combinedDirtyPathsRef = useRef(dirtyPaths);
   const suppressModelChangeRef = useRef(false);
+  const saveInFlightRef = useRef(false);
 
-  const handleEditorWillMount = useCallback((monaco: Monaco) => {
-    configureThemeTypeScript(monaco);
-  }, []);
+  const handleEditorWillMount = useCallback(
+    (monaco: Monaco) => {
+      configureThemeTypeScript(monaco);
+      ensureThemeWorkspaceModels(
+        monaco,
+        workspaceScope,
+        files.map((file) => ({
+          path: file.path,
+          content:
+            draftContentsRef.current[file.path] ??
+            useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+            file.content,
+        })),
+      );
+    },
+    [files, workspaceScope],
+  );
 
   const handleEditorDidMount = useCallback<OnMount>(
     (editor, monaco) => {
       editorRef.current = editor;
       monacoRef.current = monaco;
       completionProviderRef.current?.dispose();
-      completionProviderRef.current = registerTailwindCompletionProvider(monaco);
+      completionProviderRef.current =
+        registerTailwindCompletionProvider(monaco);
+      jsxTagDecorationsRef.current?.dispose();
+      jsxTagDecorationsRef.current = createJsxTagDecorations(editor);
       if (jumpLocation?.line && jumpLocation.filePath === activeFilePath) {
         editor.revealPositionInCenter({
           lineNumber: jumpLocation.line,
@@ -171,9 +209,29 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     () => () => {
       completionProviderRef.current?.dispose();
       completionProviderRef.current = null;
+      jsxTagDecorationsRef.current?.dispose();
+      jsxTagDecorationsRef.current = null;
+      if (monacoRef.current) {
+        disposeThemeWorkspaceModels(monacoRef.current, workspaceScope);
+      }
     },
-    [],
+    [workspaceScope],
   );
+
+  useEffect(() => {
+    if (!monacoRef.current) return;
+    ensureThemeWorkspaceModels(
+      monacoRef.current,
+      workspaceScope,
+      files.map((file) => ({
+        path: file.path,
+        content:
+          draftContentsRef.current[file.path] ??
+          useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+          file.content,
+      })),
+    );
+  }, [files, workspaceScope]);
 
   useEffect(() => {
     if (initialActiveFilePath) {
@@ -213,15 +271,18 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   // Auto-fallback if current activeFilePath does not exist in loaded workspace files
   useEffect(() => {
-    if (files.length > 0 && !files.some((f) => f.path === activeFilePath)) {
+    if (
+      openTabs.length > 0 &&
+      files.length > 0 &&
+      !files.some((f) => f.path === activeFilePath)
+    ) {
       const fallback = defaultFile?.path ?? files[0].path;
       setActiveFilePath(fallback);
       setOpenTabs((prev) =>
         prev.includes(fallback) ? prev : [...prev, fallback],
       );
     }
-  }, [files, activeFilePath, defaultFile]);
-
+  }, [files, activeFilePath, defaultFile, openTabs.length]);
 
   const activeFile = useMemo(() => {
     return files.find((f) => f.path === activeFilePath);
@@ -229,7 +290,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const getFileBaseline = useCallback(
     (path: string) => {
-      const workspaceFile = useThemeWorkspaceStore.getState().files[path];
+      const workspaceFile = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        path
+      ];
       return (
         workspaceFile?.serverContent ??
         files.find((file) => file.path === path)?.content ??
@@ -273,7 +338,10 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       const localPaths = Object.entries(draftDirtyRef.current)
         .filter(([, dirty]) => dirty)
         .map(([path]) => path);
-      const next = [...storePaths, ...localPaths.filter((path) => !storePaths.includes(path))];
+      const next = [
+        ...storePaths,
+        ...localPaths.filter((path) => !storePaths.includes(path)),
+      ];
       const previous = combinedDirtyPathsRef.current;
       if (
         next.length === previous.length &&
@@ -323,10 +391,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
       const state = useThemeWorkspaceStore
         .getState()
-        .getWorkspaceFiles(
-          workspaceScope.storefrontId,
-          workspaceScope.themeId,
-        )[path];
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        path
+      ];
       const res = await saveStorefrontThemeFile({
         data: {
           storefrontId,
@@ -334,10 +401,10 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           path,
           content,
           expectedFileId: state?.serverExists
-            ? state.serverFileId ?? undefined
+            ? (state.serverFileId ?? undefined)
             : undefined,
           expectedVersion: state?.serverExists
-            ? state.serverVersion ?? undefined
+            ? (state.serverVersion ?? undefined)
             : undefined,
           expectMissing: state ? !state.serverExists : true,
           expectedSourceGeneration: useThemeWorkspaceStore
@@ -349,7 +416,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         if (res.error === "SOURCE_GENERATION_CONFLICT") {
           useThemeWorkspaceStore.getState().markDirty(path, workspaceScope);
           await queryClient.invalidateQueries({
-            queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId).queryKey,
+            queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+              .queryKey,
           });
           toast.error("Remote source changes detected in this theme.", {
             action: {
@@ -393,17 +461,17 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     onError: (err, variables) => {
       const fileState = useThemeWorkspaceStore
         .getState()
-        .getWorkspaceFiles(
-          workspaceScope.storefrontId,
-          workspaceScope.themeId,
-        )[variables.path];
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        variables.path
+      ];
       if (
         fileState?.saveState === "dirty" ||
         fileState?.saveState === "conflict"
       ) {
         return;
       }
-      const message = err instanceof Error ? err.message : "Failed to save file";
+      const message =
+        err instanceof Error ? err.message : "Failed to save file";
       markWorkspaceError(variables.path, message, workspaceScope);
       toast.error(message);
     },
@@ -423,13 +491,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       return res.data;
     },
     onSuccess: async (data) => {
-      useThemeWorkspaceStore.getState().acceptRemoteGeneration(
-        data.sourceGeneration,
-        workspaceScope,
-      );
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(data.sourceGeneration, workspaceScope);
       toast.success("Starter theme workspace initialized");
       await queryClient.invalidateQueries({
-        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId).queryKey,
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
       });
       onRefreshPreview?.();
     },
@@ -438,14 +506,71 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async ({
+      path,
+      expectedFileId,
+      expectedVersion,
+    }: {
+      path: string;
+      expectedFileId: string;
+      expectedVersion: number;
+    }) => {
+      const result = await deleteStorefrontThemeFile({
+        data: {
+          storefrontId,
+          themeId,
+          path,
+          expectedFileId,
+          expectedVersion,
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      return result.data;
+    },
+    onSuccess: async ({ path, sourceGeneration }) => {
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(sourceGeneration, workspaceScope);
+      const nextTabs = openTabs.filter((tabPath) => tabPath !== path);
+      delete draftContentsRef.current[path];
+      delete draftDirtyRef.current[path];
+      delete draftRevisionRef.current[path];
+      discardWorkspaceLocal(path, workspaceScope);
+      syncCombinedDirtyPaths(
+        useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+      );
+      for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
+        const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
+        if (modelPath === path || modelPath.endsWith("/" + path))
+          model.dispose?.();
+      }
+      setOpenTabs(nextTabs);
+      if (activeFilePath === path)
+        setActiveFilePath(nextTabs[nextTabs.length - 1] ?? "");
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
+      });
+      toast.success("Deleted " + path);
+      onRefreshPreview?.();
+    },
+    onError: (error) =>
+      toast.error(
+        error instanceof Error ? error.message : "Failed to delete file",
+      ),
+  });
+
   const handleContentChange = (value?: string) => {
     if (value === undefined) return;
     if (suppressModelChangeRef.current) return;
 
     const path = activeFilePath;
     draftContentsRef.current[path] = value;
-    draftRevisionRef.current[path] =
-      (draftRevisionRef.current[path] ?? 0) + 1;
+    draftRevisionRef.current[path] = (draftRevisionRef.current[path] ?? 0) + 1;
     const isDirty = value !== getFileBaseline(path);
     const wasDirty =
       draftDirtyRef.current[path] ??
@@ -467,21 +592,71 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     );
 
     return useThemeWorkspaceStore.subscribe(() => {
-      const next = useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope);
+      const next = useThemeWorkspaceStore
+        .getState()
+        .getDirtyFiles(workspaceScope);
       syncCombinedDirtyPaths(next);
     });
   }, [syncCombinedDirtyPaths, workspaceScope]);
 
   const dirtyPathSet = useMemo(() => new Set(dirtyPaths), [dirtyPaths]);
 
-  const handleSaveCurrentFile = useCallback(() => {
-    if (!activeFilePath || saveMutation.isPending) return;
-    const content = getCurrentEditorContent(activeFilePath);
-    const draftRevision = draftRevisionRef.current[activeFilePath] ?? 0;
-    // Save is the source/workspace boundary: sync the complete transient
-    // Monaco model exactly once before invoking the existing OCC mutation.
-    updateWorkspaceLocal(activeFilePath, content, workspaceScope);
-    saveMutation.mutate({ path: activeFilePath, content, draftRevision });
+  const handleSaveCurrentFile = useCallback(async () => {
+    if (!activeFilePath || saveMutation.isPending || saveInFlightRef.current)
+      return;
+
+    saveInFlightRef.current = true;
+    const originalContent = getCurrentEditorContent(activeFilePath);
+    let content = originalContent;
+    const editor = editorRef.current;
+    const model = editor?.getModel?.();
+    const initialDraftRevision =
+      draftRevisionRef.current[activeFilePath] ?? 0;
+
+    try {
+      try {
+        const formattedContent = await formatEditorCode(
+          originalContent,
+          activeFilePath,
+        );
+        const latestModelContent = model?.getValue?.();
+        const modelChangedWhileFormatting =
+          typeof latestModelContent === "string" &&
+          (latestModelContent !== originalContent ||
+            (draftRevisionRef.current[activeFilePath] ?? 0) !==
+              initialDraftRevision);
+
+        if (modelChangedWhileFormatting) {
+          // A newer user edit wins over a formatter result that was computed
+          // from the older snapshot.
+          content = latestModelContent;
+        } else {
+          content = formattedContent;
+          if (
+            model &&
+            typeof model.setValue === "function" &&
+            formattedContent !== originalContent
+          ) {
+            model.setValue(formattedContent);
+          }
+        }
+      } catch {
+        const latestModelContent = model?.getValue?.();
+        content =
+          typeof latestModelContent === "string" &&
+          latestModelContent !== originalContent
+            ? latestModelContent
+            : originalContent;
+      }
+
+      const draftRevision = draftRevisionRef.current[activeFilePath] ?? 0;
+      // Save is the source/workspace boundary: sync the complete transient
+      // Monaco model exactly once before invoking the existing OCC mutation.
+      updateWorkspaceLocal(activeFilePath, content, workspaceScope);
+      saveMutation.mutate({ path: activeFilePath, content, draftRevision });
+    } finally {
+      saveInFlightRef.current = false;
+    }
   }, [
     activeFilePath,
     getCurrentEditorContent,
@@ -544,6 +719,33 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
   };
 
+  const handleDeleteFile = (path: string) => {
+    if (deleteMutation.isPending) return;
+    const file = files.find((candidate) => candidate.path === path);
+    const workspaceFile = useThemeWorkspaceStore
+      .getState()
+      .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+      path
+    ];
+    if (!file || !workspaceFile?.serverExists || !workspaceFile.serverFileId) {
+      toast.error("This file is not available for deletion.");
+      return;
+    }
+    if (workspaceFile.dirty || draftDirtyRef.current[path]) {
+      if (
+        !window.confirm(
+          'File "' + path + '" has unsaved changes. Delete it anyway?',
+        )
+      )
+        return;
+    }
+    deleteMutation.mutate({
+      path,
+      expectedFileId: workspaceFile.serverFileId,
+      expectedVersion: workspaceFile.serverVersion ?? file.version,
+    });
+  };
+
   const toggleFolder = (path: string) => {
     setCollapsedFolders((prev) => ({
       ...prev,
@@ -586,25 +788,38 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     const isDirty = dirtyPathSet.has(node.path);
 
     return (
-      <div
-        key={node.path}
-        onClick={() => handleOpenFile(node.path)}
-        className={cn(
-          "flex cursor-pointer items-center justify-between rounded-sm px-2 py-1 text-xs select-none transition-colors",
-          isActive
-            ? "bg-accent text-accent-foreground font-medium"
-            : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-        )}
-        style={{ paddingLeft: `${depth * 12 + 18}px` }}
-      >
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          {getFileIcon(node.name)}
-          <span className="truncate">{node.name}</span>
-        </div>
-        {isDirty ? (
-          <span className="size-1.5 rounded-full bg-primary shrink-0" />
-        ) : null}
-      </div>
+      <ContextMenu key={node.path}>
+        <ContextMenuTrigger asChild>
+          <div
+            onClick={() => handleOpenFile(node.path)}
+            className={cn(
+              "flex cursor-pointer items-center justify-between rounded-sm px-2 py-1 text-xs select-none transition-colors",
+              isActive
+                ? "bg-accent text-accent-foreground font-medium"
+                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+            )}
+            style={{ paddingLeft: depth * 12 + 18 }}
+          >
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              {getFileIcon(node.name)}
+              <span className="truncate">{node.name}</span>
+            </div>
+            {isDirty ? (
+              <span className="size-1.5 rounded-full bg-primary shrink-0" />
+            ) : null}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem
+            variant="destructive"
+            disabled={deleteMutation.isPending}
+            onClick={() => handleDeleteFile(node.path)}
+          >
+            <Trash2 className="size-3.5" />
+            Delete File
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     );
   };
 
@@ -618,7 +833,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           Theme Virtual Workspace is Empty
         </h3>
         <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-muted-foreground">
-          This theme does not have editable component source files in its virtual workspace yet. Initialize the starter theme files to edit React & Tailwind code.
+          This theme does not have editable component source files in its
+          virtual workspace yet. Initialize the starter theme files to edit
+          React & Tailwind code.
         </p>
         <Button
           type="button"
@@ -646,14 +863,18 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         <div className="flex h-10 items-center justify-between border-b px-3 text-xs font-semibold text-muted-foreground">
           <div className="flex items-center gap-1.5">
             <Code2 className="size-3.5 text-primary" />
-            <span className="uppercase tracking-wider text-[11px]">Explorer</span>
+            <span className="uppercase tracking-wider text-[11px]">
+              Explorer
+            </span>
           </div>
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
             {files.length} files
           </span>
         </div>
         <ScrollArea className="flex-1 p-1">
-          <div className="space-y-0.5">{tree.map((node) => renderTreeNode(node, 0))}</div>
+          <div className="space-y-0.5">
+            {tree.map((node) => renderTreeNode(node, 0))}
+          </div>
         </ScrollArea>
       </div>
 
@@ -760,7 +981,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           {activeFile ? (
             <Editor
               height="100%"
-              path={activeFilePath}
+              path={getThemeModelUri(workspaceScope, activeFilePath)}
               language={getLanguage(activeFilePath)}
               defaultValue={getInitialEditorContent(activeFilePath)}
               onChange={handleContentChange}
@@ -769,7 +990,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               theme="vs-dark"
               options={{
                 fontSize: 13,
-                fontFamily: "var(--font-mono, Menlo, Monaco, Consolas, monospace)",
+                fontFamily:
+                  "var(--font-mono, Menlo, Monaco, Consolas, monospace)",
                 minimap: { enabled: false },
                 scrollBeyondLastLine: false,
                 lineNumbers: "on",

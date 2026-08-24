@@ -6,8 +6,8 @@ import {
   type ComponentElementMeta,
   type ParsedComponentMeta,
 } from "@/lib/storefront/ast/theme-ast-transformer";
-
 type SectionSourceDescriptor = {
+  id?: string;
   type: string;
   componentRef?: string | null;
 };
@@ -62,14 +62,6 @@ export function resolveCodeSelectionTarget(input: {
   themeFiles: StorefrontThemeFileDTO[];
 }): CodeSelectionTarget | null {
   const { section, selection, themeFiles } = input;
-  const explicitSourceFile = selection?.sourceFilePath
-    ? themeFiles.find((file) => file.path === selection.sourceFilePath)
-    : undefined;
-
-  if (explicitSourceFile) {
-    return targetForFile(explicitSourceFile, selection);
-  }
-
   const sectionPath = section
     ? getComponentFilePath(
         section.type,
@@ -81,13 +73,25 @@ export function resolveCodeSelectionTarget(input: {
     ? themeFiles.find((file) => file.path === sectionPath)
     : undefined;
 
+  const explicitSourceFile = selection?.sourceFilePath
+    ? themeFiles.find((file) => file.path === selection.sourceFilePath)
+    : undefined;
+
+  if (explicitSourceFile) {
+    return targetForFile(explicitSourceFile, selection);
+  }
+
   if (selection?.nodeId && !selection.isSection) {
     const nodeMatches = themeFiles
       .filter(
         (file) =>
           file.path !== sectionPath &&
           /\.[jt]sx?$/.test(file.path) &&
-          Boolean(parseComponentSource(file.content, file.path).nodeMap[selection.nodeId!]),
+          Boolean(
+            parseComponentSource(file.content, file.path).nodeMap[
+              selection.nodeId!
+            ],
+          ),
       )
       .map((file) => targetForFile(file, selection));
 

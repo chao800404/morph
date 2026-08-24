@@ -15,7 +15,14 @@ import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, GripVertical, Layers3, Plus } from "lucide-react";
+import {
+  ChevronRight,
+  Eye,
+  EyeOff,
+  GripVertical,
+  Layers3,
+  Plus,
+} from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
@@ -33,6 +40,7 @@ export type EditorSectionsPanelProps = {
   onSectionOrderChange: (sectionIds: string[]) => void;
   onSaveStateChange: (state: "idle" | "saving" | "error") => void;
   onReorderSections?: (sectionIds: string[]) => Promise<unknown>;
+  onToggleSectionEnabled?: (sectionId: string, enabled: boolean) => void;
 };
 
 type EditorSection =
@@ -52,12 +60,14 @@ function SortableSectionRow({
   selected,
   disabled,
   onSelect,
+  onToggleEnabled,
 }: {
   section: EditorSection;
   index: number;
   selected: boolean;
   disabled: boolean;
   onSelect: () => void;
+  onToggleEnabled: () => void;
 }) {
   const { ref, handleRef, isDragging } = useSortable({
     id: section.id,
@@ -90,11 +100,38 @@ function SortableSectionRow({
         <span className="w-3.5 shrink-0 text-center text-[10px] tabular-nums text-muted-foreground">
           {index + 1}
         </span>
-        <span className="min-w-0 flex-1 truncate text-xs">
-          {section.type}
-        </span>
-        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60 group-hover:text-foreground" />
+        <span className="min-w-0 flex-1 truncate text-xs">{section.type}</span>
       </button>
+      <button
+        type="button"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleEnabled();
+        }}
+        className={cn(
+          " size-7 shrink-0 rounded p-1 text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-focus-within:opacity-100 group-hover:opacity-100",
+          section.enabled === false && "opacity-100",
+        )}
+        aria-label={
+          section.enabled === false
+            ? "Show section " + section.type
+            : "Hide section " + section.type
+        }
+        title={section.enabled === false ? "Show section" : "Hide section"}
+      >
+        {section.enabled === false ? (
+          <EyeOff className="size-3.5" />
+        ) : (
+          <Eye className="size-3.5" />
+        )}
+      </button>
+      <span
+        className="shrink-0 px-1 text-muted-foreground/60 group-hover:text-foreground"
+        aria-hidden="true"
+      >
+        <ChevronRight className="size-3.5" />
+      </span>
     </div>
   );
 }
@@ -108,6 +145,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onSectionOrderChange,
   onSaveStateChange,
   onReorderSections,
+  onToggleSectionEnabled,
 }: EditorSectionsPanelProps) {
   const activeTemplate = resolveEditorTemplate(context, search);
   const sourceSections = activeTemplate?.document.sections ?? [];
@@ -266,6 +304,12 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   selected={search.section === section.id}
                   disabled={reorderMutation.isPending}
                   onSelect={() => onSearchChange({ section: section.id })}
+                  onToggleEnabled={() =>
+                    onToggleSectionEnabled?.(
+                      section.id,
+                      section.enabled === false,
+                    )
+                  }
                 />
               ))}
             </DragDropProvider>

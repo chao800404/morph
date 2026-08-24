@@ -27,6 +27,20 @@ describe("InspectorLengthControl", () => {
     const unitTriggerClasses = screen
       .getByRole("combobox", { name: "Element width unit" })
       .className.split(" ");
+    const row = screen
+      .getByRole("spinbutton", { name: "Element width" })
+      .closest('[data-slot="inspector-control-row"]');
+    expect(row).toBeTruthy();
+    expect(
+      row?.querySelector('[data-slot="inspector-control-row-label"]'),
+    )?.toHaveProperty("textContent", "W");
+    expect(
+      row
+        ?.querySelector('[data-slot="inspector-control-row-unit"]')
+        ?.contains(
+          screen.getByRole("combobox", { name: "Element width unit" }),
+        ),
+    ).toBe(true);
     expect(unitTriggerClasses).toEqual(
       expect.arrayContaining(["w-auto", "min-w-0", "px-2", "[&>svg]:hidden"]),
     );

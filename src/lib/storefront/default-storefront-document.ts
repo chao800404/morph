@@ -108,16 +108,19 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
         props: {
           items: [
             {
+              id: "principle-natural-materials",
               number: "01",
               title: "Natural materials",
               body: "Tactile surfaces and honest finishes selected to age with character.",
             },
             {
+              id: "principle-thoughtful-sourcing",
               number: "02",
               title: "Thoughtful sourcing",
               body: "Small-batch makers and considered production wherever possible.",
             },
             {
+              id: "principle-everyday-usefulness",
               number: "03",
               title: "Everyday usefulness",
               body: "Beautiful forms designed to earn a permanent place in your routine.",

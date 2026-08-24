@@ -34,9 +34,47 @@ export type ParsedComponentMeta = {
   defaultProps: Record<string, string>;
   elements: Record<string, ComponentElementMeta>;
   nodeMap: Record<string, ComponentElementMeta>;
+  instanceClasses: Record<string, string>;
   parseOk: boolean;
   diagnostics: string[];
 };
+
+const MORPH_INSTANCE_CLASS_MAP = "morphInstanceClasses";
+
+function isMorphInstanceClassLookup(argument: any): boolean {
+  let node = argument;
+  while (
+    node?.type === "OptionalMemberExpression" ||
+    node?.type === "MemberExpression"
+  ) {
+    if (node.object?.type === "Identifier") {
+      return node.object.name === MORPH_INSTANCE_CLASS_MAP;
+    }
+    node = node.object;
+  }
+  return false;
+}
+
+function readStaticCnClassName(expression: any): string | null {
+  if (
+    expression?.type !== "CallExpression" ||
+    expression.callee?.type !== "Identifier" ||
+    expression.callee.name !== "cn" ||
+    !expression.arguments.every(
+      (argument: any) =>
+        argument.type === "StringLiteral" ||
+        isMorphInstanceClassLookup(argument),
+    )
+  ) {
+    return null;
+  }
+
+  return expression.arguments
+    .filter((argument: any) => argument.type === "StringLiteral")
+    .map((argument: any) => argument.value.trim())
+    .filter(Boolean)
+    .join(" ");
+}
 
 /**
  * Resolves actual component file path from section type and optional componentRef
@@ -205,6 +243,7 @@ export function parseComponentSource(
   const defaultProps: Record<string, string> = {};
   const elements: Record<string, ComponentElementMeta> = {};
   const nodeMap: Record<string, ComponentElementMeta> = {};
+  const instanceClasses: Record<string, string> = {};
   let parseOk = true;
   const diagnostics: string[] = [];
 
@@ -212,6 +251,23 @@ export function parseComponentSource(
     const ast = parseAst(sourceCode);
 
     walk(ast, (node) => {
+      if (
+        node.type === "VariableDeclarator" &&
+        node.id?.type === "Identifier" &&
+        node.id.name === MORPH_INSTANCE_CLASS_MAP &&
+        node.init?.type === "ObjectExpression"
+      ) {
+        for (const property of node.init.properties ?? []) {
+          if (
+            property.type === "ObjectProperty" &&
+            property.key?.type === "StringLiteral" &&
+            property.value?.type === "StringLiteral"
+          ) {
+            instanceClasses[property.key.value] = property.value.value;
+          }
+        }
+      }
+
       // 1. Extract default props from parameter destructuring (AssignmentPattern)
       if (
         node.type === "AssignmentPattern" &&
@@ -300,7 +356,9 @@ export function parseComponentSource(
                   isExpression: false,
                 };
               } else if (attr.value.type === "JSXExpressionContainer") {
-                className = sourceCode.slice(attr.value.start, attr.value.end);
+                className =
+                  readStaticCnClassName(attr.value.expression) ??
+                  sourceCode.slice(attr.value.start, attr.value.end);
                 classNameOffsets = {
                   start: attr.value.start,
                   end: attr.value.end,
@@ -379,6 +437,7 @@ export function parseComponentSource(
     defaultProps,
     elements,
     nodeMap,
+    instanceClasses,
     parseOk,
     diagnostics,
   };

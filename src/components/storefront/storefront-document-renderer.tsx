@@ -21,28 +21,54 @@ function resolveSectionStyle(props: Record<string, any>): React.CSSProperties {
   if (props.fontFamily) style.fontFamily = props.fontFamily;
   if (props.fontWeight) style.fontWeight = props.fontWeight;
   if (props.lineHeight) {
-    style.lineHeight = typeof props.lineHeight === "number" ? props.lineHeight : props.lineHeight;
+    style.lineHeight =
+      typeof props.lineHeight === "number"
+        ? props.lineHeight
+        : props.lineHeight;
   }
   if (props.fontSize) {
-    style.fontSize = typeof props.fontSize === "number" ? `${props.fontSize}px` : props.fontSize;
+    style.fontSize =
+      typeof props.fontSize === "number"
+        ? `${props.fontSize}px`
+        : props.fontSize;
   }
-  if (props.borderRadius !== undefined && props.borderRadius !== null && props.borderRadius !== 0) {
-    style.borderRadius = typeof props.borderRadius === "number" ? `${props.borderRadius}px` : props.borderRadius;
+  if (
+    props.borderRadius !== undefined &&
+    props.borderRadius !== null &&
+    props.borderRadius !== 0
+  ) {
+    style.borderRadius =
+      typeof props.borderRadius === "number"
+        ? `${props.borderRadius}px`
+        : props.borderRadius;
   }
   if (props.padding !== undefined && props.padding !== null) {
-    style.padding = typeof props.padding === "number" ? `${props.padding}px` : props.padding;
+    style.padding =
+      typeof props.padding === "number" ? `${props.padding}px` : props.padding;
   }
   if (props.paddingTop !== undefined && props.paddingTop !== null) {
-    style.paddingTop = typeof props.paddingTop === "number" ? `${props.paddingTop}px` : props.paddingTop;
+    style.paddingTop =
+      typeof props.paddingTop === "number"
+        ? `${props.paddingTop}px`
+        : props.paddingTop;
   }
   if (props.paddingBottom !== undefined && props.paddingBottom !== null) {
-    style.paddingBottom = typeof props.paddingBottom === "number" ? `${props.paddingBottom}px` : props.paddingBottom;
+    style.paddingBottom =
+      typeof props.paddingBottom === "number"
+        ? `${props.paddingBottom}px`
+        : props.paddingBottom;
   }
   if (props.paddingLeft !== undefined && props.paddingLeft !== null) {
-    style.paddingLeft = typeof props.paddingLeft === "number" ? `${props.paddingLeft}px` : props.paddingLeft;
+    style.paddingLeft =
+      typeof props.paddingLeft === "number"
+        ? `${props.paddingLeft}px`
+        : props.paddingLeft;
   }
   if (props.paddingRight !== undefined && props.paddingRight !== null) {
-    style.paddingRight = typeof props.paddingRight === "number" ? `${props.paddingRight}px` : props.paddingRight;
+    style.paddingRight =
+      typeof props.paddingRight === "number"
+        ? `${props.paddingRight}px`
+        : props.paddingRight;
   }
   return style;
 }
@@ -136,6 +162,7 @@ const principlesPropsSchema = z
     items: z
       .array(
         z.object({
+          id: z.string().max(120).nullish(),
           number: z.string().max(20).nullish().default("01"),
           title: z.string().max(150).nullish().default(""),
           body: z.string().max(400).nullish().default(""),
@@ -284,10 +311,16 @@ function StorefrontHero({
     getComponentFilePath("hero", themeFiles, componentRef ?? undefined) ??
     "src/components/Hero.tsx";
   const heroFile = themeFiles?.find((f) => f.path === componentPath);
-  const heroAst = heroFile?.content ? parseComponentSource(heroFile.content) : null;
+  const heroAst = heroFile?.content
+    ? parseComponentSource(heroFile.content)
+    : null;
   // Presentation SSOT: when TSX source exists, Tailwind classes from source govern layout/style without inline style overrides
-  const customStyle = heroFile ? undefined : resolveSectionStyle(rawProps ?? {});
-  const customClass = heroFile ? undefined : (rawProps?.className ?? rawProps?.customClass);
+  const customStyle = heroFile
+    ? undefined
+    : resolveSectionStyle(rawProps ?? {});
+  const customClass = heroFile
+    ? undefined
+    : (rawProps?.className ?? rawProps?.customClass);
 
   const sectionClassName =
     heroAst?.elements["section"]?.className ||
@@ -323,7 +356,9 @@ function StorefrontHero({
     heroAst?.defaultProps.description ??
     "Quiet essentials, thoughtfully made for the spaces you call home.";
   const displayActionLabel =
-    actionLabel ?? heroAst?.defaultProps.actionLabel ?? "Explore the collection";
+    actionLabel ??
+    heroAst?.defaultProps.actionLabel ??
+    "Explore the collection";
   const displayActionHref =
     actionHref ?? heroAst?.defaultProps.actionHref ?? "/collections/new";
   const displayImageSrc =
@@ -524,11 +559,11 @@ function CategoryShowcase({
             className="group block border-t border-stone-700 pt-4 lg:border-t-0 lg:pt-0"
           >
             <div className="aspect-[4/5] overflow-hidden bg-stone-800">
-                <img
-                  data-storefront-component="image"
-                  data-storefront-field="imageSrc"
-                  data-storefront-field-path={`items.${index}.imageSrc`}
-                  src={
+              <img
+                data-storefront-component="image"
+                data-storefront-field="imageSrc"
+                data-storefront-field-path={`items.${index}.imageSrc`}
+                src={
                   item.imageSrc ??
                   "/static/storefront/theme-preview-default.png"
                 }
@@ -601,10 +636,7 @@ function ImageWithText({
       data-morph-source-file="src/components/Hero.tsx"
       data-morph-component="ImageWithText"
       style={customStyle}
-      className={cn(
-        "grid bg-[#d8d0c3] lg:grid-cols-2",
-        customClass,
-      )}
+      className={cn("grid bg-[#d8d0c3] lg:grid-cols-2", customClass)}
     >
       <div
         data-storefront-component="image"
@@ -662,6 +694,7 @@ function Principles({
   rawProps?: Record<string, any>;
   themeFiles?: Array<{ path: string; content: string }>;
   items?: Array<{
+    id?: string | null;
     number?: string | null;
     title?: string | null;
     body?: string | null;
@@ -703,6 +736,11 @@ function Principles({
   const bodyClassName =
     principlesAst?.elements.body?.className ??
     "mt-4 max-w-sm text-sm leading-6 text-stone-600";
+  const instanceClassName = (
+    itemId: string | null | undefined,
+    nodeId: string,
+  ) =>
+    itemId ? principlesAst?.instanceClasses[`${itemId}:${nodeId}`] : undefined;
 
   return (
     <section
@@ -731,13 +769,17 @@ function Principles({
       >
         {displayItems.map((item, idx) => (
           <article
-            key={item.number ?? idx}
+            key={item.id ?? item.number ?? idx}
+            data-storefront-item-id={item.id ?? undefined}
             data-storefront-component="principle-item"
             data-storefront-field="items"
             data-storefront-field-path={`items.${idx}`}
             data-morph-node={principlesAst?.elements["principle-card"]?.nodeId}
             data-morph-element="principle-card"
-            className={cardClassName}
+            className={cn(
+              cardClassName,
+              instanceClassName(item.id, "principle-card"),
+            )}
           >
             <span
               data-storefront-component="number"
@@ -745,7 +787,10 @@ function Principles({
               data-storefront-field-path={`items.${idx}.number`}
               data-morph-node={principlesAst?.elements.number?.nodeId}
               data-morph-element="number"
-              className={numberClassName}
+              className={cn(
+                numberClassName,
+                instanceClassName(item.id, "principle-number"),
+              )}
             >
               {item.number ?? `0${idx + 1}`}
             </span>
@@ -755,7 +800,10 @@ function Principles({
               data-storefront-field-path={`items.${idx}.title`}
               data-morph-node={principlesAst?.elements.title?.nodeId}
               data-morph-element="title"
-              className={titleClassName}
+              className={cn(
+                titleClassName,
+                instanceClassName(item.id, "principle-title"),
+              )}
             >
               {item.title ?? ""}
             </h3>
@@ -765,7 +813,10 @@ function Principles({
               data-storefront-field-path={`items.${idx}.body`}
               data-morph-node={principlesAst?.elements.body?.nodeId}
               data-morph-element="body"
-              className={bodyClassName}
+              className={cn(
+                bodyClassName,
+                instanceClassName(item.id, "principle-body"),
+              )}
             >
               {item.body ?? ""}
             </p>

@@ -88,6 +88,15 @@ import {
   swapSiblingMorphNodes,
 } from "@/lib/storefront/ast/theme-ast-transformer";
 import {
+  findLegacyThemeInstanceStyleSheet,
+  patchThemeInstanceStyleClasses,
+  readLegacyThemeInstanceStyleClasses,
+  removeLegacyThemeInstanceStyle,
+  removeLegacyThemeInstanceStyleImport,
+  type ThemeInstanceStyleTarget,
+} from "@/lib/storefront/editor/theme-instance-style-source";
+import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
+import {
   toWorkspaceKey,
   useThemeWorkspaceStore,
 } from "@/lib/storefront/store/theme-workspace-store";
@@ -108,6 +117,7 @@ import {
   parsePreviewSectionProps,
   parsePreviewToEditorMessage,
   postEditorToPreviewMessage,
+  type PreviewSelectionRestoreTarget,
   type PreviewSectionProps,
 } from "@/lib/storefront/editor/preview-protocol";
 import { EditorCanvasComments } from "./editor-canvas-comments";
@@ -121,6 +131,52 @@ import {
   EditorToolbarGroup,
   EditorToolbarMode,
 } from "./editor-toolbar";
+
+export function EditorModeSurface({
+  active,
+  className,
+  children,
+}: {
+  active: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      aria-hidden={!active}
+      className={cn(
+        "col-start-1 row-start-2 min-h-0 min-w-0 flex",
+        active ? "visible" : "invisible pointer-events-none",
+        className,
+      )}
+      data-editor-mode-surface="true"
+    >
+      {children}
+    </div>
+  );
+}
+
+export function createSelectionRestoreMessages(
+  selectionMode: boolean,
+  restoreTarget: PreviewSelectionRestoreTarget | null,
+) {
+  const messages: Array<
+    | { type: "morph:storefront-preview-set-selection-mode"; enabled: boolean; restoreTarget?: PreviewSelectionRestoreTarget }
+    | { type: "morph:storefront-preview-request-selection-style" }
+  > = [
+    {
+      type: "morph:storefront-preview-set-selection-mode",
+      enabled: selectionMode,
+      restoreTarget: selectionMode ? restoreTarget ?? undefined : undefined,
+    },
+  ];
+  if (selectionMode && restoreTarget) {
+    messages.push({
+      type: "morph:storefront-preview-request-selection-style",
+    });
+  }
+  return messages;
+}
 
 type EditorShellProps = {
   context: StorefrontThemeEditorDTO;
@@ -747,6 +803,9 @@ export function VisualEditorShell({
 
   const [activeSelection, setActiveSelection] =
     useState<EditorSelectionDescriptor | null>(null);
+  const lastPreviewSelectionRef =
+    useRef<PreviewSelectionRestoreTarget | null>(null);
+  const previousTemplateIdRef = useRef(search.templateId);
   const previewSelectionSectionSyncRef = useRef<string | null>(null);
   const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
     useState(0);
@@ -866,14 +925,29 @@ export function VisualEditorShell({
     hydrateWorkspace,
   ]);
 
-  const effectiveThemeFiles = useMemo(
-    () =>
-      themeFiles.map((file) => ({
+  const effectiveThemeFiles = useMemo<StorefrontThemeFileDTO[]>(() => {
+    const serverPaths = new Set(themeFiles.map((file) => file.path));
+    return [
+      ...themeFiles.map((file) => ({
         ...file,
         content: workspaceFiles[file.path]?.localContent ?? file.content,
       })),
-    [themeFiles, workspaceFiles],
-  );
+      ...Object.values(workspaceFiles)
+        .filter((file) => !serverPaths.has(file.path))
+        .map((file) => ({
+          id: `local:${file.path}`,
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          path: file.path,
+          content: file.localContent,
+          mimeType: file.path.endsWith(".css") ? "text/css" : "text/plain",
+          isEntry: false,
+          version: 1,
+          createdAt: "",
+          updatedAt: "",
+        })),
+    ];
+  }, [context.storefront.id, context.theme.id, themeFiles, workspaceFiles]);
   const handleOpenSelectedCode = useCallback(() => {
     const selectedSection = activeTemplate?.document.sections.find(
       (section) => section.id === search.section,
@@ -908,6 +982,13 @@ export function VisualEditorShell({
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const fileRevisionRef = useRef<Map<string, number>>(new Map());
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
+  const arrayItemReorderHandlerRef = useRef<
+    (
+      sectionId: string,
+      draggedFieldPath: string,
+      targetFieldPath: string,
+    ) => void
+  >(() => {});
   const previewSelectionStyle = useCallback(
     (styles: Record<string, string>, targetElement: string) => {
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -1735,57 +1816,180 @@ export function VisualEditorShell({
       filePath: string,
       elementName: string,
       updater: (prevClasses: string) => string,
+      instanceTarget?: ThemeInstanceStyleTarget,
     ) => {
+      const workspaceFileSnapshot = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
       const currentSource =
-        useThemeWorkspaceStore
-          .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[filePath]?.localContent ??
-        themeFiles.find((f) => f.path === filePath)?.content;
+        workspaceFileSnapshot[filePath]?.localContent ??
+        themeFiles.find((file) => file.path === filePath)?.content;
       if (!currentSource) return;
 
-      const patchResult = patchElementClassNameResult(
-        currentSource,
-        elementName,
-        updater,
-      );
+      const queueRelatedFileSave = (
+        relatedPath: string,
+        relatedCurrent: string,
+        relatedNext: string,
+      ) => {
+        if (relatedNext === relatedCurrent) return;
+        updateWorkspaceLocal(relatedPath, relatedNext, workspaceScope);
+        const operationKey = getScopedOpKey(relatedPath);
+        const revision = (fileRevisionRef.current.get(operationKey) ?? 0) + 1;
+        fileRevisionRef.current.set(operationKey, revision);
+        const pendingTimer = pendingSaveTimersRef.current.get(operationKey);
+        if (pendingTimer) clearTimeout(pendingTimer);
+        pendingSaveTimersRef.current.set(
+          operationKey,
+          setTimeout(() => {
+            pendingSaveTimersRef.current.delete(operationKey);
+            saveThemeFileSequentially(relatedPath, relatedNext, revision).catch(
+              (err) => {
+                toast.error(
+                  "Failed to save source file " +
+                    relatedPath +
+                    ": " +
+                    err.message,
+                );
+              },
+            );
+          }, 300),
+        );
+        markWorkspaceDebouncing(relatedPath, workspaceScope);
+      };
 
-      if (!patchResult.editable) {
-        if (patchResult.reason === "dynamic-classname") {
-          toast.warning(
-            `Element "${elementName}" has a dynamic className expression (e.g. cn(...)). Edit in Code mode to preserve component logic.`,
-          );
-        } else if (patchResult.reason === "parse-error") {
-          toast.error(
-            `Cannot modify styles: syntax error in ${filePath}. Fix TSX in Code mode.`,
-          );
+      let targetFilePath = filePath;
+      let targetCurrentSource = currentSource;
+      let updatedContent: string;
+
+      if (instanceTarget) {
+        const currentFiles = effectiveThemeFiles;
+        const legacyStyleSheet = findLegacyThemeInstanceStyleSheet(
+          currentFiles,
+          filePath,
+          instanceTarget,
+        );
+        const legacyClasses = legacyStyleSheet
+          ? readLegacyThemeInstanceStyleClasses(
+              workspaceFileSnapshot[legacyStyleSheet.path]?.localContent ??
+                legacyStyleSheet.content,
+              instanceTarget,
+            )
+          : null;
+        const instancePatch = patchThemeInstanceStyleClasses(
+          currentSource,
+          instanceTarget,
+          elementName,
+          (previousClasses) => updater(legacyClasses ?? previousClasses),
+        );
+        if (!instancePatch.editable) {
+          if (instancePatch.reason === "dynamic-classname") {
+            toast.warning(
+              "Element " +
+                elementName +
+                " uses an unsupported dynamic className. Use Code mode to preserve component logic.",
+            );
+          } else if (instancePatch.reason === "parse-error") {
+            toast.error(
+              "Cannot modify styles: syntax error in " +
+                filePath +
+                ". Fix TSX in Code mode.",
+            );
+          } else {
+            toast.warning(
+              "Cannot safely isolate " +
+                instanceTarget.fieldPath +
+                " in this component. Add stable Morph metadata or use Code mode.",
+            );
+          }
+          return;
         }
-        return;
-      }
+        updatedContent = instancePatch.code;
 
-      const updatedContent = patchResult.code;
-      if (updatedContent !== currentSource) {
-        updateWorkspaceLocal(filePath, updatedContent, workspaceScope);
+        if (legacyStyleSheet && legacyClasses !== null) {
+          const legacyCurrent =
+            workspaceFileSnapshot[legacyStyleSheet.path]?.localContent ??
+            legacyStyleSheet.content;
+          const nextLegacy = removeLegacyThemeInstanceStyle(
+            legacyCurrent,
+            instanceTarget,
+          );
+          queueRelatedFileSave(
+            legacyStyleSheet.path,
+            legacyCurrent,
+            nextLegacy,
+          );
 
-        const styleRevision = postPreviewThemeFiles(
-          themeFiles.map((file) => ({
-            path: file.path,
-            content:
-              file.path === filePath
-                ? updatedContent
-                : (useThemeWorkspaceStore
-                    .getState()
-                    .getWorkspaceFiles(
-                      workspaceScope.storefrontId,
-                      workspaceScope.themeId,
-                    )[file.path]?.localContent ?? file.content),
-          })),
+          if (
+            legacyStyleSheet.path.endsWith(".morph.css") &&
+            nextLegacy.trim() === ""
+          ) {
+            const globalStyleSheet = effectiveThemeFiles.find(
+              (file) => file.path === "src/styles/global.css",
+            );
+            if (globalStyleSheet) {
+              const globalCurrent =
+                workspaceFileSnapshot[globalStyleSheet.path]?.localContent ??
+                globalStyleSheet.content;
+              const globalNext = removeLegacyThemeInstanceStyleImport(
+                globalCurrent,
+                legacyStyleSheet.path,
+                globalStyleSheet.path,
+              );
+              queueRelatedFileSave(
+                globalStyleSheet.path,
+                globalCurrent,
+                globalNext,
+              );
+            }
+          }
+        }
+      } else {
+        const patchResult = patchElementClassNameResult(
+          currentSource,
+          elementName,
+          updater,
         );
 
+        if (!patchResult.editable) {
+          if (patchResult.reason === "dynamic-classname") {
+            toast.warning(
+              `Element "${elementName}" has a dynamic className expression (e.g. cn(...)). Edit in Code mode to preserve component logic.`,
+            );
+          } else if (patchResult.reason === "parse-error") {
+            toast.error(
+              `Cannot modify styles: syntax error in ${filePath}. Fix TSX in Code mode.`,
+            );
+          }
+          return;
+        }
+        updatedContent = patchResult.code;
+      }
+
+      if (updatedContent !== targetCurrentSource) {
+        updateWorkspaceLocal(targetFilePath, updatedContent, workspaceScope);
+
+        const previewFiles = effectiveThemeFiles.map((file) => ({
+          path: file.path,
+          content:
+            file.path === targetFilePath
+              ? updatedContent
+              : (useThemeWorkspaceStore
+                  .getState()
+                  .getWorkspaceFiles(
+                    workspaceScope.storefrontId,
+                    workspaceScope.themeId,
+                  )[file.path]?.localContent ?? file.content),
+        }));
+        if (!previewFiles.some((file) => file.path === targetFilePath)) {
+          previewFiles.push({
+            path: targetFilePath,
+            content: updatedContent,
+          });
+        }
+        const styleRevision = postPreviewThemeFiles(previewFiles);
+
         // Debounce save to database (300ms)
-        const opKey = getScopedOpKey(filePath);
+        const opKey = getScopedOpKey(targetFilePath);
         const existingTimer = pendingSaveTimersRef.current.get(opKey);
         if (existingTimer) {
           clearTimeout(existingTimer);
@@ -1797,23 +2001,24 @@ export function VisualEditorShell({
         const newTimer = setTimeout(() => {
           pendingSaveTimersRef.current.delete(opKey);
           saveThemeFileSequentially(
-            filePath,
+            targetFilePath,
             updatedContent,
             nextRevision,
           ).catch((err) => {
             toast.error(
-              `Failed to save source file ${filePath}: ${err.message}`,
+              `Failed to save source file ${targetFilePath}: ${err.message}`,
             );
           });
         }, 300);
 
         pendingSaveTimersRef.current.set(opKey, newTimer);
-        markWorkspaceDebouncing(filePath, workspaceScope);
+        markWorkspaceDebouncing(targetFilePath, workspaceScope);
         return styleRevision;
       }
     },
     [
       getScopedOpKey,
+      effectiveThemeFiles,
       markWorkspaceDebouncing,
       saveThemeFileSequentially,
       themeFiles,
@@ -2013,6 +2218,17 @@ export function VisualEditorShell({
   }, [scheduleCanvasTransform]);
 
   useEffect(() => {
+    if (
+      previousTemplateIdRef.current &&
+      previousTemplateIdRef.current !== search.templateId
+    ) {
+      lastPreviewSelectionRef.current = null;
+      setActiveSelection(null);
+    }
+    previousTemplateIdRef.current = search.templateId;
+  }, [search.templateId]);
+
+  useEffect(() => {
     if (activeTemplate && search.templateId !== activeTemplate.id) {
       onSearchChange({
         template: activeTemplate.type,
@@ -2096,6 +2312,17 @@ export function VisualEditorShell({
           : null;
       if (!message) return;
 
+      if (
+        message.type === "morph:storefront-preview-commit-array-item-reorder"
+      ) {
+        arrayItemReorderHandlerRef.current(
+          message.sectionId,
+          message.draggedFieldPath,
+          message.targetFieldPath,
+        );
+        return;
+      }
+
       if (message.type === "morph:storefront-preview-commit-sibling-reorder") {
         void handleSwapThemeFileSiblings(
           message.sourceFilePath,
@@ -2164,6 +2391,14 @@ export function VisualEditorShell({
       const parentComputedStyle = message.parentComputedStyle;
       const sectionComputedStyle = message.sectionComputedStyle;
       const inspectorOverride = message.inspectorOverride;
+      lastPreviewSelectionRef.current = {
+        sectionId,
+        nodeId: nodeId ?? undefined,
+        fieldPath: message.fieldPath ?? undefined,
+        elementKey: elementKey ?? undefined,
+        fieldKey: fieldKey ?? undefined,
+        isSection: selectionIsSection,
+      };
       const componentType =
         activeTemplate?.document.sections.find(
           (section) => section.id === sectionId,
@@ -2221,6 +2456,7 @@ export function VisualEditorShell({
       if (next.section !== undefined) {
         previewSelectionSectionSyncRef.current = null;
         setActiveSelection(null);
+        lastPreviewSelectionRef.current = null;
         postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
           type: "morph:storefront-preview-set-section",
           sectionId: next.section ?? null,
@@ -2294,6 +2530,129 @@ export function VisualEditorShell({
       updatePropsMutation,
     ],
   );
+
+  const handleSwapSectionArrayItems = useCallback(
+    async (
+      sectionId: string,
+      draggedFieldPath: string,
+      targetFieldPath: string,
+    ) => {
+      if (!activeTemplate) return;
+      const section = activeTemplate.document.sections.find(
+        (candidate) => candidate.id === sectionId,
+      );
+      if (!section) {
+        toast.error("Cannot reorder: the selected section is unavailable.");
+        return;
+      }
+
+      const templateId = activeTemplate.id;
+      const key = `${templateId}:${sectionId}`;
+      const pendingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
+      const currentProps = { ...section.props, ...pendingProps };
+      const result = swapArrayItemsAtFieldPaths(
+        currentProps,
+        draggedFieldPath,
+        targetFieldPath,
+      );
+      const restoreSelectionAndProps = () => {
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-set-selection-field-path",
+          sectionId,
+          fieldPath: draggedFieldPath,
+        });
+        setActiveSelection((current) => {
+          if (!current?.fieldPath) return current;
+          if (
+            current.fieldPath !== targetFieldPath &&
+            !current.fieldPath.startsWith(`${targetFieldPath}.`)
+          ) {
+            return current;
+          }
+          return {
+            ...current,
+            fieldPath: `${draggedFieldPath}${current.fieldPath.slice(targetFieldPath.length)}`,
+          };
+        });
+        const rollbackProps = parsePreviewSectionProps(currentProps);
+        if (rollbackProps) syncPreviewSectionProps(sectionId, rollbackProps);
+      };
+      if (!result.editable) {
+        restoreSelectionAndProps();
+        toast.warning(
+          result.reason === "different-arrays"
+            ? "Only items in the same data array can be reordered."
+            : "This repeated item cannot be mapped to a safe array position.",
+        );
+        return;
+      }
+
+      const previewProps = parsePreviewSectionProps(result.value);
+      if (!previewProps) {
+        restoreSelectionAndProps();
+        toast.error("Cannot reorder: the resulting section data is invalid.");
+        return;
+      }
+
+      const existingTimer = pendingPropsTimersRef.current.get(key);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        pendingPropsTimersRef.current.delete(key);
+      }
+      pendingPropsMapRef.current.delete(key);
+      syncPreviewSectionProps(sectionId, previewProps);
+      setActiveSelection((current) => {
+        if (!current?.fieldPath) return current;
+        if (
+          current.fieldPath !== draggedFieldPath &&
+          !current.fieldPath.startsWith(`${draggedFieldPath}.`)
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          fieldPath: `${targetFieldPath}${current.fieldPath.slice(draggedFieldPath.length)}`,
+        };
+      });
+
+      try {
+        const mutationResult = await enqueueTemplateMutation(
+          templateId,
+          (generation) =>
+            updatePropsMutation.mutateAsync({
+              sectionId,
+              props: result.value,
+              expectedDraftGeneration: generation,
+            }),
+        );
+        if (!mutationResult?.success) {
+          restoreSelectionAndProps();
+        }
+      } catch {
+        restoreSelectionAndProps();
+      }
+    },
+    [
+      activeTemplate,
+      enqueueTemplateMutation,
+      syncPreviewSectionProps,
+      updatePropsMutation,
+    ],
+  );
+
+  useEffect(() => {
+    arrayItemReorderHandlerRef.current = (
+      sectionId,
+      draggedFieldPath,
+      targetFieldPath,
+    ) => {
+      void handleSwapSectionArrayItems(
+        sectionId,
+        draggedFieldPath,
+        targetFieldPath,
+      );
+    };
+  }, [handleSwapSectionArrayItems]);
 
   const handleSectionToggleEnabled = useCallback(
     async (sectionId: string, enabled: boolean) => {
@@ -2374,6 +2733,20 @@ export function VisualEditorShell({
       enabled: isSelectionMode,
     });
   }, [isSelectionMode]);
+
+  const handleSwitchToDesign = useCallback(() => {
+    setEditorMode("design");
+    if (isCommentMode) return;
+
+    for (const message of createSelectionRestoreMessages(
+      isSelectionMode,
+      lastPreviewSelectionRef.current,
+    )) {
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        ...message,
+      });
+    }
+  }, [isCommentMode, isSelectionMode]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -3164,7 +3537,7 @@ export function VisualEditorShell({
               variant={editorMode === "design" ? "toolbarActive" : "ghost"}
               size="sm"
               className="h-7 gap-1.5 px-3 text-xs font-medium"
-              onClick={() => setEditorMode("design")}
+              onClick={handleSwitchToDesign}
             >
               <Layout className="size-3.5" />
               <span>Design</span>
@@ -3295,11 +3668,9 @@ export function VisualEditorShell({
         </div>
       </header>
 
-      <div
-        className={cn(
-          "min-h-0 min-w-0 flex-1",
-          editorMode === "code" ? "flex" : "hidden",
-        )}
+      <EditorModeSurface
+        active={editorMode === "code"}
+        className="flex-1 overflow-hidden"
       >
         <EditorCodeWorkspace
           storefrontId={context.storefront.id}
@@ -3315,13 +3686,11 @@ export function VisualEditorShell({
           onDirtyFilesChange={setMonacoDirtyFiles}
           onSaveFile={handleUnifiedSaveFile}
         />
-      </div>
+      </EditorModeSurface>
 
-      <div
-        className={cn(
-          "min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/40 max-md:flex-col",
-          editorMode === "design" ? "flex" : "hidden",
-        )}
+      <EditorModeSurface
+        active={editorMode === "design"}
+        className="flex-1 overflow-hidden bg-muted/40 max-md:flex-col"
       >
         <EditorSectionsPanel
           style={{ width: `${leftPanelWidth}px` }}
@@ -3331,6 +3700,7 @@ export function VisualEditorShell({
           onSectionOrderChange={syncPreviewSectionOrder}
           onSaveStateChange={setDraftSaveState}
           onReorderSections={handleReorderSections}
+          onToggleSectionEnabled={handleSectionToggleEnabled}
         />
 
         {/* Left Panel Resizer */}
@@ -3756,13 +4126,12 @@ export function VisualEditorShell({
           onPreviewSelectionStyle={previewSelectionStyle}
           onPreviewSelectionField={previewSelectionField}
           onSectionPropsChange={handleSectionPropsChange}
-          onSectionToggleEnabled={handleSectionToggleEnabled}
           onJumpToCode={handleJumpToCode}
           onTabChange={setAssistantPanelTab}
         />
 
         <EditorSmallScreenNotice />
-      </div>
+      </EditorModeSurface>
     </div>
   );
 }

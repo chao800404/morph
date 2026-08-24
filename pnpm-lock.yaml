@@ -161,6 +161,9 @@ importers:
       pnpm:
         specifier: ^10.26.0
         version: 10.26.0
+      prettier:
+        specifier: ^3.9.6
+        version: 3.9.6
       react:
         specifier: ^19.2.0
         version: 19.2.1
@@ -4101,11 +4104,6 @@ packages:
     deprecated: No longer maintained. Please contact the author of the relevant native addon; alternatives are available.
     hasBin: true
 
-  prettier@3.7.4:
-    resolution: {integrity: sha512-v6UNi1+3hSlVvv8fSaoUbggEM5VErKmmpGA7Pl3HF8V6uKY7rvClBOJlH6yNwQtfTueNkGVpOv/mtWL9L4bgRA==}
-    engines: {node: '>=14'}
-    hasBin: true
-
   prettier@3.9.6:
     resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
     engines: {node: '>=14'}
@@ -6552,7 +6550,7 @@ snapshots:
   '@react-email/render@2.0.0(react-dom@19.2.1(react@19.2.1))(react@19.2.1)':
     dependencies:
       html-to-text: 9.0.5
-      prettier: 3.7.4
+      prettier: 3.9.6
       react: 19.2.1
       react-dom: 19.2.1(react@19.2.1)
 
@@ -8222,8 +8220,6 @@ snapshots:
       simple-get: 4.0.1
       tar-fs: 2.1.4
       tunnel-agent: 0.6.0
-
-  prettier@3.7.4: {}
 
   prettier@3.9.6: {}
 

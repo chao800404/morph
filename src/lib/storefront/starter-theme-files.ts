@@ -17,7 +17,7 @@ export const STARTER_THEME_FILES: Array<{
           react: "^19.0.0",
           "react-dom": "^19.0.0",
           "lucide-react": "^0.475.0",
-          "clsx": "^2.1.1",
+          clsx: "^2.1.1",
           "tailwind-merge": "^3.0.1",
         },
       },
@@ -43,6 +43,7 @@ body {
   color: #1c1917;
   background-color: #fafaf9;
 }
+
 `,
   },
   {
@@ -152,7 +153,10 @@ export default function Hero({
   {
     path: "src/components/Principles.tsx",
     mimeType: "text/typescript",
-    content: `export type PrincipleItem = {
+    content: `import { clsx as cn } from "clsx";
+
+export type PrincipleItem = {
+  id?: string;
   number?: string;
   title?: string;
   body?: string;
@@ -161,6 +165,8 @@ export default function Hero({
 export type PrinciplesProps = {
   items?: PrincipleItem[];
 };
+
+const morphInstanceClasses: Record<string, string> = {};
 
 export default function Principles({ items = [] }: PrinciplesProps) {
   return (
@@ -183,10 +189,13 @@ export default function Principles({ items = [] }: PrinciplesProps) {
       >
         {items.map((item, idx) => (
           <article
-            key={item.number ?? idx}
+            key={item.id ?? item.number ?? idx}
             data-morph-node="principle-card"
             data-morph-element="principle-card"
-            className="border-b border-stone-300 py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-0 lg:last:border-r-0"
+            className={cn(
+              "border-b border-stone-300 py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-0 lg:last:border-r-0",
+              morphInstanceClasses[\`\${item.id}:principle-card\`],
+            )}
           >
             <span
               data-morph-node="principle-number"
@@ -198,14 +207,20 @@ export default function Principles({ items = [] }: PrinciplesProps) {
             <h3
               data-morph-node="principle-title"
               data-morph-element="title"
-              className="mt-12 font-serif text-3xl tracking-tight text-stone-950"
+              className={cn(
+                "mt-12 font-serif text-3xl tracking-tight text-stone-950",
+                morphInstanceClasses[\`\${item.id}:principle-title\`],
+              )}
             >
               {item.title ?? ""}
             </h3>
             <p
               data-morph-node="principle-body"
               data-morph-element="body"
-              className="mt-4 max-w-sm text-sm leading-6 text-stone-600"
+              className={cn(
+                "mt-4 max-w-sm text-sm leading-6 text-stone-600",
+                morphInstanceClasses[\`\${item.id}:principle-body\`],
+              )}
             >
               {item.body ?? ""}
             </p>

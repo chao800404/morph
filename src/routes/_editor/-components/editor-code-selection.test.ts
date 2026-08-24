@@ -44,6 +44,26 @@ const files = [
 ];
 
 describe("resolveCodeSelectionTarget", () => {
+  it("opens a repeated item instance in its component TSX", () => {
+    expect(
+      resolveCodeSelectionTarget({
+        section: {
+          id: "principles-1",
+          type: "principles",
+          componentRef: "principles.default",
+        },
+        selection: selection({
+          nodeId: "hero-heading",
+          fieldPath: "items.1.title",
+          sourceFilePath: "src/components/Hero.tsx",
+        }),
+        themeFiles: files,
+      }),
+    ).toMatchObject({
+      filePath: "src/components/Hero.tsx",
+      line: 2,
+    });
+  });
   it("opens the selected section source", () => {
     expect(
       resolveCodeSelectionTarget({
