@@ -240,6 +240,7 @@ describe("preview protocol", () => {
       fieldKey: "heading",
       field: "heading",
       fieldPath: "heading",
+      contentValue: "Current heading",
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       tagName: "h1",
       role: null,
@@ -255,8 +256,15 @@ describe("preview protocol", () => {
     expect(parsePreviewToEditorMessage(selection)).toMatchObject({
       kind: "text",
       styleRevision: 3,
+      contentValue: "Current heading",
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
     });
+    expect(
+      parsePreviewToEditorMessage({
+        ...selection,
+        contentValue: "x".repeat(10_001),
+      }),
+    ).toBeNull();
     expect(
       parsePreviewToEditorMessage({
         ...selection,

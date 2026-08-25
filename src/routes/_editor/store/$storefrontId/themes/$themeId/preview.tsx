@@ -792,6 +792,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         role: item.role,
         inputType: item.inputType,
         fieldPath: item.fieldPath,
+        contentValue:
+          item.descendantFields.length === 0 && item.fieldKey
+            ? (item.element.textContent ?? "").slice(0, 10_000)
+            : null,
       };
     };
 

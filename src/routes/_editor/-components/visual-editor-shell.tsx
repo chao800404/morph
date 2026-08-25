@@ -2439,6 +2439,7 @@ export function VisualEditorShell({
       const elementKey = message.elementKey;
       const fieldKey = message.fieldKey ?? message.field;
       const fieldPath = message.fieldPath ?? fieldKey;
+      const contentValue = message.contentValue ?? null;
       const descendantFields = message.descendantFields;
       const tagName = message.tagName;
       const role = message.role;
@@ -2475,6 +2476,7 @@ export function VisualEditorShell({
         elementKey,
         fieldKey,
         fieldPath,
+        contentValue,
         descendantFields,
         className,
         isSection: selectionIsSection,

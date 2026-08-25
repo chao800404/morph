@@ -101,6 +101,42 @@ describe("resolveStyleInspectorClassName", () => {
   });
 });
 
+describe("code-authored text content", () => {
+  it("edits a selected label even before the section has an authored prop", () => {
+    const onPreviewSelectionField = vi.fn();
+    const onPropsChange = vi.fn();
+    render(
+      <EditorStyleInspector
+        section={baseSection("principles", { items: [] })}
+        selection={selectionDescriptor({
+          kind: "label",
+          tagName: "p",
+          nodeId: "principles-label",
+          elementKey: "label",
+          fieldKey: "label",
+          fieldPath: "label",
+          contentValue: "Why we choose differently",
+        })}
+        onPreviewSelectionField={onPreviewSelectionField}
+        onPropsChange={onPropsChange}
+      />,
+    );
+
+    const label = screen.getByDisplayValue("Why we choose differently");
+    fireEvent.input(label, { target: { value: "Designed with purpose" } });
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "label",
+      null,
+      "Designed with purpose",
+    );
+    fireEvent.blur(label);
+    expect(onPropsChange).toHaveBeenLastCalledWith({
+      items: [],
+      label: "Designed with purpose",
+    });
+  });
+});
+
 describe("EditorStyleInspector selection content", () => {
   const common = {
     onPropsChange: vi.fn(),

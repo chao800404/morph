@@ -655,7 +655,34 @@ function renderJsxElement(
     );
   }
   const props = readJsxProps(node.openingElement.attributes, env, context);
-  const children = renderJsxChildren(node.children ?? [], env, context);
+  let children = renderJsxChildren(node.children ?? [], env, context);
+
+  const fieldPath =
+    typeof props["data-storefront-field-path"] === "string"
+      ? props["data-storefront-field-path"]
+      : typeof props["data-storefront-field"] === "string"
+        ? props["data-storefront-field"]
+        : null;
+  const componentProps = env.__morphComponentProps;
+  if (
+    fieldPath &&
+    componentProps &&
+    typeof componentProps === "object" &&
+    children.length === 1 &&
+    (typeof children[0] === "string" || typeof children[0] === "number")
+  ) {
+    let boundValue: unknown = componentProps;
+    for (const segment of fieldPath.split(".")) {
+      if (!segment || BLOCKED_PROPERTIES.has(segment)) {
+        boundValue = undefined;
+        break;
+      }
+      boundValue = safeMember(boundValue, segment);
+    }
+    if (typeof boundValue === "string" || typeof boundValue === "number") {
+      children = [boundValue];
+    }
+  }
 
   if (name[0] === name[0]?.toLowerCase()) {
     if (BLOCKED_TAGS.has(name)) {
@@ -733,10 +760,12 @@ function renderFunctionComponent(
   componentName: string,
   section?: SafeThemeSectionIdentity,
 ): ReactNode {
+  const componentEnv = Object.create(moduleEnv) as Record<string, unknown>;
+  componentEnv.__morphComponentProps = props;
   const node = evaluateFunctionBody(
     fn,
     [props],
-    moduleEnv,
+    componentEnv,
     context,
   ) as ReactNode;
   return annotateComponentRoot(node, sourcePath, componentName, section);

@@ -476,7 +476,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   };
   const selectedFieldValue = (key: string): unknown => {
     const path = nestedFieldPath(key);
-    return path ? getFieldPathValue(props, path) : props[key];
+    const value = path ? getFieldPathValue(props, path) : props[key];
+    if (value !== undefined) return value;
+    return isSelectedNode && selectedField === key
+      ? selection?.contentValue
+      : undefined;
   };
   const optimisticValue = (key: string): number | string | undefined =>
     optimisticStyleRef.current.values[key];
@@ -1517,7 +1521,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             )}
 
             {showField("label") &&
-              ("label" in props || descendantFieldKeys.has("label")) && (
+              ("label" in props ||
+                descendantFieldKeys.has("label") ||
+                (isSelectedNode && selectedField === "label")) && (
               <InspectorField
                 label="Label"
                 isFocused={activeFieldKey === "label"}

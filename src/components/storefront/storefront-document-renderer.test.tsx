@@ -70,6 +70,37 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
     ).toHaveLength(1);
   });
 
+  it("uses an authored prop to override a code-authored editable text default", () => {
+    const document: StorefrontPageDocument = {
+      version: 1,
+      sections: [
+        {
+          id: "principles-1",
+          type: "principles",
+          componentRef: "principles.default",
+          enabled: true,
+          props: {
+            label: "Materials, made meaningful",
+            items: [],
+          },
+        },
+      ],
+    };
+
+    const { container } = render(
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={STARTER_THEME_FILES}
+      />,
+    );
+    const label = container.querySelector(
+      '[data-morph-node="principles-label"]',
+    );
+
+    expect(label?.getAttribute("data-storefront-field")).toBe("label");
+    expect(label?.textContent).toBe("Materials, made meaningful");
+  });
+
   it("applies a saved Hero content wrapper class from the latest theme source", () => {
     const hero = STARTER_THEME_FILES.find(
       (file) => file.path === "src/components/Hero.tsx",

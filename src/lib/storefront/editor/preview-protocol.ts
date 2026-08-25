@@ -183,6 +183,7 @@ export type PreviewSelectionMessage = {
   fieldKey: string | null;
   field: string | null;
   fieldPath: string | null;
+  contentValue?: string | null;
   descendantFields: readonly EditableDescendantField[];
   tagName: string;
   role: string | null;
@@ -631,6 +632,8 @@ export function parsePreviewToEditorMessage(
         !isNullableBoundedString(value.fieldKey, 200) ||
         !isNullableBoundedString(value.field, 200) ||
         !isNullableBoundedString(value.fieldPath, 500) ||
+        (value.contentValue !== undefined &&
+          !isNullableBoundedString(value.contentValue, 10_000)) ||
         descendantFields === null ||
         !isBoundedString(value.tagName, 100) ||
         !isNullableBoundedString(value.role, 100) ||
@@ -664,6 +667,7 @@ export function parsePreviewToEditorMessage(
         fieldKey: value.fieldKey,
         field: value.field,
         fieldPath: value.fieldPath,
+        contentValue: value.contentValue ?? null,
         descendantFields,
         tagName: value.tagName,
         role: value.role,

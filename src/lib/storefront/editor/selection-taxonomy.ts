@@ -90,6 +90,7 @@ export type EditorSelectionDescriptor = {
   elementKey: string | null;
   fieldKey: string | null;
   fieldPath: string | null;
+  contentValue?: string | null;
   descendantFields?: readonly EditableDescendantField[];
   className: string;
   isSection: boolean;
