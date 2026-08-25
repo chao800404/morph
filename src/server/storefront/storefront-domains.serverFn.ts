@@ -11,6 +11,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { DB_FANOUT_CONCURRENCY } from "@/lib/db/concurrency";
 import pLimit from "p-limit";
 import { provisionStorefrontDomain } from "@/lib/storefront/domain-provisioning.server";
+import { isReservedPlatformHostname } from "@/lib/storefront/service/storefront-request-routing";
+import { selectStorefrontDomainProvider } from "@/lib/storefront/service/storefront-domain-provider";
+import { env as cloudflareEnv } from "cloudflare:workers";
 import {
   commerceAdminMiddleware,
   commerceReadMiddleware,
@@ -49,6 +52,22 @@ export const createStorefrontDomain = createServerFn({ method: "POST" })
           "Create a storefront sales channel before connecting a domain",
           { error: "NOT_FOUND" },
         );
+      if (
+        isReservedPlatformHostname(
+          data.hostname,
+          cloudflareEnv as unknown as Record<string, unknown>,
+        )
+      ) {
+        // Routing classifies platform hosts first, so connecting one would
+        // produce a domain that reports as active yet can never be reached.
+        return fail("This domain is reserved for the Morph dashboard", {
+          errors: {
+            hostname: [
+              "This hostname serves the Morph dashboard and cannot be used as a storefront domain",
+            ],
+          },
+        });
+      }
       if (await storefrontDomainDal.findByHostname(data.hostname)) {
         return fail("This domain is already connected", {
           errors: { hostname: ["This domain is already connected"] },
@@ -60,6 +79,20 @@ export const createStorefrontDomain = createServerFn({ method: "POST" })
         page: 1,
         limit: 1,
       });
+      // Selected before any row is written so an unconfigured environment does
+      // not leave a permanently failed domain record behind.
+      const selection = selectStorefrontDomainProvider({
+        env: cloudflareEnv as unknown as Record<string, unknown>,
+        cloudflareProvider: {
+          kind: "cloudflare",
+          attach: cloudflareDomainProvider.attach,
+          detach: cloudflareDomainProvider.detach,
+        },
+      });
+      if (!selection.available) {
+        return fail(selection.reason, { error: "NOT_CONFIGURED" });
+      }
+
       const id = crypto.randomUUID();
       await storefrontDomainDal.createPending({
         id,
@@ -67,8 +100,8 @@ export const createStorefrontDomain = createServerFn({ method: "POST" })
         hostname: data.hostname,
       });
       await provisionStorefrontDomain(data.hostname, {
-        attach: cloudflareDomainProvider.attach,
-        detach: cloudflareDomainProvider.detach,
+        attach: (hostname) => selection.provider.attach(hostname),
+        detach: (domainId) => selection.provider.detach(domainId),
         activate: (cloudflareDomainId) =>
           storefrontDomainDal.activate(
             id,

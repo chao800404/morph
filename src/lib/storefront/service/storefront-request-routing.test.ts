@@ -3,7 +3,9 @@ import {
   collectPlatformHostnames,
   createThemeRuntime,
   isPlatformHostname,
+  isReservedPlatformHostname,
   resolveThemeServiceBindingName,
+  shouldRouteToStorefront,
 } from "./storefront-request-routing";
 
 describe("collectPlatformHostnames", () => {
@@ -132,5 +134,77 @@ describe("resolveThemeServiceBindingName", () => {
     expect(
       resolveThemeServiceBindingName({ MORPH_THEME_SERVICE_BINDINGS: "[]" }, "sf_1"),
     ).toBeNull();
+  });
+});
+
+describe("shouldRouteToStorefront", () => {
+  // CMS on a subdomain, storefront on the apex domain.
+  const env = { PUBLIC_URL: "https://admin.client.com" };
+  const req = (url: string, host?: string) =>
+    new Request(url, host ? { headers: { host } } : undefined);
+
+  it("keeps every dashboard path on the platform hostname", () => {
+    for (const path of ["/", "/dashboard", "/dashboard/products", "/api/auth/session"]) {
+      expect(
+        shouldRouteToStorefront(req(`https://admin.client.com${path}`), env),
+      ).toBe(false);
+    }
+  });
+
+  it("routes every path on a merchant hostname to the storefront", () => {
+    for (const path of ["/", "/about", "/products/mug"]) {
+      expect(shouldRouteToStorefront(req(`https://client.com${path}`), env)).toBe(
+        true,
+      );
+    }
+  });
+
+  it("does not leak dashboard, editor or server-function routes on a storefront hostname", () => {
+    // These paths exist on Morph Core. On a merchant domain they must still be
+    // handed to the storefront plane, never to the Start router.
+    for (const path of [
+      "/dashboard",
+      "/dashboard/settings",
+      "/store/sf_1/themes/th_1/editor",
+      "/api/auth/sign-in",
+      "/_serverFn/whatever",
+      "/preview-build/bld_1/token/index.html",
+    ]) {
+      expect(
+        shouldRouteToStorefront(req(`https://client.com${path}`), env),
+        `path ${path} must not reach Morph Core on a storefront hostname`,
+      ).toBe(true);
+    }
+  });
+
+  it("prefers the Host header over the request URL", () => {
+    expect(
+      shouldRouteToStorefront(req("https://client.com/", "admin.client.com"), env),
+    ).toBe(false);
+    expect(
+      shouldRouteToStorefront(req("https://admin.client.com/", "client.com"), env),
+    ).toBe(true);
+  });
+
+  it("treats an unusable host as platform surface rather than guessing", () => {
+    expect(shouldRouteToStorefront(req("https://client.com/", "not a host"), env)).toBe(
+      false,
+    );
+  });
+});
+
+describe("isReservedPlatformHostname", () => {
+  const env = { PUBLIC_URL: "https://admin.client.com" };
+
+  it("reserves the dashboard hostname and the default Workers domain", () => {
+    expect(isReservedPlatformHostname("admin.client.com", env)).toBe(true);
+    expect(isReservedPlatformHostname("morph.yuho0298.workers.dev", env)).toBe(true);
+    expect(isReservedPlatformHostname("localhost", env)).toBe(true);
+  });
+
+  it("allows a merchant hostname on the same registrable domain", () => {
+    expect(isReservedPlatformHostname("client.com", env)).toBe(false);
+    expect(isReservedPlatformHostname("www.client.com", env)).toBe(false);
+    expect(isReservedPlatformHostname("shop.client.com", env)).toBe(false);
   });
 });

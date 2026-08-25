@@ -1,0 +1,26 @@
+# Worker bindings for local development.
+#
+# Code reads these through `cloudflare:workers` env, NOT process.env, so values
+# in .env / .env.development do not reach the Worker. Copy this file to
+# `.dev.vars` (gitignored) and fill in what you need.
+
+BETTER_AUTH_SECRET=generate_with_openssl_rand_base64_32
+PUBLIC_URL=http://localhost:3000
+
+# Storefront domains and Theme Worker deployment.
+#
+# Leave these UNSET for local work. With real values set, activating a release
+# from your dev machine deploys to that Cloudflare account for real — there is
+# no environment guard on deployment.
+# CLOUDFLARE_API_TOKEN=
+# CLOUDFLARE_ACCOUNT_ID=
+# CLOUDFLARE_ZONE_ID=
+# CLOUDFLARE_WORKER_SERVICE=morph
+
+# Local storefront loop (no Cloudflare account required):
+MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
+
+# Hostnames that must stay on the Morph dashboard rather than resolving as a
+# storefront. localhost and *.workers.dev are always platform surface.
+# MORPH_PLATFORM_HOSTNAMES=admin.localtest.me

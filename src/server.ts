@@ -69,24 +69,14 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
 }
 
 async function isStorefrontHost(request: Request): Promise<boolean> {
-  const { collectPlatformHostnames, isPlatformHostname } = await import(
+  const { shouldRouteToStorefront } = await import(
     "@/lib/storefront/service/storefront-request-routing"
   );
   const { env } = await import("cloudflare:workers");
-  const platformHostnames = collectPlatformHostnames(
+  return shouldRouteToStorefront(
+    request,
     env as unknown as Record<string, unknown>,
   );
-  const host =
-    request.headers.get("host") ?? safeUrlHostname(request.url);
-  return !isPlatformHostname(host, platformHostnames);
-}
-
-function safeUrlHostname(url: string): string | null {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return null;
-  }
 }
 
 export default {

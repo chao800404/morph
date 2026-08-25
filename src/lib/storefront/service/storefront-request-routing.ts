@@ -58,6 +58,46 @@ export function isPlatformHostname(
   return normalizeStorefrontHostname(withoutPort) === null;
 }
 
+function safeUrlHostname(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decides whether a request belongs to the storefront plane.
+ *
+ * The decision is made purely on hostname: a storefront hostname routes to the
+ * storefront for **every** path, so Morph Core's dashboard, editor and server
+ * function routes are unreachable from a merchant domain. Path-based carve-outs
+ * are deliberately absent — one would expose platform surface on the public
+ * site the moment a route moved.
+ */
+export function shouldRouteToStorefront(
+  request: Request,
+  env: Record<string, unknown> | undefined,
+): boolean {
+  const platformHostnames = collectPlatformHostnames(env);
+  const host = request.headers.get("host") ?? safeUrlHostname(request.url);
+  return !isPlatformHostname(host, platformHostnames);
+}
+
+/**
+ * Hostnames that must never be connected as a storefront domain.
+ *
+ * Routing classifies platform hosts first, so a storefront registered on a
+ * platform hostname would be silently unreachable while the dashboard reports
+ * it as connected. Refusing at creation keeps that contradiction impossible.
+ */
+export function isReservedPlatformHostname(
+  hostname: string,
+  env: Record<string, unknown> | undefined,
+): boolean {
+  return isPlatformHostname(hostname, collectPlatformHostnames(env));
+}
+
 export const DEFAULT_THEME_SERVICE_BINDING = "THEME_WORKER";
 
 /**

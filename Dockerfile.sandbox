@@ -17,7 +17,8 @@ RUN npm init -y && \
       clsx@2.1.1 \
       tailwind-merge@3.4.0 \
       lucide-react@0.544.0 \
-      class-variance-authority@0.7.1
+      class-variance-authority@0.7.1 \
+      wrangler@4.118.0
 
 # Symlink toolchain node_modules so /workspace can resolve locally without npm download
 RUN mkdir -p /workspace && ln -s /opt/morph-toolchain/node_modules /workspace/node_modules
