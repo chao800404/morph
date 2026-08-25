@@ -33,6 +33,7 @@ import {
   MousePointer2,
   Play,
   Redo2,
+  Ruler,
   Smartphone,
   Tablet,
   Undo2,
@@ -116,9 +117,12 @@ import { type EditorSelectionDescriptor } from "@/lib/storefront/editor/selectio
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
   parsePreviewSectionProps,
+  type PreviewEditableNode,
   type PreviewSelectionRestoreTarget,
   type PreviewSectionProps,
+  type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
+import { isPreviewSpacingOverlayMode } from "@/lib/storefront/editor/spacing-overlay";
 import {
   buildLivePreviewUrl,
   resolveLivePreviewSecurity,
@@ -168,13 +172,17 @@ export function createSelectionRestoreMessages(
   restoreTarget: PreviewSelectionRestoreTarget | null,
 ) {
   const messages: Array<
-    | { type: "morph:storefront-preview-set-selection-mode"; enabled: boolean; restoreTarget?: PreviewSelectionRestoreTarget }
+    | {
+        type: "morph:storefront-preview-set-selection-mode";
+        enabled: boolean;
+        restoreTarget?: PreviewSelectionRestoreTarget;
+      }
     | { type: "morph:storefront-preview-request-selection-style" }
   > = [
     {
       type: "morph:storefront-preview-set-selection-mode",
       enabled: selectionMode,
-      restoreTarget: selectionMode ? restoreTarget ?? undefined : undefined,
+      restoreTarget: selectionMode ? (restoreTarget ?? undefined) : undefined,
     },
   ];
   if (selectionMode && restoreTarget) {
@@ -440,10 +448,16 @@ export function VisualEditorShell({
     key: string;
     height: number;
   } | null>(null);
+  const [previewStructure, setPreviewStructure] = useState<{
+    key: string;
+    nodes: readonly PreviewEditableNode[];
+  } | null>(null);
   const [canvasTransform, setCanvasTransform] = useState<CanvasTransform>(
     initialCanvasTransform,
   );
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [spacingOverlayMode, setSpacingOverlayMode] =
+    useState<PreviewSpacingOverlayMode>("off");
   const [assistantPanelTab, setAssistantPanelTab] =
     useState<EditorAssistantPanelTab>("chat");
   const previousAssistantPanelTabRef = useRef<EditorAssistantPanelTab>("chat");
@@ -782,7 +796,7 @@ export function VisualEditorShell({
   const livePreviewChannel = {
     targetOrigin: livePreviewSecurity.enabled
       ? livePreviewSecurity.previewOrigin
-      : context.previewChannel?.editorOrigin ?? "",
+      : (context.previewChannel?.editorOrigin ?? ""),
     previewSession: stablePreviewSession,
   };
   const previewUrl =
@@ -840,8 +854,9 @@ export function VisualEditorShell({
 
   const [activeSelection, setActiveSelection] =
     useState<EditorSelectionDescriptor | null>(null);
-  const lastPreviewSelectionRef =
-    useRef<PreviewSelectionRestoreTarget | null>(null);
+  const lastPreviewSelectionRef = useRef<PreviewSelectionRestoreTarget | null>(
+    null,
+  );
   const previousTemplateIdRef = useRef(search.templateId);
   const previewSelectionSectionSyncRef = useRef<string | null>(null);
   const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
@@ -2372,6 +2387,13 @@ export function VisualEditorShell({
           key: previewKey,
           sequence: current?.key === previewKey ? current.sequence + 1 : 1,
         }));
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-request-structure",
+        });
+        return;
+      }
+      if (message.type === "morph:storefront-preview-structure") {
+        setPreviewStructure({ key: previewKey, nodes: message.nodes });
         return;
       }
       if (
@@ -2417,6 +2439,7 @@ export function VisualEditorShell({
       const elementKey = message.elementKey;
       const fieldKey = message.fieldKey ?? message.field;
       const fieldPath = message.fieldPath ?? fieldKey;
+      const descendantFields = message.descendantFields;
       const tagName = message.tagName;
       const role = message.role;
       const inputType = message.inputType;
@@ -2441,6 +2464,7 @@ export function VisualEditorShell({
         )?.type ?? "custom";
 
       setActiveSelection({
+        sectionId,
         kind: selectionKind,
         componentType,
         tagName,
@@ -2451,6 +2475,7 @@ export function VisualEditorShell({
         elementKey,
         fieldKey,
         fieldPath,
+        descendantFields,
         className,
         isSection: selectionIsSection,
         computed: computedStyle,
@@ -2501,6 +2526,24 @@ export function VisualEditorShell({
       onSearchChange(next);
     },
     [onSearchChange],
+  );
+
+  const handleEditableNodeSelect = useCallback(
+    (target: PreviewSelectionRestoreTarget) => {
+      reportAuthenticatedUserActivity();
+      lastPreviewSelectionRef.current = target;
+      if (target.sectionId !== search.section) {
+        previewSelectionSectionSyncRef.current = target.sectionId;
+        onSearchChange({ section: target.sectionId });
+      }
+      setIsSelectionMode(true);
+      for (const message of createSelectionRestoreMessages(true, target)) {
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          ...message,
+        });
+      }
+    },
+    [onSearchChange, search.section],
   );
 
   const syncPreviewSectionOrder = useCallback((sectionIds: string[]) => {
@@ -2767,11 +2810,22 @@ export function VisualEditorShell({
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-selection-mode",
       enabled: isSelectionMode,
+      restoreTarget: isSelectionMode
+        ? (lastPreviewSelectionRef.current ?? undefined)
+        : undefined,
     });
   }, [isSelectionMode]);
 
+  const syncPreviewSpacingOverlay = useCallback(() => {
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-set-spacing-overlay",
+      mode: spacingOverlayMode,
+    });
+  }, [spacingOverlayMode]);
+
   const handleSwitchToDesign = useCallback(() => {
     setEditorMode("design");
+    syncPreviewSpacingOverlay();
     if (isCommentMode) return;
 
     for (const message of createSelectionRestoreMessages(
@@ -2782,12 +2836,17 @@ export function VisualEditorShell({
         ...message,
       });
     }
-  }, [isCommentMode, isSelectionMode]);
+  }, [isCommentMode, isSelectionMode, syncPreviewSpacingOverlay]);
 
   useEffect(() => {
     if (!previewKey) return;
     syncPreviewSelectionMode();
   }, [previewKey, syncPreviewSelectionMode]);
+
+  useEffect(() => {
+    if (!previewKey) return;
+    syncPreviewSpacingOverlay();
+  }, [previewKey, syncPreviewSpacingOverlay]);
 
   const syncPreviewViewportHeight = useCallback(() => {
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -3723,6 +3782,13 @@ export function VisualEditorShell({
           onSaveStateChange={setDraftSaveState}
           onReorderSections={handleReorderSections}
           onToggleSectionEnabled={handleSectionToggleEnabled}
+          editableNodes={
+            previewStructure?.key === previewKey
+              ? previewStructure.nodes
+              : undefined
+          }
+          activeSelection={activeSelection}
+          onSelectEditableNode={handleEditableNodeSelect}
         />
 
         {/* Left Panel Resizer */}
@@ -3884,6 +3950,7 @@ export function VisualEditorShell({
                       syncPreviewViewportHeight();
                       syncPreviewSection();
                       syncPreviewSelectionMode();
+                      syncPreviewSpacingOverlay();
                       postEditorToPreviewMessage(
                         previewIframeRef.current?.contentWindow,
                         { type: "morph:storefront-preview-request-size" },
@@ -4078,6 +4145,8 @@ export function VisualEditorShell({
                 handleExitCommentMode();
               }
             }}
+            spacingOverlayMode={spacingOverlayMode}
+            onSpacingOverlayModeChange={setSpacingOverlayMode}
             isCommentMode={isCommentMode}
             onCommentModeChange={(enabled) => {
               autoEnabledSelectionForStylesRef.current = false;
@@ -4263,12 +4332,17 @@ function EditorSmallScreenNotice() {
   );
 }
 
+const editorCompactRadioItemClassName =
+  "h-6 py-0 pr-1.5 pl-6 text-xs leading-none [&>span:first-child]:left-1.5";
+
 function EditorControls({
   context,
   search,
   onSearchChange,
   isSelectionMode,
   onSelectionModeChange,
+  spacingOverlayMode,
+  onSpacingOverlayModeChange,
   isCommentMode,
   onCommentModeChange,
   onRefresh,
@@ -4278,6 +4352,8 @@ function EditorControls({
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
   isSelectionMode: boolean;
   onSelectionModeChange: (enabled: boolean) => void;
+  spacingOverlayMode: PreviewSpacingOverlayMode;
+  onSpacingOverlayModeChange: (mode: PreviewSpacingOverlayMode) => void;
   isCommentMode: boolean;
   onCommentModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
@@ -4307,6 +4383,58 @@ function EditorControls({
         >
           <MousePointer2 />
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant={spacingOverlayMode === "off" ? "ghost" : "toolbarActive"}
+              size="icon"
+              className="size-7 shrink-0"
+              aria-label="Canvas spacing overlay"
+              aria-pressed={spacingOverlayMode !== "off"}
+              title="Show padding and margin on the canvas"
+            >
+              <Ruler />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="top"
+            align="start"
+            sideOffset={6}
+            className="w-40 p-1 text-xs"
+          >
+            <DropdownMenuLabel className="px-1.5 py-1 text-[11px] leading-none text-muted-foreground">
+              Spacing overlay
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator className="my-0.5" />
+            <DropdownMenuRadioGroup
+              value={spacingOverlayMode}
+              onValueChange={(value) => {
+                if (isPreviewSpacingOverlayMode(value)) {
+                  onSpacingOverlayModeChange(value);
+                }
+              }}
+            >
+              <DropdownMenuRadioItem
+                value="off"
+                className={editorCompactRadioItemClassName}
+              >
+                Off
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem
+                value="selected"
+                className={editorCompactRadioItemClassName}
+              >
+                Selected element
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem
+                value="all"
+                className={editorCompactRadioItemClassName}
+              >
+                All editable elements
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button
           variant={isCommentMode ? "toolbarActive" : "ghost"}
           size="icon"

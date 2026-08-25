@@ -78,6 +78,40 @@ describe("createSelectionStylePreview", () => {
     expect(element.style.getPropertyValue("background-clip")).toBe("");
   });
 
+  it("previews each Border side immediately and restores the original widths", () => {
+    const element = document.createElement("div");
+    element.style.setProperty("border-top-width", "1px", "important");
+    const preview = createSelectionStylePreview();
+
+    preview.apply(element, {
+      "border-top-width": "4px",
+      "border-bottom-width": "5px",
+      "border-left-width": "6px",
+      "border-right-width": "7px",
+    });
+
+    expect(element.style.getPropertyValue("border-top-width")).toBe("4px");
+    expect(element.style.getPropertyPriority("border-top-width")).toBe("");
+    expect(element.style.getPropertyValue("border-bottom-width")).toBe("5px");
+    expect(element.style.getPropertyValue("border-left-width")).toBe("6px");
+    expect(element.style.getPropertyValue("border-right-width")).toBe("7px");
+    expect(
+      selectionStylePreviewNeedsOverlayUpdate({
+        "border-left-width": "6px",
+      }),
+    ).toBe(true);
+
+    preview.restore();
+
+    expect(element.style.getPropertyValue("border-top-width")).toBe("1px");
+    expect(element.style.getPropertyPriority("border-top-width")).toBe(
+      "important",
+    );
+    expect(element.style.getPropertyValue("border-bottom-width")).toBe("");
+    expect(element.style.getPropertyValue("border-left-width")).toBe("");
+    expect(element.style.getPropertyValue("border-right-width")).toBe("");
+  });
+
   it("restores the previous target before previewing a new selection", () => {
     const first = document.createElement("div");
     const second = document.createElement("div");

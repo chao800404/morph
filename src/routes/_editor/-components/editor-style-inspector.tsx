@@ -79,6 +79,7 @@ import {
   InspectorLengthControl,
   inspectorLengthUtility,
   resolveInspectorLength,
+  type InspectorLengthValue,
   type NumericInspectorLengthUnit,
 } from "./style-inspector/inspector-length-control";
 import {
@@ -88,6 +89,7 @@ import {
 import {
   BorderRadiusInspectorModule,
   type BorderRadiusCorner,
+  type BorderWidthSide,
 } from "./style-inspector/border-radius-inspector-module";
 import {
   AppearanceInspectorModule,
@@ -175,6 +177,19 @@ const SPACING_LENGTH_STEPS = {
   vw: 1,
   vh: 1,
 } satisfies Record<NumericInspectorLengthUnit, number>;
+
+const SPECIALIZED_CONTENT_FIELD_KEYS = new Set([
+  "heading",
+  "description",
+  "body",
+  "label",
+  "eyebrow",
+  "actionLabel",
+  "actionHref",
+  "imageSrc",
+  "imageAlt",
+  "imagePosition",
+]);
 
 const BORDER_RADIUS_CORNER_CONFIG = {
   topLeft: {
@@ -271,6 +286,24 @@ function repeatedItemRootPath(
   const segments = fieldPath.split(".");
   const itemIndex = segments.findIndex((segment) => /^\d+$/.test(segment));
   return itemIndex >= 0 ? segments.slice(0, itemIndex + 1).join(".") : null;
+}
+
+function repeatedItemStructuralVariants(
+  itemPath: string | null,
+  props: Record<string, unknown>,
+): string[] {
+  if (!itemPath) return [];
+  const segments = itemPath.split(".");
+  const indexSegment = segments.at(-1);
+  if (!indexSegment || !/^\d+$/.test(indexSegment)) return [];
+  const index = Number(indexSegment);
+  const collection = getFieldPathValue(props, segments.slice(0, -1).join("."));
+  if (!Array.isArray(collection) || index >= collection.length) return [];
+
+  const variants = [index % 2 === 0 ? "odd" : "even"];
+  if (index === 0) variants.push("first");
+  if (index === collection.length - 1) variants.push("last");
+  return variants;
 }
 
 function createMorphItemId(): string {
@@ -403,9 +436,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const selectedField = activeFieldKey ?? activeElementKey;
   const isSelectedNode = activeSelectionIsSection === false;
   const selectedKind = selection?.kind ?? "custom";
+  const descendantFields = selection?.descendantFields ?? [];
+  const descendantFieldKeys = new Set(
+    descendantFields.map((binding) => binding.fieldKey),
+  );
   const showField = (...keys: string[]) =>
     !isSelectedNode ||
     keys.includes(selectedField ?? "") ||
+    keys.some((key) => descendantFieldKeys.has(key)) ||
     (activeFieldPath
       ? keys.includes(activeFieldPath.split(".").pop() ?? "")
       : false);
@@ -414,8 +452,25 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       ? getFieldPathValue(props, activeFieldPath)
       : props[key];
   const nestedFieldPath = (key: string): string | null => {
-    if (!activeFieldPath || !activeFieldPath.includes(".") || !isSelectedNode)
-      return null;
+    if (!isSelectedNode) return null;
+    const descendantPath = descendantFields.find(
+      (binding) => binding.fieldKey === key,
+    )?.fieldPath;
+    if (descendantPath) return descendantPath;
+    const nestedDescendantPath = descendantFields.find((binding) =>
+      binding.fieldPath?.includes("."),
+    )?.fieldPath;
+    if (nestedDescendantPath) {
+      const prefix = nestedDescendantPath.slice(
+        0,
+        nestedDescendantPath.lastIndexOf("."),
+      );
+      const siblingPath = `${prefix}.${key}`;
+      if (getFieldPathValue(props, siblingPath) !== undefined) {
+        return siblingPath;
+      }
+    }
+    if (!activeFieldPath || !activeFieldPath.includes(".")) return null;
     const prefix = activeFieldPath.slice(0, activeFieldPath.lastIndexOf("."));
     return prefix + "." + key;
   };
@@ -443,6 +498,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const sectionElementMeta =
     parsedMeta?.elements["section"] ?? parsedMeta?.elements["root"];
   const activeRepeatedItemPath = repeatedItemRootPath(activeFieldPath);
+  const activeStructuralVariants = repeatedItemStructuralVariants(
+    activeRepeatedItemPath,
+    props,
+  );
+  const activeStructuralVariantKey = activeStructuralVariants.join(":");
   const activeRepeatedItem = activeRepeatedItemPath
     ? getFieldPathValue(props, activeRepeatedItemPath)
     : null;
@@ -518,6 +578,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       override: selection?.inspectorOverride,
     }),
   );
+  if (descendantFields.length > 0) {
+    visibleModules.add("content");
+    if (
+      descendantFieldKeys.has("imageSrc") ||
+      descendantFieldKeys.has("imageAlt")
+    ) {
+      visibleModules.add("media");
+    }
+  }
 
   // Code as SSOT: derive style values from the source code AST
   const targetClassName =
@@ -911,14 +980,66 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     (hasResolvedContainerSource
       ? 0
       : (parsePx(containerComputedStyle?.borderTopWidth) ?? 0));
-  const effectiveBorderWidthLength = resolveInspectorLength({
-    className: containerClassName,
-    sources: [{ property: "border-width", prefix: "border" }],
-    targetVariants,
-    computedValue: containerComputedStyle?.borderTopWidth,
-    optimisticValue: optimisticValue("borderWidth"),
-    fallbackValue: effectiveBorderWidth,
-  });
+  const effectiveBorderWidthLengths = {
+    all: resolveInspectorLength({
+      className: containerClassName,
+      sources: [{ property: "border-width", prefix: "border" }],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderTopWidth,
+      optimisticValue: optimisticValue("borderWidth"),
+      fallbackValue: effectiveBorderWidth,
+    }),
+    top: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "border-width-top", prefix: "border-t" },
+        { property: "border-width", prefix: "border" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderTopWidth,
+      optimisticValue: optimisticValue("borderWidthTop"),
+      fallbackValue:
+        parsePx(containerComputedStyle?.borderTopWidth) ?? effectiveBorderWidth,
+    }),
+    bottom: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "border-width-bottom", prefix: "border-b" },
+        { property: "border-width", prefix: "border" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderBottomWidth,
+      optimisticValue: optimisticValue("borderWidthBottom"),
+      fallbackValue:
+        parsePx(containerComputedStyle?.borderBottomWidth) ??
+        effectiveBorderWidth,
+    }),
+    left: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "border-width-left", prefix: "border-l" },
+        { property: "border-width", prefix: "border" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderLeftWidth,
+      optimisticValue: optimisticValue("borderWidthLeft"),
+      fallbackValue:
+        parsePx(containerComputedStyle?.borderLeftWidth) ?? effectiveBorderWidth,
+    }),
+    right: resolveInspectorLength({
+      className: containerClassName,
+      sources: [
+        { property: "border-width-right", prefix: "border-r" },
+        { property: "border-width", prefix: "border" },
+      ],
+      targetVariants,
+      computedValue: containerComputedStyle?.borderRightWidth,
+      optimisticValue: optimisticValue("borderWidthRight"),
+      fallbackValue:
+        parsePx(containerComputedStyle?.borderRightWidth) ??
+        effectiveBorderWidth,
+    }),
+  } satisfies Record<BorderWidthSide, InspectorLengthValue>;
   const effectiveBorderStyle =
     optimisticValue("borderStyle") ??
     parseTailwindBorderStyle(containerClassName) ??
@@ -968,8 +1089,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       patchTailwindClassesBase(current, {
         ...options,
         targetVariants,
+        activeVariants: activeStructuralVariants,
       }),
-    [activeViewport],
+    [activeViewport, activeStructuralVariantKey],
   );
 
   const containerTargetElement = isSelectedNode
@@ -1107,14 +1229,20 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const handleFieldChange = useCallback(
     (field: string, value: unknown) => {
       const currentProps = localPropsRef.current;
-      const next = activeFieldPath?.endsWith("." + field)
-        ? setFieldPathValue(currentProps, activeFieldPath, value)
+      const descendantPath = selection?.descendantFields?.find(
+        (binding) => binding.fieldKey === field,
+      )?.fieldPath;
+      const targetPath = activeFieldPath?.endsWith("." + field)
+        ? activeFieldPath
+        : descendantPath;
+      const next = targetPath
+        ? setFieldPathValue(currentProps, targetPath, value)
         : { ...currentProps, [field]: value };
       localPropsRef.current = next;
       setLocalProps(next);
       onPropsChange(next);
     },
-    [activeFieldPath, onPropsChange],
+    [activeFieldPath, onPropsChange, selection?.descendantFields],
   );
   const handleNestedFieldChange = useCallback(
     (path: string, value: unknown) => {
@@ -1259,20 +1387,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         >
           <div className="space-y-3">
             {isSelectedNode &&
+              descendantFields.length === 0 &&
               activeFieldPath &&
               selectedField &&
-              ![
-                "heading",
-                "description",
-                "body",
-                "label",
-                "eyebrow",
-                "actionLabel",
-                "actionHref",
-                "imageSrc",
-                "imageAlt",
-                "imagePosition",
-              ].includes(selectedField) &&
+              !SPECIALIZED_CONTENT_FIELD_KEYS.has(selectedField) &&
               (typeof fieldValue(selectedField) === "object" &&
               fieldValue(selectedField) !== null ? (
                 Object.entries(
@@ -1325,13 +1443,62 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   />
                 </InspectorField>
               ))}
-            {showField("eyebrow") && "eyebrow" in props && (
+            {isSelectedNode &&
+              descendantFields
+                .filter(
+                  (binding) =>
+                    !SPECIALIZED_CONTENT_FIELD_KEYS.has(binding.fieldKey),
+                )
+                .map((binding) => {
+                  const value = binding.fieldPath
+                    ? getFieldPathValue(props, binding.fieldPath)
+                    : props[binding.fieldKey];
+                  if (
+                    value !== null &&
+                    !["string", "number", "boolean"].includes(typeof value)
+                  ) {
+                    return null;
+                  }
+                  return (
+                    <InspectorField
+                      key={`${binding.fieldKey}:${binding.fieldPath ?? ""}`}
+                      label={binding.fieldKey.replace(/[-_]/g, " ")}
+                    >
+                      <Textarea
+                        rows={2}
+                        defaultValue={String(value ?? "")}
+                        onInput={(event) =>
+                          onPreviewSelectionField?.(
+                            binding.fieldKey,
+                            binding.fieldPath,
+                            event.currentTarget.value,
+                          )
+                        }
+                        onBlur={(event) =>
+                          binding.fieldPath
+                            ? handleNestedFieldChange(
+                                binding.fieldPath,
+                                event.currentTarget.value,
+                              )
+                            : handleFieldChange(
+                                binding.fieldKey,
+                                event.currentTarget.value,
+                              )
+                        }
+                        disabled={disabled}
+                        className="min-h-16 resize-none text-xs"
+                      />
+                    </InspectorField>
+                  );
+                })}
+            {showField("eyebrow") &&
+              ("eyebrow" in props || descendantFieldKeys.has("eyebrow")) && (
               <InspectorField
                 label="Eyebrow / Subtitle"
                 isFocused={activeFieldKey === "eyebrow"}
               >
                 <Input
-                  defaultValue={props.eyebrow ?? ""}
+                  defaultValue={String(selectedFieldValue("eyebrow") ?? "")}
                   onInput={(e) =>
                     onPreviewSelectionField?.(
                       "eyebrow",
@@ -1349,13 +1516,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               </InspectorField>
             )}
 
-            {showField("label") && "label" in props && (
+            {showField("label") &&
+              ("label" in props || descendantFieldKeys.has("label")) && (
               <InspectorField
                 label="Label"
                 isFocused={activeFieldKey === "label"}
               >
                 <Input
-                  defaultValue={props.label ?? ""}
+                  defaultValue={String(selectedFieldValue("label") ?? "")}
                   onInput={(e) =>
                     onPreviewSelectionField?.(
                       "label",
@@ -1373,14 +1541,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               </InspectorField>
             )}
 
-            {showField("heading") && "heading" in props && (
+            {showField("heading") &&
+              ("heading" in props || descendantFieldKeys.has("heading")) && (
               <InspectorField
                 label="Heading"
                 isFocused={activeFieldKey === "heading"}
               >
                 <Textarea
                   rows={2}
-                  defaultValue={props.heading ?? ""}
+                  defaultValue={String(selectedFieldValue("heading") ?? "")}
                   onInput={(e) =>
                     onPreviewSelectionField?.(
                       "heading",
@@ -1398,14 +1567,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               </InspectorField>
             )}
 
-            {showField("description", "body") && "description" in props && (
+            {showField("description", "body") &&
+              ("description" in props ||
+                descendantFieldKeys.has("description")) && (
               <InspectorField
                 label="Description"
                 isFocused={activeFieldKey === "description"}
               >
                 <Textarea
                   rows={3}
-                  defaultValue={props.description ?? ""}
+                  defaultValue={String(
+                    selectedFieldValue("description") ?? "",
+                  )}
                   onInput={(e) =>
                     onPreviewSelectionField?.(
                       "description",
@@ -1424,7 +1597,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             )}
 
             {showField("body", "description") &&
-              ("body" in props || hasActiveRepeatedBody) && (
+              ("body" in props ||
+                hasActiveRepeatedBody ||
+                descendantFieldKeys.has("body")) && (
                 <InspectorField
                   label="Body text"
                   isFocused={activeFieldKey === "body"}
@@ -1434,7 +1609,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     defaultValue={String(
                       hasActiveRepeatedBody
                         ? (selectedFieldValue("body") ?? "")
-                        : (props.body ?? ""),
+                        : (selectedFieldValue("body") ?? ""),
                     )}
                     onInput={(e) =>
                       onPreviewSelectionField?.(
@@ -1454,7 +1629,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               )}
 
             {showField("actionLabel", "actionHref", "action") &&
-              "actionLabel" in props && (
+              ("actionLabel" in props ||
+                descendantFieldKeys.has("actionLabel")) && (
                 <div
                   className={cn(
                     "space-y-2 rounded-lg border p-2.5 transition-all",
@@ -1475,7 +1651,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         Label
                       </label>
                       <Input
-                        defaultValue={props.actionLabel ?? ""}
+                        defaultValue={String(
+                          selectedFieldValue("actionLabel") ?? "",
+                        )}
                         onInput={(e) =>
                           onPreviewSelectionField?.(
                             "actionLabel",
@@ -1499,7 +1677,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         Link URL
                       </label>
                       <Input
-                        defaultValue={props.actionHref ?? ""}
+                        defaultValue={String(
+                          selectedFieldValue("actionHref") ?? "",
+                        )}
                         onBlur={(e) =>
                           handleFieldChange("actionHref", e.currentTarget.value)
                         }
@@ -2544,23 +2724,92 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 expanded={sectionsExpanded.borders}
                 onToggle={() => toggleSection("borders")}
                 disabled={disabled || sourceStyleLocked}
-                borderWidth={effectiveBorderWidthLength}
+                borderWidth={effectiveBorderWidthLengths}
                 borderStyle={String(effectiveBorderStyle)}
                 borderColor={String(effectiveBorderColor)}
                 radius={effectiveBorderRadiusLengths}
                 palette={THEME_PALETTE_COLORS}
-                onBorderWidthPreview={(cssValue) =>
-                  previewContainerStyle({ "border-width": cssValue })
-                }
-                onBorderWidthCommit={(cssValue, numericValue) => {
-                  if (!componentPath && numericValue !== null) {
-                    handleFieldChange("borderWidth", numericValue);
+                onBorderWidthPreview={(side, cssValue) => {
+                  if (side === "all") {
+                    previewContainerStyle({
+                      "border-top-width": cssValue,
+                      "border-bottom-width": cssValue,
+                      "border-left-width": cssValue,
+                      "border-right-width": cssValue,
+                    });
+                    return;
                   }
-                  commitContainerProperty(
-                    "border-width",
-                    inspectorLengthUtility("border", cssValue),
-                    "borderWidth",
-                    cssValue,
+                  previewContainerStyle({
+                    [`border-${side}-width`]: cssValue,
+                  });
+                }}
+                onBorderWidthCommit={(side, cssValue, numericValue) => {
+                  if (side === "all") {
+                    if (!componentPath && numericValue !== null) {
+                      handleFieldChange("borderWidth", numericValue);
+                    }
+                    patchContainerStyle(
+                      (prev) =>
+                        patchTailwindClasses(
+                          patchTailwindClasses(
+                            patchTailwindClasses(
+                              patchTailwindClasses(
+                                patchTailwindClasses(prev, {
+                                  property: "border-width",
+                                  value: inspectorLengthUtility(
+                                    "border",
+                                    cssValue,
+                                  ),
+                                }),
+                                { property: "border-width-top", value: "" },
+                              ),
+                              { property: "border-width-bottom", value: "" },
+                            ),
+                            { property: "border-width-left", value: "" },
+                          ),
+                          { property: "border-width-right", value: "" },
+                        ),
+                      {
+                        borderWidth: cssValue,
+                        borderWidthTop: cssValue,
+                        borderWidthBottom: cssValue,
+                        borderWidthLeft: cssValue,
+                        borderWidthRight: cssValue,
+                      },
+                    );
+                    return;
+                  }
+
+                  const sideConfig = {
+                    top: {
+                      property: "border-width-top",
+                      prefix: "border-t",
+                      optimisticKey: "borderWidthTop",
+                    },
+                    bottom: {
+                      property: "border-width-bottom",
+                      prefix: "border-b",
+                      optimisticKey: "borderWidthBottom",
+                    },
+                    left: {
+                      property: "border-width-left",
+                      prefix: "border-l",
+                      optimisticKey: "borderWidthLeft",
+                    },
+                    right: {
+                      property: "border-width-right",
+                      prefix: "border-r",
+                      optimisticKey: "borderWidthRight",
+                    },
+                  } as const;
+                  const config = sideConfig[side];
+                  patchContainerStyle(
+                    (prev) =>
+                      patchTailwindClasses(prev, {
+                        property: config.property,
+                        value: inspectorLengthUtility(config.prefix, cssValue),
+                      }),
+                    { [config.optimisticKey]: cssValue },
                   );
                 }}
                 onBorderStyleChange={(value) => {

@@ -12,8 +12,21 @@ import {
   type ThemeCompilerApplication,
   useThemeCompiler,
 } from "@/lib/storefront/compiler/use-theme-compiler";
-import { selectionKindFromElement } from "@/lib/storefront/editor/selection-taxonomy";
+import {
+  selectionKindFromElement,
+  type EditableDescendantField,
+} from "@/lib/storefront/editor/selection-taxonomy";
 import { createSelectionOverlaySettler } from "@/lib/storefront/editor/selection-overlay-settler";
+import {
+  buildSpacingOverlayStrips,
+  cssPixelValue,
+  formatSpacingOverlayValue,
+  SPACING_OVERLAY_TARGET_SELECTOR,
+  type PreviewSpacingOverlayMode,
+  type SpacingOverlayKind,
+  type SpacingOverlaySide,
+  type SpacingOverlayStrip,
+} from "@/lib/storefront/editor/spacing-overlay";
 import {
   createSelectionStylePreview,
   SELECTION_STYLE_APPLIED_EVENT,
@@ -22,6 +35,7 @@ import {
 import {
   parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
+  type PreviewEditableNode,
   type PreviewSelectionRestoreTarget,
   type PreviewStyleSnapshot,
 } from "@/lib/storefront/editor/preview-protocol";
@@ -89,12 +103,13 @@ export function resolvePreviewSelectionRestoreElement(
 ): HTMLElement {
   if (target.isSection) return section;
   const selectors = [
-    target.nodeId
-      ? `[data-morph-node="${CSS.escape(target.nodeId)}"]`
+    target.nodeId && target.fieldPath
+      ? `[data-morph-node="${CSS.escape(target.nodeId)}"][data-storefront-field-path="${CSS.escape(target.fieldPath)}"]`
       : null,
     target.fieldPath
       ? `[data-storefront-field-path="${CSS.escape(target.fieldPath)}"]`
       : null,
+    target.nodeId ? `[data-morph-node="${CSS.escape(target.nodeId)}"]` : null,
     target.elementKey
       ? `[data-morph-element="${CSS.escape(target.elementKey)}"]`
       : null,
@@ -107,6 +122,175 @@ export function resolvePreviewSelectionRestoreElement(
     if (match) return match;
   }
   return section;
+}
+
+const PREVIEW_EDITABLE_NODE_SELECTOR = [
+  "[data-morph-node]",
+  "[data-storefront-field-path]",
+  "[data-storefront-field]",
+].join(",");
+
+function previewEditableNodeLabel(element: HTMLElement): string {
+  const fieldPath = element.dataset.storefrontFieldPath ?? "";
+  const rawLabel =
+    element.dataset.morphElement ??
+    element.dataset.storefrontComponent ??
+    element.dataset.storefrontField ??
+    element.dataset.morphNode ??
+    element.tagName.toLowerCase();
+  const label = rawLabel
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^./, (character) => character.toUpperCase());
+  const pathSegments = fieldPath.split(".");
+  const lastSegment = pathSegments.at(-1);
+  const resolvedLabel = label || element.tagName.toLowerCase();
+  return (
+    /^\d+$/.test(lastSegment ?? "")
+      ? `${resolvedLabel} ${Number(lastSegment) + 1}`
+      : resolvedLabel
+  ).slice(0, 200);
+}
+
+export function collectPreviewEditableNodes(root: {
+  querySelectorAll<T extends Element = Element>(
+    selectors: string,
+  ): NodeListOf<T>;
+}): PreviewEditableNode[] {
+  const nodes: PreviewEditableNode[] = [];
+  const nodeIds = new Set<string>();
+  const sections = root.querySelectorAll<HTMLElement>(
+    "[data-storefront-section-id]",
+  );
+
+  for (const section of sections) {
+    if (section.parentElement?.closest("[data-storefront-section-id]")) {
+      continue;
+    }
+    const sectionId = section.dataset.storefrontSectionId;
+    if (!sectionId || sectionId.length > 100) continue;
+    const candidates = Array.from(
+      section.querySelectorAll<HTMLElement>(PREVIEW_EDITABLE_NODE_SELECTOR),
+    ).filter(
+      (candidate) =>
+        candidate.closest<HTMLElement>("[data-storefront-section-id]") ===
+        section,
+    );
+    const morphNodeCounts = new Map<string, number>();
+    const fieldKeyCounts = new Map<string, number>();
+    for (const candidate of candidates) {
+      const morphNode = candidate.dataset.morphNode;
+      const fieldKey = candidate.dataset.storefrontField;
+      if (morphNode) {
+        morphNodeCounts.set(
+          morphNode,
+          (morphNodeCounts.get(morphNode) ?? 0) + 1,
+        );
+      }
+      if (fieldKey) {
+        fieldKeyCounts.set(fieldKey, (fieldKeyCounts.get(fieldKey) ?? 0) + 1);
+      }
+    }
+
+    const elementNodeIds = new Map<HTMLElement, string>();
+    for (const candidate of candidates) {
+      if (nodes.length >= 500) return nodes;
+      const nodeId = candidate.dataset.morphNode;
+      const fieldPath = candidate.dataset.storefrontFieldPath;
+      const fieldKey = candidate.dataset.storefrontField;
+      const elementKey = candidate.dataset.morphElement;
+      const itemId = candidate.closest<HTMLElement>("[data-storefront-item-id]")
+        ?.dataset.storefrontItemId;
+      if (
+        (nodeId?.length ?? 0) > 200 ||
+        (fieldPath?.length ?? 0) > 500 ||
+        (fieldKey?.length ?? 0) > 200 ||
+        (elementKey?.length ?? 0) > 200
+      ) {
+        continue;
+      }
+      const hasUniqueNodeId =
+        Boolean(nodeId) && morphNodeCounts.get(nodeId ?? "") === 1;
+      const hasUniqueFieldKey =
+        Boolean(fieldKey) && fieldKeyCounts.get(fieldKey ?? "") === 1;
+      if (!fieldPath && !hasUniqueNodeId && !hasUniqueFieldKey) continue;
+
+      const identity = itemId
+        ? `item:${itemId}:${nodeId ? `node:${nodeId}` : `field:${fieldKey ?? fieldPath}`}`
+        : fieldPath
+          ? `path:${fieldPath}${nodeId ? `:node:${nodeId}` : ""}`
+          : nodeId
+            ? `node:${nodeId}`
+            : `field:${fieldKey}`;
+      const id = `${sectionId}:${identity}`;
+      if (id.length > 500 || nodeIds.has(id)) continue;
+
+      let parentElement = candidate.parentElement;
+      let parentId: string | null = null;
+      while (parentElement && parentElement !== section) {
+        const matchedParentId = elementNodeIds.get(parentElement);
+        if (matchedParentId) {
+          parentId = matchedParentId;
+          break;
+        }
+        parentElement = parentElement.parentElement;
+      }
+
+      const target: PreviewSelectionRestoreTarget = {
+        sectionId,
+        nodeId: nodeId || undefined,
+        fieldPath: fieldPath || undefined,
+        elementKey: elementKey || undefined,
+        fieldKey: fieldKey || undefined,
+        isSection: false,
+      };
+      const kind = selectionKindFromElement({
+        component: candidate.dataset.storefrontComponent,
+        morphElement: elementKey,
+        tagName: candidate.tagName,
+        role: candidate.getAttribute("role"),
+        inputType: candidate.getAttribute("type"),
+      });
+      nodes.push({
+        id,
+        parentId,
+        sectionId,
+        label: previewEditableNodeLabel(candidate),
+        kind,
+        tagName: candidate.tagName.toLowerCase().slice(0, 32),
+        target,
+      });
+      nodeIds.add(id);
+      elementNodeIds.set(candidate, id);
+    }
+  }
+
+  return nodes;
+}
+
+export function collectEditableDescendantFields(
+  element: HTMLElement,
+): EditableDescendantField[] {
+  const result: EditableDescendantField[] = [];
+  const identities = new Set<string>();
+  const candidates = element.querySelectorAll<HTMLElement>(
+    "[data-storefront-field]",
+  );
+
+  for (const candidate of candidates) {
+    if (candidate.querySelector("[data-storefront-field]")) continue;
+    const fieldKey = candidate.dataset.storefrontField;
+    if (!fieldKey) continue;
+    const fieldPath = candidate.dataset.storefrontFieldPath ?? fieldKey;
+    const identity = `${fieldKey}\u0000${fieldPath}`;
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    result.push({ fieldKey, fieldPath });
+  }
+
+  return result;
 }
 
 export const Route = createFileRoute(
@@ -518,6 +702,18 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     hoverOverlay.appendChild(hoverLabel);
     document.body.appendChild(hoverOverlay);
 
+    const spacingOverlayLayer = document.createElement("div");
+    spacingOverlayLayer.setAttribute("aria-hidden", "true");
+    spacingOverlayLayer.dataset.storefrontEditorSpacingOverlay = "true";
+    Object.assign(spacingOverlayLayer.style, {
+      position: "fixed",
+      inset: "0",
+      zIndex: "2147483643",
+      overflow: "hidden",
+      pointerEvents: "none",
+    });
+    document.body.appendChild(spacingOverlayLayer);
+
     const reorderTargetOverlay = document.createElement("div");
     reorderTargetOverlay.setAttribute("aria-hidden", "true");
     Object.assign(reorderTargetOverlay.style, {
@@ -568,6 +764,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       fieldKey: string | null;
       field: string | null;
       fieldPath: string | null;
+      descendantFields: EditableDescendantField[];
       tagName: string;
       role: string | null;
       inputType: string | null;
@@ -603,6 +800,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     let selectedElement: HTMLElement | null = null;
     let selectedSectionId: string | null = null;
     let selectionEnabled = false;
+    let spacingOverlayMode: PreviewSpacingOverlayMode = "off";
     const selectionStylePreview = createSelectionStylePreview();
     let overlaySettler: ReturnType<
       typeof createSelectionOverlaySettler
@@ -634,6 +832,211 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       targetNodeId: string | null;
       targetFieldPath: string | null;
     } | null = null;
+    type SpacingOverlayVisual = {
+      root: HTMLElement;
+      strips: Map<string, HTMLElement>;
+    };
+    type SpacingOverlayMeasurement = {
+      element: HTMLElement;
+      strips: SpacingOverlayStrip[];
+      showLabels: boolean;
+    };
+    const spacingOverlayVisuals = new Map<HTMLElement, SpacingOverlayVisual>();
+    let structurePublishFrame = 0;
+    let lastStructureSignature = "";
+
+    const publishEditableStructure = () => {
+      structurePublishFrame = 0;
+      const nodes = collectPreviewEditableNodes(document);
+      const signature = JSON.stringify(nodes);
+      if (signature === lastStructureSignature) return;
+      lastStructureSignature = signature;
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes,
+      });
+    };
+
+    const scheduleEditableStructure = () => {
+      if (structurePublishFrame) return;
+      structurePublishFrame = requestAnimationFrame(publishEditableStructure);
+    };
+
+    const spacingSides: readonly SpacingOverlaySide[] = [
+      "top",
+      "right",
+      "bottom",
+      "left",
+    ];
+    const spacingKinds: readonly SpacingOverlayKind[] = ["margin", "padding"];
+
+    const createSpacingOverlayVisual = (): SpacingOverlayVisual => {
+      const root = document.createElement("div");
+      Object.assign(root.style, {
+        position: "absolute",
+        inset: "0",
+        pointerEvents: "none",
+      });
+      const strips = new Map<string, HTMLElement>();
+      spacingKinds.forEach((kind) => {
+        spacingSides.forEach((side) => {
+          const strip = document.createElement("div");
+          strip.dataset.spacingKind = kind;
+          strip.dataset.spacingSide = side;
+          Object.assign(strip.style, {
+            position: "absolute",
+            display: "none",
+            boxSizing: "border-box",
+            pointerEvents: "none",
+          });
+          const label = document.createElement("span");
+          label.dataset.spacingLabel = "true";
+          Object.assign(label.style, {
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            zIndex: "1",
+            display: "none",
+            transform: "translate(-50%, -50%)",
+            padding: "2px 4px",
+            borderRadius: "3px",
+            background: "oklch(42% 0.2 302 / 0.94)",
+            color: "oklch(98% 0.01 302)",
+            boxShadow: "0 1px 3px oklch(18% 0.03 302 / 0.28)",
+            font: "600 9px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+            letterSpacing: "0.01em",
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+          });
+          strip.appendChild(label);
+          root.appendChild(strip);
+          strips.set(`${kind}-${side}`, strip);
+        });
+      });
+      spacingOverlayLayer.appendChild(root);
+      return { root, strips };
+    };
+
+    const clearSpacingOverlays = () => {
+      spacingOverlayVisuals.forEach(({ root }) => root.remove());
+      spacingOverlayVisuals.clear();
+    };
+
+    const spacingOverlayTargets = (): HTMLElement[] => {
+      if (spacingOverlayMode === "off") return [];
+      if (spacingOverlayMode === "selected") {
+        return selectedItem?.element ? [selectedItem.element] : [];
+      }
+
+      const targets = Array.from(
+        document.querySelectorAll<HTMLElement>(SPACING_OVERLAY_TARGET_SELECTOR),
+      );
+      if (selectedItem?.element && !targets.includes(selectedItem.element)) {
+        targets.unshift(selectedItem.element);
+      }
+      return targets.slice(0, 160);
+    };
+
+    const measureSpacingOverlays = (): SpacingOverlayMeasurement[] =>
+      spacingOverlayTargets().flatMap((element) => {
+        if (!document.body.contains(element)) return [];
+        const bounds = element.getBoundingClientRect();
+        if (bounds.width <= 0 || bounds.height <= 0) return [];
+        const computed = window.getComputedStyle(element);
+        if (computed.display === "none" || computed.visibility === "hidden") {
+          return [];
+        }
+        const strips = buildSpacingOverlayStrips(
+          {
+            left: bounds.left,
+            top: bounds.top,
+            width: bounds.width,
+            height: bounds.height,
+          },
+          {
+            margin: {
+              top: cssPixelValue(computed.marginTop),
+              right: cssPixelValue(computed.marginRight),
+              bottom: cssPixelValue(computed.marginBottom),
+              left: cssPixelValue(computed.marginLeft),
+            },
+            padding: {
+              top: cssPixelValue(computed.paddingTop),
+              right: cssPixelValue(computed.paddingRight),
+              bottom: cssPixelValue(computed.paddingBottom),
+              left: cssPixelValue(computed.paddingLeft),
+            },
+            border: {
+              top: cssPixelValue(computed.borderTopWidth),
+              right: cssPixelValue(computed.borderRightWidth),
+              bottom: cssPixelValue(computed.borderBottomWidth),
+              left: cssPixelValue(computed.borderLeftWidth),
+            },
+          },
+        );
+        if (strips.length === 0) return [];
+        return [
+          {
+            element,
+            strips,
+            showLabels:
+              element === selectedItem?.element ||
+              element === hoveredItem?.element,
+          },
+        ];
+      });
+
+    const renderSpacingOverlays = (
+      measurements: SpacingOverlayMeasurement[],
+    ) => {
+      const activeElements = new Set(
+        measurements.map((measurement) => measurement.element),
+      );
+      spacingOverlayVisuals.forEach((visual, element) => {
+        if (activeElements.has(element)) return;
+        visual.root.remove();
+        spacingOverlayVisuals.delete(element);
+      });
+
+      measurements.forEach(({ element, strips, showLabels }) => {
+        const visual =
+          spacingOverlayVisuals.get(element) ?? createSpacingOverlayVisual();
+        spacingOverlayVisuals.set(element, visual);
+        visual.strips.forEach((strip) => {
+          strip.style.display = "none";
+        });
+        strips.forEach((measurement) => {
+          const strip = visual.strips.get(
+            `${measurement.kind}-${measurement.side}`,
+          );
+          if (!strip) return;
+          const isMargin = measurement.kind === "margin";
+          Object.assign(strip.style, {
+            display: "block",
+            left: `${measurement.rect.left}px`,
+            top: `${measurement.rect.top}px`,
+            width: `${measurement.rect.width}px`,
+            height: `${measurement.rect.height}px`,
+            background: isMargin
+              ? "repeating-linear-gradient(135deg, oklch(62% 0.22 302 / 0.46) 0 1px, oklch(62% 0.22 302 / 0.1) 1px 6px)"
+              : "repeating-linear-gradient(135deg, oklch(76% 0.15 302 / 0.4) 0 1px, oklch(76% 0.15 302 / 0.1) 1px 6px)",
+            outline: measurement.negative
+              ? "1px dashed oklch(68% 0.24 25 / 0.82)"
+              : `1px solid ${
+                  isMargin
+                    ? "oklch(62% 0.22 302 / 0.38)"
+                    : "oklch(76% 0.15 302 / 0.34)"
+                }`,
+          });
+          const label = strip.querySelector<HTMLElement>(
+            "[data-spacing-label]",
+          );
+          if (!label) return;
+          label.style.display = showLabels ? "block" : "none";
+          label.textContent = `${isMargin ? "M" : "P"} ${measurement.side.charAt(0).toUpperCase()} ${formatSpacingOverlayValue(measurement.value)}`;
+        });
+      });
+    };
 
     const updateOverlayLabel = (
       nameElement: HTMLElement,
@@ -702,15 +1105,18 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         );
         const nodeId = morphEl.dataset.morphNode ?? null;
         const elementKey = morphEl.dataset.morphElement ?? null;
+        const descendantFields = collectEditableDescendantFields(morphEl);
         const fieldKey =
-          morphEl.dataset.storefrontField ??
-          (elementKey
-            ? elementKey === "action"
-              ? "actionLabel"
-              : elementKey === "image"
-                ? "imageSrc"
-                : elementKey
-            : null);
+          descendantFields.length > 0
+            ? null
+            : (morphEl.dataset.storefrontField ??
+              (elementKey
+                ? elementKey === "action"
+                  ? "actionLabel"
+                  : elementKey === "image"
+                    ? "imageSrc"
+                    : elementKey
+                : null));
         const fieldPath = morphEl.dataset.storefrontFieldPath ?? fieldKey;
         const selectableType =
           elementKey ?? nodeId ?? morphEl.tagName.toLowerCase();
@@ -728,6 +1134,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           fieldKey,
           field: fieldKey,
           fieldPath,
+          descendantFields,
           tagName: morphEl.tagName.toLowerCase(),
           role: morphEl.getAttribute("role"),
           inputType: morphEl instanceof HTMLInputElement ? morphEl.type : null,
@@ -756,6 +1163,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           compType === "image"
             ? compType
             : null);
+        const descendantFields = collectEditableDescendantFields(componentEl);
 
         return {
           element: componentEl,
@@ -767,6 +1175,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           fieldKey,
           field: fieldKey ?? elementKey,
           fieldPath,
+          descendantFields,
           tagName: componentEl.tagName.toLowerCase(),
           role: componentEl.getAttribute("role"),
           inputType:
@@ -857,6 +1266,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
               ? "imageSrc"
               : compType);
         const fieldPath = elementEl.dataset.storefrontFieldPath ?? fieldKey;
+        const descendantFields = collectEditableDescendantFields(elementEl);
 
         return {
           element: elementEl,
@@ -868,6 +1278,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           fieldKey,
           field: fieldKey,
           fieldPath,
+          descendantFields,
           tagName: tag,
           role: elementEl.getAttribute("role"),
           inputType:
@@ -891,6 +1302,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           fieldKey: null,
           field: null,
           fieldPath: null,
+          descendantFields: collectEditableDescendantFields(section),
           tagName: section.tagName.toLowerCase(),
           role: section.getAttribute("role"),
           inputType: null,
@@ -1176,9 +1588,11 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const positionOverlays = () => {
+      const spacingMeasurements = measureSpacingOverlays();
       if (!selectionEnabled) {
         hoverOverlay.style.display = "none";
         selectedOverlay.style.display = "none";
+        renderSpacingOverlays(spacingMeasurements);
         return;
       }
 
@@ -1228,6 +1642,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       } else {
         hoverOverlay.style.display = "none";
       }
+      renderSpacingOverlays(spacingMeasurements);
     };
 
     const schedulePositionOverlays = () => {
@@ -1449,7 +1864,11 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           nodeId: morphNodeId,
           elementKey: selectable.elementKey,
           fieldKey: selectable.fieldKey,
-          field: selectable.fieldKey ?? selectable.elementKey,
+          field:
+            selectable.descendantFields.length > 0
+              ? null
+              : (selectable.fieldKey ?? selectable.elementKey),
+          descendantFields: selectable.descendantFields,
           ...selectionMetadata(selectable),
           styleRevision: Number(
             document.documentElement.dataset.storefrontStyleRevision ?? 0,
@@ -1637,9 +2056,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       syncSelectedDraggable();
     };
 
-    const restoreSelectedTarget = (
-      target: PreviewSelectionRestoreTarget,
-    ) => {
+    const restoreSelectedTarget = (target: PreviewSelectionRestoreTarget) => {
       selectedElement?.removeAttribute("data-storefront-editor-selected");
       hideSelectedDragHandle();
       clearReorderFeedback();
@@ -1656,7 +2073,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
-      const nextElement = resolvePreviewSelectionRestoreElement(section, target);
+      const nextElement = resolvePreviewSelectionRestoreElement(
+        section,
+        target,
+      );
 
       selectedElement = nextElement;
       selectedElement.setAttribute("data-storefront-editor-selected", "true");
@@ -1676,11 +2096,23 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       const message = parseEditorToPreviewWindowEvent(event);
       if (!message) return;
 
+      if (message.type === "morph:storefront-preview-request-structure") {
+        lastStructureSignature = "";
+        scheduleEditableStructure();
+        return;
+      }
+
       if (
         message.type ===
         "morph:storefront-preview-reset-selection-style-preview"
       ) {
         selectionStylePreview.restore();
+        positionOverlays();
+        return;
+      }
+
+      if (message.type === "morph:storefront-preview-set-spacing-overlay") {
+        spacingOverlayMode = message.mode;
         positionOverlays();
         return;
       }
@@ -1786,7 +2218,11 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
               undefined,
             elementKey: selectedItem.elementKey,
             fieldKey: selectedItem.fieldKey,
-            field: selectedItem.fieldKey ?? selectedItem.elementKey,
+            field:
+              selectedItem.descendantFields.length > 0
+                ? null
+                : (selectedItem.fieldKey ?? selectedItem.elementKey),
+            descendantFields: selectedItem.descendantFields,
             ...selectionMetadata(selectedItem),
             styleRevision: Number(
               document.documentElement.dataset.storefrontStyleRevision ?? 0,
@@ -1853,6 +2289,21 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       SELECTION_STYLE_APPLIED_EVENT,
       selectionStylePreview.restore,
     );
+    const structureObserver = new MutationObserver(scheduleEditableStructure);
+    structureObserver.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: [
+        "data-morph-node",
+        "data-morph-element",
+        "data-storefront-component",
+        "data-storefront-field",
+        "data-storefront-field-path",
+        "data-storefront-section-id",
+      ],
+    });
+    scheduleEditableStructure();
 
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown, true);
@@ -1875,6 +2326,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         SELECTION_STYLE_APPLIED_EVENT,
         selectionStylePreview.restore,
       );
+      structureObserver.disconnect();
+      cancelAnimationFrame(structurePublishFrame);
       selectionStylePreview.restore();
       overlaySettler?.cancel();
       document.documentElement.removeAttribute(
@@ -1892,6 +2345,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       selectedOverlay.remove();
       reorderTargetOverlay.remove();
       reorderCandidateLayer.remove();
+      clearSpacingOverlays();
+      spacingOverlayLayer.remove();
       hideSelectedDragHandle();
       selectedElement?.removeAttribute("data-storefront-editor-selected");
     };

@@ -1,6 +1,16 @@
-import { isSelectionKind, type SelectionKind } from "./selection-taxonomy";
+import {
+  isSelectionKind,
+  type EditableDescendantField,
+  type SelectionKind,
+} from "./selection-taxonomy";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import type { JsonValue } from "@/db/json";
+import {
+  isPreviewSpacingOverlayMode,
+  type PreviewSpacingOverlayMode,
+} from "./spacing-overlay";
+
+export type { PreviewSpacingOverlayMode } from "./spacing-overlay";
 
 export type PreviewSectionProps =
   StorefrontPageDocument["sections"][number]["props"];
@@ -103,8 +113,19 @@ export type PreviewSelectionRestoreTarget = Readonly<{
   isSection?: boolean;
 }>;
 
+export type PreviewEditableNode = Readonly<{
+  id: string;
+  parentId: string | null;
+  sectionId: string;
+  label: string;
+  kind: SelectionKind;
+  tagName: string | null;
+  target: PreviewSelectionRestoreTarget;
+}>;
+
 export type EditorToPreviewMessage =
   | { type: "morph:storefront-preview-request-size" }
+  | { type: "morph:storefront-preview-request-structure" }
   | {
       type: "morph:storefront-preview-request-selection-style";
       styleRevision?: number;
@@ -113,6 +134,10 @@ export type EditorToPreviewMessage =
       type: "morph:storefront-preview-set-selection-mode";
       enabled: boolean;
       restoreTarget?: PreviewSelectionRestoreTarget;
+    }
+  | {
+      type: "morph:storefront-preview-set-spacing-overlay";
+      mode: PreviewSpacingOverlayMode;
     }
   | { type: "morph:storefront-preview-set-viewport-height"; height: number }
   | { type: "morph:storefront-preview-set-section"; sectionId: string | null }
@@ -158,6 +183,7 @@ export type PreviewSelectionMessage = {
   fieldKey: string | null;
   field: string | null;
   fieldPath: string | null;
+  descendantFields: readonly EditableDescendantField[];
   tagName: string;
   role: string | null;
   inputType: string | null;
@@ -173,6 +199,10 @@ export type PreviewSelectionMessage = {
 export type PreviewToEditorMessage =
   | { type: "morph:storefront-preview-ready" }
   | { type: "morph:storefront-preview-size"; height: number }
+  | {
+      type: "morph:storefront-preview-structure";
+      nodes: readonly PreviewEditableNode[];
+    }
   | {
       type: "morph:storefront-preview-theme-files-applied";
       styleRevision: number;
@@ -269,12 +299,47 @@ function isNullableBoundedString(
   return value === null || isBoundedString(value, maxLength);
 }
 
+function isNullableHtmlTagName(value: unknown): value is string | null {
+  return (
+    value === null ||
+    (isBoundedString(value, 32) && /^[a-z][a-z0-9-]*$/.test(value))
+  );
+}
+
+function parseEditableDescendantFields(
+  value: unknown,
+): EditableDescendantField[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 100) return null;
+  const result: EditableDescendantField[] = [];
+  const identities = new Set<string>();
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      !isBoundedString(item.fieldKey, 200) ||
+      !isNullableBoundedString(item.fieldPath, 500)
+    ) {
+      return null;
+    }
+    const identity = `${item.fieldKey}\u0000${item.fieldPath ?? ""}`;
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    result.push({ fieldKey: item.fieldKey, fieldPath: item.fieldPath });
+  }
+  return result;
+}
+
 function parsePreviewSelectionRestoreTarget(
   value: unknown,
 ): PreviewSelectionRestoreTarget | undefined | null {
   if (value === undefined) return undefined;
   if (!isRecord(value) || !isBoundedString(value.sectionId, 100)) return null;
-  const identityKeys = ["nodeId", "fieldPath", "elementKey", "fieldKey"] as const;
+  const identityKeys = [
+    "nodeId",
+    "fieldPath",
+    "elementKey",
+    "fieldKey",
+  ] as const;
   if (
     !identityKeys.some((key) => value[key] !== undefined) &&
     value.isSection !== true
@@ -284,7 +349,8 @@ function parsePreviewSelectionRestoreTarget(
   if (
     (value.nodeId !== undefined && !isBoundedString(value.nodeId, 200)) ||
     (value.fieldPath !== undefined && !isBoundedString(value.fieldPath, 500)) ||
-    (value.elementKey !== undefined && !isBoundedString(value.elementKey, 200)) ||
+    (value.elementKey !== undefined &&
+      !isBoundedString(value.elementKey, 200)) ||
     (value.fieldKey !== undefined && !isBoundedString(value.fieldKey, 200)) ||
     (value.isSection !== undefined && typeof value.isSection !== "boolean")
   ) {
@@ -298,6 +364,69 @@ function parsePreviewSelectionRestoreTarget(
     fieldKey: value.fieldKey,
     isSection: value.isSection,
   };
+}
+
+function parsePreviewEditableNodes(
+  value: unknown,
+): PreviewEditableNode[] | null {
+  if (!Array.isArray(value) || value.length > 500) return null;
+  const result: PreviewEditableNode[] = [];
+  const ids = new Set<string>();
+
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      !isBoundedString(item.id, 500) ||
+      !isNullableBoundedString(item.parentId, 500) ||
+      !isBoundedString(item.sectionId, 100) ||
+      !isBoundedString(item.label, 200) ||
+      !isBoundedString(item.kind, 100) ||
+      !isSelectionKind(item.kind) ||
+      !isNullableHtmlTagName(item.tagName) ||
+      ids.has(item.id)
+    ) {
+      return null;
+    }
+    const target = parsePreviewSelectionRestoreTarget(item.target);
+    if (
+      !target ||
+      target.sectionId !== item.sectionId ||
+      target.isSection === true ||
+      item.parentId === item.id
+    ) {
+      return null;
+    }
+    ids.add(item.id);
+    result.push({
+      id: item.id,
+      parentId: item.parentId,
+      sectionId: item.sectionId,
+      label: item.label,
+      kind: item.kind,
+      tagName: item.tagName,
+      target,
+    });
+  }
+
+  const nodesById = new Map(result.map((node) => [node.id, node]));
+  for (const node of result) {
+    const visited = new Set([node.id]);
+    let parentId = node.parentId;
+    while (parentId !== null) {
+      const parent = nodesById.get(parentId);
+      if (
+        !parent ||
+        parent.sectionId !== node.sectionId ||
+        visited.has(parentId)
+      ) {
+        return null;
+      }
+      visited.add(parentId);
+      parentId = parent.parentId;
+    }
+  }
+
+  return result;
 }
 
 const PREVIEW_STYLE_SNAPSHOT_KEYS = [
@@ -360,6 +489,7 @@ export function parseEditorToPreviewMessage(
 
   switch (value.type) {
     case "morph:storefront-preview-request-size":
+    case "morph:storefront-preview-request-structure":
       return { type: value.type };
     case "morph:storefront-preview-request-selection-style":
       return value.styleRevision === undefined ||
@@ -377,6 +507,10 @@ export function parseEditorToPreviewMessage(
           ? { type: value.type, enabled: value.enabled }
           : { type: value.type, enabled: value.enabled, restoreTarget };
       }
+    case "morph:storefront-preview-set-spacing-overlay":
+      return isPreviewSpacingOverlayMode(value.mode)
+        ? { type: value.type, mode: value.mode }
+        : null;
     case "morph:storefront-preview-set-viewport-height":
       return typeof value.height === "number" && Number.isFinite(value.height)
         ? { type: value.type, height: value.height }
@@ -473,12 +607,19 @@ export function parsePreviewToEditorMessage(
       return typeof value.height === "number" && Number.isFinite(value.height)
         ? { type: value.type, height: value.height }
         : null;
+    case "morph:storefront-preview-structure": {
+      const nodes = parsePreviewEditableNodes(value.nodes);
+      return nodes ? { type: value.type, nodes } : null;
+    }
     case "morph:storefront-preview-theme-files-applied":
     case "morph:storefront-preview-theme-files-failed":
       return isSafeRevision(value.styleRevision)
         ? { type: value.type, styleRevision: value.styleRevision }
         : null;
     case "morph:storefront-preview-select-section": {
+      const descendantFields = parseEditableDescendantFields(
+        value.descendantFields,
+      );
       if (
         !isBoundedString(value.sectionId, 100) ||
         !isBoundedString(value.componentType, 200) ||
@@ -490,6 +631,7 @@ export function parsePreviewToEditorMessage(
         !isNullableBoundedString(value.fieldKey, 200) ||
         !isNullableBoundedString(value.field, 200) ||
         !isNullableBoundedString(value.fieldPath, 500) ||
+        descendantFields === null ||
         !isBoundedString(value.tagName, 100) ||
         !isNullableBoundedString(value.role, 100) ||
         !isNullableBoundedString(value.inputType, 100) ||
@@ -522,6 +664,7 @@ export function parsePreviewToEditorMessage(
         fieldKey: value.fieldKey,
         field: value.field,
         fieldPath: value.fieldPath,
+        descendantFields,
         tagName: value.tagName,
         role: value.role,
         inputType: value.inputType,

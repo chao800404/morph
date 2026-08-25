@@ -23,6 +23,10 @@ export type TailwindPropertyFamily =
   | "background-color"
   | "background-clip"
   | "border-width"
+  | "border-width-top"
+  | "border-width-bottom"
+  | "border-width-left"
+  | "border-width-right"
   | "border-style"
   | "border-color"
   | "border-radius"
@@ -62,6 +66,8 @@ export interface PatchTailwindOptions {
   property: Exclude<TailwindPropertyFamily, "other">;
   value: string;
   targetVariants?: string[];
+  /** Structural variants currently matched by the selected DOM element. */
+  activeVariants?: string[];
 }
 
 const FONT_SIZE_NAMES = new Set([
@@ -271,6 +277,18 @@ export function classifyTailwindUtility(
     return "border-radius-bottom-left";
   if (BORDER_RADIUS_PATTERN.test(utility)) return "border-radius";
   if (BORDER_STYLE_PATTERN.test(utility)) return "border-style";
+  for (const [prefix, family] of [
+    ["border-t", "border-width-top"],
+    ["border-b", "border-width-bottom"],
+    ["border-l", "border-width-left"],
+    ["border-r", "border-width-right"],
+  ] as const) {
+    const arbitrary = arbitraryValue(utility, prefix);
+    if (arbitrary && looksLikeCssLengthExpression(arbitrary)) return family;
+    if (new RegExp(`^${prefix}(?:-(?:0|2|4|8))?$`).test(utility)) {
+      return family;
+    }
+  }
   const borderArbitrary = arbitraryValue(utility, "border");
   if (borderArbitrary) {
     if (looksLikeCssLengthExpression(borderArbitrary)) return "border-width";
@@ -390,6 +408,46 @@ function areVariantsEqual(a: string[], b: string[]): boolean {
   );
 }
 
+function isSamePropertyFamily(
+  tokenFamily: TailwindPropertyFamily,
+  property: PatchTailwindOptions["property"],
+): boolean {
+  return (
+    tokenFamily === property ||
+    ((tokenFamily === "background" || tokenFamily === "background-color") &&
+      (property === "background" || property === "background-color"))
+  );
+}
+
+function resolvePatchVariants(
+  tokens: readonly TailwindToken[],
+  options: PatchTailwindOptions,
+): string[] {
+  const targetVariants = options.targetVariants ?? [];
+  const activeVariants = new Set(options.activeVariants ?? []);
+  if (activeVariants.size === 0) return targetVariants;
+
+  const matchingConditional = tokens
+    .filter((token) => {
+      if (!isSamePropertyFamily(token.propertyFamily, options.property)) {
+        return false;
+      }
+      const remaining = [...token.variants];
+      for (const target of targetVariants) {
+        const index = remaining.indexOf(target);
+        if (index < 0) return false;
+        remaining.splice(index, 1);
+      }
+      return (
+        remaining.length > 0 &&
+        remaining.every((variant) => activeVariants.has(variant))
+      );
+    })
+    .sort((a, b) => b.variants.length - a.variants.length)[0];
+
+  return matchingConditional?.variants ?? targetVariants;
+}
+
 function normalizeReplacementUtility(value: string): string {
   if (!value) return "";
   const parsed = parseTailwindToken(value);
@@ -401,18 +459,16 @@ export function patchTailwindClasses(
   options: PatchTailwindOptions,
 ): string {
   const tokens = tokenizeTailwindClasses(currentClassName);
-  const targetVariants = options.targetVariants ?? [];
+  const targetVariants = resolvePatchVariants(tokens, options);
   const replacementUtility = normalizeReplacementUtility(options.value);
   const result: TailwindToken[] = [];
   let replaced = false;
 
   for (const token of tokens) {
-    const isSameFamily =
-      token.propertyFamily === options.property ||
-      ((token.propertyFamily === "background" ||
-        token.propertyFamily === "background-color") &&
-        (options.property === "background" ||
-          options.property === "background-color"));
+    const isSameFamily = isSamePropertyFamily(
+      token.propertyFamily,
+      options.property,
+    );
     const matches =
       isSameFamily && areVariantsEqual(token.variants, targetVariants);
 

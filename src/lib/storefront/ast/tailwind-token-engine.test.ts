@@ -102,6 +102,33 @@ describe("tailwind-token-engine", () => {
     );
   });
 
+  it("updates the active structural variant instead of leaving an override in effect", () => {
+    const original =
+      "border-b py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-0 lg:last:border-r-0";
+
+    expect(
+      patchTailwindClasses(original, {
+        property: "padding-left",
+        value: "pl-[28px]",
+        targetVariants: ["lg"],
+        activeVariants: ["first", "odd"],
+      }),
+    ).toBe(
+      "border-b py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-[28px] lg:last:border-r-0",
+    );
+
+    expect(
+      patchTailwindClasses(original, {
+        property: "padding-left",
+        value: "pl-[28px]",
+        targetVariants: ["lg"],
+        activeVariants: ["even"],
+      }),
+    ).toBe(
+      "border-b py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-0 lg:last:border-r-0 lg:pl-[28px]",
+    );
+  });
+
   it("inserts new token if property not present, without clobbering existing classes", () => {
     const original = "font-serif text-stone-900";
     const patched = patchTailwindClasses(original, {
@@ -216,14 +243,22 @@ describe("tailwind-token-engine", () => {
     );
   });
 
-  it("patches border and individual corner families independently", () => {
+  it("patches border sides and individual corner families independently", () => {
     const original =
-      "border border-solid border-stone-200 rounded-[8px] rounded-tl-[4px]";
+      "border border-t-[1px] border-r-2 border-solid border-stone-200 rounded-[8px] rounded-tl-[4px]";
     const width = patchTailwindClasses(original, {
       property: "border-width",
       value: "border-[3px]",
     });
-    const color = patchTailwindClasses(width, {
+    const topWidth = patchTailwindClasses(width, {
+      property: "border-width-top",
+      value: "border-t-[5px]",
+    });
+    const rightWidth = patchTailwindClasses(topWidth, {
+      property: "border-width-right",
+      value: "border-r-[6px]",
+    });
+    const color = patchTailwindClasses(rightWidth, {
       property: "border-color",
       value: "border-[#123456]",
     });
@@ -233,7 +268,7 @@ describe("tailwind-token-engine", () => {
     });
 
     expect(corner).toBe(
-      "border-[3px] border-solid border-[#123456] rounded-[8px] rounded-tl-[12px]",
+      "border-[3px] border-t-[5px] border-r-[6px] border-solid border-[#123456] rounded-[8px] rounded-tl-[12px]",
     );
   });
   it("patches min and max sizing families independently", () => {

@@ -9,6 +9,7 @@ const file = (path: string, content: string): StorefrontThemeFileDTO =>
 const selection = (
   overrides: Partial<EditorSelectionDescriptor> = {},
 ): EditorSelectionDescriptor => ({
+  sectionId: "section-1",
   kind: "component",
   componentType: "hero",
   tagName: "div",

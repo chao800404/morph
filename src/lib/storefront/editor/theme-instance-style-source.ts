@@ -186,6 +186,15 @@ function isInstanceLookup(argument: any): boolean {
   );
 }
 
+function isInstanceFallback(expression: any): boolean {
+  return Boolean(
+    expression?.type === "LogicalExpression" &&
+    expression.operator === "??" &&
+    isInstanceLookup(expression.left) &&
+    expression.right?.type === "StringLiteral",
+  );
+}
+
 function isStaticCnCall(call: any): boolean {
   return Boolean(
     call &&
@@ -209,6 +218,9 @@ function cnManagedArgument(
 
 function baseClasses(location: LocatedClassName): string {
   if (location.staticClassName !== null) return location.staticClassName;
+  if (isInstanceFallback(location.expression)) {
+    return location.expression.right.value;
+  }
   if (!location.cnCall) return "";
   return cnStringArguments(location.cnCall)
     .flatMap((argument) =>
@@ -258,45 +270,6 @@ function readMapEntry(
       candidate.value?.type === "StringLiteral",
   );
   return property?.value?.value ?? null;
-}
-
-function hasTopLevelCnBinding(ast: any): boolean {
-  return ast.program.body.some((node: any) => {
-    if (node.type === "ImportDeclaration") {
-      return node.specifiers?.some(
-        (specifier: any) => specifier.local?.name === "cn",
-      );
-    }
-    if (
-      (node.type === "FunctionDeclaration" ||
-        node.type === "ClassDeclaration") &&
-      node.id?.name === "cn"
-    ) {
-      return true;
-    }
-    if (node.type === "VariableDeclaration") {
-      return node.declarations?.some(
-        (declaration: any) => declaration.id?.name === "cn",
-      );
-    }
-    return false;
-  });
-}
-
-function ensureCnImport(sourceCode: string): string {
-  const ast = parseTsx(sourceCode);
-  if (hasTopLevelCnBinding(ast)) return sourceCode;
-  const imports = ast.program.body.filter(
-    (node: any) => node.type === "ImportDeclaration",
-  );
-  const insertAt = imports.at(-1)?.end ?? 0;
-  const statement = 'import { clsx as cn } from "clsx";';
-  if (insertAt === 0) return `${statement}\n\n${sourceCode}`;
-  return (
-    sourceCode.slice(0, insertAt) +
-    `\n${statement}` +
-    sourceCode.slice(insertAt)
-  );
 }
 
 function ensureInstanceClassMap(sourceCode: string): string {
@@ -399,26 +372,21 @@ function ensureLookupArgument(
     tick +
     "]";
 
-  if (location.cnCall) {
-    if (!isStaticCnCall(location.cnCall)) return null;
-    if (location.cnCall.arguments.some(isInstanceLookup)) return sourceCode;
-    const last = location.cnCall.arguments.at(-1);
-    const insertAt = last?.end ?? location.cnCall.end - 1;
-    return (
-      sourceCode.slice(0, insertAt) +
-      (last ? ", " : "") +
-      lookup +
-      sourceCode.slice(insertAt)
-    );
-  }
-  if (location.staticClassName !== null) {
+  if (isInstanceFallback(location.expression)) return sourceCode;
+
+  const fallback = JSON.stringify(baseClasses(location));
+  const expression = "{" + lookup + " ?? " + fallback + "}";
+
+  if (location.attribute?.value) {
+    if (
+      location.staticClassName === null &&
+      (!location.cnCall || !isStaticCnCall(location.cnCall))
+    ) {
+      return null;
+    }
     return (
       sourceCode.slice(0, location.attribute.value.start) +
-      "{cn(" +
-      JSON.stringify(location.staticClassName) +
-      ", " +
-      lookup +
-      ")}" +
+      expression +
       sourceCode.slice(location.attribute.value.end)
     );
   }
@@ -427,9 +395,8 @@ function ensureLookupArgument(
       location.opening.end - (location.opening.selfClosing ? 2 : 1);
     return (
       sourceCode.slice(0, insertAt) +
-      " className={cn(" +
-      lookup +
-      ")}" +
+      " className=" +
+      expression +
       sourceCode.slice(insertAt)
     );
   }
@@ -514,7 +481,8 @@ export function canPatchThemeInstanceStyleClasses(
       findRepeaterItemVariable(location.ast, location.opening) &&
       (!location.attribute ||
         location.staticClassName !== null ||
-        isStaticCnCall(location.cnCall)),
+        isStaticCnCall(location.cnCall) ||
+        isInstanceFallback(location.expression)),
     );
   } catch {
     return false;
@@ -550,7 +518,8 @@ export function readThemeElementBaseClasses(
     if (
       location.attribute &&
       location.staticClassName === null &&
-      (!location.cnCall || !isStaticCnCall(location.cnCall))
+      (!location.cnCall || !isStaticCnCall(location.cnCall)) &&
+      !isInstanceFallback(location.expression)
     ) {
       return null;
     }
@@ -595,7 +564,8 @@ export function patchThemeInstanceStyleClasses(
   if (
     location.attribute &&
     location.staticClassName === null &&
-    (!location.cnCall || !isStaticCnCall(location.cnCall))
+    (!location.cnCall || !isStaticCnCall(location.cnCall)) &&
+    !isInstanceFallback(location.expression)
   ) {
     return { editable: false, code: sourceCode, reason: "dynamic-classname" };
   }
@@ -623,7 +593,6 @@ export function patchThemeInstanceStyleClasses(
   if (legacyArgument && location.cnCall) {
     code = removeArgument(code, location.cnCall, legacyArgument);
   }
-  code = ensureCnImport(code);
   code = ensureInstanceClassMap(code);
   code = ensureRepeatedItemIdType(code);
   const withLookup = ensureLookupArgument(code, elementName);

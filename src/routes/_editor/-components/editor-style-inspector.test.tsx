@@ -22,6 +22,7 @@ const baseSection = (
 const selectionDescriptor = (
   overrides: Partial<EditorSelectionDescriptor>,
 ): EditorSelectionDescriptor => ({
+  sectionId: "section-1",
   kind: "custom",
   componentType: "test",
   tagName: null,
@@ -163,6 +164,116 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.getByDisplayValue("Heading")).toBeTruthy();
     expect(screen.queryByDisplayValue("Description")).toBeNull();
     expect(screen.queryByText("Action Button")).toBeNull();
+  });
+
+  it("shows and edits only the bound child fields when a parent component is selected", () => {
+    const onPreviewSelectionField = vi.fn();
+    const onPropsChange = vi.fn();
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", {
+          content: "01",
+          eyebrow: "New collection",
+          heading: "Heading",
+          description: "Description",
+          actionLabel: "Shop",
+          actionHref: "/shop",
+          imageSrc: "/image.png",
+          imageAlt: "Alt",
+        })}
+        selection={selectionDescriptor({
+          kind: "container",
+          tagName: "div",
+          nodeId: "hero-content",
+          elementKey: "content",
+          fieldKey: null,
+          fieldPath: null,
+          descendantFields: [
+            { fieldKey: "eyebrow", fieldPath: "eyebrow" },
+            { fieldKey: "heading", fieldPath: "heading" },
+            { fieldKey: "description", fieldPath: "description" },
+            { fieldKey: "actionLabel", fieldPath: "actionLabel" },
+          ],
+        })}
+        onPreviewSelectionField={onPreviewSelectionField}
+        onPropsChange={onPropsChange}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Content & Fields" }),
+    ).toBeTruthy();
+    expect(screen.getByDisplayValue("New collection")).toBeTruthy();
+    expect(screen.getByDisplayValue("Heading")).toBeTruthy();
+    expect(screen.getByDisplayValue("Description")).toBeTruthy();
+    expect(screen.getByText("Action Button")).toBeTruthy();
+    expect(screen.queryByDisplayValue("01")).toBeNull();
+    expect(screen.queryByText("Media Image")).toBeNull();
+
+    const heading = screen.getByPlaceholderText("Main headline...");
+    fireEvent.input(heading, { target: { value: "Updated heading" } });
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "heading",
+      "heading",
+      "Updated heading",
+    );
+    fireEvent.blur(heading);
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        heading: "Updated heading",
+        description: "Description",
+        imageSrc: "/image.png",
+      }),
+    );
+  });
+
+  it("keeps exact nested field paths when a repeated parent component is selected", () => {
+    const onPreviewSelectionField = vi.fn();
+    const onPropsChange = vi.fn();
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("principles", {
+          items: [
+            { title: "First title", body: "First body" },
+            { title: "Second title", body: "Second body" },
+          ],
+        })}
+        selection={selectionDescriptor({
+          kind: "component",
+          tagName: "article",
+          nodeId: "principle-card",
+          elementKey: "principle-item",
+          fieldKey: null,
+          fieldPath: "items.1",
+          descendantFields: [
+            { fieldKey: "title", fieldPath: "items.1.title" },
+            { fieldKey: "body", fieldPath: "items.1.body" },
+          ],
+        })}
+        onPreviewSelectionField={onPreviewSelectionField}
+        onPropsChange={onPropsChange}
+      />,
+    );
+
+    const title = screen.getByDisplayValue("Second title");
+    expect(screen.getByDisplayValue("Second body")).toBeTruthy();
+    expect(screen.queryByDisplayValue("First title")).toBeNull();
+
+    fireEvent.input(title, { target: { value: "Updated second title" } });
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "title",
+      "items.1.title",
+      "Updated second title",
+    );
+    fireEvent.blur(title);
+    expect(onPropsChange).toHaveBeenLastCalledWith({
+      items: [
+        { title: "First title", body: "First body" },
+        { title: "Updated second title", body: "Second body" },
+      ],
+    });
   });
 
   it("shows fill controls for text and commits text color only after editing finishes", () => {
@@ -922,14 +1033,18 @@ describe("EditorStyleInspector selection content", () => {
       }),
     );
     expect(
-      (screen.getByRole("spinbutton", {
-        name: "Top margin",
-      }) as HTMLInputElement).value,
+      (
+        screen.getByRole("spinbutton", {
+          name: "Top margin",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("24");
     expect(
-      (screen.getByRole("spinbutton", {
-        name: "Bottom margin",
-      }) as HTMLInputElement).value,
+      (
+        screen.getByRole("spinbutton", {
+          name: "Bottom margin",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("0");
   });
 
@@ -1002,6 +1117,85 @@ describe("EditorStyleInspector selection content", () => {
     expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(1);
   });
 
+  it("updates the matched first-child padding variant for a repeated card", () => {
+    const classes =
+      "border-b py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-0 lg:last:border-r-0";
+    const onPreviewSelectionStyle = vi.fn();
+    const onUpdateThemeFileStyle = vi.fn(
+      (
+        _filePath: string,
+        _elementName: string,
+        _updater: (previous: string) => string,
+      ) => 2,
+    );
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("principles", {
+          items: [
+            { title: "First", body: "First body" },
+            { title: "Second", body: "Second body" },
+          ],
+        })}
+        themeFiles={[
+          {
+            id: "file-principles",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: "src/components/Principles.tsx",
+            content:
+              'export function Principles({ items }) { return <section data-morph-node="section">{items.map((item) => <article data-morph-node="principle-card" className="' +
+              classes +
+              '">{item.title}</article>)}</section>; }',
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "component",
+          tagName: "article",
+          nodeId: "principle-card",
+          sourceFilePath: "src/components/Principles.tsx",
+          elementKey: "card",
+          fieldKey: "title",
+          fieldPath: "items.0.title",
+          className: classes,
+          computed: {
+            paddingTop: "32px",
+            paddingBottom: "32px",
+            paddingLeft: "0px",
+            paddingRight: "32px",
+          },
+        })}
+        activeViewport="desktop"
+        onPreviewSelectionStyle={onPreviewSelectionStyle}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Expand individual padding sides",
+      }),
+    );
+    const left = screen.getByRole("spinbutton", { name: "Left padding" });
+    fireEvent.focus(left);
+    fireEvent.change(left, { target: { value: "28" } });
+    fireEvent.blur(left);
+
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { "padding-left": "28px" },
+      "principle-card",
+    );
+    expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(1);
+    expect(onUpdateThemeFileStyle.mock.calls[0]?.[2]?.(classes)).toBe(
+      "border-b py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-[28px] lg:last:border-r-0",
+    );
+  });
+
   it("places Tailwind classes before content and keeps them collapsed initially", () => {
     render(
       <EditorStyleInspector
@@ -1043,7 +1237,7 @@ describe("EditorStyleInspector selection content", () => {
     ).toBeTruthy();
   });
 
-  it("edits border controls and expands independent corner radii", () => {
+  it("edits overall and per-side border widths and expands independent corner radii", () => {
     const onPreviewSelectionStyle = vi.fn();
     const onUpdateThemeFileStyle = vi.fn(
       (
@@ -1053,7 +1247,7 @@ describe("EditorStyleInspector selection content", () => {
       ) => 6,
     );
     const sourceClasses =
-      "border-[2px] border-dashed border-[#d8d0c3] rounded-[8px] rounded-tl-[4px]";
+      "border-[2px] border-t-[1px] border-dashed border-[#d8d0c3] rounded-[8px] rounded-tl-[4px]";
     render(
       <EditorStyleInspector
         {...common}
@@ -1077,7 +1271,10 @@ describe("EditorStyleInspector selection content", () => {
           tagName: "section",
           isSection: true,
           sectionComputed: {
-            borderTopWidth: "2px",
+            borderTopWidth: "1px",
+            borderBottomWidth: "2px",
+            borderLeftWidth: "2px",
+            borderRightWidth: "2px",
             borderTopStyle: "dashed",
             borderTopColor: "rgb(216, 208, 195)",
             borderRadius: "8px",
@@ -1103,6 +1300,48 @@ describe("EditorStyleInspector selection content", () => {
     }) as HTMLInputElement;
     expect(borderColor.value).toBe("#d8d0c3");
 
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Expand individual border sides",
+      }),
+    );
+    const topBorderWidth = screen.getByRole("spinbutton", {
+      name: "Top border width",
+    }) as HTMLInputElement;
+    expect(topBorderWidth.value).toBe("1");
+    expect(
+      (
+        screen.getByRole("spinbutton", {
+          name: "Bottom border width",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("2");
+    expect(
+      (
+        screen.getByRole("spinbutton", {
+          name: "Left border width",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("2");
+    expect(
+      (
+        screen.getByRole("spinbutton", {
+          name: "Right border width",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("2");
+
+    fireEvent.focus(topBorderWidth);
+    fireEvent.change(topBorderWidth, { target: { value: "5" } });
+    expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
+      { "border-top-width": "5px" },
+      "section",
+    );
+    fireEvent.blur(topBorderWidth);
+    const topWidthUpdater = onUpdateThemeFileStyle.mock.calls.at(-1)?.[2];
+    expect(topWidthUpdater?.(sourceClasses)).toContain("border-t-[5px]");
+    onUpdateThemeFileStyle.mockClear();
+
     fireEvent.input(borderColor, { target: { value: "#292524" } });
     expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
       { "border-color": "#292524" },
@@ -1117,13 +1356,20 @@ describe("EditorStyleInspector selection content", () => {
     fireEvent.focus(borderWidth);
     fireEvent.change(borderWidth, { target: { value: "3" } });
     expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
-      { "border-width": "3px" },
+      {
+        "border-top-width": "3px",
+        "border-bottom-width": "3px",
+        "border-left-width": "3px",
+        "border-right-width": "3px",
+      },
       "section",
     );
     expect(onUpdateThemeFileStyle).not.toHaveBeenCalled();
     fireEvent.blur(borderWidth);
     const widthUpdater = onUpdateThemeFileStyle.mock.calls.at(-1)?.[2];
-    expect(widthUpdater?.(sourceClasses)).toContain("border-[3px]");
+    const updatedWidthClasses = widthUpdater?.(sourceClasses);
+    expect(updatedWidthClasses).toContain("border-[3px]");
+    expect(updatedWidthClasses).not.toContain("border-t-[1px]");
 
     fireEvent.click(
       screen.getByRole("button", {

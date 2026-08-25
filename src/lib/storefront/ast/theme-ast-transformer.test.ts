@@ -209,6 +209,36 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(parsed.elements.title?.classNameOffsets?.isExpression).toBe(true);
   });
 
+  it("reads authoritative instance fallbacks as Tailwind classes without exposing the JSX expression", () => {
+    const source = `
+      const morphInstanceClasses: Record<string, string> = {
+        "card-2:number": "text-sm text-red-500",
+      };
+      export default function Cards({ items = [] }) {
+        return items.map((item) => (
+          <span
+            data-morph-node="principle-number"
+            className={morphInstanceClasses[\`\${item.id}:number\`] ?? "text-xs text-stone-400 lg:w-[1px]"}
+          >{item.number}</span>
+        ));
+      }
+    `;
+    const parsed = parseComponentSource(source);
+
+    expect(parsed.elements["principle-number"]?.className).toBe(
+      "text-xs text-stone-400 lg:w-[1px]",
+    );
+    expect(parsed.elements["principle-number"]?.className).not.toContain(
+      "morphInstanceClasses",
+    );
+    expect(
+      parsed.elements["principle-number"]?.classNameOffsets?.isExpression,
+    ).toBe(true);
+    expect(parsed.instanceClasses["card-2:number"]).toBe(
+      "text-sm text-red-500",
+    );
+  });
+
   it("patches self-closing JSX elements without existing className without breaking syntax", () => {
     const selfClosingCode = `
       export default function ImageHero() {

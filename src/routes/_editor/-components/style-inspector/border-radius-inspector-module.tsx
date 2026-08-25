@@ -17,11 +17,13 @@ export type BorderRadiusCorner =
   | "bottomRight"
   | "bottomLeft";
 
+export type BorderWidthSide = "all" | "top" | "bottom" | "left" | "right";
+
 type BorderRadiusInspectorModuleProps = {
   expanded: boolean;
   onToggle: () => void;
   disabled: boolean;
-  borderWidth: InspectorLengthValue;
+  borderWidth: Record<BorderWidthSide, InspectorLengthValue>;
   borderStyle: string;
   borderColor: string;
   radius: Record<BorderRadiusCorner, InspectorLengthValue>;
@@ -30,8 +32,16 @@ type BorderRadiusInspectorModuleProps = {
     value: string;
     preview: string;
   }[];
-  onBorderWidthPreview: (cssValue: string, numericValue: number | null) => void;
-  onBorderWidthCommit: (cssValue: string, numericValue: number | null) => void;
+  onBorderWidthPreview: (
+    side: BorderWidthSide,
+    cssValue: string,
+    numericValue: number | null,
+  ) => void;
+  onBorderWidthCommit: (
+    side: BorderWidthSide,
+    cssValue: string,
+    numericValue: number | null,
+  ) => void;
   onBorderStyleChange: (value: string) => void;
   onBorderColorPreview: (value: string) => void;
   onBorderColorCommit: (value: string) => void;
@@ -66,6 +76,7 @@ export function BorderRadiusInspectorModule({
   onRadiusPreview,
   onRadiusCommit,
 }: BorderRadiusInspectorModuleProps) {
+  const [borderWidthExpanded, setBorderWidthExpanded] = useState(false);
   const [radiusExpanded, setRadiusExpanded] = useState(false);
 
   return (
@@ -76,25 +87,64 @@ export function BorderRadiusInspectorModule({
       onToggle={onToggle}
     >
       <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-2">
-          <InspectorLengthControl
-            label="Border"
-            ariaLabel="Border width"
-            value={borderWidth}
-            allowedUnits={["px", "rem", "em"]}
-            disabled={disabled}
-            onPreview={onBorderWidthPreview}
-            onCommit={onBorderWidthCommit}
-          />
-          <InspectorSelectControl
-            label="Style"
-            ariaLabel="Border style"
-            value={borderStyle}
-            options={["solid", "dashed", "dotted", "double", "none"]}
-            disabled={disabled}
-            onValueChange={onBorderStyleChange}
-          />
-        </div>
+        <InspectorDisclosureField
+          id="border-width-side-controls"
+          expanded={borderWidthExpanded}
+          onExpandedChange={setBorderWidthExpanded}
+          expandLabel="Expand individual border sides"
+          collapseLabel="Collapse individual border sides"
+          field={
+            <InspectorLengthControl
+              label="Border"
+              ariaLabel="Border width"
+              value={borderWidth.all}
+              allowedUnits={["px", "rem", "em"]}
+              disabled={disabled}
+              onPreview={(cssValue, numericValue) =>
+                onBorderWidthPreview("all", cssValue, numericValue)
+              }
+              onCommit={(cssValue, numericValue) =>
+                onBorderWidthCommit("all", cssValue, numericValue)
+              }
+              className="flex-1"
+            />
+          }
+        >
+          <div className="grid grid-cols-2 gap-2">
+            {(
+              [
+                ["T", "Top border width", "top"],
+                ["B", "Bottom border width", "bottom"],
+                ["L", "Left border width", "left"],
+                ["R", "Right border width", "right"],
+              ] as const
+            ).map(([label, ariaLabel, side]) => (
+              <InspectorLengthControl
+                key={side}
+                label={label}
+                ariaLabel={ariaLabel}
+                value={borderWidth[side]}
+                allowedUnits={["px", "rem", "em"]}
+                disabled={disabled}
+                onPreview={(cssValue, numericValue) =>
+                  onBorderWidthPreview(side, cssValue, numericValue)
+                }
+                onCommit={(cssValue, numericValue) =>
+                  onBorderWidthCommit(side, cssValue, numericValue)
+                }
+              />
+            ))}
+          </div>
+        </InspectorDisclosureField>
+
+        <InspectorSelectControl
+          label="Style"
+          ariaLabel="Border style"
+          value={borderStyle}
+          options={["solid", "dashed", "dotted", "double", "none"]}
+          disabled={disabled}
+          onValueChange={onBorderStyleChange}
+        />
 
         <InspectorColorField
           label="Color"

@@ -108,6 +108,109 @@ describe("preview protocol", () => {
     ).toBeNull();
   });
 
+  it("accepts a bounded editable structure and rejects ambiguous parent links", () => {
+    const nodes = [
+      {
+        id: "hero:node:content",
+        parentId: null,
+        sectionId: "hero",
+        label: "Content",
+        kind: "container",
+        tagName: "div",
+        target: {
+          sectionId: "hero",
+          nodeId: "content",
+          isSection: false,
+        },
+      },
+      {
+        id: "hero:node:heading",
+        parentId: "hero:node:content",
+        sectionId: "hero",
+        label: "Heading",
+        kind: "heading",
+        tagName: "h1",
+        target: {
+          sectionId: "hero",
+          nodeId: "heading",
+          fieldPath: "heading",
+          isSection: false,
+        },
+      },
+    ] as const;
+
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-request-structure",
+      }),
+    ).toEqual({ type: "morph:storefront-preview-request-structure" });
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes,
+      }),
+    ).toEqual({ type: "morph:storefront-preview-structure", nodes });
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: [nodes[0], { ...nodes[1], parentId: "missing-parent" }],
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: [
+          { ...nodes[0], parentId: nodes[1].id },
+          { ...nodes[1], parentId: nodes[0].id },
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: [
+          {
+            ...nodes[0],
+            target: { sectionId: "hero", isSection: true },
+          },
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: Array.from({ length: 501 }, (_, index) => ({
+          ...nodes[0],
+          id: `node-${index}`,
+        })),
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: [{ ...nodes[0], tagName: "DIV onclick=alert(1)" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts only supported spacing overlay modes", () => {
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-set-spacing-overlay",
+        mode: "selected",
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-set-spacing-overlay",
+      mode: "selected",
+    });
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-set-spacing-overlay",
+        mode: "everything",
+      }),
+    ).toBeNull();
+  });
+
   it("rejects malformed or unbounded editor messages", () => {
     expect(
       parseEditorToPreviewMessage({
@@ -137,6 +240,7 @@ describe("preview protocol", () => {
       fieldKey: "heading",
       field: "heading",
       fieldPath: "heading",
+      descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       tagName: "h1",
       role: null,
       inputType: null,
@@ -151,6 +255,7 @@ describe("preview protocol", () => {
     expect(parsePreviewToEditorMessage(selection)).toMatchObject({
       kind: "text",
       styleRevision: 3,
+      descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
     });
     expect(
       parsePreviewToEditorMessage({
@@ -162,6 +267,21 @@ describe("preview protocol", () => {
       parsePreviewToEditorMessage({
         ...selection,
         computedStyle: { ...styleSnapshot, marginTop: undefined },
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...selection,
+        descendantFields: [{ fieldKey: "heading", fieldPath: 12 }],
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...selection,
+        descendantFields: Array.from({ length: 101 }, (_, index) => ({
+          fieldKey: `field-${index}`,
+          fieldPath: `field-${index}`,
+        })),
       }),
     ).toBeNull();
   });

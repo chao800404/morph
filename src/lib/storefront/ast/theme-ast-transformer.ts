@@ -76,6 +76,22 @@ function readStaticCnClassName(expression: any): string | null {
     .join(" ");
 }
 
+function readStaticClassNameExpression(expression: any): string | null {
+  const cnClassName = readStaticCnClassName(expression);
+  if (cnClassName !== null) return cnClassName;
+
+  if (
+    expression?.type === "LogicalExpression" &&
+    expression.operator === "??" &&
+    isMorphInstanceClassLookup(expression.left) &&
+    expression.right?.type === "StringLiteral"
+  ) {
+    return expression.right.value;
+  }
+
+  return null;
+}
+
 /**
  * Resolves actual component file path from section type and optional componentRef
  * using morph.theme.json manifest or convention-based verification against existing workspace files.
@@ -357,7 +373,7 @@ export function parseComponentSource(
                 };
               } else if (attr.value.type === "JSXExpressionContainer") {
                 className =
-                  readStaticCnClassName(attr.value.expression) ??
+                  readStaticClassNameExpression(attr.value.expression) ??
                   sourceCode.slice(attr.value.start, attr.value.end);
                 classNameOffsets = {
                   start: attr.value.start,

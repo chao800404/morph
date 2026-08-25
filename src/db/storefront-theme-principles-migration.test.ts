@@ -114,12 +114,12 @@ describe("starter Principles source migration", () => {
       () => "text-5xl",
     );
     expect(upgraded.editable).toBe(true);
-    expect(upgraded.code).toContain('import { clsx as cn } from "clsx";');
+    expect(upgraded.code).not.toContain('import { clsx as cn } from "clsx";');
     expect(upgraded.code).toContain(
       '"principle-thoughtful-sourcing:principle-title": "text-5xl"',
     );
     expect(upgraded.code).toContain(
-      "morphInstanceClasses[`${item.id}:principle-title`]",
+      'className={morphInstanceClasses[`${item.id}:principle-title`] ?? "mt-12 font-serif text-3xl tracking-tight text-stone-950"}',
     );
     expect(upgraded.code).not.toContain("data-storefront-field-path=");
 

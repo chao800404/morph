@@ -47,7 +47,9 @@ describe("theme instance style source", () => {
       () => "mt-12 font-serif text-4xl text-blue-500 lg:text-[54px]",
     );
     expect(first.editable).toBe(true);
-    expect(first.code).toContain("className={cn(");
+    expect(first.code).toContain(
+      'className={morphInstanceClasses[`${item.id}:principle-title`] ?? "mt-12 font-serif text-3xl text-stone-950"}',
+    );
     expect(first.code).toContain(
       '"principle-thoughtful-sourcing:principle-title": "mt-12 font-serif text-4xl text-blue-500 lg:text-[54px]"',
     );
@@ -106,9 +108,8 @@ describe("theme instance style source", () => {
       () => "p-8 text-lg",
     );
     expect(result.editable).toBe(true);
-    expect(result.code.match(/clsx as cn/g)).toHaveLength(1);
     expect(result.code).toContain(
-      'className={cn("p-4 text-sm", morphInstanceClasses[\`\${entry.id}:card\`])}',
+      'className={morphInstanceClasses[`${entry.id}:card`] ?? "p-4 text-sm"}',
     );
     expect(result.code).toContain("id?: string;");
   });
@@ -141,6 +142,80 @@ describe("theme instance style source", () => {
         "principle-title",
       ),
     ).toBe("text-6xl");
+  });
+
+  it("treats the scoped class snapshot as authoritative so removed base utilities do not remain active", () => {
+    const cardSource = [
+      "type CardItem = { id?: string; title?: string };",
+      "export default function Cards({ items = [] }: { items?: CardItem[] }) {",
+      "  return <>{items.map((item) => (",
+      '    <article data-morph-node="card" className="py-8 lg:px-8 lg:first:pl-0">{item.title}</article>',
+      "  ))}</>;",
+      "}",
+    ].join("\n");
+    const result = patchThemeInstanceStyleClasses(
+      cardSource,
+      {
+        sectionId: "section-1",
+        fieldPath: "items.0.title",
+        itemId: "card-first",
+      },
+      "card",
+      () => "lg:p-[28px]",
+    );
+
+    expect(result.editable).toBe(true);
+    expect(result.code).toContain(
+      '"card-first:card": "lg:p-[28px]"',
+    );
+    expect(result.code).toContain(
+      'className={morphInstanceClasses[`${item.id}:card`] ?? "py-8 lg:px-8 lg:first:pl-0"}',
+    );
+    expect(
+      readThemeInstanceStyleClasses(
+        result.code,
+        {
+          sectionId: "section-1",
+          fieldPath: "items.0.title",
+          itemId: "card-first",
+        },
+        "card",
+      ),
+    ).toBe("lg:p-[28px]");
+    expect(readThemeElementBaseClasses(result.code, "card")).toBe(
+      "py-8 lg:px-8 lg:first:pl-0",
+    );
+  });
+
+  it("migrates an existing additive instance lookup to authoritative fallback semantics on the next edit", () => {
+    const existingSource = [
+      'import { clsx as cn } from "clsx";',
+      'const morphInstanceClasses: Record<string, string> = { "card-first:card": "lg:px-8" };',
+      "type CardItem = { id?: string; title?: string };",
+      "export default function Cards({ items = [] }: { items?: CardItem[] }) {",
+      "  return <>{items.map((item) => (",
+      '    <article data-morph-node="card" className={cn("py-8 lg:px-8", morphInstanceClasses[`${item.id}:card`])}>{item.title}</article>',
+      "  ))}</>;",
+      "}",
+    ].join("\n");
+    const result = patchThemeInstanceStyleClasses(
+      existingSource,
+      {
+        sectionId: "section-1",
+        fieldPath: "items.0.title",
+        itemId: "card-first",
+      },
+      "card",
+      () => "lg:p-[28px]",
+    );
+
+    expect(result.editable).toBe(true);
+    expect(result.code).toContain(
+      'className={morphInstanceClasses[`${item.id}:card`] ?? "py-8 lg:px-8"}',
+    );
+    expect(result.code).toContain(
+      '"card-first:card": "lg:p-[28px]"',
+    );
   });
 
   it("rejects unsupported dynamic className expressions", () => {
