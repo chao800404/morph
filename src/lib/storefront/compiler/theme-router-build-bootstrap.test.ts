@@ -75,3 +75,45 @@ describe("Theme router build bootstrap", () => {
     );
   });
 });
+
+describe("preview router history", () => {
+  const bootstrap = () =>
+    createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({
+            entry: "src/routes/index.tsx",
+            router: { framework: "tanstack-start" },
+          }),
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+      ],
+    });
+
+  it("resolves Theme routes from the site root, not the preview URL", () => {
+    // The preview iframe loads /preview-build/<buildId>/<token>/, so browser
+    // history would hand that path to the router and every Theme route would
+    // miss — the page renders the root layout wrapped around "Not Found".
+    const { content } = bootstrap();
+    expect(content).toContain("createMemoryHistory");
+    expect(content).toContain('initialEntries: ["/"]');
+  });
+
+  it("does not fall back to browser history for the preview bundle", () => {
+    // A basepath cannot work either: the capability token changes per session
+    // while the built bundle is immutable.
+    const { content } = bootstrap();
+    expect(content).not.toContain("createBrowserHistory");
+    expect(content).not.toMatch(/basepath\s*:/);
+  });
+});

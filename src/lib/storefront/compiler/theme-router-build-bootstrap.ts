@@ -161,13 +161,25 @@ if (container) {
     content: `
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { RouterProvider, createRouter } from "@tanstack/react-router";
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRouter,
+} from "@tanstack/react-router";
 ${cssImports}
 ${routeImports}
 
 ${updatedRoutes}
 const routeTree = rootRouteImport.addChildren([${children}]);
-const router = createRouter({ routeTree });
+// The preview is served from a capability-scoped URL
+// (/preview-build/<buildId>/<token>/...), so browser history would ask the
+// router to match that path and every Theme route would miss. The token also
+// changes per session while this bundle is immutable, which rules out a
+// basepath. Memory history lets the Theme resolve its own routes from "/".
+const router = createRouter({
+  routeTree,
+  history: createMemoryHistory({ initialEntries: ["/"] }),
+});
 const container = document.getElementById("root");
 if (container) {
   createRoot(container).render(React.createElement(RouterProvider, { router }));

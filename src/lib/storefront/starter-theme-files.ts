@@ -546,19 +546,27 @@ export function createStarterThemeWorkspaceUpgrade(
             packageChanged = true;
           }
 
-          for (const dependency of Object.keys(
+          // Platform-owned toolchain versions are corrected, not merely added.
+          // The build container ships one pinned version of each, so a Theme
+          // cannot run against a different one — and the build contract
+          // validates them by exact equality. Skipping an entry that is present
+          // but wrong (for example `react: "^19.0.0"` from an older starter)
+          // leaves the workspace permanently unbuildable with no way to
+          // recover through the upgrade path.
+          for (const [dependency, version] of Object.entries(
             THEME_START_RUNTIME_DEPENDENCIES,
           )) {
-            if (existingDependencies[dependency] !== undefined) continue;
-            existingDependencies[dependency] = targetDependencies[dependency];
+            const resolved = targetDependencies[dependency] ?? version;
+            if (existingDependencies[dependency] === resolved) continue;
+            existingDependencies[dependency] = resolved;
             packageChanged = true;
           }
-          for (const dependency of Object.keys(
+          for (const [dependency, version] of Object.entries(
             THEME_START_BUILD_DEPENDENCIES,
           )) {
-            if (existingDevDependencies[dependency] !== undefined) continue;
-            existingDevDependencies[dependency] =
-              targetDevDependencies[dependency];
+            const resolved = targetDevDependencies[dependency] ?? version;
+            if (existingDevDependencies[dependency] === resolved) continue;
+            existingDevDependencies[dependency] = resolved;
             packageChanged = true;
           }
 

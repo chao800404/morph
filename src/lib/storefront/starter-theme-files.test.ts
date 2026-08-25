@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseComponentSource } from "./ast/theme-ast-transformer";
+import { validateThemeStartPackageContract } from "./compiler/theme-start-toolchain";
 import {
   createStarterThemeWorkspaceUpgrade,
   createStarterThemeWorkspaceUpgradePlan,
@@ -397,5 +398,95 @@ describe("starter Principles theme source", () => {
         content: STARTER_THEME_HOME_ROUTE_SOURCE,
       }),
     );
+  });
+});
+
+describe("platform toolchain version correction", () => {
+  it("corrects a platform dependency that exists with an unsupported version", () => {
+    // A theme created by an older starter carries `^19.0.0`, which the Start
+    // package contract rejects by exact equality. Leaving it in place would
+    // make the workspace permanently unbuildable.
+    const upgrades = createStarterThemeWorkspaceUpgrade([
+      {
+        id: "manifest",
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          name: "Dawn Starter",
+          entry: "src/routes/index.tsx",
+          router: { framework: "tanstack-start" },
+          components: {},
+        }),
+        version: 1,
+      },
+      {
+        id: "package",
+        path: "package.json",
+        content: JSON.stringify({
+          name: "morph-storefront-theme",
+          dependencies: {
+            react: "^19.0.0",
+            "react-dom": "^19.0.0",
+            clsx: "customer-version",
+            "@tanstack/react-router": "1.170.18",
+            "@tanstack/react-start": "1.168.32",
+          },
+          devDependencies: {
+            vite: "7.0.0",
+            tailwindcss: "4.1.17",
+          },
+        }),
+        version: 1,
+      },
+    ] as never);
+
+    const packageUpgrade = upgrades.find(
+      (upgrade) => upgrade.path === "package.json",
+    );
+    expect(packageUpgrade).toBeDefined();
+
+    const upgraded = JSON.parse(packageUpgrade!.content) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+
+    expect(upgraded.dependencies.react).toBe("19.2.1");
+    expect(upgraded.dependencies["react-dom"]).toBe("19.2.1");
+    expect(upgraded.devDependencies.vite).toBe("7.2.7");
+    // Dependencies the platform does not own keep the customer's choice.
+    expect(upgraded.dependencies.clsx).toBe("customer-version");
+  });
+
+  it("produces a package.json that satisfies the Start package contract", () => {
+    const upgrades = createStarterThemeWorkspaceUpgrade([
+      {
+        id: "manifest",
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          name: "Dawn Starter",
+          entry: "src/routes/index.tsx",
+          router: { framework: "tanstack-start" },
+          components: {},
+        }),
+        version: 1,
+      },
+      {
+        id: "package",
+        path: "package.json",
+        content: JSON.stringify({
+          dependencies: { react: "^19.0.0", "react-dom": "^19.0.0" },
+          devDependencies: {},
+        }),
+        version: 1,
+      },
+    ] as never);
+
+    const packageUpgrade = upgrades.find(
+      (upgrade) => upgrade.path === "package.json",
+    )!;
+    expect(
+      validateThemeStartPackageContract([
+        { path: "package.json", content: packageUpgrade.content },
+      ]),
+    ).toEqual([]);
   });
 });

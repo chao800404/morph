@@ -228,8 +228,24 @@ export async function serveThemeArtifact(
     canonicalPath = defaultEntry;
   }
 
-  const manifestFile: CanonicalThemeBuildManifestFile | undefined =
+  let manifestFile: CanonicalThemeBuildManifestFile | undefined =
     manifest.files.find((f) => f.path === canonicalPath);
+
+  // Resources referenced relatively by the entry document resolve against the
+  // entry's directory, not the artifact root. When the entry lives in a
+  // subdirectory (`preview/index.html`), the browser asks for
+  // `assets/app.js` while the artifact stores `preview/assets/app.js`.
+  // The retry is still bounded by the manifest, so nothing outside the build
+  // becomes reachable.
+  if (!manifestFile && defaultEntry.includes("/")) {
+    const entryDirectory = defaultEntry.slice(0, defaultEntry.lastIndexOf("/"));
+    const scopedPath = `${entryDirectory}/${canonicalPath}`;
+    const scopedFile = manifest.files.find((f) => f.path === scopedPath);
+    if (scopedFile) {
+      canonicalPath = scopedPath;
+      manifestFile = scopedFile;
+    }
+  }
 
   if (!manifestFile) {
     return {
