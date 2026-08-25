@@ -12,6 +12,8 @@ import type {
   ThemeBuildRunnerLog,
   ThemeBuildRunnerResult,
 } from "./theme-build-runner.types";
+import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
+import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 
 export type CloudflareSandboxExecResult = {
   exitCode?: number;
@@ -157,6 +159,10 @@ export const PINNED_SANDBOX_DEPENDENCIES: Record<string, string> = {
   "@tailwindcss/vite": "4.1.17",
   "@vitejs/plugin-react": "5.2.0",
   "vite": "7.2.7",
+  "@tanstack/react-router": "1.170.18",
+  "@tanstack/react-start": "1.168.32",
+  "@tanstack/router-plugin": "1.168.23",
+  "@cloudflare/vite-plugin": "1.50.0",
 };
 
 /**
@@ -297,6 +303,20 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
           durationMs: Date.now() - startTime,
         };
       }
+      if (isPlatformOwnedThemeBuildPath(normalized)) {
+        const msg = `RESERVED_THEME_BUILD_PATH: Theme source cannot replace platform-owned build file "${file.path}"`;
+        addLog("error", msg);
+        return {
+          success: false,
+          errorMessage: msg,
+          diagnosticsJson: {
+            stage: "security-containment",
+            errors: [{ severity: "error", message: msg }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
       if (normalized.startsWith("../") || normalized.includes("/../") || normalized.startsWith("/")) {
         const msg = `WORKSPACE_PATH_ESCAPE: File path "${file.path}" escapes sandbox workspace root`;
         addLog("error", msg);
@@ -349,6 +369,9 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       // Write virtual files into container workspace
       let hasCustomIndexHtml = false;
       const cssFiles: string[] = [];
+      let routeRegistry: ReturnType<
+        typeof createThemeBuildBootstrap
+      >["routeRegistry"] = null;
 
       for (const file of input.files) {
         const fullPath = `${workspaceRoot}/${file.path.replace(/\\/g, "/")}`;
@@ -366,27 +389,49 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         }
       }
 
+      const bootstrap = createThemeBuildBootstrap({
+        files: input.files,
+        entry: input.entry,
+        cssFiles,
+      });
+      routeRegistry = bootstrap.routeRegistry;
+      if (hasCustomIndexHtml && routeRegistry) {
+        throw new Error(
+          "CUSTOM_INDEX_HTML_UNSUPPORTED: TanStack Start Theme routes use the platform-owned preview document.",
+        );
+      }
+
+      if (routeRegistry) {
+        const routerFile = input.files.find(
+          (file) => file.path.replace(/\\/g, "/") === "src/router.tsx",
+        );
+        if (!routerFile) {
+          throw new Error(
+            "MISSING_START_ROUTER: TanStack Start Theme requires src/router.tsx exporting getRouter().",
+          );
+        }
+        await sandbox.writeFile(
+          `${workspaceRoot}/wrangler.json`,
+          JSON.stringify(
+            {
+              name: `morph-theme-${input.buildId}`
+                .toLowerCase()
+                .replace(/[^a-z0-9-]/g, "-")
+                .slice(0, 63),
+              compatibility_date: "2025-09-02",
+              compatibility_flags: ["nodejs_compat"],
+              main: "@tanstack/react-start/server-entry",
+            },
+            null,
+            2,
+          ),
+        );
+      }
+
       // Generate bootstrap entry and index.html if needed
       if (!hasCustomIndexHtml) {
         const bootstrapPath = `${workspaceRoot}/__entry.tsx`;
-        const cssImports = cssFiles
-          .map((css) => `import "./${css.replace(/\\/g, "/")}";`)
-          .join("\n");
-
-        const normalizedEntry = input.entry.replace(/\\/g, "/");
-        const bootstrapContent = `
-import React from "react";
-import { createRoot } from "react-dom/client";
-${cssImports}
-import EntryComponent from "./${normalizedEntry}";
-
-const container = document.getElementById("root");
-if (container) {
-  const root = createRoot(container);
-  root.render(React.createElement(EntryComponent));
-}
-`;
-        await sandbox.writeFile(bootstrapPath, bootstrapContent);
+        await sandbox.writeFile(bootstrapPath, bootstrap.content);
 
         const indexPath = `${workspaceRoot}/index.html`;
         const indexHtml = `<!DOCTYPE html>
@@ -429,10 +474,15 @@ if (container) {
       const viteConfigContent = `
 import path from "node:path";
 import { defineConfig } from "vite";
+import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
+import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 
 const approvedSet = new Set(${approvedArrayJson});
+const hasStartRuntime = ${routeRegistry ? "true" : "false"};
+const isStartRuntimeBuild =
+  hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
 
 const dependencyEnforcerPlugin = {
   name: "morph-dependency-enforcer",
@@ -460,7 +510,7 @@ const dependencyEnforcerPlugin = {
       }
 
       const rel = path.relative("/workspace", resolved);
-      const normalizedResolved = resolved.replace(/\\/g, "/");
+      const normalizedResolved = resolved.replace(/\\\\/g, "/");
 
       if (rel.startsWith("..") || !normalizedResolved.startsWith("/workspace")) {
         throw new Error(
@@ -469,6 +519,12 @@ const dependencyEnforcerPlugin = {
       }
 
       if (normalizedResolved.includes("/node_modules")) {
+        const normalizedImporter = typeof importer === "string"
+          ? importer.replace(/\\\\/g, "/")
+          : "";
+        if (!normalizedImporter.startsWith("/workspace")) {
+          return null;
+        }
         throw new Error(
           'UNAPPROVED_DEPENDENCY_PATH: Direct filesystem imports from node_modules are forbidden in theme source files. Use approved bare module specifiers instead (attempted: "' + source + '").'
         );
@@ -480,6 +536,23 @@ const dependencyEnforcerPlugin = {
 
     if (typeof source === "string" && source.startsWith("\\0")) {
       return null;
+    }
+
+    if (
+      typeof source === "string" &&
+      (source.startsWith("virtual:") || source.startsWith("cloudflare:"))
+    ) {
+      const normalizedImporter = typeof importer === "string"
+        ? importer.replace(/\\\\/g, "/")
+        : "";
+      if (
+        !normalizedImporter ||
+        normalizedImporter.startsWith("\\0") ||
+        normalizedImporter.includes("/node_modules/") ||
+        normalizedImporter.startsWith("virtual:")
+      ) {
+        return null;
+      }
     }
 
     const basePkg = source.startsWith("@")
@@ -497,10 +570,22 @@ const dependencyEnforcerPlugin = {
 
 export default defineConfig({
   root: "${workspaceRoot}",
-  base: "./",
-  plugins: [tailwindcss(), viteReact(), dependencyEnforcerPlugin],
+  base: isStartRuntimeBuild ? "/" : "./",
+  plugins: isStartRuntimeBuild
+    ? [
+        cloudflare({ viteEnvironment: { name: "ssr" } }),
+        tailwindcss(),
+        tanstackStart(),
+        viteReact(),
+        dependencyEnforcerPlugin,
+      ]
+    : [tailwindcss(), viteReact(), dependencyEnforcerPlugin],
   build: {
-    outDir: "${workspaceRoot}/dist",
+    outDir: isStartRuntimeBuild
+      ? "${workspaceRoot}/dist/runtime"
+      : hasStartRuntime
+        ? "${workspaceRoot}/dist/preview"
+        : "${workspaceRoot}/dist",
     emptyOutDir: true,
     minify: true,
     cssMinify: true,
@@ -510,6 +595,43 @@ export default defineConfig({
 
 `;
       await sandbox.writeFile(`${workspaceRoot}/vite.config.ts`, viteConfigContent);
+
+      if (routeRegistry) {
+        addLog(
+          "info",
+          "Executing platform-owned TanStack Start Cloudflare build inside Sandbox...",
+        );
+        const startExecResult = await sandbox.exec(
+          `/opt/morph-toolchain/node_modules/.bin/vite build --config ${workspaceRoot}/vite.config.ts`,
+          {
+            timeout: this.maxDurationMs,
+            timeoutMs: this.maxDurationMs,
+            env: {
+              NODE_ENV: "production",
+              MORPH_THEME_BUILD_TARGET: "runtime",
+            },
+          },
+        );
+        if (startExecResult.stdout) addLog("info", startExecResult.stdout);
+        const startSuccess =
+          startExecResult.success ?? startExecResult.exitCode === 0;
+        if (!startSuccess) {
+          const errorMsg =
+            startExecResult.stderr ||
+            startExecResult.stdout ||
+            "TanStack Start build exited with non-zero status code";
+          return {
+            success: false,
+            errorMessage: errorMsg,
+            diagnosticsJson: {
+              stage: "sandbox-start-compiler",
+              errors: [{ severity: "error", message: errorMsg }],
+            },
+            logs,
+            durationMs: Date.now() - startTime,
+          };
+        }
+      }
 
       addLog("info", "Executing Vite build inside Cloudflare Sandbox container...");
 
@@ -522,6 +644,7 @@ export default defineConfig({
           // Zero Morph server secrets passed into container
           env: {
             NODE_ENV: "production",
+            MORPH_THEME_BUILD_TARGET: "preview",
           },
         },
       );
@@ -725,6 +848,31 @@ export default defineConfig({
         });
       }
 
+      if (routeRegistry) {
+        const artifactPaths = new Set(
+          artifacts.map((artifact) => artifact.path),
+        );
+        if (!artifactPaths.has("runtime/server/index.js")) {
+          throw new Error(
+            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce runtime/server/index.js.",
+          );
+        }
+        if (!artifactPaths.has("preview/index.html")) {
+          throw new Error(
+            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce preview/index.html.",
+          );
+        }
+        if (
+          !artifacts.some((artifact) =>
+            artifact.path.startsWith("runtime/client/"),
+          )
+        ) {
+          throw new Error(
+            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce runtime client assets.",
+          );
+        }
+      }
+
 
       const cssChunks = artifacts
         .filter((a) => a.mimeType === "text/css")
@@ -735,6 +883,7 @@ export default defineConfig({
 
       const manifest: ThemeBuildArtifactManifest = {
         entry: input.entry,
+        artifactEntry: routeRegistry ? "preview/index.html" : "index.html",
         filesCount: input.files.length,
         inputHash: input.inputHash,
         bundleFiles: artifacts.map((a) => ({
@@ -744,6 +893,17 @@ export default defineConfig({
         })),
         cssChunks,
         jsChunks,
+        metadata: routeRegistry
+          ? {
+              router: "tanstack-start",
+              runtime: "cloudflare-worker",
+              workerEntry: "runtime/server/index.js",
+              clientAssetsDirectory: "runtime/client",
+              previewRuntime: "tanstack-router-client",
+              previewEntry: "preview/index.html",
+              routes: routeRegistry.routes,
+            }
+          : undefined,
       };
 
       addLog("info", `Cloudflare Sandbox build completed with ${artifacts.length} dist files.`);

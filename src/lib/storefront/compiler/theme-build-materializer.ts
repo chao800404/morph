@@ -7,6 +7,11 @@ import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
 import { computeThemeInputHash } from "./theme-compiler-hasher";
 import type { ThemeCompilerFile } from "./theme-compiler.types";
+import { buildThemeRouteRegistry } from "./theme-route-registry";
+import {
+  isPlatformOwnedThemeBuildPath,
+  validateThemeStartPackageContract,
+} from "./theme-start-toolchain";
 
 export type MaterializeThemeBuildInputParams = {
   build: StorefrontThemeBuildDTO;
@@ -31,7 +36,7 @@ export function normalizeRevisionSnapshot(
   }
 
   const fileMap = new Map<string, ThemeCompilerFile>();
-  let detectedEntry: string | undefined;
+  const detectedEntries: string[] = [];
 
   for (const raw of snapshot) {
     if (
@@ -53,6 +58,12 @@ export function normalizeRevisionSnapshot(
     }
     const path = parseResult.data;
 
+    if (isPlatformOwnedThemeBuildPath(path)) {
+      throw new Error(
+        `PLATFORM_OWNED_THEME_BUILD_PATH: Theme source cannot author platform-owned build file "${path}" in source revision ${sourceRevisionId}.`,
+      );
+    }
+
     if (fileMap.has(path)) {
       throw new Error(
         `CORRUPT_REVISION_SNAPSHOT: Duplicate file path found in source revision ${sourceRevisionId}: "${path}".`,
@@ -60,12 +71,7 @@ export function normalizeRevisionSnapshot(
     }
 
     if (raw.isEntry) {
-      if (detectedEntry) {
-        throw new Error(
-          `CORRUPT_REVISION_SNAPSHOT: Multiple entry files declared in source revision ${sourceRevisionId}: "${detectedEntry}" and "${path}".`,
-        );
-      }
-      detectedEntry = path;
+      detectedEntries.push(path);
     }
 
     const file: ThemeCompilerFile = {
@@ -89,11 +95,86 @@ export function normalizeRevisionSnapshot(
     a.path.localeCompare(b.path),
   );
 
+  const manifestFile = fileMap.get("morph.theme.json");
+  let manifestEntry: string | undefined;
+  let routerFramework: string | null = null;
+  if (manifestFile) {
+    try {
+      const manifest: unknown = JSON.parse(manifestFile.content);
+      if (
+        manifest &&
+        typeof manifest === "object" &&
+        !Array.isArray(manifest)
+      ) {
+        const record = manifest as Record<string, unknown>;
+        if (typeof record.entry === "string" && record.entry.trim()) {
+          manifestEntry = record.entry.replace(/\\/g, "/").trim();
+        }
+        if (
+          record.router &&
+          typeof record.router === "object" &&
+          !Array.isArray(record.router)
+        ) {
+          const framework = (record.router as Record<string, unknown>)
+            .framework;
+          routerFramework =
+            typeof framework === "string" ? framework.trim() : "";
+        }
+      }
+    } catch {
+      // Preserve the existing legacy fallback for an authored malformed manifest.
+    }
+  }
+
+  if (manifestEntry) {
+    const parsedEntry = safeThemeFilePathSchema.safeParse(manifestEntry);
+    if (!parsedEntry.success || !fileMap.has(parsedEntry.data)) {
+      throw new Error(
+        `MANIFEST_ENTRY_NOT_FOUND: Theme manifest entry "${manifestEntry}" is missing or unsafe in source revision ${sourceRevisionId}.`,
+      );
+    }
+  }
+
+  if (!manifestEntry && detectedEntries.length > 1) {
+    throw new Error(
+      `CORRUPT_REVISION_SNAPSHOT: Multiple entry files declared in source revision ${sourceRevisionId}: ${detectedEntries.map((path) => `"${path}"`).join(", ")}.`,
+    );
+  }
+
+  if (routerFramework !== null && routerFramework !== "tanstack-start") {
+    throw new Error(
+      `UNSUPPORTED_THEME_ROUTER: Theme router framework "${routerFramework || "missing"}" is not supported.`,
+    );
+  }
+
+  if (routerFramework === "tanstack-start") {
+    const routeRegistry = buildThemeRouteRegistry(sortedFiles);
+    if (!routeRegistry.valid) {
+      throw new Error(
+        `INVALID_THEME_ROUTES: ${routeRegistry.diagnostics.map((diagnostic) => diagnostic.message).join("; ")}`,
+      );
+    }
+    if (!fileMap.has("src/router.tsx")) {
+      throw new Error(
+        "MISSING_START_ROUTER: TanStack Start Theme requires src/router.tsx exporting getRouter().",
+      );
+    }
+    const packageDiagnostics = validateThemeStartPackageContract(sortedFiles);
+    if (packageDiagnostics.length > 0) {
+      throw new Error(
+        `INVALID_START_PACKAGE: ${packageDiagnostics.join("; ")}`,
+      );
+    }
+  }
+
   const entry =
-    detectedEntry ??
-    (fileMap.has("src/pages/index.tsx")
-      ? "src/pages/index.tsx"
-      : sortedFiles[0].path);
+    manifestEntry ??
+    detectedEntries[0] ??
+    (fileMap.has("src/routes/index.tsx")
+      ? "src/routes/index.tsx"
+      : fileMap.has("src/pages/index.tsx")
+        ? "src/pages/index.tsx"
+        : sortedFiles[0].path);
 
   return {
     files: sortedFiles,

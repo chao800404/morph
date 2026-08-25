@@ -193,8 +193,9 @@ beforeEach(() => {
   `);
 
   drizzle(sqlite, { schema: storefrontSchema });
-  // @ts-expect-error test mock
-  vi.mocked(getDb).mockResolvedValue(drizzle(sqlite, { schema: storefrontSchema }));
+  vi.mocked(getDb).mockResolvedValue(
+    drizzle(sqlite, { schema: storefrontSchema }) as never,
+  );
 
   sqlite.exec(`
     INSERT INTO storefronts (id, sales_channel_id, name, status, created_at, updated_at)
@@ -436,7 +437,10 @@ describe("storefront theme DAL", () => {
       .prepare(
         "SELECT published_source_revision_id, release_generation FROM storefront_themes WHERE id = ?",
       )
-      .get("theme-a") as { published_source_revision_id: string | null; release_generation: number };
+      .get("theme-a") as {
+      published_source_revision_id: string | null;
+      release_generation: number;
+    };
     expect(theme.published_source_revision_id).toBe(
       "22222222-2222-4222-8222-222222222222",
     );
@@ -650,6 +654,128 @@ describe("storefront theme DAL", () => {
     expect(props.width).toBeUndefined();
   });
 
+  it("persists custom content when an older draft is missing componentRef", async () => {
+    const themeManifest = JSON.stringify({
+      components: {
+        "promo.default": {
+          source: "src/components/Promo.tsx",
+          sectionType: "promo",
+          contentFields: {
+            heading: { type: "text", label: "Heading", maxLength: 80 },
+            href: { type: "url", label: "Link" },
+          },
+        },
+      },
+      sections: {
+        promo: {
+          componentRef: "promo.default",
+          source: "src/components/Promo.tsx",
+        },
+      },
+    }).replaceAll("'", "''");
+    sqlite.exec(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, mime_type, version, created_at, updated_at)
+      VALUES
+        ('manifest-custom', 'storefront-a', 'theme-a', 'morph.theme.json',
+         '${themeManifest}', 'application/json', 1, 'now', 'now');
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-promo', 'theme-a', 'index', 'Home',
+         '{"version":1,"sections":[{"id":"promo-1","type":"promo","enabled":true,"props":{"campaignId":"campaign-1"}}]}',
+         '66666666-6666-4666-8666-666666666666', '66666666-6666-4666-8666-666666666666', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('66666666-6666-4666-8666-666666666666', 'template-promo', 1,
+         '{"version":1,"sections":[{"id":"promo-1","type":"promo","enabled":true,"props":{"campaignId":"campaign-1"}}]}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-promo",
+      sectionId: "promo-1",
+      props: {
+        heading: "A thoughtful default",
+        href: "/collections/new",
+        className: "fixed inset-0",
+      },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.document.sections[0].componentRef).toBe("promo.default");
+    expect(result?.document.sections[0].props).toEqual({
+      campaignId: "campaign-1",
+      heading: "A thoughtful default",
+      href: "/collections/new",
+    });
+
+    const stored = sqlite
+      .prepare(
+        "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+      )
+      .get(result?.draftRevisionId) as { document: string };
+    expect(JSON.parse(stored.document).sections[0].props).toEqual({
+      campaignId: "campaign-1",
+      heading: "A thoughtful default",
+      href: "/collections/new",
+    });
+  });
+
+  it("fails closed when custom manifest content values violate their declaration", async () => {
+    const themeManifest = JSON.stringify({
+      components: {
+        "promo.default": {
+          source: "src/components/Promo.tsx",
+          contentFields: {
+            heading: { type: "text", maxLength: 20 },
+          },
+        },
+      },
+    }).replaceAll("'", "''");
+    sqlite.exec(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, mime_type, version, created_at, updated_at)
+      VALUES
+        ('manifest-invalid-value', 'storefront-a', 'theme-a', 'morph.theme.json',
+         '${themeManifest}', 'application/json', 1, 'now', 'now');
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-promo-invalid', 'theme-a', 'index', 'Home',
+         '{"version":1,"sections":[{"id":"promo-invalid","type":"promo","componentRef":"promo.default","enabled":true,"props":{}}]}',
+         '77777777-7777-4777-8777-777777777777', '77777777-7777-4777-8777-777777777777', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('77777777-7777-4777-8777-777777777777', 'template-promo-invalid', 1,
+         '{"version":1,"sections":[{"id":"promo-invalid","type":"promo","componentRef":"promo.default","enabled":true,"props":{}}]}', 'now');
+    `);
+
+    await expect(
+      storefrontThemeDal.updateSectionProps({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-promo-invalid",
+        sectionId: "promo-invalid",
+        props: { heading: "This heading is longer than twenty characters" },
+        expectedDraftGeneration: 1,
+        createdBy: "user-1",
+      }),
+    ).rejects.toThrow("INVALID_THEME_CONTENT_FIELD_VALUE:heading");
+
+    const template = sqlite
+      .prepare(
+        "SELECT draft_generation FROM storefront_theme_templates WHERE id = ?",
+      )
+      .get("template-promo-invalid") as { draft_generation: number };
+    expect(template.draft_generation).toBe(1);
+  });
+
   it("strictly rejects styling/presentation props on unknown componentRef", async () => {
     sqlite.exec(`
       INSERT INTO storefront_theme_templates
@@ -746,7 +872,9 @@ describe("storefront theme DAL", () => {
       expectedDraftGeneration: 1,
       createdBy: "user-1",
     });
-    const heroProps = heroResult?.document.sections.find((s) => s.id === "hero-1")?.props as any;
+    const heroProps = heroResult?.document.sections.find(
+      (s) => s.id === "hero-1",
+    )?.props as any;
     expect(heroProps.eyebrow).toBe("New collection");
     expect(heroProps.heading).toBe("Objects for everyday rituals.");
     expect(heroProps.description).toBe("Updated hero description.");
@@ -763,7 +891,9 @@ describe("storefront theme DAL", () => {
       expectedDraftGeneration: 2,
       createdBy: "user-1",
     });
-    const introProps = introResult?.document.sections.find((s) => s.id === "intro-1")?.props as any;
+    const introProps = introResult?.document.sections.find(
+      (s) => s.id === "intro-1",
+    )?.props as any;
     expect(introProps.label).toBe("Considered living");
     expect(introProps.heading).toBe("New Intro Heading");
     expect(introProps.body).toBe("We bring together useful objects.");
@@ -778,7 +908,8 @@ describe("storefront theme DAL", () => {
       expectedDraftGeneration: 3,
       createdBy: "user-1",
     });
-    const catProps = catResult?.document.sections.find((s) => s.id === "cat-1")?.props as any;
+    const catProps = catResult?.document.sections.find((s) => s.id === "cat-1")
+      ?.props as any;
     expect(catProps.heading).toBe("New Showcase Heading");
     expect(catProps.items).toHaveLength(1);
     expect(catProps.items[0].title).toBe("Morning");
@@ -793,7 +924,9 @@ describe("storefront theme DAL", () => {
       expectedDraftGeneration: 4,
       createdBy: "user-1",
     });
-    const storyProps = storyResult?.document.sections.find((s) => s.id === "story-1")?.props as any;
+    const storyProps = storyResult?.document.sections.find(
+      (s) => s.id === "story-1",
+    )?.props as any;
     expect(storyProps.eyebrow).toBe("Our point of view");
     expect(storyProps.heading).toBe("Made to be kept.");
     expect(storyProps.actionLabel).toBe("Discover More");
@@ -809,7 +942,9 @@ describe("storefront theme DAL", () => {
       expectedDraftGeneration: 5,
       createdBy: "user-1",
     });
-    const newsProps = newsResult?.document.sections.find((s) => s.id === "news-1")?.props as any;
+    const newsProps = newsResult?.document.sections.find(
+      (s) => s.id === "news-1",
+    )?.props as any;
     expect(newsProps.eyebrow).toBe("Notes from the studio");
     expect(newsProps.heading).toBe("A quieter inbox.");
     expect(newsProps.body).toBe("New objects.");

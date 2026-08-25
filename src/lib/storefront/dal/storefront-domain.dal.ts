@@ -15,6 +15,7 @@ import {
 import type { StorefrontDomainDTO } from "../dto/storefront-domain.dto";
 import { toStorefrontDomainDTO } from "../mapper/storefront-domain.mapper";
 import type { BatchItem } from "drizzle-orm/batch";
+import { firstOrNull } from "@/lib/db/single-row";
 
 const activeStorefront = async () => {
   const db = await getDb();
@@ -31,28 +32,33 @@ export const storefrontDomainDal = {
   activeStorefront,
   async findById(id: string) {
     const db = await getDb();
-    const [row] = await db
-      .select()
-      .from(storefrontDomains)
-      .where(
-        and(eq(storefrontDomains.id, id), isNull(storefrontDomains.deletedAt)),
-      )
-      .limit(1);
-    return row ?? null;
+    return firstOrNull(
+      await db
+        .select()
+        .from(storefrontDomains)
+        .where(
+          and(
+            eq(storefrontDomains.id, id),
+            isNull(storefrontDomains.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
   },
   async findByHostname(hostname: string) {
     const db = await getDb();
-    const [row] = await db
-      .select()
-      .from(storefrontDomains)
-      .where(
-        and(
-          eq(storefrontDomains.hostname, hostname),
-          isNull(storefrontDomains.deletedAt),
-        ),
-      )
-      .limit(1);
-    return row ?? null;
+    return firstOrNull(
+      await db
+        .select()
+        .from(storefrontDomains)
+        .where(
+          and(
+            eq(storefrontDomains.hostname, hostname),
+            isNull(storefrontDomains.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
   },
   async listPage(options: {
     query?: string | null;

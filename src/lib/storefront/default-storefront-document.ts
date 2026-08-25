@@ -1,6 +1,6 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 2;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 9;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 
@@ -45,6 +45,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-introduction",
         type: "editorial-intro",
+        componentRef: "editorial-intro.default",
         enabled: true,
         props: {
           label: "Considered living",
@@ -55,6 +56,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-categories",
         type: "category-showcase",
+        componentRef: "category-showcase.default",
         enabled: true,
         props: {
           heading: "Shop by ritual",
@@ -89,6 +91,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-story",
         type: "image-with-text",
+        componentRef: "image-with-text.default",
         enabled: true,
         props: {
           eyebrow: "Our point of view",
@@ -104,8 +107,10 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-principles",
         type: "principles",
+        componentRef: "principles.default",
         enabled: true,
         props: {
+          label: "Why we choose differently",
           items: [
             {
               id: "principle-natural-materials",
@@ -131,6 +136,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-newsletter",
         type: "newsletter",
+        componentRef: "newsletter.default",
         enabled: true,
         props: {
           eyebrow: "Notes from the studio",

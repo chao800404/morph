@@ -12,6 +12,11 @@ import {
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
+import {
+  filterThemeContentProps,
+  parseThemeContentCapabilities,
+  type ThemeContentCapabilities,
+} from "@/lib/storefront/theme-content-capabilities";
 import { and, asc, eq, isNull, max } from "drizzle-orm";
 
 const revisionIdPattern =
@@ -403,10 +408,19 @@ export function filterSectionContentProps(
   sectionType: string,
   rawProps: Record<string, unknown>,
   componentRef?: string | null,
+  themeCapabilities?: ThemeContentCapabilities,
 ): Record<string, unknown> {
-  // If componentRef is explicitly specified, check COMPONENT_CONTENT_MANIFESTS.
-  // If not found in manifest, return {} (strict reject, do not fall back to sectionType).
+  // A capability declared in the persisted Theme Workspace manifest is
+  // authoritative for that componentRef. The client cannot supply this
+  // capability as part of the content mutation.
   if (componentRef) {
+    const themeCapability = themeCapabilities?.[componentRef];
+    if (themeCapability) {
+      return filterThemeContentProps(rawProps, themeCapability);
+    }
+
+    // Existing platform manifests remain a compatibility adapter while
+    // starter and customer themes migrate to Theme-level contentFields.
     const manifest = COMPONENT_CONTENT_MANIFESTS[componentRef];
     if (!manifest) return {};
     const result: Record<string, unknown> = {};
@@ -444,8 +458,10 @@ function prepareTemplateDraftCASGuard(args: {
   templateId: string;
   expectedDraftGeneration: number;
   expectedDraftRevisionId?: string | null;
+  expectedSourceGeneration?: number;
 }) {
-  return env.DATABASE.prepare(`
+  return env.DATABASE.prepare(
+    `
     SELECT CASE WHEN EXISTS (
       SELECT 1
       FROM storefront_theme_templates t
@@ -456,16 +472,19 @@ function prepareTemplateDraftCASGuard(args: {
         AND t.id = ?3
         AND t.draft_generation = ?4
         AND (t.draft_revision_id = ?5 OR (t.draft_revision_id IS NULL AND ?5 = ''))
+        AND (?6 IS NULL OR th.source_generation = ?6)
         AND s.deleted_at IS NULL
         AND th.deleted_at IS NULL
         AND t.deleted_at IS NULL
     ) THEN 1 ELSE json('') END AS ok
-  `).bind(
+  `,
+  ).bind(
     args.storefrontId,
     args.themeId,
     args.templateId,
     args.expectedDraftGeneration,
     args.expectedDraftRevisionId ?? "",
+    args.expectedSourceGeneration ?? null,
   );
 }
 
@@ -670,24 +689,34 @@ export const storefrontThemeDal = {
             expectedDraftGeneration: data.expectedDraftGeneration,
             expectedDraftRevisionId: activeDraft.id,
           }),
-          env.DATABASE.prepare(`
+          env.DATABASE.prepare(
+            `
             UPDATE storefront_theme_template_revisions
             SET document = ?1
             WHERE id = ?2 AND template_id = ?3
-          `).bind(JSON.stringify(document), activeDraft.id, data.templateId),
-          env.DATABASE.prepare(`
+          `,
+          ).bind(JSON.stringify(document), activeDraft.id, data.templateId),
+          env.DATABASE.prepare(
+            `
             UPDATE storefront_theme_templates
             SET draft_generation = ?1, updated_at = ?2
             WHERE id = ?3 AND theme_id = ?4 AND deleted_at IS NULL
-          `).bind(nextGeneration, now, data.templateId, data.themeId),
+          `,
+          ).bind(nextGeneration, now, data.templateId, data.themeId),
         ];
 
         try {
           await env.DATABASE.batch(statements);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes("malformed JSON") || message.includes("constraint")) {
-            throw new Error("CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.");
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (
+            message.includes("malformed JSON") ||
+            message.includes("constraint")
+          ) {
+            throw new Error(
+              "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+            );
           }
           throw error;
         }
@@ -717,11 +746,13 @@ export const storefrontThemeDal = {
         expectedDraftGeneration: data.expectedDraftGeneration,
         expectedDraftRevisionId: template.draftRevisionId,
       }),
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         INSERT INTO storefront_theme_template_revisions (
           id, template_id, version, document, created_by, created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-      `).bind(
+      `,
+      ).bind(
         revisionId,
         data.templateId,
         version,
@@ -729,19 +760,26 @@ export const storefrontThemeDal = {
         data.createdBy,
         now,
       ),
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         UPDATE storefront_theme_templates
         SET draft_revision_id = ?1, draft_generation = ?2, updated_at = ?3
         WHERE id = ?4 AND theme_id = ?5 AND deleted_at IS NULL
-      `).bind(revisionId, nextGeneration, now, data.templateId, data.themeId),
+      `,
+      ).bind(revisionId, nextGeneration, now, data.templateId, data.themeId),
     ];
 
     try {
       await env.DATABASE.batch(statements);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("malformed JSON") || message.includes("constraint")) {
-        throw new Error("CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.");
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
+        throw new Error(
+          "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+        );
       }
       throw error;
     }
@@ -777,17 +815,63 @@ export const storefrontThemeDal = {
     );
     if (!targetSection) return null;
 
+    const db = await getDb();
+    const manifestState = await env.DATABASE.prepare(
+      `
+      SELECT
+        th.source_generation AS sourceGeneration,
+        f.content AS manifestContent
+      FROM storefront_themes th
+      LEFT JOIN storefront_theme_files f
+        ON f.storefront_id = th.storefront_id
+        AND f.theme_id = th.id
+        AND f.path = 'morph.theme.json'
+        AND f.deleted_at IS NULL
+      WHERE th.id = ?1
+        AND th.storefront_id = ?2
+        AND th.deleted_at IS NULL
+      LIMIT 1
+    `,
+    )
+      .bind(data.themeId, data.storefrontId)
+      .first<{ sourceGeneration: number; manifestContent: string | null }>();
+    if (!manifestState) return null;
+    const themeCapabilityState = parseThemeContentCapabilities(
+      manifestState.manifestContent,
+    );
+    const themeCapabilities = themeCapabilityState.capabilities;
+    const resolvedComponentRef =
+      targetSection.componentRef ??
+      themeCapabilityState.sectionComponentRefs[targetSection.type] ??
+      null;
+
     const { enabled: propEnabled, ...restProps } = data.props;
     const cleanIncomingProps = filterSectionContentProps(
       targetSection.type,
       restProps,
-      targetSection.componentRef,
+      resolvedComponentRef,
+      themeCapabilities,
     );
-    const cleanExistingProps = filterSectionContentProps(
-      targetSection.type,
-      (targetSection.props as Record<string, unknown>) ?? {},
-      targetSection.componentRef,
-    );
+    const existingProps =
+      (targetSection.props as Record<string, unknown>) ?? {};
+    const themeCapability = resolvedComponentRef
+      ? themeCapabilities[resolvedComponentRef]
+      : null;
+    if (themeCapability) {
+      // Validate declared values against the current capability, but preserve
+      // existing non-editable props. contentFields is an authoring allowlist,
+      // not the complete runtime prop schema, so a partial content edit must
+      // not erase references or other persisted component data.
+      filterThemeContentProps(existingProps, themeCapability);
+    }
+    const cleanExistingProps = themeCapability
+      ? existingProps
+      : filterSectionContentProps(
+          targetSection.type,
+          existingProps,
+          resolvedComponentRef,
+          themeCapabilities,
+        );
 
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,
@@ -795,6 +879,7 @@ export const storefrontThemeDal = {
         section.id === data.sectionId
           ? {
               ...section,
+              componentRef: resolvedComponentRef ?? section.componentRef,
               enabled:
                 typeof propEnabled === "boolean"
                   ? propEnabled
@@ -809,7 +894,6 @@ export const storefrontThemeDal = {
     });
 
     const now = new Date().toISOString();
-    const db = await getDb();
     const nextGeneration = data.expectedDraftGeneration + 1;
 
     // If an uncommitted draft revision is currently active, update it in place
@@ -839,25 +923,36 @@ export const storefrontThemeDal = {
             templateId: data.templateId,
             expectedDraftGeneration: data.expectedDraftGeneration,
             expectedDraftRevisionId: activeDraft.id,
+            expectedSourceGeneration: manifestState.sourceGeneration,
           }),
-          env.DATABASE.prepare(`
+          env.DATABASE.prepare(
+            `
             UPDATE storefront_theme_template_revisions
             SET document = ?1
             WHERE id = ?2 AND template_id = ?3
-          `).bind(JSON.stringify(document), activeDraft.id, data.templateId),
-          env.DATABASE.prepare(`
+          `,
+          ).bind(JSON.stringify(document), activeDraft.id, data.templateId),
+          env.DATABASE.prepare(
+            `
             UPDATE storefront_theme_templates
             SET draft_generation = ?1, updated_at = ?2
             WHERE id = ?3 AND theme_id = ?4 AND deleted_at IS NULL
-          `).bind(nextGeneration, now, data.templateId, data.themeId),
+          `,
+          ).bind(nextGeneration, now, data.templateId, data.themeId),
         ];
 
         try {
           await env.DATABASE.batch(statements);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes("malformed JSON") || message.includes("constraint")) {
-            throw new Error("CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.");
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (
+            message.includes("malformed JSON") ||
+            message.includes("constraint")
+          ) {
+            throw new Error(
+              "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+            );
           }
           throw error;
         }
@@ -886,12 +981,15 @@ export const storefrontThemeDal = {
         templateId: data.templateId,
         expectedDraftGeneration: data.expectedDraftGeneration,
         expectedDraftRevisionId: template.draftRevisionId,
+        expectedSourceGeneration: manifestState.sourceGeneration,
       }),
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         INSERT INTO storefront_theme_template_revisions (
           id, template_id, version, document, created_by, created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-      `).bind(
+      `,
+      ).bind(
         revisionId,
         data.templateId,
         version,
@@ -899,19 +997,26 @@ export const storefrontThemeDal = {
         data.createdBy,
         now,
       ),
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         UPDATE storefront_theme_templates
         SET draft_revision_id = ?1, draft_generation = ?2, updated_at = ?3
         WHERE id = ?4 AND theme_id = ?5 AND deleted_at IS NULL
-      `).bind(revisionId, nextGeneration, now, data.templateId, data.themeId),
+      `,
+      ).bind(revisionId, nextGeneration, now, data.templateId, data.themeId),
     ];
 
     try {
       await env.DATABASE.batch(statements);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("malformed JSON") || message.includes("constraint")) {
-        throw new Error("CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.");
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
+        throw new Error(
+          "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+        );
       }
       throw error;
     }
@@ -1069,7 +1174,8 @@ export const storefrontThemeDal = {
     const now = new Date().toISOString();
     const templateUnchanged =
       template.draftRevisionId === template.publishedRevisionId;
-    const sourceUnchanged = template.publishedSourceRevisionId === sourceRevisionId;
+    const sourceUnchanged =
+      template.publishedSourceRevisionId === sourceRevisionId;
     const unchanged =
       templateUnchanged &&
       sourceUnchanged &&
@@ -1089,7 +1195,8 @@ export const storefrontThemeDal = {
         });
 
     const statements = [
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         SELECT CASE WHEN EXISTS (
           SELECT 1
           FROM storefront_theme_templates t
@@ -1112,7 +1219,8 @@ export const storefrontThemeDal = {
             AND r.storefront_id = ?1
             AND r.deleted_at IS NULL
         ) THEN 1 ELSE json('') END AS ok
-      `).bind(
+      `,
+      ).bind(
         data.storefrontId,
         data.themeId,
         data.templateId,
@@ -1131,14 +1239,16 @@ export const storefrontThemeDal = {
 
     if (!templateUnchanged) {
       statements.push(
-        env.DATABASE.prepare(`
+        env.DATABASE.prepare(
+          `
           UPDATE storefront_theme_templates
           SET document = ?1, published_revision_id = ?2, draft_generation = draft_generation + 1, updated_at = ?3
           WHERE id = ?4
             AND theme_id = ?5
             AND draft_revision_id = ?2
             AND deleted_at IS NULL
-        `).bind(
+        `,
+        ).bind(
           JSON.stringify(document),
           data.expectedDraftRevisionId,
           now,
@@ -1147,32 +1257,38 @@ export const storefrontThemeDal = {
         ),
       );
       statements.push(
-        env.DATABASE.prepare(`
+        env.DATABASE.prepare(
+          `
           UPDATE storefront_theme_template_revisions
           SET published_at = ?1
           WHERE id = ?2 AND template_id = ?3
-        `).bind(now, data.expectedDraftRevisionId, data.templateId),
+        `,
+        ).bind(now, data.expectedDraftRevisionId, data.templateId),
       );
     }
 
     if (!unchanged) {
       statements.push(
-        env.DATABASE.prepare(`
+        env.DATABASE.prepare(
+          `
           UPDATE storefront_themes
           SET published_source_revision_id = ?1, release_generation = release_generation + 1, updated_at = ?2
           WHERE id = ?3 AND storefront_id = ?4 AND deleted_at IS NULL
-        `).bind(sourceRevisionId, now, data.themeId, data.storefrontId),
+        `,
+        ).bind(sourceRevisionId, now, data.themeId, data.storefrontId),
       );
     }
 
     if (!unchanged) {
       statements.push(
-        env.DATABASE.prepare(`
+        env.DATABASE.prepare(
+          `
           INSERT INTO storefront_releases (
             id, storefront_id, theme_id, source_revision_id, theme_build_id,
             content_publication_id, status, created_by, created_at, updated_at
           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'available', ?7, ?8, ?8)
-        `).bind(
+        `,
+        ).bind(
           releaseId,
           data.storefrontId,
           data.themeId,
@@ -1184,11 +1300,13 @@ export const storefrontThemeDal = {
         ),
       );
       statements.push(
-        env.DATABASE.prepare(`
+        env.DATABASE.prepare(
+          `
           UPDATE storefronts
           SET active_release_id = ?1, updated_at = ?2
           WHERE id = ?3 AND deleted_at IS NULL
-        `).bind(releaseId, now, data.storefrontId),
+        `,
+        ).bind(releaseId, now, data.storefrontId),
       );
     }
 
@@ -1196,7 +1314,10 @@ export const storefrontThemeDal = {
       await env.DATABASE.batch(statements);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("malformed JSON") || message.includes("constraint")) {
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
         const latestContext = await this.findEditorContext(
           data.storefrontId,
           data.themeId,

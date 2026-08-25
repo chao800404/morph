@@ -1,3 +1,21 @@
+import {
+  LEGACY_STARTER_THEME_FOOTER_SOURCE,
+  LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_INDEX_SOURCE,
+  LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
+  LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE,
+  STARTER_THEME_FOOTER_SOURCE,
+  STARTER_THEME_V4_NEW_FILES,
+  STARTER_THEME_HEADER_SOURCE,
+  STARTER_THEME_INDEX_SOURCE,
+  STARTER_THEME_HOME_ROUTE_SOURCE,
+  STARTER_THEME_V3_NEW_FILES,
+} from "./starter-theme-v3-files";
+import {
+  THEME_START_BUILD_DEPENDENCIES,
+  THEME_START_RUNTIME_DEPENDENCIES,
+} from "./compiler/theme-start-toolchain";
+
 export const STARTER_THEME_FILES: Array<{
   path: string;
   content: string;
@@ -13,13 +31,17 @@ export const STARTER_THEME_FILES: Array<{
         version: "1.0.0",
         private: true,
         type: "module",
+        scripts: {
+          dev: "vite dev",
+          build: "vite build",
+        },
         dependencies: {
-          react: "^19.0.0",
-          "react-dom": "^19.0.0",
+          ...THEME_START_RUNTIME_DEPENDENCIES,
           "lucide-react": "^0.475.0",
           clsx: "^2.1.1",
           "tailwind-merge": "^3.0.1",
         },
+        devDependencies: THEME_START_BUILD_DEPENDENCIES,
       },
       null,
       2,
@@ -128,28 +150,10 @@ export default function Hero({
   {
     path: "src/components/Header.tsx",
     mimeType: "text/typescript",
-    content: `export default function Header({ storeName = "Online Store" }: { storeName?: string }) {
-  return (
-    <header className="flex h-16 items-center justify-between border-b border-neutral-200 bg-stone-50 px-5 sm:px-8">
-      <span className="font-serif text-lg font-semibold tracking-tight">
-        {storeName}
-      </span>
-      <nav
-        className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
-        aria-label="Storefront navigation"
-      >
-        <a href="/collections/all" className="hover:text-neutral-950">Shop</a>
-        <a href="/pages/about" className="hover:text-neutral-950">About</a>
-        <a href="/blogs/journal" className="hover:text-neutral-950">Journal</a>
-      </nav>
-      <a href="/cart" className="text-xs text-neutral-600 hover:text-neutral-950">
-        Cart (0)
-      </a>
-    </header>
-  );
-}
-`,
+    content: STARTER_THEME_HEADER_SOURCE,
   },
+  ...STARTER_THEME_V4_NEW_FILES,
+  ...STARTER_THEME_V3_NEW_FILES,
   {
     path: "src/components/Principles.tsx",
     mimeType: "text/typescript",
@@ -164,11 +168,15 @@ export type PrincipleItem = {
 
 export type PrinciplesProps = {
   items?: PrincipleItem[];
+  label?: string;
 };
 
 const morphInstanceClasses: Record<string, string> = {};
 
-export default function Principles({ items = [] }: PrinciplesProps) {
+export default function Principles({
+  items = [],
+  label = "Why we choose differently",
+}: PrinciplesProps) {
   return (
     <section
       data-morph-section="principles"
@@ -176,11 +184,12 @@ export default function Principles({ items = [] }: PrinciplesProps) {
       className="bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]"
     >
       <p
+        data-storefront-field="label"
         data-morph-node="principles-label"
         data-morph-element="label"
         className="mb-14 text-xs font-medium uppercase tracking-[0.22em] text-stone-500"
       >
-        Why we choose differently
+        {label}
       </p>
       <div
         data-morph-node="principles-grid"
@@ -235,52 +244,7 @@ export default function Principles({ items = [] }: PrinciplesProps) {
   {
     path: "src/components/Footer.tsx",
     mimeType: "text/typescript",
-    content: `export default function Footer({ storeName = "Online Store" }: { storeName?: string }) {
-  return (
-    <footer className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]">
-      <div>
-        <p className="font-serif text-3xl text-stone-100">{storeName}</p>
-        <p className="mt-4 max-w-xs text-sm leading-6 text-stone-500">
-          Objects with lasting character for thoughtful, everyday living.
-        </p>
-      </div>
-      <div className="text-sm leading-8">
-        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Explore</p>
-        <a className="block hover:text-white" href="/collections/all">Shop all</a>
-        <a className="block hover:text-white" href="/pages/about">Our story</a>
-        <a className="block hover:text-white" href="/blogs/journal">Journal</a>
-      </div>
-      <div className="text-sm leading-8">
-        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Help</p>
-        <a className="block hover:text-white" href="/pages/contact">Contact</a>
-        <a className="block hover:text-white" href="/pages/shipping">Shipping</a>
-        <a className="block hover:text-white" href="/pages/returns">Returns</a>
-      </div>
-    </footer>
-  );
-}
-`,
-  },
-  {
-    path: "src/pages/index.tsx",
-    isEntry: true,
-    mimeType: "text/typescript",
-    content: `import Header from "../components/Header";
-import Hero from "../components/Hero";
-import Footer from "../components/Footer";
-
-export default function HomePage() {
-  return (
-    <div className="min-h-screen bg-stone-50 text-neutral-950">
-      <Header />
-      <main>
-        <Hero />
-      </main>
-      <Footer />
-    </div>
-  );
-}
-`,
+    content: STARTER_THEME_FOOTER_SOURCE,
   },
   {
     path: "morph.theme.json",
@@ -288,19 +252,113 @@ export default function HomePage() {
     content: JSON.stringify(
       {
         name: "Dawn Starter",
-        version: "1.0.0",
+        version: "1.1.0",
         author: "Morph Studio",
-        entry: "src/pages/index.tsx",
+        entry: "src/routes/index.tsx",
+        router: {
+          framework: "tanstack-start",
+          previewAdapter: "tanstack-router-client",
+          routesDirectory: "src/routes",
+          rootRoute: "src/routes/__root.tsx",
+          generatedRouteTree: "src/routeTree.gen.ts",
+        },
+        documentLayout: {
+          source: "src/layouts/StorefrontLayout.tsx",
+        },
         components: {
           "hero.default": {
             name: "Hero",
             source: "src/components/Hero.tsx",
             sectionType: "hero",
+            contentFields: {
+              eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
+              heading: { type: "text", label: "Heading", maxLength: 200 },
+              description: {
+                type: "textarea",
+                label: "Description",
+                maxLength: 500,
+              },
+              actionLabel: {
+                type: "text",
+                label: "Action label",
+                maxLength: 100,
+              },
+              actionHref: { type: "url", label: "Action link" },
+              imageSrc: { type: "url", label: "Image" },
+              imageAlt: {
+                type: "text",
+                label: "Image description",
+                maxLength: 200,
+              },
+            },
+          },
+          "editorial-intro.default": {
+            name: "Editorial intro",
+            source: "src/components/EditorialIntro.tsx",
+            sectionType: "editorial-intro",
+            contentFields: {
+              label: { type: "text", label: "Label", maxLength: 100 },
+              heading: { type: "text", label: "Heading", maxLength: 200 },
+              body: { type: "textarea", label: "Body", maxLength: 700 },
+            },
+          },
+          "category-showcase.default": {
+            name: "Category showcase",
+            source: "src/components/CategoryShowcase.tsx",
+            sectionType: "category-showcase",
+            contentFields: {
+              heading: { type: "text", label: "Heading", maxLength: 200 },
+            },
+          },
+          "image-with-text.default": {
+            name: "Image with text",
+            source: "src/components/ImageWithText.tsx",
+            sectionType: "image-with-text",
+            contentFields: {
+              eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
+              heading: { type: "text", label: "Heading", maxLength: 200 },
+              body: { type: "textarea", label: "Body", maxLength: 700 },
+              actionLabel: {
+                type: "text",
+                label: "Action label",
+                maxLength: 100,
+              },
+              actionHref: { type: "url", label: "Action link" },
+              imageSrc: { type: "url", label: "Image" },
+              imageAlt: {
+                type: "text",
+                label: "Image description",
+                maxLength: 200,
+              },
+            },
           },
           "principles.default": {
             name: "Principles",
             source: "src/components/Principles.tsx",
             sectionType: "principles",
+            contentFields: {
+              label: { type: "text", label: "Label", maxLength: 100 },
+            },
+          },
+          "newsletter.default": {
+            name: "Newsletter",
+            source: "src/components/Newsletter.tsx",
+            sectionType: "newsletter",
+            contentFields: {
+              eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
+              heading: { type: "text", label: "Heading", maxLength: 200 },
+              body: { type: "textarea", label: "Body", maxLength: 500 },
+              placeholder: {
+                type: "text",
+                label: "Placeholder",
+                maxLength: 100,
+              },
+              actionLabel: {
+                type: "text",
+                label: "Action label",
+                maxLength: 100,
+              },
+            },
           },
           "layout.header": {
             name: "Header",
@@ -316,9 +374,25 @@ export default function HomePage() {
             componentRef: "hero.default",
             source: "src/components/Hero.tsx",
           },
+          "editorial-intro": {
+            componentRef: "editorial-intro.default",
+            source: "src/components/EditorialIntro.tsx",
+          },
+          "category-showcase": {
+            componentRef: "category-showcase.default",
+            source: "src/components/CategoryShowcase.tsx",
+          },
+          "image-with-text": {
+            componentRef: "image-with-text.default",
+            source: "src/components/ImageWithText.tsx",
+          },
           principles: {
             componentRef: "principles.default",
             source: "src/components/Principles.tsx",
+          },
+          newsletter: {
+            componentRef: "newsletter.default",
+            source: "src/components/Newsletter.tsx",
           },
         },
       },
@@ -327,3 +401,340 @@ export default function HomePage() {
     ),
   },
 ];
+
+type ExistingStarterThemeFile = {
+  id: string;
+  path: string;
+  content: string;
+  version: number;
+};
+
+export type StarterThemeWorkspaceUpgradeFile = {
+  path: string;
+  content: string;
+  mimeType: string;
+  expectedFileId?: string;
+  expectedVersion?: number;
+  expectMissing?: boolean;
+};
+
+export type StarterThemeWorkspaceUpgradeDeletion = {
+  path: string;
+  expectedFileId: string;
+  expectedVersion: number;
+};
+
+export type StarterThemeWorkspaceUpgradePlan = {
+  files: StarterThemeWorkspaceUpgradeFile[];
+  deletions: StarterThemeWorkspaceUpgradeDeletion[];
+};
+
+const V3_COMPONENT_REFS = [
+  "editorial-intro.default",
+  "category-showcase.default",
+  "image-with-text.default",
+  "newsletter.default",
+] as const;
+
+const V3_SECTION_TYPES = [
+  "editorial-intro",
+  "category-showcase",
+  "image-with-text",
+  "newsletter",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Produces an additive, OCC-ready upgrade for an existing v2 starter
+ * workspace. Authored files are preserved. Legacy shell components are
+ * replaced only when their bytes still exactly match the previous bootstrap,
+ * and new route/section files are inserted only when missing.
+ */
+export function createStarterThemeWorkspaceUpgrade(
+  existingFiles: ExistingStarterThemeFile[],
+): StarterThemeWorkspaceUpgradeFile[] {
+  const existingByPath = new Map(
+    existingFiles.map((file) => [file.path, file]),
+  );
+  const targetByPath = new Map(
+    STARTER_THEME_FILES.map((file) => [file.path, file]),
+  );
+  const upgrades: StarterThemeWorkspaceUpgradeFile[] = [];
+
+  const existingLegacyPage = existingByPath.get("src/pages/index.tsx");
+  const existingManifestForRouteContract =
+    existingByPath.get("morph.theme.json");
+  let alreadyUsesStartRouteContract = false;
+  if (existingManifestForRouteContract) {
+    try {
+      const parsedManifest: unknown = JSON.parse(
+        existingManifestForRouteContract.content,
+      );
+      if (isRecord(parsedManifest) && isRecord(parsedManifest.router)) {
+        alreadyUsesStartRouteContract =
+          parsedManifest.router.framework === "tanstack-start";
+      }
+    } catch {
+      // Malformed authored manifests remain untouched and fail through the
+      // normal compiler diagnostics rather than being inferred as Starter.
+    }
+  }
+  const canAdoptRouteContract =
+    alreadyUsesStartRouteContract ||
+    Boolean(
+      existingLegacyPage &&
+      (existingLegacyPage.content === STARTER_THEME_INDEX_SOURCE ||
+        existingLegacyPage.content === LEGACY_STARTER_THEME_INDEX_SOURCE),
+    );
+
+  if (canAdoptRouteContract) {
+    for (const file of STARTER_THEME_V4_NEW_FILES) {
+      if (existingByPath.has(file.path)) continue;
+      upgrades.push({
+        path: file.path,
+        content: file.content,
+        mimeType: file.mimeType,
+        expectMissing: true,
+      });
+    }
+
+    const existingHomeRoute = existingByPath.get("src/routes/index.tsx");
+    if (
+      existingHomeRoute?.content === LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE ||
+      existingHomeRoute?.content ===
+        LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE
+    ) {
+      upgrades.push({
+        path: existingHomeRoute.path,
+        content: STARTER_THEME_HOME_ROUTE_SOURCE,
+        mimeType: "text/typescript",
+        expectedFileId: existingHomeRoute.id,
+        expectedVersion: existingHomeRoute.version,
+      });
+    }
+
+    const existingPackage = existingByPath.get("package.json");
+    const targetPackage = targetByPath.get("package.json");
+    if (existingPackage && targetPackage) {
+      try {
+        const parsedExisting: unknown = JSON.parse(existingPackage.content);
+        const parsedTarget: unknown = JSON.parse(targetPackage.content);
+        if (isRecord(parsedExisting) && isRecord(parsedTarget)) {
+          const existingDependencies = isRecord(parsedExisting.dependencies)
+            ? { ...parsedExisting.dependencies }
+            : {};
+          const existingDevDependencies = isRecord(
+            parsedExisting.devDependencies,
+          )
+            ? { ...parsedExisting.devDependencies }
+            : {};
+          const targetDependencies = isRecord(parsedTarget.dependencies)
+            ? parsedTarget.dependencies
+            : {};
+          const targetDevDependencies = isRecord(parsedTarget.devDependencies)
+            ? parsedTarget.devDependencies
+            : {};
+          let packageChanged = false;
+
+          if (
+            existingDependencies["@morph/storefront-runtime"] === "1.0.0"
+          ) {
+            delete existingDependencies["@morph/storefront-runtime"];
+            packageChanged = true;
+          }
+
+          for (const dependency of Object.keys(
+            THEME_START_RUNTIME_DEPENDENCIES,
+          )) {
+            if (existingDependencies[dependency] !== undefined) continue;
+            existingDependencies[dependency] = targetDependencies[dependency];
+            packageChanged = true;
+          }
+          for (const dependency of Object.keys(
+            THEME_START_BUILD_DEPENDENCIES,
+          )) {
+            if (existingDevDependencies[dependency] !== undefined) continue;
+            existingDevDependencies[dependency] =
+              targetDevDependencies[dependency];
+            packageChanged = true;
+          }
+
+          if (packageChanged) {
+            upgrades.push({
+              path: existingPackage.path,
+              content: `${JSON.stringify(
+                {
+                  ...parsedExisting,
+                  dependencies: existingDependencies,
+                  devDependencies: existingDevDependencies,
+                },
+                null,
+                2,
+              )}\n`,
+              mimeType: "application/json",
+              expectedFileId: existingPackage.id,
+              expectedVersion: existingPackage.version,
+            });
+          }
+        }
+      } catch {
+        // Invalid authored package metadata remains untouched so the normal
+        // compiler diagnostic can fail closed without destroying customer work.
+      }
+    }
+  }
+
+  for (const file of STARTER_THEME_V3_NEW_FILES) {
+    if (existingByPath.has(file.path)) continue;
+    upgrades.push({
+      path: file.path,
+      content: file.content,
+      mimeType: file.mimeType,
+      expectMissing: true,
+    });
+  }
+
+  const exactLegacyReplacements = [
+    {
+      path: "src/components/Header.tsx",
+      legacy: LEGACY_STARTER_THEME_HEADER_SOURCE,
+      current: STARTER_THEME_HEADER_SOURCE,
+    },
+    {
+      path: "src/components/Footer.tsx",
+      legacy: LEGACY_STARTER_THEME_FOOTER_SOURCE,
+      current: STARTER_THEME_FOOTER_SOURCE,
+    },
+  ] as const;
+
+  const documentLayoutReady = Boolean(
+    existingLegacyPage &&
+    (existingLegacyPage.content === STARTER_THEME_INDEX_SOURCE ||
+      existingLegacyPage.content === LEGACY_STARTER_THEME_INDEX_SOURCE),
+  );
+  for (const replacement of exactLegacyReplacements) {
+    const existing = existingByPath.get(replacement.path);
+    if (!existing) continue;
+    const isLegacy = existing.content === replacement.legacy;
+    if (!isLegacy) continue;
+    upgrades.push({
+      path: replacement.path,
+      content: replacement.current,
+      mimeType: "text/typescript",
+      expectedFileId: existing.id,
+      expectedVersion: existing.version,
+    });
+  }
+
+  const existingManifest = existingByPath.get("morph.theme.json");
+  const targetManifestFile = targetByPath.get("morph.theme.json");
+  if (!existingManifest || !targetManifestFile) return upgrades;
+
+  try {
+    const parsedExisting: unknown = JSON.parse(existingManifest.content);
+    const parsedTarget: unknown = JSON.parse(targetManifestFile.content);
+    if (!isRecord(parsedExisting) || !isRecord(parsedTarget)) return upgrades;
+
+    const existingComponents = isRecord(parsedExisting.components)
+      ? { ...parsedExisting.components }
+      : {};
+    const targetComponents = isRecord(parsedTarget.components)
+      ? parsedTarget.components
+      : {};
+    const existingSections = isRecord(parsedExisting.sections)
+      ? { ...parsedExisting.sections }
+      : {};
+    const targetSections = isRecord(parsedTarget.sections)
+      ? parsedTarget.sections
+      : {};
+    let changed = false;
+
+    for (const componentRef of V3_COMPONENT_REFS) {
+      if (existingComponents[componentRef] !== undefined) continue;
+      const target = targetComponents[componentRef];
+      if (target === undefined) continue;
+      existingComponents[componentRef] = target;
+      changed = true;
+    }
+    for (const sectionType of V3_SECTION_TYPES) {
+      if (existingSections[sectionType] !== undefined) continue;
+      const target = targetSections[sectionType];
+      if (target === undefined) continue;
+      existingSections[sectionType] = target;
+      changed = true;
+    }
+
+    const nextManifest: Record<string, unknown> = {
+      ...parsedExisting,
+      components: existingComponents,
+      sections: existingSections,
+    };
+    if (documentLayoutReady && canAdoptRouteContract) {
+      for (const key of ["entry", "router", "documentLayout"] as const) {
+        if (
+          JSON.stringify(nextManifest[key]) ===
+          JSON.stringify(parsedTarget[key])
+        ) {
+          continue;
+        }
+        nextManifest[key] = parsedTarget[key];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      upgrades.push({
+        path: existingManifest.path,
+        content: `${JSON.stringify(nextManifest, null, 2)}\n`,
+        mimeType: "application/json",
+        expectedFileId: existingManifest.id,
+        expectedVersion: existingManifest.version,
+      });
+    }
+  } catch {
+    // Invalid authored manifests remain untouched and continue to surface their
+    // existing diagnostics. A bootstrap upgrade must never replace them.
+  }
+
+  return upgrades;
+}
+
+/**
+ * Builds the complete OCC mutation for upgrading an existing Starter Theme.
+ * The obsolete pages entry is removed only when its bytes still match a known
+ * Morph Starter version and the TanStack Start route entry already exists or
+ * will be inserted by the same mutation.
+ */
+export function createStarterThemeWorkspaceUpgradePlan(
+  existingFiles: ExistingStarterThemeFile[],
+): StarterThemeWorkspaceUpgradePlan {
+  const files = createStarterThemeWorkspaceUpgrade(existingFiles);
+  const existingLegacyPage = existingFiles.find(
+    (file) => file.path === "src/pages/index.tsx",
+  );
+  const hasStartRoute =
+    existingFiles.some((file) => file.path === "src/routes/index.tsx") ||
+    files.some((file) => file.path === "src/routes/index.tsx");
+  const isPristineStarterPage = Boolean(
+    existingLegacyPage &&
+    (existingLegacyPage.content === STARTER_THEME_INDEX_SOURCE ||
+      existingLegacyPage.content === LEGACY_STARTER_THEME_INDEX_SOURCE),
+  );
+
+  return {
+    files,
+    deletions:
+      existingLegacyPage && hasStartRoute && isPristineStarterPage
+        ? [
+            {
+              path: existingLegacyPage.path,
+              expectedFileId: existingLegacyPage.id,
+              expectedVersion: existingLegacyPage.version,
+            },
+          ]
+        : [],
+  };
+}

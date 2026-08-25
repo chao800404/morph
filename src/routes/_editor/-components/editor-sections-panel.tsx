@@ -27,6 +27,7 @@ import {
   SidebarProvider,
 } from "@/components/ui/sidebar";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import type { ThemeRouteRecord } from "@/lib/storefront/compiler/theme-route-registry";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import type {
   PreviewEditableNode,
@@ -66,6 +67,7 @@ import {
   TextQuote,
   Type,
   Video,
+  FileCode2,
   type LucideIcon,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
@@ -89,6 +91,8 @@ export type EditorSectionsPanelProps = {
   editableNodes?: readonly PreviewEditableNode[];
   activeSelection?: EditorSelectionDescriptor | null;
   onSelectEditableNode?: (target: PreviewSelectionRestoreTarget) => void;
+  themeRoutes?: readonly ThemeRouteRecord[];
+  onOpenThemeRoute?: (route: ThemeRouteRecord) => void;
 };
 
 type EditorSection =
@@ -404,6 +408,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   editableNodes = [],
   activeSelection,
   onSelectEditableNode,
+  themeRoutes = [],
+  onOpenThemeRoute,
 }: EditorSectionsPanelProps) {
   const activeTemplate = resolveEditorTemplate(context, search);
   const sourceSections = activeTemplate?.document.sections ?? [];
@@ -642,8 +648,32 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
         >
           <SidebarHeader className="h-[3.25rem] flex-row items-center gap-2 border-b px-3 py-0">
             <Layers3 className="size-4 text-muted-foreground" />
-            <h2 className="text-sm font-medium">Sections</h2>
+            <h2 className="text-sm font-medium">Pages &amp; Sections</h2>
           </SidebarHeader>
+
+          {themeRoutes.length > 0 ? (
+            <SidebarGroup className="border-b border-solid p-2">
+              <div className="px-2 pb-1 text-xs font-medium text-muted-foreground">
+                Pages
+              </div>
+              <SidebarMenu aria-label="Theme pages">
+                {themeRoutes.map((route) => (
+                  <SidebarMenuItem key={`${route.sourcePath}:${route.path}`}>
+                    <SidebarMenuButton
+                      type="button"
+                      size="sm"
+                      className="cursor-pointer"
+                      onClick={() => onOpenThemeRoute?.(route)}
+                      title={`Open ${route.sourcePath}`}
+                    >
+                      <FileCode2 aria-hidden="true" />
+                      <span>{route.path === "/" ? "Home /" : route.path}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroup>
+          ) : null}
 
           <SidebarGroup className="border-b border-solid p-3">
             <Select

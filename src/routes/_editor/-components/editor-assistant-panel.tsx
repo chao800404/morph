@@ -21,7 +21,10 @@ import {
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
-import { EditorStyleInspector } from "./editor-style-inspector";
+import {
+  EditorStyleInspector,
+  type InspectorPropsChangeOptions,
+} from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import type { ThemeInstanceStyleTarget } from "@/lib/storefront/editor/theme-instance-style-source";
@@ -64,6 +67,7 @@ type EditorAssistantPanelProps = {
   onSectionPropsChange?: (
     sectionId: string,
     nextProps: Record<string, unknown>,
+    options?: InspectorPropsChangeOptions,
   ) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   onTabChange?: (tab: EditorAssistantPanelTab) => void;
@@ -123,9 +127,12 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   }, [isStylesPreRendered, tab]);
 
   const handleInspectorPropsChange = useCallback(
-    (nextProps: Record<string, unknown>) => {
+    (
+      nextProps: Record<string, unknown>,
+      options?: InspectorPropsChangeOptions,
+    ) => {
       if (selectedSection) {
-        onSectionPropsChange?.(selectedSection.id, nextProps);
+        onSectionPropsChange?.(selectedSection.id, nextProps, options);
       }
     },
     [onSectionPropsChange, selectedSection],

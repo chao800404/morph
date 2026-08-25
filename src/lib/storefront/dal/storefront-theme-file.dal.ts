@@ -27,7 +27,8 @@ function prepareThemeOwnershipGuard(
   expectedSourceGeneration?: number,
 ) {
   if (expectedSourceGeneration !== undefined) {
-    return env.DATABASE.prepare(`
+    return env.DATABASE.prepare(
+      `
       SELECT CASE WHEN EXISTS (
         SELECT 1 FROM storefront_themes
         WHERE id = ?1
@@ -35,15 +36,18 @@ function prepareThemeOwnershipGuard(
           AND source_generation = ?3
           AND deleted_at IS NULL
       ) THEN 1 ELSE json('') END AS ok
-    `).bind(themeId, storefrontId, expectedSourceGeneration);
+    `,
+    ).bind(themeId, storefrontId, expectedSourceGeneration);
   }
 
-  return env.DATABASE.prepare(`
+  return env.DATABASE.prepare(
+    `
     SELECT CASE WHEN EXISTS (
       SELECT 1 FROM storefront_themes
       WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL
     ) THEN 1 ELSE json('') END AS ok
-  `).bind(themeId, storefrontId);
+  `,
+  ).bind(themeId, storefrontId);
 }
 
 function prepareIncrementThemeSourceGeneration(
@@ -51,11 +55,13 @@ function prepareIncrementThemeSourceGeneration(
   themeId: string,
   now: string,
 ) {
-  return env.DATABASE.prepare(`
+  return env.DATABASE.prepare(
+    `
     UPDATE storefront_themes
     SET source_generation = source_generation + 1, updated_at = ?1
     WHERE id = ?2 AND storefront_id = ?3 AND deleted_at IS NULL
-  `).bind(now, themeId, storefrontId);
+  `,
+  ).bind(now, themeId, storefrontId);
 }
 
 function prepareRevisionInsert(args: {
@@ -68,7 +74,8 @@ function prepareRevisionInsert(args: {
   now: string;
   sourceGeneration?: number;
 }) {
-  return env.DATABASE.prepare(`
+  return env.DATABASE.prepare(
+    `
     INSERT INTO storefront_theme_revisions (
       id, storefront_id, theme_id, revision_number, message, source,
       snapshot, source_generation, created_by, created_at, updated_at
@@ -98,7 +105,8 @@ function prepareRevisionInsert(args: {
         )
       ), json('[]')),
       ?6, ?7, ?8, ?8
-  `).bind(
+  `,
+  ).bind(
     args.revisionId,
     args.storefrontId,
     args.themeId,
@@ -195,30 +203,35 @@ export const storefrontThemeFileDal = {
     createdBy?: string,
   ): Promise<StorefrontThemeFileDTO[]> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
-    if (!isOwner) throw new Error("Theme not found or does not belong to storefront");
+    if (!isOwner)
+      throw new Error("Theme not found or does not belong to storefront");
 
     const now = new Date().toISOString();
     const revisionId = crypto.randomUUID();
 
     const statements = [
       prepareThemeOwnershipGuard(storefrontId, themeId),
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         SELECT CASE WHEN NOT EXISTS (
           SELECT 1 FROM storefront_theme_files
           WHERE storefront_id = ?1 AND theme_id = ?2 AND deleted_at IS NULL
         ) THEN 1 ELSE json('') END AS ok
-      `).bind(storefrontId, themeId),
+      `,
+      ).bind(storefrontId, themeId),
     ];
 
     for (const f of STARTER_THEME_FILES) {
       statements.push(
-        env.DATABASE.prepare(`
+        env.DATABASE.prepare(
+          `
           INSERT INTO storefront_theme_files (
             id, storefront_id, theme_id, path, content, mime_type,
             is_entry, version, created_at, updated_at
           )
           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
-        `).bind(
+        `,
+        ).bind(
           crypto.randomUUID(),
           storefrontId,
           themeId,
@@ -251,12 +264,17 @@ export const storefrontThemeFileDal = {
       await env.DATABASE.batch(statements);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("malformed JSON") || message.includes("constraint")) {
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
         const existing = await this.listFiles(storefrontId, themeId);
         if (existing.length > 0) {
           return existing;
         }
-        throw new Error("CONFLICT_OWNERSHIP_MISMATCH: Theme does not exist or was deleted.");
+        throw new Error(
+          "CONFLICT_OWNERSHIP_MISMATCH: Theme does not exist or was deleted.",
+        );
       }
       throw error;
     }
@@ -363,14 +381,16 @@ export const storefrontThemeFileDal = {
     const saved = await this.saveFilesBatch(
       storefrontId,
       themeId,
-      [{
-        path,
-        content,
-        mimeType,
-        expectedFileId: options.expectedFileId,
-        expectedVersion: options.expectedVersion,
-        expectMissing: options.expectMissing,
-      }],
+      [
+        {
+          path,
+          content,
+          mimeType,
+          expectedFileId: options.expectedFileId,
+          expectedVersion: options.expectedVersion,
+          expectMissing: options.expectMissing,
+        },
+      ],
       {
         expectedSourceGeneration: options.expectedSourceGeneration,
         createRevision: options.createRevision,
@@ -396,6 +416,11 @@ export const storefrontThemeFileDal = {
     }>,
     options: {
       expectedSourceGeneration: number;
+      deletions?: Array<{
+        path: string;
+        expectedFileId: string;
+        expectedVersion: number;
+      }>;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
@@ -406,8 +431,10 @@ export const storefrontThemeFileDal = {
         "expectedSourceGeneration is required to mutate storefront theme files.",
       );
     }
-    if (files.length === 0) {
-      const empty: StorefrontThemeFileDTO[] & { sourceGeneration?: number } = [];
+    const deletions = options.deletions ?? [];
+    if (files.length === 0 && deletions.length === 0) {
+      const empty: StorefrontThemeFileDTO[] & { sourceGeneration?: number } =
+        [];
       return empty;
     }
 
@@ -419,6 +446,8 @@ export const storefrontThemeFileDal = {
         options.expectedSourceGeneration,
       ),
     ];
+    const preconditionStatements = [];
+    const mutationStatements = [];
 
     const preparedFiles = files.map((item) => ({
       ...item,
@@ -441,8 +470,9 @@ export const storefrontThemeFileDal = {
       }
 
       if (expectsExisting) {
-        statements.push(
-          env.DATABASE.prepare(`
+        preconditionStatements.push(
+          env.DATABASE.prepare(
+            `
             SELECT CASE WHEN EXISTS (
               SELECT 1 FROM storefront_theme_files
               WHERE storefront_id = ?1
@@ -452,13 +482,18 @@ export const storefrontThemeFileDal = {
                 AND version = ?5
                 AND deleted_at IS NULL
             ) THEN 1 ELSE json('') END AS ok
-          `).bind(
-            storefrontId, themeId, item.path,
-            item.fileId, item.expectedVersion!,
+          `,
+          ).bind(
+            storefrontId,
+            themeId,
+            item.path,
+            item.fileId,
+            item.expectedVersion!,
           ),
         );
-        statements.push(
-          env.DATABASE.prepare(`
+        mutationStatements.push(
+          env.DATABASE.prepare(
+            `
             UPDATE storefront_theme_files
             SET content = ?1,
                 mime_type = ?2,
@@ -471,7 +506,8 @@ export const storefrontThemeFileDal = {
               AND version = ?8
               AND deleted_at IS NULL
             RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
-          `).bind(
+          `,
+          ).bind(
             item.content,
             detectThemeMimeType(item.path, item.mimeType),
             now,
@@ -483,8 +519,9 @@ export const storefrontThemeFileDal = {
           ),
         );
       } else {
-        statements.push(
-          env.DATABASE.prepare(`
+        preconditionStatements.push(
+          env.DATABASE.prepare(
+            `
             SELECT CASE WHEN NOT EXISTS (
               SELECT 1 FROM storefront_theme_files
               WHERE storefront_id = ?1
@@ -492,17 +529,20 @@ export const storefrontThemeFileDal = {
                 AND path = ?3
                 AND deleted_at IS NULL
             ) THEN 1 ELSE json('') END AS ok
-          `).bind(storefrontId, themeId, item.path),
+          `,
+          ).bind(storefrontId, themeId, item.path),
         );
-        statements.push(
-          env.DATABASE.prepare(`
+        mutationStatements.push(
+          env.DATABASE.prepare(
+            `
             INSERT INTO storefront_theme_files (
               id, storefront_id, theme_id, path, content, mime_type,
               is_entry, version, created_at, updated_at
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
             RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
-          `).bind(
+          `,
+          ).bind(
             item.fileId,
             storefrontId,
             themeId,
@@ -516,13 +556,63 @@ export const storefrontThemeFileDal = {
       }
     }
 
+    for (const deletion of deletions) {
+      preconditionStatements.push(
+        env.DATABASE.prepare(
+          `
+          SELECT CASE WHEN EXISTS (
+            SELECT 1 FROM storefront_theme_files
+            WHERE storefront_id = ?1
+              AND theme_id = ?2
+              AND path = ?3
+              AND id = ?4
+              AND version = ?5
+              AND deleted_at IS NULL
+          ) THEN 1 ELSE json('') END AS ok
+        `,
+        ).bind(
+          storefrontId,
+          themeId,
+          deletion.path,
+          deletion.expectedFileId,
+          deletion.expectedVersion,
+        ),
+      );
+      mutationStatements.push(
+        env.DATABASE.prepare(
+          `
+          UPDATE storefront_theme_files
+          SET deleted_at = ?1, updated_at = ?1
+          WHERE storefront_id = ?2
+            AND theme_id = ?3
+            AND path = ?4
+            AND id = ?5
+            AND version = ?6
+            AND deleted_at IS NULL
+        `,
+        ).bind(
+          now,
+          storefrontId,
+          themeId,
+          deletion.path,
+          deletion.expectedFileId,
+          deletion.expectedVersion,
+        ),
+      );
+    }
+
+    const fileMutationStartIndex = 1 + preconditionStatements.length;
+    statements.push(...preconditionStatements, ...mutationStatements);
+
     if (options.createRevision) {
       statements.push(
         prepareRevisionInsert({
           storefrontId,
           themeId,
           revisionId: crypto.randomUUID(),
-          message: options.revisionMessage ?? `Batch save of ${files.length} files`,
+          message:
+            options.revisionMessage ??
+            `Batch mutation of ${files.length} saved and ${deletions.length} deleted files`,
           source: "manual",
           createdBy: options.createdBy,
           now,
@@ -535,11 +625,13 @@ export const storefrontThemeFileDal = {
     );
 
     statements.push(
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         SELECT source_generation
         FROM storefront_themes
         WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL
-      `).bind(themeId, storefrontId),
+      `,
+      ).bind(themeId, storefrontId),
     );
 
     let batchResults: unknown[] = [];
@@ -552,7 +644,10 @@ export const storefrontThemeFileDal = {
         message.includes("constraint") ||
         message.includes("UNIQUE")
       ) {
-        const currentGen = await this.getSourceGeneration(storefrontId, themeId);
+        const currentGen = await this.getSourceGeneration(
+          storefrontId,
+          themeId,
+        );
         if (
           currentGen !== null &&
           currentGen !== options.expectedSourceGeneration
@@ -571,36 +666,47 @@ export const storefrontThemeFileDal = {
     const lastResult = batchResults[batchResults.length - 1] as any;
     const sourceGeneration = Number(
       lastResult?.results?.[0]?.source_generation ??
-      lastResult?.[0]?.source_generation ??
-      lastResult?.source_generation ??
-      1,
+        lastResult?.[0]?.source_generation ??
+        lastResult?.source_generation ??
+        1,
     );
 
-    const resultFiles: StorefrontThemeFileDTO[] = preparedFiles.map((item, index) => {
-      // The mutation statement is at index 1 + 2 * index + 1
-      const mutationIndex = 1 + 2 * index + 1;
-      const mutationResult = batchResults[mutationIndex] as any;
-      const row =
-        mutationResult?.results?.[0] ??
-        mutationResult?.[0] ??
-        mutationResult?.results ??
-        mutationResult;
+    const resultFiles: StorefrontThemeFileDTO[] = preparedFiles.map(
+      (item, index) => {
+        const mutationIndex = fileMutationStartIndex + index;
+        const mutationResult = batchResults[mutationIndex] as any;
+        const row =
+          mutationResult?.results?.[0] ??
+          mutationResult?.[0] ??
+          mutationResult?.results ??
+          mutationResult;
 
-      const fileDto: StorefrontThemeFileDTO = {
-        id: row?.id ?? item.fileId,
-        storefrontId: row?.storefront_id ?? row?.storefrontId ?? storefrontId,
-        themeId: row?.theme_id ?? row?.themeId ?? themeId,
-        path: row?.path ?? item.path,
-        content: row?.content ?? item.content,
-        mimeType: row?.mime_type ?? row?.mimeType ?? detectThemeMimeType(item.path, item.mimeType),
-        isEntry: Boolean(row?.is_entry ?? row?.isEntry ?? (item.path === "src/pages/index.tsx")),
-        version: Number(row?.version ?? (item.expectedVersion ? item.expectedVersion + 1 : 1)),
-        createdAt: row?.created_at ?? row?.createdAt ?? now,
-        updatedAt: row?.updated_at ?? row?.updatedAt ?? now,
-      };
+        const fileDto: StorefrontThemeFileDTO = {
+          id: row?.id ?? item.fileId,
+          storefrontId: row?.storefront_id ?? row?.storefrontId ?? storefrontId,
+          themeId: row?.theme_id ?? row?.themeId ?? themeId,
+          path: row?.path ?? item.path,
+          content: row?.content ?? item.content,
+          mimeType:
+            row?.mime_type ??
+            row?.mimeType ??
+            detectThemeMimeType(item.path, item.mimeType),
+          isEntry: Boolean(
+            row?.is_entry ??
+            row?.isEntry ??
+            item.path === "src/pages/index.tsx",
+          ),
+          version: Number(
+            row?.version ??
+              (item.expectedVersion ? item.expectedVersion + 1 : 1),
+          ),
+          createdAt: row?.created_at ?? row?.createdAt ?? now,
+          updatedAt: row?.updated_at ?? row?.updatedAt ?? now,
+        };
 
-      return Object.assign(fileDto, { sourceGeneration });
-    });
+        return Object.assign(fileDto, { sourceGeneration });
+      },
+    );
 
     return Object.assign(resultFiles, { sourceGeneration });
   },
@@ -630,7 +736,8 @@ export const storefrontThemeFileDal = {
         themeId,
         options.expectedSourceGeneration,
       ),
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         SELECT CASE WHEN EXISTS (
           SELECT 1 FROM storefront_theme_files
           WHERE storefront_id = ?1
@@ -640,8 +747,10 @@ export const storefrontThemeFileDal = {
             AND version = ?5
             AND deleted_at IS NULL
         ) THEN 1 ELSE json('') END AS ok
-      `).bind(storefrontId, themeId, path, expectedFileId, expectedVersion),
-      env.DATABASE.prepare(`
+      `,
+      ).bind(storefrontId, themeId, path, expectedFileId, expectedVersion),
+      env.DATABASE.prepare(
+        `
         UPDATE storefront_theme_files
         SET deleted_at = ?1, updated_at = ?1
         WHERE storefront_id = ?2
@@ -650,7 +759,8 @@ export const storefrontThemeFileDal = {
           AND id = ?5
           AND version = ?6
           AND deleted_at IS NULL
-      `).bind(now, storefrontId, themeId, path, expectedFileId, expectedVersion),
+      `,
+      ).bind(now, storefrontId, themeId, path, expectedFileId, expectedVersion),
       prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
     ];
 
@@ -662,7 +772,10 @@ export const storefrontThemeFileDal = {
         message.includes("malformed JSON") ||
         message.includes("constraint")
       ) {
-        const currentGen = await this.getSourceGeneration(storefrontId, themeId);
+        const currentGen = await this.getSourceGeneration(
+          storefrontId,
+          themeId,
+        );
         if (
           currentGen !== null &&
           currentGen !== options.expectedSourceGeneration
@@ -752,7 +865,9 @@ export const storefrontThemeFileDal = {
       .limit(1);
 
     if (!created) {
-      throw new Error("REVISION_FAILED: Revision not found after atomic batch.");
+      throw new Error(
+        "REVISION_FAILED: Revision not found after atomic batch.",
+      );
     }
 
     return {
@@ -863,8 +978,8 @@ export const storefrontThemeFileDal = {
       .limit(1);
     if (!rev) throw new Error(`Revision #${revisionNumber} not found`);
 
-    const snapshot =
-      (rev.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"];
+    const snapshot = (rev.snapshot ??
+      []) as StorefrontThemeRevisionDTO["snapshot"];
     const now = new Date().toISOString();
     const statements = [
       prepareThemeOwnershipGuard(
@@ -872,22 +987,26 @@ export const storefrontThemeFileDal = {
         themeId,
         options.expectedSourceGeneration,
       ),
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         UPDATE storefront_theme_files
         SET deleted_at = ?1, updated_at = ?1
         WHERE storefront_id = ?2 AND theme_id = ?3 AND deleted_at IS NULL
-      `).bind(now, storefrontId, themeId),
+      `,
+      ).bind(now, storefrontId, themeId),
     ];
 
     for (const file of snapshot) {
       statements.push(
-        env.DATABASE.prepare(`
+        env.DATABASE.prepare(
+          `
           INSERT INTO storefront_theme_files (
             id, storefront_id, theme_id, path, content, mime_type,
             is_entry, version, created_at, updated_at
           )
           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
-        `).bind(
+        `,
+        ).bind(
           crypto.randomUUID(),
           storefrontId,
           themeId,
@@ -920,7 +1039,10 @@ export const storefrontThemeFileDal = {
       await env.DATABASE.batch(statements);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("malformed JSON") || message.includes("constraint")) {
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
         throw new Error(
           options?.expectedSourceGeneration !== undefined
             ? "CONFLICT_SOURCE_GENERATION_MISMATCH: Theme files changed concurrently before rollback."
@@ -974,7 +1096,8 @@ export const storefrontThemeFileDal = {
       sourceGeneration: revision.sourceGeneration,
       message: revision.message,
       source: revision.source as "manual" | "ai" | "publish" | "rollback",
-      snapshot: (revision.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
+      snapshot: (revision.snapshot ??
+        []) as StorefrontThemeRevisionDTO["snapshot"],
       createdBy: revision.createdBy,
       createdAt: revision.createdAt,
     };

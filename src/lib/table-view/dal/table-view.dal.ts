@@ -4,6 +4,7 @@ import {
   type TableViewConfiguration,
 } from "@/db/table-view.schema";
 import { and, eq } from "drizzle-orm";
+import { firstOrNull } from "@/lib/db/single-row";
 
 const DEFAULT_VIEW_NAME = "Default";
 
@@ -21,7 +22,7 @@ export const tableViewDal = {
         ),
       )
       .limit(1);
-    return rows[0]?.configuration ?? null;
+    return firstOrNull(rows)?.configuration ?? null;
   },
 
   async upsertDefault(

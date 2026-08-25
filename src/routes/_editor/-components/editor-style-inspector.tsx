@@ -35,6 +35,7 @@ import {
 } from "@/lib/storefront/ast/tailwind-token-engine";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import { getThemeComponentContentCapabilityFromFiles } from "@/lib/storefront/theme-content-capabilities";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
@@ -49,7 +50,7 @@ import {
   Sliders,
   Type,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RxPadding } from "react-icons/rx";
 import { InspectorColorField } from "./style-inspector/inspector-color-field";
 import {
@@ -108,6 +109,10 @@ import {
 type EditorSection =
   StorefrontThemeEditorDTO["templates"][number]["document"]["sections"][number];
 
+export type InspectorPropsChangeOptions = {
+  skipPreviewSync?: boolean;
+};
+
 type EditorStyleInspectorProps = {
   section: EditorSection;
   themeFiles?: StorefrontThemeFileDTO[];
@@ -129,7 +134,10 @@ type EditorStyleInspectorProps = {
     fieldPath: string | null,
     value: string,
   ) => void;
-  onPropsChange: (next: Record<string, unknown>) => void;
+  onPropsChange: (
+    next: Record<string, unknown>,
+    options?: InspectorPropsChangeOptions,
+  ) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   disabled?: boolean;
 };
@@ -493,6 +501,37 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const parsedMeta = componentFile?.content
     ? parseComponentSource(componentFile.content, componentFile.path)
     : null;
+  const themeContentCapability = useMemo(
+    () =>
+      getThemeComponentContentCapabilityFromFiles(
+        themeFiles,
+        section.componentRef,
+      ),
+    [section.componentRef, themeFiles],
+  );
+  const declaredContentFields = Object.entries(
+    themeContentCapability?.fields ?? {},
+  );
+  const isDeclaredContentField = (fieldKey: string) =>
+    Boolean(themeContentCapability?.fields[fieldKey]);
+  const declaredContentFieldLabel = (fieldKey: string, fallback: string) =>
+    themeContentCapability?.fields[fieldKey]?.label ?? fallback;
+  const declaredContentFieldMaxLength = (fieldKey: string) => {
+    const definition = themeContentCapability?.fields[fieldKey];
+    return definition &&
+      (definition.type === "text" ||
+        definition.type === "textarea" ||
+        definition.type === "url")
+      ? definition.maxLength
+      : undefined;
+  };
+  const contentFieldDisplayValue = (fieldKey: string): unknown => {
+    const value = selectedFieldValue(fieldKey);
+    if (value !== undefined) return value;
+    return isDeclaredContentField(fieldKey)
+      ? (parsedMeta?.defaultProps[fieldKey] ?? "")
+      : undefined;
+  };
   const targetElementMeta =
     (activeNodeId ? parsedMeta?.nodeMap[activeNodeId] : undefined) ??
     parsedMeta?.elements[targetElement] ??
@@ -1028,7 +1067,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       computedValue: containerComputedStyle?.borderLeftWidth,
       optimisticValue: optimisticValue("borderWidthLeft"),
       fallbackValue:
-        parsePx(containerComputedStyle?.borderLeftWidth) ?? effectiveBorderWidth,
+        parsePx(containerComputedStyle?.borderLeftWidth) ??
+        effectiveBorderWidth,
     }),
     right: resolveInspectorLength({
       className: containerClassName,
@@ -1117,8 +1157,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 
   const resolveCommittedInstanceStyleTarget = useCallback(():
-    | ThemeInstanceStyleTarget
-    | undefined => {
+    ThemeInstanceStyleTarget | undefined => {
     if (!activeFieldPath || !activeRepeatedItemPath) return undefined;
     const currentItem = getFieldPathValue(
       localPropsRef.current,
@@ -1231,7 +1270,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 
   const handleFieldChange = useCallback(
-    (field: string, value: unknown) => {
+    (
+      field: string,
+      value: unknown,
+      options?: InspectorPropsChangeOptions,
+    ) => {
       const currentProps = localPropsRef.current;
       const descendantPath = selection?.descendantFields?.find(
         (binding) => binding.fieldKey === field,
@@ -1244,7 +1287,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         : { ...currentProps, [field]: value };
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next);
+      if (options) {
+        onPropsChange(next, options);
+      } else {
+        onPropsChange(next);
+      }
     },
     [activeFieldPath, onPropsChange, selection?.descendantFields],
   );
@@ -1390,10 +1437,144 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           onToggle={() => toggleSection("content")}
         >
           <div className="space-y-3">
+            {declaredContentFields
+              .filter(
+                ([fieldKey]) =>
+                  !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
+                  (!isSelectedNode || selectedField === fieldKey),
+              )
+              .map(([fieldKey, definition]) => {
+                const value = contentFieldDisplayValue(fieldKey);
+                const label =
+                  definition.label ?? fieldKey.replace(/[-_]/g, " ");
+                const previewAndCommitTextValue = (nextValue: string) => {
+                  onPreviewSelectionField?.(
+                    fieldKey,
+                    nestedFieldPath(fieldKey),
+                    nextValue,
+                  );
+                  handleFieldChange(fieldKey, nextValue, {
+                    skipPreviewSync: true,
+                  });
+                };
+
+                if (definition.type === "boolean") {
+                  return (
+                    <InspectorSelectControl
+                      key={fieldKey}
+                      label={label}
+                      ariaLabel={label}
+                      value={value === true ? "true" : "false"}
+                      onValueChange={(nextValue) => {
+                        onPreviewSelectionField?.(
+                          fieldKey,
+                          nestedFieldPath(fieldKey),
+                          nextValue,
+                        );
+                        handleFieldChange(fieldKey, nextValue === "true");
+                      }}
+                      options={["true", "false"]}
+                      formatOption={(option) =>
+                        option === "true" ? "True" : "False"
+                      }
+                      disabled={disabled}
+                    />
+                  );
+                }
+
+                if (definition.type === "select") {
+                  return (
+                    <InspectorSelectControl
+                      key={fieldKey}
+                      label={label}
+                      ariaLabel={label}
+                      value={String(value ?? definition.options[0]?.value)}
+                      onValueChange={(nextValue) => {
+                        onPreviewSelectionField?.(
+                          fieldKey,
+                          nestedFieldPath(fieldKey),
+                          nextValue,
+                        );
+                        handleFieldChange(fieldKey, nextValue);
+                      }}
+                      options={definition.options.map((option) => option.value)}
+                      formatOption={(value) =>
+                        definition.options.find(
+                          (option) => option.value === value,
+                        )?.label ?? value
+                      }
+                      disabled={disabled}
+                    />
+                  );
+                }
+
+                return (
+                  <InspectorField
+                    key={fieldKey}
+                    label={label}
+                    isFocused={activeFieldKey === fieldKey}
+                  >
+                    {definition.type === "textarea" ? (
+                      <Textarea
+                        rows={3}
+                        defaultValue={String(value ?? "")}
+                        maxLength={definition.maxLength}
+                        onInput={(event) => {
+                          previewAndCommitTextValue(event.currentTarget.value);
+                        }}
+                        disabled={disabled}
+                        className="min-h-20 resize-none text-xs"
+                      />
+                    ) : definition.type === "number" ? (
+                      <Input
+                        type="number"
+                        defaultValue={typeof value === "number" ? value : ""}
+                        min={definition.min}
+                        max={definition.max}
+                        step={definition.step}
+                        onInput={(event) => {
+                          onPreviewSelectionField?.(
+                            fieldKey,
+                            nestedFieldPath(fieldKey),
+                            event.currentTarget.value,
+                          );
+                        }}
+                        onBlur={(event) => {
+                          const rawValue = event.currentTarget.value.trim();
+                          if (!rawValue) return;
+                          const parsed = Number(rawValue);
+                          if (Number.isFinite(parsed)) {
+                            handleFieldChange(fieldKey, parsed);
+                          }
+                        }}
+                        disabled={disabled}
+                        className="h-8 text-xs"
+                      />
+                    ) : (
+                      <Input
+                        type={definition.type === "url" ? "url" : "text"}
+                        defaultValue={String(value ?? "")}
+                        maxLength={definition.maxLength}
+                        onInput={(event) => {
+                          previewAndCommitTextValue(event.currentTarget.value);
+                        }}
+                        disabled={disabled}
+                        className="h-8 text-xs"
+                      />
+                    )}
+                    {definition.description ? (
+                      <p className="text-[10px] leading-relaxed text-muted-foreground">
+                        {definition.description}
+                      </p>
+                    ) : null}
+                  </InspectorField>
+                );
+              })}
             {isSelectedNode &&
               descendantFields.length === 0 &&
               activeFieldPath &&
               selectedField &&
+              !isDeclaredContentField(selectedField) &&
               !SPECIALIZED_CONTENT_FIELD_KEYS.has(selectedField) &&
               (typeof fieldValue(selectedField) === "object" &&
               fieldValue(selectedField) !== null ? (
@@ -1496,127 +1677,151 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   );
                 })}
             {showField("eyebrow") &&
-              ("eyebrow" in props || descendantFieldKeys.has("eyebrow")) && (
-              <InspectorField
-                label="Eyebrow / Subtitle"
-                isFocused={activeFieldKey === "eyebrow"}
-              >
-                <Input
-                  defaultValue={String(selectedFieldValue("eyebrow") ?? "")}
-                  onInput={(e) =>
-                    onPreviewSelectionField?.(
-                      "eyebrow",
-                      nestedFieldPath("eyebrow"),
-                      e.currentTarget.value,
-                    )
-                  }
-                  onBlur={(e) =>
-                    handleFieldChange("eyebrow", e.currentTarget.value)
-                  }
-                  disabled={disabled}
-                  placeholder="Eyebrow text..."
-                  className="h-8 text-xs"
-                />
-              </InspectorField>
-            )}
+              ("eyebrow" in props ||
+                descendantFieldKeys.has("eyebrow") ||
+                isDeclaredContentField("eyebrow")) && (
+                <InspectorField
+                  label={declaredContentFieldLabel(
+                    "eyebrow",
+                    "Eyebrow / Subtitle",
+                  )}
+                  isFocused={activeFieldKey === "eyebrow"}
+                >
+                  <Input
+                    defaultValue={String(
+                      contentFieldDisplayValue("eyebrow") ?? "",
+                    )}
+                    maxLength={declaredContentFieldMaxLength("eyebrow")}
+                    onInput={(e) =>
+                      onPreviewSelectionField?.(
+                        "eyebrow",
+                        nestedFieldPath("eyebrow"),
+                        e.currentTarget.value,
+                      )
+                    }
+                    onBlur={(e) =>
+                      handleFieldChange("eyebrow", e.currentTarget.value)
+                    }
+                    disabled={disabled}
+                    placeholder="Eyebrow text..."
+                    className="h-8 text-xs"
+                  />
+                </InspectorField>
+              )}
 
             {showField("label") &&
               ("label" in props ||
                 descendantFieldKeys.has("label") ||
+                isDeclaredContentField("label") ||
                 (isSelectedNode && selectedField === "label")) && (
-              <InspectorField
-                label="Label"
-                isFocused={activeFieldKey === "label"}
-              >
-                <Input
-                  defaultValue={String(selectedFieldValue("label") ?? "")}
-                  onInput={(e) =>
-                    onPreviewSelectionField?.(
-                      "label",
-                      nestedFieldPath("label"),
-                      e.currentTarget.value,
-                    )
-                  }
-                  onBlur={(e) =>
-                    handleFieldChange("label", e.currentTarget.value)
-                  }
-                  disabled={disabled}
-                  placeholder="Section label..."
-                  className="h-8 text-xs"
-                />
-              </InspectorField>
-            )}
+                <InspectorField
+                  label={declaredContentFieldLabel("label", "Label")}
+                  isFocused={activeFieldKey === "label"}
+                >
+                  <Input
+                    defaultValue={String(
+                      contentFieldDisplayValue("label") ?? "",
+                    )}
+                    maxLength={declaredContentFieldMaxLength("label")}
+                    onInput={(e) =>
+                      onPreviewSelectionField?.(
+                        "label",
+                        nestedFieldPath("label"),
+                        e.currentTarget.value,
+                      )
+                    }
+                    onBlur={(e) =>
+                      handleFieldChange("label", e.currentTarget.value)
+                    }
+                    disabled={disabled}
+                    placeholder="Section label..."
+                    className="h-8 text-xs"
+                  />
+                </InspectorField>
+              )}
 
             {showField("heading") &&
-              ("heading" in props || descendantFieldKeys.has("heading")) && (
-              <InspectorField
-                label="Heading"
-                isFocused={activeFieldKey === "heading"}
-              >
-                <Textarea
-                  rows={2}
-                  defaultValue={String(selectedFieldValue("heading") ?? "")}
-                  onInput={(e) =>
-                    onPreviewSelectionField?.(
-                      "heading",
-                      nestedFieldPath("heading"),
-                      e.currentTarget.value,
-                    )
-                  }
-                  onBlur={(e) =>
-                    handleFieldChange("heading", e.currentTarget.value)
-                  }
-                  disabled={disabled}
-                  placeholder="Main headline..."
-                  className="min-h-16 text-xs resize-none"
-                />
-              </InspectorField>
-            )}
+              ("heading" in props ||
+                descendantFieldKeys.has("heading") ||
+                isDeclaredContentField("heading")) && (
+                <InspectorField
+                  label={declaredContentFieldLabel("heading", "Heading")}
+                  isFocused={activeFieldKey === "heading"}
+                >
+                  <Textarea
+                    rows={2}
+                    defaultValue={String(
+                      contentFieldDisplayValue("heading") ?? "",
+                    )}
+                    maxLength={declaredContentFieldMaxLength("heading")}
+                    onInput={(e) =>
+                      onPreviewSelectionField?.(
+                        "heading",
+                        nestedFieldPath("heading"),
+                        e.currentTarget.value,
+                      )
+                    }
+                    onBlur={(e) =>
+                      handleFieldChange("heading", e.currentTarget.value)
+                    }
+                    disabled={disabled}
+                    placeholder="Main headline..."
+                    className="min-h-16 text-xs resize-none"
+                  />
+                </InspectorField>
+              )}
 
             {showField("description", "body") &&
               ("description" in props ||
-                descendantFieldKeys.has("description")) && (
-              <InspectorField
-                label="Description"
-                isFocused={activeFieldKey === "description"}
-              >
-                <Textarea
-                  rows={3}
-                  defaultValue={String(
-                    selectedFieldValue("description") ?? "",
+                descendantFieldKeys.has("description") ||
+                isDeclaredContentField("description")) && (
+                <InspectorField
+                  label={declaredContentFieldLabel(
+                    "description",
+                    "Description",
                   )}
-                  onInput={(e) =>
-                    onPreviewSelectionField?.(
-                      "description",
-                      nestedFieldPath("description"),
-                      e.currentTarget.value,
-                    )
-                  }
-                  onBlur={(e) =>
-                    handleFieldChange("description", e.currentTarget.value)
-                  }
-                  disabled={disabled}
-                  placeholder="Body description..."
-                  className="min-h-20 text-xs resize-none"
-                />
-              </InspectorField>
-            )}
+                  isFocused={activeFieldKey === "description"}
+                >
+                  <Textarea
+                    rows={3}
+                    defaultValue={String(
+                      contentFieldDisplayValue("description") ?? "",
+                    )}
+                    maxLength={declaredContentFieldMaxLength("description")}
+                    onInput={(e) =>
+                      onPreviewSelectionField?.(
+                        "description",
+                        nestedFieldPath("description"),
+                        e.currentTarget.value,
+                      )
+                    }
+                    onBlur={(e) =>
+                      handleFieldChange("description", e.currentTarget.value)
+                    }
+                    disabled={disabled}
+                    placeholder="Body description..."
+                    className="min-h-20 text-xs resize-none"
+                  />
+                </InspectorField>
+              )}
 
             {showField("body", "description") &&
               ("body" in props ||
                 hasActiveRepeatedBody ||
-                descendantFieldKeys.has("body")) && (
+                descendantFieldKeys.has("body") ||
+                isDeclaredContentField("body")) && (
                 <InspectorField
-                  label="Body text"
+                  label={declaredContentFieldLabel("body", "Body text")}
                   isFocused={activeFieldKey === "body"}
                 >
                   <Textarea
                     rows={3}
                     defaultValue={String(
                       hasActiveRepeatedBody
-                        ? (selectedFieldValue("body") ?? "")
-                        : (selectedFieldValue("body") ?? ""),
+                        ? (contentFieldDisplayValue("body") ?? "")
+                        : (contentFieldDisplayValue("body") ?? ""),
                     )}
+                    maxLength={declaredContentFieldMaxLength("body")}
                     onInput={(e) =>
                       onPreviewSelectionField?.(
                         "body",
@@ -2566,21 +2771,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         allowedUnits={
                           componentPath ? ["px", "rem", "em"] : ["px"]
                         }
-                        min={
-                          effectiveFontSizeLength.unit === "px" ? 1 : 0.05
-                        }
-                        max={
-                          effectiveFontSizeLength.unit === "px" ? 240 : 15
-                        }
-                        step={
-                          effectiveFontSizeLength.unit === "px" ? 1 : 0.05
-                        }
+                        min={effectiveFontSizeLength.unit === "px" ? 1 : 0.05}
+                        max={effectiveFontSizeLength.unit === "px" ? 240 : 15}
+                        step={effectiveFontSizeLength.unit === "px" ? 1 : 0.05}
                         disabled={disabled || sourceStyleLocked}
                         onPreview={(cssValue) =>
                           previewStyle({ "font-size": cssValue })
                         }
                         onCommit={(cssValue, numericValue) => {
-                          if (sourceStyleLocked || numericValue === null) return;
+                          if (sourceStyleLocked || numericValue === null)
+                            return;
                           if (!componentPath)
                             handleFieldChange("fontSize", numericValue);
                           patchStyle(

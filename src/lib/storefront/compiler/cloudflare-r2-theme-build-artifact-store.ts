@@ -150,6 +150,14 @@ export function validateAndCanonicalizeArtifactPath(rawPath: string): string {
   return normalized;
 }
 
+function validateAndCanonicalizeArtifactDirectory(rawPath: string): string {
+  const trimmed = rawPath.trim().replace(/\/+$/, "");
+  const sentinel = validateAndCanonicalizeArtifactPath(
+    `${trimmed}/.morph-directory`,
+  );
+  return sentinel.slice(0, -"/.morph-directory".length);
+}
+
 /**
  * Builds the canonical tenant/theme/build scoped immutable artifact prefix.
  */
@@ -185,7 +193,7 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
     artifacts: ThemeBuildArtifactFile[];
     runnerManifest?: any;
   }): Promise<ThemeBuildArtifactStoreResult> {
-    const { build, buildInput, artifacts } = params;
+    const { build, buildInput, artifacts, runnerManifest } = params;
 
     if (!this.r2Bucket) {
       throw new Error(
@@ -279,6 +287,76 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
         actualSizeBytes,
         sha256,
       });
+    }
+
+    const requestedArtifactEntry =
+      typeof runnerManifest?.artifactEntry === "string"
+        ? validateAndCanonicalizeArtifactPath(runnerManifest.artifactEntry)
+        : null;
+    if (
+      requestedArtifactEntry &&
+      !validatedFiles.some((file) => file.relPath === requestedArtifactEntry)
+    ) {
+      throw new Error(
+        `INVALID_ARTIFACT_ENTRY: Runner entry "${requestedArtifactEntry}" is not present in the immutable artifact set.`,
+      );
+    }
+    const runtimeMetadata = runnerManifest?.metadata;
+    if (
+      runtimeMetadata?.runtime === "cloudflare-worker" &&
+      typeof runtimeMetadata.workerEntry !== "string"
+    ) {
+      throw new Error(
+        "INVALID_WORKER_ENTRY: Cloudflare Worker runtime metadata requires workerEntry.",
+      );
+    }
+    const runtime =
+      runtimeMetadata?.runtime === "cloudflare-worker"
+        ? {
+            kind: "cloudflare-worker" as const,
+            workerEntry: validateAndCanonicalizeArtifactPath(
+              runtimeMetadata.workerEntry,
+            ),
+            clientAssetsDirectory:
+              typeof runtimeMetadata.clientAssetsDirectory === "string"
+                ? validateAndCanonicalizeArtifactDirectory(
+                    runtimeMetadata.clientAssetsDirectory,
+                  )
+                : undefined,
+            previewEntry:
+              typeof runtimeMetadata.previewEntry === "string"
+                ? validateAndCanonicalizeArtifactPath(
+                    runtimeMetadata.previewEntry,
+                  )
+                : undefined,
+          }
+        : { kind: "static" as const };
+
+    if (
+      runtime.workerEntry &&
+      !validatedFiles.some((file) => file.relPath === runtime.workerEntry)
+    ) {
+      throw new Error(
+        `INVALID_WORKER_ENTRY: Worker entry "${runtime.workerEntry}" is not present in the immutable artifact set.`,
+      );
+    }
+    if (
+      runtime.previewEntry &&
+      !validatedFiles.some((file) => file.relPath === runtime.previewEntry)
+    ) {
+      throw new Error(
+        `INVALID_PREVIEW_ENTRY: Preview entry "${runtime.previewEntry}" is not present in the immutable artifact set.`,
+      );
+    }
+    if (
+      runtime.clientAssetsDirectory &&
+      !validatedFiles.some((file) =>
+        file.relPath.startsWith(`${runtime.clientAssetsDirectory}/`),
+      )
+    ) {
+      throw new Error(
+        `INVALID_CLIENT_ASSETS_DIRECTORY: Client assets directory "${runtime.clientAssetsDirectory}" is not present in the immutable artifact set.`,
+      );
     }
 
     // Stage 2: Upload all artifact files via atomic conditional creates
@@ -377,6 +455,7 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       .map((f) => f.path);
 
     const artifactEntry =
+      requestedArtifactEntry ??
       uploadedManifestFiles.find((f) => f.path === "index.html")?.path ??
       uploadedManifestFiles[0]?.path ??
       "index.html";
@@ -397,6 +476,7 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       sourceEntry: buildInput.entry,
       entry: buildInput.entry,
       artifactEntry,
+      runtime,
       filesCount: uploadedManifestFiles.length,
       totalSizeBytes,
       files: uploadedManifestFiles,

@@ -195,6 +195,7 @@ Edge Runtime
 - immutable build preview service
 - preview capability token
 - sandboxed iframe preview
+- source-authored `src/routes/` registry、fail-closed route diagnostics、真正 TanStack Start Cloudflare Worker build 與隔離的 TanStack Router client preview adapter
 
 ### 尚未完整閉環
 
@@ -203,6 +204,7 @@ Edge Runtime
 - StorefrontRelease 已具備 base entity、`activeReleaseId` SSOT、ContentPublication model、immutable content revision snapshot foundation、build/source validation、content-only build reuse、publication + release atomic batch 與 legacy sourceGeneration fail-closed
 - release history UI、production runtime
 - production edge storefront router
+- production Workers for Platforms dispatch／deployment plane；目前 immutable artifact 已包含 TanStack Start Worker、client assets 與 Editor preview，但 production edge 尚未執行該 Worker
 - custom domain → active release → artifact serving
 - Theme artifact + Page Document + Commerce DTO runtime composition
 - content-only publish without rebuild 的完整 production flow
@@ -286,6 +288,7 @@ Monaco
 - display name
 - visual-editor capability
 - optional inspector metadata
+- bounded `contentFields` capability，讓 customer code-authored props 可安全接入 versioned Page／Template content draft
 
 Manifest 是 mapping / metadata，不是 styling SSOT。
 

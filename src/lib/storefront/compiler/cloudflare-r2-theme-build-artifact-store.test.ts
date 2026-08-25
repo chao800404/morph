@@ -193,6 +193,90 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
     expect(pngEntry?.sha256).toBe(calculateArtifactSha256(artifacts[3].content));
   });
 
+  it("preserves the runner-selected preview entry and Cloudflare Worker runtime contract", async () => {
+    const { r2Bucket } = createMockR2();
+    const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+    const result = await store.persistBuildArtifacts({
+      build: createDummyBuild(),
+      buildInput: createDummyBuildInput(),
+      artifacts: [
+        {
+          path: "preview/index.html",
+          content: "<html></html>",
+          mimeType: "text/html",
+        },
+        {
+          path: "runtime/server/index.js",
+          content: "export default { fetch() {} }",
+          mimeType: "application/javascript",
+        },
+        {
+          path: "runtime/client/assets/app.js",
+          content: "export {};",
+          mimeType: "application/javascript",
+        },
+      ],
+      runnerManifest: {
+        artifactEntry: "preview/index.html",
+        metadata: {
+          runtime: "cloudflare-worker",
+          workerEntry: "runtime/server/index.js",
+          clientAssetsDirectory: "runtime/client",
+          previewEntry: "preview/index.html",
+        },
+      },
+    });
+
+    expect(result.manifest.artifactEntry).toBe("preview/index.html");
+    expect(result.manifest.runtime).toEqual({
+      kind: "cloudflare-worker",
+      workerEntry: "runtime/server/index.js",
+      clientAssetsDirectory: "runtime/client",
+      previewEntry: "preview/index.html",
+    });
+  });
+
+  it("rejects a runner-selected entry that is absent from the immutable artifact set", async () => {
+    const { r2Bucket } = createMockR2();
+    const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+    await expect(
+      store.persistBuildArtifacts({
+        build: createDummyBuild(),
+        buildInput: createDummyBuildInput(),
+        artifacts: [
+          {
+            path: "runtime/server/index.js",
+            content: "export default {}",
+            mimeType: "application/javascript",
+          },
+        ],
+        runnerManifest: { artifactEntry: "preview/index.html" },
+      }),
+    ).rejects.toThrow(/INVALID_ARTIFACT_ENTRY/);
+  });
+
+  it("fails closed on incomplete Cloudflare Worker runtime metadata", async () => {
+    const { r2Bucket } = createMockR2();
+    const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+    await expect(
+      store.persistBuildArtifacts({
+        build: createDummyBuild(),
+        buildInput: createDummyBuildInput(),
+        artifacts: [
+          {
+            path: "preview/index.html",
+            content: "<html></html>",
+            mimeType: "text/html",
+          },
+        ],
+        runnerManifest: {
+          artifactEntry: "preview/index.html",
+          metadata: { runtime: "cloudflare-worker" },
+        },
+      }),
+    ).rejects.toThrow(/INVALID_WORKER_ENTRY/);
+  });
+
   it("blocks path traversal in artifact paths with specific errors", () => {
     const invalidPaths = [
       "../secret.txt",

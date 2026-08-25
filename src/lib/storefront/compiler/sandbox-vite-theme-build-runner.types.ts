@@ -35,7 +35,8 @@ export const DEFAULT_APPROVED_DEPENDENCIES: string[] = [
   "@vitejs/plugin-react",
   "vite",
   "vite/modulepreload-polyfill",
+  "@tanstack/react-router",
+  "@tanstack/react-start",
+  "@tanstack/router-plugin",
+  "@cloudflare/vite-plugin",
 ];
-
-
-

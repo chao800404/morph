@@ -23,3 +23,15 @@ export function shouldRevealPreviewForStyleAck(
     shouldAcceptStyleAck(revision, latestRequested)
   );
 }
+
+export function isPreviewHandshakePending(
+  previewKey: string | null,
+  loadedPreviewKey: string | null,
+  failedPreviewKey: string | null,
+): boolean {
+  return (
+    previewKey !== null &&
+    loadedPreviewKey !== previewKey &&
+    failedPreviewKey !== previewKey
+  );
+}

@@ -8,6 +8,10 @@ import {
   materializeThemeBuildInput,
   normalizeRevisionSnapshot,
 } from "./theme-build-materializer";
+import {
+  THEME_START_BUILD_DEPENDENCIES,
+  THEME_START_RUNTIME_DEPENDENCIES,
+} from "./theme-start-toolchain";
 
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
 
@@ -524,6 +528,103 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
         "rev-multi-entry",
       ),
     ).toThrow(/CORRUPT_REVISION_SNAPSHOT: Multiple entry files/);
+  });
+
+  it("uses a manifest entry as the immutable entry SSOT before legacy isEntry", () => {
+    const result = normalizeRevisionSnapshot(
+      [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ entry: "src/routes/index.tsx" }),
+        },
+        {
+          path: "src/pages/index.tsx",
+          content: "export default function Legacy() {}",
+          isEntry: true,
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: "export default function Home() {}",
+        },
+      ],
+      "rev-manifest-entry",
+    );
+
+    expect(result.entry).toBe("src/routes/index.tsx");
+  });
+
+  it("fails closed when a manifest entry is missing", () => {
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [
+          {
+            path: "morph.theme.json",
+            content: JSON.stringify({ entry: "src/routes/index.tsx" }),
+          },
+          {
+            path: "src/pages/index.tsx",
+            content: "export default function Legacy() {}",
+          },
+        ],
+        "rev-missing-manifest-entry",
+      ),
+    ).toThrow(/MANIFEST_ENTRY_NOT_FOUND/);
+  });
+
+  it("validates the complete TanStack Start package and router contract", () => {
+    const files = [
+      {
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          entry: "src/routes/index.tsx",
+          router: { framework: "tanstack-start" },
+        }),
+      },
+      {
+        path: "package.json",
+        content: JSON.stringify({
+          dependencies: THEME_START_RUNTIME_DEPENDENCIES,
+          devDependencies: THEME_START_BUILD_DEPENDENCIES,
+        }),
+      },
+      {
+        path: "src/router.tsx",
+        content: "export function getRouter() { return {}; }",
+      },
+      {
+        path: "src/routes/__root.tsx",
+        content:
+          'import { createRootRoute } from "@tanstack/react-router"; export const Route = createRootRoute({ component: () => null });',
+      },
+      {
+        path: "src/routes/index.tsx",
+        content:
+          'import { createFileRoute } from "@tanstack/react-router"; export const Route = createFileRoute("/")({ component: () => null });',
+      },
+    ];
+
+    expect(() => normalizeRevisionSnapshot(files, "rev-start")).not.toThrow();
+    expect(() =>
+      normalizeRevisionSnapshot(
+        files.filter((file) => file.path !== "package.json"),
+        "rev-start-missing-package",
+      ),
+    ).toThrow(/INVALID_START_PACKAGE/);
+    expect(() =>
+      normalizeRevisionSnapshot(
+        files.filter((file) => file.path !== "src\/router.tsx"),
+        "rev-start-missing-router",
+      ),
+    ).toThrow(/MISSING_START_ROUTER/);
+  });
+
+  it("rejects customer-authored platform build files", () => {
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [{ path: "src/routeTree.gen.ts", content: "export {};" }],
+        "rev-generated-route-tree",
+      ),
+    ).toThrow(/PLATFORM_OWNED_THEME_BUILD_PATH/);
   });
 
   it("enforces identity freeze: locked build strictly rejects conflicting compilerIdentity overrides", async () => {

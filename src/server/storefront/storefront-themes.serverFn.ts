@@ -1,5 +1,6 @@
 import { fail, failure, ok } from "@/lib/db/server-result";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
+import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
 import {
   publishStorefrontThemeTemplateInputSchema,
   reorderStorefrontThemeSectionsInputSchema,
@@ -43,7 +44,7 @@ function parseEditorPanelWidths(cookieHeader: string | null | undefined) {
 export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
   .validator((data: unknown) => storefrontThemeEditorInputSchema.parse(data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context: authContext }) => {
     try {
       const request = getRequest();
       const cookieHeader = request?.headers?.get("cookie");
@@ -51,6 +52,11 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
       const editorOrigin = request
         ? new URL(request.url).origin
         : process.env.PUBLIC_URL || "http://localhost:3000";
+      await storefrontDal.ensureStoredStarterPreview({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        createdBy: authContext.user.id,
+      });
       const context = await storefrontThemeDal.findEditorContext(
         data.storefrontId,
         data.themeId,
@@ -120,6 +126,15 @@ export const updateStorefrontThemeSectionProps = createServerFn({
             error: "NOT_FOUND",
           });
     } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("INVALID_THEME_CONTENT_FIELD_VALUE")) {
+        return fail(
+          "The content value does not match the Theme field declaration.",
+          {
+            error: "INVALID_CONTENT_FIELD",
+          },
+        );
+      }
       return failure(
         "Update storefront theme section props error",
         error,

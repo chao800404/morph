@@ -41,6 +41,12 @@ export type ParsedComponentMeta = {
 
 const MORPH_INSTANCE_CLASS_MAP = "morphInstanceClasses";
 
+const MAX_THEME_MANIFEST_BYTES = 256 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function isMorphInstanceClassLookup(argument: any): boolean {
   let node = argument;
   while (
@@ -205,6 +211,37 @@ export function getComponentFilePath(
   return null;
 }
 
+/**
+ * Resolves the optional Theme Workspace page shell used to wrap the versioned
+ * Template Document. The explicit manifest capability prevents an older entry
+ * file that hard-codes sections from silently replacing stored document
+ * assembly in Live Preview.
+ */
+export function getThemeDocumentLayoutFilePath(
+  themeFiles?: Array<{ path: string; content?: string }>,
+): string | null {
+  if (!themeFiles) return null;
+  const manifestFile = themeFiles.find(
+    (file) => file.path === "morph.theme.json",
+  );
+  if (
+    !manifestFile?.content ||
+    manifestFile.content.length > MAX_THEME_MANIFEST_BYTES
+  ) {
+    return null;
+  }
+
+  try {
+    const manifest: unknown = JSON.parse(manifestFile.content);
+    if (!isRecord(manifest) || !isRecord(manifest.documentLayout)) return null;
+    const source = manifest.documentLayout.source;
+    if (typeof source !== "string" || !source.trim()) return null;
+    return themeFiles.some((file) => file.path === source) ? source : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseAst(sourceCode: string) {
   return parse(sourceCode, {
     sourceType: "module",
@@ -327,8 +364,7 @@ export function parseComponentSource(
         let morphElementName: string | null = null;
         let className = "";
         let classNameOffsets:
-          | { start: number; end: number; isExpression: boolean }
-          | undefined;
+          { start: number; end: number; isExpression: boolean } | undefined;
 
         for (const attr of openingElement.attributes) {
           if (

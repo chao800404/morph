@@ -32,17 +32,17 @@ Morph 不是單純的 section-schema page builder，也不是無限制的一般�
 
 Morph 有多個 SSOT，但每一種資料只能有一個權威來源。
 
-| 領域 | Source of Truth |
-|---|---|
-| 商品、價格、庫存、選項、媒體、客戶、訂單、促銷、稅、sales channel | Commerce modules / D1 |
+| 領域                                                                                             | Source of Truth                           |
+| ------------------------------------------------------------------------------------------------ | ----------------------------------------- |
+| 商品、價格、庫存、選項、媒體、客戶、訂單、促銷、稅、sales channel                                | Commerce modules / D1                     |
 | Storefront layout、樣式、responsive、motion、interaction、Canvas/WebGL/Three/GSAP implementation | React / TSX / CSS / Tailwind Theme Source |
-| 可視化元件 implementation | Theme Source |
-| 文案、圖片選擇、SEO、commerce references、頁面 section instance 與 ordering | Versioned Page / Template Document |
-| Theme 的可編輯工作狀態 | Theme Workspace Files |
-| 可重現的 Theme source snapshot | Immutable Theme Source Revision |
-| 可執行前端結果 | Immutable Theme Build Artifact |
-| 線上正在使用的 storefront 組合 | Storefront Release / Active Release |
-| 使用者登入、角色與 session | Better Auth / existing auth helpers |
+| 可視化元件 implementation                                                                        | Theme Source                              |
+| 文案、圖片選擇、SEO、commerce references、頁面 section instance 與 ordering                      | Versioned Page / Template Document        |
+| Theme 的可編輯工作狀態                                                                           | Theme Workspace Files                     |
+| 可重現的 Theme source snapshot                                                                   | Immutable Theme Source Revision           |
+| 可執行前端結果                                                                                   | Immutable Theme Build Artifact            |
+| 線上正在使用的 storefront 組合                                                                   | Storefront Release / Active Release       |
+| 使用者登入、角色與 session                                                                       | Better Auth / existing auth helpers       |
 
 ### 2.1 Presentation SSOT
 
@@ -164,7 +164,7 @@ package.json
 morph.theme.json
 
 src/
-├─ pages/
+├─ routes/
 ├─ components/
 ├─ styles/
 └─ ...
@@ -179,6 +179,24 @@ Theme files 可以包含：
 - 允許的靜態資產或 manifest
 
 所有 path 必須經 `safeThemeFilePathSchema` 或等價的集中驗證，不可直接相信 client path。
+
+### 4.1.1 Customer Theme 是獨立 TanStack Start storefront
+
+Customer Theme 的最終 runtime contract 是一個可獨立 build 與執行的 TanStack Start storefront application，不是 Morph Core 內的 preview-only component renderer。
+
+- Theme 使用標準 `src/routes/` file-based routing；`src/routes/about.tsx` 在該 Theme 的 generated route tree 中對應 `/about`。
+- Theme 與 Morph Core / Dashboard 必須是兩個獨立 TanStack Start application、兩棵獨立 route tree 與兩個獨立 build input。Customer route 不得寫入、import 或修改 Morph Core 的 `src/routeTree.gen.ts`。
+- `routeTree.gen.ts` 與其他 router generated output 只能由固定版本的 Theme build toolchain 在暫存 build workspace 產生；不是 mutable Theme Workspace 的人工編輯 SSOT。
+- Theme Workspace 可包含 route components、nested layouts、loader 與 head metadata，但只能使用允許的 Theme dependency 與 Morph Storefront public runtime capability。不得取得 Dashboard auth context、private D1 binding、Morph Core secret 或未允許的 server / network / filesystem capability。
+- Theme 的 `package.json`、TanStack / Vite plugin、server entry、Worker bindings 與 build configuration 必須經過平台 allowlist 與 Sandbox build policy；不可讓 customer source 藉由修改 build infrastructure 越界。
+- Starter Theme 必須使用同一個 `src/routes/` contract 並能由正式 Theme build pipeline 產生可執行 storefront；相容性 renderer 只能是明確可移除的 migration path。
+
+Theme 同時支援兩種頁面來源，不得強迫所有頁面只使用其中一種：
+
+1. **Code-authored route**：由 `src/routes/**` 定義特殊 layout、loader、interaction 或完全自訂頁面；修改後必須建立新 Theme source revision / build / release。
+2. **Content-backed dynamic route**：由已 build 的 `$handle` 或 splat route 解析 versioned D1 Page / Template Document；文案、asset reference、section instance 與 ordering 的修改不得要求重建 Theme。
+
+Visual Editor 的 Page Registry 必須由「Theme build 產生的 route manifest + 有權限的 D1 Page / Template records」可重建地推導，不得手工維護第二份可漂移 route registry。
 
 ### 4.2 Workspace 是 mutable，Revision 是 immutable
 

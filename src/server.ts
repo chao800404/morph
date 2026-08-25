@@ -42,10 +42,61 @@ if (import.meta.hot) {
 
 export { Sandbox } from "@cloudflare/sandbox";
 
+/**
+ * Production storefront traffic arrives on merchant hostnames and must never
+ * reach the Morph Core router: the dashboard, editor and server functions are
+ * platform surface. Hostnames are classified first, and only non-platform hosts
+ * pay for storefront resolution.
+ *
+ * The storefront modules are imported lazily so a dashboard cold start does not
+ * pull the release/artifact graph, and so this entry keeps the deferred-import
+ * shape that the Start handler comment above depends on.
+ */
+async function handleStorefrontRequest(request: Request): Promise<Response> {
+  const [{ StorefrontProductionService }, routing, { env }] = await Promise.all([
+    import("@/lib/storefront/service/storefront-production.service"),
+    import("@/lib/storefront/service/storefront-request-routing"),
+    import("cloudflare:workers"),
+  ]);
+
+  const service = new StorefrontProductionService({
+    runtime: routing.createThemeRuntime(
+      env as unknown as Record<string, unknown>,
+    ),
+    r2Bucket: (env as any)?.R2_BUCKET,
+  });
+  return service.handleRequest(request);
+}
+
+async function isStorefrontHost(request: Request): Promise<boolean> {
+  const { collectPlatformHostnames, isPlatformHostname } = await import(
+    "@/lib/storefront/service/storefront-request-routing"
+  );
+  const { env } = await import("cloudflare:workers");
+  const platformHostnames = collectPlatformHostnames(
+    env as unknown as Record<string, unknown>,
+  );
+  const host =
+    request.headers.get("host") ?? safeUrlHostname(request.url);
+  return !isPlatformHostname(host, platformHostnames);
+}
+
+function safeUrlHostname(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
 export default {
   async fetch(
     ...args: Parameters<StartRequestHandler>
   ): Promise<Response> {
+    const request = args[0];
+    if (await isStorefrontHost(request)) {
+      return handleStorefrontRequest(request);
+    }
     return (await getHandler())(...args);
   },
 };

@@ -252,6 +252,18 @@ describe("reorder and update props schemas", () => {
         props: { title: "Hello" },
       }),
     ).toThrow();
+
+    expect(() =>
+      updateStorefrontThemeSectionPropsInputSchema.parse({
+        ...validProps,
+        props: Object.fromEntries(
+          Array.from({ length: 101 }, (_, index) => [
+            `field${index}`,
+            "value",
+          ]),
+        ),
+      }),
+    ).toThrow();
   });
 });
 

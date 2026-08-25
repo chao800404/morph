@@ -48,6 +48,28 @@ declare module "clsx" {
   export function clsx(...inputs: ClassValue[]): string;
   export default clsx;
 }
+
+declare module "@tanstack/react-router" {
+  export const HeadContent: (props: Record<string, never>) => JSX.Element;
+  export const Outlet: (props: Record<string, never>) => JSX.Element;
+  export const RouterProvider: (props: { router: unknown }) => JSX.Element;
+  export const Scripts: (props: Record<string, never>) => JSX.Element;
+  export function createRootRoute(options: Record<string, unknown>): any;
+  export function createRootRouteWithContext<TContext>(): (
+    options: Record<string, unknown>,
+  ) => any;
+  export function createFileRoute<TPath extends string>(
+    path: TPath,
+  ): (options: Record<string, unknown>) => any;
+  export function createRouter(options: Record<string, unknown>): any;
+}
+
+declare module "@tanstack/react-start" {
+  export function createServerFn(options?: Record<string, unknown>): {
+    validator<T>(validator: (data: T) => T): any;
+    handler<T>(handler: (context: { data: any }) => T | Promise<T>): any;
+  };
+}
 `;
 
 type ThemeModelFile = {

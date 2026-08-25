@@ -137,6 +137,8 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(writtenPkg.dependencies["tailwindcss"]).toBe("4.1.17");
     expect(writtenPkg.dependencies["@tailwindcss/vite"]).toBe("4.1.17");
     expect(writtenPkg.dependencies["@vitejs/plugin-react"]).toBe("5.2.0");
+    expect(writtenPkg.dependencies["@tanstack/react-start"]).toBe("1.168.32");
+    expect(writtenPkg.dependencies["@tanstack/react-router"]).toBe("1.170.18");
 
     // Verify container vite.config.ts has injected dependency enforcer AND path containment
     const writtenViteConfig = String(mock.writtenFiles.get("/workspace/vite.config.ts"));
@@ -152,7 +154,10 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
       "/opt/morph-toolchain/node_modules/.bin/vite build --config /workspace/vite.config.ts",
       expect.objectContaining({
         timeout: 30_000,
-        env: { NODE_ENV: "production" },
+        env: {
+          NODE_ENV: "production",
+          MORPH_THEME_BUILD_TARGET: "preview",
+        },
       }),
     );
     expect(mock.session.destroy).toHaveBeenCalled();
@@ -168,6 +173,94 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
       expect(png?.mimeType).toBe("image/png");
       expect(png?.content instanceof Uint8Array).toBe(true);
       expect(png?.sizeBytes).toBe(4);
+    }
+  });
+
+  it("builds a TanStack Start Worker and the isolated preview adapter in the same immutable artifact set", async () => {
+    const mock = createMockSandbox({
+      exec: vi.fn(async (command: string) => {
+        if (command.includes("find /workspace/dist")) {
+          return {
+            exitCode: 0,
+            success: true,
+            stdout:
+              "200 /workspace/dist/runtime/server/index.js\n" +
+              "120 /workspace/dist/runtime/client/assets/app.js\n" +
+              "80 /workspace/dist/preview/index.html\n" +
+              "90 /workspace/dist/preview/assets/preview.js\n",
+            stderr: "",
+          };
+        }
+        return {
+          exitCode: 0,
+          success: true,
+          stdout: "vite build complete",
+          stderr: "",
+        };
+      }),
+    });
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi.fn(async () => mock.session),
+    };
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+    });
+
+    const result = await runner.run(
+      createInput(
+        [
+          {
+            path: "morph.theme.json",
+            content: JSON.stringify({
+              entry: "src/routes/index.tsx",
+              router: { framework: "tanstack-start" },
+            }),
+          },
+          {
+            path: "src/router.tsx",
+            content:
+              'export function getRouter() { return createRouter({ routeTree }); }',
+          },
+          {
+            path: "src/routes/__root.tsx",
+            content: "export const Route = createRootRoute({});",
+          },
+          {
+            path: "src/routes/index.tsx",
+            content: 'export const Route = createFileRoute("/")({});',
+          },
+        ],
+        { entry: "src/routes/index.tsx" },
+      ),
+    );
+
+    expect(result.success).toBe(true);
+    expect(mock.writtenFiles.has("/workspace/wrangler.json")).toBe(true);
+    expect(
+      String(mock.writtenFiles.get("/workspace/vite.config.ts")),
+    ).not.toContain("@morph/storefront-runtime");
+    expect(mock.session.exec).toHaveBeenCalledWith(
+      "/opt/morph-toolchain/node_modules/.bin/vite build --config /workspace/vite.config.ts",
+      expect.objectContaining({
+        env: {
+          NODE_ENV: "production",
+          MORPH_THEME_BUILD_TARGET: "runtime",
+        },
+      }),
+    );
+    if (result.success) {
+      expect(result.manifestJson.artifactEntry).toBe("preview/index.html");
+      expect(result.manifestJson.metadata).toEqual(
+        expect.objectContaining({
+          runtime: "cloudflare-worker",
+          workerEntry: "runtime/server/index.js",
+        }),
+      );
+      expect(
+        result.artifacts.some(
+          (artifact) => artifact.path === "runtime/server/index.js",
+        ),
+      ).toBe(true);
     }
   });
 
@@ -431,4 +524,3 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(mock.session.readFile).not.toHaveBeenCalled();
   });
 });
-

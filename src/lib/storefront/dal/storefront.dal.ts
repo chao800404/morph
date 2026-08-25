@@ -17,6 +17,7 @@ import {
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
 import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
+import { createStarterThemeWorkspaceUpgradePlan } from "../starter-theme-files";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
 export const DEFAULT_STOREFRONT_THEME_ID =
@@ -100,10 +101,7 @@ async function ensureStarterHomeDocument(
     return;
   }
 
-  if (
-    homeTemplate &&
-    isUpgradeableStarterHomeDocument(homeTemplate.document)
-  ) {
+  if (homeTemplate && isUpgradeableStarterHomeDocument(homeTemplate.document)) {
     await db
       .update(storefrontThemeTemplates)
       .set({
@@ -128,14 +126,75 @@ async function ensureStarterHomeDocument(
 async function ensureStarterThemeWorkspace(
   storefrontId: string,
   themeId: string,
+  upgradeExistingStarter: boolean,
+  createdBy?: string,
 ): Promise<void> {
   const existingFiles = await storefrontThemeFileDal.listFiles(
     storefrontId,
     themeId,
   );
   if (existingFiles.length === 0) {
-    await storefrontThemeFileDal.initStarterTheme(storefrontId, themeId);
+    if (createdBy) {
+      await storefrontThemeFileDal.initStarterTheme(
+        storefrontId,
+        themeId,
+        createdBy,
+      );
+    } else {
+      await storefrontThemeFileDal.initStarterTheme(storefrontId, themeId);
+    }
+    return;
   }
+  if (!upgradeExistingStarter) return;
+
+  const upgradePlan = createStarterThemeWorkspaceUpgradePlan(existingFiles);
+  if (upgradePlan.files.length === 0 && upgradePlan.deletions.length === 0) {
+    return;
+  }
+  const sourceGeneration = await storefrontThemeFileDal.getSourceGeneration(
+    storefrontId,
+    themeId,
+  );
+  if (sourceGeneration === null) {
+    throw new Error("Starter Theme source generation is unavailable.");
+  }
+  await storefrontThemeFileDal.saveFilesBatch(
+    storefrontId,
+    themeId,
+    upgradePlan.files,
+    {
+      expectedSourceGeneration: sourceGeneration,
+      deletions: upgradePlan.deletions,
+      createRevision: true,
+      revisionMessage: "Upgrade Starter Theme route workspace",
+      createdBy,
+    },
+  );
+}
+
+async function shouldUpgradeStarterWorkspace(
+  db: StorefrontDb,
+  storefrontId: string,
+  themeId: string,
+): Promise<boolean> {
+  const [theme] = await db
+    .select({ metadata: storefrontThemes.metadata })
+    .from(storefrontThemes)
+    .where(
+      and(
+        eq(storefrontThemes.id, themeId),
+        eq(storefrontThemes.storefrontId, storefrontId),
+        isNull(storefrontThemes.deletedAt),
+      ),
+    )
+    .limit(1);
+  const version = theme?.metadata?.starterTemplateVersion;
+  return (
+    typeof version === "number" &&
+    Number.isInteger(version) &&
+    version > 0 &&
+    version < STOREFRONT_STARTER_TEMPLATE_VERSION
+  );
 }
 
 /**
@@ -145,6 +204,28 @@ async function ensureStarterThemeWorkspace(
  * reads. Existing themes and authored documents are never overwritten.
  */
 export const storefrontDal = {
+  async ensureStoredStarterPreview(data: {
+    storefrontId: string;
+    themeId: string;
+    createdBy: string;
+  }): Promise<boolean> {
+    const db = await getDb();
+    const shouldUpgrade = await shouldUpgradeStarterWorkspace(
+      db,
+      data.storefrontId,
+      data.themeId,
+    );
+    if (!shouldUpgrade) return false;
+
+    await ensureStarterThemeWorkspace(
+      data.storefrontId,
+      data.themeId,
+      true,
+      data.createdBy,
+    );
+    await ensureStarterHomeDocument(db, data.themeId);
+    return true;
+  },
   async findActive(id?: string): Promise<StorefrontDTO | null> {
     const db = await getDb();
     const conditions = [isNull(storefronts.deletedAt)];
@@ -216,8 +297,17 @@ export const storefrontDal = {
       .limit(1);
 
     if (existing?.activeThemeId) {
+      const upgradeExistingStarter = await shouldUpgradeStarterWorkspace(
+        db,
+        existing.id,
+        existing.activeThemeId,
+      );
+      await ensureStarterThemeWorkspace(
+        existing.id,
+        existing.activeThemeId,
+        upgradeExistingStarter,
+      );
       await ensureStarterHomeDocument(db, existing.activeThemeId);
-      await ensureStarterThemeWorkspace(existing.id, existing.activeThemeId);
       return;
     }
 
@@ -290,7 +380,7 @@ export const storefrontDal = {
       .set({ activeThemeId: themeId, updatedAt: now })
       .where(eq(storefronts.id, storefrontId));
 
+    await ensureStarterThemeWorkspace(storefrontId, themeId, false);
     await ensureStarterHomeDocument(db, themeId);
-    await ensureStarterThemeWorkspace(storefrontId, themeId);
   },
 };

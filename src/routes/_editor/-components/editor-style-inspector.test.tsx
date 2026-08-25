@@ -135,6 +135,208 @@ describe("code-authored text content", () => {
       label: "Designed with purpose",
     });
   });
+
+  it("uses Theme manifest contentFields for a custom code-authored heading", () => {
+    const onPreviewSelectionField = vi.fn();
+    const onPropsChange = vi.fn();
+    const themeFileBase = {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      mimeType: "text/typescript",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      updatedAt: "2026-08-25T00:00:00.000Z",
+    };
+    render(
+      <EditorStyleInspector
+        section={baseSection("promo", {})}
+        themeFiles={[
+          {
+            ...themeFileBase,
+            id: "manifest",
+            path: "morph.theme.json",
+            mimeType: "application/json",
+            content: JSON.stringify({
+              components: {
+                "promo.default": {
+                  source: "src/components/Promo.tsx",
+                  contentFields: {
+                    heading: {
+                      type: "text",
+                      label: "Promo heading",
+                      maxLength: 80,
+                    },
+                  },
+                },
+              },
+            }),
+          },
+          {
+            ...themeFileBase,
+            id: "promo-source",
+            path: "src/components/Promo.tsx",
+            content: `export default function Promo({ heading = "A thoughtful default" }) {
+              return <section data-morph-node="promo-root"><h2 data-morph-node="promo-heading" data-morph-element="heading">{heading}</h2></section>;
+            }`,
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "heading",
+          tagName: "h2",
+          sourceFilePath: "src/components/Promo.tsx",
+          nodeId: "promo-heading",
+          elementKey: "heading",
+          fieldKey: "heading",
+          fieldPath: "heading",
+          contentValue: "A thoughtful default",
+        })}
+        onPreviewSelectionField={onPreviewSelectionField}
+        onPropsChange={onPropsChange}
+      />,
+    );
+
+    const heading = screen.getByDisplayValue("A thoughtful default");
+    expect(screen.getByText("Promo heading")).toBeTruthy();
+    fireEvent.input(heading, {
+      target: { value: "Designed for everyday use" },
+    });
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "heading",
+      null,
+      "Designed for everyday use",
+    );
+    fireEvent.blur(heading);
+    expect(onPropsChange).toHaveBeenLastCalledWith({
+      heading: "Designed for everyday use",
+    });
+  });
+
+  it("persists a custom text field while it is edited", () => {
+    const onPreviewSelectionField = vi.fn();
+    const onPropsChange = vi.fn();
+    const themeFileBase = {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      mimeType: "text/typescript",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      updatedAt: "2026-08-25T00:00:00.000Z",
+    };
+    render(
+      <EditorStyleInspector
+        section={baseSection("principles", { items: [] })}
+        themeFiles={[
+          {
+            ...themeFileBase,
+            id: "manifest",
+            path: "morph.theme.json",
+            mimeType: "application/json",
+            content: JSON.stringify({
+              components: {
+                "principles.default": {
+                  source: "src/components/Principles.tsx",
+                  contentFields: {
+                    nn: { type: "text", label: "hello" },
+                  },
+                },
+              },
+            }),
+          },
+          {
+            ...themeFileBase,
+            id: "principles-source",
+            path: "src/components/Principles.tsx",
+            content: `export default function Principles({ nn = "t" }) {
+              return <section data-morph-node="principles-root"><p data-morph-node="principles-nn" data-morph-element="nn">{nn}</p></section>;
+            }`,
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "text",
+          tagName: "p",
+          sourceFilePath: "src/components/Principles.tsx",
+          nodeId: "principles-nn",
+          elementKey: "nn",
+          fieldKey: "nn",
+          fieldPath: "nn",
+          contentValue: "t",
+        })}
+        onPreviewSelectionField={onPreviewSelectionField}
+        onPropsChange={onPropsChange}
+      />,
+    );
+
+    const field = screen.getByDisplayValue("t");
+    fireEvent.input(field, { target: { value: "saved nn" } });
+
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "nn",
+      null,
+      "saved nn",
+    );
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [],
+        nn: "saved nn",
+      },
+      { skipPreviewSync: true },
+    );
+  });
+
+  it("shows declared code defaults when the custom parent section is selected", () => {
+    const themeFileBase = {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      mimeType: "text/typescript",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      updatedAt: "2026-08-25T00:00:00.000Z",
+    };
+    render(
+      <EditorStyleInspector
+        section={baseSection("promo", {})}
+        themeFiles={[
+          {
+            ...themeFileBase,
+            id: "manifest",
+            path: "morph.theme.json",
+            mimeType: "application/json",
+            content: JSON.stringify({
+              components: {
+                "promo.default": {
+                  source: "src/components/Promo.tsx",
+                  contentFields: {
+                    heading: { type: "text", label: "Promo heading" },
+                  },
+                },
+              },
+            }),
+          },
+          {
+            ...themeFileBase,
+            id: "promo-source",
+            path: "src/components/Promo.tsx",
+            content: `export default function Promo({ heading = "A thoughtful default" }) {
+              return <section data-morph-node="promo-root"><h2 data-morph-node="promo-heading" data-morph-element="heading">{heading}</h2></section>;
+            }`,
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "section",
+          tagName: "section",
+          sourceFilePath: "src/components/Promo.tsx",
+          nodeId: "promo-root",
+          isSection: true,
+        })}
+        onPropsChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("A thoughtful default")).toBeTruthy();
+  });
 });
 
 describe("EditorStyleInspector selection content", () => {

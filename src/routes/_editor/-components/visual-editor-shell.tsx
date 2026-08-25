@@ -62,6 +62,7 @@ import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildPreviewDTO,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
+import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 
 import {
   publishStorefrontThemeTemplate,
@@ -108,8 +109,10 @@ import {
   EditorAssistantPanel,
   type EditorAssistantPanelTab,
 } from "./editor-assistant-panel";
+import type { InspectorPropsChangeOptions } from "./editor-style-inspector";
 import { resolveStylesSelectionTransition } from "./editor-styles-selection-mode";
 import {
+  isPreviewHandshakePending,
   isLatestStyleRevision,
   shouldRevealPreviewForStyleAck,
 } from "./style-revision";
@@ -440,6 +443,10 @@ export function VisualEditorShell({
 
   const [previewRevision, setPreviewRevision] = useState(0);
   const [loadedPreviewKey, setLoadedPreviewKey] = useState<string | null>(null);
+  const [previewLoadFailure, setPreviewLoadFailure] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
   const [previewFrameReady, setPreviewFrameReady] = useState<{
     key: string;
     sequence: number;
@@ -812,8 +819,28 @@ export function VisualEditorShell({
         })
       : null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
-  const isPreviewLoading =
-    previewKey !== null && loadedPreviewKey !== previewKey;
+  const isPreviewLoading = isPreviewHandshakePending(
+    previewKey,
+    loadedPreviewKey,
+    previewLoadFailure?.key ?? null,
+  );
+  useEffect(() => {
+    if (!previewKey || loadedPreviewKey === previewKey) return;
+
+    const timeout = window.setTimeout(() => {
+      setPreviewLoadFailure((current) =>
+        current?.key === previewKey
+          ? current
+          : {
+              key: previewKey,
+              message:
+                "Live Preview did not confirm the current Theme source. The last rendered frame remains available.",
+            },
+      );
+    }, 15_000);
+
+    return () => window.clearTimeout(timeout);
+  }, [loadedPreviewKey, previewKey]);
   const previewFrameHeight =
     previewContentSize?.key === previewKey
       ? previewContentSize.height
@@ -1000,6 +1027,10 @@ export function VisualEditorShell({
         })),
     ];
   }, [context.storefront.id, context.theme.id, themeFiles, workspaceFiles]);
+  const themeRouteRegistry = useMemo(
+    () => buildThemeRouteRegistry(effectiveThemeFiles),
+    [effectiveThemeFiles],
+  );
   const handleOpenSelectedCode = useCallback(() => {
     const selectedSection = activeTemplate?.document.sections.find(
       (section) => section.id === search.section,
@@ -2413,8 +2444,16 @@ export function VisualEditorShell({
         }
         setLoadedPreviewKey(previewKey);
         if (message.type === "morph:storefront-preview-theme-files-failed") {
+          setPreviewLoadFailure({
+            key: previewKey,
+            message:
+              "Live Preview could not apply the current Theme source. Check the Theme compile diagnostic, then retry.",
+          });
           return;
         }
+        setPreviewLoadFailure((current) =>
+          current?.key === previewKey ? null : current,
+        );
         latestAppliedStyleRevisionRef.current = message.styleRevision;
         postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
           type: "morph:storefront-preview-request-selection-style",
@@ -2568,10 +2607,16 @@ export function VisualEditorShell({
   );
 
   const handleSectionPropsChange = useCallback(
-    (sectionId: string, nextProps: Record<string, unknown>) => {
+    (
+      sectionId: string,
+      nextProps: Record<string, unknown>,
+      options?: InspectorPropsChangeOptions,
+    ) => {
       // 1. Instant 0ms visual sync to iframe canvas
       const previewProps = parsePreviewSectionProps(nextProps);
-      if (previewProps) syncPreviewSectionProps(sectionId, previewProps);
+      if (!options?.skipPreviewSync && previewProps) {
+        syncPreviewSectionProps(sectionId, previewProps);
+      }
 
       if (!activeTemplate) return;
       const templateId = activeTemplate.id;
@@ -3791,6 +3836,10 @@ export function VisualEditorShell({
           }
           activeSelection={activeSelection}
           onSelectEditableNode={handleEditableNodeSelect}
+          themeRoutes={themeRouteRegistry.routes.filter(
+            (route) => route.kind === "route",
+          )}
+          onOpenThemeRoute={(route) => handleJumpToCode(route.sourcePath, 1, 1)}
         />
 
         {/* Left Panel Resizer */}
@@ -4133,6 +4182,32 @@ export function VisualEditorShell({
                 ) : null}
               </>
             )}
+
+            {previewLoadFailure?.key === previewKey && previewUrl ? (
+              <div
+                role="alert"
+                className="absolute left-1/2 top-16 z-50 flex max-w-md -translate-x-1/2 items-start gap-3 rounded-lg border border-amber-500/40 bg-background/95 p-3 text-sm shadow-lg backdrop-blur-sm"
+              >
+                <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                <div className="min-w-0">
+                  <p className="text-foreground">
+                    {previewLoadFailure.message}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={() => {
+                      setPreviewLoadFailure(null);
+                      setPreviewRevision((revision) => revision + 1);
+                    }}
+                  >
+                    Retry Preview
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <EditorControls
@@ -4170,6 +4245,7 @@ export function VisualEditorShell({
               }
             }}
             onRefresh={() => {
+              setPreviewLoadFailure(null);
               setPreviewRevision((revision) => revision + 1);
             }}
           />

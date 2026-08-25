@@ -72,6 +72,18 @@ React / TSX / CSS / Tailwind Theme Source 是 Code Mode、Live Preview、Visual 
 - Repeater 的 Design identity 必須同時包含 source node identity、持久 item／instance identity 與完整 field path；不得用 array index 或單一 `data-morph-node` 假裝能唯一識別所有 runtime instance。
 - Code Save 只能更新 mutable draft workspace 與 Live Preview；Immutable Build Preview 必須來自 frozen source revision，Production 只能由明確授權的 Publish／release activation 更新。
 
+### 5.3.2 Theme content field capability
+
+Customer Theme 若要讓 code-authored component props 可由 Design Mode 編輯，必須在同一份 Theme Source 的 `morph.theme.json` 宣告 bounded `contentFields` capability。
+
+- `contentFields` 只描述 content authoring capability：欄位 key、控制型別、label、長度／數值限制與有限選項；不得包含 callback、任意 validator、JS expression、HTML renderer 或 presentation implementation。
+- Theme component 的程式碼 default prop 仍是 source fallback。儲存 Theme source 不得自動把 default 寫入 D1；只有使用者首次確認 Design content 修改時，才透過既有 versioned Page／Template Document draft 與 OCC/CAS 建立 override。
+- Client manifest 解析只負責呈現 Inspector。Server mutation 必須從該 storefront／theme 的已保存 Theme Workspace 或對應 immutable source revision 重新讀取並驗證 capability，不得相信 client 傳入的 field definition。
+- `contentFields` 是可寫欄位 allowlist，不是完整 runtime props schema。Content mutation 只能新增或修改已宣告欄位，但不得因 partial edit 刪除 Document 中既有的非 editable reference／assembly props。
+- 未知 `componentRef`、未宣告欄位、錯誤型別、超過限制或不安全 URL 必須 fail closed；presentation class、任意 object 或 executable value 不得藉由 content mutation 寫入 Document。
+- Capability 變更與 content mutation 的競態必須由 server-side source generation guard 處理；不可只靠 Inspector 當下看到的 manifest。
+- 第一版支援的 bounded control type 為 `text`、`textarea`、`url`、`number`、`boolean` 與有限 `select`。需要 asset／commerce reference picker 時應擴充正式 reference field contract，不得先用任意字串假裝完成關聯能力。
+
 ### 5.4 AST 安全邊界
 
 Visual Editor 只能在 transformer 能證明安全時自動 patch source。
@@ -220,6 +232,29 @@ Code Mode 的 Monaco 輸入同樣是高頻熱路徑：
 ## 6. Page / Template Content Authoring
 
 Content 修改與 source 修改是兩種不同 mutation。
+
+### 6.0 TanStack Start route authoring
+
+Code Mode 、AI Authoring 與 Theme import 可以在 Customer Theme 的 `src/routes/` 新增、修改或移除 TanStack Start route source，但必須共用既有 Theme Workspace 與 publish boundary：
+
+```text
+Theme route source save
+        → workspace OCC
+        → bounded route scan / diagnostics
+        → isolated incremental Live Preview build
+        → freeze immutable source revision
+        → full Theme build
+        → explicit authorized release activation
+```
+
+- 新增 `src/routes/about.tsx` 後，`/about` 只能在該 Theme 的 route generation / Preview build 成功後顯示；不可用只修改 Editor React state 的假 route 冒充完成。
+- Code Save 不得重啟或接管使用者的 Morph dev server。Live Preview 必須使用 Theme-scoped incremental compiler / sandbox lifecycle，並且只有該 Theme source generation 變更時失效。
+- Route discovery 必須遵守 TanStack file-route convention，並對 duplicate path、invalid route path、缺少 root route、越界 import 與不允許 server capability fail closed。
+- Visual Editor 必須可從 Page Registry 開啟 code-authored route；route 內具有穩定 `data-morph-*` 與可安全 AST 定位的 node 可進行 Design round-trip，其他 node 必須標示 code-only / unsupported。
+- Design Canvas 必須執行所選 pathname 對應的 `src/routes/**` component tree，且 route source 必須以一般相對 import 明確組合 `src/components/**`。Route component tree 是頁面結構與組件順序的 SSOT；不得以 `StorefrontPage`、隱藏 outlet 或 route 外的通用 section renderer 產生另一棵頁面。
+- Versioned D1 Page／Template Document 只能把內容 props、enabled state 與 instance metadata 配對至 route 中實際存在的 component instance，不得自行新增、刪除、重新排序 route component。Design 的安全 renderer、Preview 與正式 runtime 必須遵守同一個 route-first pairing contract。
+- AI 新增 route 必須走與人類 Code Mode 相同的 workspace mutation、OCC、diagnostics、Preview、revision、build 與 Publish 流程；不得直接修改 generated route tree 或 active release。
+- 由 Visual Editor 建立的一般內容頁應建立 versioned D1 Page Document，並由已存在的 dynamic route 解析；不得為了新增文案頁而無條件產生 route source 或要求 Theme rebuild。
 
 ### 6.1 Content-only mutation
 

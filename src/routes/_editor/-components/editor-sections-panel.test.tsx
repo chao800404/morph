@@ -104,6 +104,25 @@ function renderPanel(
 }
 
 describe("EditorSectionsPanel visibility controls", () => {
+  it("shows source-authored Theme pages and opens their route module", () => {
+    const onOpenThemeRoute = vi.fn();
+    const route = {
+      id: "/about",
+      path: "/about",
+      sourcePath: "src/routes/about.tsx",
+      kind: "route" as const,
+      dynamic: false,
+      componentName: "AboutRoute",
+    };
+    renderPanel(vi.fn(), vi.fn(), {
+      themeRoutes: [route],
+      onOpenThemeRoute,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "/about" }));
+    expect(onOpenThemeRoute).toHaveBeenCalledWith(route);
+  });
+
   it("shows accessible hide/show labels and sends the exact section id and next state", () => {
     const { onToggleSectionEnabled } = renderPanel();
 

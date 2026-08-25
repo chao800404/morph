@@ -31,6 +31,12 @@ export type CanonicalThemeBuildManifest = {
   sourceEntry: string;
   entry?: string;
   artifactEntry: string;
+  runtime?: {
+    kind: "static" | "cloudflare-worker";
+    workerEntry?: string;
+    clientAssetsDirectory?: string;
+    previewEntry?: string;
+  };
 
   filesCount: number;
   totalSizeBytes: number;

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 
@@ -70,7 +71,6 @@ export default function HomePage() {
       // Verify portable relative asset base: dist/index.html references ./assets/*
       expect(String(htmlArtifact?.content)).toMatch(/src=["']\.\/assets\//);
 
-
       const jsArtifact = result.artifacts.find((a) =>
         a.path.startsWith("assets/") && a.path.endsWith(".js"),
       );
@@ -94,6 +94,86 @@ export default function HomePage() {
       expect(result.manifestJson.cssChunks?.length).toBeGreaterThan(0);
       expect(result.manifestJson.jsChunks?.length).toBeGreaterThan(0);
       expect(result.durationMs).toBeGreaterThan(0);
+    }
+  });
+
+  it("builds source-authored TanStack routes through the isolated client preview adapter", async () => {
+    const runner = new LocalViteThemeBuildRunner();
+    const input = createInput(
+      [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({
+            entry: "src/routes/index.tsx",
+            router: { framework: "tanstack-start" },
+          }),
+        },
+        {
+          path: "src/router.tsx",
+          content: `import { createRouter } from "@tanstack/react-router";
+import { routeTree } from "./routeTree.gen";
+export function getRouter() { return createRouter({ routeTree }); }`,
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: () => <Outlet /> });`,
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/")({ component: () => <main>Home</main> });`,
+        },
+      ],
+      { entry: "src/routes/index.tsx" },
+    );
+
+    const result = await runner.run(input);
+
+    expect(
+      result.success,
+      result.success ? undefined : result.errorMessage,
+    ).toBe(true);
+    if (result.success) {
+      expect(result.manifestJson.metadata).toEqual(
+        expect.objectContaining({
+          router: "tanstack-start",
+          runtime: "cloudflare-worker",
+          workerEntry: "runtime/server/index.js",
+          previewRuntime: "tanstack-router-client",
+          routes: expect.arrayContaining([
+            expect.objectContaining({ path: "/" }),
+          ]),
+        }),
+      );
+      expect(result.manifestJson.artifactEntry).toBe("preview/index.html");
+      expect(result.artifacts.map((artifact) => artifact.path)).toContain(
+        "runtime/server/index.js",
+      );
+      expect(
+        result.artifacts.some(
+          (artifact) => artifact.path === "preview/index.html",
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("builds the complete stored starter Theme route contract", async () => {
+    const runner = new LocalViteThemeBuildRunner();
+    const input = createInput(STARTER_THEME_FILES, {
+      entry: "src/routes/index.tsx",
+    });
+
+    const result = await runner.run(input);
+
+    expect(
+      result.success,
+      result.success ? undefined : result.errorMessage,
+    ).toBe(true);
+    if (result.success) {
+      expect(result.manifestJson.metadata).toEqual(
+        expect.objectContaining({ router: "tanstack-start" }),
+      );
     }
   });
 
@@ -438,5 +518,3 @@ export default function Page() {
     }
   });
 });
-
-

@@ -7,6 +7,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { SAFE_THEME_INLINE_ROUTE_COMPONENT } from "@/lib/storefront/compiler/theme-route-registry";
 
 type ThemeSourceFile = {
   path: string;
@@ -25,10 +26,34 @@ export type SafeThemeComponentRenderResult =
 
 type RuntimeContext = {
   files: Map<string, ThemeSourceFile>;
+  builtinComponents: SafeThemeBuiltinComponentMap;
+  injectedProps: Record<string, unknown>;
+  resolveComponent?: SafeThemeComponentResolver;
   nodeCount: number;
   componentStack: string[];
   diagnostics: string[];
 };
+
+export type SafeThemeBuiltinComponent = (
+  props: Record<string, unknown>,
+) => ReactNode;
+
+export type SafeThemeBuiltinComponentMap = Record<
+  string,
+  Record<string, SafeThemeBuiltinComponent>
+>;
+
+export type SafeThemeComponentOverride = {
+  render: boolean;
+  props: Record<string, unknown>;
+  section?: SafeThemeSectionIdentity;
+};
+
+export type SafeThemeComponentResolver = (args: {
+  sourcePath: string;
+  exportName: string;
+  props: Record<string, unknown>;
+}) => SafeThemeComponentOverride | null;
 
 type ModuleRecord = {
   ast: any;
@@ -120,6 +145,32 @@ function parseModule(path: string, source: string): ModuleRecord {
             item.init?.type === "FunctionExpression")
         ) {
           functions.set(item.id.name, item.init);
+        }
+        if (item.id?.type === "Identifier" && item.id.name === "Route") {
+          const initializer = item.init;
+          const options =
+            initializer?.type === "CallExpression" &&
+            initializer.callee?.type === "CallExpression"
+              ? initializer.arguments?.[0]
+              : initializer?.type === "CallExpression"
+                ? initializer.arguments?.[0]
+                : null;
+          const component =
+            options?.type === "ObjectExpression"
+              ? options.properties?.find(
+                  (property: any) =>
+                    property?.type === "ObjectProperty" &&
+                    !property.computed &&
+                    (property.key?.name === "component" ||
+                      property.key?.value === "component"),
+                )?.value
+              : null;
+          if (
+            component?.type === "ArrowFunctionExpression" ||
+            component?.type === "FunctionExpression"
+          ) {
+            functions.set(SAFE_THEME_INLINE_ROUTE_COMPONENT, component);
+          }
         }
       }
     }
@@ -707,6 +758,12 @@ function renderJsxElement(
 
   const imported = env[`__import:${name}`] as
     { path: string; imported: string } | undefined;
+  const builtin = env[`__builtin:${name}`] as
+    | SafeThemeBuiltinComponent
+    | undefined;
+  if (builtin) {
+    return createElement(builtin, { ...props, children });
+  }
   if (!imported) {
     throw new SafeThemeRuntimeError(
       `Component <${name}> is not a local Theme Workspace component.`,
@@ -778,6 +835,17 @@ function renderModuleComponent(
   context: RuntimeContext,
   section?: SafeThemeSectionIdentity,
 ): ReactNode {
+  const override = context.resolveComponent?.({
+    sourcePath,
+    exportName,
+    props,
+  });
+  if (override && !override.render) return null;
+  const resolvedProps = override
+    ? { ...context.injectedProps, ...props, ...override.props }
+    : { ...context.injectedProps, ...props };
+  const resolvedSection = override?.section ?? section;
+
   if (context.componentStack.length >= MAX_COMPONENT_DEPTH) {
     throw new SafeThemeRuntimeError(
       `Theme component depth exceeds ${MAX_COMPONENT_DEPTH}.`,
@@ -810,6 +878,12 @@ function renderModuleComponent(
           path: importedPath,
           imported: imported.imported,
         };
+        continue;
+      }
+      const builtin =
+        context.builtinComponents[imported.source]?.[imported.imported];
+      if (builtin) {
+        env[`__builtin:${name}`] = builtin;
       }
     }
     for (const [name, fn] of module.functions) {
@@ -818,7 +892,8 @@ function renderModuleComponent(
     for (const declaration of module.variables) {
       if (
         declaration.id?.type === "Identifier" &&
-        !module.functions.has(declaration.id.name)
+        !module.functions.has(declaration.id.name) &&
+        declaration.id.name !== "Route"
       ) {
         env[declaration.id.name] = evaluateExpression(
           declaration.init,
@@ -853,12 +928,12 @@ function renderModuleComponent(
     }
     return renderFunctionComponent(
       fn,
-      props,
+      resolvedProps,
       env,
       context,
       sourcePath,
       componentName,
-      section,
+      resolvedSection,
     );
   } finally {
     context.componentStack.pop();
@@ -870,11 +945,19 @@ export function renderSafeThemeComponent({
   sourcePath,
   props,
   section,
+  componentName = "default",
+  builtinComponents = {},
+  injectedProps = {},
+  resolveComponent,
 }: {
   files: ThemeSourceFile[];
   sourcePath: string;
   props: Record<string, unknown>;
-  section: SafeThemeSectionIdentity;
+  section?: SafeThemeSectionIdentity;
+  componentName?: string;
+  builtinComponents?: SafeThemeBuiltinComponentMap;
+  injectedProps?: Record<string, unknown>;
+  resolveComponent?: SafeThemeComponentResolver;
 }): SafeThemeComponentRenderResult {
   const fileMap = new Map(
     files.map((file) => [normalizePath(file.path), file]),
@@ -882,6 +965,9 @@ export function renderSafeThemeComponent({
   const normalizedSourcePath = normalizePath(sourcePath);
   const context: RuntimeContext = {
     files: fileMap,
+    builtinComponents,
+    injectedProps,
+    resolveComponent,
     nodeCount: 0,
     componentStack: [],
     diagnostics: [],
@@ -891,7 +977,7 @@ export function renderSafeThemeComponent({
       success: true,
       node: renderModuleComponent(
         normalizedSourcePath,
-        "default",
+        componentName,
         props,
         context,
         section,

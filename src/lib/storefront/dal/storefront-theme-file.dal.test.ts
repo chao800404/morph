@@ -130,7 +130,10 @@ afterEach(() => {
 describe("storefront theme file DAL", () => {
   it("increments source_generation on saveFilesBatch", async () => {
     expect(
-      await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+      await storefrontThemeFileDal.getSourceGeneration(
+        "storefront-a",
+        "theme-a",
+      ),
     ).toBe(1);
 
     await storefrontThemeFileDal.saveFilesBatch(
@@ -147,7 +150,10 @@ describe("storefront theme file DAL", () => {
     );
 
     expect(
-      await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+      await storefrontThemeFileDal.getSourceGeneration(
+        "storefront-a",
+        "theme-a",
+      ),
     ).toBe(2);
   });
 
@@ -196,15 +202,22 @@ describe("storefront theme file DAL", () => {
     );
 
     expect(
-      await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+      await storefrontThemeFileDal.getSourceGeneration(
+        "storefront-a",
+        "theme-a",
+      ),
     ).toBe(2);
 
     // Freezing with matching expectedSourceGeneration (2) succeeds and DOES NOT bump generation
-    const rev = await storefrontThemeFileDal.createRevision("storefront-a", "theme-a", {
-      expectedSourceGeneration: 2,
-      message: "Frozen checkpoint",
-      source: "publish",
-    });
+    const rev = await storefrontThemeFileDal.createRevision(
+      "storefront-a",
+      "theme-a",
+      {
+        expectedSourceGeneration: 2,
+        message: "Frozen checkpoint",
+        source: "publish",
+      },
+    );
 
     expect(rev.id).toBeDefined();
     expect(rev.message).toBe("Frozen checkpoint");
@@ -212,7 +225,10 @@ describe("storefront theme file DAL", () => {
 
     // Generation must remain 2 after snapshot
     expect(
-      await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+      await storefrontThemeFileDal.getSourceGeneration(
+        "storefront-a",
+        "theme-a",
+      ),
     ).toBe(2);
 
     // Attempting to freeze with stale expectedSourceGeneration (e.g. 1) rejects due to OCC
@@ -290,7 +306,10 @@ describe("storefront theme file DAL", () => {
     );
 
     expect(
-      await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+      await storefrontThemeFileDal.getSourceGeneration(
+        "storefront-a",
+        "theme-a",
+      ),
     ).toBe(2);
 
     await storefrontThemeFileDal.deleteFile(
@@ -303,25 +322,139 @@ describe("storefront theme file DAL", () => {
     );
 
     expect(
-      await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+      await storefrontThemeFileDal.getSourceGeneration(
+        "storefront-a",
+        "theme-a",
+      ),
     ).toBe(3);
   });
 
+  it("saves route files and deletes an obsolete page in one OCC generation", async () => {
+    const [legacyPage] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/pages/index.tsx",
+          content: "export default function LegacyPage() { return null; }",
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+
+    await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/routes/index.tsx",
+          content: "export const Route = {};",
+          expectMissing: true,
+        },
+      ],
+      {
+        expectedSourceGeneration: 2,
+        deletions: [
+          {
+            path: legacyPage.path,
+            expectedFileId: legacyPage.id,
+            expectedVersion: legacyPage.version,
+          },
+        ],
+        createRevision: true,
+        revisionMessage: "Adopt route workspace",
+      },
+    );
+
+    await expect(
+      storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).resolves.toBe(3);
+    await expect(
+      storefrontThemeFileDal.listFiles("storefront-a", "theme-a"),
+    ).resolves.toEqual([
+      expect.objectContaining({ path: "src/routes/index.tsx" }),
+    ]);
+  });
+
+  it("rolls back route writes when an atomic deletion precondition is stale", async () => {
+    const [legacyPage] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/pages/index.tsx",
+          content: "export default function LegacyPage() { return null; }",
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/routes/index.tsx",
+            content: "export const Route = {};",
+            expectMissing: true,
+          },
+        ],
+        {
+          expectedSourceGeneration: 2,
+          deletions: [
+            {
+              path: legacyPage.path,
+              expectedFileId: legacyPage.id,
+              expectedVersion: legacyPage.version + 1,
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+
+    await expect(
+      storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).resolves.toBe(2);
+    const files = await storefrontThemeFileDal.listFiles(
+      "storefront-a",
+      "theme-a",
+    );
+    expect(files.map((file) => file.path)).toEqual(["src/pages/index.tsx"]);
+  });
+
   it("initializes starter theme idempotently without duplicating files or revisions", async () => {
-    const files1 = await storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a");
+    const files1 = await storefrontThemeFileDal.initStarterTheme(
+      "storefront-a",
+      "theme-a",
+    );
     expect(files1.length).toBeGreaterThan(0);
-    const gen1 = await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a");
+    const gen1 = await storefrontThemeFileDal.getSourceGeneration(
+      "storefront-a",
+      "theme-a",
+    );
 
     // Second call should return existing files cleanly without incrementing generation
-    const files2 = await storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a");
+    const files2 = await storefrontThemeFileDal.initStarterTheme(
+      "storefront-a",
+      "theme-a",
+    );
     expect(files2.length).toBe(files1.length);
-    const gen2 = await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a");
+    const gen2 = await storefrontThemeFileDal.getSourceGeneration(
+      "storefront-a",
+      "theme-a",
+    );
     expect(gen2).toBe(gen1);
   });
 
   it("rolls back to revision with expectedSourceGeneration OCC guard", async () => {
     await storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a");
-    const gen = await storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a");
+    const gen = await storefrontThemeFileDal.getSourceGeneration(
+      "storefront-a",
+      "theme-a",
+    );
 
     // Rollback with matching generation
     const rolledBack = await storefrontThemeFileDal.rollbackToRevision(
@@ -334,12 +467,9 @@ describe("storefront theme file DAL", () => {
 
     // Rollback with stale generation should fail
     await expect(
-      storefrontThemeFileDal.rollbackToRevision(
-        "storefront-a",
-        "theme-a",
-        1,
-        { expectedSourceGeneration: 999 },
-      ),
+      storefrontThemeFileDal.rollbackToRevision("storefront-a", "theme-a", 1, {
+        expectedSourceGeneration: 999,
+      }),
     ).rejects.toThrow();
   });
 });

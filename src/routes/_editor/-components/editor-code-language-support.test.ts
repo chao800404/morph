@@ -179,6 +179,14 @@ describe("configureThemeTypeScript", () => {
       expect.stringContaining('declare module "clsx"'),
       "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
     );
+    expect(addExtraLib).toHaveBeenCalledWith(
+      expect.stringContaining('declare module "@tanstack/react-router"'),
+      "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
+    );
+    expect(addExtraLib).toHaveBeenCalledWith(
+      expect.stringContaining('declare module "@tanstack/react-start"'),
+      "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
+    );
   });
 });
 

@@ -28,7 +28,11 @@ export const updateStorefrontThemeSectionPropsInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
     sectionId: z.string().trim().min(1).max(100),
-    props: z.record(z.string(), z.any()),
+    props: z
+      .record(z.string().trim().min(1).max(100), z.unknown())
+      .refine((props) => Object.keys(props).length <= 100, {
+        message: "Section props cannot contain more than 100 top-level fields",
+      }),
     expectedDraftGeneration: z.number().int().min(1),
   });
 
