@@ -1094,6 +1094,10 @@ export function VisualEditorShell({
         type: "morph:storefront-preview-update-selection-style",
         styles,
         targetElement,
+        // An unmarked element's `targetElement` is only `line:column`, which
+        // matches no DOM attribute; the full position is how the preview finds
+        // it for live feedback while a control is being dragged.
+        sourceLocation: lastPreviewSelectionRef.current?.sourceLocation ?? null,
       });
     },
     [],
@@ -2504,6 +2508,7 @@ export function VisualEditorShell({
       const inspectorOverride = message.inspectorOverride;
       lastPreviewSelectionRef.current = {
         sectionId,
+        sourceLocation: message.sourceLocation ?? undefined,
         nodeId: nodeId ?? undefined,
         fieldPath: message.fieldPath ?? undefined,
         elementKey: elementKey ?? undefined,
@@ -2524,6 +2529,7 @@ export function VisualEditorShell({
         inputType,
         nodeId,
         sourceFilePath,
+        sourceLocation: message.sourceLocation ?? null,
         elementKey,
         fieldKey,
         fieldPath,

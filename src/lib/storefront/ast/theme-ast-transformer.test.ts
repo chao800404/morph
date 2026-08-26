@@ -473,3 +473,52 @@ export function MultiCard() {
     );
   });
 });
+
+describe("locating elements by source position", () => {
+  const source = `export default function Promo({ heading = "Promo" }) {
+  return (
+    <section className="px-6 py-16">
+      <h2 className="text-2xl">{heading}</h2>
+    </section>
+  );
+}`;
+
+  it("indexes every element, including ones with no authored markers", () => {
+    // A customer-written component carries no data-morph-* attributes, so
+    // without a position index it could be selected but never restyled.
+    const parsed = parseComponentSource(source);
+    expect(parsed.parseOk).toBe(true);
+    expect(Object.keys(parsed.elements)).toHaveLength(0);
+    expect(parsed.locationMap["3:5"]?.tag).toBe("section");
+    expect(parsed.locationMap["4:7"]?.tag).toBe("h2");
+  });
+
+  it("patches an unmarked element addressed by position", () => {
+    const result = patchElementClassNameResult(source, "4:7", () => "text-3xl");
+    expect(result.editable).toBe(true);
+    expect(result.code).toContain('<h2 className="text-3xl">');
+    // The sibling element must be untouched.
+    expect(result.code).toContain('<section className="px-6 py-16">');
+  });
+
+  it("keeps an authored marker authoritative over a position", () => {
+    // Positions shift whenever the file above them is edited, so a stable
+    // marker must never be overridden by one.
+    const marked = `export default function Promo() {
+  return <section data-morph-node="promo-root" className="a" />;
+}`;
+    const byMarker = patchElementClassNameResult(
+      marked,
+      "promo-root",
+      () => "b",
+    );
+    expect(byMarker.editable).toBe(true);
+    expect(byMarker.code).toContain('className="b"');
+  });
+
+  it("refuses a position that matches no element", () => {
+    const result = patchElementClassNameResult(source, "99:1", () => "x");
+    expect(result.editable).toBe(false);
+    expect(result.reason).toBe("not-found");
+  });
+});

@@ -165,6 +165,14 @@ export type EditorToPreviewMessage =
       type: "morph:storefront-preview-update-selection-style";
       styles: Record<string, string>;
       targetElement: string;
+      /**
+       * `file:line:column` of the element being restyled.
+       *
+       * `targetElement` is the AST patch key, which for an unmarked element is
+       * only `line:column` and matches no DOM attribute. The full position is
+       * what lets the preview find the element for live feedback.
+       */
+      sourceLocation?: string | null;
     }
   | { type: "morph:storefront-preview-reset-selection-style-preview" }
   | {
@@ -181,6 +189,8 @@ export type PreviewSelectionMessage = {
   kind: SelectionKind;
   nodeId?: string;
   sourceFilePath: string | null;
+  /** `file:line:column`, present when the preview could annotate the element. */
+  sourceLocation?: string | null;
   elementKey: string | null;
   fieldKey: string | null;
   field: string | null;
@@ -572,11 +582,14 @@ export function parseEditorToPreviewMessage(
         : null;
     case "morph:storefront-preview-update-selection-style":
       return isStringRecord(value.styles) &&
-        isBoundedString(value.targetElement, 100)
+        isBoundedString(value.targetElement, 100) &&
+        (value.sourceLocation === undefined ||
+          isNullableBoundedString(value.sourceLocation, 400))
         ? {
             type: value.type,
             styles: value.styles,
             targetElement: value.targetElement,
+            sourceLocation: value.sourceLocation ?? null,
           }
         : null;
     case "morph:storefront-preview-reset-selection-style-preview":
@@ -630,6 +643,8 @@ export function parsePreviewToEditorMessage(
         !isSelectionKind(value.kind) ||
         (value.nodeId !== undefined && !isBoundedString(value.nodeId, 200)) ||
         !isNullableBoundedString(value.sourceFilePath, 1_000) ||
+        (value.sourceLocation !== undefined &&
+          !isNullableBoundedString(value.sourceLocation, 400)) ||
         !isNullableBoundedString(value.elementKey, 200) ||
         !isNullableBoundedString(value.fieldKey, 200) ||
         !isNullableBoundedString(value.field, 200) ||
@@ -665,6 +680,7 @@ export function parsePreviewToEditorMessage(
         kind: value.kind,
         nodeId: value.nodeId,
         sourceFilePath: value.sourceFilePath,
+        sourceLocation: value.sourceLocation ?? null,
         elementKey: value.elementKey,
         fieldKey: value.fieldKey,
         field: value.field,

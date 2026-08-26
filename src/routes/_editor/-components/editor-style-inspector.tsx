@@ -1,3 +1,8 @@
+import {
+  DEFAULT_ELEMENT_TARGET_KEY,
+  resolveElementMeta,
+  resolveElementTargetKey,
+} from "@/lib/storefront/ast/element-target";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
@@ -439,7 +444,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       themeFiles,
       section.componentRef ?? undefined,
     );
-  const targetElement = activeNodeId || activeElementKey || "heading";
+  const activeSourceLocation = selection?.sourceLocation ?? null;
+  // Shared with the AST patch and the live preview so the Inspector never
+  // enables a control the patch cannot apply, and never disables one it could.
+  const targetElement = resolveElementTargetKey({
+    nodeId: activeNodeId,
+    elementKey: activeElementKey,
+    sourceLocation: activeSourceLocation,
+  });
   const props = localProps;
   const selectedField = activeFieldKey ?? activeElementKey;
   const isSelectedNode = activeSelectionIsSection === false;
@@ -537,11 +549,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       : undefined;
   };
   const targetElementMeta =
-    (activeNodeId ? parsedMeta?.nodeMap[activeNodeId] : undefined) ??
-    parsedMeta?.elements[targetElement] ??
+    resolveElementMeta(parsedMeta, targetElement) ??
     (activeSelectionIsSection === false
       ? undefined
-      : parsedMeta?.elements["heading"]);
+      : parsedMeta?.elements[DEFAULT_ELEMENT_TARGET_KEY]);
   const sectionElementMeta =
     parsedMeta?.elements["section"] ?? parsedMeta?.elements["root"];
   const activeRepeatedItemPath = repeatedItemRootPath(activeFieldPath);

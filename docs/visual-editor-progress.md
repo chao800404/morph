@@ -9,8 +9,8 @@
 | 最後更新     | 2026-08-26                                                                                       |
 | 目前狀態     | 開發中                                                                                           |
 | 整體完成度   | **80%**（加權，權重表見下）                                                                                  |
-| 目前重點     | Production runtime／部署平面與零標記元素識別已完成；下一步是 source 宣告的 content slot（讓純程式碼元件的內容通到生產）              |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（177 files / 978 tests）、`pnpm build` 均通過                                  |
+| 目前重點     | 零標記元件的選取／樣式編輯／即時預覽已全線打通，content slot 契約已建立；下一步是讓內容值通到 production                        |
+| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（185 files / 1019 tests）、`pnpm build` 均通過                                  |
 
 `████████ 80%`
 
@@ -37,7 +37,7 @@
 | 3. Inspector 模組化與基本樣式     | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border | 🟢   |    97% | 補齊跨尺寸與真實瀏覽器視覺檢查               |
 | 4. Editor ↔ Preview 通訊          | typed protocol、runtime validation、selection/style 同步                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試    |
 | 5. 編輯器互動效能                 | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放      | 🟢   |    97% | 以瀏覽器 Performance trace 建立實際延遲基準  |
-| 6. Code-authored 內容 round-trip  | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence                   | 🟢   |    90% | 補齊 Publish 與 immutable revision E2E        |
+| 6. Code-authored 內容 round-trip  | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence                   | 🟢   |    93% | 內容值仍未通到 production，需 runtime 組合     |
 | 7. 真實 Theme Source Live Runtime | 在隔離 iframe 執行真實 TSX/theme runtime，不再依賴固定相容 renderer                           | 🟡   |    55% | Live 仍走解釋器；已驗證 build 產物可執行，但編輯器尚未改用          |
 | 8. 最終品質與發布準備             | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態                                                 | 🟡   |    55% | 缺瀏覽器層 E2E：選取鏈連續五次失敗都沒有測試攔截 |
 
@@ -50,10 +50,10 @@
 | 3. Inspector 模組化與基本樣式     |   15 |    97% | 14.55 |
 | 4. Editor ↔ Preview 通訊          |   10 |   100% | 10.00 |
 | 5. 編輯器互動效能                 |   10 |    97% | 9.70 |
-| 6. Code-authored 內容 round-trip  |   15 |    90% | 13.50 |
+| 6. Code-authored 內容 round-trip  |   15 |    93% | 13.95 |
 | 7. 真實 Theme Source Live Runtime |   25 |    55% | 13.75 |
 | 8. 最終品質與發布準備             |   15 |    55% | 8.25 |
-| **合計**                          | **100** |    | **79.8 → 80%** |
+| **合計**                          | **100** |    | **80.2 → 80%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
@@ -251,6 +251,7 @@
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                          | 驗證                                                                                          |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 2026-08-26 | 打通零標記元件的完整編輯鏈路：解釋器輸出 source position、元件根部即 section 邊界、AST 以 `line:column` 定位、Inspector 鎖定判斷與即時樣式預覽統一改用共用的 `element-target` 解析；修復重繪後選取框消失與 padding 值閃跳（inline 預覽跨重繪存活）。建立 `content("slot")` 契約：解釋器支援、Document section id 即 slot id、starter 升級至版本 11 並植入平台 content 模組 | `pnpm typecheck`、`pnpm test`（1019 tests）、`pnpm build` 通過；並以真實 workspace 實測渲染與選取收集 |
 | 2026-08-26 | 完成 production runtime 與部署平面：hostname → active release → artifact 的 fail-closed 解析、preview／production 共用 serving core、`ThemeRuntime` 傳輸抽象（service binding／local／dispatch／unavailable）、Sandbox wrangler 部署與憑證隔離、CAS 先佔位後部署的啟用順序、Publish 與 rollback 共用部署核心；並完成零標記元素識別：解釋器產生 source position、元件根部即 section 邊界、收集／點擊／還原三段統一，Inspector 不再要求 Document section | `pnpm typecheck`、`pnpm test`（978 tests）、`pnpm build` 通過；並以真實 workspace 實測 Live 預覽渲染與選取收集 |
 | 2026-08-25 | 完成 Customer Theme TanStack Start build contract：加入固定 package/toolchain、Starter v5 OCC additive upgrade、真正 Cloudflare multi-environment Worker build、platform-owned generated/config path、Worker/client/preview artifact contract 與 R2 manifest fail-closed 驗證；production Worker dispatch 與 D1 Page Registry 組合仍明確列為後續 | `pnpm typecheck`、`pnpm test`（162 files / 793 tests）、`pnpm build`、`git diff --check` 通過 |
 | 2026-08-25 | 完成 Theme-level `contentFields` capability：共用 bounded manifest parser、Inspector 自訂欄位與 code default、server-authoritative D1 Workspace 驗證、safe URL／型別／長度／select 限制、source-generation + draft OCC guard、partial edit 資料保留及內建 manifest 相容 adapter | `pnpm typecheck`、`pnpm test`（159 files / 766 tests）、`pnpm build`、`git diff --check` 通過 |

@@ -87,6 +87,8 @@ export type EditorSelectionDescriptor = {
   inputType: string | null;
   nodeId: string | null;
   sourceFilePath: string | null;
+  /** `file:line:column` of the selected element, when the preview supplied it. */
+  sourceLocation?: string | null;
   elementKey: string | null;
   fieldKey: string | null;
   fieldPath: string | null;

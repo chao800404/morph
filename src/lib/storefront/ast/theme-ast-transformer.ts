@@ -1,4 +1,5 @@
 import { parse } from "@babel/parser";
+import { resolveElementMeta } from "./element-target";
 
 /**
  * Morph Theme Component AST Transformer & Parser
@@ -34,6 +35,8 @@ export type ParsedComponentMeta = {
   defaultProps: Record<string, string>;
   elements: Record<string, ComponentElementMeta>;
   nodeMap: Record<string, ComponentElementMeta>;
+  /** Every element keyed by `"line:column"` of its opening tag. */
+  locationMap: Record<string, ComponentElementMeta>;
   instanceClasses: Record<string, string>;
   parseOk: boolean;
   diagnostics: string[];
@@ -296,6 +299,7 @@ export function parseComponentSource(
   const defaultProps: Record<string, string> = {};
   const elements: Record<string, ComponentElementMeta> = {};
   const nodeMap: Record<string, ComponentElementMeta> = {};
+  const locationMap: Record<string, ComponentElementMeta> = {};
   const instanceClasses: Record<string, string> = {};
   let parseOk = true;
   const diagnostics: string[] = [];
@@ -429,18 +433,21 @@ export function parseComponentSource(
 
         const primaryKey = morphNodeId || morphElementName;
 
-        if (primaryKey) {
+        {
           let tagName = "div";
           if (openingElement.name?.type === "JSXIdentifier") {
             tagName = openingElement.name.name;
           }
 
+          // Same convention the Live preview emits, so a selection made by
+          // source position resolves to exactly this element.
           const line = openingElement.loc?.start?.line ?? 1;
           const column = (openingElement.loc?.start?.column ?? 0) + 1;
+          const locationKey = `${line}:${column}`;
 
           const meta: ComponentElementMeta = {
             nodeId: morphNodeId ?? undefined,
-            elementName: morphElementName ?? primaryKey,
+            elementName: morphElementName ?? primaryKey ?? locationKey,
             tag: tagName,
             className,
             isSelfClosing,
@@ -454,6 +461,13 @@ export function parseComponentSource(
             openingEndOffset: openingEnd,
             classNameOffsets,
           };
+
+          // Every element is indexed by position, so an element the author
+          // never marked is still editable. Authored markers stay authoritative
+          // because a position shifts whenever the file above it is edited.
+          if (!locationMap[locationKey]) {
+            locationMap[locationKey] = meta;
+          }
 
           if (morphElementName) {
             if (!elements[morphElementName]) {
@@ -489,6 +503,7 @@ export function parseComponentSource(
     defaultProps,
     elements,
     nodeMap,
+    locationMap,
     instanceClasses,
     parseOk,
     diagnostics,
@@ -739,7 +754,7 @@ export function patchElementClassNameResult(
     return { code: sourceCode, editable: false, reason: "parse-error" };
   }
 
-  const element = parsed.elements[elementName];
+  const element = resolveElementMeta(parsed, elementName);
   if (!element) {
     return { code: sourceCode, editable: false, reason: "not-found" };
   }

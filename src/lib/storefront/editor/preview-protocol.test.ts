@@ -463,3 +463,45 @@ describe("preview protocol", () => {
     expect(postMessage).not.toHaveBeenCalled();
   });
 });
+
+describe("live style preview carries the source position", () => {
+  it("accepts and forwards a source position with the style update", () => {
+    // An unmarked element's targetElement is only "line:column", which matches
+    // no DOM attribute; without the full position the preview cannot find the
+    // element and a dragged control shows no live feedback.
+    const parsed = parseEditorToPreviewMessage({
+      type: "morph:storefront-preview-update-selection-style",
+      styles: { color: "red" },
+      targetElement: "10:7",
+      sourceLocation: "src/components/Promo.tsx:10:7",
+    });
+
+    expect(parsed).toMatchObject({
+      targetElement: "10:7",
+      sourceLocation: "src/components/Promo.tsx:10:7",
+    });
+  });
+
+  it("still accepts a message with no source position", () => {
+    const parsed = parseEditorToPreviewMessage({
+      type: "morph:storefront-preview-update-selection-style",
+      styles: { color: "red" },
+      targetElement: "hero-heading",
+    });
+    expect(parsed).toMatchObject({
+      targetElement: "hero-heading",
+      sourceLocation: null,
+    });
+  });
+
+  it("refuses an oversized source position", () => {
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-update-selection-style",
+        styles: { color: "red" },
+        targetElement: "10:7",
+        sourceLocation: "a".repeat(401),
+      }),
+    ).toBeNull();
+  });
+});

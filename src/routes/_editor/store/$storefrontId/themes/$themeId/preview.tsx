@@ -1,3 +1,4 @@
+import { domElementMatchesTarget } from "@/lib/storefront/ast/element-target";
 import { StorefrontPreview } from "@/components/storefront/storefront-preview";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontThemePreviewSearchSchema } from "@/lib/validations/storefront-theme";
@@ -863,6 +864,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     type SelectableInfo = {
       element: HTMLElement;
       section: HTMLElement | null;
+      /** `file:line:column`, when the element carries a compiled position. */
+      sourceLocation?: string | null;
       sectionId: string | null;
       type: string;
       label: string;
@@ -909,6 +912,24 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     let selectedItem: SelectableInfo | null = null;
     let selectedElement: HTMLElement | null = null;
     let selectedSectionId: string | null = null;
+    /**
+     * Last selection expressed as a restore target.
+     *
+     * Applying a style edit re-renders the Theme, which replaces the DOM node
+     * the selection points at. Without re-resolving, the overlay tracks a
+     * detached node and the selection outline silently vanishes.
+     */
+    let lastRestoreTarget: PreviewSelectionRestoreTarget | null = null;
+    /**
+     * Styles being previewed on the selected element, held until the edited
+     * source is actually painted.
+     *
+     * Committing an edit re-renders the Theme, which drops the inline preview
+     * from the element. The new class is present immediately but its generated
+     * rule is not, so without re-applying these the element renders unstyled
+     * for a moment and the value visibly jumps.
+     */
+    let pendingPreviewStyles: Record<string, string> | null = null;
     let selectionEnabled = false;
     let spacingOverlayMode: PreviewSpacingOverlayMode = "off";
     const selectionStylePreview = createSelectionStylePreview();
@@ -954,6 +975,23 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     const spacingOverlayVisuals = new Map<HTMLElement, SpacingOverlayVisual>();
     let structurePublishFrame = 0;
     let lastStructureSignature = "";
+
+    /**
+     * Re-attaches the selection after a re-render replaced its element.
+     *
+     * Runs only when the held node has actually left the document, so ordinary
+     * mutations never disturb an in-progress interaction.
+     */
+    const reattachSelectionIfDetached = () => {
+      if (!lastRestoreTarget) return;
+      if (selectedElement && selectedElement.isConnected) return;
+      restoreSelectedTarget(lastRestoreTarget);
+      // Carry the preview onto the element the re-render produced, so the value
+      // stays put until the edited source is painted.
+      if (pendingPreviewStyles && selectedElement) {
+        selectionStylePreview.apply(selectedElement, pendingPreviewStyles);
+      }
+    };
 
     const publishEditableStructure = () => {
       structurePublishFrame = 0;
@@ -1234,6 +1272,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return {
           element: morphEl,
           section: sectionEl,
+          sourceLocation: morphEl.dataset.morphLoc ?? null,
           sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
           type: selectableType,
           label: getComponentDisplayName(selectableType),
@@ -1946,6 +1985,20 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       selectedElement = selectable.element;
       selectedItem = selectable;
       selectedSectionId = selectable.sectionId;
+      // Recorded here too: a click is a selection the editor never sent us, so
+      // without this a re-render right after clicking would have nothing to
+      // re-attach to.
+      lastRestoreTarget = selectable.sectionId
+        ? {
+            sectionId: selectable.sectionId,
+            sourceLocation: selectable.sourceLocation ?? undefined,
+            nodeId: selectable.element.dataset.morphNode ?? undefined,
+            fieldPath: selectable.fieldPath ?? undefined,
+            elementKey: selectable.elementKey ?? undefined,
+            fieldKey: selectable.fieldKey ?? undefined,
+            isSection: selectable.element === selectable.section,
+          }
+        : null;
 
       positionOverlays();
       previousSelectedElement?.removeAttribute(
@@ -1965,6 +2018,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           sectionId: selectable.sectionId,
           componentType: selectable.type,
           nodeId: morphNodeId,
+          sourceLocation: selectable.element.dataset.morphLoc ?? null,
           elementKey: selectable.elementKey,
           fieldKey: selectable.fieldKey,
           field:
@@ -2160,6 +2214,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const restoreSelectedTarget = (target: PreviewSelectionRestoreTarget) => {
+      lastRestoreTarget = target;
       selectedElement?.removeAttribute("data-storefront-editor-selected");
       hideSelectedDragHandle();
       clearReorderFeedback();
@@ -2269,20 +2324,35 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       ) {
         const targetKey = message.targetElement;
         const scope = selectedItem.section ?? document;
+        // Shared with the AST patch and the Inspector so live feedback covers
+        // exactly the elements those two can address.
         const selectedElementMatchesTarget =
           selectedItem.elementKey === targetKey ||
-          selectedItem.element.dataset.morphNode === targetKey ||
-          selectedItem.element.dataset.morphElement === targetKey;
+          domElementMatchesTarget(
+            selectedItem.element,
+            targetKey,
+            message.sourceLocation,
+          );
         const previewTarget =
           targetKey === "section" || targetKey === "root"
             ? (selectedItem.section ?? selectedItem.element)
             : selectedElementMatchesTarget
               ? selectedItem.element
               : scope.querySelector<HTMLElement>(
-                  `[data-morph-node="${CSS.escape(targetKey)}"], [data-morph-element="${CSS.escape(targetKey)}"], [data-storefront-field="${CSS.escape(targetKey)}"]`,
+                  [
+                    `[data-morph-node="${CSS.escape(targetKey)}"]`,
+                    `[data-morph-element="${CSS.escape(targetKey)}"]`,
+                    `[data-storefront-field="${CSS.escape(targetKey)}"]`,
+                    ...(message.sourceLocation
+                      ? [
+                          `[data-morph-loc="${CSS.escape(message.sourceLocation)}"]`,
+                        ]
+                      : []),
+                  ].join(","),
                 );
         if (!previewTarget) return;
         const previewStyles = message.styles;
+        pendingPreviewStyles = { ...pendingPreviewStyles, ...previewStyles };
         selectionStylePreview.apply(previewTarget, previewStyles);
         if (selectionStylePreviewNeedsOverlayUpdate(previewStyles)) {
           positionOverlays();
@@ -2315,6 +2385,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             type: "morph:storefront-preview-select-section",
             sectionId: selectedItem.sectionId,
             componentType: selectedItem.type,
+            sourceLocation: selectedItem.element.dataset.morphLoc ?? null,
             nodeId:
               selectedItem.element.getAttribute("data-morph-node") ||
               selectedItem.element.dataset.morphNode ||
@@ -2388,11 +2459,32 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     window.addEventListener("scroll", schedulePositionOverlays, true);
     window.addEventListener("resize", schedulePositionOverlays);
     window.addEventListener("message", handleEditorMessage);
+    /**
+     * Clears the drag-time inline styles one frame after the source styles land.
+     *
+     * Removing them in the same frame can expose the previous value: the new
+     * class is already on the element, but the stylesheet rule for it may not
+     * have been generated yet, so the element briefly renders at its old size
+     * before snapping to the edited one. Waiting a frame lets the new rule take
+     * effect first, so the value only ever moves once.
+     */
+    const handleSelectionStyleApplied = () => {
+      requestAnimationFrame(() => {
+        pendingPreviewStyles = null;
+        selectionStylePreview.restore();
+      });
+    };
+
     window.addEventListener(
       SELECTION_STYLE_APPLIED_EVENT,
-      selectionStylePreview.restore,
+      handleSelectionStyleApplied,
     );
-    const structureObserver = new MutationObserver(scheduleEditableStructure);
+    const structureObserver = new MutationObserver(() => {
+      // Re-attach synchronously: publishing the structure is throttled to a
+      // frame, and waiting that long leaves the element unstyled for one paint.
+      reattachSelectionIfDetached();
+      scheduleEditableStructure();
+    });
     structureObserver.observe(document.body, {
       subtree: true,
       childList: true,
@@ -2427,7 +2519,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       window.removeEventListener("message", handleEditorMessage);
       window.removeEventListener(
         SELECTION_STYLE_APPLIED_EVENT,
-        selectionStylePreview.restore,
+        handleSelectionStyleApplied,
       );
       structureObserver.disconnect();
       cancelAnimationFrame(structurePublishFrame);
