@@ -20,6 +20,7 @@ import type {
 } from "./theme-build-runner.types";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
+import { createThemePreviewServerStubPlugin } from "./theme-preview-server-stub";
 
 function getMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
@@ -485,7 +486,14 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         root: tempDir,
         base: "./",
         configFile: false,
-        plugins: [tailwindcss(), viteReact(), securityPlugin],
+        plugins: [
+          // Preview is client-only and never runs a loader, so the Start server
+          // module is stubbed rather than resolved.
+          createThemePreviewServerStubPlugin(),
+          tailwindcss(),
+          viteReact(),
+          securityPlugin,
+        ],
         build: {
           outDir: previewOutDir,
           emptyOutDir: true,

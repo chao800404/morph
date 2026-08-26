@@ -214,6 +214,54 @@ function RootRoute() {
 }
 `;
 
+/**
+ * Root route emitted before published content reached the runtime.
+ *
+ * It renders the document shell but never loads slot values, so an edited
+ * heading stayed in the Document and the site kept showing component defaults.
+ * Kept verbatim so an untouched copy can be upgraded and an edited one left
+ * alone.
+ */
+export const LEGACY_STARTER_THEME_ROOT_ROUTE_CONTENTLESS_SOURCE = `import type { ReactNode } from "react";
+import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
+import StorefrontLayout from "../layouts/StorefrontLayout";
+import "../styles/global.css";
+
+export const Route = createRootRoute({
+  head: () => ({
+    meta: [
+      { charSet: "utf-8" },
+      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { title: "Online Store" },
+    ],
+  }),
+  component: RootComponent,
+  shellComponent: RootDocument,
+});
+
+function RootComponent() {
+  return (
+    <StorefrontLayout>
+      <Outlet />
+    </StorefrontLayout>
+  );
+}
+
+function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
+  return (
+    <html lang="en">
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        {children}
+        <Scripts />
+      </body>
+    </html>
+  );
+}
+`;
+
 export const STARTER_THEME_ROOT_ROUTE_SOURCE = `import type { ReactNode } from "react";
 import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
 import StorefrontLayout from "../layouts/StorefrontLayout";
@@ -253,6 +301,8 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
   );
 }
 `;
+
+
 
 export const STARTER_THEME_ROUTER_SOURCE = `import { createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";

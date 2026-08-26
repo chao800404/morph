@@ -9,9 +9,22 @@ import {
   type ResolvedStorefrontHost,
   type StorefrontHostResolverDeps,
 } from "./storefront-host-resolver";
+import {
+  resolveStorefrontContent,
+  type ContentRuntimePorts,
+} from "./storefront-content-runtime";
 import type { ThemeRuntime } from "./theme-runtime.types";
 
 const DEFAULT_CLIENT_ASSETS_DIRECTORY = "runtime/client";
+
+/**
+ * Platform-owned path a Theme reads its published content from.
+ *
+ * Served by Morph Core rather than the Theme Worker: only Morph Core knows
+ * which release is active, and content must come from that release's immutable
+ * publication, never from a draft.
+ */
+export const STOREFRONT_CONTENT_PATH = "/_morph/content";
 
 /**
  * Reads the client assets directory from the canonical manifest.
@@ -44,6 +57,7 @@ export type StorefrontProductionServiceOptions = Readonly<{
   runtime: ThemeRuntime;
   r2Bucket?: R2BucketLike;
   resolverDeps?: StorefrontHostResolverDeps;
+  contentPorts?: ContentRuntimePorts;
 }>;
 
 /**
@@ -75,6 +89,10 @@ export class StorefrontProductionService {
 
     const resolved = resolution.value;
 
+    if (url.pathname === STOREFRONT_CONTENT_PATH) {
+      return this.serveContent(request, url, resolved);
+    }
+
     if (request.method === "GET" || request.method === "HEAD") {
       const asset = await this.tryServeClientAsset(request, url, resolved);
       if (asset) return asset;
@@ -88,6 +106,48 @@ export class StorefrontProductionService {
       return errorResponse(runtimeResult.status, runtimeResult.message);
     }
     return runtimeResult.response;
+  }
+
+  /**
+   * Serves the published content for one route of the active release.
+   *
+   * Immutable for a given release, so it is cached hard and keyed by the
+   * release id: a new release changes the URL's meaning only through a new
+   * release id, and rollback restores the previous content without a purge.
+   */
+  private async serveContent(
+    request: Request,
+    url: URL,
+    resolved: ResolvedStorefrontHost,
+  ): Promise<Response> {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return errorResponse(405, "Method not allowed.");
+    }
+    if (!this.options.contentPorts) {
+      return errorResponse(503, "Storefront content is not configured.");
+    }
+
+    const requestedPath = url.searchParams.get("path") ?? "/";
+    if (requestedPath.length > 500 || !requestedPath.startsWith("/")) {
+      return errorResponse(400, "Invalid content path.");
+    }
+
+    const content = await resolveStorefrontContent({
+      publicationId: resolved.contentPublicationId,
+      pathname: requestedPath,
+      ports: this.options.contentPorts,
+    });
+
+    return new Response(JSON.stringify(content), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        // Content is immutable within a release; the release id is the version.
+        "Cache-Control": "public, max-age=60, must-revalidate",
+        ETag: `"${resolved.releaseId}:${requestedPath}"`,
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
   }
 
   /**

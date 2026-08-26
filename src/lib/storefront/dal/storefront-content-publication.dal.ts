@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
+import { firstOrNull } from "@/lib/db/single-row";
 import {
   storefrontContentPublicationItems,
   storefrontContentPublications,
@@ -9,6 +10,7 @@ import {
   storefrontThemeTemplates,
   storefrontThemes,
 } from "@/db/storefront.schema";
+import type { StorefrontTemplateType } from "@/db/storefront.schema";
 import type {
   StorefrontContentPublicationDTO,
   StorefrontContentPublicationItemDTO,
@@ -288,6 +290,54 @@ export const storefrontContentPublicationDal = {
     const publication = await this.resolveForTheme(data);
     await env.DATABASE.batch(this.insertStatements(publication));
     return publication;
+  },
+
+  /**
+   * Published document for one template type inside a ContentPublication.
+   *
+   * Scoped to the publication the active release points at, so a draft revision
+   * can never reach the public runtime. Returns `null` when the release
+   * publishes nothing for that template, which the caller treats as "no
+   * authored content" rather than an error.
+   */
+  async getPublishedTemplateDocument(data: {
+    publicationId: string;
+    templateType: StorefrontTemplateType;
+  }): Promise<unknown | null> {
+    const db = await getDb();
+    const row = firstOrNull(
+      await db
+        .select({ document: storefrontThemeTemplateRevisions.document })
+        .from(storefrontContentPublicationItems)
+        .innerJoin(
+          storefrontThemeTemplateRevisions,
+          eq(
+            storefrontContentPublicationItems.revisionId,
+            storefrontThemeTemplateRevisions.id,
+          ),
+        )
+        .innerJoin(
+          storefrontThemeTemplates,
+          eq(
+            storefrontThemeTemplateRevisions.templateId,
+            storefrontThemeTemplates.id,
+          ),
+        )
+        .where(
+          and(
+            eq(
+              storefrontContentPublicationItems.publicationId,
+              data.publicationId,
+            ),
+            eq(storefrontContentPublicationItems.itemType, "template"),
+            eq(storefrontThemeTemplates.type, data.templateType),
+            isNull(storefrontContentPublicationItems.deletedAt),
+            isNull(storefrontThemeTemplates.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
+    return row?.document ?? null;
   },
 
   async getById(

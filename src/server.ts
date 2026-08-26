@@ -59,11 +59,21 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
     import("cloudflare:workers"),
   ]);
 
+  const { storefrontContentPublicationDal } = await import(
+    "@/lib/storefront/dal/storefront-content-publication.dal"
+  );
+
   const service = new StorefrontProductionService({
     runtime: routing.createThemeRuntime(
       env as unknown as Record<string, unknown>,
     ),
     r2Bucket: (env as any)?.R2_BUCKET,
+    contentPorts: {
+      getPublishedDocument: (args) =>
+        storefrontContentPublicationDal.getPublishedTemplateDocument(
+          args,
+        ) as never,
+    },
   });
   return service.handleRequest(request);
 }

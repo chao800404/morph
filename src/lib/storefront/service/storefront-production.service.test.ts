@@ -429,3 +429,75 @@ describe("LocalDirectThemeRuntime global binding", () => {
     }
   });
 });
+
+describe("published content endpoint", () => {
+  const contentPorts = {
+    getPublishedDocument: vi.fn(async () => ({
+      sections: [
+        { id: "starter-hero", enabled: true, props: { heading: "Published" } },
+      ],
+    })),
+  };
+
+  function service(overrides: Record<string, unknown> = {}) {
+    return new StorefrontProductionService({
+      runtime: { kind: "local-direct", handle: vi.fn() } as never,
+      r2Bucket: r2(),
+      resolverDeps: resolverDeps(),
+      contentPorts: contentPorts as never,
+      ...overrides,
+    });
+  }
+
+  it("serves the active release's content for a route", async () => {
+    contentPorts.getPublishedDocument.mockClear();
+    const res = await service().handleRequest(req("/_morph/content?path=/"));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("application/json");
+    expect(await res.json()).toEqual({
+      slots: { "starter-hero": { heading: "Published" } },
+    });
+    // Scoped to the publication the active release points at, never a draft.
+    expect(contentPorts.getPublishedDocument).toHaveBeenCalledWith({
+      publicationId: "pub_1",
+      templateType: "index",
+    });
+  });
+
+  it("versions the response by release so rollback restores content", async () => {
+    const res = await service().handleRequest(req("/_morph/content?path=/"));
+    expect(res.headers.get("ETag")).toContain("rel_1");
+  });
+
+  it("never reaches the Theme Worker for this path", async () => {
+    const handle = vi.fn();
+    await service({
+      runtime: { kind: "local-direct", handle } as never,
+    }).handleRequest(req("/_morph/content?path=/"));
+    expect(handle).not.toHaveBeenCalled();
+  });
+
+  it("refuses a path that could not be a route", async () => {
+    const res = await service().handleRequest(
+      req("/_morph/content?path=notapath"),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses a write method", async () => {
+    const res = await service().handleRequest(
+      req("/_morph/content?path=/", { method: "POST" }),
+    );
+    expect(res.status).toBe(405);
+  });
+
+  it("reports an unconfigured content source instead of serving empty content", async () => {
+    // Silently returning no slots would render the site with placeholder copy
+    // and look like a successful publish.
+    const res = await service({ contentPorts: undefined }).handleRequest(
+      req("/_morph/content?path=/"),
+    );
+    expect(res.status).toBe(503);
+  });
+});
