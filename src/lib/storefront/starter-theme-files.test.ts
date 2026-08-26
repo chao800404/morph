@@ -9,9 +9,11 @@ import {
 import {
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE,
+  LEGACY_STARTER_THEME_ROOT_ROUTE_CONTENTLESS_SOURCE,
   LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE,
   STARTER_THEME_HOME_ROUTE_SOURCE,
@@ -538,6 +540,25 @@ describe("root document shell upgrade", () => {
     });
   });
 
+  it("replaces a root route that renders the shell but loads no content", () => {
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withRoot(LEGACY_STARTER_THEME_ROOT_ROUTE_CONTENTLESS_SOURCE) as never,
+    );
+    const rootUpgrade = upgrades.find(
+      (upgrade) => upgrade.path === "src/routes/__root.tsx",
+    );
+
+    expect(rootUpgrade).toBeDefined();
+    // Without these an edited heading stays in the Document and the deployed
+    // site keeps rendering the component's own defaults.
+    expect(rootUpgrade!.content).toContain("beforeLoad");
+    expect(rootUpgrade!.content).toContain("loadContentSlots");
+    expect(rootUpgrade!.content).toContain("MorphContentProvider");
+    // The shell must survive the upgrade, not be traded for content.
+    expect(rootUpgrade!.content).toContain("shellComponent");
+    expect(rootUpgrade!.content).toContain("../styles/global.css");
+  });
+
   it("never overwrites an authored root route", () => {
     const authored =
       LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE.replace(
@@ -617,6 +638,56 @@ describe("content slot upgrade", () => {
 
     expect(
       upgrades.some((upgrade) => upgrade.path === "src/routes/index.tsx"),
+    ).toBe(false);
+  });
+});
+
+describe("content module upgrade", () => {
+  const withContentModule = (moduleContent: string) => [
+    {
+      id: "manifest",
+      path: "morph.theme.json",
+      content: JSON.stringify({
+        name: "Dawn Starter",
+        entry: "src/routes/index.tsx",
+        router: { framework: "tanstack-start" },
+        components: {},
+      }),
+      version: 1,
+    },
+    {
+      id: "content",
+      path: "src/morph/content.ts",
+      content: moduleContent,
+      version: 3,
+    },
+  ];
+
+  it("replaces an untouched module that cannot load published content", () => {
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withContentModule(LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE) as never,
+    );
+    const upgrade = upgrades.find(
+      (candidate) => candidate.path === "src/morph/content.ts",
+    );
+
+    expect(upgrade).toBeDefined();
+    expect(upgrade!.content).toContain("loadContentSlots");
+    expect(upgrade!.content).toContain("x-morph-content-origin");
+    expect(upgrade).toMatchObject({ expectedFileId: "content", expectedVersion: 3 });
+  });
+
+  it("never overwrites an authored content module", () => {
+    const authored = LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE.replace(
+      "MorphContentContext",
+      "MyContentContext",
+    );
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withContentModule(authored) as never,
+    );
+
+    expect(
+      upgrades.some((candidate) => candidate.path === "src/morph/content.ts"),
     ).toBe(false);
   });
 });

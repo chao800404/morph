@@ -25,9 +25,21 @@ export type ThemeServiceBindingResolver = (
 function applyStorefrontContext(
   request: Request,
   resolved: ResolvedStorefrontHost,
+  /**
+   * Origin Morph Core was reached on, taken from the invocation rather than
+   * from `request`: a transport may already have rewritten the URL to the
+   * Theme's own address, and a Theme told to fetch content from there would
+   * call itself and silently render defaults.
+   */
+  contentOrigin: string,
 ): Request {
   const forwarded = new Request(request);
   forwarded.headers.set("x-morph-storefront-host", resolved.hostname);
+  // Absolute origin the Theme calls back on for published content. Sent rather
+  // than left to be rebuilt from the hostname: only Morph Core knows the scheme
+  // and port it was actually reached on, and a Theme guessing "https://" plus a
+  // bare hostname is wrong on every non-default port.
+  forwarded.headers.set("x-morph-content-origin", contentOrigin);
   forwarded.headers.set("x-morph-storefront-id", resolved.storefrontId);
   forwarded.headers.set("x-morph-release-id", resolved.releaseId);
   forwarded.headers.set("x-morph-theme-build-id", resolved.themeBuildId);
@@ -68,7 +80,11 @@ export class ServiceBindingThemeRuntime implements ThemeRuntime {
 
     try {
       const response = await binding.fetch(
-        applyStorefrontContext(invocation.request, invocation.resolved),
+        applyStorefrontContext(
+          invocation.request,
+          invocation.resolved,
+          new URL(invocation.request.url).origin,
+        ),
       );
       return { success: true, response };
     } catch (error) {
@@ -186,8 +202,10 @@ export class LocalDirectThemeRuntime implements ThemeRuntime {
 
   async handle(invocation: ThemeRuntimeInvocation): Promise<ThemeRuntimeResult> {
     let target: URL;
+    let incomingOrigin: string;
     try {
       const incoming = new URL(invocation.request.url);
+      incomingOrigin = incoming.origin;
       target = new URL(this.originUrl);
       target.pathname = incoming.pathname;
       target.search = incoming.search;
@@ -206,6 +224,7 @@ export class LocalDirectThemeRuntime implements ThemeRuntime {
     const forwarded = applyStorefrontContext(
       new Request(target, invocation.request),
       invocation.resolved,
+      incomingOrigin,
     );
 
     try {

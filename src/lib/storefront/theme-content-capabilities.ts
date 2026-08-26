@@ -96,7 +96,8 @@ const selectContentFieldSchema = z
     { message: "select option values must be unique" },
   );
 
-export const themeContentFieldDefinitionSchema = z.discriminatedUnion("type", [
+/** Every field a repeated row may contain. Rows hold values, never more rows. */
+const scalarContentFieldSchema = z.discriminatedUnion("type", [
   textContentFieldSchema,
   textareaContentFieldSchema,
   urlContentFieldSchema,
@@ -104,6 +105,124 @@ export const themeContentFieldDefinitionSchema = z.discriminatedUnion("type", [
   booleanContentFieldSchema,
   selectContentFieldSchema,
 ]);
+
+/** A field that holds one value, which is everything a row may contain. */
+export type ThemeScalarContentFieldDefinition = z.infer<
+  typeof scalarContentFieldSchema
+>;
+
+/** Narrows a definition to the kind a row may contain. */
+export function isScalarContentField(
+  definition: ThemeContentFieldDefinition,
+): definition is ThemeScalarContentFieldDefinition {
+  return definition.type !== "array";
+}
+
+export const MAX_ARRAY_CONTENT_FIELD_ROWS = 200;
+
+/**
+ * A repeated group of fields — the shape behind a list of cards, principles or
+ * FAQ entries.
+ *
+ * Rows are declared as an object keyed by field name, the same way the top
+ * level is, so one nesting level reads identically to none.
+ *
+ * A row may not itself contain an array. Sanity forbids the same thing and
+ * recommends wrapping a nested list in an object instead; the reason is that a
+ * multidimensional list cannot be presented so an editor can tell which level
+ * they are editing. Morph has less need for it than a pure CMS besides: layout
+ * nesting belongs in the component's TSX, not in its content shape. The row
+ * shape is already an object, so allowing one later is a depth check, not a
+ * redesign.
+ */
+/** Import specifier naming the component one row is rendered by. */
+const rowComponentSpecifierSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^\.{1,2}\/[A-Za-z0-9._\/-]+$/, {
+    message: "of must be a relative path to a component in this Theme",
+  })
+  .refine((value) => !value.includes(".."), {
+    message: "of must not leave the Theme workspace",
+  });
+
+const arrayContentFieldSchema = z
+  .object({
+    type: z.literal("array"),
+    label: fieldLabelSchema,
+    description: fieldDescriptionSchema,
+    /**
+     * Row shape declared here, for rows rendered inline in the same file.
+     * Mutually exclusive with `of`.
+     */
+    fields: z
+      .record(contentFieldKeySchema, scalarContentFieldSchema)
+      .refine((fields) => Object.keys(fields).length > 0, {
+        message: "array fields must declare at least one row field",
+      })
+      .refine(
+        (fields) => Object.keys(fields).length <= MAX_COMPONENT_CONTENT_FIELDS,
+        {
+          message: `array fields must declare at most ${MAX_COMPONENT_CONTENT_FIELDS} row fields`,
+        },
+      )
+      .optional(),
+    /**
+     * Row shape taken from the component that renders one row, for rows
+     * extracted into their own file. The component keeps its own declaration
+     * and nothing has to be repeated here.
+     */
+    of: rowComponentSpecifierSchema.optional(),
+    minRows: z.number().int().min(0).max(MAX_ARRAY_CONTENT_FIELD_ROWS).optional(),
+    maxRows: z.number().int().min(1).max(MAX_ARRAY_CONTENT_FIELD_ROWS).optional(),
+  })
+  .strict()
+  .refine(
+    (field) =>
+      field.minRows === undefined ||
+      field.maxRows === undefined ||
+      field.minRows <= field.maxRows,
+    { message: "minRows must be less than or equal to maxRows" },
+  )
+  // Exactly one source for the row shape. Accepting both would leave which one
+  // wins to be discovered by experiment, and accepting neither would describe
+  // a list whose rows have no fields.
+  .refine(
+    (field) => Boolean(field.fields) !== Boolean(field.of),
+    { message: "array fields must declare either fields or of, not both" },
+  );
+
+export const themeContentFieldDefinitionSchema = z.union([
+  scalarContentFieldSchema,
+  arrayContentFieldSchema,
+]);
+
+export type ThemeArrayContentFieldDefinition = z.infer<
+  typeof arrayContentFieldSchema
+>;
+
+/**
+ * Row fields of a repeated field, once its shape is known.
+ *
+ * `of` is resolved to concrete fields when capabilities are read from the
+ * workspace, so anything downstream sees one shape. `null` means the shape was
+ * never resolved — the referenced component is missing or declares nothing —
+ * and the caller must treat the field as uneditable rather than as empty.
+ */
+export function arrayRowFields(
+  definition: ThemeArrayContentFieldDefinition,
+): Record<string, ThemeScalarContentFieldDefinition> | null {
+  return definition.fields ?? null;
+}
+
+/** Narrows a definition to the repeated kind without re-parsing it. */
+export function isArrayContentField(
+  definition: ThemeContentFieldDefinition | undefined | null,
+): definition is ThemeArrayContentFieldDefinition {
+  return definition?.type === "array";
+}
 
 export type ThemeContentFieldDefinition = z.infer<
   typeof themeContentFieldDefinitionSchema
@@ -314,13 +433,81 @@ function assertThemeContentFieldValue(
     return;
   }
 
+  if (definition.type === "array") {
+    if (!Array.isArray(value)) invalid();
+    const rows = value as unknown[];
+    if (rows.length > MAX_ARRAY_CONTENT_FIELD_ROWS) invalid();
+    if (definition.minRows !== undefined && rows.length < definition.minRows) {
+      invalid();
+    }
+    if (definition.maxRows !== undefined && rows.length > definition.maxRows) {
+      invalid();
+    }
+    const rowFields = arrayRowFields(definition);
+    // A list whose row shape never resolved cannot be validated, so nothing may
+    // be written to it. Accepting the value unchecked would be the one path
+    // that reaches storage without a schema behind it.
+    if (!rowFields) invalid();
+    for (const [index, row] of rows.entries()) {
+      if (typeof row !== "object" || row === null || Array.isArray(row)) {
+        invalid();
+      }
+      const entries = Object.entries(row as Record<string, unknown>);
+      for (const [rowKey, rowValue] of entries) {
+        // Platform-managed: the row's identity is what instance styles and
+        // reordering are keyed by, so it is carried rather than declared.
+        if (rowKey === ROW_IDENTITY_KEY) {
+          if (typeof rowValue !== "string" || rowValue.length > 200) invalid();
+          continue;
+        }
+        const rowDefinition = rowFields![rowKey];
+        // An undeclared key is dropped by the filter, not rejected here: a row
+        // may still carry runtime data the Design surface never writes.
+        if (!rowDefinition) continue;
+        assertThemeContentFieldValue(
+          `${fieldKey}.${index}.${rowKey}`,
+          rowDefinition,
+          rowValue,
+        );
+      }
+    }
+    return;
+  }
+
   if (definition.type !== "select") invalid();
   if (
     typeof value !== "string" ||
-    !definition.options.some((option) => option.value === value)
+    !(definition as { options: { value: string }[] }).options.some(
+      (option) => option.value === value,
+    )
   ) {
     invalid();
   }
+}
+
+/** Key a repeated row carries its stable identity under. */
+export const ROW_IDENTITY_KEY = "id";
+
+/**
+ * Keeps only the declared row fields, plus the row's own identity.
+ *
+ * Undeclared keys are dropped rather than rejected so a row can still carry
+ * data the Design surface never writes, exactly as the top level does.
+ */
+function filterRow(
+  row: Record<string, unknown>,
+  definition: ThemeArrayContentFieldDefinition,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const rowFields = arrayRowFields(definition) ?? {};
+  const identity = row[ROW_IDENTITY_KEY];
+  if (typeof identity === "string") result[ROW_IDENTITY_KEY] = identity;
+  for (const [rowKey, rowValue] of Object.entries(row)) {
+    if (rowKey === ROW_IDENTITY_KEY) continue;
+    if (!rowFields[rowKey]) continue;
+    result[rowKey] = rowValue;
+  }
+  return result;
 }
 
 export function filterThemeContentProps(
@@ -332,7 +519,11 @@ export function filterThemeContentProps(
     const definition = capability.fields[fieldKey];
     if (!definition) continue;
     assertThemeContentFieldValue(fieldKey, definition, value);
-    result[fieldKey] = value;
+    result[fieldKey] = isArrayContentField(definition)
+      ? (value as Record<string, unknown>[]).map((row) =>
+          filterRow(row, definition),
+        )
+      : value;
   }
   return result;
 }

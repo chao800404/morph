@@ -264,6 +264,7 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
 
 export const STARTER_THEME_ROOT_ROUTE_SOURCE = `import type { ReactNode } from "react";
 import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
+import { MorphContentProvider, loadContentSlots } from "../morph/content";
 import StorefrontLayout from "../layouts/StorefrontLayout";
 import "../styles/global.css";
 
@@ -275,15 +276,23 @@ export const Route = createRootRoute({
       { title: "Online Store" },
     ],
   }),
+  // Runs on the server during SSR and its result is serialized to the client,
+  // so every route below reads published content without fetching it again.
+  beforeLoad: async ({ location }) => ({
+    morphContent: await loadContentSlots(location.pathname),
+  }),
   component: RootComponent,
   shellComponent: RootDocument,
 });
 
 function RootComponent() {
+  const { morphContent } = Route.useRouteContext();
   return (
-    <StorefrontLayout>
-      <Outlet />
-    </StorefrontLayout>
+    <MorphContentProvider value={morphContent}>
+      <StorefrontLayout>
+        <Outlet />
+      </StorefrontLayout>
+    </MorphContentProvider>
   );
 }
 
@@ -388,7 +397,13 @@ function HomeRoute() {
  * Slot values are supplied by the platform at render time, so a Theme never
  * reads storage itself.
  */
-export const STARTER_THEME_CONTENT_MODULE_SOURCE = `import { createContext, useContext } from "react";
+/**
+ * Content module before published content could reach the rendered Theme.
+ *
+ * Kept so the bootstrap upgrade can recognise an untouched copy and replace it.
+ * An authored copy is left alone.
+ */
+export const LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE = `import { createContext, useContext } from "react";
 
 export type MorphContentSlots = Record<string, Record<string, unknown>>;
 
@@ -401,6 +416,55 @@ export function content(slotId: string): Record<string, unknown> {
   const slots = useContext(MorphContentContext);
   return slots[slotId] ?? {};
 }
+`;
+
+export const STARTER_THEME_CONTENT_MODULE_SOURCE = `import { createIsomorphicFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { createContext, useContext } from "react";
+
+export type MorphContentSlots = Record<string, Record<string, unknown>>;
+
+const MorphContentContext = createContext<MorphContentSlots>({});
+
+export const MorphContentProvider = MorphContentContext.Provider;
+
+/** Reads the stored values for one content slot. */
+export function content(slotId: string): Record<string, unknown> {
+  const slots = useContext(MorphContentContext);
+  return slots[slotId] ?? {};
+}
+
+/**
+ * Loads the published content for one route.
+ *
+ * The server branch is the only one that touches the request; Start strips it
+ * from the client bundle, which is what keeps the server-only import out of
+ * client code. The client branch returns nothing because the root route has
+ * already serialized the server's answer into the router context.
+ *
+ * Morph Core owns the answer \u2014 only it knows which release is active \u2014 so
+ * this asks it back on the origin it forwarded the request from, rather than
+ * reading any store directly. Every failure degrades to defaults: content must
+ * never be able to take the storefront down.
+ */
+export const loadContentSlots = createIsomorphicFn()
+  .client(async (_pathname: string): Promise<MorphContentSlots> => ({}))
+  .server(async (pathname: string): Promise<MorphContentSlots> => {
+    try {
+      const request = getRequest();
+      const origin = request.headers.get("x-morph-content-origin");
+      if (!origin) return {};
+      const response = await fetch(
+        origin + "/_morph/content?path=" + encodeURIComponent(pathname),
+        { headers: { accept: "application/json" } },
+      );
+      if (!response.ok) return {};
+      const payload = (await response.json()) as { slots?: MorphContentSlots };
+      return payload?.slots ?? {};
+    } catch {
+      return {};
+    }
+  });
 `;
 
 export const STARTER_THEME_HOME_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";

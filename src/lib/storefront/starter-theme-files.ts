@@ -1,9 +1,11 @@
 import {
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE,
+  LEGACY_STARTER_THEME_ROOT_ROUTE_CONTENTLESS_SOURCE,
   LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE,
   STARTER_THEME_FOOTER_SOURCE,
@@ -532,7 +534,11 @@ export function createStarterThemeWorkspaceUpgrade(
     if (
       existingRootRoute &&
       targetRootRoute &&
-      existingRootRoute.content === LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE
+      (existingRootRoute.content === LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE ||
+        // Renders the shell but never loads slot values, so an edited heading
+        // stayed in the Document and the site kept showing component defaults.
+        existingRootRoute.content ===
+          LEGACY_STARTER_THEME_ROOT_ROUTE_CONTENTLESS_SOURCE)
     ) {
       upgrades.push({
         path: existingRootRoute.path,
@@ -540,6 +546,25 @@ export function createStarterThemeWorkspaceUpgrade(
         mimeType: "text/typescript",
         expectedFileId: existingRootRoute.id,
         expectedVersion: existingRootRoute.version,
+      });
+    }
+
+    // The content module gained the SSR loader that fetches published values
+    // from Morph Core. Without it a slot-based route renders, but always with
+    // component defaults. Only an untouched copy is replaced.
+    const existingContentModule = existingByPath.get("src/morph/content.ts");
+    const targetContentModule = targetByPath.get("src/morph/content.ts");
+    if (
+      existingContentModule &&
+      targetContentModule &&
+      existingContentModule.content === LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE
+    ) {
+      upgrades.push({
+        path: existingContentModule.path,
+        content: targetContentModule.content,
+        mimeType: "text/typescript",
+        expectedFileId: existingContentModule.id,
+        expectedVersion: existingContentModule.version,
       });
     }
 

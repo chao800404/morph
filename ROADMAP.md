@@ -208,13 +208,14 @@ Edge Runtime
 - Theme Worker 部署平面：deployment plan（含 forbidden binding 檢查）、Sandbox 內以固定版本 wrangler 部署、憑證只存在於 exec environment 且失敗輸出會清洗
 - Publish 與 rollback 兩條路徑共用同一個部署核心
 - artifact smoke-run harness：本地實際啟動 `runtime/server/index.js` 驗證 build 產物真的可執行
+- **Theme artifact + Page Document 的 runtime 組合已閉環**：Morph Core 以 `/_morph/content` 提供 active release 的已發布內容，Theme 在 root route `beforeLoad` 以 server-only 分支取回並經 router context 序列化到 client。編輯器解釋器、Build Preview 與 production 三個平面共用同一份 root route source
+- Morph Core 以 `x-morph-content-origin` 明確告知回撥位址，Theme 不需從 hostname 猜測 scheme／port；該 header 為 set 而非 merge，外部無法偽造
 
 ### 尚未完整閉環
 
 目前主要缺口：
 
 - release history UI（`activateStorefrontRelease` 已可用，但沒有切換介面）
-- **Theme artifact + Page Document 的 runtime 組合**：內容值仍只存在 Document，build 出來的 theme 不會讀取，因此改文字不會反映到 production
 - content-only publish without rebuild 的完整 production flow
 - section 排序仍寫入 Document，但 production 依 route 的 JSX 順序渲染
 - 純程式碼元件的內容欄位（需要 source 宣告的 content slot）

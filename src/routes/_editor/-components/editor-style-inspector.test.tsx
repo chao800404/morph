@@ -428,10 +428,10 @@ describe("EditorStyleInspector selection content", () => {
           fieldKey: null,
           fieldPath: null,
           descendantFields: [
-            { fieldKey: "eyebrow", fieldPath: "eyebrow" },
-            { fieldKey: "heading", fieldPath: "heading" },
-            { fieldKey: "description", fieldPath: "description" },
-            { fieldKey: "actionLabel", fieldPath: "actionLabel" },
+            { fieldKey: "eyebrow", fieldPath: "eyebrow", sectionId: null },
+            { fieldKey: "heading", fieldPath: "heading", sectionId: null },
+            { fieldKey: "description", fieldPath: "description", sectionId: null },
+            { fieldKey: "actionLabel", fieldPath: "actionLabel", sectionId: null },
           ],
         })}
         onPreviewSelectionField={onPreviewSelectionField}
@@ -486,8 +486,8 @@ describe("EditorStyleInspector selection content", () => {
           fieldKey: null,
           fieldPath: "items.1",
           descendantFields: [
-            { fieldKey: "title", fieldPath: "items.1.title" },
-            { fieldKey: "body", fieldPath: "items.1.body" },
+            { fieldKey: "title", fieldPath: "items.1.title", sectionId: null },
+            { fieldKey: "body", fieldPath: "items.1.body", sectionId: null },
           ],
         })}
         onPreviewSelectionField={onPreviewSelectionField}

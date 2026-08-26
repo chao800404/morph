@@ -1,4 +1,7 @@
-import { domElementMatchesTarget } from "@/lib/storefront/ast/element-target";
+import {
+  domElementMatchesTarget,
+  sourceLocationKey,
+} from "@/lib/storefront/ast/element-target";
 import { StorefrontPreview } from "@/components/storefront/storefront-preview";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontThemePreviewSearchSchema } from "@/lib/validations/storefront-theme";
@@ -391,10 +394,13 @@ export function collectEditableDescendantFields(
     const fieldKey = candidate.dataset.storefrontField;
     if (!fieldKey) continue;
     const fieldPath = candidate.dataset.storefrontFieldPath ?? fieldKey;
-    const identity = `${fieldKey}\u0000${fieldPath}`;
+    const sectionId = previewSectionIdOf(
+      closestPreviewSectionRoot(candidate) ?? candidate,
+    );
+    const identity = `${sectionId ?? ""}\u0000${fieldKey}\u0000${fieldPath}`;
     if (identities.has(identity)) continue;
     identities.add(identity);
-    result.push({ fieldKey, fieldPath });
+    result.push({ fieldKey, fieldPath, sectionId: sectionId ?? null });
   }
 
   return result;
@@ -1461,6 +1467,26 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         .morphSourceFile ??
       null;
 
+    /**
+     * `line:column` of an element, when nothing else in the same source file
+     * renders from that position. A JSX element inside `map()` renders once per
+     * item and shares one position, which is precisely the ambiguity that must
+     * not be reordered through source.
+     */
+    const uniqueSourceLocationKey = (element: HTMLElement) => {
+      const sourceLocation = element.dataset.morphLoc;
+      if (!sourceLocation) return null;
+      const key = sourceLocationKey(sourceLocation);
+      if (!key) return null;
+      const scope =
+        element.closest<HTMLElement>("[data-storefront-section-id]") ??
+        document;
+      const matches = scope.querySelectorAll<HTMLElement>(
+        `[data-morph-loc="${CSS.escape(sourceLocation)}"]`,
+      );
+      return matches.length === 1 ? key : null;
+    };
+
     const isUniqueMorphNode = (element: HTMLElement, nodeId: string) => {
       const sourcePath = sourceFilePathFor(element);
       if (!sourcePath) return false;
@@ -1501,10 +1527,18 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           sourceFilePath,
         };
       }
-      if (!nodeId || !isUniqueMorphNode(element, nodeId)) return null;
+      // An unmarked element is reordered by its source position instead. The
+      // transformer accepts either, so a component with no authored markers is
+      // still draggable — but the position must resolve to one element in this
+      // file, exactly as a marker must.
+      const targetKey =
+        nodeId && isUniqueMorphNode(element, nodeId)
+          ? nodeId
+          : uniqueSourceLocationKey(element);
+      if (!targetKey) return null;
       return {
         kind: "source" as const,
-        nodeId,
+        nodeId: targetKey,
         fieldPath: null,
         arrayPath: null,
         parent,

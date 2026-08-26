@@ -104,6 +104,16 @@ import {
   SizingInspectorModule,
 } from "./style-inspector/box-style-modules";
 import {
+  arrayRowFields,
+  MAX_ARRAY_CONTENT_FIELD_ROWS,
+} from "@/lib/storefront/theme-content-capabilities";
+import { toast } from "sonner";
+import {
+  addArrayRowAtFieldPath,
+  createMorphItemId,
+  removeArrayRowAtFieldPath,
+} from "@/lib/storefront/editor/reorder-array-items";
+import {
   canPatchThemeInstanceStyleClasses,
   isRepeatedFieldPath,
   readThemeElementBaseClasses,
@@ -319,17 +329,6 @@ function repeatedItemStructuralVariants(
   return variants;
 }
 
-function createMorphItemId(): string {
-  const uuid = globalThis.crypto?.randomUUID?.();
-  if (uuid) return "morph-" + uuid;
-  return (
-    "morph-" +
-    Date.now().toString(36) +
-    "-" +
-    Math.random().toString(36).slice(2, 10)
-  );
-}
-
 function computedColorToHex(value?: string | null): string | null {
   if (!value) return null;
   const raw = value.trim();
@@ -456,7 +455,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const selectedField = activeFieldKey ?? activeElementKey;
   const isSelectedNode = activeSelectionIsSection === false;
   const selectedKind = selection?.kind ?? "custom";
-  const descendantFields = selection?.descendantFields ?? [];
+  // Restricted to this section: a selected parent can span several components,
+  // and two instances of one component expose the same field names. Editing
+  // through an unfiltered list would write to whichever instance came first.
+  const descendantFields = (selection?.descendantFields ?? []).filter(
+    (binding) => binding.sectionId === null || binding.sectionId === section.id,
+  );
   const descendantFieldKeys = new Set(
     descendantFields.map((binding) => binding.fieldKey),
   );
@@ -518,13 +522,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     // that declares its own `contentFields` is editable without being
     // registered anywhere. Server validation resolves the same way, so the form
     // and what the server accepts cannot diverge.
-    if (!section.componentRef || !themeFiles) return null;
+    if (!themeFiles) return null;
+    const { capabilities } = resolveThemeContentCapabilitiesFromFiles(themeFiles);
+    // Falls back to the component's own source path so a component that was
+    // never registered anywhere — the case co-located declaration exists to
+    // support — still resolves what it declares.
     return (
-      resolveThemeContentCapabilitiesFromFiles(themeFiles).capabilities[
-        section.componentRef
-      ] ?? null
+      (section.componentRef ? capabilities[section.componentRef] : null) ??
+      (componentPath ? capabilities[componentPath] : null) ??
+      null
     );
-  }, [section.componentRef, themeFiles]);
+  }, [componentPath, section.componentRef, themeFiles]);
   const declaredContentFields = Object.entries(
     themeContentCapability?.fields ?? {},
   );
@@ -1292,7 +1300,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     ) => {
       const currentProps = localPropsRef.current;
       const descendantPath = selection?.descendantFields?.find(
-        (binding) => binding.fieldKey === field,
+        (binding) =>
+          binding.fieldKey === field &&
+          (binding.sectionId === null || binding.sectionId === section.id),
       )?.fieldPath;
       const targetPath = activeFieldPath?.endsWith("." + field)
         ? activeFieldPath
@@ -1308,8 +1318,39 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         onPropsChange(next);
       }
     },
-    [activeFieldPath, onPropsChange, selection?.descendantFields],
+    [activeFieldPath, onPropsChange, section.id, selection?.descendantFields],
   );
+  /**
+   * Applies a row mutation to the whole repeated field at once.
+   *
+   * Rows are written as one value rather than path by path: adding or removing
+   * shifts every index after it, so a per-path write would address the wrong
+   * rows the moment the list changed length.
+   */
+  const mutateArrayRows = useCallback(
+    (
+      mutate: (
+        props: Record<string, unknown>,
+      ) => ReturnType<typeof addArrayRowAtFieldPath<Record<string, unknown>>>,
+    ) => {
+      const result = mutate(localPropsRef.current);
+      if (!result.editable) {
+        const message =
+          result.reason === "max-rows"
+            ? "This list is already at its maximum number of entries."
+            : result.reason === "min-rows"
+              ? "This list requires at least one more entry than that."
+              : "That entry could not be changed.";
+        toast.warning(message);
+        return;
+      }
+      localPropsRef.current = result.value;
+      setLocalProps(result.value);
+      onPropsChange(result.value);
+    },
+    [onPropsChange],
+  );
+
   const handleNestedFieldChange = useCallback(
     (path: string, value: unknown) => {
       const next = setFieldPathValue(localPropsRef.current, path, value);
@@ -1472,6 +1513,150 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     skipPreviewSync: true,
                   });
                 };
+
+                if (definition.type === "array") {
+                  const rows: Record<string, unknown>[] = Array.isArray(value)
+                    ? (value as Record<string, unknown>[])
+                    : [];
+                  const resolvedRowFields = arrayRowFields(definition);
+                  // A list whose row shape never resolved is shown as such
+                  // rather than as an empty list: the difference is whether the
+                  // Theme is misdeclared or simply has no entries yet.
+                  if (!resolvedRowFields) {
+                    return (
+                      <p
+                        key={fieldKey}
+                        className="text-[10px] leading-relaxed text-muted-foreground"
+                      >
+                        {label} cannot be edited: its row component could not be
+                        resolved.
+                      </p>
+                    );
+                  }
+                  const rowFields = Object.entries(resolvedRowFields);
+                  const minRows = definition.minRows ?? 0;
+                  const maxRows =
+                    definition.maxRows ?? MAX_ARRAY_CONTENT_FIELD_ROWS;
+                  return (
+                    <div key={fieldKey} className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-medium text-muted-foreground capitalize">
+                          {label}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {rows.length}
+                        </span>
+                      </div>
+                      {rows.length === 0 ? (
+                        <p className="text-[10px] leading-relaxed text-muted-foreground">
+                          No entries yet.
+                        </p>
+                      ) : null}
+                      {rows.map((row, index) => (
+                        <div
+                          key={
+                            typeof row?.id === "string"
+                              ? row.id
+                              : `${fieldKey}-${index}`
+                          }
+                          className="space-y-2 rounded-lg border bg-muted/30 p-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="text-[10px] font-mono text-muted-foreground">
+                              {index + 1}
+                            </p>
+                            <button
+                              type="button"
+                              disabled={disabled || rows.length <= minRows}
+                              onClick={() =>
+                                mutateArrayRows((current) =>
+                                  removeArrayRowAtFieldPath(
+                                    current,
+                                    `${fieldKey}.${index}`,
+                                    definition,
+                                  ),
+                                )
+                              }
+                              className="text-[10px] text-muted-foreground hover:text-destructive disabled:opacity-40"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          {rowFields.map(([rowKey, rowDefinition]) => (
+                            <InspectorField
+                              key={rowKey}
+                              label={
+                                rowDefinition.label ??
+                                rowKey.replace(/[-_]/g, " ")
+                              }
+                            >
+                              {rowDefinition.type === "textarea" ? (
+                                <Textarea
+                                  defaultValue={String(row?.[rowKey] ?? "")}
+                                  maxLength={rowDefinition.maxLength}
+                                  onInput={(event) =>
+                                    handleNestedFieldChange(
+                                      `${fieldKey}.${index}.${rowKey}`,
+                                      event.currentTarget.value,
+                                    )
+                                  }
+                                  disabled={disabled}
+                                  className="min-h-16 text-xs"
+                                />
+                              ) : (
+                                <Input
+                                  type={
+                                    rowDefinition.type === "url"
+                                      ? "url"
+                                      : rowDefinition.type === "number"
+                                        ? "number"
+                                        : "text"
+                                  }
+                                  defaultValue={String(row?.[rowKey] ?? "")}
+                                  maxLength={
+                                    rowDefinition.type === "text" ||
+                                    rowDefinition.type === "url"
+                                      ? rowDefinition.maxLength
+                                      : undefined
+                                  }
+                                  onInput={(event) =>
+                                    handleNestedFieldChange(
+                                      `${fieldKey}.${index}.${rowKey}`,
+                                      rowDefinition.type === "number"
+                                        ? Number(event.currentTarget.value)
+                                        : event.currentTarget.value,
+                                    )
+                                  }
+                                  disabled={disabled}
+                                  className="h-8 text-xs"
+                                />
+                              )}
+                            </InspectorField>
+                          ))}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        disabled={disabled || rows.length >= maxRows}
+                        onClick={() =>
+                          mutateArrayRows((current) =>
+                            addArrayRowAtFieldPath(current, fieldKey, definition, {
+                              createId: createMorphItemId,
+                            }),
+                          )
+                        }
+                        className="w-full rounded-lg border border-dashed py-1.5 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+                      >
+                        Add entry
+                      </button>
+                      {definition.description ? (
+                        <p className="text-[10px] leading-relaxed text-muted-foreground">
+                          {definition.description}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                }
 
                 if (definition.type === "boolean") {
                   return (

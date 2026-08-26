@@ -8,11 +8,11 @@
 | ------------ | ------------------------------------------------------------------------------------------------ |
 | 最後更新     | 2026-08-26                                                                                       |
 | 目前狀態     | 開發中                                                                                           |
-| 整體完成度   | **80%**（加權，權重表見下）                                                                                  |
-| 目前重點     | 零標記元件的選取／樣式編輯／即時預覽已全線打通，content slot 契約已建立；下一步是讓內容值通到 production                        |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（185 files / 1019 tests）、`pnpm build` 均通過                                  |
+| 整體完成度   | **82%**（加權，權重表見下）                                                                                  |
+| 目前重點     | 內容值已端到端通到 production 並實測驗證；下一步是 section 排序改走 source，以及純程式碼元件的 content slot                        |
+| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（185 files / 1048 tests）、`pnpm build` 均通過；另有 production 內容路徑的手動端到端驗證 |
 
-`████████ 80%`
+`████████ 82%`
 
 > 完成度依下方權重表計算，可自行複核。權重反映各階段的規模與剩餘風險，不是平均分配 ——
 > 把「Inspector 數值輸入一致性」與「真實 Theme Runtime」等重看待，是先前數字偏高的主因。
@@ -37,9 +37,9 @@
 | 3. Inspector 模組化與基本樣式     | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border | 🟢   |    97% | 補齊跨尺寸與真實瀏覽器視覺檢查               |
 | 4. Editor ↔ Preview 通訊          | typed protocol、runtime validation、selection/style 同步                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試    |
 | 5. 編輯器互動效能                 | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放      | 🟢   |    97% | 以瀏覽器 Performance trace 建立實際延遲基準  |
-| 6. Code-authored 內容 round-trip  | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence                   | 🟢   |    93% | 內容值仍未通到 production，需 runtime 組合     |
-| 7. 真實 Theme Source Live Runtime | 在隔離 iframe 執行真實 TSX/theme runtime，不再依賴固定相容 renderer                           | 🟡   |    55% | Live 仍走解釋器；已驗證 build 產物可執行，但編輯器尚未改用          |
-| 8. 最終品質與發布準備             | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態                                                 | 🟡   |    55% | 缺瀏覽器層 E2E：選取鏈連續五次失敗都沒有測試攔截 |
+| 6. Code-authored 內容 round-trip  | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence、production runtime | ✅   |   100% | 純程式碼元件的 content slot 由 ROADMAP 追蹤     |
+| 7. 真實 Theme Source Live Runtime | 在隔離 iframe 執行真實 TSX/theme runtime，不再依賴固定相容 renderer                           | 🟡   |    57% | Live 仍走解釋器；同一份 root route 現已能在三個平面執行            |
+| 8. 最終品質與發布準備             | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態                                                 | 🟡   |    58% | 仍缺瀏覽器層 E2E；production 內容路徑目前只有手動驗證 |
 
 ## 權重與計算
 
@@ -50,10 +50,10 @@
 | 3. Inspector 模組化與基本樣式     |   15 |    97% | 14.55 |
 | 4. Editor ↔ Preview 通訊          |   10 |   100% | 10.00 |
 | 5. 編輯器互動效能                 |   10 |    97% | 9.70 |
-| 6. Code-authored 內容 round-trip  |   15 |    93% | 13.95 |
-| 7. 真實 Theme Source Live Runtime |   25 |    55% | 13.75 |
-| 8. 最終品質與發布準備             |   15 |    55% | 8.25 |
-| **合計**                          | **100** |    | **80.2 → 80%** |
+| 6. Code-authored 內容 round-trip  |   15 |   100% | 15.00 |
+| 7. 真實 Theme Source Live Runtime |   25 |    57% | 14.25 |
+| 8. 最終品質與發布準備             |   15 |    58% | 8.70 |
+| **合計**                          | **100** |    | **82.2 → 82%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
@@ -62,12 +62,16 @@
 - 階段 3、6、8 各 15：面積大或直接決定可交付性。
 - 階段 1、2 各 5：已完成的一致性修正，範圍小。
 
-### 本次調整的依據
+### 本次調整的依據（2026-08-26）
 
-- 階段 7 由 60% 調回 **55%**：production runtime 能執行真實 Worker 是另一個平面的進展，
-  編輯器 iframe 仍走解釋器，不應記在此階段。已驗證 build 產物可執行算是前置達成。
-- 階段 8 由 65% 調為 **55%**：本次有直接證據——使用者連續五次回報選取失敗，
-  五個成因分散在五處，**沒有任何一條現有測試攔截到**，因為缺少瀏覽器層的端到端測試。
+- 階段 6 由 93% 調為 **100%**：其唯一未完項「內容值通到 production」已閉環並實測 ——
+  以真實 D1 workspace 套用升級、編譯、啟動 Worker，從 storefront 網域取得的 SSR HTML
+  含已發布內容（6706 → 11805 bytes）。剩下的「純程式碼元件 content slot」屬另一項缺口。
+- 階段 7 由 55% 調為 **57%**：編輯器仍走解釋器，此階段本質未變。但同一份 root route
+  現在能在解釋器、Build Preview 與 production 三個平面執行，是往「移除解釋器」的實質收斂。
+- 階段 8 由 55% 調為 **58%**：新增針對「靜默失敗」的回歸測試（內容回撥 origin 取錯來源時
+  頁面仍回 200、只是內容變預設值）。但 production 內容路徑目前**只有手動端到端驗證**，
+  仍缺瀏覽器層 E2E，因此漲幅有限。
 
 ## 已完成內容
 

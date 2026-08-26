@@ -15,6 +15,18 @@ export const THEME_CONTENT_SLOT_HELPER = "content";
 /** Path of the platform-owned module that provides the helper to a Theme. */
 export const THEME_CONTENT_MODULE_PATH = "src/morph/content.ts";
 
+/**
+ * Router hook a Theme's root route calls to read what its `beforeLoad` loaded.
+ *
+ * Production resolves it through TanStack Router. The Design preview has no
+ * router and never runs `beforeLoad`, so it answers the call directly from the
+ * Document instead — the two planes agree on the shape, not the mechanism.
+ */
+export const THEME_ROUTE_CONTEXT_HOOK = "useRouteContext";
+
+/** Key the root route's context carries published slot values under. */
+export const THEME_CONTENT_CONTEXT_KEY = "morphContent";
+
 const SLOT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/i;
 const MAX_SLOT_ID_LENGTH = 64;
 export const MAX_THEME_CONTENT_SLOTS = 200;

@@ -10,6 +10,65 @@ export const THEME_START_SERVER_SPECIFIER = "@tanstack/react-start/server";
 const VIRTUAL_ID = "\0morph-theme-start-server-stub";
 
 /**
+ * Node builtin the preview build cannot bundle for the browser.
+ *
+ * `createIsomorphicFn` is how a Theme keeps a server-only branch out of client
+ * code, but reaching it drags Start's storage context in, which imports
+ * `AsyncLocalStorage`. Vite maps Node builtins to an empty browser shim, so the
+ * named import fails and the whole preview build dies on a module the preview
+ * never executes.
+ */
+const NODE_ASYNC_HOOKS_SPECIFIERS = ["node:async_hooks", "async_hooks"];
+
+const ASYNC_HOOKS_VIRTUAL_ID = "\0morph-theme-preview-async-hooks-stub";
+
+/**
+ * Single-threaded stand-in for `AsyncLocalStorage`.
+ *
+ * Correct for synchronous `run` calls, which is all the preview could ever
+ * reach, and it stays a real implementation rather than a throw: this module
+ * is pulled in transitively, so failing on import would break builds that
+ * never call it.
+ */
+const ASYNC_HOOKS_STUB_SOURCE = `export class AsyncLocalStorage {
+  #store = undefined;
+  run(store, callback, ...args) {
+    const previous = this.#store;
+    this.#store = store;
+    try {
+      return callback(...args);
+    } finally {
+      this.#store = previous;
+    }
+  }
+  getStore() {
+    return this.#store;
+  }
+  enterWith(store) {
+    this.#store = store;
+  }
+  exit(callback, ...args) {
+    return this.run(undefined, callback, ...args);
+  }
+  disable() {
+    this.#store = undefined;
+  }
+}
+export class AsyncResource {
+  runInAsyncScope(fn, thisArg, ...args) {
+    return fn.apply(thisArg, args);
+  }
+  bind(fn) {
+    return fn;
+  }
+  emitDestroy() {
+    return this;
+  }
+}
+export default { AsyncLocalStorage, AsyncResource };
+`;
+
+/**
  * Stub the preview build substitutes for the Start server module.
  *
  * Every export throws: the preview never calls them, and a silent no-op would
@@ -39,10 +98,16 @@ export function createThemePreviewServerStubPlugin() {
     name: "morph-theme-preview-server-stub",
     enforce: "pre" as const,
     resolveId(source: string) {
-      return source === THEME_START_SERVER_SPECIFIER ? VIRTUAL_ID : null;
+      if (source === THEME_START_SERVER_SPECIFIER) return VIRTUAL_ID;
+      if (NODE_ASYNC_HOOKS_SPECIFIERS.includes(source)) {
+        return ASYNC_HOOKS_VIRTUAL_ID;
+      }
+      return null;
     },
     load(id: string) {
-      return id === VIRTUAL_ID ? STUB_SOURCE : null;
+      if (id === VIRTUAL_ID) return STUB_SOURCE;
+      if (id === ASYNC_HOOKS_VIRTUAL_ID) return ASYNC_HOOKS_STUB_SOURCE;
+      return null;
     },
   };
 }

@@ -89,6 +89,24 @@ function createDocumentComponentResolver(args: {
 }
 
 /**
+ * Declared type of each stored section, keyed by its slot id.
+ *
+ * Read alongside the values because a component identified by its slot needs a
+ * section type too, and only the Document knows it.
+ */
+function readSectionTypesBySlot(
+  document: StorefrontPageDocument,
+): Record<string, string> {
+  const types: Record<string, string> = {};
+  for (const section of document.sections ?? []) {
+    if (typeof section?.id === "string" && typeof section.type === "string") {
+      types[section.id] = section.type;
+    }
+  }
+  return types;
+}
+
+/**
  * Content values keyed by slot, built from the published Page Document.
  *
  * A Document section's id is the slot id, so a route that declares
@@ -186,6 +204,7 @@ export function renderSafeThemeRoute(args: {
     document: args.document,
   });
   const contentSlots = readContentSlots(args.document);
+  const sectionTypeBySlot = readSectionTypesBySlot(args.document);
   let parentPath = parentRoutePath(matched.path, routePaths);
   while (parentPath) {
     const parent = registry.routes.find(
@@ -217,6 +236,7 @@ export function renderSafeThemeRoute(args: {
       injectedProps: args.runtimeProps,
       resolveComponent,
       contentSlots,
+      sectionTypeBySlot,
     });
     if (!rendered.success) return rendered;
     outlet = rendered.node;
@@ -242,5 +262,6 @@ export function renderSafeThemeRoute(args: {
     injectedProps: args.runtimeProps,
     resolveComponent,
     contentSlots,
+    sectionTypeBySlot,
   });
 }

@@ -307,6 +307,67 @@ describe("ThemeRuntime transports", () => {
     expect(result.success).toBe(true);
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
+
+  it("local runtime tells the Theme to fetch content from Morph Core, not from itself", async () => {
+    // The forwarded request's URL has already been rewritten to the local Theme
+    // Worker. Deriving the callback origin from it would send the Theme to its
+    // own address, where there is no content endpoint, and the storefront would
+    // silently render component defaults instead of published content.
+    const fetchImpl = vi.fn(async (input: any) => {
+      expect((input as Request).headers.get("x-morph-content-origin")).toBe(
+        `https://${HOST}`,
+      );
+      return new Response("local");
+    });
+
+    const result = await new LocalDirectThemeRuntime(
+      "http://127.0.0.1:8788",
+      fetchImpl as any,
+    ).handle(invocation);
+
+    // Asserted explicitly: the transport catches everything the fetch throws,
+    // so a failed expectation inside it would otherwise pass silently.
+    expect(result.success).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("service binding runtime forwards the origin the request arrived on", async () => {
+    const fetch = vi.fn(async (request: Request) => {
+      expect(request.headers.get("x-morph-content-origin")).toBe(
+        `https://${HOST}`,
+      );
+      return new Response("ok");
+    });
+
+    const result = await new ServiceBindingThemeRuntime(() => ({
+      fetch,
+    })).handle(invocation);
+
+    expect(result.success).toBe(true);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("never lets a client spoof the content origin", async () => {
+    const spoofed = {
+      ...invocation,
+      request: new Request(`https://${HOST}/about?x=1`, {
+        headers: { "x-morph-content-origin": "https://attacker.example" },
+      }),
+    };
+    const fetch = vi.fn(async (request: Request) => {
+      expect(request.headers.get("x-morph-content-origin")).toBe(
+        `https://${HOST}`,
+      );
+      return new Response("ok");
+    });
+
+    const result = await new ServiceBindingThemeRuntime(() => ({
+      fetch,
+    })).handle(spoofed);
+
+    expect(result.success).toBe(true);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
 });
 
 describe("ServiceBindingThemeRuntime", () => {

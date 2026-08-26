@@ -1,5 +1,11 @@
 import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
 import {
+  isArrayContentField,
+  isScalarContentField,
+  type ThemeContentFieldDefinition,
+  type ThemeScalarContentFieldDefinition,
+} from "./theme-content-capabilities";
+import {
   parseThemeContentCapabilities,
   type ThemeComponentContentCapability,
   type ThemeContentCapabilities,
@@ -12,6 +18,56 @@ const MAX_SCANNED_COMPONENT_SOURCES = 200;
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+/** Resolves a relative import specifier against the file that declared it. */
+function resolveRowComponentPath(
+  declaringPath: string,
+  specifier: string,
+): string | null {
+  const base = declaringPath.slice(0, declaringPath.lastIndexOf("/"));
+  const segments = `${base}/${specifier}`.split("/");
+  const resolved: string[] = [];
+  for (const segment of segments) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (resolved.length === 0) return null;
+      resolved.pop();
+      continue;
+    }
+    resolved.push(segment);
+  }
+  const path = resolved.join("/");
+  return path.startsWith("src/") ? path : null;
+}
+
+/**
+ * Row fields the referenced component declares.
+ *
+ * Only scalar fields are taken: a row component that itself declares a list
+ * would make the row a list of lists, which the schema rejects for the same
+ * reason Sanity does — an editor cannot tell which level they are editing.
+ */
+function resolveRowFields(
+  declaringPath: string,
+  specifier: string,
+  declared: ReadonlyMap<string, Record<string, ThemeContentFieldDefinition>>,
+): Record<string, ThemeScalarContentFieldDefinition> | null {
+  const base = resolveRowComponentPath(declaringPath, specifier);
+  if (!base) return null;
+  for (const extension of ROW_COMPONENT_EXTENSIONS) {
+    const fields = declared.get(`${base}${extension}`);
+    if (!fields) continue;
+    const scalars: Record<string, ThemeScalarContentFieldDefinition> = {};
+    for (const [key, definition] of Object.entries(fields)) {
+      if (isScalarContentField(definition)) scalars[key] = definition;
+    }
+    return Object.keys(scalars).length > 0 ? scalars : null;
+  }
+  return null;
+}
+
+/** Extensions a row component reference may omit. */
+const ROW_COMPONENT_EXTENSIONS = ["", ".tsx", ".jsx", "/index.tsx", "/index.jsx"];
 
 /**
  * Maps each declared componentRef to the source file that implements it.
@@ -121,16 +177,67 @@ export function resolveThemeContentCapabilitiesFromFiles(
   const colocated = new Map<string, ThemeComponentContentCapability>();
   const diagnostics: string[] = [];
 
+  // Every component source is scanned, not only the ones the manifest names.
+  // Registration is what makes a growing Theme unmanageable: a component that
+  // declares its own fields is editable because it declares them, not because
+  // someone remembered to list it. Its source path is its identity.
+  const manifestRefsBySource = new Map<string, string>();
   for (const [componentRef, sourcePath] of readComponentSourcePaths(
     manifestContent,
   )) {
-    const source = byPath.get(sourcePath);
+    manifestRefsBySource.set(sourcePath, componentRef);
+  }
+
+  const declared = new Map<
+    string,
+    Record<string, ThemeContentFieldDefinition>
+  >();
+  let scanned = 0;
+  for (const [path, source] of byPath) {
+    if (scanned >= MAX_SCANNED_COMPONENT_SOURCES) break;
     if (typeof source !== "string") continue;
+    if (!path.startsWith("src/") || !/\.(tsx|jsx)$/.test(path)) continue;
+    scanned += 1;
     const parsed = parseColocatedContentFields(source);
     for (const diagnostic of parsed.diagnostics) {
-      diagnostics.push(`${sourcePath}: ${diagnostic}`);
+      diagnostics.push(`${path}: ${diagnostic}`);
     }
-    if (parsed.fields) colocated.set(componentRef, { fields: parsed.fields });
+    if (!parsed.fields) continue;
+    declared.set(path, parsed.fields);
+  }
+
+  // Second pass: a row shape declared by reference is filled in from the
+  // component that renders one row. Done after every declaration is known so
+  // the referenced component may itself be declared later in the scan.
+  for (const [path, fields] of declared) {
+    const resolvedFields: Record<string, ThemeContentFieldDefinition> = {};
+    for (const [fieldKey, definition] of Object.entries(fields)) {
+      if (!isArrayContentField(definition) || definition.fields) {
+        resolvedFields[fieldKey] = definition;
+        continue;
+      }
+      const specifier = definition.of;
+      const rowFields = specifier
+        ? resolveRowFields(path, specifier, declared)
+        : null;
+      if (!rowFields) {
+        // Dropped rather than left shapeless: an editor offering a list whose
+        // rows have no fields cannot do anything useful with it, and silence
+        // here is how a mistyped path would go unnoticed.
+        diagnostics.push(
+          `${path}: content field "${fieldKey}" references "${specifier ?? ""}", which declares no content fields.`,
+        );
+        continue;
+      }
+      resolvedFields[fieldKey] = { ...definition, fields: rowFields };
+    }
+    if (Object.keys(resolvedFields).length === 0) continue;
+    const capability = { fields: resolvedFields };
+    // Keyed by source path so an unregistered component resolves, and by its
+    // manifest ref as well so existing Document sections keep resolving.
+    colocated.set(path, capability);
+    const componentRef = manifestRefsBySource.get(path);
+    if (componentRef) colocated.set(componentRef, capability);
   }
 
   return mergeCapabilities(

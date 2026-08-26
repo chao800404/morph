@@ -16,7 +16,7 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  *     seeded. Without it authored content stays in the Document and never
  *     reaches the rendered component.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 11;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 12;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

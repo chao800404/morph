@@ -10,7 +10,10 @@ import {
 import { SAFE_THEME_INLINE_ROUTE_COMPONENT } from "@/lib/storefront/compiler/theme-route-registry";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
+  THEME_CONTENT_CONTEXT_KEY,
+  THEME_CONTENT_MODULE_PATH,
   THEME_CONTENT_SLOT_HELPER,
+  THEME_ROUTE_CONTEXT_HOOK,
   isValidThemeContentSlotId,
   resolveThemeContentSlot,
   type ThemeContentSlotValues,
@@ -35,6 +38,8 @@ type RuntimeContext = {
   files: Map<string, ThemeSourceFile>;
   /** Stored values for each content slot the route declares. */
   contentSlots?: ThemeContentSlotValues;
+  /** Declared type of each stored section, keyed by its slot id. */
+  sectionTypeBySlot?: Readonly<Record<string, string>>;
   builtinComponents: SafeThemeBuiltinComponentMap;
   injectedProps: Record<string, unknown>;
   resolveComponent?: SafeThemeComponentResolver;
@@ -358,6 +363,21 @@ function evaluateCall(
   env: Record<string, unknown>,
   context: RuntimeContext,
 ): unknown {
+  // A root route reads published content through the router context its
+  // `beforeLoad` populated. The preview has no router and never runs a loader,
+  // so it answers with the same shape resolved from the Document, which is what
+  // lets one authored root route serve both planes.
+  if (
+    (node.callee?.type === "Identifier" &&
+      node.callee.name === THEME_ROUTE_CONTEXT_HOOK) ||
+    (node.callee?.type === "MemberExpression" &&
+      node.callee.computed !== true &&
+      node.callee.property?.type === "Identifier" &&
+      node.callee.property.name === THEME_ROUTE_CONTEXT_HOOK)
+  ) {
+    return { [THEME_CONTENT_CONTEXT_KEY]: context.contentSlots ?? {} };
+  }
+
   if (
     node.callee?.type === "Identifier" &&
     node.callee.name === THEME_CONTENT_SLOT_HELPER
@@ -417,6 +437,12 @@ function evaluateCall(
         mapEnv.__morphArrayPath = arrayPath;
         mapEnv.__morphArrayIndex = index;
         mapEnv.__morphArrayItem = item;
+        // Name the callback gave the item, so `{item.title}` can be read back
+        // as the field `title` without the author marking the element.
+        mapEnv.__morphArrayItemName =
+          callback.params?.[0]?.type === "Identifier"
+            ? callback.params[0].name
+            : null;
         mapEnv.__morphMapRootRendered = false;
         return evaluateFunctionBody(
           callback,
@@ -429,8 +455,28 @@ function evaluateCall(
   }
 
   throw new SafeThemeRuntimeError(
-    "This function call is not supported by the safe Design preview.",
+    `${describeCallee(node.callee)} is not supported by the safe Design preview.`,
   );
+}
+
+/**
+ * Names the unsupported call so a Theme author can find it.
+ *
+ * Only the callee's own identifiers are used: a source path here would end up
+ * in an editor diagnostic for a file the reader may not own.
+ */
+function describeCallee(callee: any): string {
+  if (callee?.type === "Identifier") return `${callee.name}()`;
+  if (
+    callee?.type === "MemberExpression" &&
+    callee.computed !== true &&
+    callee.property?.type === "Identifier"
+  ) {
+    const object =
+      callee.object?.type === "Identifier" ? `${callee.object.name}.` : "";
+    return `${object}${callee.property.name}()`;
+  }
+  return "This function call";
 }
 
 function evaluateExpression(
@@ -647,7 +693,265 @@ function renderJsxChildren(
   });
 }
 
+/**
+ * Repeated-item context a child component has to inherit.
+ *
+ * It lives in the interpreter's environment, and a component imported from
+ * another file is evaluated against its own module environment — so without
+ * carrying this across the boundary, a row extracted into its own component
+ * renders with no row identity at all: every row claims the same field, and
+ * writing one would write all of them.
+ */
+export type ThemeArrayItemContext = Readonly<{
+  arrayPath: string;
+  arrayIndex: number;
+  item: unknown;
+  itemName: string | null;
+}>;
+
+/**
+ * Section identity a `content("slot")` call gives the component it feeds.
+ *
+ * The route decides which sections a page has and in what order; the Document
+ * only stores their values. Without reading the slot back here, two instances
+ * of one component fall back to their shared source path and become
+ * indistinguishable — editing one would edit both.
+ */
+function readContentSlotSection(
+  node: any,
+  context: RuntimeContext,
+): SafeThemeSectionIdentity | null {
+  for (const attribute of node.openingElement?.attributes ?? []) {
+    if (attribute?.type !== "JSXSpreadAttribute") continue;
+    const call = attribute.argument;
+    if (
+      call?.type !== "CallExpression" ||
+      call.callee?.type !== "Identifier" ||
+      call.callee.name !== THEME_CONTENT_SLOT_HELPER
+    ) {
+      continue;
+    }
+    const slot = call.arguments?.[0];
+    if (slot?.type !== "StringLiteral" || !isValidThemeContentSlotId(slot.value)) {
+      continue;
+    }
+    return {
+      sectionId: slot.value,
+      // Falls back to the slot id so a section the Document has never stored
+      // still has a type, rather than the component losing its identity for
+      // want of a value that only exists once someone has edited it.
+      sectionType: context.sectionTypeBySlot?.[slot.value] ?? slot.value,
+    };
+  }
+  return null;
+}
+
+/**
+ * Which repeated-item field each of a child component's props came from.
+ *
+ * `<Card {...item} />` and `<Card title={item.title} />` both mean the child's
+ * `title` edits `items.0.title`. Recorded at the call site because only the
+ * parent can see where the value came from; inside the child it is just a prop.
+ */
+function readItemFieldPathsByProp(
+  node: any,
+  inherited: ThemeArrayItemContext | null,
+): Record<string, string> | null {
+  if (!inherited) return null;
+  const itemName = inherited.itemName;
+  const item = inherited.item;
+  const prefix = `${inherited.arrayPath}.${inherited.arrayIndex}`;
+  const paths: Record<string, string> = {};
+
+  for (const attribute of node.openingElement?.attributes ?? []) {
+    if (attribute?.type === "JSXSpreadAttribute") {
+      // `{...item}` hands the child every field of the row.
+      if (
+        attribute.argument?.type !== "Identifier" ||
+        attribute.argument.name !== itemName ||
+        !item ||
+        typeof item !== "object"
+      ) {
+        continue;
+      }
+      for (const key of Object.keys(item as Record<string, unknown>)) {
+        if (BLOCKED_PROPERTIES.has(key)) continue;
+        paths[key] = `${prefix}.${key}`;
+      }
+      continue;
+    }
+    if (
+      attribute?.type !== "JSXAttribute" ||
+      attribute.name?.type !== "JSXIdentifier" ||
+      attribute.value?.type !== "JSXExpressionContainer"
+    ) {
+      continue;
+    }
+    const field = inferBoundPropName(attribute.value.expression, itemName);
+    if (field && !BLOCKED_PROPERTIES.has(field)) {
+      paths[attribute.name.name] = `${prefix}.${field}`;
+    }
+  }
+  return Object.keys(paths).length > 0 ? paths : null;
+}
+
+/** Reads the repeated-item context out of an interpreter environment. */
+function readArrayItemContext(
+  env: Record<string, unknown>,
+): ThemeArrayItemContext | null {
+  const arrayPath = env.__morphArrayPath;
+  const arrayIndex = env.__morphArrayIndex;
+  if (typeof arrayPath !== "string" || typeof arrayIndex !== "number") {
+    return null;
+  }
+  return {
+    arrayPath,
+    arrayIndex,
+    item: env.__morphArrayItem,
+    itemName:
+      typeof env.__morphArrayItemName === "string"
+        ? env.__morphArrayItemName
+        : null,
+  };
+}
+
+/** Seeds an environment with an inherited repeated-item context. */
+function applyArrayItemContext(
+  env: Record<string, unknown>,
+  inherited: ThemeArrayItemContext | null,
+): void {
+  if (!inherited) return;
+  env.__morphArrayPath = inherited.arrayPath;
+  env.__morphArrayIndex = inherited.arrayIndex;
+  env.__morphArrayItem = inherited.item;
+  env.__morphArrayItemName = inherited.itemName;
+}
+
+
+/**
+ * Prop name a JSX expression reads, when it reads exactly one.
+ *
+ * `{heading}` and `{item.title ?? ""}` both name a single editable value; an
+ * expression that combines several, or computes one, names none. Returning
+ * `null` there is deliberate: the Inspector must not offer to edit a field it
+ * cannot write back unambiguously.
+ */
+function inferBoundPropName(
+  expression: any,
+  itemVariableName: string | null,
+): string | null {
+  if (!expression) return null;
+  switch (expression.type) {
+    case "Identifier":
+      return expression.name === itemVariableName ? null : expression.name;
+    case "MemberExpression":
+      if (
+        expression.computed !== true &&
+        expression.object?.type === "Identifier" &&
+        expression.object.name === itemVariableName &&
+        expression.property?.type === "Identifier"
+      ) {
+        return expression.property.name;
+      }
+      return null;
+    // `{item.title ?? ""}` and `{value || "fallback"}`: the left side is the
+    // stored value and the right side is only what shows when it is missing.
+    case "LogicalExpression":
+      return inferBoundPropName(expression.left, itemVariableName);
+    case "ConditionalExpression":
+      return inferBoundPropName(expression.consequent, itemVariableName);
+    case "TSAsExpression":
+    case "TSNonNullExpression":
+      return inferBoundPropName(expression.expression, itemVariableName);
+    default:
+      return null;
+  }
+}
+
+/** Attributes whose bound prop identifies the element's editable content. */
+const CONTENT_BEARING_ATTRIBUTES = ["src", "href"];
+
+/**
+ * Field key for an element the author never marked.
+ *
+ * `data-morph-element` used to declare this by hand. The interpreter can read
+ * it from the JSX instead — the element that renders `{heading}` is the element
+ * that edits `heading` — so a component stays fully editable with no markers.
+ *
+ * The name is accepted only when it is a real prop of the component (or of the
+ * repeated item), which keeps an arbitrary local variable from being offered as
+ * an editable field.
+ */
+function inferElementFieldKey(
+  node: any,
+  env: Record<string, unknown>,
+): string | null {
+  const itemVariableName =
+    typeof env.__morphArrayItemName === "string"
+      ? env.__morphArrayItemName
+      : null;
+  const inMap = typeof env.__morphArrayPath === "string";
+  const mappedPaths = env.__morphFieldPathByProp as
+    | Record<string, string>
+    | null
+    | undefined;
+  // Three places a name can legitimately come from: the row being repeated,
+  // the component's own props, and a prop the parent renamed on the way in.
+  // A row extracted into its own component reads its own prop names, so
+  // checking only the row would reject every field it declares.
+  const scopes = [
+    inMap ? env.__morphArrayItem : null,
+    env.__morphComponentProps,
+  ].filter(
+    (scope): scope is Record<string, unknown> =>
+      Boolean(scope) && typeof scope === "object",
+  );
+  if (scopes.length === 0 && !mappedPaths) return null;
+  const accept = (name: string | null) => {
+    if (!name || BLOCKED_PROPERTIES.has(name)) return null;
+    if (mappedPaths && name in mappedPaths) return name;
+    return scopes.some((scope) => name in scope) ? name : null;
+  };
+
+  const meaningfulChildren = (node.children ?? []).filter(
+    (child: any) =>
+      !(child?.type === "JSXText" && String(child.value ?? "").trim() === ""),
+  );
+  if (
+    meaningfulChildren.length === 1 &&
+    meaningfulChildren[0]?.type === "JSXExpressionContainer"
+  ) {
+    const fromChild = accept(
+      inferBoundPropName(
+        meaningfulChildren[0].expression,
+        inMap ? itemVariableName : null,
+      ),
+    );
+    if (fromChild) return fromChild;
+  }
+
+  for (const attribute of node.openingElement?.attributes ?? []) {
+    if (
+      attribute?.type !== "JSXAttribute" ||
+      attribute.name?.type !== "JSXIdentifier" ||
+      !CONTENT_BEARING_ATTRIBUTES.includes(attribute.name.name) ||
+      attribute.value?.type !== "JSXExpressionContainer"
+    ) {
+      continue;
+    }
+    const fromAttribute = accept(
+      inferBoundPropName(
+        attribute.value.expression,
+        inMap ? itemVariableName : null,
+      ),
+    );
+    if (fromAttribute) return fromAttribute;
+  }
+  return null;
+}
+
 function readJsxProps(
+  node: any,
   attributes: any[],
   env: Record<string, unknown>,
   context: RuntimeContext,
@@ -677,37 +981,58 @@ function readJsxProps(
     typeof props["data-morph-element"] === "string"
       ? String(props["data-morph-element"])
       : null;
-  if (morphElement) {
-    props["data-storefront-component"] ??= morphElement;
-    const arrayPath =
-      typeof env.__morphArrayPath === "string" ? env.__morphArrayPath : null;
-    const arrayIndex =
-      typeof env.__morphArrayIndex === "number" ? env.__morphArrayIndex : null;
-    const isMapRoot =
-      arrayPath !== null &&
-      arrayIndex !== null &&
-      env.__morphMapRootRendered !== true;
-    if (isMapRoot) {
-      env.__morphMapRootRendered = true;
-      props["data-storefront-field"] ??= arrayPath;
-      props["data-storefront-field-path"] ??= `${arrayPath}.${arrayIndex}`;
-      const item = env.__morphArrayItem;
-      if (
-        item &&
-        typeof item === "object" &&
-        typeof (item as Record<string, unknown>).id === "string"
-      ) {
-        props["data-storefront-item-id"] ??= (
-          item as Record<string, unknown>
-        ).id;
-      }
+  if (morphElement) props["data-storefront-component"] ??= morphElement;
+
+  const arrayPath =
+    typeof env.__morphArrayPath === "string" ? env.__morphArrayPath : null;
+  const arrayIndex =
+    typeof env.__morphArrayIndex === "number" ? env.__morphArrayIndex : null;
+  // The first element rendered inside a map callback stands for the whole item,
+  // whether or not the author marked it. Gating this on a marker would leave an
+  // unmarked repeated component with no per-item identity to select or reorder.
+  const isMapRoot =
+    arrayPath !== null &&
+    arrayIndex !== null &&
+    env.__morphMapRootRendered !== true;
+
+  if (isMapRoot) {
+    env.__morphMapRootRendered = true;
+    props["data-storefront-field"] ??= arrayPath;
+    props["data-storefront-field-path"] ??= `${arrayPath}.${arrayIndex}`;
+    const item = env.__morphArrayItem;
+    if (
+      item &&
+      typeof item === "object" &&
+      typeof (item as Record<string, unknown>).id === "string"
+    ) {
+      props["data-storefront-item-id"] ??= (
+        item as Record<string, unknown>
+      ).id;
+    }
+    return sanitizeProps(props);
+  }
+
+  // An authored marker still wins: it names the field explicitly, including the
+  // two aliases that never matched their prop name.
+  const fieldKey = morphElement
+    ? morphElement === "action"
+      ? "actionLabel"
+      : morphElement === "image"
+        ? "imageSrc"
+        : morphElement
+    : inferElementFieldKey(node, env);
+  if (fieldKey) {
+    // A prop the parent renamed still edits the row field it came from, so the
+    // recorded path wins over the one the prop name would imply.
+    const mappedPath = (
+      env.__morphFieldPathByProp as Record<string, string> | null | undefined
+    )?.[fieldKey];
+    if (mappedPath) {
+      props["data-storefront-field"] ??= mappedPath.slice(
+        mappedPath.lastIndexOf(".") + 1,
+      );
+      props["data-storefront-field-path"] ??= mappedPath;
     } else {
-      const fieldKey =
-        morphElement === "action"
-          ? "actionLabel"
-          : morphElement === "image"
-            ? "imageSrc"
-            : morphElement;
       props["data-storefront-field"] ??= fieldKey;
       if (arrayPath !== null && arrayIndex !== null) {
         props["data-storefront-field-path"] ??=
@@ -754,7 +1079,12 @@ function renderJsxElement(
       "Namespaced and member-expression JSX tags are not supported.",
     );
   }
-  const props = readJsxProps(node.openingElement.attributes, env, context);
+  const props = readJsxProps(
+    node,
+    node.openingElement.attributes,
+    env,
+    context,
+  );
   let children = renderJsxChildren(node.children ?? [], env, context);
 
   const fieldPath =
@@ -802,6 +1132,18 @@ function renderJsxElement(
     return createElement(name, props, ...children);
   }
 
+  // Where each of the child's props came from, recorded here because only the
+  // call site can see it. `{...item}` needs no mapping — the names already
+  // match — but `<Card heading={item.title} />` does.
+  const itemFieldPaths = readItemFieldPathsByProp(
+    node,
+    readArrayItemContext(env),
+  );
+  // The slot a component is fed from is that instance's identity. Two renders
+  // of one component differ only here, so without it both fall back to the
+  // source path they share.
+  const slotSection = readContentSlotSection(node, context);
+
   const localFunction = env[`__component:${name}`];
   if (localFunction) {
     return renderFunctionComponent(
@@ -811,6 +1153,8 @@ function renderJsxElement(
       context,
       String(env.__sourcePath ?? ""),
       name,
+      slotSection ?? undefined,
+      itemFieldPaths,
     );
   }
 
@@ -832,6 +1176,9 @@ function renderJsxElement(
     imported.imported,
     { ...props, children },
     context,
+    slotSection ?? undefined,
+    readArrayItemContext(env),
+    itemFieldPaths,
   );
 }
 
@@ -874,9 +1221,13 @@ function renderFunctionComponent(
   sourcePath: string,
   componentName: string,
   section?: SafeThemeSectionIdentity,
+  itemFieldPaths?: Record<string, string> | null,
 ): ReactNode {
   const componentEnv = Object.create(moduleEnv) as Record<string, unknown>;
   componentEnv.__morphComponentProps = props;
+  // Set unconditionally so a component rendered outside any row clears an
+  // inherited mapping rather than reusing the enclosing row's paths.
+  componentEnv.__morphFieldPathByProp = itemFieldPaths ?? null;
   const node = evaluateFunctionBody(
     fn,
     [props],
@@ -892,6 +1243,8 @@ function renderModuleComponent(
   props: Record<string, unknown>,
   context: RuntimeContext,
   section?: SafeThemeSectionIdentity,
+  arrayItem?: ThemeArrayItemContext | null,
+  itemFieldPaths?: Record<string, string> | null,
 ): ReactNode {
   const override = context.resolveComponent?.({
     sourcePath,
@@ -925,12 +1278,34 @@ function renderModuleComponent(
   try {
     const module = parseModule(sourcePath, file.content);
     const env: Record<string, unknown> = { __sourcePath: sourcePath };
+    // A row extracted into its own file is still a row. Without this the child
+    // renders with no repeated-item identity and every row claims the same
+    // field, so editing one would edit all of them.
+    applyArrayItemContext(env, arrayItem ?? null);
     for (const [name, imported] of module.imports) {
       const importedPath = resolveLocalImport(
         context.files,
         sourcePath,
         imported.source,
       );
+      // The platform content module is modelled natively: `content()` is
+      // resolved from the Document above, and its provider only exists so the
+      // deployed Theme can pass server-loaded values down. Interpreting the
+      // module itself would mean supporting `createContext`, which the preview
+      // deliberately does not, for a value the preview never reads.
+      if (importedPath === THEME_CONTENT_MODULE_PATH) {
+        env[`__builtin:${name}`] = (builtinProps: Record<string, unknown>) => {
+          const children = builtinProps.children;
+          // Spread rather than passed as one array child: the interpreter
+          // builds children positionally and has no keys to give them.
+          return createElement(
+            Fragment,
+            null,
+            ...(Array.isArray(children) ? children : [children ?? null]),
+          );
+        };
+        continue;
+      }
       if (importedPath) {
         env[`__import:${name}`] = {
           path: importedPath,
@@ -992,6 +1367,7 @@ function renderModuleComponent(
       sourcePath,
       componentName,
       resolvedSection,
+      itemFieldPaths ?? null,
     );
   } finally {
     context.componentStack.pop();
@@ -1008,6 +1384,7 @@ export function renderSafeThemeComponent({
   injectedProps = {},
   resolveComponent,
   contentSlots,
+  sectionTypeBySlot,
 }: {
   files: ThemeSourceFile[];
   sourcePath: string;
@@ -1018,6 +1395,7 @@ export function renderSafeThemeComponent({
   injectedProps?: Record<string, unknown>;
   resolveComponent?: SafeThemeComponentResolver;
   contentSlots?: ThemeContentSlotValues;
+  sectionTypeBySlot?: Readonly<Record<string, string>>;
 }): SafeThemeComponentRenderResult {
   const fileMap = new Map(
     files.map((file) => [normalizePath(file.path), file]),
@@ -1029,6 +1407,7 @@ export function renderSafeThemeComponent({
     injectedProps,
     resolveComponent,
     contentSlots,
+    sectionTypeBySlot,
     nodeCount: 0,
     componentStack: [],
     diagnostics: [],

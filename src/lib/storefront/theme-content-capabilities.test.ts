@@ -104,3 +104,119 @@ describe("Theme content capabilities", () => {
     ).toThrow("INVALID_THEME_CONTENT_FIELD_VALUE:emphasis");
   });
 });
+
+const arrayManifest = JSON.stringify({
+  components: {
+    "principles.default": {
+      source: "src/components/Principles.tsx",
+      contentFields: {
+        label: { type: "text", label: "Section label" },
+        items: {
+          type: "array",
+          label: "Principles",
+          minRows: 1,
+          maxRows: 3,
+          fields: {
+            number: { type: "text", maxLength: 4 },
+            title: { type: "text" },
+            body: { type: "textarea" },
+          },
+        },
+      },
+    },
+  },
+  sections: {},
+});
+
+const arrayCapability = () =>
+  parseThemeContentCapabilities(arrayManifest).capabilities[
+    "principles.default"
+  ]!;
+
+const row = (id: string, title: string) => ({ id, number: "01", title, body: "b" });
+
+describe("array content fields", () => {
+  it("parses a repeated group of row fields", () => {
+    const result = parseThemeContentCapabilities(arrayManifest);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.capabilities["principles.default"]?.fields.items).toEqual({
+      type: "array",
+      label: "Principles",
+      minRows: 1,
+      maxRows: 3,
+      fields: {
+        number: { type: "text", maxLength: 4 },
+        title: { type: "text" },
+        body: { type: "textarea" },
+      },
+    });
+  });
+
+  it("keeps each row's identity, which styles and ordering are keyed by", () => {
+    const filtered = filterThemeContentProps(
+      { items: [row("r1", "One"), row("r2", "Two")] },
+      arrayCapability(),
+    );
+
+    expect(filtered.items).toEqual([row("r1", "One"), row("r2", "Two")]);
+  });
+
+  it("drops undeclared row keys instead of rejecting the whole row", () => {
+    // A row may still carry runtime data the Design surface never writes;
+    // rejecting it would make the section uneditable rather than safe.
+    const filtered = filterThemeContentProps(
+      { items: [{ ...row("r1", "One"), internalRef: "x" }] },
+      arrayCapability(),
+    );
+
+    expect(filtered.items).toEqual([row("r1", "One")]);
+  });
+
+  it("validates row values against the row field definitions", () => {
+    expect(() =>
+      filterThemeContentProps(
+        { items: [{ ...row("r1", "One"), number: "toolong" }] },
+        arrayCapability(),
+      ),
+    ).toThrow(/INVALID_THEME_CONTENT_FIELD_VALUE:items\.0\.number/);
+  });
+
+  it("enforces the declared row bounds", () => {
+    expect(() =>
+      filterThemeContentProps({ items: [] }, arrayCapability()),
+    ).toThrow(/INVALID_THEME_CONTENT_FIELD_VALUE:items/);
+    expect(() =>
+      filterThemeContentProps(
+        { items: [row("a", "1"), row("b", "2"), row("c", "3"), row("d", "4")] },
+        arrayCapability(),
+      ),
+    ).toThrow(/INVALID_THEME_CONTENT_FIELD_VALUE:items/);
+  });
+
+  it("refuses a row that is itself a list", () => {
+    // Declaring an array inside an array is rejected at parse time, so a value
+    // shaped that way can only be malformed input.
+    const nested = JSON.stringify({
+      components: {
+        "x.default": {
+          source: "src/components/X.tsx",
+          contentFields: {
+            items: {
+              type: "array",
+              fields: { inner: { type: "array", fields: { a: { type: "text" } } } },
+            },
+          },
+        },
+      },
+      sections: {},
+    });
+
+    const result = parseThemeContentCapabilities(nested);
+
+    // The field is dropped and reported; the component itself survives, the
+    // same way any other invalid field is handled.
+    expect(result.capabilities["x.default"]?.fields).toEqual({});
+    expect(result.diagnostics.join(" ")).toContain("items");
+  });
+});

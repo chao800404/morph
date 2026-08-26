@@ -122,6 +122,61 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(result.code).toContain('<h2 data-morph-node="title">Title</h2>');
   });
 
+  it("swaps unmarked siblings addressed by source position", () => {
+    // A component written without any Morph markers must still be reorderable:
+    // requiring an authored attribute would mean the editor could select and
+    // restyle an element it could not move.
+    const source = `export default function Example() {
+  return (
+    <div>
+      <h2 className="a">Title</h2>
+      <p className="b">Body</p>
+    </div>
+  );
+}`;
+    const result = swapSiblingMorphNodes(source, "4:7", "5:7");
+
+    expect(result.editable).toBe(true);
+    expect(result.code.indexOf('className="b"')).toBeLessThan(
+      result.code.indexOf('className="a"'),
+    );
+    expect(result.code).toContain('<h2 className="a">Title</h2>');
+  });
+
+  it("prefers an authored marker over a position that names another element", () => {
+    // Positions shift as the file above them is edited, so wherever both exist
+    // the marker has to win or a stale position could move the wrong element.
+    const source = `export default function Example() {
+  return (
+    <div>
+      <h2 data-morph-node="title">Title</h2>
+      <p data-morph-node="body">Body</p>
+    </div>
+  );
+}`;
+    const result = swapSiblingMorphNodes(source, "title", "5:7");
+
+    expect(result.editable).toBe(true);
+    expect(result.code.indexOf('data-morph-node="body"')).toBeLessThan(
+      result.code.indexOf('data-morph-node="title"'),
+    );
+  });
+
+  it("rejects a position that does not name a JSX sibling", () => {
+    const source = `export default function Example() {
+  return (
+    <div>
+      <h2 className="a">Title</h2>
+      <p className="b">Body</p>
+    </div>
+  );
+}`;
+    const result = swapSiblingMorphNodes(source, "4:7", "99:1");
+
+    expect(result).toMatchObject({ editable: false, reason: "not-found" });
+    expect(result.code).toBe(source);
+  });
+
   it("rejects Morph nodes that are not direct siblings", () => {
     const source = `export default function Example() {
   return <div><div><span data-morph-node="nested" /></div><p data-morph-node="peer" /></div>;

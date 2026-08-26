@@ -628,6 +628,31 @@ export type SwapSiblingMorphNodesResult = {
   reason?: "parse-error" | "not-found" | "not-siblings" | "same-node";
 };
 
+/**
+ * `line:column` of a JSX element's opening tag.
+ *
+ * Same convention `locationMap` and the Live preview's `data-morph-loc` use, so
+ * an element the author never marked is still addressable.
+ */
+function jsxElementLocationKey(node: any): string | null {
+  const opening = node?.openingElement;
+  const line = opening?.loc?.start?.line;
+  if (typeof line !== "number") return null;
+  return `${line}:${(opening.loc.start.column ?? 0) + 1}`;
+}
+
+/**
+ * Whether a JSX element is the one a reorder target names.
+ *
+ * Accepts either an authored `data-morph-node` or a source position, in that
+ * order: a marker survives edits above it, a position does not, so the marker
+ * has to win wherever both exist.
+ */
+function jsxElementMatchesTargetKey(node: any, targetKey: string): boolean {
+  if (staticMorphNodeId(node) === targetKey) return true;
+  return jsxElementLocationKey(node) === targetKey;
+}
+
 function staticMorphNodeId(node: any): string | null {
   if (node?.type !== "JSXElement") return null;
   for (const attribute of node.openingElement?.attributes ?? []) {
@@ -654,8 +679,11 @@ function staticMorphNodeId(node: any): string | null {
 /**
  * Swaps two statically-addressable JSX siblings without reformatting the rest
  * of the source file. Runtime DOM order is never used as source of truth: the
- * transformer succeeds only when both unique Morph nodes are direct children
- * of the same JSX parent in the parsed TSX source.
+ * transformer succeeds only when both targets resolve to exactly one direct
+ * child of the same JSX parent in the parsed TSX source.
+ *
+ * Each target is an authored `data-morph-node` or a `line:column` position, so
+ * a component that carries no markers at all can still be reordered.
  */
 export function swapSiblingMorphNodes(
   sourceCode: string,
@@ -678,12 +706,12 @@ export function swapSiblingMorphNodes(
       let first: any = null;
       let second: any = null;
       for (const child of node.children) {
-        const childNodeId = staticMorphNodeId(child);
-        if (childNodeId === firstNodeId) {
+        if (child?.type !== "JSXElement") continue;
+        if (jsxElementMatchesTargetKey(child, firstNodeId)) {
           firstMatchCount += 1;
           first = child;
         }
-        if (childNodeId === secondNodeId) {
+        if (jsxElementMatchesTargetKey(child, secondNodeId)) {
           secondMatchCount += 1;
           second = child;
         }

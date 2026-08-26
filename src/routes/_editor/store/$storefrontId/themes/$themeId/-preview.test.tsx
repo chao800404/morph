@@ -144,9 +144,29 @@ describe("preview parent field discovery", () => {
     `;
 
     expect(collectEditableDescendantFields(parent)).toEqual([
-      { fieldKey: "heading", fieldPath: "heading" },
-      { fieldKey: "description", fieldPath: "description" },
-      { fieldKey: "actionLabel", fieldPath: "actionLabel" },
+      { fieldKey: "heading", fieldPath: "heading", sectionId: null },
+      { fieldKey: "description", fieldPath: "description", sectionId: null },
+      { fieldKey: "actionLabel", fieldPath: "actionLabel", sectionId: null },
+    ]);
+  });
+
+  it("says which section each field belongs to", () => {
+    // A selected parent can span several sections, and two instances of one
+    // component expose the same field names. Without the owning section,
+    // editing one would write to whichever came first.
+    const parent = document.createElement("main");
+    parent.innerHTML = `
+      <section data-storefront-section-id="promo-a">
+        <h2 data-storefront-field="heading" data-storefront-field-path="heading"></h2>
+      </section>
+      <section data-storefront-section-id="promo-b">
+        <h2 data-storefront-field="heading" data-storefront-field-path="heading"></h2>
+      </section>
+    `;
+
+    expect(collectEditableDescendantFields(parent)).toEqual([
+      { fieldKey: "heading", fieldPath: "heading", sectionId: "promo-a" },
+      { fieldKey: "heading", fieldPath: "heading", sectionId: "promo-b" },
     ]);
   });
 });

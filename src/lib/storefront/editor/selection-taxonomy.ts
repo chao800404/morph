@@ -76,6 +76,14 @@ export type SelectionCapabilities = {
 export type EditableDescendantField = Readonly<{
   fieldKey: string;
   fieldPath: string | null;
+  /**
+   * Section the field belongs to.
+   *
+   * A parent can span several components, and two instances of one component
+   * expose the same field names. Without saying which section a field came
+   * from, editing one would write to whichever the selection happened to name.
+   */
+  sectionId: string | null;
 }>;
 
 export type EditorSelectionDescriptor = {

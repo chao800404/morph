@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { BrowserPreviewThemeCompiler } from "../compiler/browser-preview-compiler";
 import {
   canPatchThemeInstanceStyleClasses,
+  ensureStableElementName,
   findLegacyThemeInstanceStyleSheet,
   isRepeatedFieldPath,
   patchThemeInstanceStyleClasses,
@@ -273,6 +274,73 @@ describe("theme instance style source", () => {
     ).toMatchObject({ editable: false, reason: "dynamic-classname" });
   });
 
+  const unmarkedSource = [
+    "type PrincipleItem = { title?: string };",
+    "",
+    "export default function Principles({ items = [] }: { items?: PrincipleItem[] }) {",
+    "  return (",
+    "    <>{items.map((item) => (",
+    '      <h3 className="mt-12 font-serif text-3xl text-stone-950">{item.title}</h3>',
+    "    ))}</>",
+    "  );",
+    "}",
+  ].join("\n");
+
+  it("writes an instance override for an element the author never marked", () => {
+    // The component carries no data-morph-* at all. Styling one repeated item
+    // must still work, otherwise an unmarked component can be selected and
+    // restyled globally but never per instance.
+    const result = patchThemeInstanceStyleClasses(
+      unmarkedSource,
+      target,
+      "6:7",
+      () => "mt-12 font-serif text-3xl text-stone-950 lg:text-[30px]",
+      () => "el-abc123",
+    );
+
+    expect(result.editable).toBe(true);
+    if (!result.editable) return;
+    expect(result.code).toContain('data-morph-node="el-abc123"');
+    expect(result.code).toContain(":el-abc123`]");
+    expect(result.code).toContain("morphInstanceClasses");
+  });
+
+  it("keys the override by the provisioned name, not by the source position", () => {
+    // A position shifts as soon as anything above it is edited. Storing it
+    // would silently detach every saved override on the next unrelated edit.
+    const first = patchThemeInstanceStyleClasses(
+      unmarkedSource,
+      target,
+      "6:7",
+      () => "text-3xl lg:text-[30px]",
+      () => "el-abc123",
+    );
+    expect(first.editable).toBe(true);
+    if (!first.editable) return;
+
+    const shifted = first.code.replace(
+      "export default function Principles",
+      "// an unrelated edit above\nexport default function Principles",
+    );
+
+    expect(
+      readThemeInstanceStyleClasses(shifted, target, "el-abc123"),
+    ).toBe("text-3xl lg:text-[30px]");
+  });
+
+  it("reuses an authored marker instead of writing a second identity", () => {
+    const provisioned = ensureStableElementName(source, "8:7", () => "el-new");
+
+    expect(provisioned).toEqual({
+      code: source,
+      elementName: "principle-title",
+    });
+  });
+
+  it("refuses to mark anything when the target names no element", () => {
+    expect(ensureStableElementName(unmarkedSource, "99:1")).toBeNull();
+  });
+
   it("reads and removes a legacy CSS rule only as migration input", () => {
     const legacy = [
       "/* morph-instance-style:principles-1:items.1.title */",
@@ -339,5 +407,54 @@ describe("theme instance style source", () => {
     expect(result.css).not.toContain("data-storefront-section-id");
     expect(result.css).toContain("border-right-style");
     expect(result.css).toContain("@media (width >= 64rem)");
+  });
+});
+
+describe("rows extracted into their own component", () => {
+  // No map() here: the row's identity arrives as a prop instead. Without
+  // recognising that, the component would be styled globally — every row at
+  // once — which is exactly what instance styles exist to avoid.
+  const extracted = [
+    "type CardProps = { id?: string; title?: string };",
+    "",
+    "export default function Card({ id, title }: CardProps) {",
+    '  return <h3 data-morph-node="principle-title" className="mt-12 text-3xl">{title}</h3>;',
+    "}",
+  ].join("\n");
+
+  it("writes an override keyed by the identity the component receives", () => {
+    const result = patchThemeInstanceStyleClasses(
+      extracted,
+      target,
+      "principle-title",
+      () => "mt-12 text-3xl lg:text-[30px]",
+    );
+
+    expect(result.editable).toBe(true);
+    if (!result.editable) return;
+    // Reads the id off its own props, not off a map item that is not there.
+    expect(result.code).toContain("${id}:principle-title");
+    expect(result.code).not.toContain("${item.id}");
+    expect(
+      readThemeInstanceStyleClasses(result.code, target, "principle-title"),
+    ).toBe("mt-12 text-3xl lg:text-[30px]");
+  });
+
+  it("reports the component as patchable before anything is written", () => {
+    expect(
+      canPatchThemeInstanceStyleClasses(extracted, "principle-title", target),
+    ).toBe(true);
+  });
+
+  it("refuses a component that receives no row identity", () => {
+    const shared = [
+      "export default function Banner({ title }: { title?: string }) {",
+      '  return <h3 data-morph-node="banner-title" className="text-3xl">{title}</h3>;',
+      "}",
+    ].join("\n");
+
+    expect(
+      canPatchThemeInstanceStyleClasses(shared, "banner-title", target),
+    ).toBe(false);
   });
 });

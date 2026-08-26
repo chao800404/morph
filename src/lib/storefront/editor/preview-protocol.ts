@@ -330,14 +330,27 @@ function parseEditableDescendantFields(
     if (
       !isRecord(item) ||
       !isBoundedString(item.fieldKey, 200) ||
-      !isNullableBoundedString(item.fieldPath, 500)
+      !isNullableBoundedString(item.fieldPath, 500) ||
+      (item.sectionId !== undefined &&
+        !isNullableBoundedString(item.sectionId, 100))
     ) {
       return null;
     }
-    const identity = `${item.fieldKey}\u0000${item.fieldPath ?? ""}`;
+    // Optional on the wire: a preview that has not reloaded yet sends bindings
+    // without it, and rejecting the whole message would break selection
+    // entirely rather than degrade one attribution.
+    const sectionId =
+      typeof item.sectionId === "string" ? item.sectionId : null;
+    // Two sections may legitimately expose the same field name, so the section
+    // is part of what makes a binding distinct.
+    const identity = `${sectionId ?? ""}\u0000${item.fieldKey}\u0000${item.fieldPath ?? ""}`;
     if (identities.has(identity)) continue;
     identities.add(identity);
-    result.push({ fieldKey: item.fieldKey, fieldPath: item.fieldPath });
+    result.push({
+      fieldKey: item.fieldKey,
+      fieldPath: item.fieldPath,
+      sectionId,
+    });
   }
   return result;
 }
