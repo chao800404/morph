@@ -138,6 +138,24 @@ Release / activeReleaseId
 - Theme workspace source、source blobs、assets 與 build artifacts 不得寫回 Morph GitHub repository，也不得寫入 Morph Core 的 Worker bundle 或部署原始碼。GitHub／Worker 只保存 Morph Core、平台程式與 bootstrap starter source。
 - 目前若仍有 D1 snapshot 或 compatibility path，必須明確視為 migration／compatibility implementation，不能因此新增第二套 source、revision 或 production runtime SSOT。
 
+### 2.5 Deployment Topology
+
+Morph 目前是**單租戶交付**：每個客戶取得一份自己的 Morph 部署，跑在客戶自己的
+Cloudflare 帳號。Theme Worker 是**同帳號內的一般 Worker**，由 Morph Core 以
+service binding 呼叫。
+
+- Workers for Platforms／dispatch namespace 是多租戶（Phase 8）的傳輸層，不得在單租戶
+  路徑上引入。`ThemeRuntime` 介面已保留該實作，未來只換傳輸層，不改解析與授權邏輯。
+- service binding 指向固定 script 名稱，所以**部署本身就是切換**。`active_release_id`
+  仍是「哪個 release 應該在線上」的唯一 SSOT，而部署是讓現實對齊 SSOT 的動作。
+- 因此啟用必須**先以 CAS 佔位、再部署**：佔位失敗者不得碰部署腳本。部署失敗必須還原
+  佔位；還原也失敗時必須回報 drift，不得靜默讓 D1 指向未部署的 release。
+- Publish 與 rollback 必須共用同一個部署核心。任何一條「只改 D1 不部署」的啟用路徑
+  都會讓 dashboard 顯示已上線而網站仍是舊版，屬於禁止的靜默分歧。
+- 客戶的 Cloudflare 憑證只能存成 Worker secret，只能出現在部署程序的執行環境，
+  不得寫入 workspace、build 產物、log 或任何回傳給前端的訊息。部署容器必須與執行
+  customer theme code 的 build 容器分離。
+
 ---
 
 ## 3. 核心工作原則
@@ -254,3 +272,24 @@ Starter Theme 是建立新 Theme 時使用的 bootstrap seed，不是任何 cust
 - future AI agent context
 
 Manifest 不得變成另一份 presentation SSOT。
+
+**Manifest 不得是唯一的能力宣告來源。** 元件可以在自己的原始碼裡宣告
+`contentFields`，那份宣告與元件在同一個檔案、不可能漂移，且優先於 manifest。
+Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服器驗證必須用**同一個解析器**，
+否則會出現「表單顯示得了、存檔卻被丟掉」的分歧。
+
+### 4.5 Starter Workspace 升級
+
+既有 Theme 的升級由 `STOREFRONT_STARTER_TEMPLATE_VERSION` 閘門控制。
+
+- **新增任何升級規則都必須同時提升這個版本常數**，否則既有 Theme 永遠不會再跑升級，
+  規則等於沒有生效。
+- 平台擁有的 toolchain 版本（React、TanStack、Vite、Tailwind 等）必須**修正**，不是
+  只在缺少時補上。build 契約以精確相等驗證，一個「存在但版本錯誤」的相依會讓 workspace
+  永久無法 build，而純增量的升級救不回來。客戶自行加入的套件版本則必須保留。
+- customer 可編輯的原始碼（route、component）只能在**內容完全等於某個已知舊範本**時
+  才替換；被改過的檔案一律不動，改由使用者自行遷移。
+- Theme 的根 route 必須擁有完整 document shell（`shellComponent`、`HeadContent`、
+  `Scripts`、global stylesheet import）。少了它，build 會成功、編輯器預覽也正常
+  （預覽的 HTML 由平台產生），但 production SSR 會端出沒有 `<html>`、沒有樣式、
+  不會 hydration 的片段。

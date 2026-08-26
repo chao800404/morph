@@ -11,7 +11,9 @@ describe("default storefront home document", () => {
     const first = createDefaultStorefrontHomeDocument();
     const second = createDefaultStorefrontHomeDocument();
 
-    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(9);
+    // Pinned so a bump is always a deliberate decision: raising it re-runs the
+    // Starter upgrade for every existing Theme.
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(11);
     expect(storefrontPageDocumentSchema.parse(first)).toEqual(first);
     expect(first.sections).toHaveLength(6);
     expect(first.sections[0]?.type).toBe("hero");

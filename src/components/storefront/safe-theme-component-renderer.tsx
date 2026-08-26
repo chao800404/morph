@@ -8,6 +8,13 @@ import {
   type ReactNode,
 } from "react";
 import { SAFE_THEME_INLINE_ROUTE_COMPONENT } from "@/lib/storefront/compiler/theme-route-registry";
+import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
+import {
+  THEME_CONTENT_SLOT_HELPER,
+  isValidThemeContentSlotId,
+  resolveThemeContentSlot,
+  type ThemeContentSlotValues,
+} from "@/lib/storefront/theme-content-slots";
 
 type ThemeSourceFile = {
   path: string;
@@ -26,6 +33,8 @@ export type SafeThemeComponentRenderResult =
 
 type RuntimeContext = {
   files: Map<string, ThemeSourceFile>;
+  /** Stored values for each content slot the route declares. */
+  contentSlots?: ThemeContentSlotValues;
   builtinComponents: SafeThemeBuiltinComponentMap;
   injectedProps: Record<string, unknown>;
   resolveComponent?: SafeThemeComponentResolver;
@@ -349,6 +358,27 @@ function evaluateCall(
   env: Record<string, unknown>,
   context: RuntimeContext,
 ): unknown {
+  if (
+    node.callee?.type === "Identifier" &&
+    node.callee.name === THEME_CONTENT_SLOT_HELPER
+  ) {
+    // The slot id must be a literal: the editor has to know which slots a route
+    // declares before the Theme ever runs, so a computed id could not be listed,
+    // ordered or edited.
+    const slotArgument = node.arguments?.[0];
+    if (slotArgument?.type !== "StringLiteral") {
+      throw new SafeThemeRuntimeError(
+        `${THEME_CONTENT_SLOT_HELPER}() requires a literal slot id.`,
+      );
+    }
+    if (!isValidThemeContentSlotId(slotArgument.value)) {
+      throw new SafeThemeRuntimeError(
+        `Invalid content slot id "${String(slotArgument.value).slice(0, 64)}".`,
+      );
+    }
+    return resolveThemeContentSlot(context.contentSlots, slotArgument.value);
+  }
+
   if (
     node.callee?.type === "Identifier" &&
     ["cn", "clsx", "twMerge"].includes(node.callee.name)
@@ -688,6 +718,25 @@ function readJsxProps(
   return sanitizeProps(props);
 }
 
+/**
+ * Source position of a JSX node being interpreted.
+ *
+ * Mirrors the build-time annotation exactly, including the 1-based column, so
+ * a selection made in one preview mode resolves in the other.
+ */
+function themeSourceLocationOf(
+  node: any,
+  context: RuntimeContext,
+): string | null {
+  const line = node?.openingElement?.loc?.start?.line;
+  const column = node?.openingElement?.loc?.start?.column;
+  if (typeof line !== "number" || typeof column !== "number") return null;
+  const currentFrame = context.componentStack[context.componentStack.length - 1];
+  const filePath = currentFrame?.split("#")[0];
+  if (!filePath || !filePath.startsWith("src/")) return null;
+  return `${filePath}:${line}:${column + 1}`;
+}
+
 function renderJsxElement(
   node: any,
   env: Record<string, unknown>,
@@ -740,6 +789,15 @@ function renderJsxElement(
       throw new SafeThemeRuntimeError(
         `The <${name}> tag is not allowed in the safe Design preview.`,
       );
+    }
+    // The Live preview interprets source instead of running the built bundle,
+    // so the build's Babel annotation never reaches it. Emitting the same
+    // attribute here keeps element identity identical in both preview modes;
+    // without it a component with no authored markers is selectable in Build
+    // Preview but not in Live.
+    const sourceLocation = themeSourceLocationOf(node, context);
+    if (sourceLocation && props[MORPH_SOURCE_LOCATION_ATTRIBUTE] === undefined) {
+      props[MORPH_SOURCE_LOCATION_ATTRIBUTE] = sourceLocation;
     }
     return createElement(name, props, ...children);
   }
@@ -949,6 +1007,7 @@ export function renderSafeThemeComponent({
   builtinComponents = {},
   injectedProps = {},
   resolveComponent,
+  contentSlots,
 }: {
   files: ThemeSourceFile[];
   sourcePath: string;
@@ -958,6 +1017,7 @@ export function renderSafeThemeComponent({
   builtinComponents?: SafeThemeBuiltinComponentMap;
   injectedProps?: Record<string, unknown>;
   resolveComponent?: SafeThemeComponentResolver;
+  contentSlots?: ThemeContentSlotValues;
 }): SafeThemeComponentRenderResult {
   const fileMap = new Map(
     files.map((file) => [normalizePath(file.path), file]),
@@ -968,6 +1028,7 @@ export function renderSafeThemeComponent({
     builtinComponents,
     injectedProps,
     resolveComponent,
+    contentSlots,
     nodeCount: 0,
     componentStack: [],
     diagnostics: [],

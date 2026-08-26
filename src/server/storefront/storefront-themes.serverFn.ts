@@ -8,6 +8,11 @@ import {
   updateStorefrontThemeSectionPropsInputSchema,
 } from "@/lib/validations/storefront-theme";
 import { createServerFn } from "@tanstack/react-start";
+import { env as cloudflareEnv } from "cloudflare:workers";
+import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
+import { storefrontReleaseDal } from "@/lib/storefront/dal/storefront-release.dal";
+import { deployReleaseArtifact } from "@/lib/storefront/service/storefront-release-reconciler";
+import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-worker-deployer.factory";
 import { getRequest } from "@tanstack/react-start/server";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
@@ -155,14 +160,58 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
         ...data,
         createdBy: context.user.id,
       });
-      return result
-        ? ok(
-            result.unchanged ? "Theme is already published" : "Theme published",
-            result,
-          )
-        : fail("Theme template or draft revision not found", {
-            error: "NOT_FOUND",
-          });
+      if (!result) {
+        return fail("Theme template or draft revision not found", {
+          error: "NOT_FOUND",
+        });
+      }
+
+      if (result.unchanged) {
+        return ok("Theme is already published", result);
+      }
+
+      // D1 activation is written atomically by publishTemplate, but the Theme
+      // Worker is separate state. Deploy the release that was just activated,
+      // and report a failure explicitly: silently returning success would leave
+      // the storefront serving the previous build while the dashboard reports
+      // the new release as live.
+      //
+      // Concurrent publishes cannot race here — `expectedReleaseGeneration`
+      // already rejects the second one before it reaches this point.
+      if (result.releaseId) {
+        const deployed = await deployReleaseArtifact({
+          releaseId: result.releaseId,
+          deployer: createServerThemeWorkerDeployer(),
+          r2Bucket: (cloudflareEnv as unknown as { R2_BUCKET?: unknown })
+            .R2_BUCKET as never,
+          ports: {
+            getRelease: async (releaseId) => {
+              const release = await storefrontReleaseDal.getById(
+                data.storefrontId,
+                releaseId,
+              );
+              return release
+                ? {
+                    id: release.id,
+                    storefrontId: data.storefrontId,
+                    themeId: release.themeId,
+                    themeBuildId: release.themeBuildId,
+                  }
+                : null;
+            },
+            getBuild: (buildId) => storefrontThemeBuildDal.getBuildById(buildId),
+          },
+        });
+
+        if (!deployed.success) {
+          return fail(
+            `Theme published, but the storefront was not updated: ${deployed.message} The site still serves the previous build — retry publishing once the cause is resolved.`,
+            { error: "RELEASE_DEPLOYMENT_FAILED", ...result },
+          );
+        }
+      }
+
+      return ok("Theme published", result);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to publish theme";

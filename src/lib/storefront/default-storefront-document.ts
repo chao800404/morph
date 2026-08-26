@@ -1,6 +1,22 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 9;
+/**
+ * Starter workspace revision.
+ *
+ * A Theme only re-runs the Starter upgrade while its stored
+ * `starterTemplateVersion` is below this number, so adding an upgrade rule
+ * without bumping this leaves every existing Theme on the old files with no way
+ * to reach the new ones.
+ *
+ * 10: root route owns the document shell (`shellComponent`, `HeadContent`,
+ *     `Scripts`, global stylesheet import). Without it a build previews
+ *     correctly but serves production SSR with no <html>, <head> or stylesheet.
+ * 11: content slots. The home route reads each section through
+ *     `content("slot")` and the platform-owned `src/morph/content.ts` is
+ *     seeded. Without it authored content stays in the Document and never
+ *     reaches the rendered component.
+ */
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 11;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

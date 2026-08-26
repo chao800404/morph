@@ -85,6 +85,101 @@ async function readGeneratedWorkerConfig(
   }
 }
 
+export type ReleaseDeploymentOutcome =
+  | { success: true; scriptName: string; deploymentId: string | null }
+  | {
+      success: false;
+      reason: Exclude<ReleaseActivationFailureReason, "ACTIVATION_CONFLICT">;
+      message: string;
+    };
+
+/**
+ * Deploys one release's immutable artifact as the storefront's Theme Worker.
+ *
+ * It only transports bytes: activation state is never read or written here, so
+ * the same routine serves both the publish path (where D1 was already updated
+ * atomically) and the rollback path (where activation is claimed first).
+ */
+export async function deployReleaseArtifact(args: {
+  releaseId: string;
+  deployer: ThemeWorkerDeployer;
+  ports: Pick<ReleaseReconcilerPorts, "getRelease" | "getBuild">;
+  r2Bucket?: R2BucketLike;
+}): Promise<ReleaseDeploymentOutcome> {
+  const release = await args.ports.getRelease(args.releaseId);
+  if (!release) {
+    return {
+      success: false,
+      reason: "RELEASE_NOT_FOUND",
+      message: `Release "${args.releaseId}" was not found.`,
+    };
+  }
+
+  const build = await args.ports.getBuild(release.themeBuildId);
+  if (
+    !build ||
+    build.status !== "succeeded" ||
+    !build.artifactPrefix ||
+    !build.manifestJson
+  ) {
+    return {
+      success: false,
+      reason: "BUILD_NOT_DEPLOYABLE",
+      message: `Release "${args.releaseId}" has no succeeded build artifact to deploy.`,
+    };
+  }
+
+  if (build.storefrontId !== release.storefrontId) {
+    return {
+      success: false,
+      reason: "BUILD_NOT_DEPLOYABLE",
+      message: `Release "${args.releaseId}" references a build outside its storefront.`,
+    };
+  }
+
+  const workerConfig = await readGeneratedWorkerConfig(
+    args.r2Bucket,
+    build.artifactPrefix,
+  );
+  if (workerConfig === null) {
+    return {
+      success: false,
+      reason: "WORKER_CONFIG_UNREADABLE",
+      message: `Build artifact is missing a readable "${GENERATED_WORKER_CONFIG_PATH}".`,
+    };
+  }
+
+  const planned = planThemeWorkerDeployment({
+    storefrontId: release.storefrontId,
+    manifest: build.manifestJson as CanonicalThemeBuildManifest,
+    workerConfig,
+  });
+  if (!planned.success) {
+    return { success: false, reason: "PLAN_REJECTED", message: planned.message };
+  }
+
+  const deployed = await args.deployer.deploy({
+    plan: planned.plan,
+    artifactPrefix: build.artifactPrefix,
+    storefrontId: release.storefrontId,
+    releaseId: release.id,
+    themeBuildId: build.id,
+  });
+  if (!deployed.success) {
+    return {
+      success: false,
+      reason: "DEPLOY_FAILED",
+      message: deployed.message,
+    };
+  }
+
+  return {
+    success: true,
+    scriptName: planned.plan.scriptName,
+    deploymentId: deployed.deploymentId,
+  };
+}
+
 /**
  * Claims the active release, then deploys its immutable artifact.
  *

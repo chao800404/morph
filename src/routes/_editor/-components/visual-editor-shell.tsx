@@ -851,6 +851,7 @@ export function VisualEditorShell({
 
   const [editorMode, setEditorMode] = useState<"design" | "code">("design");
   const [previewMode, setPreviewMode] = useState<"live" | "build">("live");
+  const isImmutableBuildPreview = previewMode === "build";
   const [activeBuildPreview, setActiveBuildPreview] =
     useState<StorefrontThemeBuildDTO | null>(null);
   const [activeBuildSourceGeneration, setActiveBuildSourceGeneration] =
@@ -879,8 +880,19 @@ export function VisualEditorShell({
     [],
   );
 
+  /**
+   * Selection the side panels may act on.
+   *
+   * Build Preview shows an immutable artifact: its iframe carries no editor
+   * channel, so nothing in it can be selected, and the workspace source it was
+   * built from may already have moved on. Presenting a stale Live selection
+   * there would let the panels edit source that does not correspond to what is
+   * on screen. The selection is kept in state, so switching back to Live
+   * restores it.
+   */
   const [activeSelection, setActiveSelection] =
     useState<EditorSelectionDescriptor | null>(null);
+  const editableSelection = isImmutableBuildPreview ? null : activeSelection;
   const lastPreviewSelectionRef = useRef<PreviewSelectionRestoreTarget | null>(
     null,
   );
@@ -3834,7 +3846,7 @@ export function VisualEditorShell({
               ? previewStructure.nodes
               : undefined
           }
-          activeSelection={activeSelection}
+          activeSelection={editableSelection}
           onSelectEditableNode={handleEditableNodeSelect}
           themeRoutes={themeRouteRegistry.routes.filter(
             (route) => route.kind === "route",
@@ -4296,7 +4308,7 @@ export function VisualEditorShell({
           onSelectCommentThread={handleSelectCommentThread}
           previewWidth={previewWidth}
           themeFiles={effectiveThemeFiles}
-          selection={activeSelection}
+          selection={editableSelection}
           activeComputedStyleRevision={activeComputedStyleRevision}
           activeViewport={search.viewport}
           onUpdateThemeFileStyle={handleUpdateThemeFileStyle}

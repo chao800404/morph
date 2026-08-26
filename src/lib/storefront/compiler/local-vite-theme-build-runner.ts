@@ -485,11 +485,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         root: tempDir,
         base: "./",
         configFile: false,
-        plugins: [
-          tailwindcss(),
-          viteReact(),
-          securityPlugin,
-        ],
+        plugins: [tailwindcss(), viteReact(), securityPlugin],
         build: {
           outDir: previewOutDir,
           emptyOutDir: true,

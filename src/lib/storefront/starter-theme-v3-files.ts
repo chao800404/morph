@@ -189,6 +189,31 @@ export default function HomePage({
  * making the real Theme contract a standard TanStack Start route tree. */
 export const STARTER_THEME_LAYOUT_SOURCE = STARTER_THEME_INDEX_SOURCE;
 
+/**
+ * Root route emitted before the Theme owned its own document shell.
+ *
+ * It renders only the layout, so a build using it produces SSR output with no
+ * <html>, no <head> and no stylesheet link — the editor preview still looks
+ * correct because that shell is platform-generated, while production would
+ * serve an unstyled fragment. Kept verbatim so an untouched copy can be
+ * upgraded and an edited one left alone.
+ */
+export const LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+import StorefrontLayout from "../layouts/StorefrontLayout";
+
+export const Route = createRootRoute({
+  component: RootRoute,
+});
+
+function RootRoute() {
+  return (
+    <StorefrontLayout>
+      <Outlet />
+    </StorefrontLayout>
+  );
+}
+`;
+
 export const STARTER_THEME_ROOT_ROUTE_SOURCE = `import type { ReactNode } from "react";
 import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
 import StorefrontLayout from "../layouts/StorefrontLayout";
@@ -269,7 +294,14 @@ function HomeRoute() {
 }
 `;
 
-export const STARTER_THEME_HOME_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+/**
+ * Home route emitted before content slots existed.
+ *
+ * It renders each section with no props, so authored content in the Page
+ * Document could never reach the component. Kept verbatim so an untouched copy
+ * can be upgraded and an edited one left alone.
+ */
+export const LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
 import CategoryShowcase from "../components/CategoryShowcase";
 import EditorialIntro from "../components/EditorialIntro";
 import Hero from "../components/Hero";
@@ -295,7 +327,65 @@ function HomeRoute() {
 }
 `;
 
+/**
+ * Platform-provided content access for a Theme.
+ *
+ * `content("slot")` is the single binding between authored structure and stored
+ * values: the route declares which slots exist and in what order, and the Page
+ * Document holds only their values. Nothing has to be registered for a
+ * customer-written component to become editable.
+ *
+ * Slot values are supplied by the platform at render time, so a Theme never
+ * reads storage itself.
+ */
+export const STARTER_THEME_CONTENT_MODULE_SOURCE = `import { createContext, useContext } from "react";
+
+export type MorphContentSlots = Record<string, Record<string, unknown>>;
+
+const MorphContentContext = createContext<MorphContentSlots>({});
+
+export const MorphContentProvider = MorphContentContext.Provider;
+
+/** Reads the stored values for one content slot. */
+export function content(slotId: string): Record<string, unknown> {
+  const slots = useContext(MorphContentContext);
+  return slots[slotId] ?? {};
+}
+`;
+
+export const STARTER_THEME_HOME_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import CategoryShowcase from "../components/CategoryShowcase";
+import EditorialIntro from "../components/EditorialIntro";
+import Hero from "../components/Hero";
+import ImageWithText from "../components/ImageWithText";
+import Newsletter from "../components/Newsletter";
+import Principles from "../components/Principles";
+
+export const Route = createFileRoute("/")({
+  component: HomeRoute,
+});
+
+function HomeRoute() {
+  return (
+    <main data-morph-node="home-route">
+      <Hero {...content("starter-hero")} />
+      <EditorialIntro {...content("starter-introduction")} />
+      <CategoryShowcase {...content("starter-categories")} />
+      <ImageWithText {...content("starter-story")} />
+      <Principles {...content("starter-principles")} />
+      <Newsletter {...content("starter-newsletter")} />
+    </main>
+  );
+}
+`;
+
 export const STARTER_THEME_V4_NEW_FILES = [
+  {
+    path: "src/morph/content.ts",
+    mimeType: "text/typescript",
+    content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+  },
   {
     path: "src/router.tsx",
     mimeType: "text/typescript",

@@ -35,7 +35,7 @@ import {
 } from "@/lib/storefront/ast/tailwind-token-engine";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
-import { getThemeComponentContentCapabilityFromFiles } from "@/lib/storefront/theme-content-capabilities";
+import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
@@ -501,14 +501,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const parsedMeta = componentFile?.content
     ? parseComponentSource(componentFile.content, componentFile.path)
     : null;
-  const themeContentCapability = useMemo(
-    () =>
-      getThemeComponentContentCapabilityFromFiles(
-        themeFiles,
-        section.componentRef,
-      ),
-    [section.componentRef, themeFiles],
-  );
+  const themeContentCapability = useMemo(() => {
+    // Resolved from the workspace rather than the manifest alone so a component
+    // that declares its own `contentFields` is editable without being
+    // registered anywhere. Server validation resolves the same way, so the form
+    // and what the server accepts cannot diverge.
+    if (!section.componentRef || !themeFiles) return null;
+    return (
+      resolveThemeContentCapabilitiesFromFiles(themeFiles).capabilities[
+        section.componentRef
+      ] ?? null
+    );
+  }, [section.componentRef, themeFiles]);
   const declaredContentFields = Object.entries(
     themeContentCapability?.fields ?? {},
   );

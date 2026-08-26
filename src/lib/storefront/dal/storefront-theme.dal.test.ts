@@ -270,7 +270,7 @@ describe("storefront theme DAL", () => {
         expectedDraftGeneration: 1,
         expectedReleaseGeneration: 1,
       }),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       revisionId: "11111111-1111-4111-8111-111111111111",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       draftGeneration: 2,
@@ -278,6 +278,9 @@ describe("storefront theme DAL", () => {
       templateUnchanged: false,
       sourceUnchanged: false,
       unchanged: false,
+      // Surfaced so the publish caller can deploy the release it activated.
+      releaseCreated: true,
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
     });
 
     const storefront = sqlite
@@ -423,7 +426,7 @@ describe("storefront theme DAL", () => {
       expectedReleaseGeneration: 1,
     });
 
-    expect(res).toEqual({
+    expect(res).toMatchObject({
       revisionId: "11111111-1111-4111-8111-111111111111",
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       draftGeneration: 2,
@@ -431,7 +434,11 @@ describe("storefront theme DAL", () => {
       templateUnchanged: false,
       sourceUnchanged: false,
       unchanged: false,
+      releaseCreated: true,
     });
+    // The activated release id must reach the caller so the Theme Worker for it
+    // can be deployed; without it publishing would silently skip deployment.
+    expect(res!.releaseId).toEqual(expect.any(String));
 
     const theme = sqlite
       .prepare(
@@ -950,5 +957,239 @@ describe("storefront theme DAL", () => {
     expect(newsProps.body).toBe("New objects.");
     expect(newsProps.placeholder).toBe("Your email here...");
     expect(newsProps.actionLabel).toBe("Subscribe");
+  });
+});
+
+describe("publish build resolution", () => {
+  const seedTemplateAndRevision = (extra = "") => {
+    const draftDocument = JSON.stringify({
+      version: 1,
+      sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
+    });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+         '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '${draftDocument.replaceAll("'", "''")}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, source_generation, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1,
+         'Frozen checkpoint', 'publish', '[]', 'now', 'now');
+      ${extra}
+    `);
+  };
+
+  const publish = () =>
+    storefrontThemeDal.publishTemplate({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+      expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+
+  it("resolves the build for the current source when the caller names none", async () => {
+    // The editor only knows a Build Preview while it is showing one, so a
+    // reload must not make an existing valid build unpublishable.
+    seedTemplateAndRevision();
+
+    const result = await publish();
+
+    expect(result).toMatchObject({
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      releaseCreated: true,
+    });
+  });
+
+  it("prefers the newest succeeded build for the current source generation", async () => {
+    seedTemplateAndRevision(`
+      INSERT INTO storefront_theme_builds
+        (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, created_at, updated_at)
+      VALUES
+        ('44444444-4444-4444-8444-444444444444', 'storefront-a', 'theme-a',
+         '22222222-2222-4222-8222-222222222222', 'succeeded',
+         'themes/theme-a/builds/build-b', '{}', 'zzz-later', 'zzz-later');
+    `);
+
+    const result = await publish();
+    expect(result!.themeBuildId).toBe("44444444-4444-4444-8444-444444444444");
+  });
+
+  it("never selects a build bound to a different source generation", async () => {
+    // A build from an older revision would publish stale bytes under a newer
+    // source, which is exactly what the guard exists to prevent.
+    sqlite.exec(
+      "UPDATE storefront_themes SET source_generation = 2 WHERE id = 'theme-a'",
+    );
+    seedTemplateAndRevision();
+
+    await expect(publish()).rejects.toThrow(/PUBLISH_BUILD_NOT_READY/);
+  });
+
+  it("ignores builds that did not succeed", async () => {
+    sqlite.exec(
+      "UPDATE storefront_theme_builds SET status = 'failed' WHERE id = '33333333-3333-4333-8333-333333333333'",
+    );
+    seedTemplateAndRevision();
+
+    await expect(publish()).rejects.toThrow(/PUBLISH_BUILD_NOT_READY/);
+  });
+
+  it("ignores succeeded builds with no immutable artifact", async () => {
+    sqlite.exec(
+      "UPDATE storefront_theme_builds SET artifact_prefix = NULL WHERE id = '33333333-3333-4333-8333-333333333333'",
+    );
+    seedTemplateAndRevision();
+
+    await expect(publish()).rejects.toThrow(/PUBLISH_BUILD_NOT_READY/);
+  });
+
+  it("still honours a build the caller names explicitly", async () => {
+    seedTemplateAndRevision(`
+      INSERT INTO storefront_theme_builds
+        (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, created_at, updated_at)
+      VALUES
+        ('44444444-4444-4444-8444-444444444444', 'storefront-a', 'theme-a',
+         '22222222-2222-4222-8222-222222222222', 'succeeded',
+         'themes/theme-a/builds/build-b', '{}', 'zzz-later', 'zzz-later');
+    `);
+
+    const result = await storefrontThemeDal.publishTemplate({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
+      expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+
+    expect(result!.themeBuildId).toBe("33333333-3333-4333-8333-333333333333");
+  });
+});
+
+describe("co-located content field declarations", () => {
+  const seedSection = (props: string) => {
+    const doc = `{"version":1,"sections":[{"id":"promo-1","type":"promo","componentRef":"promo.default","enabled":true,"props":${props}}]}`;
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-p', 'theme-a', 'index', 'Home', '${doc}',
+         '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-p', 1, '${doc}', 'now');
+    `);
+  };
+
+  const seedThemeFiles = (componentSource: string, manifest: string) => {
+    const insert = (path: string, content: string) =>
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_files
+             (id, storefront_id, theme_id, path, content, version, created_at, updated_at)
+           VALUES (?, 'storefront-a', 'theme-a', ?, ?, 1, 'now', 'now')`,
+        )
+        .run(`file-${path}`, path, content);
+    insert("morph.theme.json", manifest);
+    insert("src/components/Promo.tsx", componentSource);
+  };
+
+  const MANIFEST_WITHOUT_FIELDS = JSON.stringify({
+    components: { "promo.default": { source: "src/components/Promo.tsx" } },
+  });
+
+  it("accepts values for fields a component declares in its own source", async () => {
+    // Nothing registers these fields in the manifest; the declaration lives
+    // beside the component, and server validation must resolve the same way the
+    // editor form does or saving would silently drop the value.
+    seedThemeFiles(
+      `export const contentFields = {
+         headline: { type: "text", label: "Headline" },
+       } as const;
+       export default function Promo() { return <section />; }`,
+      MANIFEST_WITHOUT_FIELDS,
+    );
+    seedSection('{"headline":"Original"}');
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-p",
+      sectionId: "promo-1",
+      props: { headline: "From the component declaration" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result?.document.sections[0].props.headline).toBe(
+      "From the component declaration",
+    );
+  });
+
+  it("still rejects a prop the component never declared", async () => {
+    seedThemeFiles(
+      `export const contentFields = { headline: { type: "text" } } as const;
+       export default function Promo() { return <section />; }`,
+      MANIFEST_WITHOUT_FIELDS,
+    );
+    seedSection('{"headline":"Original"}');
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-p",
+      sectionId: "promo-1",
+      props: { headline: "ok", fontSize: 80, injected: "nope" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    const saved = result!.document.sections[0].props;
+    expect(saved.headline).toBe("ok");
+    expect(saved.fontSize).toBeUndefined();
+    expect(saved.injected).toBeUndefined();
+  });
+
+  it("lets the component's declaration override a stale manifest entry", async () => {
+    seedThemeFiles(
+      `export const contentFields = { headline: { type: "text" } } as const;
+       export default function Promo() { return <section />; }`,
+      JSON.stringify({
+        components: {
+          "promo.default": {
+            source: "src/components/Promo.tsx",
+            contentFields: { removedField: { type: "text" } },
+          },
+        },
+      }),
+    );
+    seedSection('{"headline":"Original"}');
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-p",
+      sectionId: "promo-1",
+      props: { headline: "current", removedField: "stale" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    const saved = result!.document.sections[0].props;
+    expect(saved.headline).toBe("current");
+    expect(saved.removedField).toBeUndefined();
   });
 });

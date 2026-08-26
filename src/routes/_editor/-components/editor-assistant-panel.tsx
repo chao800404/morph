@@ -105,9 +105,30 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   const [tab, setTab] = useState<EditorAssistantPanelTab>("chat");
   const activeTemplate = resolveEditorTemplate(context, search);
   const sections = activeTemplate?.document.sections ?? [];
-  const selectedSection = sections.find(
+  const documentSection = sections.find(
     (section) => section.id === search.section,
   );
+  /**
+   * Section the inspector renders for.
+   *
+   * A component authored purely in code has no Document section, so requiring
+   * one would leave the Styles panel empty for exactly the components a
+   * customer writes themselves. Style edits do not need the Document — they are
+   * patched into the Theme source — so a selection-derived stand-in is enough
+   * to inspect and restyle it. Content fields stay empty because there is no
+   * Document slot to write values into yet.
+   */
+  const selectedSection: typeof documentSection =
+    documentSection ??
+    (selection?.sectionId
+      ? ({
+          id: selection.sectionId,
+          type: selection.componentType ?? "custom",
+          enabled: true,
+          props: {},
+        } as NonNullable<typeof documentSection>)
+      : undefined);
+
   const initialSectionRef = useRef(search.section);
   const [isStylesPreRendered, setIsStylesPreRendered] = useState(false);
   const shouldRenderStyles = isStylesPreRendered || tab === "styles";
@@ -131,11 +152,13 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       nextProps: Record<string, unknown>,
       options?: InspectorPropsChangeOptions,
     ) => {
-      if (selectedSection) {
-        onSectionPropsChange?.(selectedSection.id, nextProps, options);
+      // Never write content for a stand-in: there is no Document section to
+      // receive it, and the server would reject the mutation anyway.
+      if (documentSection) {
+        onSectionPropsChange?.(documentSection.id, nextProps, options);
       }
     },
-    [onSectionPropsChange, selectedSection],
+    [documentSection, onSectionPropsChange],
   );
 
   useEffect(() => {

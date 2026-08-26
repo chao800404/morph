@@ -103,6 +103,10 @@ export function resolvePreviewSelectionRestoreElement(
 ): HTMLElement {
   if (target.isSection) return section;
   const selectors = [
+    // Source position is the most precise handle when the build provided one.
+    target.sourceLocation
+      ? `[data-morph-loc="${CSS.escape(target.sourceLocation)}"]`
+      : null,
     target.nodeId && target.fieldPath
       ? `[data-morph-node="${CSS.escape(target.nodeId)}"][data-storefront-field-path="${CSS.escape(target.fieldPath)}"]`
       : null,
@@ -128,7 +132,80 @@ const PREVIEW_EDITABLE_NODE_SELECTOR = [
   "[data-morph-node]",
   "[data-storefront-field-path]",
   "[data-storefront-field]",
+  // Compile-time source positions make any authored element selectable, so a
+  // component works in the editor without hand-written identity markers.
+  "[data-morph-loc]",
 ].join(",");
+
+
+
+/**
+ * Elements that act as a selectable section root.
+ *
+ * `data-storefront-section-id` is injected when a component resolves to a
+ * Document section. `data-morph-section` is authored in the component's own
+ * source, so a component added purely in code is selectable without being
+ * registered in the manifest or given a Document section first.
+ */
+export const PREVIEW_SECTION_ROOT_SELECTOR =
+  // Over-selects on purpose: every candidate is still filtered by
+  // `isPreviewSectionRoot`, which decides whether it really starts a section.
+  "[data-storefront-section-id],[data-morph-section],[data-morph-component]";
+
+/** Section identity, preferring the Document binding when both are present. */
+export function previewSectionIdOf(element: HTMLElement): string | undefined {
+  return (
+    element.dataset.storefrontSectionId ??
+    element.dataset.morphSection ??
+    // Falls back to the component's own source file, so a component with no
+    // authored markers still has a stable section identity.
+    element.dataset.morphSourceFile ??
+    undefined
+  );
+}
+
+/**
+ * Whether an element acts as a section root.
+ *
+ * A Document-bound section always is. An authored `data-morph-section` only
+ * counts outside a Document section: treating a nested one as its own root
+ * would cut its children out of the enclosing section and leave them
+ * unselectable.
+ */
+export function isPreviewSectionRoot(element: HTMLElement): boolean {
+  if (element.dataset.storefrontSectionId) return true;
+  if (element.dataset.morphSection) {
+    return !element.parentElement?.closest("[data-storefront-section-id]");
+  }
+  // The preview renderer marks the root element of every component it renders,
+  // which is exactly where one component's markup ends and another's begins.
+  // Deriving this from source-file changes instead would also match a route's
+  // own markup, and that outer element would then absorb every component
+  // nested inside it.
+  if (!element.dataset.morphComponent) return false;
+  return !element.parentElement?.closest("[data-storefront-section-id]");
+}
+
+export function closestPreviewSectionRoot(
+  element: HTMLElement,
+): HTMLElement | null {
+  let current: HTMLElement | null = element;
+  while (current) {
+    if (isPreviewSectionRoot(current)) return current;
+    current = current.parentElement;
+  }
+  return null;
+}
+
+export function previewSectionSelector(sectionId: string): string {
+  const escaped = CSS.escape(sectionId);
+  return [
+    `[data-storefront-section-id="${escaped}"]`,
+    `[data-morph-section="${escaped}"]`,
+    // A component with no authored markers is identified by its source file.
+    `[data-morph-source-file="${escaped}"]`,
+  ].join(",");
+}
 
 function previewEditableNodeLabel(element: HTMLElement): string {
   const fieldPath = element.dataset.storefrontFieldPath ?? "";
@@ -162,27 +239,42 @@ export function collectPreviewEditableNodes(root: {
   const nodes: PreviewEditableNode[] = [];
   const nodeIds = new Set<string>();
   const sections = root.querySelectorAll<HTMLElement>(
-    "[data-storefront-section-id]",
+    PREVIEW_SECTION_ROOT_SELECTOR,
   );
 
   for (const section of sections) {
-    if (section.parentElement?.closest("[data-storefront-section-id]")) {
+    if (!isPreviewSectionRoot(section)) continue;
+    // Components nest by nature, so a nested component root stays its own
+    // section and simply owns fewer elements. Only Document sections are
+    // flattened, because a Document section inside another would double-count
+    // the same content.
+    if (
+      section.dataset.storefrontSectionId &&
+      section.parentElement?.closest("[data-storefront-section-id]")
+    ) {
       continue;
     }
-    const sectionId = section.dataset.storefrontSectionId;
+    const sectionId = previewSectionIdOf(section);
     if (!sectionId || sectionId.length > 100) continue;
     const candidates = Array.from(
       section.querySelectorAll<HTMLElement>(PREVIEW_EDITABLE_NODE_SELECTOR),
     ).filter(
       (candidate) =>
-        candidate.closest<HTMLElement>("[data-storefront-section-id]") ===
-        section,
+        closestPreviewSectionRoot(candidate) === section,
     );
     const morphNodeCounts = new Map<string, number>();
     const fieldKeyCounts = new Map<string, number>();
+    const sourceLocationCounts = new Map<string, number>();
     for (const candidate of candidates) {
       const morphNode = candidate.dataset.morphNode;
       const fieldKey = candidate.dataset.storefrontField;
+      const sourceLocation = candidate.dataset.morphLoc;
+      if (sourceLocation) {
+        sourceLocationCounts.set(
+          sourceLocation,
+          (sourceLocationCounts.get(sourceLocation) ?? 0) + 1,
+        );
+      }
       if (morphNode) {
         morphNodeCounts.set(
           morphNode,
@@ -211,11 +303,22 @@ export function collectPreviewEditableNodes(root: {
       ) {
         continue;
       }
+      const sourceLocation = candidate.dataset.morphLoc;
       const hasUniqueNodeId =
         Boolean(nodeId) && morphNodeCounts.get(nodeId ?? "") === 1;
       const hasUniqueFieldKey =
         Boolean(fieldKey) && fieldKeyCounts.get(fieldKey ?? "") === 1;
-      if (!fieldPath && !hasUniqueNodeId && !hasUniqueFieldKey) continue;
+      const hasUniqueSourceLocation =
+        Boolean(sourceLocation) &&
+        sourceLocationCounts.get(sourceLocation ?? "") === 1;
+      if (
+        !fieldPath &&
+        !hasUniqueNodeId &&
+        !hasUniqueFieldKey &&
+        !hasUniqueSourceLocation
+      ) {
+        continue;
+      }
 
       const identity = itemId
         ? `item:${itemId}:${nodeId ? `node:${nodeId}` : `field:${fieldKey ?? fieldPath}`}`
@@ -223,7 +326,9 @@ export function collectPreviewEditableNodes(root: {
           ? `path:${fieldPath}${nodeId ? `:node:${nodeId}` : ""}`
           : nodeId
             ? `node:${nodeId}`
-            : `field:${fieldKey}`;
+            : fieldKey
+              ? `field:${fieldKey}`
+              : `loc:${sourceLocation}`;
       const id = `${sectionId}:${identity}`;
       if (id.length > 500 || nodeIds.has(id)) continue;
 
@@ -240,6 +345,7 @@ export function collectPreviewEditableNodes(root: {
 
       const target: PreviewSelectionRestoreTarget = {
         sectionId,
+        sourceLocation: sourceLocation || undefined,
         nodeId: nodeId || undefined,
         fieldPath: fieldPath || undefined,
         elementKey: elementKey || undefined,
@@ -1101,12 +1207,12 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
       // 0. Prefer the nearest AST-backed Morph identity annotation.
       const morphEl = target.closest<HTMLElement>(
-        "[data-morph-node], [data-morph-element]",
+        // Compile-time source positions make an element identifiable even when
+        // the author wrote no markers, so they select like any other element.
+        "[data-morph-node], [data-morph-element], [data-morph-loc]",
       );
       if (morphEl) {
-        const sectionEl = morphEl.closest<HTMLElement>(
-          "[data-storefront-section-id], [data-morph-section]",
-        );
+        const sectionEl = closestPreviewSectionRoot(morphEl);
         const nodeId = morphEl.dataset.morphNode ?? null;
         const elementKey = morphEl.dataset.morphElement ?? null;
         const descendantFields = collectEditableDescendantFields(morphEl);
@@ -1128,10 +1234,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return {
           element: morphEl,
           section: sectionEl,
-          sectionId:
-            sectionEl?.dataset.storefrontSectionId ??
-            sectionEl?.dataset.morphSection ??
-            null,
+          sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
           type: selectableType,
           label: getComponentDisplayName(selectableType),
           elementKey,
@@ -1150,9 +1253,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         "[data-storefront-component]",
       );
       if (componentEl) {
-        const sectionEl = componentEl.closest<HTMLElement>(
-          "[data-storefront-section-id]",
-        );
+        const sectionEl = closestPreviewSectionRoot(componentEl);
         const compType =
           componentEl.dataset.storefrontComponent ??
           componentEl.tagName.toLowerCase();
@@ -1172,7 +1273,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return {
           element: componentEl,
           section: sectionEl,
-          sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
+          sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
           type: compType,
           label: getComponentDisplayName(compType),
           elementKey,
@@ -1192,9 +1293,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         "h1, h2, h3, h4, h5, h6, p, blockquote, code, pre, img, picture, svg, video, audio, canvas, iframe, embed, map, a, button, nav, details, summary, form, fieldset, input, textarea, select, option, ul, ol, li, table, thead, tbody, tfoot, tr, td, th, hr, article",
       );
       if (elementEl) {
-        const sectionEl = elementEl.closest<HTMLElement>(
-          "[data-storefront-section-id]",
-        );
+        const sectionEl = closestPreviewSectionRoot(elementEl);
         const tag = elementEl.tagName.toLowerCase();
         const compType = tag.startsWith("h")
           ? "heading"
@@ -1275,7 +1374,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return {
           element: elementEl,
           section: sectionEl,
-          sectionId: sectionEl?.dataset.storefrontSectionId ?? null,
+          sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
           type: compType,
           label: getComponentDisplayName(compType),
           elementKey: compType,
@@ -1663,7 +1762,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
       const section = selectedItem.sectionId
         ? document.querySelector<HTMLElement>(
-            `[data-storefront-section-id="${CSS.escape(selectedItem.sectionId)}"], [data-morph-section="${CSS.escape(selectedItem.sectionId)}"]`,
+            previewSectionSelector(selectedItem.sectionId),
           )
         : null;
       if (selectedItem.element === selectedItem.section) return section;
@@ -2041,7 +2140,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       clearReorderFeedback();
       if (selectionEnabled && selectedSectionId) {
         const sectionEl = document.querySelector<HTMLElement>(
-          `[data-storefront-section-id="${CSS.escape(selectedSectionId)}"]`,
+          previewSectionSelector(selectedSectionId),
         );
         if (sectionEl) {
           selectedElement = sectionEl;
@@ -2067,7 +2166,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       selectedSectionId = target.sectionId;
 
       const section = document.querySelector<HTMLElement>(
-        `[data-storefront-section-id="${CSS.escape(target.sectionId)}"], [data-morph-section="${CSS.escape(target.sectionId)}"]`,
+        previewSectionSelector(target.sectionId),
       );
       if (!section) {
         selectedElement = null;

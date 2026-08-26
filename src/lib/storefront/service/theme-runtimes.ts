@@ -174,7 +174,14 @@ export class LocalDirectThemeRuntime implements ThemeRuntime {
 
   constructor(
     private readonly originUrl: string,
-    private readonly fetchImpl: typeof fetch = fetch,
+    /**
+     * Wrapped rather than passed as a bare reference: the Workers runtime
+     * requires `fetch` to be invoked with the global as its receiver, and
+     * storing it on an instance would call it with the instance instead —
+     * which fails at runtime with "Illegal invocation".
+     */
+    private readonly fetchImpl: typeof fetch = (input, init) =>
+      fetch(input, init),
   ) {}
 
   async handle(invocation: ThemeRuntimeInvocation): Promise<ThemeRuntimeResult> {

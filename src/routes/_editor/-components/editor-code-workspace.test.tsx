@@ -4,7 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
-import { deleteStorefrontThemeFile } from "@/server/storefront/storefront-theme-files.serverFn";
+import {
+  deleteStorefrontThemeFile,
+  saveStorefrontThemeFile,
+} from "@/server/storefront/storefront-theme-files.serverFn";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { configureThemeTypeScript } from "./editor-code-language-support";
 import { formatEditorCode } from "./editor-code-formatter";
@@ -21,6 +24,7 @@ vi.mock(
       typeof import("@/server/storefront/storefront-theme-files.serverFn")
     >()),
     deleteStorefrontThemeFile: vi.fn(),
+    saveStorefrontThemeFile: vi.fn(),
   }),
 );
 
@@ -420,5 +424,117 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
 
     expect(deleteStorefrontThemeFile).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
+  });
+});
+
+describe("EditorCodeWorkspace file creation", () => {
+  const folderTree = [
+    {
+      name: "src",
+      path: "src",
+      isDirectory: true,
+      children: [
+        {
+          name: "components",
+          path: "src/components",
+          isDirectory: true,
+          children: [
+            { name: "Hero.tsx", path: file.path, isDirectory: false },
+          ],
+        },
+      ],
+    },
+  ];
+
+  function renderTree() {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    return render(
+      <QueryClientProvider client={client}>
+        <EditorCodeWorkspace
+          storefrontId="store-1"
+          themeId="theme-1"
+          files={[file]}
+          tree={folderTree as never}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    vi.mocked(saveStorefrontThemeFile).mockReset();
+    useThemeWorkspaceStore.setState({ files: {} });
+  });
+
+  it("creates a file from the explorer with the create precondition", async () => {
+    vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { ...file, id: "file-2", path: "src/components/Promo.tsx" },
+    } as never);
+
+    renderTree();
+    fireEvent.click(screen.getByRole("button", { name: "New file" }));
+
+    const input = screen.getByPlaceholderText("src/components/Promo.tsx");
+    fireEvent.change(input, {
+      target: { value: "src/components/Promo.tsx" },
+    });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+    });
+
+    const payload = vi.mocked(saveStorefrontThemeFile).mock.calls[0]![0] as {
+      data: Record<string, unknown>;
+    };
+    expect(payload.data.path).toBe("src/components/Promo.tsx");
+    // Without this precondition a create could silently overwrite a file.
+    expect(payload.data.expectMissing).toBe(true);
+    // Scaffolded so the new component is editable in the Inspector at once.
+    expect(String(payload.data.content)).toContain("export const contentFields");
+  });
+
+  it("refuses an invalid path before contacting the server", async () => {
+    renderTree();
+    fireEvent.click(screen.getByRole("button", { name: "New file" }));
+
+    const input = screen.getByPlaceholderText("src/components/Promo.tsx");
+    fireEvent.change(input, { target: { value: "../escape.tsx" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
+    });
+  });
+
+  it("refuses creating a path that already exists", async () => {
+    renderTree();
+    fireEvent.click(screen.getByRole("button", { name: "New file" }));
+
+    const input = screen.getByPlaceholderText("src/components/Promo.tsx");
+    fireEvent.change(input, { target: { value: file.path } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
+    });
+  });
+
+  it("closes the input on Escape without creating anything", async () => {
+    renderTree();
+    fireEvent.click(screen.getByRole("button", { name: "New file" }));
+
+    const input = screen.getByPlaceholderText("src/components/Promo.tsx");
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByPlaceholderText("src/components/Promo.tsx"),
+      ).toBeNull();
+    });
+    expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
   });
 });

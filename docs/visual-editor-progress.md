@@ -6,15 +6,20 @@
 
 | 項目         | 內容                                                                                             |
 | ------------ | ------------------------------------------------------------------------------------------------ |
-| 最後更新     | 2026-08-25                                                                                       |
+| 最後更新     | 2026-08-26                                                                                       |
 | 目前狀態     | 開發中                                                                                           |
-| 整體完成度   | **93%**                                                                                                      |
-| 目前重點     | TanStack Start Theme build contract 已完成；下一步是 production Worker dispatch 與 D1 Page Registry 組合                  |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（162 files / 793 tests）、`pnpm build` 均通過                                  |
+| 整體完成度   | **80%**（加權，權重表見下）                                                                                  |
+| 目前重點     | Production runtime／部署平面與零標記元素識別已完成；下一步是 source 宣告的 content slot（讓純程式碼元件的內容通到生產）              |
+| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（177 files / 978 tests）、`pnpm build` 均通過                                  |
 
-`█████████▎ 93%`
+`████████ 80%`
 
-> 完成度是依功能、架構與驗證結果加權估算，不代表已達正式發布標準。
+> 完成度依下方權重表計算，可自行複核。權重反映各階段的規模與剩餘風險，不是平均分配 ——
+> 把「Inspector 數值輸入一致性」與「真實 Theme Runtime」等重看待，是先前數字偏高的主因。
+>
+> **這個數字只衡量下表列出的階段。** 它不包含「內容值通到 production」「排序改走 source」
+> 「純程式碼元件的 content slot」等產品缺口，那些在 ROADMAP 追蹤。因此 80% 不代表
+> Visual Editor 接近可交付。
 
 ### 狀態標記
 
@@ -33,8 +38,36 @@
 | 4. Editor ↔ Preview 通訊          | typed protocol、runtime validation、selection/style 同步                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試    |
 | 5. 編輯器互動效能                 | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放      | 🟢   |    97% | 以瀏覽器 Performance trace 建立實際延遲基準  |
 | 6. Code-authored 內容 round-trip  | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence                   | 🟢   |    90% | 補齊 Publish 與 immutable revision E2E        |
-| 7. 真實 Theme Source Live Runtime | 在隔離 iframe 執行真實 TSX/theme runtime，不再依賴固定相容 renderer                           | 🟡   |    50% | 串接 production Worker dispatch 與 D1 Page Registry 組合          |
-| 8. 最終品質與發布準備             | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態                                                 | 🟡   |    65% | 建立完整互動驗收矩陣                         |
+| 7. 真實 Theme Source Live Runtime | 在隔離 iframe 執行真實 TSX/theme runtime，不再依賴固定相容 renderer                           | 🟡   |    55% | Live 仍走解釋器；已驗證 build 產物可執行，但編輯器尚未改用          |
+| 8. 最終品質與發布準備             | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態                                                 | 🟡   |    55% | 缺瀏覽器層 E2E：選取鏈連續五次失敗都沒有測試攔截 |
+
+## 權重與計算
+
+| 階段                              | 權重 | 完成度 | 貢獻 |
+| --------------------------------- | ---: | -----: | ---: |
+| 1. Inspector 資料一致性           |    5 |   100% | 5.00 |
+| 2. 即時預覽與提交語意             |    5 |   100% | 5.00 |
+| 3. Inspector 模組化與基本樣式     |   15 |    97% | 14.55 |
+| 4. Editor ↔ Preview 通訊          |   10 |   100% | 10.00 |
+| 5. 編輯器互動效能                 |   10 |    97% | 9.70 |
+| 6. Code-authored 內容 round-trip  |   15 |    90% | 13.50 |
+| 7. 真實 Theme Source Live Runtime |   25 |    55% | 13.75 |
+| 8. 最終品質與發布準備             |   15 |    55% | 8.25 |
+| **合計**                          | **100** |    | **79.8 → 80%** |
+
+權重依「剩餘工作量 × 對可交付性的影響」設定：
+
+- 階段 7 權重最高（25）：解釋器是編輯器的核心限制，替換它會連帶改動選取模型、
+  Inspector 與 section 推導，是唯一還會大幅改寫既有程式碼的階段。
+- 階段 3、6、8 各 15：面積大或直接決定可交付性。
+- 階段 1、2 各 5：已完成的一致性修正，範圍小。
+
+### 本次調整的依據
+
+- 階段 7 由 60% 調回 **55%**：production runtime 能執行真實 Worker 是另一個平面的進展，
+  編輯器 iframe 仍走解釋器，不應記在此階段。已驗證 build 產物可執行算是前置達成。
+- 階段 8 由 65% 調為 **55%**：本次有直接證據——使用者連續五次回報選取失敗，
+  五個成因分散在五處，**沒有任何一條現有測試攔截到**，因為缺少瀏覽器層的端到端測試。
 
 ## 已完成內容
 
@@ -218,6 +251,7 @@
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                          | 驗證                                                                                          |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 2026-08-26 | 完成 production runtime 與部署平面：hostname → active release → artifact 的 fail-closed 解析、preview／production 共用 serving core、`ThemeRuntime` 傳輸抽象（service binding／local／dispatch／unavailable）、Sandbox wrangler 部署與憑證隔離、CAS 先佔位後部署的啟用順序、Publish 與 rollback 共用部署核心；並完成零標記元素識別：解釋器產生 source position、元件根部即 section 邊界、收集／點擊／還原三段統一，Inspector 不再要求 Document section | `pnpm typecheck`、`pnpm test`（978 tests）、`pnpm build` 通過；並以真實 workspace 實測 Live 預覽渲染與選取收集 |
 | 2026-08-25 | 完成 Customer Theme TanStack Start build contract：加入固定 package/toolchain、Starter v5 OCC additive upgrade、真正 Cloudflare multi-environment Worker build、platform-owned generated/config path、Worker/client/preview artifact contract 與 R2 manifest fail-closed 驗證；production Worker dispatch 與 D1 Page Registry 組合仍明確列為後續 | `pnpm typecheck`、`pnpm test`（162 files / 793 tests）、`pnpm build`、`git diff --check` 通過 |
 | 2026-08-25 | 完成 Theme-level `contentFields` capability：共用 bounded manifest parser、Inspector 自訂欄位與 code default、server-authoritative D1 Workspace 驗證、safe URL／型別／長度／select 限制、source-generation + draft OCC guard、partial edit 資料保留及內建 manifest 相容 adapter | `pnpm typecheck`、`pnpm test`（159 files / 766 tests）、`pnpm build`、`git diff --check` 通過 |
 | 2026-08-25 | 完成 code-authored primitive 文字內容 round-trip：Preview protocol 傳遞 bounded `contentValue`、Inspector 顯示目前文字、已登記 component 可即時預覽並透過 debounce／OCC 寫入 D1 draft；確認下一個缺口為 Theme-level `contentFields` capability，而非自動把程式碼 default 寫入資料庫 | `pnpm typecheck`、`pnpm test`（158 files / 758 tests）、`pnpm build`、`git diff --check` 通過 |

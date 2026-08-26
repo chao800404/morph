@@ -14,10 +14,14 @@
  * wrangler-driven harness does.
  *
  * Usage:
- *   node scripts/theme-artifact-smoke.mjs --artifact <dir> [--port 8799]
+ *   node scripts/theme-artifact-smoke.mjs --artifact <dir> [--port 8799] [--keep]
  *
  * <dir> is the materialized artifact root containing runtime/server and
  * runtime/client.
+ *
+ * `--keep` leaves the Worker serving after the checks pass, so Morph Core can
+ * forward storefront requests to it during local development. Without it the
+ * process verifies and exits, which is what CI wants.
  */
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
@@ -30,6 +34,7 @@ function arg(name, fallback) {
 
 const artifactRoot = resolve(arg("artifact", ""));
 const port = Number(arg("port", "8799"));
+const keepServing = process.argv.includes("--keep");
 
 if (!artifactRoot || !existsSync(artifactRoot)) {
   console.error("[smoke] --artifact <dir> is required and must exist");
@@ -63,26 +68,39 @@ writeFileSync(
   ),
 );
 
+// Own process group: wrangler spawns workerd as a separate child, and killing
+// only the wrangler process leaves that grandchild holding the port. Signalling
+// the whole group tears the Worker down with it.
 const wrangler = spawn(
   resolve(process.cwd(), "node_modules/.bin/wrangler"),
   ["dev", "-c", configPath, "--port", String(port), "--ip", "127.0.0.1"],
-  { stdio: ["ignore", "pipe", "pipe"] },
+  { stdio: ["ignore", "pipe", "pipe"], detached: true },
 );
 
 let log = "";
 wrangler.stdout.on("data", (chunk) => (log += chunk.toString()));
 wrangler.stderr.on("data", (chunk) => (log += chunk.toString()));
 
+let stopped = false;
 const stop = () => {
+  if (stopped) return;
+  stopped = true;
   try {
-    wrangler.kill("SIGTERM");
-  } catch {}
+    // Negative pid signals the group, reaching workerd as well.
+    process.kill(-wrangler.pid, "SIGTERM");
+  } catch {
+    try {
+      wrangler.kill("SIGTERM");
+    } catch {}
+  }
 };
 process.on("exit", stop);
-process.on("SIGINT", () => {
-  stop();
-  process.exit(130);
-});
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    stop();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
 
 async function waitForReady(deadlineMs = 90_000) {
   const started = Date.now();
@@ -141,7 +159,7 @@ try {
     `status=${missing.status}`,
   );
 } finally {
-  stop();
+  if (!keepServing) stop();
 }
 
 const failed = checks.filter((check) => !check.ok);
@@ -150,4 +168,17 @@ console.log(
     ? `\n[smoke] PASS — ${checks.length} checks`
     : `\n[smoke] FAIL — ${failed.length}/${checks.length} checks failed`,
 );
-process.exit(failed.length === 0 ? 0 : 1);
+
+if (keepServing && failed.length === 0) {
+  console.log(`\n[smoke] serving on http://127.0.0.1:${port} — press Ctrl+C to stop`);
+  // Keep the event loop alive by holding stdin open rather than awaiting a
+  // promise that never settles, which Node reports as an unsettled top-level
+  // await. Exiting is driven by SIGINT, which tears the Worker down.
+  process.stdin.resume();
+  wrangler.on("exit", (code) => {
+    console.log(`\n[smoke] the Theme Worker exited (code ${code ?? "null"})`);
+    process.exit(code ?? 1);
+  });
+} else {
+  process.exit(failed.length === 0 ? 0 : 1);
+}

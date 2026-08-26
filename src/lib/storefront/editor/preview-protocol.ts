@@ -106,6 +106,8 @@ export type PreviewStyleSnapshot = Readonly<{
 
 export type PreviewSelectionRestoreTarget = Readonly<{
   sectionId: string;
+  /** Compile-time source position, present when the build annotated it. */
+  sourceLocation?: string;
   nodeId?: string;
   fieldPath?: string;
   elementKey?: string;

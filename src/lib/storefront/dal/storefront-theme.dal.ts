@@ -12,12 +12,12 @@ import {
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
+import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
 import {
   filterThemeContentProps,
-  parseThemeContentCapabilities,
   type ThemeContentCapabilities,
 } from "@/lib/storefront/theme-content-capabilities";
-import { and, asc, eq, isNull, max } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, max } from "drizzle-orm";
 
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -836,9 +836,27 @@ export const storefrontThemeDal = {
       .bind(data.themeId, data.storefrontId)
       .first<{ sourceGeneration: number; manifestContent: string | null }>();
     if (!manifestState) return null;
-    const themeCapabilityState = parseThemeContentCapabilities(
-      manifestState.manifestContent,
-    );
+    // Components may declare their editable fields in their own source, so the
+    // manifest alone no longer answers what this mutation is allowed to write.
+    // Only the sources the manifest references are read, never the whole
+    // workspace, and the client cannot influence which paths are loaded.
+    const themeCapabilityState = await resolveThemeContentCapabilities({
+      manifestContent: manifestState.manifestContent,
+      readSource: async (path) => {
+        const row = await env.DATABASE.prepare(
+          `
+          SELECT content
+          FROM storefront_theme_files
+          WHERE storefront_id = ?1 AND theme_id = ?2 AND path = ?3
+            AND deleted_at IS NULL
+          LIMIT 1
+        `,
+        )
+          .bind(data.storefrontId, data.themeId, path)
+          .first<{ content: string | null }>();
+        return row?.content ?? null;
+      },
+    });
     const themeCapabilities = themeCapabilityState.capabilities;
     const resolvedComponentRef =
       targetSection.componentRef ??
@@ -1098,11 +1116,57 @@ export const storefrontThemeDal = {
           )
           .limit(1)
       : [];
+    // Resolve the build server-side when the caller did not name one.
+    //
+    // The editor only knows about a Build Preview while it is showing one, so a
+    // reload would otherwise make an existing, valid build unpublishable and
+    // force a rebuild. Falling back to the active release's build instead is
+    // wrong in the opposite direction: it would publish stale bytes under a
+    // newer source. The authoritative answer is the newest succeeded build
+    // whose revision matches the theme's current source generation.
+    const [resolvedBuild] =
+      data.themeBuildId || data.sourceRevisionId
+        ? []
+        : await db
+            .select({
+              id: storefrontThemeBuilds.id,
+              sourceRevisionId: storefrontThemeBuilds.sourceRevisionId,
+            })
+            .from(storefrontThemeBuilds)
+            .innerJoin(
+              storefrontThemeRevisions,
+              eq(
+                storefrontThemeBuilds.sourceRevisionId,
+                storefrontThemeRevisions.id,
+              ),
+            )
+            .where(
+              and(
+                eq(storefrontThemeBuilds.storefrontId, data.storefrontId),
+                eq(storefrontThemeBuilds.themeId, data.themeId),
+                eq(storefrontThemeBuilds.status, "succeeded"),
+                isNotNull(storefrontThemeBuilds.artifactPrefix),
+                isNotNull(storefrontThemeBuilds.manifestJson),
+                isNull(storefrontThemeBuilds.deletedAt),
+                isNull(storefrontThemeRevisions.deletedAt),
+                eq(
+                  storefrontThemeRevisions.sourceGeneration,
+                  template.sourceGeneration,
+                ),
+              ),
+            )
+            .orderBy(desc(storefrontThemeBuilds.createdAt))
+            .limit(1);
+
     const sourceRevisionId =
-      data.sourceRevisionId ?? activeRelease?.sourceRevisionId;
-    const themeBuildId = data.themeBuildId ?? activeRelease?.themeBuildId;
+      data.sourceRevisionId ??
+      resolvedBuild?.sourceRevisionId ??
+      activeRelease?.sourceRevisionId;
+    const themeBuildId =
+      data.themeBuildId ?? resolvedBuild?.id ?? activeRelease?.themeBuildId;
     if (
       !data.sourceRevisionId &&
+      !resolvedBuild &&
       (activeRelease?.sourceGeneration == null ||
         activeRelease.sourceGeneration !== template.sourceGeneration)
     ) {
@@ -1361,6 +1425,13 @@ export const storefrontThemeDal = {
       templateUnchanged,
       sourceUnchanged,
       unchanged,
+      // Surfaced so the caller can deploy the Theme Worker for the release it
+      // just activated. Publishing writes D1 atomically, but the deployed
+      // script is separate state that has to be reconciled afterwards.
+      releaseId,
+      themeBuildId,
+      /** `true` when this publish created and activated a new release. */
+      releaseCreated: !unchanged,
     };
   },
 };

@@ -197,18 +197,28 @@ Edge Runtime
 - sandboxed iframe preview
 - source-authored `src/routes/` registry、fail-closed route diagnostics、真正 TanStack Start Cloudflare Worker build 與隔離的 TanStack Router client preview adapter
 
+### Production Runtime / Deployment（2026-08 新增）
+
+已具備：
+
+- hostname → 已驗證 domain → published storefront → `active_release_id` → available release → succeeded build 的 fail-closed 解析鏈
+- preview 與 production 共用的 artifact serving core（manifest 邊界、path sanitize、ETag／304、快取與安全標頭），差異只由 serving policy 表達
+- `ThemeRuntime` 傳輸抽象：service binding（生產）、local direct（開發）、dispatch namespace（保留給 Phase 8）、unavailable（fail-closed）
+- storefront hostname 與平台 hostname 的精確分流；storefront 網域上不得出現 dashboard／editor／server function 路由
+- Theme Worker 部署平面：deployment plan（含 forbidden binding 檢查）、Sandbox 內以固定版本 wrangler 部署、憑證只存在於 exec environment 且失敗輸出會清洗
+- Publish 與 rollback 兩條路徑共用同一個部署核心
+- artifact smoke-run harness：本地實際啟動 `runtime/server/index.js` 驗證 build 產物真的可執行
+
 ### 尚未完整閉環
 
 目前主要缺口：
 
-- StorefrontRelease 已具備 base entity、`activeReleaseId` SSOT、ContentPublication model、immutable content revision snapshot foundation、build/source validation、content-only build reuse、publication + release atomic batch 與 legacy sourceGeneration fail-closed
-- release history UI、production runtime
-- production edge storefront router
-- production Workers for Platforms dispatch／deployment plane；目前 immutable artifact 已包含 TanStack Start Worker、client assets 與 Editor preview，但 production edge 尚未執行該 Worker
-- custom domain → active release → artifact serving
-- Theme artifact + Page Document + Commerce DTO runtime composition
+- release history UI（`activateStorefrontRelease` 已可用，但沒有切換介面）
+- **Theme artifact + Page Document 的 runtime 組合**：內容值仍只存在 Document，build 出來的 theme 不會讀取，因此改文字不會反映到 production
 - content-only publish without rebuild 的完整 production flow
-- production rollback based on release
+- section 排序仍寫入 Document，但 production 依 route 的 JSX 順序渲染
+- 純程式碼元件的內容欄位（需要 source 宣告的 content slot）
+- custom domain 憑證與 DNS 生命週期
 - AI Code Agent backend workflow
 - AI patch / diff / repair orchestration
 - production-grade observability / metering / tenant isolation
@@ -483,6 +493,35 @@ New Published Content Revisions
 ## User value
 
 真正的顧客可以透過 storefront domain 使用 Morph 發布的網站。
+
+## 部署拓撲（2026-08 確立）
+
+Morph 目前是**單租戶交付**：每個客戶取得一份自己的 Morph 部署，跑在客戶自己的
+Cloudflare 帳號。這決定了 production runtime 的形狀：
+
+```text
+merchant hostname
+      ↓
+Morph Core Worker（分流：平台 hostname vs storefront hostname）
+      ↓ hostname → active release → immutable build
+      ↓
+service binding → Theme Worker（同帳號內的一般 Worker）
+```
+
+- Theme Worker 是**同一個 Cloudflare 帳號裡的普通 Worker**，用 service binding 呼叫。
+- **Workers for Platforms／dispatch namespace 屬於 Phase 8**，不是現在的方案。它是為
+  「一個帳號承載大量互不信任的客戶 Worker」而存在的，單租戶交付不需要，也不該為此付費。
+- `ThemeRuntime` 介面已保留 dispatch 實作，Phase 8 只需換傳輸層，解析與授權邏輯不變。
+
+### service binding 的取捨
+
+service binding 指向**固定的 script 名稱**，所以「哪個 build 在線上」由部署決定，
+指標翻轉做不到。因此：
+
+- `storefronts.active_release_id` 仍是「哪個 release 應該在線上」的唯一 SSOT。
+- 啟用必須**先以 CAS 佔位、再部署**；佔位失敗者永遠不得碰部署腳本，兩個並行啟用
+  就不可能同時替換同一個 script。
+- 部署失敗必須把 `active_release_id` 還原；還原也失敗時必須明確回報 drift，不得靜默。
 
 ## Request path
 
@@ -816,6 +855,9 @@ Morph Runtime Plane
 ## Deliverables
 
 - explicit tenant identity
+- **Workers for Platforms dispatch namespace**：多租戶才需要的傳輸層。`ThemeRuntime`
+  已有 `DispatchNamespaceThemeRuntime` 實作與 script 命名（以 buildId 為鍵，讓啟用
+  變成指標切換），Phase 8 需補的是部署平面、script GC 與 outbound worker 隔離
 - tenant-aware D1 / storage strategy
 - per-tenant quotas
 - AI cost attribution

@@ -518,3 +518,41 @@ export default function Page() {
     }
   });
 });
+
+describe("build output stays free of editor annotations", { timeout: 60_000 }, () => {
+  it("never ships Theme source positions in a build artifact", async () => {
+    // Build Preview shows an immutable artifact and carries no editor channel,
+    // so source positions would be unreadable weight — and would place Theme
+    // source paths into stored build output.
+    const runner = new LocalViteThemeBuildRunner();
+    const result = await runner.run({
+      buildId: "loc-build",
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-1",
+      revisionNumber: 1,
+      entry: "src/routes/index.tsx",
+      inputHash: "a".repeat(64),
+      compilerId: "tailwind-v4-build",
+      compilerVersion: "4.1.17",
+      files: STARTER_THEME_FILES as never,
+    } as never);
+
+    expect(
+      result.success,
+      result.success ? undefined : result.errorMessage,
+    ).toBe(true);
+    if (!result.success) return;
+
+    const allOutput = result.artifacts
+      .filter((artifact) => artifact.path.endsWith(".js"))
+      .map((artifact) =>
+        typeof artifact.content === "string"
+          ? artifact.content
+          : new TextDecoder().decode(artifact.content as Uint8Array),
+      )
+      .join("");
+
+    expect(allOutput).not.toContain("data-morph-loc");
+  });
+});

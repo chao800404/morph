@@ -426,6 +426,39 @@ Human publish 應以 successful immutable build 為基礎，而不是只看 live
 - Preview 不得取得 Better Auth／admin cookie、production secret、D1／R2 credential 或 general admin token。Preview capability 必須 short-lived、purpose-scoped、resource-scoped，且不得被當成 release／deploy credential。
 - 自訂 source 的編譯、dependency resolution 與 artifact creation 必須沿用既有 Sandbox／Container runner、dependency allowlist、path containment 與 resource／network limits；Node `vm` 或 request Worker 內 `eval` 不得被當成 untrusted-code sandbox。
 
+### 8.4 Build Preview 是唯讀的
+
+Build Preview 呈現的是 immutable artifact，其 iframe 不得攜帶任何編輯通道。
+
+- Build Preview 期間，兩側面板不得取得可操作的 selection。看著不可變 build 卻改著
+  已經往前走的 workspace 原始碼，是使用者無法理解的狀態。
+- **Build 產物不得含任何編輯器標記**（例如 source position 屬性）。它們在 build 端沒有
+  消費者，只會讓 bundle 變大，並把 Theme 原始碼路徑寫進儲存的 artifact。
+- 編輯器所需的識別資訊由 Live Preview 的解釋器在渲染時產生，那是唯一的來源與唯一的消費者。
+
+### 8.5 元素識別
+
+Visual Editor 必須能識別 customer 自己撰寫的元件，**且不得要求對方手寫識別標記**。
+
+識別優先序，任何一層都不得單獨實作：
+
+1. `data-storefront-section-id`：Document 綁定的 section
+2. `data-morph-section`／`data-morph-node`：作者手寫的語意標記（穩定，不隨編輯位移）
+3. 解釋器產生的 source position 與元件根部標記：零撰寫成本的備援
+
+規則：
+
+- **section 判定、點擊解析、選取還原必須共用同一份實作。** 這三段曾各自複製一份判斷，
+  導致同一個元件在左側樹出現、卻點不到、也回不去，而且完全沒有錯誤訊息。新增識別
+  來源時必須同時通過這三段的測試，不得只改其中一段。
+- 元件會巢狀，元件根部就是 section 邊界；每個元素歸屬**最近**的 section 根部，不得由
+  最外層吸收全部內容。只有 Document section 之間才需要扁平化。
+- source position 只在該位置唯一時可用；重複（例如 `.map()` 產生的列表）必須跳過，
+  不得任選一個。
+- 右側 Inspector 不得要求存在 Document section 才能運作。樣式編輯寫回 Theme Source，
+  與 Document 無關；沒有 Document section 時仍應可檢視與改樣式，只是內容欄位為空，
+  且不得對不存在的 section 寫入內容值。
+
 ---
 
 ## 9. Storefront Release 與 Production Runtime
@@ -487,6 +520,33 @@ activeReleaseId: old → new
 - 不可基於 compatibility path 再建立第二套 production router。
 - 新 production runtime 工作必須朝 immutable release 收斂。
 - migration 必須保留 rollback 與既有 published state。
+
+### 9.3.1 啟用與部署的順序
+
+service binding 指向固定 script 名稱，替換 script 才是真正的切換（見核心規則 2.5）。因此：
+
+```text
+驗證 build / plan  →  CAS 佔位 active_release_id  →  部署  →  失敗則還原佔位
+```
+
+- 佔位失敗者**永遠不得進入部署**，這是防止兩個並行啟用同時替換同一 script 的唯一保證。
+- 部署失敗且還原也失敗時，必須回報 drift，不得讓 D1 指向未部署的 release。
+- Publish 與 rollback 必須共用同一個部署核心；只改 D1 不部署的啟用路徑一律禁止。
+- Publish 的 build 解析必須以**目前 source generation 對應的最新成功 build** 為準，
+  不得退回 active release 的舊 build，也不得依賴 client 端傳來的 build id 才能運作。
+
+### 9.3.2 Serving 邊界
+
+- preview 與 production 必須共用同一個 artifact serving 實作；差異只能用 serving policy
+  （cache 可見度、document CSP、CORS）表達，不得複製出第二套 serving path。
+- 任何被服務的檔案都必須存在於 canonical manifest；R2 中未被 manifest 宣告的物件不得端出。
+- entry 位於子目錄時，其相對子資源必須相對 entry 目錄解析，且重試仍受 manifest 邊界約束。
+- storefront hostname 與平台 hostname 的分流**只看 hostname，不得有路徑豁免**。任何路徑
+  白名單都會在路由搬移的當下把 dashboard／editor／server function 曝露到公開站上。
+- 平台 hostname 判定必須用精確比對，不得用後綴比對；後綴規則會讓
+  `evil-morph.example.com` 被當成平台介面。
+- 已被判定為平台介面的 hostname 不得被建立成 storefront domain：路由是平台優先，
+  那會產生一個顯示為 active 卻永遠不可達的網域。
 
 ### 9.4 Production Edge Router
 

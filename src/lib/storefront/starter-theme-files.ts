@@ -3,6 +3,8 @@ import {
   LEGACY_STARTER_THEME_HEADER_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
+  LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE,
+  LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE,
   STARTER_THEME_FOOTER_SOURCE,
   STARTER_THEME_V4_NEW_FILES,
@@ -504,6 +506,10 @@ export function createStarterThemeWorkspaceUpgrade(
     const existingHomeRoute = existingByPath.get("src/routes/index.tsx");
     if (
       existingHomeRoute?.content === LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE ||
+      // Slotless route: renders every section with no props, so authored
+      // content in the Document could never reach the component.
+      existingHomeRoute?.content ===
+        LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE ||
       existingHomeRoute?.content ===
         LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE
     ) {
@@ -513,6 +519,27 @@ export function createStarterThemeWorkspaceUpgrade(
         mimeType: "text/typescript",
         expectedFileId: existingHomeRoute.id,
         expectedVersion: existingHomeRoute.version,
+      });
+    }
+
+    // A root route without a document shell builds successfully and previews
+    // correctly, because the preview entry document is platform-generated.
+    // Production serves the Theme's own SSR output, which would then have no
+    // <html>, no <head> and no stylesheet. Only an untouched legacy copy is
+    // replaced; an authored root route is left for its owner to migrate.
+    const existingRootRoute = existingByPath.get("src/routes/__root.tsx");
+    const targetRootRoute = targetByPath.get("src/routes/__root.tsx");
+    if (
+      existingRootRoute &&
+      targetRootRoute &&
+      existingRootRoute.content === LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE
+    ) {
+      upgrades.push({
+        path: existingRootRoute.path,
+        content: targetRootRoute.content,
+        mimeType: "text/typescript",
+        expectedFileId: existingRootRoute.id,
+        expectedVersion: existingRootRoute.version,
       });
     }
 

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { activateReleaseWithDeployment } from "./storefront-release-reconciler";
+import {
+  activateReleaseWithDeployment,
+  deployReleaseArtifact,
+} from "./storefront-release-reconciler";
 import { UnavailableThemeWorkerDeployer } from "./theme-worker-deployer.types";
 import type { ReleaseReconcilerPorts } from "./storefront-release-reconciler";
 
@@ -286,5 +289,66 @@ describe("activateReleaseWithDeployment", () => {
     expect(bucket.get).toHaveBeenCalledWith(
       "themes/th_1/builds/bld_1/runtime/server/wrangler.json",
     );
+  });
+});
+
+describe("deployReleaseArtifact", () => {
+  const basePorts = ports();
+
+  it("deploys the release artifact without touching activation state", async () => {
+    const activateRelease = vi.fn(async () => ({}));
+    const deployer = okDeployer();
+
+    const result = await deployReleaseArtifact({
+      releaseId: "rel_1",
+      deployer,
+      r2Bucket: r2(),
+      ports: { getRelease: basePorts.getRelease, getBuild: basePorts.getBuild },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.scriptName).toBe("morph-theme-sf-1");
+    expect(deployer.deploy).toHaveBeenCalledOnce();
+    // The publish path already wrote activation atomically; this must not
+    // re-enter the CAS.
+    expect(activateRelease).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed deployment rather than reporting success", async () => {
+    const result = await deployReleaseArtifact({
+      releaseId: "rel_1",
+      deployer: new UnavailableThemeWorkerDeployer(),
+      r2Bucket: r2(),
+      ports: { getRelease: basePorts.getRelease, getBuild: basePorts.getBuild },
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.reason).toBe("DEPLOY_FAILED");
+  });
+
+  it("refuses a build outside the release's storefront", async () => {
+    const deployer = okDeployer();
+    const result = await deployReleaseArtifact({
+      releaseId: "rel_1",
+      deployer,
+      r2Bucket: r2(),
+      ports: {
+        getRelease: basePorts.getRelease,
+        getBuild: async () => ({
+          id: "bld_1",
+          storefrontId: "sf_OTHER",
+          status: "succeeded",
+          artifactPrefix: "themes/th_1/builds/bld_1",
+          manifestJson: manifest,
+        }),
+      },
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.reason).toBe("BUILD_NOT_DEPLOYABLE");
+    expect(deployer.deploy).not.toHaveBeenCalled();
   });
 });

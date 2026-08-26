@@ -2,6 +2,11 @@ import type { ReactNode } from "react";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
+  MAX_THEME_CONTENT_SLOTS,
+  isValidThemeContentSlotId,
+  type ThemeContentSlotValues,
+} from "@/lib/storefront/theme-content-slots";
+import {
   renderSafeThemeComponent,
   type SafeThemeBuiltinComponentMap,
   type SafeThemeComponentResolver,
@@ -83,6 +88,28 @@ function createDocumentComponentResolver(args: {
   };
 }
 
+/**
+ * Content values keyed by slot, built from the published Page Document.
+ *
+ * A Document section's id is the slot id, so a route that declares
+ * `content("starter-hero")` reads exactly that section's props. No registration
+ * step and no ordering heuristic sits between the two.
+ */
+function readContentSlots(
+  document: StorefrontPageDocument,
+): ThemeContentSlotValues {
+  const slots: Record<string, Record<string, unknown>> = {};
+  let count = 0;
+  for (const section of document.sections ?? []) {
+    if (count >= MAX_THEME_CONTENT_SLOTS) break;
+    if (!isValidThemeContentSlotId(section.id)) continue;
+    if (section.enabled === false) continue;
+    slots[section.id] = (section.props ?? {}) as Record<string, unknown>;
+    count += 1;
+  }
+  return slots;
+}
+
 function routeMatchesPath(routePath: string, pathname: string): boolean {
   const routeSegments = routePath.split("/").filter(Boolean);
   const pathSegments = pathname.split("/").filter(Boolean);
@@ -158,6 +185,7 @@ export function renderSafeThemeRoute(args: {
     files: args.files,
     document: args.document,
   });
+  const contentSlots = readContentSlots(args.document);
   let parentPath = parentRoutePath(matched.path, routePaths);
   while (parentPath) {
     const parent = registry.routes.find(
@@ -188,6 +216,7 @@ export function renderSafeThemeRoute(args: {
       builtinComponents: builtins,
       injectedProps: args.runtimeProps,
       resolveComponent,
+      contentSlots,
     });
     if (!rendered.success) return rendered;
     outlet = rendered.node;
@@ -212,5 +241,6 @@ export function renderSafeThemeRoute(args: {
     },
     injectedProps: args.runtimeProps,
     resolveComponent,
+    contentSlots,
   });
 }

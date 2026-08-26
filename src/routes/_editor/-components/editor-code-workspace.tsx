@@ -23,6 +23,8 @@ import {
   ChevronDown,
   ChevronRight,
   Code2,
+  Copy,
+  FilePlus2,
   Trash2,
   FileCode2,
   FileJson,
@@ -46,6 +48,7 @@ import {
   registerTailwindCompletionProvider,
 } from "./editor-code-language-support";
 import { formatEditorCode } from "./editor-code-formatter";
+import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
 
 type EditorCodeWorkspaceProps = {
   storefrontId: string;
@@ -153,6 +156,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
+  /** Folder the inline create input is anchored to; "" is the workspace root. */
+  const [creatingInFolder, setCreatingInFolder] = useState<string | null>(null);
+  const [newFilePath, setNewFilePath] = useState("");
   const [dirtyPaths, setDirtyPaths] = useState<string[]>(() =>
     useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
   );
@@ -564,6 +570,109 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       ),
   });
 
+  const createMutation = useMutation({
+    mutationFn: async ({
+      path,
+      content,
+      mimeType,
+    }: {
+      path: string;
+      content: string;
+      mimeType: string;
+    }) => {
+      // `expectMissing` is the create precondition: the write is refused if the
+      // path already exists, so creating can never overwrite existing work.
+      const res = await saveStorefrontThemeFile({
+        data: {
+          storefrontId,
+          themeId,
+          path,
+          content,
+          mimeType,
+          expectMissing: true,
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+        },
+      });
+      if (!res.success) throw new Error(res.message);
+      return res.data;
+    },
+    onSuccess: async (saved) => {
+      if (!saved) return;
+      markWorkspaceSaved(saved, workspaceScope);
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.all(),
+      });
+      setCreatingInFolder(null);
+      setNewFilePath("");
+      setActiveFilePath(saved.path);
+      setOpenTabs((prev) =>
+        prev.includes(saved.path) ? prev : [...prev, saved.path],
+      );
+      toast.success(`Created ${saved.path}`);
+      onRefreshPreview?.();
+    },
+    onError: (error) =>
+      toast.error(
+        error instanceof Error ? error.message : "Failed to create file",
+      ),
+  });
+
+  const startCreatingIn = useCallback((folderPath: string) => {
+    setCreatingInFolder(folderPath);
+    setNewFilePath(folderPath ? `${folderPath}/` : "");
+    if (folderPath) {
+      setCollapsedFolders((prev) => ({ ...prev, [folderPath]: false }));
+    }
+  }, []);
+
+  const submitNewFile = useCallback(() => {
+    if (createMutation.isPending) return;
+    const prepared = prepareNewThemeFile(
+      newFilePath,
+      files.map((file) => file.path),
+    );
+    if (!prepared.ok) {
+      toast.error(prepared.message);
+      return;
+    }
+    createMutation.mutate({
+      path: prepared.path,
+      content: prepared.content,
+      mimeType: prepared.mimeType,
+    });
+  }, [createMutation, files, newFilePath]);
+
+  const handleDuplicateFile = useCallback(
+    (path: string) => {
+      if (createMutation.isPending) return;
+      const extensionIndex = path.lastIndexOf(".");
+      const candidate =
+        extensionIndex === -1
+          ? `${path}-copy`
+          : `${path.slice(0, extensionIndex)}-copy${path.slice(extensionIndex)}`;
+      const prepared = prepareNewThemeFile(
+        candidate,
+        files.map((file) => file.path),
+      );
+      if (!prepared.ok) {
+        toast.error(prepared.message);
+        return;
+      }
+      // Duplicate the file as it stands on the server, not a transient draft,
+      // so the copy matches what the build would use.
+      const source =
+        files.find((file) => file.path === path)?.content ?? prepared.content;
+      createMutation.mutate({
+        path: prepared.path,
+        content: source,
+        mimeType: prepared.mimeType,
+      });
+    },
+    [createMutation, files],
+  );
+
   const handleContentChange = (value?: string) => {
     if (value === undefined) return;
     if (suppressModelChangeRef.current) return;
@@ -753,28 +862,75 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }));
   };
 
+  const renderCreateInput = (depth: number) => (
+    <div
+      className="flex items-center gap-1.5 py-1 pr-2"
+      style={{ paddingLeft: depth * 12 + 18 }}
+    >
+      <FilePlus2 className="size-3.5 shrink-0 text-primary" />
+      <input
+        autoFocus
+        value={newFilePath}
+        placeholder="src/components/Promo.tsx"
+        disabled={createMutation.isPending}
+        onChange={(event) => setNewFilePath(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submitNewFile();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setCreatingInFolder(null);
+            setNewFilePath("");
+          }
+        }}
+        onBlur={() => {
+          if (!createMutation.isPending) setCreatingInFolder(null);
+        }}
+        className="h-6 w-full min-w-0 rounded-sm border bg-background px-1.5 font-mono text-[11px] outline-none focus:border-primary"
+      />
+    </div>
+  );
+
   const renderTreeNode = (node: StorefrontThemeFileTreeNode, depth = 0) => {
     if (node.isDirectory) {
       const isCollapsed = Boolean(collapsedFolders[node.path]);
       return (
         <div key={node.path} className="select-none">
-          <div
-            onClick={() => toggleFolder(node.path)}
-            className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
-            style={{ paddingLeft: `${depth * 12 + 8}px` }}
-          >
-            {isCollapsed ? (
-              <ChevronRight className="size-3 shrink-0" />
-            ) : (
-              <ChevronDown className="size-3 shrink-0" />
-            )}
-            {isCollapsed ? (
-              <Folder className="size-3.5 text-amber-500/80 shrink-0" />
-            ) : (
-              <FolderOpen className="size-3.5 text-amber-500 shrink-0" />
-            )}
-            <span className="font-medium truncate">{node.name}</span>
-          </div>
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <div
+                onClick={() => toggleFolder(node.path)}
+                className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
+                style={{ paddingLeft: `${depth * 12 + 8}px` }}
+              >
+                {isCollapsed ? (
+                  <ChevronRight className="size-3 shrink-0" />
+                ) : (
+                  <ChevronDown className="size-3 shrink-0" />
+                )}
+                {isCollapsed ? (
+                  <Folder className="size-3.5 text-amber-500/80 shrink-0" />
+                ) : (
+                  <FolderOpen className="size-3.5 text-amber-500 shrink-0" />
+                )}
+                <span className="font-medium truncate">{node.name}</span>
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem
+                disabled={createMutation.isPending}
+                onClick={() => startCreatingIn(node.path)}
+              >
+                <FilePlus2 className="size-3.5" />
+                New File
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+          {creatingInFolder === node.path
+            ? renderCreateInput(depth + 1)
+            : null}
           {!isCollapsed && node.children ? (
             <div>
               {node.children.map((child) => renderTreeNode(child, depth + 1))}
@@ -810,6 +966,26 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuItem
+            disabled={createMutation.isPending}
+            onClick={() =>
+              startCreatingIn(
+                node.path.includes("/")
+                  ? node.path.slice(0, node.path.lastIndexOf("/"))
+                  : "",
+              )
+            }
+          >
+            <FilePlus2 className="size-3.5" />
+            New File Here
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={createMutation.isPending}
+            onClick={() => handleDuplicateFile(node.path)}
+          >
+            <Copy className="size-3.5" />
+            Duplicate
+          </ContextMenuItem>
           <ContextMenuItem
             variant="destructive"
             disabled={deleteMutation.isPending}
@@ -867,12 +1043,25 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               Explorer
             </span>
           </div>
-          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
-            {files.length} files
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+              {files.length} files
+            </span>
+            <button
+              type="button"
+              title="New file"
+              aria-label="New file"
+              disabled={createMutation.isPending}
+              onClick={() => startCreatingIn("")}
+              className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              <FilePlus2 className="size-3.5" />
+            </button>
+          </div>
         </div>
         <ScrollArea className="flex-1 p-1">
           <div className="space-y-0.5">
+            {creatingInFolder === "" ? renderCreateInput(0) : null}
             {tree.map((node) => renderTreeNode(node, 0))}
           </div>
         </ScrollArea>

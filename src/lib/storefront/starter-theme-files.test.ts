@@ -11,6 +11,8 @@ import {
   LEGACY_STARTER_THEME_HEADER_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
+  LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE,
+  LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE,
   STARTER_THEME_HOME_ROUTE_SOURCE,
   STARTER_THEME_V3_NEW_FILES,
@@ -102,17 +104,20 @@ describe("starter Principles theme source", () => {
     const homeRoute = STARTER_THEME_FILES.find(
       (file) => file.path === "src/routes/index.tsx",
     )!.content;
-    for (const component of [
-      "Hero",
-      "EditorialIntro",
-      "CategoryShowcase",
-      "ImageWithText",
-      "Principles",
-      "Newsletter",
+    // Each section is rendered through its content slot, which is what lets
+    // authored values in the Page Document reach the component at all.
+    for (const [component, slot] of [
+      ["Hero", "starter-hero"],
+      ["EditorialIntro", "starter-introduction"],
+      ["CategoryShowcase", "starter-categories"],
+      ["ImageWithText", "starter-story"],
+      ["Principles", "starter-principles"],
+      ["Newsletter", "starter-newsletter"],
     ]) {
       expect(homeRoute).toContain(`import ${component} from`);
-      expect(homeRoute).toContain(`<${component} />`);
+      expect(homeRoute).toContain(`<${component} {...content("${slot}")} />`);
     }
+    expect(homeRoute).toContain('import { content } from "../morph/content"');
     expect(homeRoute).not.toContain("StorefrontPage");
 
     const packageJson = JSON.parse(
@@ -488,5 +493,130 @@ describe("platform toolchain version correction", () => {
         { path: "package.json", content: packageUpgrade.content },
       ]),
     ).toEqual([]);
+  });
+});
+
+describe("root document shell upgrade", () => {
+  const withRoot = (rootContent: string) => [
+    {
+      id: "manifest",
+      path: "morph.theme.json",
+      content: JSON.stringify({
+        name: "Dawn Starter",
+        entry: "src/routes/index.tsx",
+        router: { framework: "tanstack-start" },
+        components: {},
+      }),
+      version: 1,
+    },
+    {
+      id: "root",
+      path: "src/routes/__root.tsx",
+      content: rootContent,
+      version: 2,
+    },
+  ];
+
+  it("replaces an untouched legacy root route that renders no document shell", () => {
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withRoot(LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE) as never,
+    );
+    const rootUpgrade = upgrades.find(
+      (upgrade) => upgrade.path === "src/routes/__root.tsx",
+    );
+
+    expect(rootUpgrade).toBeDefined();
+    // Without these the Theme's production SSR output has no document shell and
+    // no stylesheet, while the editor preview still looks correct.
+    expect(rootUpgrade!.content).toContain("shellComponent");
+    expect(rootUpgrade!.content).toContain("<html");
+    expect(rootUpgrade!.content).toContain("Scripts");
+    expect(rootUpgrade!.content).toContain("../styles/global.css");
+    expect(rootUpgrade).toMatchObject({
+      expectedFileId: "root",
+      expectedVersion: 2,
+    });
+  });
+
+  it("never overwrites an authored root route", () => {
+    const authored =
+      LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE.replace(
+        "StorefrontLayout",
+        "MyCustomLayout",
+      );
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withRoot(authored) as never,
+    );
+    expect(
+      upgrades.some((upgrade) => upgrade.path === "src/routes/__root.tsx"),
+    ).toBe(false);
+  });
+});
+
+describe("content slot upgrade", () => {
+  const withHomeRoute = (routeContent: string) => [
+    {
+      id: "manifest",
+      path: "morph.theme.json",
+      content: JSON.stringify({
+        name: "Dawn Starter",
+        entry: "src/routes/index.tsx",
+        router: { framework: "tanstack-start" },
+        components: {},
+      }),
+      version: 1,
+    },
+    {
+      id: "home",
+      path: "src/routes/index.tsx",
+      content: routeContent,
+      version: 4,
+    },
+  ];
+
+  it("seeds the platform content module for themes that lack it", () => {
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withHomeRoute(LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE) as never,
+    );
+    const contentModule = upgrades.find(
+      (upgrade) => upgrade.path === "src/morph/content.ts",
+    );
+
+    expect(contentModule).toBeDefined();
+    expect(contentModule!.content).toContain("export function content(");
+    // Added only when absent, never overwriting an existing file.
+    expect(contentModule).toMatchObject({ expectMissing: true });
+  });
+
+  it("upgrades an untouched slotless home route to read its slots", () => {
+    // Without this the route renders every section with no props, so authored
+    // content stays in the Document and never reaches the component.
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withHomeRoute(LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE) as never,
+    );
+    const routeUpgrade = upgrades.find(
+      (upgrade) => upgrade.path === "src/routes/index.tsx",
+    );
+
+    expect(routeUpgrade).toBeDefined();
+    expect(routeUpgrade!.content).toContain('<Hero {...content("starter-hero")} />');
+    expect(routeUpgrade).toMatchObject({
+      expectedFileId: "home",
+      expectedVersion: 4,
+    });
+  });
+
+  it("never rewrites a home route the customer edited", () => {
+    const authored = LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE.replace(
+      "<Newsletter />",
+      "<Newsletter />\n      <MyPromo />",
+    );
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withHomeRoute(authored) as never,
+    );
+
+    expect(
+      upgrades.some((upgrade) => upgrade.path === "src/routes/index.tsx"),
+    ).toBe(false);
   });
 });

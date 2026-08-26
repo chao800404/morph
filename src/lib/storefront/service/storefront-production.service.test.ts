@@ -393,3 +393,39 @@ describe("ServiceBindingThemeRuntime", () => {
     expect(result.status).toBe(503);
   });
 });
+
+describe("LocalDirectThemeRuntime global binding", () => {
+  it("calls the runtime fetch with the global receiver, not the instance", async () => {
+    // Workers reject a `fetch` invoked with any other receiver:
+    // "Illegal invocation: function called with incorrect `this` reference".
+    // Storing the global on the instance and calling `this.fetchImpl(...)`
+    // does exactly that, so the default must wrap instead of alias.
+    const seen: unknown[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = function (this: unknown) {
+      seen.push(this);
+      return Promise.resolve(new Response("ok"));
+    } as unknown as typeof fetch;
+
+    try {
+      const runtime = new LocalDirectThemeRuntime("http://127.0.0.1:8799");
+      const result = await runtime.handle({
+        request: new Request(`https://${HOST}/about`),
+        resolved: {
+          hostname: HOST,
+          storefrontId: "sf_1",
+          releaseId: "rel_1",
+          themeBuildId: "bld_1",
+          contentPublicationId: null,
+        } as never,
+      });
+
+      expect(result.success).toBe(true);
+      expect(seen).toHaveLength(1);
+      expect(seen[0] === globalThis || seen[0] === undefined).toBe(true);
+      expect(seen[0]).not.toBeInstanceOf(LocalDirectThemeRuntime);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});

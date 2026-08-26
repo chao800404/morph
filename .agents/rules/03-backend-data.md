@@ -77,6 +77,22 @@ DAL 負責：
 - relation read
 - D1-specific SQL when required
 
+**單列查詢必須誠實表達「查不到」。**
+
+專案未開啟 `noUncheckedIndexedAccess`，所以 `const [row] = await db.select()...`
+會把解構出的元素推導成必定存在。`row ?? null` 之後型別又縮回非 null，於是呼叫端
+**看不到查無資料這個情況**，失敗會延後成無法解釋的 `undefined`。
+
+單列讀取一律使用 `firstOrNull()`（`@/lib/db/single-row`）：
+
+```ts
+const row = firstOrNull(await db.select().from(t).where(...).limit(1));
+if (!row) return null;
+```
+
+新增 DAL 讀取時，若對外型別可能為 null，必須實際驗證推導結果，不能只看程式碼有寫
+`?? null` 就認定型別正確。
+
 ### 14.2 Service
 
 Service 負責跨 storage / build / artifact 的 workflow coordination。
