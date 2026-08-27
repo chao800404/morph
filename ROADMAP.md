@@ -248,9 +248,12 @@ Edge Runtime
 
 目前主要缺口：
 
-- release history UI（`activateStorefrontRelease` 已可用，但沒有切換介面）
-- 復原／重做已覆蓋全部八條寫入路徑，範圍是單一分頁的編輯 session；跨發布的回復
-  仍待 release history UI
+- release history UI：已閉環——編輯器工具列的 History 列出每次發布的 release，
+  標出目前 live 的版本並可切換。啟用沿用同一個部署核心（CAS 搶指標後部署該 release
+  的不可變 artifact），CAS 的期望指標取自清單自身看到的狀態，過期的分頁會輸掉。
+  尚未做分頁：固定取最新 25 筆，伺服器支援 `offset` 但沒有介面。
+- 復原／重做已覆蓋全部八條寫入路徑，同一檔案的多次寫入會逐筆堆疊；範圍是單一分頁的
+  編輯 session（上限 100 筆、不持久化）。跨發布的回復由 release history 負責。
 - content-only publish：已閉環——不重新編譯，且相同 build 不再重新部署 Worker。
   已用真實 workspace 的資料庫副本實測：第一次發布因無部署紀錄而部署，記錄後的第二次
   純內容發布判定為跳過，且仍建立新 release。
@@ -510,10 +513,14 @@ New Published Content Revisions
 - revision retention guard for ContentPublication references
 - 0045 → 0049 migration regression coverage, including trustworthy active legacy backfill
 
+已具備（續）：
+
+- release history UI 與回滾切換（編輯器工具列 History）
+
 待完成：
 
-- release history UI
-- audit/history presentation
+- release history 分頁（目前固定取最新 25 筆）
+- audit/history presentation：誰在何時發布、變更了什麼；目前只有 `created_by` 與時間
 - compatibility cleanup from current `publishedSourceRevisionId` / `publishedRevisionId`
 
 ## Completion criteria

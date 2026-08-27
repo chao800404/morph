@@ -8,19 +8,19 @@
 | ------------ | ------------------------------------------------------------------------------------------------ |
 | 最後更新     | 2026-08-27                                                                                       |
 | 目前狀態     | 開發中                                                                                           |
-| 整體完成度   | **85%**（加權，權重表見下）                                                                                  |
-| 目前重點     | 復原／重做已覆蓋全部八條寫入路徑；下一步是 release history UI 與真實瀏覽器 E2E                        |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（193 files / 1161 tests）、`pnpm build` 均通過；另有 production 內容路徑、Ctrl+Z 與結構樹的手動驗證 |
+| 整體完成度   | **86%**（加權，權重表見下）                                                                                  |
+| 目前重點     | release history UI 已接上，production 回滾不再需要改資料庫；剩下的主要缺口是真實瀏覽器 E2E            |
+| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（196 files / 1183 tests）、`pnpm build` 均通過；另有 production 內容路徑、Ctrl+Z、結構樹、畫布拖曳與 release history 的手動驗證 |
 
-`████████ 85%`
+`████████ 86%`
 
 > 完成度依下方權重表計算，可自行複核。權重反映各階段的規模與剩餘風險，不是平均分配 ——
 > 把「Inspector 數值輸入一致性」與「真實 Theme Runtime」等重看待，是先前數字偏高的主因。
 >
-> **這個數字只衡量下表列出的階段。** 先前列在此處的三項產品缺口——「內容值通到 production」
-> 「排序改走 source」「純程式碼元件的 content slot」——都已閉環，改由 ROADMAP 記錄為已具備。
-> 仍未涵蓋的是 release history UI、content-only publish 與瀏覽器層 E2E，因此 84% 不代表
-> Visual Editor 接近可交付。
+> **這個數字只衡量下表列出的階段。** 先前列在此處的產品缺口——「內容值通到 production」
+> 「排序改走 source」「純程式碼元件的 content slot」「content-only publish」「release history UI」
+> ——都已閉環，改由 ROADMAP 記錄為已具備。仍未涵蓋的是瀏覽器層 E2E，因此 86% 不代表
+> Visual Editor 接近可交付：今天有四個缺陷是使用者在瀏覽器裡回報、而全套單元測試都攔不下來的。
 
 ### 狀態標記
 
@@ -40,7 +40,7 @@
 | 5. 編輯器互動效能                 | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取 | 🟢   |    98% | 以瀏覽器 Performance trace 建立實際延遲基準  |
 | 6. Code-authored 內容 round-trip  | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence、production runtime | ✅   |   100% | 純程式碼元件的 content slot 由 ROADMAP 追蹤     |
 | 7. 真實 Theme Source Live Runtime | 在隔離 iframe 執行真實 TSX/theme runtime，不再依賴固定相容 renderer                           | 🟡   |    60% | Live 仍走解釋器；解釋器已能處理無標記元件、跨檔案 row 元件與 slot section |
-| 8. 最終品質與發布準備             | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做                                     | 🟡   |    70% | 復原已覆蓋全部寫入路徑；仍缺真實瀏覽器的指標與互動驗證 |
+| 8. 最終品質與發布準備             | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                        | 🟡   |    74% | 回滾與復原都已可用；仍缺真實瀏覽器的指標與互動驗證 |
 
 ## 權重與計算
 
@@ -53,8 +53,8 @@
 | 5. 編輯器互動效能                 |   10 |    98% | 9.80 |
 | 6. Code-authored 內容 round-trip  |   15 |   100% | 15.00 |
 | 7. 真實 Theme Source Live Runtime |   25 |    60% | 15.00 |
-| 8. 最終品質與發布準備             |   15 |    70% | 10.50 |
-| **合計**                          | **100** |    | **85.0 → 85%** |
+| 8. 最終品質與發布準備             |   15 |    74% | 11.10 |
+| **合計**                          | **100** |    | **85.6 → 86%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
@@ -80,7 +80,60 @@
   且對「沉默失敗」這一類問題補上了系統性的緩解——協定拒絕訊息時會出聲。本輪那個
   結構樹缺陷正是靠這類可見性才定位出來的，而它在此之前已經存在一段時間。
 
+- 階段 8 由 70% 調為 **74%**（2026-08-27 第三輪）：production 回滾從「改資料庫」變成
+  介面操作，錯誤與載入狀態也隨之補齊（載入中、載入失敗可重試、從未發布、啟用被拒）。
+  未調更高的理由是同一天的證據：畫布拖曳、預覽高度、樹狀選取三個缺陷都是使用者在
+  瀏覽器裡發現的，1183 個測試沒有一個攔得下來。這個階段剩下的百分比幾乎都是
+  瀏覽器層工具的缺席，不是功能的缺席。
+
 ## 已完成內容
+
+### Release history 與回滾介面（2026-08-27）
+
+- [x] **接上原本沒有介面的兩個 server function**。`listStorefrontReleaseHistory` 與
+      `activateStorefrontRelease` 早已實作並測過，但整個 `src` 沒有任何地方呼叫它們——
+      回滾 production 必須手動改資料庫。現在編輯器工具列的 History 開啟版本清單，
+      標出目前 live 的版本，其餘提供啟用。
+- [x] **可判斷的部分才在前端擋下**：已經 live、或已被 invalidated 的版本不提供啟用按鈕，
+      並寫出理由。伺服器仍是最終權威（它會重新檢查 build 並以 CAS 搶指標），前端只排除
+      「按下去不可能成功」的情況，不猜測、也不隱藏。
+- [x] **CAS 指標取自這份清單自己看到的狀態**。若目前 live 的版本不在清單裡就送 `null`，
+      讓過期的分頁在比對時輸掉，而不是覆蓋掉別人剛切好的版本。啟用被拒時一併
+      invalidate 清單——失敗通常正代表這份清單過期了。
+- [x] 12 個測試（純呈現邏輯 7、對話框 5），三種變異都會被攔下：讓 live 那列也可啟用、
+      CAS 指標永遠送 null、把失敗的啟用當成成功。
+- [ ] **分頁未做**：固定取最新 25 筆，伺服器支援 `offset` 但沒有介面。超過 25 筆之後
+      較舊的版本在畫面上無法到達。
+
+### 復原歷史改為逐檔堆疊（2026-08-27）
+
+- [x] **同一個檔案的歷史不再互相取代**。原本每次寫入都先清掉該檔案的所有歷史，
+      結果是來回交換兩次只能復原一次。現在逐筆堆疊，由新到舊播放就是沿著檔案
+      真正經過的狀態往回走。
+- [x] 前提是「每一次寫入都有記錄」，兩個真正的破口各自補上：樣式修改連帶寫入的
+      關聯檔案（不記錄自己的項目）、以及衝突解決選 reload 時本地內容被遠端覆蓋。
+      兩者都改為退掉該檔案的歷史。
+- [x] 交換失敗後的回滾寫回的正是最上層項目所描述的狀態，因此不需要退掉——這點
+      逐一確認過，不是假設。
+
+### 畫布與樹狀的互動修正（2026-08-27）
+
+- [x] **LivePreview 高度**：主題自己的 `min-h-screen` 對應的是 iframe 的高度，而 iframe
+      的高度又來自上一次量測——量到的不是內容高度，而是「確認它已經有的高度」，
+      因此只能長高不能變矮。改為先縮到可見區域的高度再量，兩個方向都會收斂。
+      同時讓明確的 `request-size` 一定回覆，否則去重會讓編輯器停在暫時的基準高度上。
+- [x] **拖曳自動捲動**：原生拖曳會壓掉 wheel 事件，所以拖曳中無法捲動畫布，只能放到
+      當下看得見的元素上。邊緣判定放在編輯器端（iframe 不知道自己哪一段是可見的），
+      速度隨進入邊緣帶的深度遞增，可見範圍太矮時邊緣帶自動收縮以保留靜止區。
+- [x] **樹狀選取無標記元素**：比對只看 `fieldPath`／`nodeId`／`fieldKey`／`elementKey`，
+      而一個單純的版面 `<div>` 四個都沒有，唯一身分是編譯期位置。補上該分支後，
+      點擊畫布上的 div 才會選到對應的樹狀列。這與先前結構樹那個缺陷同源：
+      一次漏在收集端，一次漏在比對端。
+- [x] **section 可在畫布上互換**：`reorderIdentity` 原本直接排除 section root，握把、
+      候選高亮與放置判定全都建立在它上面，所以三者一起消失。section 走的是路由的
+      section 清單，因此改為以既有的 `reorderThemeRouteSections` 改寫路由檔，
+      不新增第二條寫入路徑。
+
 
 ### 結構樹（2026-08-27）
 
@@ -354,6 +407,7 @@
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                          | 驗證                                                                                          |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 2026-08-27 | 接上 release history 與回滾介面（原本兩個 server function 沒有任何呼叫端，回滾需改資料庫）；復原歷史改為逐檔堆疊並補上兩個未記錄的寫入旁路；修正 LivePreview 高度只增不減的量測回圈、原生拖曳期間無法捲動畫布、樹狀無法選取只有來源位置的元素；section 可在畫布上互換，改寫路由檔而不新增寫入路徑 | `pnpm typecheck`、`pnpm test`（196 files / 1183 tests）、`pnpm build` 通過；新增測試皆以變異驗證確認會攔下缺陷；畫布拖曳、預覽高度、樹狀選取由使用者在瀏覽器實測確認 |
 | 2026-08-26 | 打通零標記元件的完整編輯鏈路：解釋器輸出 source position、元件根部即 section 邊界、AST 以 `line:column` 定位、Inspector 鎖定判斷與即時樣式預覽統一改用共用的 `element-target` 解析；修復重繪後選取框消失與 padding 值閃跳（inline 預覽跨重繪存活）。建立 `content("slot")` 契約：解釋器支援、Document section id 即 slot id、starter 升級至版本 11 並植入平台 content 模組 | `pnpm typecheck`、`pnpm test`（1019 tests）、`pnpm build` 通過；並以真實 workspace 實測渲染與選取收集 |
 | 2026-08-26 | 完成 production runtime 與部署平面：hostname → active release → artifact 的 fail-closed 解析、preview／production 共用 serving core、`ThemeRuntime` 傳輸抽象（service binding／local／dispatch／unavailable）、Sandbox wrangler 部署與憑證隔離、CAS 先佔位後部署的啟用順序、Publish 與 rollback 共用部署核心；並完成零標記元素識別：解釋器產生 source position、元件根部即 section 邊界、收集／點擊／還原三段統一，Inspector 不再要求 Document section | `pnpm typecheck`、`pnpm test`（978 tests）、`pnpm build` 通過；並以真實 workspace 實測 Live 預覽渲染與選取收集 |
 | 2026-08-25 | 完成 Customer Theme TanStack Start build contract：加入固定 package/toolchain、Starter v5 OCC additive upgrade、真正 Cloudflare multi-environment Worker build、platform-owned generated/config path、Worker/client/preview artifact contract 與 R2 manifest fail-closed 驗證；production Worker dispatch 與 D1 Page Registry 組合仍明確列為後續 | `pnpm typecheck`、`pnpm test`（162 files / 793 tests）、`pnpm build`、`git diff --check` 通過 |

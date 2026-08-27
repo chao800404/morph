@@ -24,6 +24,7 @@ import {
   ChevronDown,
   Code2,
   ExternalLink,
+  History,
   Layers,
   Layout,
   LoaderCircle,
@@ -148,6 +149,7 @@ import {
   useStableLivePreviewSession,
 } from "./use-live-preview-message-bridge";
 import { EditorCanvasComments } from "./editor-canvas-comments";
+import { EditorReleaseHistoryDialog } from "./editor-release-history";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { resolveCodeSelectionTarget } from "./editor-code-selection";
 import { EditorPathNavigator } from "./editor-path-navigator";
@@ -896,6 +898,7 @@ export function VisualEditorShell({
     null,
   );
   const [isBuildPending, setIsBuildPending] = useState(false);
+  const [isReleaseHistoryOpen, setIsReleaseHistoryOpen] = useState(false);
   const [buildDiagnostics, setBuildDiagnostics] = useState<any | null>(null);
 
   const [activeCodeFilePath, setActiveCodeFilePath] = useState<
@@ -4318,6 +4321,18 @@ export function VisualEditorShell({
 
           <Button
             type="button"
+            variant="outline"
+            size="xs"
+            className="gap-1.5 max-sm:hidden"
+            onClick={() => setIsReleaseHistoryOpen(true)}
+            title="Review published releases and switch production to one of them"
+          >
+            <History className="size-3.5" />
+            <span>History</span>
+          </Button>
+
+          <Button
+            type="button"
             size="xs"
             disabled={
               !hasUnpublishedChanges ||
@@ -4339,6 +4354,14 @@ export function VisualEditorShell({
           </Button>
         </div>
       </header>
+
+      <EditorReleaseHistoryDialog
+        open={isReleaseHistoryOpen}
+        onOpenChange={setIsReleaseHistoryOpen}
+        storefrontId={context.storefront.id}
+        themeId={context.theme.id}
+        activeReleaseId={context.storefront.activeReleaseId}
+      />
 
       <EditorModeSurface
         active={editorMode === "code"}
