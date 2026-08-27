@@ -58,6 +58,39 @@ describe("content field inference", () => {
     expect(fieldsIn(html)).toEqual(["imageSrc"]);
   });
 
+  it("binds a component that has never been given any values", () => {
+    // A section whose values have never been stored is rendered with `{}`.
+    // Validating only against the runtime props would leave it permanently
+    // uneditable: the binding it needs in order to be edited would appear only
+    // once it already had been.
+    const html = render(
+      `export default function Widget({ heading = "Default" }) {
+  return <h2>{heading}</h2>;
+}`,
+      {},
+    );
+
+    expect(fieldsIn(html)).toEqual(["heading"]);
+    expect(html).toContain("Default");
+  });
+
+  it("still ignores a local that the component does not declare", () => {
+    const html = render(
+      `export default function Widget({ heading = "H" }) {
+  const internal = "x";
+  return (
+    <section>
+      <h2>{heading}</h2>
+      <p>{internal}</p>
+    </section>
+  );
+}`,
+      {},
+    );
+
+    expect(fieldsIn(html)).toEqual(["heading"]);
+  });
+
   it("never invents a field for an expression that names no single prop", () => {
     // Two props in one expression cannot be written back unambiguously, and a
     // local that is not a prop is not content at all.

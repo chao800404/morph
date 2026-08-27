@@ -236,6 +236,74 @@ describe("storefront theme DAL", () => {
     ).rejects.toThrow();
   });
 
+  it("derives a Promo Document section from the route and persists it on first edit", async () => {
+    const manifest = JSON.stringify({
+      components: {
+        "promo.default": { source: "src/components/Promo.tsx" },
+      },
+      sections: {},
+    });
+    const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+    const route = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><Promo {...content("promo")} /></main>; }`;
+    const promo = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>; }`;
+    const insertFile = sqlite.prepare(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, created_at, updated_at)
+      VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+    `);
+    insertFile.run("file-manifest", "morph.theme.json", manifest);
+    insertFile.run("file-root", "src/routes/__root.tsx", root);
+    insertFile.run("file-route", "src/routes/index.tsx", route);
+    insertFile.run("file-promo", "src/components/Promo.tsx", promo);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-promo', 'theme-a', 'index', 'Home', ?, 'now', 'now')`,
+      )
+      .run(JSON.stringify({ version: 1, sections: [] }));
+
+    const context = await storefrontThemeDal.findEditorContext(
+      "storefront-a",
+      "theme-a",
+    );
+    expect(context?.templates[0]?.document.sections).toEqual([
+      {
+        id: "promo",
+        type: "promo",
+        componentRef: "promo.default",
+        enabled: true,
+        props: {},
+      },
+    ]);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-promo",
+      sectionId: "promo",
+      props: { heading: "Editable promo" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result?.document.sections[0]).toMatchObject({
+      id: "promo",
+      type: "promo",
+      componentRef: "promo.default",
+      props: { heading: "Editable promo" },
+    });
+  });
+
   it("publishes template document and updates publishedRevisionId", async () => {
     const draftDocument = JSON.stringify({
       version: 1,
@@ -390,6 +458,105 @@ describe("storefront theme DAL", () => {
         expectedReleaseGeneration: 3,
       }),
     ).rejects.toThrow("PUBLISH_BUILD_NOT_READY");
+  });
+
+  it("reports what the Theme Worker already runs, read before this publish activates anything", async () => {
+    // The decision to skip a redeploy depends on the release that was active
+    // *before* this publish. Reading it afterwards would always find the new
+    // release, whose deployment record is necessarily empty, so a content-only
+    // publish would redeploy the build the Worker is already serving.
+    const draftDocument = JSON.stringify({
+      version: 1,
+      sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
+    });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+         '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '${draftDocument.replaceAll("'", "''")}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1,
+         'Frozen checkpoint', 'publish', '[]', 'now', 'now');
+      INSERT INTO storefront_releases
+        (id, storefront_id, theme_id, source_revision_id, theme_build_id, status,
+         metadata, created_at, updated_at)
+      VALUES
+        ('44444444-4444-4444-8444-444444444444', 'storefront-a', 'theme-a',
+         '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333',
+         'available', '{"deployedThemeBuildId":"33333333-3333-4333-8333-333333333333"}',
+         'now', 'now');
+      UPDATE storefronts SET active_release_id = '44444444-4444-4444-8444-444444444444'
+        WHERE id = 'storefront-a';
+    `);
+
+    const res = await storefrontThemeDal.publishTemplate({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
+      expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+
+    expect(res?.previousDeployedThemeBuildId).toBe(
+      "33333333-3333-4333-8333-333333333333",
+    );
+    expect(res?.themeBuildId).toBe("33333333-3333-4333-8333-333333333333");
+  });
+
+  it("reports no deployed build when the previously active release never recorded one", async () => {
+    // A deployment can fail after its release is activated, so activation is
+    // not evidence. Without a record the caller must deploy.
+    const draftDocument = JSON.stringify({ version: 1, sections: [] });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+         '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '${draftDocument.replaceAll("'", "''")}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1,
+         'Frozen checkpoint', 'publish', '[]', 'now', 'now');
+      INSERT INTO storefront_releases
+        (id, storefront_id, theme_id, source_revision_id, theme_build_id, status,
+         created_at, updated_at)
+      VALUES
+        ('44444444-4444-4444-8444-444444444444', 'storefront-a', 'theme-a',
+         '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333',
+         'available', 'now', 'now');
+      UPDATE storefronts SET active_release_id = '44444444-4444-4444-8444-444444444444'
+        WHERE id = 'storefront-a';
+    `);
+
+    const res = await storefrontThemeDal.publishTemplate({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
+      expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+
+    expect(res?.previousDeployedThemeBuildId).toBeNull();
   });
 
   it("publishes explicit source revision snapshot and binds it to published_source_revision_id", async () => {

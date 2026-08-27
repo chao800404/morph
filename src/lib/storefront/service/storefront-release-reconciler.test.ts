@@ -352,3 +352,84 @@ describe("deployReleaseArtifact", () => {
     expect(deployer.deploy).not.toHaveBeenCalled();
   });
 });
+
+describe("recording what the Theme Worker runs", () => {
+  it("records the deployed build only after the deployment succeeded", async () => {
+    const recordDeployedThemeBuild = vi.fn(async () => ({}));
+
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: null,
+      deployer: okDeployer(),
+      r2Bucket: r2(),
+      ports: ports({ recordDeployedThemeBuild }),
+    });
+
+    expect(result.success).toBe(true);
+    expect(recordDeployedThemeBuild).toHaveBeenCalledWith({
+      storefrontId: "sf_1",
+      releaseId: "rel_1",
+      themeBuildId: "bld_1",
+    });
+  });
+
+  it("records nothing when the deployment failed", async () => {
+    // A recorded build that never reached the Worker is worse than no record:
+    // the next content-only publish would skip a deployment that is still
+    // needed, and the storefront would keep serving the previous build with no
+    // error anywhere.
+    const recordDeployedThemeBuild = vi.fn(async () => ({}));
+
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: null,
+      deployer: {
+        kind: "sandbox-wrangler" as const,
+        deploy: vi.fn(async () => ({
+          success: false as const,
+          reason: "DEPLOY_ERROR" as const,
+          message: "wrangler exited 1",
+        })),
+      },
+      r2Bucket: r2(),
+      ports: ports({ recordDeployedThemeBuild }),
+    });
+
+    expect(result.success).toBe(false);
+    expect(recordDeployedThemeBuild).not.toHaveBeenCalled();
+  });
+
+  it("records nothing when another activation claimed the slot first", async () => {
+    const recordDeployedThemeBuild = vi.fn(async () => ({}));
+
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: "rel_0",
+      deployer: okDeployer(),
+      r2Bucket: r2(),
+      ports: ports({
+        activateRelease: async () => {
+          throw new Error("Another release was activated first.");
+        },
+        recordDeployedThemeBuild,
+      }),
+    });
+
+    expect(result.success).toBe(false);
+    expect(recordDeployedThemeBuild).not.toHaveBeenCalled();
+  });
+
+  it("still succeeds when the caller does not implement the port", async () => {
+    // A smoke harness or a test that never skips deployments should not be
+    // forced to implement it.
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: null,
+      deployer: okDeployer(),
+      r2Bucket: r2(),
+      ports: ports(),
+    });
+
+    expect(result.success).toBe(true);
+  });
+});

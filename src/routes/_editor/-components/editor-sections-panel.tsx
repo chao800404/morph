@@ -12,6 +12,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -28,14 +34,15 @@ import {
 } from "@/components/ui/sidebar";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { ThemeRouteRecord } from "@/lib/storefront/compiler/theme-route-registry";
+import type { ThemeRouteSectionOption } from "@/lib/storefront/compiler/theme-route-sections";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import type {
   PreviewEditableNode,
   PreviewSelectionRestoreTarget,
 } from "@/lib/storefront/editor/preview-protocol";
+import { isGeneratedElementName } from "@/lib/storefront/editor/theme-instance-style-source";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { cn } from "@/lib/utils";
-import { reorderStorefrontThemeSections } from "@/server/storefront/storefront-themes.serverFn";
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
@@ -93,6 +100,8 @@ export type EditorSectionsPanelProps = {
   onSelectEditableNode?: (target: PreviewSelectionRestoreTarget) => void;
   themeRoutes?: readonly ThemeRouteRecord[];
   onOpenThemeRoute?: (route: ThemeRouteRecord) => void;
+  sectionOptions?: readonly ThemeRouteSectionOption[];
+  onAddSection?: (option: ThemeRouteSectionOption) => Promise<unknown>;
 };
 
 type EditorSection =
@@ -295,6 +304,13 @@ function selectionMatchesEditableNode(
   if (target.fieldKey && selection.fieldKey) {
     return target.fieldKey === selection.fieldKey;
   }
+  // A plain layout element carries no field, no marker and no element key. Its
+  // compile-time source position is the only identity it has, and leaving it
+  // out here is what left such an element selected on the canvas with nothing
+  // selected in the tree.
+  if (target.sourceLocation && selection.sourceLocation) {
+    return target.sourceLocation === selection.sourceLocation;
+  }
   return Boolean(
     target.elementKey && target.elementKey === selection.elementKey,
   );
@@ -310,6 +326,9 @@ function selectionIdentity(
     selection.nodeId,
     selection.fieldKey,
     selection.elementKey,
+    // Without this, two different marker-free elements in one section produce
+    // the same identity and the optimistic selection never clears.
+    selection.sourceLocation,
     selection.isSection ? "section" : "node",
   ]
     .map((value) => value ?? "")
@@ -378,14 +397,37 @@ function EditableNodeRow({
               type="button"
               aria-current={selected ? "true" : undefined}
               className="h-8 min-w-0 flex-1 cursor-pointer text-left"
-              title={node.label}
+              title={
+                node.stableId
+                  ? `${node.label} · ${node.stableId}${
+                      isGeneratedElementName(node.stableId)
+                        ? " (added by the editor)"
+                        : ""
+                    }`
+                  : node.label
+              }
             >
               <NodeIcon
                 className="shrink-0 text-muted-foreground"
                 data-editor-tree-icon={icon.name}
                 aria-hidden="true"
               />
-              <span>{node.label}</span>
+              <span className="min-w-0 flex-1 truncate">{node.label}</span>
+              {node.stableId ? (
+                // Marked rather than named: a style bound to one instance needs
+                // an identity that survives edits, so which elements have one is
+                // worth seeing — but `el-a3f9c2b4d1e0` names nothing, and in
+                // place of "Heading" it would make the tree unreadable.
+                <span
+                  aria-hidden="true"
+                  data-editor-tree-identity={
+                    isGeneratedElementName(node.stableId)
+                      ? "generated"
+                      : "authored"
+                  }
+                  className="mr-1 size-1 shrink-0 rounded-full bg-muted-foreground/40 data-[editor-tree-identity=authored]:bg-muted-foreground/70"
+                />
+              ) : null}
             </button>
           </SidebarMenuSubButton>
         </div>
@@ -410,6 +452,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onSelectEditableNode,
   themeRoutes = [],
   onOpenThemeRoute,
+  sectionOptions = [],
+  onAddSection,
 }: EditorSectionsPanelProps) {
   const activeTemplate = resolveEditorTemplate(context, search);
   const sourceSections = activeTemplate?.document.sections ?? [];
@@ -483,19 +527,10 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   const reorderMutation = useMutation({
     onMutate: () => onSaveStateChange("saving"),
     mutationFn: async (sectionIds: string[]) => {
-      if (onReorderSections) {
-        return onReorderSections(sectionIds);
+      if (!onReorderSections) {
+        throw new Error("This route does not support source reordering.");
       }
-      if (!activeTemplate) throw new Error("No active template");
-      return reorderStorefrontThemeSections({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          templateId: activeTemplate.id,
-          sectionIds,
-          expectedDraftGeneration: activeTemplate.draftGeneration,
-        },
-      });
+      return onReorderSections(sectionIds);
     },
     onSuccess: async (result: any) => {
       if (result && !result.success) {
@@ -516,6 +551,20 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
       updateSections(sourceSections);
       onSaveStateChange("error");
       toast.error("Failed to reorder theme sections");
+    },
+  });
+  const addMutation = useMutation({
+    onMutate: () => onSaveStateChange("saving"),
+    mutationFn: async (option: ThemeRouteSectionOption) => {
+      if (!onAddSection) {
+        throw new Error("This route does not support adding sections.");
+      }
+      return onAddSection(option);
+    },
+    onSuccess: () => onSaveStateChange("idle"),
+    onError: (error) => {
+      onSaveStateChange("error");
+      toast.error(error instanceof Error ? error.message : "Failed to add section");
     },
   });
 
@@ -808,9 +857,34 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           </SidebarContent>
 
           <SidebarFooter className="border-t p-3">
-            <Button variant="outline" size="sm" className="w-full" disabled>
-              <Plus /> Add section
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  disabled={
+                    !onAddSection ||
+                    sectionOptions.length === 0 ||
+                    addMutation.isPending ||
+                    reorderMutation.isPending
+                  }
+                >
+                  <Plus /> Add section
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="start" className="w-56">
+                {sectionOptions.map((option) => (
+                  <DropdownMenuItem
+                    key={option.componentRef}
+                    onSelect={() => addMutation.mutate(option)}
+                  >
+                    <Blocks aria-hidden="true" />
+                    <span>{option.sectionType}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarFooter>
         </Sidebar>
       </SidebarProvider>

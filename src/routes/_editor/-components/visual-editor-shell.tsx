@@ -50,6 +50,12 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { dragAutoScrollStep } from "@/lib/storefront/editor/drag-autoscroll";
+import { useEditorHistory } from "./use-editor-history";
+import {
+  sectionHistoryScope,
+  themeFileHistoryScope,
+} from "@/lib/storefront/editor/editor-history";
 import type {
   StorefrontCommentGroupDTO,
   StorefrontCommentThreadDTO,
@@ -63,10 +69,17 @@ import type {
   StorefrontThemeBuildPreviewDTO,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  addThemeRouteSection,
+  deriveThemeRouteSections,
+  listThemeRouteSectionOptions,
+  mergeDocumentWithRouteSections,
+  reorderThemeRouteSections,
+  type ThemeRouteSectionOption,
+} from "@/lib/storefront/compiler/theme-route-sections";
 
 import {
   publishStorefrontThemeTemplate,
-  reorderStorefrontThemeSections,
   updateStorefrontThemeSectionProps,
 } from "@/server/storefront/storefront-themes.serverFn";
 import {
@@ -221,6 +234,10 @@ const previewDefaultHeights = {
 } as const;
 
 const DEFAULT_PREVIEW_VIEWPORT_HEIGHT = previewDefaultHeights.desktop;
+/** Never measure from a frame shorter than this; matches the reported floor. */
+const MIN_PREVIEW_FRAME_HEIGHT = 320;
+/** Settling time before re-measuring, so a burst of edits measures once. */
+const PREVIEW_REMEASURE_DELAY_MS = 500;
 // The current Live Preview parses Theme Source into the compatibility renderer;
 // it does not execute the user's JavaScript bundle. Switching this to
 // "user-code" intentionally fails closed until an isolated origin is configured.
@@ -675,6 +692,10 @@ export function VisualEditorShell({
   const pendingPropsMapRef = useRef<
     Map<string, { sectionId: string; props: Record<string, unknown> }>
   >(new Map());
+  /** Section props as they stood when the current debounce window opened. */
+  const pendingPropsBaselineRef = useRef<Map<string, Record<string, unknown>>>(
+    new Map(),
+  );
   const templateMutationQueueRef = useRef<Map<string, Promise<unknown>>>(
     new Map(),
   );
@@ -719,6 +740,21 @@ export function VisualEditorShell({
       toast.error("Failed to update section properties");
     },
   });
+
+  /**
+   * Drops any drag-time inline styles before reversing an edit.
+   *
+   * They exist to carry a value across the re-render an edit causes. When the
+   * edit is being reversed they describe the state being undone, so the
+   * re-render would put the old value straight back on screen.
+   */
+  const resetPreviewSelectionStyle = useCallback(() => {
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-reset-selection-style-preview",
+    });
+  }, []);
+
+  const { actions: history, state: historyState } = useEditorHistory();
 
   const enqueueTemplateMutation = useCallback(
     (templateId: string, op: (generation: number) => Promise<any>) => {
@@ -1043,6 +1079,62 @@ export function VisualEditorShell({
     () => buildThemeRouteRegistry(effectiveThemeFiles),
     [effectiveThemeFiles],
   );
+  const activeThemeRoute = useMemo(() => {
+    if (!activeTemplate) return null;
+    const prefix =
+      activeTemplate.type === "index"
+        ? "/"
+        : activeTemplate.type === "product"
+          ? "/products/"
+          : activeTemplate.type === "collection"
+            ? "/collections/"
+            : activeTemplate.type === "page"
+              ? "/pages/"
+              : activeTemplate.type === "blog"
+                ? "/blogs/"
+                : null;
+    if (!prefix) return null;
+    return (
+      themeRouteRegistry.routes.find(
+        (route) =>
+          route.kind === "route" &&
+          (prefix === "/"
+            ? route.path === "/"
+            : route.path.startsWith(prefix)),
+      ) ?? null
+    );
+  }, [activeTemplate, themeRouteRegistry.routes]);
+  const activeRouteSections = useMemo(
+    () =>
+      activeThemeRoute
+        ? deriveThemeRouteSections(
+            effectiveThemeFiles,
+            activeThemeRoute.sourcePath,
+          ).sections
+        : [],
+    [activeThemeRoute, effectiveThemeFiles],
+  );
+  const routeBackedContext = useMemo<StorefrontThemeEditorDTO>(() => {
+    if (!activeTemplate || activeRouteSections.length === 0) return context;
+    return {
+      ...context,
+      templates: context.templates.map((template) =>
+        template.id === activeTemplate.id
+          ? {
+              ...template,
+              document: mergeDocumentWithRouteSections(
+                template.document,
+                activeRouteSections,
+              ),
+            }
+          : template,
+      ),
+    };
+  }, [activeRouteSections, activeTemplate, context]);
+  const routeSectionOptions = useMemo(
+    () => listThemeRouteSectionOptions(effectiveThemeFiles),
+    [effectiveThemeFiles],
+  );
   const handleOpenSelectedCode = useCallback(() => {
     const selectedSection = activeTemplate?.document.sections.find(
       (section) => section.id === search.section,
@@ -1088,6 +1180,12 @@ export function VisualEditorShell({
       targetFieldPath: string,
     ) => void
   >(() => {});
+  // Held in a ref for the same reason the array handler is: the message
+  // listener is registered once, and reading the handler through a ref keeps it
+  // from capturing a stale section list.
+  const sectionSwapHandlerRef = useRef<
+    (draggedSectionId: string, targetSectionId: string) => void
+  >(() => {});
   const previewSelectionStyle = useCallback(
     (styles: Record<string, string>, targetElement: string) => {
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -1113,6 +1211,8 @@ export function VisualEditorShell({
     },
     [],
   );
+  // Assigned below, where the canvas geometry it needs is in scope.
+  const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
   const postPreviewThemeFiles = useCallback(
     (files: Array<{ path: string; content: string }>) => {
       const styleRevision = latestStyleRevisionRef.current + 1;
@@ -1122,6 +1222,7 @@ export function VisualEditorShell({
         files,
         styleRevision,
       });
+      schedulePreviewRemeasureRef.current();
       return styleRevision;
     },
     [],
@@ -1428,8 +1529,48 @@ export function VisualEditorShell({
     ],
   );
 
+  /**
+   * Lets a recorded entry call back into the saver that recorded it.
+   *
+   * The entry outlives the render that created it, so capturing the callback
+   * directly would pin a stale closure over `themeFiles`.
+   */
+  const handleUnifiedSaveFileRef = useRef<
+    | ((
+        filePath: string,
+        content: string,
+        options?: { fromHistory?: boolean },
+      ) => Promise<unknown>)
+    | null
+  >(null);
+
   const handleUnifiedSaveFile = useCallback(
-    async (filePath: string, content: string) => {
+    async (
+      filePath: string,
+      content: string,
+      options?: { fromHistory?: boolean },
+    ) => {
+      // Recorded here rather than at each call site: reordering siblings,
+      // reordering sections, adding one and saving in Code mode all write a
+      // whole file through this one path, and each would otherwise need its own
+      // copy of the same before/after bookkeeping.
+      //
+      // Entries for this file stack rather than replace each other. Each one
+      // holds the whole file before and after that write, so reversing them
+      // newest-first walks the file back through exactly the states it passed
+      // through — swapping two elements twice takes two presses to undo. That
+      // only holds while every write to the file records an entry; the two
+      // places that write one without recording retire its history instead.
+      const before = options?.fromHistory
+        ? null
+        : (useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            )[filePath]?.localContent ??
+          themeFiles.find((file) => file.path === filePath)?.content ??
+          null);
       const opKey = getScopedOpKey(filePath);
       const existingTimer = pendingSaveTimersRef.current.get(opKey);
       if (existingTimer) {
@@ -1467,6 +1608,23 @@ export function VisualEditorShell({
         return null;
       }
 
+      // Only a landed write is reversible, and only one that actually changed
+      // something: recording a no-op would spend an undo press doing nothing.
+      if (before !== null && before !== content) {
+        history.record({
+          label: `Edit · ${filePath.slice(filePath.lastIndexOf("/") + 1)}`,
+          scope: themeFileHistoryScope(filePath),
+          undo: () =>
+            handleUnifiedSaveFileRef.current?.(filePath, before, {
+              fromHistory: true,
+            }),
+          redo: () =>
+            handleUnifiedSaveFileRef.current?.(filePath, content, {
+              fromHistory: true,
+            }),
+        });
+      }
+
       return result.file;
     },
     [
@@ -1478,6 +1636,8 @@ export function VisualEditorShell({
       postPreviewThemeFiles,
     ],
   );
+
+  handleUnifiedSaveFileRef.current = handleUnifiedSaveFile;
 
   const handleSwapThemeFileSiblings = useCallback(
     async (filePath: string, draggedNodeId: string, targetNodeId: string) => {
@@ -1500,13 +1660,20 @@ export function VisualEditorShell({
         targetNodeId,
       );
       if (!result.editable) {
-        const message =
-          result.reason === "not-siblings"
-            ? "Only unique elements under the same source parent can be reordered."
-            : result.reason === "parse-error"
-              ? `Cannot reorder because ${filePath} contains a syntax error.`
-              : "This rendered element cannot be mapped to one unique source sibling.";
-        toast.warning(message);
+        const message = (() => {
+          switch (result.reason) {
+            case "not-siblings":
+              return "Only elements under the same source parent can be reordered.";
+            case "parse-error":
+              return `Cannot reorder because ${filePath} contains a syntax error.`;
+            case "same-node":
+              // Dropped where it already was. Nothing changed and nothing failed.
+              return null;
+            default:
+              return "This rendered element cannot be mapped to one unique source sibling.";
+          }
+        })();
+        if (message) toast.warning(message);
         postPreviewThemeFiles(
           themeFiles.map((file) => ({
             path: file.path,
@@ -1574,6 +1741,10 @@ export function VisualEditorShell({
         if (!workspace.hasActiveConflictsOrErrors(workspaceScope)) {
           workspace.acceptRemoteGeneration(undefined, workspaceScope);
         }
+        // The local content is now the remote version. Every entry for this
+        // file describes the local edits that were just discarded, so replaying
+        // one would bring them back over the version that won.
+        history.discardScope(themeFileHistoryScope(filePath));
         postPreviewThemeFiles(
           themeFiles.flatMap((file) => {
             const current = useThemeWorkspaceStore
@@ -1604,6 +1775,7 @@ export function VisualEditorShell({
       context.storefront.id,
       context.theme.id,
       handleUnifiedSaveFile,
+      history,
       queryClient,
       resolveWorkspaceConflict,
       themeFiles,
@@ -1935,6 +2107,9 @@ export function VisualEditorShell({
         relatedNext: string,
       ) => {
         if (relatedNext === relatedCurrent) return;
+        // Written without an entry of its own, so anything the history still
+        // holds for this file describes a state this write has moved past.
+        history.discardScope(themeFileHistoryScope(relatedPath));
         updateWorkspaceLocal(relatedPath, relatedNext, workspaceScope);
         const operationKey = getScopedOpKey(relatedPath);
         const revision = (fileRevisionRef.current.get(operationKey) ?? 0) + 1;
@@ -2101,13 +2276,42 @@ export function VisualEditorShell({
         const nextRevision = (fileRevisionRef.current.get(opKey) ?? 0) + 1;
         fileRevisionRef.current.set(opKey, nextRevision);
 
+        // Recorded against the same write path the edit used, so reversing it
+        // inherits the version checks, debouncing and preview sync rather than
+        // reaching around them. The value is captured now because the workspace
+        // has already moved on by the time anyone presses undo.
+        const styleBefore = targetCurrentSource;
+        const styleAfter = updatedContent;
+        const stylePath = targetFilePath;
+        const historyId = history.record({
+          label: `Style · ${elementName}`,
+          scope: themeFileHistoryScope(stylePath),
+          undo: () => {
+            resetPreviewSelectionStyle();
+            return handleUnifiedSaveFile(stylePath, styleBefore, {
+              fromHistory: true,
+            });
+          },
+          redo: () => {
+            resetPreviewSelectionStyle();
+            return handleUnifiedSaveFile(stylePath, styleAfter, {
+              fromHistory: true,
+            });
+          },
+        });
+
         const newTimer = setTimeout(() => {
           pendingSaveTimersRef.current.delete(opKey);
           saveThemeFileSequentially(
             targetFilePath,
             updatedContent,
             nextRevision,
-          ).catch((err) => {
+          ).then((result) => {
+            // A conflicted write never landed, so there is nothing to reverse;
+            // leaving the entry would undo a change that never happened.
+            if (result.status === "source-conflict") history.discard(historyId);
+          }).catch((err) => {
+            history.discard(historyId);
             toast.error(
               `Failed to save source file ${targetFilePath}: ${err.message}`,
             );
@@ -2157,6 +2361,13 @@ export function VisualEditorShell({
   const canvasRenderFrameRef = useRef(0);
   const canvasTransformCommitTimerRef = useRef(0);
   const canvasViewportHeightRef = useRef(0);
+  const previewRemeasureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const previewKeyRef = useRef(previewKey);
+  useEffect(() => {
+    previewKeyRef.current = previewKey;
+  }, [previewKey]);
   const previewWidthRenderFrameRef = useRef(0);
   const panOriginRef = useRef<{
     pointerId: number;
@@ -2253,6 +2464,57 @@ export function VisualEditorShell({
       });
     },
     [applyCanvasTransformToDom, scheduleCanvasTransformCommit],
+  );
+
+  // The frame is sized to its content, but a theme's own `min-h-screen`
+  // resolves against the frame's height — so the content can never measure
+  // shorter than the frame already is, and an edit that removes content leaves
+  // the empty space behind forever. Measuring from a floor first is what makes
+  // the number the content's own height rather than a confirmation of the
+  // height it was given.
+  const schedulePreviewRemeasure = useCallback(() => {
+    if (previewRemeasureTimerRef.current) {
+      clearTimeout(previewRemeasureTimerRef.current);
+    }
+    previewRemeasureTimerRef.current = setTimeout(() => {
+      previewRemeasureTimerRef.current = null;
+      const key = previewKeyRef.current;
+      const frameWindow = previewIframeRef.current?.contentWindow;
+      if (!key || !frameWindow) return;
+      const floor = Math.max(
+        MIN_PREVIEW_FRAME_HEIGHT,
+        Math.round(
+          canvasViewportHeightRef.current || DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
+        ),
+      );
+      setPreviewContentSize((current) =>
+        current?.key === key && current.height <= floor
+          ? current
+          : { key, height: floor },
+      );
+      // Two frames: one for the shrunk frame to lay out, one for the theme's
+      // viewport-relative rules to settle against it.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() =>
+          postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+            type: "morph:storefront-preview-request-size",
+          }),
+        ),
+      );
+    }, PREVIEW_REMEASURE_DELAY_MS);
+  }, []);
+
+  useEffect(() => {
+    schedulePreviewRemeasureRef.current = schedulePreviewRemeasure;
+  }, [schedulePreviewRemeasure]);
+
+  useEffect(
+    () => () => {
+      if (previewRemeasureTimerRef.current) {
+        clearTimeout(previewRemeasureTimerRef.current);
+      }
+    },
+    [],
   );
 
   const scheduleCanvasScroll = useCallback(
@@ -2405,7 +2667,25 @@ export function VisualEditorShell({
 
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
-      if (!message) return;
+      if (!message) {
+        // A rejected message is dropped whole and the editor keeps whatever it
+        // accepted last. That silence is how a structure the validator refused
+        // went unnoticed while the panel kept rendering a Theme that no longer
+        // existed.
+        if (
+          import.meta.env.DEV &&
+          typeof (event.data as { type?: unknown })?.type === "string" &&
+          (event.data as { type: string }).type.startsWith(
+            "morph:storefront-preview-",
+          )
+        ) {
+          console.warn(
+            "[morph] preview message rejected by validation:",
+            (event.data as { type: string }).type,
+          );
+        }
+        return;
+      }
 
       if (
         message.type === "morph:storefront-preview-commit-array-item-reorder"
@@ -2415,6 +2695,15 @@ export function VisualEditorShell({
           message.sectionId,
           message.draggedFieldPath,
           message.targetFieldPath,
+        );
+        return;
+      }
+
+      if (message.type === "morph:storefront-preview-commit-section-reorder") {
+        reportAuthenticatedUserActivity();
+        void sectionSwapHandlerRef.current(
+          message.draggedSectionId,
+          message.targetSectionId,
         );
         return;
       }
@@ -2516,9 +2805,12 @@ export function VisualEditorShell({
         isSection: selectionIsSection,
       };
       const componentType =
+        activeRouteSections.find((section) => section.slotId === sectionId)
+          ?.sectionType ??
         activeTemplate?.document.sections.find(
           (section) => section.id === sectionId,
-        )?.type ?? "custom";
+        )?.type ??
+        "custom";
 
       setActiveSelection({
         sectionId,
@@ -2554,6 +2846,7 @@ export function VisualEditorShell({
     return () => window.removeEventListener("message", handlePreviewSelection);
   }, [
     activeTemplate,
+    activeRouteSections,
     activeSelection,
     handleSwapThemeFileSiblings,
     handleUpdateThemeFileStyle,
@@ -2624,6 +2917,23 @@ export function VisualEditorShell({
     [],
   );
 
+  /**
+   * The stored props of one section, as a plain object to restore later.
+   *
+   * Read from the active template rather than from the Inspector's local state,
+   * because the Inspector has already applied the edit optimistically by the
+   * time this runs.
+   */
+  const sectionPropsSnapshot = useCallback(
+    (sectionId: string): Record<string, unknown> => {
+      const section = activeTemplate?.document.sections.find(
+        (candidate) => candidate.id === sectionId,
+      );
+      return { ...((section?.props ?? {}) as Record<string, unknown>) };
+    },
+    [activeTemplate],
+  );
+
   const handleSectionPropsChange = useCallback(
     (
       sectionId: string,
@@ -2648,6 +2958,15 @@ export function VisualEditorShell({
 
       const existingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
       const mergedProps = { ...existingProps, ...nextProps };
+      // The value to go back to is whatever was stored before this run of edits
+      // began — not the previous keystroke. Captured once per debounce window so
+      // typing a word is one undo, not one per character.
+      if (!pendingPropsMapRef.current.has(key)) {
+        pendingPropsBaselineRef.current.set(
+          key,
+          sectionPropsSnapshot(sectionId),
+        );
+      }
       pendingPropsMapRef.current.set(key, { sectionId, props: mergedProps });
 
       const timer = setTimeout(async () => {
@@ -2656,13 +2975,28 @@ export function VisualEditorShell({
         pendingPropsMapRef.current.delete(key);
         if (!pending) return;
 
-        await enqueueTemplateMutation(templateId, (gen) =>
+        const baseline = pendingPropsBaselineRef.current.get(key);
+        pendingPropsBaselineRef.current.delete(key);
+
+        const result = await enqueueTemplateMutation(templateId, (gen) =>
           updatePropsMutation.mutateAsync({
             sectionId: pending.sectionId,
             props: pending.props,
             expectedDraftGeneration: gen,
           }),
         );
+
+        // Recorded only once the write landed: an entry for a rejected edit
+        // would reverse a change that never happened.
+        if (baseline && result?.success) {
+          const after = pending.props;
+          history.record({
+            label: `Content · ${Object.keys(after).join(", ").slice(0, 40)}`,
+            scope: sectionHistoryScope(pending.sectionId),
+            undo: () => handleSectionPropsChange(pending.sectionId, baseline),
+            redo: () => handleSectionPropsChange(pending.sectionId, after),
+          });
+        }
       }, 300);
 
       pendingPropsTimersRef.current.set(key, timer);
@@ -2675,12 +3009,25 @@ export function VisualEditorShell({
     ],
   );
 
+  /**
+   * Retires a section's history after something rewrote its stored props
+   * without going through the history.
+   *
+   * Those entries hold the props as they were before an earlier edit, so
+   * replaying one would put them back and discard the newer write.
+   */
+  const invalidateSectionHistory = useCallback(
+    (sectionId: string) => history.discardScope(sectionHistoryScope(sectionId)),
+    [history],
+  );
+
   const handleSwapSectionArrayItems = useCallback(
     async (
       sectionId: string,
       draggedFieldPath: string,
       targetFieldPath: string,
     ) => {
+      invalidateSectionHistory(sectionId);
       if (!activeTemplate) return;
       const section = activeTemplate.document.sections.find(
         (candidate) => candidate.id === sectionId,
@@ -2771,12 +3118,24 @@ export function VisualEditorShell({
         );
         if (!mutationResult?.success) {
           restoreSelectionAndProps();
+          return;
         }
+        // Reversing a swap is the same swap again, so both directions write the
+        // props the other one started from.
+        history.record({
+          label: "Reorder · item",
+          scope: sectionHistoryScope(sectionId),
+          undo: () => handleSectionPropsChange(sectionId, currentProps),
+          redo: () => handleSectionPropsChange(sectionId, result.value),
+        });
       } catch {
         restoreSelectionAndProps();
       }
     },
     [
+      history,
+      handleSectionPropsChange,
+      invalidateSectionHistory,
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
@@ -2798,8 +3157,14 @@ export function VisualEditorShell({
     };
   }, [handleSwapSectionArrayItems]);
 
+  /** Lets a recorded toggle call back without pinning a stale closure. */
+  const handleSectionToggleEnabledRef = useRef<
+    ((sectionId: string, enabled: boolean) => Promise<void>) | null
+  >(null);
+
   const handleSectionToggleEnabled = useCallback(
     async (sectionId: string, enabled: boolean) => {
+      invalidateSectionHistory(sectionId);
       // 1. Instant 0ms visual toggle on canvas
       syncPreviewSectionProps(sectionId, undefined, enabled);
 
@@ -2817,15 +3182,26 @@ export function VisualEditorShell({
       pendingPropsMapRef.current.delete(key);
       const mergedProps = { ...existingProps, enabled };
 
-      await enqueueTemplateMutation(templateId, (gen) =>
+      const result = await enqueueTemplateMutation(templateId, (gen) =>
         updatePropsMutation.mutateAsync({
           sectionId,
           props: mergedProps,
           expectedDraftGeneration: gen,
         }),
       );
+
+      if (result?.success) {
+        history.record({
+          label: enabled ? "Show section" : "Hide section",
+          scope: sectionHistoryScope(sectionId),
+          undo: () => handleSectionToggleEnabledRef.current?.(sectionId, !enabled),
+          redo: () => handleSectionToggleEnabledRef.current?.(sectionId, enabled),
+        });
+      }
     },
     [
+      history,
+      invalidateSectionHistory,
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
@@ -2833,32 +3209,104 @@ export function VisualEditorShell({
     ],
   );
 
+  handleSectionToggleEnabledRef.current = handleSectionToggleEnabled;
+
   const handleReorderSections = useCallback(
     async (sectionIds: string[]) => {
-      if (!activeTemplate) return;
-      const templateId = activeTemplate.id;
-      // 1. Flush any pending props before reordering
-      await flushTemplatePendingProps(templateId);
-
-      // 2. Queue reorder mutation with atomic generation CAS
-      return enqueueTemplateMutation(templateId, async (gen) => {
-        return reorderStorefrontThemeSections({
-          data: {
-            storefrontId: context.storefront.id,
-            themeId: context.theme.id,
-            templateId,
-            sectionIds,
-            expectedDraftGeneration: gen,
-          },
-        });
-      });
+      if (!activeThemeRoute) {
+        throw new Error("The active template has no source-authored route.");
+      }
+      if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      const routeFile = effectiveThemeFiles.find(
+        (file) => file.path === activeThemeRoute.sourcePath,
+      );
+      if (!routeFile) throw new Error("The active route source is unavailable.");
+      const result = reorderThemeRouteSections(
+        routeFile.content,
+        effectiveThemeFiles,
+        activeThemeRoute.sourcePath,
+        sectionIds,
+      );
+      if (result.diagnostic) throw new Error(result.diagnostic);
+      if (!result.changed) return { success: true };
+      await handleUnifiedSaveFile(activeThemeRoute.sourcePath, result.code);
+      return { success: true };
     },
     [
       activeTemplate,
-      context.storefront.id,
-      context.theme.id,
-      enqueueTemplateMutation,
+      activeThemeRoute,
+      effectiveThemeFiles,
       flushTemplatePendingProps,
+      handleUnifiedSaveFile,
+    ],
+  );
+
+  const handleSwapPreviewSections = useCallback(
+    async (draggedSectionId: string, targetSectionId: string) => {
+      const sectionIds = (activeTemplate?.document.sections ?? []).map(
+        (section) => section.id,
+      );
+      const from = sectionIds.indexOf(draggedSectionId);
+      const to = sectionIds.indexOf(targetSectionId);
+      if (from < 0 || to < 0 || from === to) return;
+      const next = [...sectionIds];
+      next[from] = targetSectionId;
+      next[to] = draggedSectionId;
+      try {
+        await handleReorderSections(next);
+      } catch (error) {
+        toast.error(
+          `Failed to reorder sections: ${error instanceof Error ? error.message : "Save failed"}`,
+        );
+      }
+    },
+    [activeTemplate, handleReorderSections],
+  );
+
+  useEffect(() => {
+    sectionSwapHandlerRef.current = (draggedSectionId, targetSectionId) => {
+      void handleSwapPreviewSections(draggedSectionId, targetSectionId);
+    };
+  }, [handleSwapPreviewSections]);
+
+  const handleAddSection = useCallback(
+    async (option: ThemeRouteSectionOption) => {
+      if (!activeThemeRoute) {
+        throw new Error("The active template has no source-authored route.");
+      }
+      if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      const routeFile = effectiveThemeFiles.find(
+        (file) => file.path === activeThemeRoute.sourcePath,
+      );
+      if (!routeFile) throw new Error("The active route source is unavailable.");
+      const usedSlots = new Set(activeRouteSections.map((section) => section.slotId));
+      const baseSlot = option.sectionType || "section";
+      let slotId = baseSlot;
+      let suffix = 2;
+      while (usedSlots.has(slotId)) {
+        slotId = `${baseSlot}-${suffix}`;
+        suffix += 1;
+      }
+      const result = addThemeRouteSection({
+        source: routeFile.content,
+        files: effectiveThemeFiles,
+        routeSourcePath: activeThemeRoute.sourcePath,
+        option,
+        slotId,
+      });
+      if (result.diagnostic) throw new Error(result.diagnostic);
+      if (!result.changed) return;
+      await handleUnifiedSaveFile(activeThemeRoute.sourcePath, result.code);
+      onSearchChange({ section: slotId });
+    },
+    [
+      activeRouteSections,
+      activeTemplate,
+      activeThemeRoute,
+      effectiveThemeFiles,
+      flushTemplatePendingProps,
+      handleUnifiedSaveFile,
+      onSearchChange,
     ],
   );
 
@@ -3124,6 +3572,52 @@ export function VisualEditorShell({
     scheduleCanvasTransform,
   ]);
 
+  // Follows the pointer during a reorder drag. A native drag suppresses wheel
+  // events, so without this only the sections already on screen could be
+  // reached — the canvas has to come to the pointer instead.
+  useEffect(() => {
+    if (!previewKey) return;
+    let pointerY: number | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+      pointerY = null;
+    };
+
+    const tick = () => {
+      const viewport = canvasViewportRef.current;
+      const frame = previewIframeRef.current;
+      if (pointerY === null || !viewport || !frame) return stop();
+      const viewportBounds = viewport.getBoundingClientRect();
+      const frameBounds = frame.getBoundingClientRect();
+      const step = dragAutoScrollStep({
+        pointerY:
+          frameBounds.top + pointerY * canvasTransformRef.current.scale,
+        viewportTop: viewportBounds.top,
+        viewportBottom: viewportBounds.bottom,
+      });
+      if (step !== 0) scheduleCanvasScroll(step);
+    };
+
+    const handleDragAutoScroll = (event: MessageEvent<unknown>) => {
+      const message = parseLivePreviewMessage(event);
+      if (message?.type !== "morph:storefront-preview-drag-autoscroll") return;
+      if (message.phase === "end") return stop();
+      pointerY = message.clientY;
+      // A drop outside the canvas ends the drag without a further message, so
+      // the loop is also bounded by the drag still reporting where it is.
+      timer ??= setInterval(tick, 16);
+    };
+
+    window.addEventListener("message", handleDragAutoScroll);
+    return () => {
+      window.removeEventListener("message", handleDragAutoScroll);
+      stop();
+    };
+  }, [parseLivePreviewMessage, previewKey, scheduleCanvasScroll]);
+
   useEffect(() => {
     if (!previewKey) return;
 
@@ -3133,6 +3627,15 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-reset-canvas") {
         resetCanvas();
+        return;
+      }
+
+      // The canvas is an iframe, so a shortcut pressed there never reaches the
+      // editor's own listener. Selecting an element puts focus in it, which is
+      // when someone is most likely to press undo.
+      if (message.type === "morph:storefront-preview-history-shortcut") {
+        if (message.direction === "undo") history.undo();
+        else history.redo();
         return;
       }
 
@@ -3186,6 +3689,7 @@ export function VisualEditorShell({
     parseLivePreviewMessage,
     previewKey,
     resetCanvas,
+    history,
   ]);
 
   const handleCanvasPointerDown = useCallback(
@@ -3742,10 +4246,32 @@ export function VisualEditorShell({
               </span>
             );
           })()}
-          <Button variant="ghost" size="icon" disabled aria-label="Undo">
+          <Button
+            variant="ghost"
+            size="icon"
+            disabled={!historyState.canUndo}
+            onClick={history.undo}
+            aria-label="Undo"
+            title={
+              historyState.undoLabel
+                ? `Undo ${historyState.undoLabel}`
+                : "Undo"
+            }
+          >
             <Undo2 />
           </Button>
-          <Button variant="ghost" size="icon" disabled aria-label="Redo">
+          <Button
+            variant="ghost"
+            size="icon"
+            disabled={!historyState.canRedo}
+            onClick={history.redo}
+            aria-label="Redo"
+            title={
+              historyState.redoLabel
+                ? `Redo ${historyState.redoLabel}`
+                : "Redo"
+            }
+          >
             <Redo2 />
           </Button>
           {activeBuildPreview && (
@@ -3840,12 +4366,12 @@ export function VisualEditorShell({
       >
         <EditorSectionsPanel
           style={{ width: `${leftPanelWidth}px` }}
-          context={context}
+          context={routeBackedContext}
           search={search}
           onSearchChange={handleSectionsSearchChange}
           onSectionOrderChange={syncPreviewSectionOrder}
           onSaveStateChange={setDraftSaveState}
-          onReorderSections={handleReorderSections}
+          onReorderSections={activeThemeRoute ? handleReorderSections : undefined}
           onToggleSectionEnabled={handleSectionToggleEnabled}
           editableNodes={
             previewStructure?.key === previewKey
@@ -3858,6 +4384,8 @@ export function VisualEditorShell({
             (route) => route.kind === "route",
           )}
           onOpenThemeRoute={(route) => handleJumpToCode(route.sourcePath, 1, 1)}
+          sectionOptions={routeSectionOptions}
+          onAddSection={activeThemeRoute ? handleAddSection : undefined}
         />
 
         {/* Left Panel Resizer */}
@@ -4300,7 +4828,7 @@ export function VisualEditorShell({
 
         <EditorAssistantPanel
           style={{ width: `${rightPanelWidth}px` }}
-          context={context}
+          context={routeBackedContext}
           search={search}
           isCommentMode={isCommentMode}
           commentFilter={commentFilter}

@@ -236,9 +236,18 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
 
     expect(result.success).toBe(true);
     expect(mock.writtenFiles.has("/workspace/wrangler.json")).toBe(true);
-    expect(
-      String(mock.writtenFiles.get("/workspace/vite.config.ts")),
-    ).not.toContain("@morph/storefront-runtime");
+    const generatedConfig = String(
+      mock.writtenFiles.get("/workspace/vite.config.ts"),
+    );
+    expect(generatedConfig).not.toContain("@morph/storefront-runtime");
+    // The container builds against this generated config and cannot import
+    // Morph's source, so the in-process stub plugin does not apply there.
+    // Without it the preview pass fails on `#tanstack-router-entry` and on
+    // `node:async_hooks` — a failure the in-process runner never reproduces,
+    // which is why it stayed hidden until a real Build Preview ran.
+    expect(generatedConfig).toContain("morph-theme-preview-server-stub");
+    expect(generatedConfig).toContain("@tanstack/react-start/server");
+    expect(generatedConfig).toContain("node:async_hooks");
     expect(mock.session.exec).toHaveBeenCalledWith(
       "/opt/morph-toolchain/node_modules/.bin/vite build --config /workspace/vite.config.ts",
       expect.objectContaining({

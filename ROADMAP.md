@@ -197,6 +197,35 @@ Edge Runtime
 - sandboxed iframe preview
 - source-authored `src/routes/` registry、fail-closed route diagnostics、真正 TanStack Start Cloudflare Worker build 與隔離的 TanStack Router client preview adapter
 
+### Authoring Contract（2026-08 確立）
+
+已具備：
+
+- **內容契約完全由元件原始碼決定**：元件以 `export const contentFields` 宣告可編輯欄位，
+  不需要登記在 `morph.theme.json`。掃描涵蓋所有 `src/**/*.tsx`，以來源路徑為身分；
+  manifest 的 capability 已完全退役。
+- 未宣告時，欄位由 JSX 自動推導，依據是元件簽章宣告的 prop 而非執行期收到的值——
+  否則從未編輯過的元件永遠無法編輯。
+- 欄位型別：text／textarea／url／number／boolean／select／array。`array` 支援
+  `minRows`／`maxRows`、逐列欄位與新增／刪除；row 可抽成獨立元件並以 `of: "./Card"` 參照。
+  array 不可巢狀 array（與 Sanity 相同的取捨）。
+- **section 由路由的 `content("slot")` 推導**：路由決定頁面有哪些 section 與順序，
+  Document 只存值。同一元件可在同頁出現多次，各自由 slot id 區分。
+- 左側樹的排序與新增 section 直接改寫路由 JSX；路由尚未宣告 slot 時沿用既存 Document，
+  所以採用 slot 是每個路由各自的選擇。
+- 選取、樣式、結構樹與內容編輯都不再需要 `data-morph-*` 標記。instance 樣式需要跨編輯
+  穩定的身分，平台會在首次寫入時自動補上，作者不必手寫。
+
+寫入目標的分界：
+
+| 使用者動作 | 寫進哪裡 |
+| --- | --- |
+| 樣式、Tailwind classes、同層排序 | 元件 TSX |
+| section 排序、新增 section | 路由 TSX |
+| Content & Fields 的值、陣列列增刪、section 啟用 | Document（D1） |
+
+---
+
 ### Production Runtime / Deployment（2026-08 新增）
 
 已具備：
@@ -208,6 +237,10 @@ Edge Runtime
 - Theme Worker 部署平面：deployment plan（含 forbidden binding 檢查）、Sandbox 內以固定版本 wrangler 部署、憑證只存在於 exec environment 且失敗輸出會清洗
 - Publish 與 rollback 兩條路徑共用同一個部署核心
 - artifact smoke-run harness：本地實際啟動 `runtime/server/index.js` 驗證 build 產物真的可執行
+- **純內容發布不再重新部署**：Theme Worker 實際執行的 build 記錄在該 release 的 metadata，
+  只在部署成功後寫入。發布時若記錄顯示 Worker 已在跑同一個 build 就跳過部署；
+  沒有紀錄、紀錄不符、id 空白等任何不確定情況一律照常部署——多部署一次只是慢，
+  少部署一次會讓網站靜默地服務舊的產物。
 - **Theme artifact + Page Document 的 runtime 組合已閉環**：Morph Core 以 `/_morph/content` 提供 active release 的已發布內容，Theme 在 root route `beforeLoad` 以 server-only 分支取回並經 router context 序列化到 client。編輯器解釋器、Build Preview 與 production 三個平面共用同一份 root route source
 - Morph Core 以 `x-morph-content-origin` 明確告知回撥位址，Theme 不需從 hostname 猜測 scheme／port；該 header 為 set 而非 merge，外部無法偽造
 
@@ -216,9 +249,13 @@ Edge Runtime
 目前主要缺口：
 
 - release history UI（`activateStorefrontRelease` 已可用，但沒有切換介面）
-- content-only publish without rebuild 的完整 production flow
-- section 排序仍寫入 Document，但 production 依 route 的 JSX 順序渲染
-- 純程式碼元件的內容欄位（需要 source 宣告的 content slot）
+- 復原／重做已覆蓋全部八條寫入路徑，範圍是單一分頁的編輯 session；跨發布的回復
+  仍待 release history UI
+- content-only publish：已閉環——不重新編譯，且相同 build 不再重新部署 Worker。
+  已用真實 workspace 的資料庫副本實測：第一次發布因無部署紀錄而部署，記錄後的第二次
+  純內容發布判定為跳過，且仍建立新 release。
+- 真實瀏覽器層 E2E：內容鏈已有跨層整合測試（直譯器輸出 → 預覽解析 → 欄位可達性），
+  仍缺實際互動延遲、跨瀏覽器行為、響應式斷點與需要登入的完整編輯迴圈
 - custom domain 憑證與 DNS 生命週期
 - AI Code Agent backend workflow
 - AI patch / diff / repair orchestration

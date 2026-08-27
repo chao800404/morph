@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
+import { withDeployedThemeBuildId } from "../service/theme-worker-deployment-state";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import {
   storefrontReleases,
@@ -77,6 +78,56 @@ export const storefrontReleaseDal = {
       .limit(1);
 
     return row ? mapReleaseRowToDTO(row) : null;
+  },
+
+  /**
+   * Records that this release's artifact reached the Theme Worker.
+   *
+   * Written only after a deployment succeeded. An activated release is not
+   * evidence on its own: a deploy can fail after activation, and treating the
+   * two as the same thing would let a later publish skip a deployment that
+   * never landed.
+   */
+  async recordDeployedThemeBuild(data: {
+    storefrontId: string;
+    releaseId: string;
+    themeBuildId: string;
+  }): Promise<boolean> {
+    const db = await getDb();
+    const [row] = await db
+      .select({ metadata: storefrontReleases.metadata })
+      .from(storefrontReleases)
+      .where(
+        and(
+          eq(storefrontReleases.id, data.releaseId),
+          eq(storefrontReleases.storefrontId, data.storefrontId),
+          isNull(storefrontReleases.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!row) return false;
+
+    // No driver-specific result shape is read here. This runs after a
+    // deployment has already succeeded, so a throw would turn a published,
+    // deployed release into a reported failure — over a bookkeeping write
+    // against a row whose existence was just confirmed.
+    await db
+      .update(storefrontReleases)
+      .set({
+        metadata: withDeployedThemeBuildId(
+          row.metadata ?? null,
+          data.themeBuildId,
+        ),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(
+        and(
+          eq(storefrontReleases.id, data.releaseId),
+          eq(storefrontReleases.storefrontId, data.storefrontId),
+          isNull(storefrontReleases.deletedAt),
+        ),
+      );
+    return true;
   },
 
   async listHistory(

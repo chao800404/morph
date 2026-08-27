@@ -13,6 +13,7 @@ import type {
   ThemeBuildRunnerResult,
 } from "./theme-build-runner.types";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
+import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 
 export type CloudflareSandboxExecResult = {
@@ -579,7 +580,16 @@ export default defineConfig({
         viteReact(),
         dependencyEnforcerPlugin,
       ]
-    : [tailwindcss(), viteReact(), dependencyEnforcerPlugin],
+    : [
+        // Preview is client-only and has no Start plugin, so the Start server
+        // module and the Node builtin its storage context imports cannot
+        // resolve. Stubbed here as well as in the in-process runner, from one
+        // shared definition.
+        ${themePreviewServerStubPluginSource()},
+        tailwindcss(),
+        viteReact(),
+        dependencyEnforcerPlugin,
+      ],
   build: {
     outDir: isStartRuntimeBuild
       ? "${workspaceRoot}/dist/runtime"

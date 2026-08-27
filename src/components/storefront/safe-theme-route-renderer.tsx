@@ -2,6 +2,10 @@ import type { ReactNode } from "react";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
+  deriveThemeRouteSections,
+  mergeDocumentWithRouteSections,
+} from "@/lib/storefront/compiler/theme-route-sections";
+import {
   MAX_THEME_CONTENT_SLOTS,
   isValidThemeContentSlotId,
   type ThemeContentSlotValues,
@@ -106,6 +110,17 @@ function readSectionTypesBySlot(
   return types;
 }
 
+function readComponentRefsBySlot(
+  document: StorefrontPageDocument,
+): Record<string, string> {
+  const refs: Record<string, string> = {};
+  for (const section of document.sections ?? []) {
+    if (typeof section?.id !== "string") continue;
+    refs[section.id] = section.componentRef ?? `${section.type}.default`;
+  }
+  return refs;
+}
+
 /**
  * Content values keyed by slot, built from the published Page Document.
  *
@@ -199,12 +214,24 @@ export function renderSafeThemeRoute(args: {
     .filter((route) => route.kind === "route")
     .map((route) => route.path);
   const chain = [matched];
+  const routeSections = deriveThemeRouteSections(
+    args.files,
+    matched.sourcePath,
+  );
+  if (routeSections.diagnostics.length > 0) {
+    return routeFailure(routeSections.diagnostics.join("; "));
+  }
+  const routeDocument = mergeDocumentWithRouteSections(
+    args.document,
+    routeSections.sections,
+  );
   const resolveComponent = createDocumentComponentResolver({
     files: args.files,
-    document: args.document,
+    document: routeDocument,
   });
-  const contentSlots = readContentSlots(args.document);
-  const sectionTypeBySlot = readSectionTypesBySlot(args.document);
+  const contentSlots = readContentSlots(routeDocument);
+  const sectionTypeBySlot = readSectionTypesBySlot(routeDocument);
+  const componentRefBySlot = readComponentRefsBySlot(routeDocument);
   let parentPath = parentRoutePath(matched.path, routePaths);
   while (parentPath) {
     const parent = registry.routes.find(
@@ -237,6 +264,7 @@ export function renderSafeThemeRoute(args: {
       resolveComponent,
       contentSlots,
       sectionTypeBySlot,
+      componentRefBySlot,
     });
     if (!rendered.success) return rendered;
     outlet = rendered.node;
@@ -263,5 +291,6 @@ export function renderSafeThemeRoute(args: {
     resolveComponent,
     contentSlots,
     sectionTypeBySlot,
+    componentRefBySlot,
   });
 }

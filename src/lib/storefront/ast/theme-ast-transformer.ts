@@ -116,6 +116,13 @@ export function getComponentFilePath(
 
   // 1. Check morph.theme.json manifest if available
   if (themeFiles) {
+    const directComponentRefPath = componentRef?.replace(/\\/g, "/");
+    if (
+      directComponentRefPath?.startsWith("src/") &&
+      themeFiles.some((file) => file.path === directComponentRefPath)
+    ) {
+      return directComponentRefPath;
+    }
     const manifestFile = themeFiles.find((f) => f.path === "morph.theme.json");
     if (manifestFile && manifestFile.content) {
       try {

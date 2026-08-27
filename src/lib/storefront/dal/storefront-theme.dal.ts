@@ -7,12 +7,19 @@ import {
   storefrontThemeTemplateRevisions,
   storefrontThemeRevisions,
   storefrontThemeBuilds,
+  storefrontThemeFiles,
   storefrontReleases,
 } from "@/db/storefront.schema";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
+import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
+import { readDeployedThemeBuildId } from "@/lib/storefront/service/theme-worker-deployment-state";
+import {
+  deriveThemeRouteSections,
+  mergeDocumentWithRouteSections,
+} from "@/lib/storefront/compiler/theme-route-sections";
 import {
   filterThemeContentProps,
   type ThemeContentCapabilities,
@@ -21,6 +28,45 @@ import { and, asc, desc, eq, isNotNull, isNull, max } from "drizzle-orm";
 
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function routePathForTemplateType(type: string): string | null {
+  if (type === "index") return "/";
+  const segment =
+    type === "product"
+      ? "products"
+      : type === "collection"
+        ? "collections"
+        : type === "page"
+          ? "pages"
+          : type === "blog"
+            ? "blogs"
+            : null;
+  return segment ? `/${segment}/` : null;
+}
+
+function deriveTemplateDocumentFromRoutes(args: {
+  type: string;
+  document: import("@/db/storefront.schema").StorefrontPageDocument;
+  files: readonly { path: string; content: string }[];
+}) {
+  const registry = buildThemeRouteRegistry(args.files);
+  if (!registry.valid) return args.document;
+  const expectedPath = routePathForTemplateType(args.type);
+  if (!expectedPath) return args.document;
+  const route = registry.routes.find(
+    (candidate) =>
+      candidate.kind === "route" &&
+      (expectedPath === "/"
+        ? candidate.path === "/"
+        : candidate.path.startsWith(expectedPath)),
+  );
+  if (!route) return args.document;
+  const derived = deriveThemeRouteSections(args.files, route.sourcePath);
+  if (derived.diagnostics.length > 0 || derived.sections.length === 0) {
+    return args.document;
+  }
+  return mergeDocumentWithRouteSections(args.document, derived.sections);
+}
 
 export interface ComponentContentManifest {
   allowedContentFields: Set<string>;
@@ -562,6 +608,21 @@ export const storefrontThemeDal = {
         asc(storefrontThemeTemplates.name),
       );
 
+    const themeSourceFiles = await db
+      .select({
+        path: storefrontThemeFiles.path,
+        content: storefrontThemeFiles.content,
+      })
+      .from(storefrontThemeFiles)
+      .where(
+        and(
+          eq(storefrontThemeFiles.storefrontId, storefrontId),
+          eq(storefrontThemeFiles.themeId, themeId),
+          isNull(storefrontThemeFiles.deletedAt),
+        ),
+      )
+      .orderBy(asc(storefrontThemeFiles.path));
+
     const templates = await Promise.all(
       templateRows.map(async (template) => {
         let document = template.document;
@@ -595,9 +656,13 @@ export const storefrontThemeDal = {
           id: template.id,
           type: template.type as StorefrontThemeEditorDTO["templates"][number]["type"],
           name: template.name,
-          document: storefrontPageDocumentSchema.parse(
-            typeof document === "string" ? JSON.parse(document) : document,
-          ),
+          document: deriveTemplateDocumentFromRoutes({
+            type: template.type,
+            document: storefrontPageDocumentSchema.parse(
+              typeof document === "string" ? JSON.parse(document) : document,
+            ),
+            files: themeSourceFiles,
+          }),
           draftRevisionId: template.draftRevisionId,
           publishedRevisionId: template.publishedRevisionId,
           draftGeneration: template.draftGeneration ?? 1,
@@ -842,6 +907,10 @@ export const storefrontThemeDal = {
     // workspace, and the client cannot influence which paths are loaded.
     const themeCapabilityState = await resolveThemeContentCapabilities({
       manifestContent: manifestState.manifestContent,
+      additionalSourcePaths:
+        targetSection.componentRef?.startsWith("src/")
+          ? [targetSection.componentRef]
+          : [],
       readSource: async (path) => {
         const row = await env.DATABASE.prepare(
           `
@@ -1095,6 +1164,10 @@ export const storefrontThemeDal = {
             id: storefrontReleases.id,
             sourceRevisionId: storefrontReleases.sourceRevisionId,
             themeBuildId: storefrontReleases.themeBuildId,
+            // Read before this publish activates anything, because afterwards
+            // the active release is the new one and its deployment record is
+            // necessarily empty.
+            metadata: storefrontReleases.metadata,
             sourceGeneration: storefrontThemeRevisions.sourceGeneration,
           })
           .from(storefrontReleases)
@@ -1432,6 +1505,15 @@ export const storefrontThemeDal = {
       themeBuildId,
       /** `true` when this publish created and activated a new release. */
       releaseCreated: !unchanged,
+      /**
+       * Build the Theme Worker was last recorded as actually running, read from
+       * the release that was active before this publish. Lets the caller skip a
+       * redeploy when only content changed, without trusting activation alone
+       * as evidence that a deployment landed.
+       */
+      previousDeployedThemeBuildId: readDeployedThemeBuildId(
+        activeRelease?.metadata ?? null,
+      ),
     };
   },
 };

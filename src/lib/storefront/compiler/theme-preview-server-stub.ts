@@ -89,6 +89,41 @@ export default {};
 `;
 
 /**
+ * The same stub, emitted as source for a config generated inside a container.
+ *
+ * The sandbox build writes its own `vite.config.ts` into an image that cannot
+ * import Morph's source, so the plugin has to travel as text. Built from the
+ * same constants as the in-process plugin: two copies of what to stub would
+ * drift, and the preview build is exactly where that drift is invisible until
+ * a customer's build fails.
+ *
+ * Every embedded value goes through `JSON.stringify`, so the result is safe to
+ * interpolate into a template literal — no backtick or `${}` can escape it.
+ */
+export function themePreviewServerStubPluginSource(): string {
+  return `{
+  name: ${JSON.stringify("morph-theme-preview-server-stub")},
+  enforce: "pre",
+  resolveId(source) {
+    if (source === ${JSON.stringify(THEME_START_SERVER_SPECIFIER)}) {
+      return ${JSON.stringify(VIRTUAL_ID)};
+    }
+    if (${JSON.stringify(NODE_ASYNC_HOOKS_SPECIFIERS)}.includes(source)) {
+      return ${JSON.stringify(ASYNC_HOOKS_VIRTUAL_ID)};
+    }
+    return null;
+  },
+  load(id) {
+    if (id === ${JSON.stringify(VIRTUAL_ID)}) return ${JSON.stringify(STUB_SOURCE)};
+    if (id === ${JSON.stringify(ASYNC_HOOKS_VIRTUAL_ID)}) {
+      return ${JSON.stringify(ASYNC_HOOKS_STUB_SOURCE)};
+    }
+    return null;
+  },
+}`;
+}
+
+/**
  * Vite plugin that redirects the Start server module in preview builds only.
  *
  * The runtime build keeps the real module, so production SSR is unaffected.

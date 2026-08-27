@@ -318,6 +318,58 @@ describe("preview protocol", () => {
     ).toBeNull();
   });
 
+  it("accepts a drag autoscroll report only with a usable pointer", () => {
+    const message = {
+      type: "morph:storefront-preview-drag-autoscroll",
+      phase: "move",
+      clientX: 320,
+      clientY: 940,
+    };
+
+    expect(parsePreviewToEditorMessage(message)).toEqual(message);
+    expect(
+      parsePreviewToEditorMessage({ ...message, phase: "end" }),
+    ).toMatchObject({ phase: "end" });
+    // A pointer that is not a finite number would drive the scroll loop off
+    // the canvas rather than towards it.
+    expect(
+      parsePreviewToEditorMessage({ ...message, clientY: Number.NaN }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, clientX: "320" }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, phase: "start" }),
+    ).toBeNull();
+  });
+
+  it("accepts only bounded, distinct section reorder identities", () => {
+    const message = {
+      type: "morph:storefront-preview-commit-section-reorder",
+      draggedSectionId: "starter-hero",
+      targetSectionId: "promo",
+    };
+
+    expect(parsePreviewToEditorMessage(message)).toEqual(message);
+    // Dropping a section on itself is not a reorder, and an unbounded identity
+    // is not one this editor authored.
+    expect(
+      parsePreviewToEditorMessage({
+        ...message,
+        targetSectionId: message.draggedSectionId,
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...message,
+        draggedSectionId: "x".repeat(101),
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, targetSectionId: 7 }),
+    ).toBeNull();
+  });
+
   it("accepts only bounded, distinct array item reorder paths", () => {
     const message = {
       type: "morph:storefront-preview-commit-array-item-reorder",
@@ -503,5 +555,117 @@ describe("live style preview carries the source position", () => {
         sourceLocation: "a".repeat(401),
       }),
     ).toBeNull();
+  });
+});
+
+describe("structure nodes identified only by source position", () => {
+  const node = (overrides: Record<string, unknown> = {}) => ({
+    id: "src/components/Header.tsx:loc:src/components/Header.tsx:11:7",
+    parentId: null,
+    sectionId: "src/components/Header.tsx",
+    label: "Nav",
+    kind: "navigation",
+    tagName: "nav",
+    target: {
+      sectionId: "src/components/Header.tsx",
+      sourceLocation: "src/components/Header.tsx:11:7",
+      isSection: false,
+    },
+    ...overrides,
+  });
+
+  it("accepts a node whose only identity is where it came from in source", () => {
+    // A component with no authored markers produces exactly this. Rejecting it
+    // failed the whole message — one marker-free element made the entire
+    // structure unusable, and the panel silently kept the last one it had
+    // accepted, so the tree showed a Theme that no longer existed.
+    const parsed = parsePreviewToEditorMessage({
+      type: "morph:storefront-preview-structure",
+      nodes: [node()],
+    });
+
+    expect(parsed).not.toBeNull();
+    expect((parsed as any).nodes).toHaveLength(1);
+  });
+
+  it("carries the source position through to the restore target", () => {
+    // Accepting it but dropping it would leave the element with nothing to
+    // restore its selection by after a re-render.
+    const parsed: any = parsePreviewToEditorMessage({
+      type: "morph:storefront-preview-structure",
+      nodes: [node()],
+    });
+
+    expect(parsed.nodes[0].target.sourceLocation).toBe(
+      "src/components/Header.tsx:11:7",
+    );
+  });
+
+  it("still rejects a node that identifies nothing at all", () => {
+    const parsed = parsePreviewToEditorMessage({
+      type: "morph:storefront-preview-structure",
+      nodes: [
+        node({
+          target: { sectionId: "src/components/Header.tsx", isSection: false },
+        }),
+      ],
+    });
+
+    expect(parsed).toBeNull();
+  });
+
+  it("rejects an implausibly long source position", () => {
+    const parsed = parsePreviewToEditorMessage({
+      type: "morph:storefront-preview-structure",
+      nodes: [
+        node({
+          target: {
+            sectionId: "src/components/Header.tsx",
+            sourceLocation: "x".repeat(501),
+            isSection: false,
+          },
+        }),
+      ],
+    });
+
+    expect(parsed).toBeNull();
+  });
+});
+
+describe("stable identity on a structure node", () => {
+  const withIdentity = (stableId?: unknown) => ({
+    type: "morph:storefront-preview-structure",
+    nodes: [
+      {
+        id: "hero:node:hero-heading",
+        parentId: null,
+        sectionId: "hero",
+        label: "Heading",
+        kind: "heading",
+        tagName: "h1",
+        ...(stableId === undefined ? {} : { stableId }),
+        target: { sectionId: "hero", nodeId: "hero-heading", isSection: false },
+      },
+    ],
+  });
+
+  it("carries the identity through so the panel can mark it", () => {
+    // Only an element with an identity that survives edits can carry a style
+    // bound to one instance, so which elements have one is worth showing.
+    const parsed: any = parsePreviewToEditorMessage(withIdentity("hero-heading"));
+
+    expect(parsed.nodes[0].stableId).toBe("hero-heading");
+  });
+
+  it("accepts a node with no identity at all", () => {
+    const parsed: any = parsePreviewToEditorMessage(withIdentity());
+
+    expect(parsed).not.toBeNull();
+    expect(parsed.nodes[0].stableId).toBeUndefined();
+  });
+
+  it("rejects an identity that is not a bounded string", () => {
+    expect(parsePreviewToEditorMessage(withIdentity(42))).toBeNull();
+    expect(parsePreviewToEditorMessage(withIdentity("x".repeat(201)))).toBeNull();
   });
 });

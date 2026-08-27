@@ -87,8 +87,24 @@ export type SelectionStylePreview = ReturnType<
   typeof createSelectionStylePreview
 >;
 
+/**
+ * Drag-time inline styles on the selected element.
+ *
+ * A control previews its value directly on the DOM node while it is being
+ * dragged, then the edit is written to source and the component re-renders with
+ * a new element. The previewed styles are remembered so they can be carried
+ * onto that new element: dropping them in the same frame exposes the old value
+ * until the generated stylesheet rule for the new class exists.
+ *
+ * The remembered styles and the applied ones are owned together here. They were
+ * separate before — a map in the preview route and the inline styles in this
+ * module — and one code path cleared only the inline styles, so the next
+ * re-render put the previewed value straight back. Reversing an edit is exactly
+ * such a re-render, which is how that showed up as "undo does nothing".
+ */
 export function createSelectionStylePreview() {
   let target: HTMLElement | null = null;
+  let pending: Record<string, string> | null = null;
   const originalStyles = new Map<string, InlineStyleSnapshot>();
 
   const restore = () => {
@@ -109,6 +125,7 @@ export function createSelectionStylePreview() {
     apply(element: HTMLElement, styles: Record<string, string>) {
       if (target && target !== element) restore();
       target = element;
+      pending = { ...(pending ?? {}), ...styles };
 
       for (const [property, value] of Object.entries(styles)) {
         if (
@@ -127,6 +144,58 @@ export function createSelectionStylePreview() {
         element.style.setProperty(property, value);
       }
     },
+
+    /**
+     * Re-applies the remembered styles to the element a re-render produced.
+     *
+     * Without this the value visibly returns to what it was until the new
+     * class's stylesheet rule exists, so a single edit appears to move twice.
+     */
+    carryTo(element: HTMLElement) {
+      if (!pending) return;
+      this.apply(element, pending);
+    },
+
+    /** Whether anything is waiting to be carried across a re-render. */
+    hasPending() {
+      return pending !== null;
+    },
+
+    /**
+     * Pins the element's current appearance so it survives a recompile.
+     *
+     * The generated stylesheet is compiled from the theme source and lands
+     * after the DOM already carries the new class, so between the two the
+     * element has a class no rule matches and falls back to its unstyled size.
+     * A live drag hides that gap behind the value it is previewing; an edit
+     * applied without one — reversing a change, for instance — shows it as a
+     * visible jump to the unstyled value and back.
+     *
+     * Recorded as pending like any other preview, because the edit replaces the
+     * element: held styles left on the old node would vanish with it, which is
+     * the gap this is meant to cover.
+     */
+    holdCurrentStyles(element: HTMLElement) {
+      const computed = getComputedStyle(element);
+      const held: Record<string, string> = {};
+      for (const property of ALLOWED_SELECTION_STYLE_PROPERTIES) {
+        const value = computed.getPropertyValue(property);
+        if (value) held[property] = value;
+      }
+      this.apply(element, held);
+    },
+
+    /**
+     * Restores the element and forgets what was previewed.
+     *
+     * The two must happen together: keeping the remembered styles would let the
+     * next re-render re-apply what was just dropped.
+     */
+    clear() {
+      pending = null;
+      restore();
+    },
+
     restore,
   };
 }

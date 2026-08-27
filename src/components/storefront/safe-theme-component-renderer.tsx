@@ -40,6 +40,8 @@ type RuntimeContext = {
   contentSlots?: ThemeContentSlotValues;
   /** Declared type of each stored section, keyed by its slot id. */
   sectionTypeBySlot?: Readonly<Record<string, string>>;
+  /** Route-derived component identity for each content slot. */
+  componentRefBySlot?: Readonly<Record<string, string>>;
   builtinComponents: SafeThemeBuiltinComponentMap;
   injectedProps: Record<string, unknown>;
   resolveComponent?: SafeThemeComponentResolver;
@@ -741,6 +743,7 @@ function readContentSlotSection(
       // still has a type, rather than the component losing its identity for
       // want of a value that only exists once someone has edited it.
       sectionType: context.sectionTypeBySlot?.[slot.value] ?? slot.value,
+      componentRef: context.componentRefBySlot?.[slot.value] ?? null,
     };
   }
   return null;
@@ -793,6 +796,31 @@ function readItemFieldPathsByProp(
     }
   }
   return Object.keys(paths).length > 0 ? paths : null;
+}
+
+/**
+ * Prop names a component's parameter list declares.
+ *
+ * What a component accepts is stated in its signature; what it was passed this
+ * render is not the same thing. A section whose values have never been stored
+ * receives `{}`, so validating against the runtime props alone makes a
+ * never-edited component permanently uneditable — the field binding it needs
+ * in order to be edited only appears once it already has been.
+ */
+function readDeclaredPropNames(fn: any): ReadonlySet<string> {
+  const declared = new Set<string>();
+  const parameter = fn?.params?.[0];
+  if (parameter?.type !== "ObjectPattern") return declared;
+  for (const property of parameter.properties ?? []) {
+    if (
+      property?.type === "ObjectProperty" &&
+      property.computed !== true &&
+      property.key?.type === "Identifier"
+    ) {
+      declared.add(property.key.name);
+    }
+  }
+  return declared;
 }
 
 /** Reads the repeated-item context out of an interpreter environment. */
@@ -906,10 +934,17 @@ function inferElementFieldKey(
     (scope): scope is Record<string, unknown> =>
       Boolean(scope) && typeof scope === "object",
   );
-  if (scopes.length === 0 && !mappedPaths) return null;
+  const declaredProps =
+    env.__morphDeclaredProps instanceof Set
+      ? (env.__morphDeclaredProps as ReadonlySet<string>)
+      : null;
+  if (scopes.length === 0 && !mappedPaths && !declaredProps) return null;
   const accept = (name: string | null) => {
     if (!name || BLOCKED_PROPERTIES.has(name)) return null;
     if (mappedPaths && name in mappedPaths) return name;
+    // Declared before stored: a component that has never been edited has no
+    // values yet, and would otherwise never become editable.
+    if (declaredProps?.has(name)) return name;
     return scopes.some((scope) => name in scope) ? name : null;
   };
 
@@ -1225,6 +1260,7 @@ function renderFunctionComponent(
 ): ReactNode {
   const componentEnv = Object.create(moduleEnv) as Record<string, unknown>;
   componentEnv.__morphComponentProps = props;
+  componentEnv.__morphDeclaredProps = readDeclaredPropNames(fn);
   // Set unconditionally so a component rendered outside any row clears an
   // inherited mapping rather than reusing the enclosing row's paths.
   componentEnv.__morphFieldPathByProp = itemFieldPaths ?? null;
@@ -1385,6 +1421,7 @@ export function renderSafeThemeComponent({
   resolveComponent,
   contentSlots,
   sectionTypeBySlot,
+  componentRefBySlot,
 }: {
   files: ThemeSourceFile[];
   sourcePath: string;
@@ -1396,6 +1433,7 @@ export function renderSafeThemeComponent({
   resolveComponent?: SafeThemeComponentResolver;
   contentSlots?: ThemeContentSlotValues;
   sectionTypeBySlot?: Readonly<Record<string, string>>;
+  componentRefBySlot?: Readonly<Record<string, string>>;
 }): SafeThemeComponentRenderResult {
   const fileMap = new Map(
     files.map((file) => [normalizePath(file.path), file]),
@@ -1408,6 +1446,7 @@ export function renderSafeThemeComponent({
     resolveComponent,
     contentSlots,
     sectionTypeBySlot,
+    componentRefBySlot,
     nodeCount: 0,
     componentStack: [],
     diagnostics: [],

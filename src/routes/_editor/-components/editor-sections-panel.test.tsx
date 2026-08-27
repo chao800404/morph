@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
@@ -104,6 +104,27 @@ function renderPanel(
 }
 
 describe("EditorSectionsPanel visibility controls", () => {
+  it("enables Add section and forwards the selected route component", async () => {
+    const onAddSection = vi.fn().mockResolvedValue({ success: true });
+    const option = {
+      componentRef: "promo.default",
+      sectionType: "promo",
+      componentName: "Promo",
+      componentSourcePath: "src/components/Promo.tsx",
+    };
+    renderPanel(vi.fn(), vi.fn(), {
+      sectionOptions: [option],
+      onAddSection,
+    });
+
+    const addButton = screen.getByRole("button", { name: "Add section" });
+    expect(addButton.hasAttribute("disabled")).toBe(false);
+    fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "promo" }));
+
+    await waitFor(() => expect(onAddSection).toHaveBeenCalledWith(option));
+  });
+
   it("shows source-authored Theme pages and opens their route module", () => {
     const onOpenThemeRoute = vi.fn();
     const route = {
@@ -394,6 +415,51 @@ describe("EditorSectionsPanel editable node tree", () => {
 
     const headingButton = screen.getByRole("button", { name: "Heading" });
     expect(headingButton.getAttribute("aria-current")).toBe("true");
+    expect(
+      screen
+        .getByRole("button", { name: "Content" })
+        .getAttribute("aria-current"),
+    ).toBeNull();
+  });
+
+  it("highlights a node the canvas identified only by its source position", () => {
+    // A plain <div> carries no field, no marker and no element key, so a match
+    // that only ever compares those leaves the tree with nothing selected.
+    const activeSelection = {
+      sectionId: "section-1",
+      isSection: false,
+      nodeId: null,
+      fieldPath: null,
+      fieldKey: null,
+      elementKey: null,
+      sourceLocation: "src/components/Hero.tsx:22:7",
+    } as EditorSelectionDescriptor;
+
+    renderPanel(vi.fn(), vi.fn(), {
+      editableNodes: [
+        // Authored with no markers at all: the compiler's source position is
+        // its only identity, the ordinary case for a plain layout <div>.
+        {
+          id: "section-1:loc:src/components/Hero.tsx:22:7",
+          parentId: null,
+          sectionId: "section-1",
+          label: "Div",
+          kind: "container",
+          tagName: "div",
+          target: {
+            sectionId: "section-1",
+            sourceLocation: "src/components/Hero.tsx:22:7",
+            isSection: false,
+          },
+        },
+        ...editableNodes,
+      ],
+      activeSelection,
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Div" }).getAttribute("aria-current"),
+    ).toBe("true");
     expect(
       screen
         .getByRole("button", { name: "Content" })

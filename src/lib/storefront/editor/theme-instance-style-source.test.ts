@@ -3,6 +3,8 @@ import { BrowserPreviewThemeCompiler } from "../compiler/browser-preview-compile
 import {
   canPatchThemeInstanceStyleClasses,
   ensureStableElementName,
+  generateStableElementName,
+  isGeneratedElementName,
   findLegacyThemeInstanceStyleSheet,
   isRepeatedFieldPath,
   patchThemeInstanceStyleClasses,
@@ -456,5 +458,36 @@ describe("rows extracted into their own component", () => {
     expect(
       canPatchThemeInstanceStyleClasses(shared, "banner-title", target),
     ).toBe(false);
+  });
+});
+
+describe("telling platform-written identities from authored ones", () => {
+  it("recognises what the generator produces", () => {
+    // Kept together so the two cannot drift: a name the editor fails to
+    // recognise as its own would be shown as something the author chose.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      expect(isGeneratedElementName(generateStableElementName())).toBe(true);
+    }
+  });
+
+  it("treats an authored name as authored", () => {
+    for (const name of [
+      "principle-card",
+      "hero-heading",
+      "el-card",
+      "el-0123456789ab-extra",
+      "EL-0123456789AB",
+      "",
+    ]) {
+      expect({ name, generated: isGeneratedElementName(name) }).toEqual({
+        name,
+        generated: false,
+      });
+    }
+  });
+
+  it("handles a missing name", () => {
+    expect(isGeneratedElementName(null)).toBe(false);
+    expect(isGeneratedElementName(undefined)).toBe(false);
   });
 });

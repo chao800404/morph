@@ -256,21 +256,35 @@ export function resolveThemeContentCapabilitiesFromFiles(
 export async function resolveThemeContentCapabilities(args: {
   manifestContent: string | null | undefined;
   readSource: (path: string) => Promise<string | null | undefined>;
+  additionalSourcePaths?: readonly string[];
 }): Promise<ThemeContentCapabilityParseResult> {
   const manifestResult = parseThemeContentCapabilities(args.manifestContent);
   const colocated = new Map<string, ThemeComponentContentCapability>();
   const diagnostics: string[] = [];
 
-  for (const [componentRef, sourcePath] of readComponentSourcePaths(
-    args.manifestContent,
-  )) {
+  const sources = new Map(readComponentSourcePaths(args.manifestContent));
+  for (const sourcePath of args.additionalSourcePaths ?? []) {
+    const normalized = sourcePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (normalized.startsWith("src/") && /\.(?:tsx|jsx)$/.test(normalized)) {
+      sources.set(normalized, normalized);
+    }
+  }
+  for (const [componentRef, sourcePath] of sources) {
     const source = await args.readSource(sourcePath);
     if (typeof source !== "string") continue;
     const parsed = parseColocatedContentFields(source);
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${sourcePath}: ${diagnostic}`);
     }
-    if (parsed.fields) colocated.set(componentRef, { fields: parsed.fields });
+    if (parsed.fields) {
+      const capability = { fields: parsed.fields };
+      colocated.set(componentRef, capability);
+      // A route is allowed to be the only registration for a component. In
+      // that case its source path becomes the persisted component identity,
+      // and server validation must resolve the same co-located declaration the
+      // editor used.
+      colocated.set(sourcePath, capability);
+    }
   }
 
   return mergeCapabilities(

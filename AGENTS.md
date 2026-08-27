@@ -29,8 +29,6 @@ These invariants apply to both the primary agent and every delegated subagent. D
 
 ## Delegation
 
-Prefer the project-scoped `implementer` custom agent for clear and bounded implementation work. It is configured as GPT-5.6 Luna with medium reasoning.
-
 Delegate work such as:
 - implementation with clear acceptance criteria
 - CRUD

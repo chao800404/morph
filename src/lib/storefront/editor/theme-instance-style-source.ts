@@ -384,6 +384,21 @@ export function generateStableElementName(): string {
   return `el-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/**
+ * Shape of the names the platform writes for itself.
+ *
+ * Kept beside the generator so the two cannot drift: a name the editor cannot
+ * recognise as its own would be presented as something the author chose, and
+ * anything that later tidies unused names would have no way to tell which ones
+ * are safe to remove.
+ */
+const GENERATED_ELEMENT_NAME_PATTERN = /^el-[0-9a-f]{12}$/;
+
+/** Whether this identity was written by the platform rather than by an author. */
+export function isGeneratedElementName(value: string | null | undefined) {
+  return typeof value === "string" && GENERATED_ELEMENT_NAME_PATTERN.test(value);
+}
+
 export type ProvisionedElementName = {
   code: string;
   elementName: string;

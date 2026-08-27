@@ -12,6 +12,7 @@ import { env as cloudflareEnv } from "cloudflare:workers";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { storefrontReleaseDal } from "@/lib/storefront/dal/storefront-release.dal";
 import { deployReleaseArtifact } from "@/lib/storefront/service/storefront-release-reconciler";
+import { canSkipThemeWorkerDeployment } from "@/lib/storefront/service/theme-worker-deployment-state";
 import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-worker-deployer.factory";
 import { getRequest } from "@tanstack/react-start/server";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
@@ -179,6 +180,25 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
       // Concurrent publishes cannot race here — `expectedReleaseGeneration`
       // already rejects the second one before it reaches this point.
       if (result.releaseId) {
+        // A publish that only changed content reuses the build that is already
+        // live, so redeploying uploads bytes the Worker already serves — a
+        // container start and a wrangler run for a text edit. Skipped only when
+        // a previous deployment of exactly this build is recorded as having
+        // succeeded; every uncertain case still deploys.
+        if (
+          canSkipThemeWorkerDeployment({
+            deployedThemeBuildId: result.previousDeployedThemeBuildId,
+            releaseThemeBuildId: result.themeBuildId,
+          })
+        ) {
+          await storefrontReleaseDal.recordDeployedThemeBuild({
+            storefrontId: data.storefrontId,
+            releaseId: result.releaseId,
+            themeBuildId: result.themeBuildId,
+          });
+          return ok("Theme published", result);
+        }
+
         const deployed = await deployReleaseArtifact({
           releaseId: result.releaseId,
           deployer: createServerThemeWorkerDeployer(),
@@ -209,6 +229,14 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
             { error: "RELEASE_DEPLOYMENT_FAILED", ...result },
           );
         }
+
+        // Recorded only now, so a failed deploy above leaves no trace that
+        // would let the next publish skip a deployment that never landed.
+        await storefrontReleaseDal.recordDeployedThemeBuild({
+          storefrontId: data.storefrontId,
+          releaseId: result.releaseId,
+          themeBuildId: result.themeBuildId,
+        });
       }
 
       return ok("Theme published", result);

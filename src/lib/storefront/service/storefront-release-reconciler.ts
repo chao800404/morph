@@ -55,6 +55,18 @@ export type ReleaseReconcilerPorts = Readonly<{
     releaseId: string;
     expectedActiveReleaseId: string | null;
   }): Promise<unknown>;
+  /**
+   * Records the build the Theme Worker now runs.
+   *
+   * Optional so a caller that never skips deployments — a smoke harness, a
+   * test — is not forced to implement it. A caller that does skip must provide
+   * it, or its next content-only publish would deploy again.
+   */
+  recordDeployedThemeBuild?(args: {
+    storefrontId: string;
+    releaseId: string;
+    themeBuildId: string;
+  }): Promise<unknown>;
 }>;
 
 async function readGeneratedWorkerConfig(
@@ -325,6 +337,15 @@ export async function activateReleaseWithDeployment(args: {
       };
     }
   }
+
+  // 4. Record what the Worker now runs. Written only on success, and after the
+  //    claim, so a later publish that changes nothing but content can skip a
+  //    redeploy without treating activation alone as evidence.
+  await args.ports.recordDeployedThemeBuild?.({
+    storefrontId: release.storefrontId,
+    releaseId: release.id,
+    themeBuildId: build.id,
+  });
 
   return {
     success: true,

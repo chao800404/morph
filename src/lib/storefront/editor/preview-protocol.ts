@@ -122,6 +122,15 @@ export type PreviewEditableNode = Readonly<{
   label: string;
   kind: SelectionKind;
   tagName: string | null;
+  /**
+   * Identity that survives edits to the file, when the element has one.
+   *
+   * Only such an element can carry a style bound to one instance, so which
+   * elements have one is worth showing — but not as the label. A
+   * platform-written identity reads as `el-a3f9c2b4d1e0`, which names nothing;
+   * putting it where "Heading" goes would make the tree unreadable.
+   */
+  stableId?: string;
   target: PreviewSelectionRestoreTarget;
 }>;
 
@@ -211,6 +220,19 @@ export type PreviewSelectionMessage = {
 
 export type PreviewToEditorMessage =
   | { type: "morph:storefront-preview-ready" }
+  | {
+      /**
+       * An undo shortcut pressed while focus was inside the preview.
+       *
+       * The canvas is an iframe, so a key pressed there never reaches the
+       * editor's own listener. Someone who has just clicked an element to
+       * select it has focus in the iframe, which is exactly when they are most
+       * likely to press undo — so without forwarding, the shortcut appears to
+       * work only sometimes.
+       */
+      type: "morph:storefront-preview-history-shortcut";
+      direction: "undo" | "redo";
+    }
   | { type: "morph:storefront-preview-size"; height: number }
   | {
       type: "morph:storefront-preview-structure";
@@ -233,10 +255,37 @@ export type PreviewToEditorMessage =
       targetNodeId: string;
     }
   | {
+      /**
+       * Two sections exchanged by dragging one onto the other on the canvas.
+       *
+       * Sections are ordered by the route source, not by the element tree, so
+       * this carries identities rather than a source position and is applied
+       * through the same rewrite the sidebar's drag uses.
+       */
+      type: "morph:storefront-preview-commit-section-reorder";
+      draggedSectionId: string;
+      targetSectionId: string;
+    }
+  | {
       type: "morph:storefront-preview-commit-array-item-reorder";
       sectionId: string;
       draggedFieldPath: string;
       targetFieldPath: string;
+    }
+  | {
+      /**
+       * Where the pointer is during a reorder drag, so the canvas can follow it.
+       *
+       * A native drag suppresses wheel events, so the canvas cannot be scrolled
+       * by hand while one is in flight and only the sections already on screen
+       * could be dropped on. The preview reports the pointer in its own
+       * coordinates and the editor decides, because only the editor knows where
+       * its visible region currently sits.
+       */
+      type: "morph:storefront-preview-drag-autoscroll";
+      phase: "move" | "end";
+      clientX: number;
+      clientY: number;
     }
   | { type: "morph:storefront-preview-reset-canvas" }
   | {
@@ -360,11 +409,17 @@ function parsePreviewSelectionRestoreTarget(
 ): PreviewSelectionRestoreTarget | undefined | null {
   if (value === undefined) return undefined;
   if (!isRecord(value) || !isBoundedString(value.sectionId, 100)) return null;
+  // A compile-time source position is an identity in its own right: it is the
+  // only one a component with no authored markers has. Leaving it out rejected
+  // every such node, and because one bad node fails the whole message, a single
+  // marker-free element made the entire structure unusable — the panel kept
+  // showing whatever it had last accepted.
   const identityKeys = [
     "nodeId",
     "fieldPath",
     "elementKey",
     "fieldKey",
+    "sourceLocation",
   ] as const;
   if (
     !identityKeys.some((key) => value[key] !== undefined) &&
@@ -378,12 +433,17 @@ function parsePreviewSelectionRestoreTarget(
     (value.elementKey !== undefined &&
       !isBoundedString(value.elementKey, 200)) ||
     (value.fieldKey !== undefined && !isBoundedString(value.fieldKey, 200)) ||
+    (value.sourceLocation !== undefined &&
+      !isBoundedString(value.sourceLocation, 500)) ||
     (value.isSection !== undefined && typeof value.isSection !== "boolean")
   ) {
     return null;
   }
   return {
     sectionId: value.sectionId,
+    // Carried through, not just accepted: dropping it here would leave a
+    // marker-free element with nothing to restore its selection by.
+    sourceLocation: value.sourceLocation,
     nodeId: value.nodeId,
     fieldPath: value.fieldPath,
     elementKey: value.elementKey,
@@ -409,6 +469,7 @@ function parsePreviewEditableNodes(
       !isBoundedString(item.kind, 100) ||
       !isSelectionKind(item.kind) ||
       !isNullableHtmlTagName(item.tagName) ||
+      (item.stableId !== undefined && !isBoundedString(item.stableId, 200)) ||
       ids.has(item.id)
     ) {
       return null;
@@ -430,6 +491,7 @@ function parsePreviewEditableNodes(
       label: item.label,
       kind: item.kind,
       tagName: item.tagName,
+      stableId: item.stableId,
       target,
     });
   }
@@ -632,6 +694,10 @@ export function parsePreviewToEditorMessage(
     case "morph:storefront-preview-ready":
     case "morph:storefront-preview-reset-canvas":
       return { type: value.type };
+    case "morph:storefront-preview-history-shortcut":
+      return value.direction === "undo" || value.direction === "redo"
+        ? { type: value.type, direction: value.direction }
+        : null;
     case "morph:storefront-preview-size":
       return typeof value.height === "number" && Number.isFinite(value.height)
         ? { type: value.type, height: value.height }
@@ -724,6 +790,27 @@ export function parsePreviewToEditorMessage(
             sourceFilePath: value.sourceFilePath,
             draggedNodeId: value.draggedNodeId,
             targetNodeId: value.targetNodeId,
+          }
+        : null;
+    case "morph:storefront-preview-drag-autoscroll":
+      return (value.phase === "move" || value.phase === "end") &&
+        Number.isFinite(value.clientX) &&
+        Number.isFinite(value.clientY)
+        ? {
+            type: value.type,
+            phase: value.phase,
+            clientX: value.clientX as number,
+            clientY: value.clientY as number,
+          }
+        : null;
+    case "morph:storefront-preview-commit-section-reorder":
+      return isBoundedString(value.draggedSectionId, 100) &&
+        isBoundedString(value.targetSectionId, 100) &&
+        value.draggedSectionId !== value.targetSectionId
+        ? {
+            type: value.type,
+            draggedSectionId: value.draggedSectionId,
+            targetSectionId: value.targetSectionId,
           }
         : null;
     case "morph:storefront-preview-commit-array-item-reorder":

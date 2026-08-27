@@ -2,6 +2,7 @@ import {
   domElementMatchesTarget,
   sourceLocationKey,
 } from "@/lib/storefront/ast/element-target";
+import { shouldDeferUndoShortcut } from "@/lib/storefront/editor/editor-history";
 import { StorefrontPreview } from "@/components/storefront/storefront-preview";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontThemePreviewSearchSchema } from "@/lib/validations/storefront-theme";
@@ -370,6 +371,9 @@ export function collectPreviewEditableNodes(root: {
         label: previewEditableNodeLabel(candidate),
         kind,
         tagName: candidate.tagName.toLowerCase().slice(0, 32),
+        // Reported, not used as the label: only an element with one can carry a
+        // style bound to a single instance, and that is worth being able to see.
+        stableId: nodeId || elementKey || undefined,
         target,
       });
       nodeIds.add(id);
@@ -935,7 +939,6 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
      * rule is not, so without re-applying these the element renders unstyled
      * for a moment and the value visibly jumps.
      */
-    let pendingPreviewStyles: Record<string, string> | null = null;
     let selectionEnabled = false;
     let spacingOverlayMode: PreviewSpacingOverlayMode = "off";
     const selectionStylePreview = createSelectionStylePreview();
@@ -957,7 +960,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       overlay: HTMLElement;
     }> = [];
     let reorderGesture: {
-      kind: "source" | "array";
+      kind: "source" | "array" | "section";
       dragged: HTMLElement;
       parent: HTMLElement;
       sectionId: string;
@@ -994,9 +997,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       restoreSelectedTarget(lastRestoreTarget);
       // Carry the preview onto the element the re-render produced, so the value
       // stays put until the edited source is painted.
-      if (pendingPreviewStyles && selectedElement) {
-        selectionStylePreview.apply(selectedElement, pendingPreviewStyles);
-      }
+      if (selectedElement) selectionStylePreview.carryTo(selectedElement);
     };
 
     const publishEditableStructure = () => {
@@ -1513,8 +1514,20 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       );
       const sectionId = section?.dataset.storefrontSectionId;
       const sourceFilePath = sourceFilePathFor(element);
-      if (!parent || !sectionId || !sourceFilePath || element === section) {
-        return null;
+      if (!parent || !sectionId || !sourceFilePath) return null;
+      // A section root belongs to the route's section list, not to the JSX
+      // siblings inside one component, so it reorders through the same path the
+      // sidebar uses rather than through a source-file rewrite.
+      if (element === section) {
+        return {
+          kind: "section" as const,
+          nodeId: sectionId,
+          fieldPath: null,
+          arrayPath: null,
+          parent,
+          sectionId,
+          sourceFilePath,
+        };
       }
       if (arrayItem && fieldPath) {
         return {
@@ -1553,8 +1566,12 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     ) =>
       identity.kind === gesture.kind &&
       identity.parent === gesture.parent &&
-      identity.sectionId === gesture.sectionId &&
-      identity.sourceFilePath === gesture.sourceFilePath &&
+      // Two sections are exchangeable precisely because they are different
+      // sections; everything else has to stay within one section and one file.
+      (identity.kind === "section"
+        ? identity.sectionId !== gesture.sectionId
+        : identity.sectionId === gesture.sectionId &&
+          identity.sourceFilePath === gesture.sourceFilePath) &&
       (identity.kind !== "array" || identity.arrayPath === gesture.arrayPath);
 
     const clearDragPreview = () => {
@@ -2135,6 +2152,15 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
     const handleDragOver = (event: DragEvent) => {
       if (!reorderGesture) return;
+      // Sent on every move, including the ones where no drop target resolves:
+      // reaching a section further down the page means dragging across the gap
+      // between two of them.
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-drag-autoscroll",
+        phase: "move",
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
       const target = directReorderTarget(event.target);
       if (!target) {
         reorderGesture.target = null;
@@ -2159,6 +2185,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       const target = directReorderTarget(event.target);
       reorderGesture = null;
       clearReorderFeedback();
+      stopDragAutoScroll();
       suppressNextClick = true;
       if (!target) return;
 
@@ -2191,6 +2218,15 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           targetFieldPath: target.identity.fieldPath,
         });
       } else if (
+        gesture.kind === "section" &&
+        target.identity.kind === "section"
+      ) {
+        postPreviewToEditorMessage({
+          type: "morph:storefront-preview-commit-section-reorder",
+          draggedSectionId: gesture.sectionId,
+          targetSectionId: target.identity.sectionId,
+        });
+      } else if (
         gesture.draggedNodeId &&
         target.identity.kind === "source" &&
         target.identity.nodeId
@@ -2205,9 +2241,19 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       }
     };
 
+    const stopDragAutoScroll = () => {
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-drag-autoscroll",
+        phase: "end",
+        clientX: 0,
+        clientY: 0,
+      });
+    };
+
     const handleDragEnd = () => {
       reorderGesture = null;
       clearReorderFeedback();
+      stopDragAutoScroll();
     };
 
     const handleWheel = (event: WheelEvent) => {
@@ -2298,8 +2344,18 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         message.type ===
         "morph:storefront-preview-reset-selection-style-preview"
       ) {
-        selectionStylePreview.restore();
-        positionOverlays();
+        // Cleared as well as restored. The pending map exists to carry a
+        // drag-time style across the re-render the edit causes; leaving it set
+        // would re-apply the style the editor just asked to drop, the moment
+        // anything re-renders — which is exactly what reversing an edit does.
+        // Pins what is on screen now and carries it across the re-render the
+        // incoming edit causes. Without it the element sits at its unstyled
+        // size from the moment the new class lands until the stylesheet is
+        // recompiled; the normal applied-styles path releases the pin a frame
+        // after that, so the value only ever moves once.
+        if (selectedElement) {
+          selectionStylePreview.holdCurrentStyles(selectedElement);
+        }
         return;
       }
 
@@ -2386,7 +2442,6 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
                 );
         if (!previewTarget) return;
         const previewStyles = message.styles;
-        pendingPreviewStyles = { ...pendingPreviewStyles, ...previewStyles };
         selectionStylePreview.apply(previewTarget, previewStyles);
         if (selectionStylePreviewNeedsOverlayUpdate(previewStyles)) {
           positionOverlays();
@@ -2492,6 +2547,27 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     });
     window.addEventListener("scroll", schedulePositionOverlays, true);
     window.addEventListener("resize", schedulePositionOverlays);
+    /**
+     * Forwards the undo shortcut to the editor.
+     *
+     * The canvas is an iframe, so a key pressed here never reaches the editor's
+     * own listener. Clicking an element to select it puts focus in here, which
+     * is exactly when someone is most likely to press undo — without this the
+     * shortcut works from the toolbar but appears dead from the keyboard.
+     */
+    const handleHistoryShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") {
+        return;
+      }
+      if (shouldDeferUndoShortcut(event.target as HTMLElement | null)) return;
+      event.preventDefault();
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-history-shortcut",
+        direction: event.shiftKey ? "redo" : "undo",
+      });
+    };
+
+    window.addEventListener("keydown", handleHistoryShortcut);
     window.addEventListener("message", handleEditorMessage);
     /**
      * Clears the drag-time inline styles one frame after the source styles land.
@@ -2503,10 +2579,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
      * effect first, so the value only ever moves once.
      */
     const handleSelectionStyleApplied = () => {
-      requestAnimationFrame(() => {
-        pendingPreviewStyles = null;
-        selectionStylePreview.restore();
-      });
+      requestAnimationFrame(() => selectionStylePreview.clear());
     };
 
     window.addEventListener(
@@ -2550,6 +2623,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       window.removeEventListener("scroll", schedulePositionOverlays, true);
       window.removeEventListener("resize", schedulePositionOverlays);
       cancelAnimationFrame(overlayPositionFrame);
+      window.removeEventListener("keydown", handleHistoryShortcut);
       window.removeEventListener("message", handleEditorMessage);
       window.removeEventListener(
         SELECTION_STYLE_APPLIED_EVENT,
@@ -2671,6 +2745,11 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
     const handleSizeRequest = (event: MessageEvent<unknown>) => {
       const message = parseEditorToPreviewWindowEvent(event);
       if (message?.type === "morph:storefront-preview-request-size") {
+        // An explicit request means the editor does not know the height, so the
+        // answer has to be sent even when it repeats the last one. Skipping it
+        // as a duplicate is how a re-measure could leave the editor holding the
+        // provisional height it shrank to in order to ask.
+        lastPublishedHeight = null;
         stableFrameCount = 0;
         measureUntilStable();
       }
