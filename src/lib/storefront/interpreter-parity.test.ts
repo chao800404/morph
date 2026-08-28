@@ -1,9 +1,6 @@
 // @vitest-environment node
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import * as jsxRuntime from "react/jsx-runtime";
-import { transformSync } from "esbuild";
-import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -15,13 +12,16 @@ import {
 } from "@tanstack/react-router";
 
 import { renderSafeThemeComponent } from "@/components/storefront/safe-theme-component-renderer";
+import {
+  createThemeModuleLoader,
+  normalizeThemeMarkup as normalize,
+} from "@/lib/test-utils/theme-module-loader";
 import { renderSafeThemeRoute } from "@/components/storefront/safe-theme-route-renderer";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import {
   STARTER_THEME_V3_NEW_FILES,
   STARTER_THEME_V4_NEW_FILES,
 } from "@/lib/storefront/starter-theme-v3-files";
-import { DEFAULT_APPROVED_DEPENDENCIES } from "@/lib/storefront/compiler/sandbox-vite-theme-build-runner.types";
 
 /**
  * Does the editor's interpreter render what React renders?
@@ -53,19 +53,7 @@ const files = Array.from(
   ).values(),
 );
 
-/** Attributes the editor injects for its own use; the build never emits them. */
-const EDITOR_ATTRIBUTE = /\s(?:data-(?:morph|storefront|tsd)-[a-z-]+)="[^"]*"/g;
-
-function normalize(html: string): string {
-  return html
-    // Head output is the router's job, not the interpreter's: Live Preview
-    // renders into an existing document and has no head to write to.
-    .replace(/<link[^>]*>|<meta[^>]*>|<title>[\s\S]*?<\/title>/g, "")
-    .replace(EDITOR_ATTRIBUTE, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+const { loadModule, preloadPackages } = createThemeModuleLoader(files);
 
 /**
  * Renders a component the way the build does: real TSX, real React.
@@ -73,92 +61,6 @@ function normalize(html: string): string {
  * Compiled in process rather than through a temp directory so the comparison
  * has no filesystem or bundler state of its own to go stale.
  */
-const moduleCache = new Map<string, Record<string, unknown>>();
-const hostRequire = createRequire(import.meta.url);
-const approved = new Set(DEFAULT_APPROVED_DEPENDENCIES);
-const preloadedPackages = new Map<string, unknown>();
-
-/** Imports ESM-only approved packages so the module loader can hand them over. */
-async function preloadPackages(ids: readonly string[]) {
-  for (const id of ids) {
-    if (!preloadedPackages.has(id)) {
-      preloadedPackages.set(id, await import(/* @vite-ignore */ id));
-    }
-  }
-}
-
-/** Resolves a relative import the way a bundler would, without a bundler. */
-function resolveRelative(fromPath: string, specifier: string): string {
-  const segments = fromPath.split("/").slice(0, -1);
-  for (const part of specifier.split("/")) {
-    if (part === ".") continue;
-    else if (part === "..") segments.pop();
-    else segments.push(part);
-  }
-  const base = segments.join("/");
-  for (const candidate of [base, `${base}.tsx`, `${base}.ts`]) {
-    if (files.some((file) => file.path === candidate)) return candidate;
-  }
-  return `${base}.tsx`;
-}
-
-/**
- * Loads a Theme module and everything it imports, compiled in process.
- *
- * A temp directory and a real bundler would answer the same question, but with
- * filesystem and cache state of their own — and a parity check has to be able
- * to blame the interpreter, not the harness.
- */
-function loadModule(sourcePath: string): Record<string, unknown> {
-  const cached = moduleCache.get(sourcePath);
-  if (cached) return cached;
-
-  const source = files.find((file) => file.path === sourcePath);
-  if (!source) throw new Error(`${sourcePath} is not part of the starter Theme`);
-  // A stylesheet import contributes nothing to the rendered markup, and the
-  // build resolves it through Tailwind rather than through this module graph.
-  if (sourcePath.endsWith(".css")) {
-    const empty = {};
-    moduleCache.set(sourcePath, empty);
-    return empty;
-  }
-
-  const { code } = transformSync(source.content, {
-    loader: sourcePath.endsWith(".ts") ? "ts" : "tsx",
-    jsx: "automatic",
-    format: "cjs",
-    target: "es2022",
-  });
-
-  const module = { exports: {} as Record<string, unknown> };
-  moduleCache.set(sourcePath, module.exports);
-  const require = (id: string) => {
-    if (id.endsWith(".css")) return {};
-    if (id === "react/jsx-runtime" || id === "react/jsx-dev-runtime") {
-      return jsxRuntime;
-    }
-    if (id.startsWith(".")) return loadModule(resolveRelative(sourcePath, id));
-    // Some approved packages ship ESM only and cannot be required at all, so
-    // they are imported ahead of time and handed over here.
-    const preloaded = preloadedPackages.get(id);
-    if (preloaded) return preloaded;
-    // Approved packages are resolved for real, exactly as the build resolves
-    // them: a Theme may only import from that list, so anything else reaching
-    // here is a package the build would have rejected too.
-    if (approved.has(id)) return hostRequire(id);
-    throw new Error(
-      `${sourcePath} imports ${id}, which this comparison does not model`,
-    );
-  };
-  new Function("exports", "module", "require", code)(
-    module.exports,
-    module,
-    require,
-  );
-  moduleCache.set(sourcePath, module.exports);
-  return module.exports;
-}
-
 function renderWithReact(
   sourcePath: string,
   props: Record<string, unknown>,

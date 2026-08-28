@@ -1,6 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+import { EDITOR_PATH, openEditor as openEditorShell } from "./helpers";
+
 /**
  * What a keyboard and a screen reader make of the editor.
  *
@@ -8,16 +10,10 @@ import { expect, test, type Page } from "@playwright/test";
  * that matter here are structural — an unlabelled control, a trap, an order
  * that makes no sense — and none of them are visible in a component test.
  */
-const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
-
 test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to run accessibility checks.");
 
 async function openEditor(page: Page) {
-  await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
-    timeout: 45_000,
-  });
-  await page.waitForTimeout(4_000);
+  await openEditorShell(page);
 }
 
 /**

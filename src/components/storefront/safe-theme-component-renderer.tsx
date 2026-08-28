@@ -321,10 +321,27 @@ function bindPattern(
       value && typeof value === "object"
         ? (value as Record<string, unknown>)
         : {};
+    const taken = new Set<string>();
     for (const property of pattern.properties ?? []) {
       if (property.type === "RestElement") continue;
       const key = property.key?.name ?? property.key?.value;
+      taken.add(String(key));
       bindPattern(property.value, record[key], env, context);
+    }
+    // `{ id, ...rest }` is how a component forwards the props it was not
+    // written to know about. Skipping it left every forwarded attribute out of
+    // the preview while the build rendered them — a difference with nothing to
+    // announce it.
+    const rest = (pattern.properties ?? []).find(
+      (property: any) => property?.type === "RestElement",
+    );
+    if (rest?.argument?.type === "Identifier") {
+      const remaining: Record<string, unknown> = {};
+      for (const key of Object.keys(record)) {
+        if (taken.has(key) || BLOCKED_PROPERTIES.has(key)) continue;
+        remaining[key] = record[key];
+      }
+      env[rest.argument.name] = remaining;
     }
   }
 }
@@ -454,6 +471,9 @@ function evaluateCall(
         );
       });
     }
+
+    const pure = evaluatePureMethod(receiver, method, node, env, context);
+    if (pure !== NOT_A_PURE_METHOD) return pure;
   }
 
   throw new SafeThemeRuntimeError(
@@ -591,8 +611,17 @@ function evaluateExpression(
           return Number(left) < Number(right);
         case "<=":
           return Number(left) <= Number(right);
+        case "%":
+          return Number(left) % Number(right);
+        case "**":
+          return Number(left) ** Number(right);
         default:
-          return undefined;
+          // Silence here is the dangerous answer: an unsupported operator that
+          // evaluates to `undefined` turns a condition false and quietly drops
+          // whatever it guarded, so the preview shows a page the build does not.
+          throw new SafeThemeRuntimeError(
+            `The ${node.operator} operator is not supported by the safe Design preview.`,
+          );
       }
     }
     case "CallExpression":
@@ -678,7 +707,7 @@ function renderJsxChildren(
 ): ReactNode[] {
   return children.flatMap((child) => {
     if (child.type === "JSXText") {
-      const text = child.value.replace(/\s+/g, " ").trim();
+      const text = normalizeJsxText(child.value);
       return text ? [text] : [];
     }
     if (child.type === "JSXExpressionContainer") {
@@ -983,6 +1012,154 @@ function inferElementFieldKey(
     if (fromAttribute) return fromAttribute;
   }
   return null;
+}
+
+/**
+ * Collapses JSX text the way JSX itself does.
+ *
+ * Whitespace that contains a line break is layout in the source rather than
+ * content, so it is dropped at both ends; whitespace on a single line is text
+ * the author typed. Trimming everything instead turned `{index + 1}. {item}`
+ * into "1.a" in the preview and "1. a" in the build.
+ */
+function normalizeJsxText(value: string): string {
+  const lines = value.split("\n");
+  if (lines.length === 1) return value.replace(/\s+/g, " ");
+
+  const kept = lines
+    .map((line, index) => {
+      if (index === 0) return line.replace(/\s+$/, "");
+      if (index === lines.length - 1) return line.replace(/^\s+/, "");
+      return line.trim();
+    })
+    .filter((line) => line.length > 0);
+  return kept.join(" ");
+}
+
+/** Sentinel: distinguishes "not a supported method" from a method returning undefined. */
+const NOT_A_PURE_METHOD = Symbol("not-a-pure-method");
+
+/** String methods that only read their receiver and return a new value. */
+const PURE_STRING_METHODS = new Set([
+  "toUpperCase",
+  "toLowerCase",
+  "trim",
+  "trimStart",
+  "trimEnd",
+  "slice",
+  "split",
+  "includes",
+  "startsWith",
+  "endsWith",
+  "replace",
+  "replaceAll",
+  "padStart",
+  "padEnd",
+  "repeat",
+  "at",
+  "charAt",
+  "concat",
+  "indexOf",
+]);
+
+/** Array methods that take no callback and cannot mutate their receiver. */
+const PURE_ARRAY_METHODS = new Set([
+  "join",
+  "slice",
+  "includes",
+  "indexOf",
+  "concat",
+  "at",
+  "flat",
+]);
+
+/** Array methods that take an inline callback and return a new array or value. */
+const CALLBACK_ARRAY_METHODS = new Set([
+  "filter",
+  "find",
+  "findIndex",
+  "some",
+  "every",
+  "flatMap",
+]);
+
+/**
+ * Evaluates a method a Theme author would reasonably use in markup.
+ *
+ * Everything here reads its receiver and returns a new value: no mutation, no
+ * access to anything the expression did not already hold. A Theme that uses one
+ * of these renders correctly in the build, so refusing it in the preview makes
+ * the editor unable to show a page the storefront serves perfectly well.
+ *
+ * `map` is handled separately because it also carries the array identity the
+ * editor needs to make repeated rows editable.
+ */
+function evaluatePureMethod(
+  receiver: unknown,
+  method: string | null,
+  node: any,
+  env: Record<string, unknown>,
+  context: RuntimeContext,
+): unknown {
+  if (!method) return NOT_A_PURE_METHOD;
+  const args = () =>
+    (node.arguments ?? []).map((argument: any) =>
+      evaluateExpression(argument, env, context),
+    );
+
+  if (typeof receiver === "string" && PURE_STRING_METHODS.has(method)) {
+    const value = (receiver as unknown as Record<string, unknown>)[method];
+    if (typeof value !== "function") return NOT_A_PURE_METHOD;
+    return (value as (...rest: unknown[]) => unknown).apply(receiver, args());
+  }
+
+  if (Array.isArray(receiver)) {
+    if (receiver.length > MAX_MAP_ITEMS) {
+      throw new SafeThemeRuntimeError(
+        `Theme list exceeds the ${MAX_MAP_ITEMS} item preview limit.`,
+      );
+    }
+    if (PURE_ARRAY_METHODS.has(method)) {
+      const value = (receiver as unknown as Record<string, unknown>)[method];
+      if (typeof value !== "function") return NOT_A_PURE_METHOD;
+      return (value as (...rest: unknown[]) => unknown).apply(receiver, args());
+    }
+    if (CALLBACK_ARRAY_METHODS.has(method)) {
+      const callback = node.arguments?.[0];
+      if (
+        callback?.type !== "ArrowFunctionExpression" &&
+        callback?.type !== "FunctionExpression"
+      ) {
+        throw new SafeThemeRuntimeError(
+          `${method}() requires an inline callback in the Design preview.`,
+        );
+      }
+      const run = (item: unknown, index: number) =>
+        evaluateFunctionBody(callback, [item, index, receiver], env, context);
+      switch (method) {
+        case "filter":
+          return receiver.filter((item, index) => Boolean(run(item, index)));
+        case "find":
+          return receiver.find((item, index) => Boolean(run(item, index)));
+        case "findIndex":
+          return receiver.findIndex((item, index) => Boolean(run(item, index)));
+        case "some":
+          return receiver.some((item, index) => Boolean(run(item, index)));
+        case "every":
+          return receiver.every((item, index) => Boolean(run(item, index)));
+        case "flatMap":
+          return receiver.flatMap((item, index) => run(item, index) as never);
+        default:
+          return NOT_A_PURE_METHOD;
+      }
+    }
+  }
+
+  if (typeof receiver === "number" && method === "toFixed") {
+    return receiver.toFixed(Number(args()[0] ?? 0));
+  }
+
+  return NOT_A_PURE_METHOD;
 }
 
 function readJsxProps(

@@ -31,7 +31,8 @@
     "db:studio:dev": "drizzle-kit studio",
     "db:studio:prod": "cross-env DRIZZLE_TARGET=remote drizzle-kit studio",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "test:parity": "MORPH_THEME_PARITY=1 vitest run src/lib/storefront/workspace-theme-parity.test.ts"
   },
   "dependencies": {
     "@babel/parser": "^7.26.9",

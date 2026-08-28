@@ -262,8 +262,12 @@ Edge Runtime
   含跨檔案 import 與 `map` 內的元件邊界）。前提是主題依賴為封閉白名單，所以解釋器要
   覆蓋的是一個受控子集，不是整個 React 生態。框架整合層也已涵蓋：以真實 TanStack
   Router 渲染 starter 主題首頁並與解釋器逐字比對，`beforeLoad`、`createIsomorphicFn`、
-  React context 與 `Outlet` 全部真的執行。**邊界是 starter 主題實際用到的 API**
-  ——使用者自寫的主題若用到別的功能，目前沒有測試會知道。
+  React context 與 `Outlet` 全部真的執行。另有對抗性模式測試：列出 15 種 starter
+  沒用過、但熟悉 React 的人會使用的模式，據此找出並修好五個缺口——其中三個是靜默
+  分歧（`{...rest}` 轉發被丟棄、JSX 文字空白被無條件 trim、`%` 運算子未支援且靜默
+  回傳 `undefined`）。**邊界是那份 fixture 是自己寫的**：它只能找到有人想得到要探的
+  缺口。因此另有 `pnpm test:parity`，直接對照本機工作區裡真實開發中的主題跑同一套
+  比對——那份主題不會顧慮解釋器支援什麼，所以每個新元件都是沒人設計來通過的 fixture。
 - 真實瀏覽器層 E2E：已建立（Playwright，`pnpm test:e2e`，與單元測試分離；憑證走未追蹤
   的 `.env.e2e`，未設定時自行 skip）。目前覆蓋三個場景——畫布選取回到樹狀、預覽框高度
   等於內容高度、未編輯時 Undo 停用——皆經變異驗證。仍缺：實際互動延遲、跨瀏覽器行為、

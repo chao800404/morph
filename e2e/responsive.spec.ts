@@ -1,5 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import {
+  EDITOR_PATH,
+  clickExposedElement,
+  enableSelection,
+  openEditor as openEditorShell,
+} from "./helpers";
+
 /**
  * The editor at the widths people actually use.
  *
@@ -8,8 +15,6 @@ import { expect, test, type Page } from "@playwright/test";
  * underneath rather than widening the page. A scrollWidth check sees nothing
  * wrong while the save status is printed on top of the mode switch.
  */
-const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
-
 test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to run responsive checks.");
 
 /** Widths the editor is expected to be usable at. */
@@ -20,11 +25,7 @@ const SUPPORTED_WIDTHS = [
 ] as const;
 
 async function openEditor(page: Page) {
-  await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
-    timeout: 45_000,
-  });
-  await page.waitForTimeout(4_000);
+  await openEditorShell(page);
 }
 
 for (const size of SUPPORTED_WIDTHS) {
@@ -81,3 +82,55 @@ test("the canvas keeps usable width beside both panels", async ({ page }) => {
   expect(frame).not.toBeNull();
   expect(frame!.width, "canvas width at 1024px").toBeGreaterThan(320);
 });
+
+test.describe("inspector panel", () => {
+  for (const size of SUPPORTED_WIDTHS) {
+    test(`controls stay inside the panel at ${size.name}`, async ({ page }) => {
+      await page.setViewportSize({ width: size.width, height: size.height });
+      await openEditor(page);
+      await enableSelection(page);
+
+      // Select something with styles to inspect; an empty panel proves nothing.
+      // Which element the canvas exposes differs by width, so this walks the
+      // candidates until one of them opens the controls being measured.
+      const fields = page
+        .frameLocator("iframe")
+        .locator("[data-storefront-field]");
+      const colorInput = page.getByLabel("Text color value");
+      let opened = false;
+      for (let attempt = 0; attempt < 6 && !opened; attempt += 1) {
+        const clicked = await clickExposedElement(page, fields, attempt);
+        if (!clicked) break;
+        opened = await colorInput.isVisible().catch(() => false);
+      }
+      expect(opened, "no styleable element was reachable").toBe(true);
+
+      const panel = page.locator("aside").last();
+      const escaping = await panel.evaluate((root) => {
+        const bounds = root.getBoundingClientRect();
+        const out: string[] = [];
+        // Absolutely positioned swatches legitimately sit on top of their row,
+        // so the panel's own edge is the boundary that matters.
+        for (const element of root.querySelectorAll(
+          "input, select, [role='group'], [data-slot='select-trigger']",
+        )) {
+          const rect = element.getBoundingClientRect();
+          if (rect.width === 0) continue;
+          if (rect.right > bounds.right + 1 || rect.left < bounds.left - 1) {
+            out.push(
+              `${element.tagName}:${element.getAttribute("aria-label") ?? ""}`,
+            );
+          }
+        }
+        return out;
+      });
+
+      expect(escaping, `at ${size.width}px`).toEqual([]);
+      expect(
+        await panel.evaluate((el) => el.scrollWidth - el.clientWidth),
+        "the inspector scrolls sideways",
+      ).toBeLessThanOrEqual(0);
+    });
+  }
+});
+

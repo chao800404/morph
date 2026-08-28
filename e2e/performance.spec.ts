@@ -1,5 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import {
+  EDITOR_PATH,
+  enableSelection,
+  median,
+  openEditor as openEditorShell,
+} from "./helpers";
+
 /**
  * How long the editor takes to answer the things people do constantly.
  *
@@ -14,9 +21,17 @@ import { expect, test, type Page } from "@playwright/test";
  * The measured values are always printed, so the trend is visible even when
  * nothing fails.
  */
-const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
-
 test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to run performance checks.");
+
+// One engine only. The ceilings below were calibrated against Chromium, and the
+// same numbers elsewhere measure the engine rather than this code: the tree
+// interaction takes about 150ms in Chromium and about 1100ms in a headless
+// WebKit on this host, with no difference in what the editor does. Comparing
+// engines is worth doing, but it needs baselines of its own.
+test.skip(
+  ({ browserName }) => browserName !== "chromium",
+  "Latency ceilings are calibrated on Chromium.",
+);
 
 /** Points to try inside a target, as fractions of its own box. */
 const SAMPLE_OFFSETS = [
@@ -25,19 +40,10 @@ const SAMPLE_OFFSETS = [
   [0.75, 0.5],
 ] as const;
 
-function median(values: number[]) {
-  return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
-}
-
 async function openEditor(page: Page) {
-  await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
-    timeout: 45_000,
-  });
-  await page.locator("iframe").first().dblclick({ position: { x: 400, y: 300 } });
-  await page.waitForTimeout(1_500);
-  await page.getByRole("button", { name: "Enable section selection" }).click();
-  await page.waitForTimeout(1_500);
+  await openEditorShell(page);
+  await enableSelection(page);
+  await page.waitForTimeout(1_000);
 }
 
 /** Canvas points that are neither covered by a panel nor over a child. */
