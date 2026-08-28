@@ -1,4 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { CheckCircle2, History, LoaderCircle, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,14 +37,15 @@ export function EditorReleaseHistoryDialog({
   activeReleaseId: string | null;
 }) {
   const queryClient = useQueryClient();
-  const history = useQuery({
+  const history = useInfiniteQuery({
     ...storefrontReleaseQueries.history(storefrontId),
     // Only fetched while the dialog is open: it is a rarely-opened panel, and
     // the list is worthless if it is not current at the moment it is read.
     enabled: open,
     staleTime: 0,
   });
-  const rows = describeReleaseHistory(history.data ?? [], activeReleaseId);
+  const releases = history.data?.pages.flat() ?? [];
+  const rows = describeReleaseHistory(releases, activeReleaseId);
 
   const activate = useMutation({
     mutationFn: async (releaseId: string) => {
@@ -145,7 +150,9 @@ export function EditorReleaseHistoryDialog({
                       <Badge variant="secondary">Content</Badge>
                     ) : null}
                   </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
+                  {/* Muted foreground at this size lands at 4.35:1 on the
+                      row's own background — under AA. */}
+                  <p className="mt-0.5 text-xs text-foreground/75">
                     {new Date(row.createdAt).toLocaleString()}
                   </p>
                 </div>
@@ -167,12 +174,29 @@ export function EditorReleaseHistoryDialog({
                     Activate
                   </Button>
                 ) : (
-                  <span className="max-w-[12rem] text-right text-xs text-muted-foreground">
+                  <span className="max-w-[12rem] text-right text-xs text-foreground/75">
                     {row.blockedReason}
                   </span>
                 )}
               </li>
             ))}
+            {history.hasNextPage ? (
+              <li className="pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  disabled={history.isFetchingNextPage}
+                  onClick={() => void history.fetchNextPage()}
+                >
+                  {history.isFetchingNextPage ? (
+                    <LoaderCircle className="size-3.5 animate-spin" />
+                  ) : null}
+                  Load older releases
+                </Button>
+              </li>
+            ) : null}
           </ul>
         )}
       </DialogContent>

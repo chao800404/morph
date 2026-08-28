@@ -487,4 +487,27 @@ describe("EditorSectionsPanel editable node tree", () => {
       screen.getByRole("button", { name: "hero" }).getAttribute("data-active"),
     ).not.toBe("true");
   });
+
+  it("marks a section row selected without waiting for the canvas", async () => {
+    // The canvas is the source of truth for selection, but confirming a click
+    // takes a round trip through the preview frame. Waiting for it left the row
+    // looking unselected for about a second after it was pressed.
+    const activeSelection = {
+      sectionId: "section-2",
+      isSection: false,
+      nodeId: "newsletter-title",
+      fieldPath: null,
+      fieldKey: null,
+      elementKey: null,
+    } as EditorSelectionDescriptor;
+
+    renderPanel(vi.fn(), vi.fn(), { editableNodes, activeSelection });
+
+    const heroRow = screen.getByRole("button", { name: "hero" });
+    expect(heroRow.getAttribute("data-active")).not.toBe("true");
+
+    fireEvent.click(heroRow);
+
+    expect(heroRow.getAttribute("data-active")).toBe("true");
+  });
 });

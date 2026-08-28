@@ -47,6 +47,15 @@ const releases = [
   },
 ];
 
+/** A full page of releases, so the list has more than one page to walk. */
+function page(count: number, prefix: string) {
+  return Array.from({ length: count }, (_, index) => ({
+    ...releases[0],
+    id: `${prefix}${String(index).padStart(4, "0")}-1111-4111-8111-111111111111`,
+    createdAt: `2026-08-${String(10 + (index % 18)).padStart(2, "0")}T10:00:00.000Z`,
+  }));
+}
+
 function renderDialog(activeReleaseId: string | null = releases[0].id) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -140,5 +149,47 @@ describe("EditorReleaseHistoryDialog", () => {
       await screen.findByText("Failed to fetch storefront release history"),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("reaches releases past the first page instead of stopping at 25", async () => {
+    // Releases only accumulate, so a fixed first page silently hides every
+    // older one — including the version someone opened this panel to roll back
+    // to.
+    const first = page(25, "aaaa");
+    const second = page(3, "bbbb");
+    listStorefrontReleaseHistory.mockImplementation(
+      ({ data }: { data: { offset?: number } }) => ({
+        success: true,
+        data: (data.offset ?? 0) === 0 ? first : second,
+      }),
+    );
+
+    renderDialog(first[0].id);
+
+    const more = await screen.findByRole("button", {
+      name: /Load older releases/,
+    });
+    fireEvent.click(more);
+
+    await waitFor(() =>
+      expect(screen.getByText(second[0].id.slice(0, 8))).toBeTruthy(),
+    );
+    // The second request asks for what comes after everything already shown.
+    await waitFor(() =>
+      expect(listStorefrontReleaseHistory).toHaveBeenLastCalledWith({
+        data: { storefrontId: "store-1", limit: 25, offset: 25 },
+      }),
+    );
+  });
+
+  it("stops offering more once a short page comes back", async () => {
+    // A page shorter than the limit is the end of the list; asking again would
+    // repeat the work to learn the same thing.
+    renderDialog();
+
+    await screen.findByText("Live");
+    expect(
+      screen.queryByRole("button", { name: /Load older releases/ }),
+    ).toBeNull();
   });
 });

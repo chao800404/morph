@@ -87,11 +87,16 @@ function DialogHeader({
     >
       <div className="flex items-center gap-2">
         <DialogPrimitive.Close asChild>
-          <Button variant="ghost" size="icon">
+          {/* Icon-only, so without a label it reads as "button" and a keyboard
+              user cannot tell what closing control they have landed on. */}
+          <Button variant="ghost" size="icon" aria-label="Close dialog">
             <XIcon className="size-4 text-muted-foreground" />
           </Button>
         </DialogPrimitive.Close>
-        <Kbd className="border">esc</Kbd>
+        {/* `text-muted-foreground` on `bg-muted` is 4.39:1, just under the 4.5
+            AA threshold at this size. A stronger foreground keeps the hint
+            readable without changing the token for the whole product. */}
+        <Kbd className="border text-foreground/75">esc</Kbd>
       </div>
       {children}
     </div>

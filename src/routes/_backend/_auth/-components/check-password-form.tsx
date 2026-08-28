@@ -57,6 +57,11 @@ export const CheckPasswordForm = ({
         </div>
       </div>
       <form
+        // Submitting before React has hydrated falls back to a native submit,
+        // and a form with no method submits as GET — which would put every
+        // field, the password included, into the URL, the browser history and
+        // any access log along the way.
+        method="post"
         onSubmit={(e) => {
           e.preventDefault();
           e.stopPropagation();

@@ -1096,6 +1096,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                   <button
                     type="button"
                     onClick={(e) => handleCloseTab(path, e)}
+                    // Its only content is an icon, so without this it reads as
+                    // "button" and nothing else — and there is one per open
+                    // tab, which makes them indistinguishable.
+                    aria-label={`Close ${name}`}
+                    title={`Close ${name}`}
                     className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-muted"
                   >
                     <X className="size-3 text-muted-foreground hover:text-foreground" />

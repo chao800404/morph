@@ -899,6 +899,7 @@ export function VisualEditorShell({
   );
   const [isBuildPending, setIsBuildPending] = useState(false);
   const [isReleaseHistoryOpen, setIsReleaseHistoryOpen] = useState(false);
+  const releaseHistoryTriggerRef = useRef<HTMLButtonElement>(null);
   const [buildDiagnostics, setBuildDiagnostics] = useState<any | null>(null);
 
   const [activeCodeFilePath, setActiveCodeFilePath] = useState<
@@ -4013,8 +4014,19 @@ export function VisualEditorShell({
   );
 
   return (
-    <div className="grid h-svh min-h-0 grid-rows-[3.5rem_minmax(0,1fr)] bg-background">
-      <header className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b bg-component px-3 lg:px-4">
+    <div
+      // Marks where the editor ends and anything mounted beside it begins —
+      // dev tools mount as a sibling of the app, and an accessibility check
+      // that cannot tell them apart reports faults nobody here can fix.
+      data-morph-editor
+      className="grid h-svh min-h-0 grid-rows-[3.5rem_minmax(0,1fr)] bg-background"
+    >
+      {/* The controls size to their content and the storefront name absorbs
+          what is left over. Giving the two outer columns an equal share instead
+          meant the right-hand group was handed less width than its buttons
+          need, and it overflowed leftwards — printing the save status on top of
+          the mode switch. */}
+      <header className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 border-b bg-component px-3 lg:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="ghost" size="icon" asChild>
             <Link
@@ -4066,7 +4078,10 @@ export function VisualEditorShell({
             <div
               role="group"
               aria-label="Preview device"
-              className="hidden items-center gap-0.5 lg:flex"
+              // Collapses into the dropdown below a wide viewport. At 1024 the
+              // expanded row plus the mode switch is wider than the middle
+              // column can be, and the overflow lands on the buttons beside it.
+              className="hidden items-center gap-0.5 xl:flex"
             >
               {viewportOptions.map(({ value, label, icon: Icon }) => (
                 <Button
@@ -4116,7 +4131,7 @@ export function VisualEditorShell({
                 )}
               </Button>
             </div>
-            <div className="flex items-center gap-0.5 lg:hidden">
+            <div className="flex items-center gap-0.5 xl:hidden">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -4207,7 +4222,7 @@ export function VisualEditorShell({
             </Button>
           </div>
         </div>
-        <div className="flex items-center gap-1 justify-self-end">
+        <div className="flex min-w-0 items-center gap-1 justify-self-end">
           {(() => {
             const isThemeSaving = Object.values(themeFileSaveStatus).some(
               (s) => s === "saving",
@@ -4220,13 +4235,29 @@ export function VisualEditorShell({
               isThemeSaving ||
               publishMutation.isPending;
 
+            const statusLabel = publishMutation.isPending
+              ? "Publishing…"
+              : isSaving
+                ? "Saving…"
+                : hasError
+                  ? firstThemeError
+                    ? `Save failed: ${firstThemeError.slice(0, 30)}…`
+                    : "Save failed"
+                  : hasUnpublishedChanges
+                    ? "Unpublished changes"
+                    : "All changes saved";
+
             return (
               <span
                 className={cn(
-                  "mr-2 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex",
+                  // Below a wide viewport only the icon survives: the words
+                  // cost about 140px, which is the difference between this
+                  // toolbar fitting on a 1024px laptop and overlapping.
+                  "mr-2 hidden shrink-0 items-center gap-1.5 text-xs text-muted-foreground sm:flex",
                   hasError && "text-destructive font-medium",
                 )}
-                title={firstThemeError}
+                title={firstThemeError ?? statusLabel}
+                aria-label={statusLabel}
               >
                 {isSaving ? (
                   <LoaderCircle className="size-3.5 animate-spin text-primary" />
@@ -4235,17 +4266,7 @@ export function VisualEditorShell({
                 ) : (
                   <CircleCheck className="size-3.5" />
                 )}
-                {publishMutation.isPending
-                  ? "Publishing…"
-                  : isSaving
-                    ? "Saving…"
-                    : hasError
-                      ? firstThemeError
-                        ? `Save failed: ${firstThemeError.slice(0, 30)}…`
-                        : "Save failed"
-                      : hasUnpublishedChanges
-                        ? "Unpublished changes"
-                        : "All changes saved"}
+                <span className="hidden xl:inline">{statusLabel}</span>
               </span>
             );
           })()}
@@ -4320,6 +4341,7 @@ export function VisualEditorShell({
           </Button>
 
           <Button
+            ref={releaseHistoryTriggerRef}
             type="button"
             variant="outline"
             size="xs"
@@ -4357,7 +4379,19 @@ export function VisualEditorShell({
 
       <EditorReleaseHistoryDialog
         open={isReleaseHistoryOpen}
-        onOpenChange={setIsReleaseHistoryOpen}
+        onOpenChange={(open) => {
+          setIsReleaseHistoryOpen(open);
+          // Focus is put back by hand rather than left to the dialog: the
+          // editor re-renders constantly, and the node the dialog remembered
+          // may be gone by the time it closes — which drops a keyboard user at
+          // the top of the document with the whole toolbar to tab through
+          // again.
+          if (!open) {
+            requestAnimationFrame(() =>
+              releaseHistoryTriggerRef.current?.focus(),
+            );
+          }
+        }}
         storefrontId={context.storefront.id}
         themeId={context.theme.id}
         activeReleaseId={context.storefront.activeReleaseId}

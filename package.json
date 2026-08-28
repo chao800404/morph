@@ -29,7 +29,9 @@
     "db:migrate:dev": "wrangler d1 migrations apply DATABASE --local",
     "db:migrate:prod": "wrangler d1 migrations apply DATABASE --remote",
     "db:studio:dev": "drizzle-kit studio",
-    "db:studio:prod": "cross-env DRIZZLE_TARGET=remote drizzle-kit studio"
+    "db:studio:prod": "cross-env DRIZZLE_TARGET=remote drizzle-kit studio",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@babel/parser": "^7.26.9",
@@ -105,7 +107,9 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@cloudflare/workers-types": "^4.20251212.0",
+    "@playwright/test": "^1.62.1",
     "@tanstack/devtools-vite": "^0.3.11",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.2.0",

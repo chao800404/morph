@@ -22,4 +22,9 @@ todos.json
 .phase3-seal-backup/
 .morph-builds
 *Zone.Identifier*
-*:Zone.Identifier:
+*:Zone.Identifier:
+# Playwright
+e2e/.auth/
+test-results/
+playwright-report/
+.env.e2e

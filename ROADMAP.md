@@ -251,14 +251,30 @@ Edge Runtime
 - release history UI：已閉環——編輯器工具列的 History 列出每次發布的 release，
   標出目前 live 的版本並可切換。啟用沿用同一個部署核心（CAS 搶指標後部署該 release
   的不可變 artifact），CAS 的期望指標取自清單自身看到的狀態，過期的分頁會輸掉。
-  尚未做分頁：固定取最新 25 筆，伺服器支援 `offset` 但沒有介面。
+  分頁已完成：25 筆一頁，底部可載入更早的版本。
 - 復原／重做已覆蓋全部八條寫入路徑，同一檔案的多次寫入會逐筆堆疊；範圍是單一分頁的
   編輯 session（上限 100 筆、不持久化）。跨發布的回復由 release history 負責。
 - content-only publish：已閉環——不重新編譯，且相同 build 不再重新部署 Worker。
   已用真實 workspace 的資料庫副本實測：第一次發布因無部署紀錄而部署，記錄後的第二次
   純內容發布判定為跳過，且仍建立新 release。
-- 真實瀏覽器層 E2E：內容鏈已有跨層整合測試（直譯器輸出 → 預覽解析 → 欄位可達性），
-  仍缺實際互動延遲、跨瀏覽器行為、響應式斷點與需要登入的完整編輯迴圈
+- 編輯器解釋器與真實建置的一致性：元件層已證實逐字相同（同一份 starter 主題原始碼，
+  一邊走解釋器、一邊以 esbuild 編譯後交給真的 React，比對正規化 DOM；九個案例通過，
+  含跨檔案 import 與 `map` 內的元件邊界）。前提是主題依賴為封閉白名單，所以解釋器要
+  覆蓋的是一個受控子集，不是整個 React 生態。框架整合層也已涵蓋：以真實 TanStack
+  Router 渲染 starter 主題首頁並與解釋器逐字比對，`beforeLoad`、`createIsomorphicFn`、
+  React context 與 `Outlet` 全部真的執行。**邊界是 starter 主題實際用到的 API**
+  ——使用者自寫的主題若用到別的功能，目前沒有測試會知道。
+- 真實瀏覽器層 E2E：已建立（Playwright，`pnpm test:e2e`，與單元測試分離；憑證走未追蹤
+  的 `.env.e2e`，未設定時自行 skip）。目前覆蓋三個場景——畫布選取回到樹狀、預覽框高度
+  等於內容高度、未編輯時 Undo 停用——皆經變異驗證。仍缺：實際互動延遲、跨瀏覽器行為、
+  響應式斷點與跨瀏覽器已覆蓋（無障礙以 axe 掃描含對話框狀態、鍵盤操作與焦點歸還；
+  響應式比對 header 各組是否重疊；Chromium、Firefox、WebKit 三個引擎全數通過，
+  無任何引擎行為差異）。
+  發布迴圈已實際執行並通過：編譯 → 建置產物 → Publish → 建立 release → production
+  指標移動，斷言包含最新的 release 帶有 `Live` 標記。仍由 `E2E_ALLOW_PUBLISH=1`
+  才啟用，因為它會建立 release 並移動指標。互動延遲也已建立基準（畫布選取約 470ms、
+  樹狀選取約 150ms、模式切換約 220ms），量測過程本身找出並修掉一處退化。
+  原生拖放在 iframe 加縮放畫布的組合下仍驗證不了，拖曳行為只能手動實測。
 - custom domain 憑證與 DNS 生命週期
 - AI Code Agent backend workflow
 - AI patch / diff / repair orchestration
@@ -519,7 +535,7 @@ New Published Content Revisions
 
 待完成：
 
-- release history 分頁（目前固定取最新 25 筆）
+- ~~release history 分頁~~：已完成（`useInfiniteQuery`，25 筆一頁，收到不足一頁即停止）
 - audit/history presentation：誰在何時發布、變更了什麼；目前只有 `created_by` 與時間
 - compatibility cleanup from current `publishedSourceRevisionId` / `publishedRevisionId`
 
@@ -972,6 +988,27 @@ Code Agent 可處理超出 controlled runtime schema 的需求，但仍走 Sandb
 - production schema mutation 必須人工批准。
 
 ---
+
+# Deferred by decision
+
+以下不是缺口，是明確決定「先不做」的項目。記在這裡是為了不用再討論第二次。
+
+## 主題可用的第三方 runtime 套件（例如 Rive）
+
+**決定：系統收完之前不加。** 每加一個有副作用的套件，就是在半成品上再開一個戰場。
+
+技術路徑已經確認，之後照這個做即可：
+
+- 建置端：加進 `DEFAULT_APPROVED_DEPENDENCIES` 即可，容器內的 Vite 會打包它；
+  建置本來就保留二進位產物完整，`.riv` 這類資產不會被破壞。
+- Live Preview：走既有的 `builtinComponents` 機制——主題 import 該套件時，解釋器
+  直接換成平台提供的真實 React 元件（`@tanstack/react-router` 的 `Outlet` 就是這樣
+  處理的）。解釋器不需要理解那個套件在做什麼。
+- 前提：主題必須用**元件寫法**（`<Rive src="..." />`），不能用 hook 寫法
+  （`useRive()` 需要解釋器能執行 hook 並解構結果，那是另一個層級的工作）。
+- 兩個待決定：WASM 自行託管或走外部 CDN；以及編輯器 iframe 裡要不要真的執行
+  第三方 WASM（跑＝所見即所得，不跑＝Live Preview 顯示佔位框、真實效果看
+  Build Preview）。後者是安全決定，不是技術決定。
 
 # Product Ceiling
 

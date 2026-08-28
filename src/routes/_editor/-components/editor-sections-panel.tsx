@@ -470,6 +470,16 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     nodeId: string;
     baselineSelectionIdentity: string | null;
   } | null>(null);
+  // Clicking a section row updates the URL in about a tenth of a second, but
+  // the row only counted as selected once the canvas reported back — roughly a
+  // second later. The row shows the choice immediately and lets the canvas
+  // confirm, which is what the node rows already do.
+  const [optimisticSectionId, setOptimisticSectionId] = useState<string | null>(
+    null,
+  );
+  const optimisticSectionTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const optimisticSelectionTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -595,6 +605,27 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
       }
     }
   }, [activeSelectionIdentity, editableNodeById, optimisticSelection]);
+
+  useEffect(() => {
+    if (!optimisticSectionId) return;
+    // Cleared as soon as the canvas agrees; the timer is the backstop for a
+    // selection the canvas never confirms, so a stale row cannot outlive it.
+    if (
+      activeSelection?.isSection &&
+      activeSelection.sectionId === optimisticSectionId
+    ) {
+      setOptimisticSectionId(null);
+    }
+  }, [activeSelection, optimisticSectionId]);
+
+  useEffect(
+    () => () => {
+      if (optimisticSectionTimerRef.current) {
+        clearTimeout(optimisticSectionTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const sectionId = search.section;
@@ -808,10 +839,12 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                           section={section}
                           index={index}
                           selected={
-                            !optimisticSelectedEditableNode &&
-                            (activeSelection?.sectionId ?? search.section) ===
-                              section.id &&
-                            (!activeSelection || activeSelection.isSection)
+                            optimisticSectionId
+                              ? optimisticSectionId === section.id
+                              : !optimisticSelectedEditableNode &&
+                                (activeSelection?.sectionId ??
+                                  search.section) === section.id &&
+                                (!activeSelection || activeSelection.isSection)
                           }
                           disabled={reorderMutation.isPending}
                           expanded={expanded}
@@ -822,6 +855,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                               clearTimeout(optimisticSelectionTimerRef.current);
                               optimisticSelectionTimerRef.current = null;
                             }
+                            setOptimisticSectionId(section.id);
+                            if (optimisticSectionTimerRef.current) {
+                              clearTimeout(optimisticSectionTimerRef.current);
+                            }
+                            optimisticSectionTimerRef.current = setTimeout(() => {
+                              setOptimisticSectionId(null);
+                              optimisticSectionTimerRef.current = null;
+                            }, OPTIMISTIC_SELECTION_TIMEOUT_MS);
                             onSearchChange({ section: section.id });
                           }}
                           onToggleExpanded={() =>
