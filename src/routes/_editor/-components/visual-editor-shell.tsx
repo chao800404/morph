@@ -3076,6 +3076,19 @@ export function VisualEditorShell({
         return;
       }
 
+      // Keep the Inspector's content control aligned with the value just
+      // committed in the canvas. The preview edits its DOM optimistically, so
+      // waiting for the debounced Document refetch would otherwise leave the
+      // right panel showing the previous value.
+      setActiveSelection((current) =>
+        current &&
+        current.sectionId === message.sectionId &&
+        current.fieldKey === message.fieldKey &&
+        current.fieldPath === message.fieldPath
+          ? { ...current, contentValue: message.value }
+          : current,
+      );
+
       const key = `${activeTemplate.id}:${message.sectionId}`;
       const currentProps = {
         ...sectionPropsSnapshot(message.sectionId),

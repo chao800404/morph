@@ -69,6 +69,7 @@ import {
   createJsxTagDecorations,
   registerTailwindCompletionProvider,
 } from "./editor-code-language-support";
+import { extractThemeDependencyNames } from "./editor-code-package-types";
 import { formatEditorCode } from "./editor-code-formatter";
 import { prepareDuplicateThemeFile } from "@/lib/storefront/editor/duplicate-theme-file";
 import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
@@ -137,7 +138,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
-  const jsxTagDecorationsRef = useRef<{ dispose: () => void } | null>(null);
+  const jsxTagDecorationsRef =
+    useRef<ReturnType<typeof createJsxTagDecorations> | null>(null);
 
   // Find initial active file (default to Hero.tsx or index.tsx)
   const defaultFile = useMemo(() => {
@@ -217,7 +219,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleEditorWillMount = useCallback(
     (monaco: Monaco) => {
-      configureThemeTypeScript(monaco);
+      configureThemeTypeScript(monaco, extractThemeDependencyNames(files));
       ensureThemeWorkspaceModels(
         monaco,
         workspaceScope,
@@ -339,6 +341,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const activeFile = useMemo(() => {
     return files.find((f) => f.path === activeFilePath);
   }, [files, activeFilePath]);
+
+  // Monaco can swap the model without remounting the React editor. Refresh the
+  // semantic tag decorations after that transition so a hot reload or a tab
+  // switch cannot leave the JSX depth colors missing until a full page reload.
+  useEffect(() => {
+    jsxTagDecorationsRef.current?.update();
+  }, [activeFilePath, activeFile?.content]);
 
   const getFileBaseline = useCallback(
     (path: string) => {
@@ -1913,12 +1922,28 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                 wordWrap: "on",
                 automaticLayout: true,
                 padding: { top: 12, bottom: 12 },
+                autoClosingBrackets: "always",
+                autoClosingQuotes: "always",
+                autoSurround: "languageDefined",
+                formatOnPaste: true,
+                formatOnType: true,
+                parameterHints: {
+                  enabled: true,
+                  cycle: true,
+                },
                 quickSuggestions: {
                   other: true,
                   comments: false,
                   strings: true,
                 },
+                quickSuggestionsDelay: 80,
+                acceptSuggestionOnEnter: "smart",
+                acceptSuggestionOnCommitCharacter: true,
+                suggestSelection: "first",
+                snippetSuggestions: "inline",
+                tabCompletion: "on",
                 suggestOnTriggerCharacters: true,
+                inlayHints: { enabled: "on" },
               }}
             />
           ) : (

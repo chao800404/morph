@@ -501,11 +501,28 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const selectedFieldValue = (key: string): unknown => {
     const path = nestedFieldPath(key);
     const value = path ? getFieldPathValue(props, path) : props[key];
+    // Canvas inline editing updates the selected preview descriptor before the
+    // debounced Document refetch reaches this panel. Prefer that value for the
+    // selected text control so the Inspector converges immediately.
+    if (
+      isSelectedNode &&
+      selectedField === key &&
+      selection?.contentValue !== null &&
+      selection?.contentValue !== undefined
+    ) {
+      return selection.contentValue;
+    }
     if (value !== undefined) return value;
     return isSelectedNode && selectedField === key
       ? selection?.contentValue
       : undefined;
   };
+  const contentFieldInputKey = (fieldKey: string) =>
+    `${fieldKey}:${
+      isSelectedNode && selectedField === fieldKey
+        ? (selection?.contentValue ?? "")
+        : ""
+    }`;
   const optimisticValue = (key: string): number | string | undefined =>
     optimisticStyleRef.current.values[key];
   const optimisticNumber = (key: string): number | undefined => {
@@ -1600,6 +1617,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             >
                               {rowDefinition.type === "textarea" ? (
                                 <Textarea
+                                  key={contentFieldInputKey(rowKey)}
                                   defaultValue={String(row?.[rowKey] ?? "")}
                                   maxLength={rowDefinition.maxLength}
                                   onInput={(event) =>
@@ -1858,6 +1876,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       label={binding.fieldKey.replace(/[-_]/g, " ")}
                     >
                       <Textarea
+                        key={contentFieldInputKey(binding.fieldKey)}
                         rows={2}
                         defaultValue={String(value ?? "")}
                         onInput={(event) =>
@@ -1896,6 +1915,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   isFocused={activeFieldKey === "eyebrow"}
                 >
                   <Input
+                    key={contentFieldInputKey("eyebrow")}
                     defaultValue={String(
                       contentFieldDisplayValue("eyebrow") ?? "",
                     )}
@@ -1931,6 +1951,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   isFocused={activeFieldKey === "label"}
                 >
                   <Input
+                    key={contentFieldInputKey("label")}
                     defaultValue={String(
                       contentFieldDisplayValue("label") ?? "",
                     )}
@@ -1965,6 +1986,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   isFocused={activeFieldKey === "heading"}
                 >
                   <Textarea
+                    key={contentFieldInputKey("heading")}
                     rows={2}
                     defaultValue={String(
                       contentFieldDisplayValue("heading") ?? "",
@@ -2003,6 +2025,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   isFocused={activeFieldKey === "description"}
                 >
                   <Textarea
+                    key={contentFieldInputKey("description")}
                     rows={3}
                     defaultValue={String(
                       contentFieldDisplayValue("description") ?? "",
@@ -2039,6 +2062,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   isFocused={activeFieldKey === "body"}
                 >
                   <Textarea
+                    key={contentFieldInputKey("body")}
                     rows={3}
                     defaultValue={String(
                       hasActiveRepeatedBody
@@ -2090,6 +2114,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         Label
                       </label>
                       <Input
+                        key={contentFieldInputKey("actionLabel")}
                         defaultValue={String(
                           selectedFieldValue("actionLabel") ?? "",
                         )}
@@ -2117,6 +2142,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         Link URL
                       </label>
                       <Input
+                        key={contentFieldInputKey("actionHref")}
                         defaultValue={String(
                           selectedFieldValue("actionHref") ?? "",
                         )}
@@ -2199,6 +2225,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     )}
                   </div>
                   <Input
+                    key={contentFieldInputKey("imageSrc")}
                     defaultValue={String(selectedFieldValue("imageSrc") ?? "")}
                     onBlur={(e) =>
                       nestedFieldPath("imageSrc")
@@ -2214,6 +2241,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   />
                   {selectedFieldValue("imageAlt") !== undefined && (
                     <Input
+                      key={contentFieldInputKey("imageAlt")}
                       defaultValue={String(
                         selectedFieldValue("imageAlt") ?? "",
                       )}

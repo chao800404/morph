@@ -469,6 +469,38 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.queryByText("Action Button")).toBeNull();
   });
 
+  it("reflects a value committed from the live preview", () => {
+    const section = baseSection("hero", { heading: "Original heading" });
+    const selection = selectionDescriptor({
+      kind: "heading",
+      tagName: "h1",
+      elementKey: "heading",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      contentValue: "Original heading",
+    });
+    const { rerender } = render(
+      <EditorStyleInspector
+        {...common}
+        section={section}
+        selection={selection}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("Original heading")).toBeTruthy();
+
+    rerender(
+      <EditorStyleInspector
+        {...common}
+        section={section}
+        selection={{ ...selection, contentValue: "Edited in preview" }}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("Edited in preview")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Original heading")).toBeNull();
+  });
+
   it("shows and edits only the bound child fields when a parent component is selected", () => {
     const onPreviewSelectionField = vi.fn();
     const onPropsChange = vi.fn();

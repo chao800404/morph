@@ -1,6 +1,10 @@
 import type { Monaco } from "@monaco-editor/react";
 import type { editor, Position } from "monaco-editor";
 import { suggestTailwindClasses } from "@/lib/storefront/ast/tailwind-class-suggestions";
+import {
+  DEFAULT_THEME_TYPE_PACKAGE_NAMES,
+  renderThemePackageTypeDeclarations,
+} from "./editor-code-package-types";
 
 const MORPH_THEME_JSX_TYPES = `
 declare namespace JSX {
@@ -16,7 +20,84 @@ declare namespace JSX {
     key?: string | number;
   }
 
+  type ThemeIntrinsicProps = {
+    id?: string;
+    title?: string;
+    role?: string;
+    className?: string;
+    style?: Record<string, string | number | undefined>;
+    children?: unknown;
+    "aria-label"?: string;
+    "aria-hidden"?: boolean | "true" | "false";
+    onClick?: (event: unknown) => void;
+    onChange?: (event: unknown) => void;
+    onSubmit?: (event: unknown) => void;
+  };
+
   interface IntrinsicElements {
+    a: ThemeIntrinsicProps & {
+      href?: string;
+      target?: string;
+      rel?: string;
+      download?: string | boolean;
+    };
+    button: ThemeIntrinsicProps & {
+      type?: "button" | "submit" | "reset";
+      disabled?: boolean;
+      name?: string;
+      value?: string | number;
+    };
+    input: ThemeIntrinsicProps & {
+      type?: string;
+      value?: string | number;
+      defaultValue?: string | number;
+      placeholder?: string;
+      name?: string;
+      checked?: boolean;
+      disabled?: boolean;
+      readOnly?: boolean;
+      required?: boolean;
+    };
+    textarea: ThemeIntrinsicProps & {
+      value?: string | number;
+      defaultValue?: string | number;
+      placeholder?: string;
+      rows?: number;
+      cols?: number;
+      disabled?: boolean;
+      readOnly?: boolean;
+      required?: boolean;
+    };
+    img: ThemeIntrinsicProps & {
+      src?: string;
+      alt?: string;
+      width?: string | number;
+      height?: string | number;
+      loading?: "eager" | "lazy";
+    };
+    form: ThemeIntrinsicProps & { action?: string; method?: "get" | "post" };
+    label: ThemeIntrinsicProps & { htmlFor?: string };
+    select: ThemeIntrinsicProps & {
+      value?: string | number;
+      defaultValue?: string | number;
+      name?: string;
+      disabled?: boolean;
+      required?: boolean;
+    };
+    option: ThemeIntrinsicProps & {
+      value?: string | number;
+      label?: string;
+      disabled?: boolean;
+      selected?: boolean;
+    };
+    video: ThemeIntrinsicProps & {
+      src?: string;
+      controls?: boolean;
+      autoPlay?: boolean;
+      loop?: boolean;
+      muted?: boolean;
+      poster?: string;
+    };
     [elementName: string]: {
       children?: unknown;
       className?: string;
@@ -50,25 +131,120 @@ declare module "clsx" {
 }
 
 declare module "@tanstack/react-router" {
-  export const HeadContent: (props: Record<string, never>) => JSX.Element;
+  export type LinkElementProps = {
+    href?: string;
+    target?: string;
+    rel?: string;
+    className?: string;
+    style?: Record<string, string | number | undefined>;
+    id?: string;
+    title?: string;
+    role?: string;
+    children?: unknown;
+    onClick?: (event: unknown) => void;
+    onMouseEnter?: (event: unknown) => void;
+    onMouseLeave?: (event: unknown) => void;
+    "aria-label"?: string;
+    "aria-current"?: string | boolean;
+  };
+
+  export type LinkOptions = {
+    to?: string;
+    from?: string;
+    params?: Record<string, unknown>;
+    search?: unknown;
+    hash?: string;
+    state?: unknown;
+    mask?: unknown;
+    preload?: boolean | "intent" | "viewport" | "render";
+    preloadDelay?: number;
+    preloadIntentProximity?: number;
+    activeOptions?: {
+      exact?: boolean;
+      includeSearch?: boolean;
+      includeHash?: boolean;
+      explicitUndefined?: boolean;
+    };
+    activeProps?: Record<string, unknown> | (() => Record<string, unknown>);
+    inactiveProps?: Record<string, unknown> | (() => Record<string, unknown>);
+    replace?: boolean;
+    resetScroll?: boolean;
+    hashScrollIntoView?: boolean;
+    viewTransition?: boolean;
+    startTransition?: boolean;
+    reloadDocument?: boolean;
+    unsafeRelative?: "path" | "route";
+    disabled?: boolean;
+    ignoreBlocker?: boolean;
+  };
+
+  export type LinkProps = LinkOptions &
+    LinkElementProps & {
+      children?: unknown | ((state: { isActive: boolean; isTransitioning: boolean }) => unknown);
+    };
+
+  export type HeadContentProps = { assetCrossOrigin?: string };
+  export type RouterProviderProps = {
+    router: unknown;
+    context?: Record<string, unknown>;
+    routeTree?: unknown;
+    defaultPreload?: boolean | "intent" | "viewport" | "render";
+    defaultPreloadDelay?: number;
+    basepath?: string;
+  };
+
+  export type RouteAuthoringOptions = {
+    component?: (props: Record<string, unknown>) => JSX.Element;
+    pendingComponent?: (props: Record<string, unknown>) => JSX.Element;
+    errorComponent?: (props: Record<string, unknown>) => JSX.Element;
+    notFoundComponent?: (props: Record<string, unknown>) => JSX.Element;
+    loader?: (context: Record<string, unknown>) => unknown | Promise<unknown>;
+    loaderDeps?: (context: Record<string, unknown>) => Record<string, unknown>;
+    beforeLoad?: (context: Record<string, unknown>) => unknown | Promise<unknown>;
+    validateSearch?: (search: Record<string, unknown>) => unknown;
+    head?: (context: Record<string, unknown>) => Record<string, unknown>;
+    meta?: (context: Record<string, unknown>) => readonly Record<string, unknown>[];
+    links?: (context: Record<string, unknown>) => readonly Record<string, unknown>[];
+    scripts?: (context: Record<string, unknown>) => readonly Record<string, unknown>[];
+    staleTime?: number;
+    gcTime?: number;
+    preload?: boolean;
+  };
+
+  export type RouteOptions = RouteAuthoringOptions;
+  export type RouterOptions = {
+    routeTree: unknown;
+    context?: Record<string, unknown>;
+    defaultPreload?: boolean | "intent" | "viewport" | "render";
+    defaultPreloadDelay?: number;
+    scrollRestoration?: boolean;
+    notFoundMode?: "root" | "fuzzy";
+  };
+
+  export const HeadContent: (props: HeadContentProps) => JSX.Element;
+  export const Link: (props: LinkProps) => JSX.Element;
   export const Outlet: (props: Record<string, never>) => JSX.Element;
-  export const RouterProvider: (props: { router: unknown }) => JSX.Element;
+  export const RouterProvider: (props: RouterProviderProps) => JSX.Element;
   export const Scripts: (props: Record<string, never>) => JSX.Element;
-  export function createRootRoute(options: Record<string, unknown>): any;
+  export function createRootRoute(options?: RouteAuthoringOptions): unknown;
   export function createRootRouteWithContext<TContext>(): (
-    options: Record<string, unknown>,
-  ) => any;
+    options?: RouteAuthoringOptions,
+  ) => unknown;
   export function createFileRoute<TPath extends string>(
     path: TPath,
-  ): (options: Record<string, unknown>) => any;
-  export function createRouter(options: Record<string, unknown>): any;
+  ): (options?: RouteAuthoringOptions) => unknown;
+  export function createRouter(options: RouterOptions): unknown;
 }
 
 declare module "@tanstack/react-start" {
-  export function createServerFn(options?: Record<string, unknown>): {
-    validator<T>(validator: (data: T) => T): any;
-    handler<T>(handler: (context: { data: any }) => T | Promise<T>): any;
+  export type ServerFnOptions = {
+    method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
   };
+  export type ServerFnBuilder = {
+    validator<T>(validator: (data: T) => T): ServerFnBuilder;
+    handler<T>(handler: (context: { data: T }) => T | Promise<T>): ServerFnBuilder;
+  };
+  export function createServerFn(options?: ServerFnOptions): ServerFnBuilder;
 }
 `;
 
@@ -278,7 +454,14 @@ export const JSX_TAG_DECORATION_CLASSES = [
   "morph-jsx-tag-5",
 ] as const;
 
-export function createJsxTagDecorations(editorInstance: editor.IStandaloneCodeEditor) {
+export type JsxTagDecorationController = {
+  update: () => void;
+  dispose: () => void;
+};
+
+export function createJsxTagDecorations(
+  editorInstance: editor.IStandaloneCodeEditor,
+): JsxTagDecorationController {
   let decorationIds: string[] = [];
   let contentDisposable: { dispose: () => void } | null = null;
 
@@ -349,12 +532,37 @@ export function resolveTailwindCompletionContext(
   };
 }
 
-export function configureThemeTypeScript(monaco: Monaco): void {
+export function configureThemeTypeScript(
+  monaco: Monaco,
+  packageNames: readonly string[] = DEFAULT_THEME_TYPE_PACKAGE_NAMES,
+): void {
   const defaults = monaco.languages.typescript.typescriptDefaults;
   defaults.setEagerModelSync(true);
   defaults.setDiagnosticsOptions({
     noSemanticValidation: false,
     noSyntaxValidation: false,
+  });
+  defaults.setModeConfiguration({
+    completionItems: true,
+    hovers: true,
+    documentSymbols: true,
+    definitions: true,
+    references: true,
+    documentHighlights: true,
+    rename: true,
+    diagnostics: true,
+    signatureHelp: true,
+    onTypeFormattingEdits: true,
+    codeActions: true,
+    inlayHints: true,
+  });
+  defaults.setInlayHintsOptions?.({
+    includeInlayParameterNameHints: "all",
+    includeInlayParameterNameHintsWhenArgumentMatchesName: true,
+    includeInlayFunctionParameterTypeHints: true,
+    includeInlayVariableTypeHints: false,
+    includeInlayPropertyDeclarationTypeHints: false,
+    includeInlayFunctionLikeReturnTypeHints: false,
   });
   defaults.setCompilerOptions({
     allowJs: true,
@@ -372,7 +580,12 @@ export function configureThemeTypeScript(monaco: Monaco): void {
     "file:///node_modules/@morph/theme-jsx/index.d.ts",
   );
   defaults.addExtraLib(
-    MORPH_THEME_DEPENDENCY_TYPES,
+    [
+      MORPH_THEME_DEPENDENCY_TYPES,
+      renderThemePackageTypeDeclarations(packageNames),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
     "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
   );
 }

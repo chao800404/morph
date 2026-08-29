@@ -145,6 +145,8 @@ describe("configureThemeTypeScript", () => {
   it("enables TSX parsing without disabling real syntax or semantic diagnostics", () => {
     const setEagerModelSync = vi.fn();
     const setDiagnosticsOptions = vi.fn();
+    const setModeConfiguration = vi.fn();
+    const setInlayHintsOptions = vi.fn();
     const setCompilerOptions = vi.fn();
     const addExtraLib = vi.fn();
     const monaco = {
@@ -153,6 +155,8 @@ describe("configureThemeTypeScript", () => {
           typescriptDefaults: {
             setEagerModelSync,
             setDiagnosticsOptions,
+            setModeConfiguration,
+            setInlayHintsOptions,
             setCompilerOptions,
             addExtraLib,
           },
@@ -171,12 +175,33 @@ describe("configureThemeTypeScript", () => {
       noSemanticValidation: false,
       noSyntaxValidation: false,
     });
+    expect(setModeConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        completionItems: true,
+        hovers: true,
+        signatureHelp: true,
+        codeActions: true,
+        inlayHints: true,
+      }),
+    );
+    expect(setInlayHintsOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        includeInlayParameterNameHints: "all",
+        includeInlayFunctionParameterTypeHints: true,
+      }),
+    );
     expect(setCompilerOptions).toHaveBeenCalledWith(
       expect.objectContaining({ jsx: 1, noEmit: true }),
     );
     expect(addExtraLib).toHaveBeenCalledTimes(2);
     expect(addExtraLib).toHaveBeenCalledWith(
       expect.stringContaining('declare module "clsx"'),
+      "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
+    );
+    expect(addExtraLib).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "export const Link: (props: LinkProps) => JSX.Element;",
+      ),
       "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
     );
     expect(addExtraLib).toHaveBeenCalledWith(

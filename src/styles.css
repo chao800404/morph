@@ -307,4 +307,19 @@ body {
   .monaco-editor .view-lines .view-line span.morph-jsx-tag-3 { color: #2ecc71 !important; }
   .monaco-editor .view-lines .view-line span.morph-jsx-tag-4 { color: #ff9d00 !important; }
   .monaco-editor .view-lines .view-line span.morph-jsx-tag-5 { color: #00d7ff !important; }
+
+  /* Monaco may put an inline decoration on a wrapper span instead of the
+     token span itself. Keep the depth color inherited in both DOM shapes. */
+  .monaco-editor .view-lines .morph-jsx-tag-0,
+  .monaco-editor .view-lines .morph-jsx-tag-0 span { color: #ffd700 !important; }
+  .monaco-editor .view-lines .morph-jsx-tag-1,
+  .monaco-editor .view-lines .morph-jsx-tag-1 span { color: #da70d6 !important; }
+  .monaco-editor .view-lines .morph-jsx-tag-2,
+  .monaco-editor .view-lines .morph-jsx-tag-2 span { color: #179fff !important; }
+  .monaco-editor .view-lines .morph-jsx-tag-3,
+  .monaco-editor .view-lines .morph-jsx-tag-3 span { color: #2ecc71 !important; }
+  .monaco-editor .view-lines .morph-jsx-tag-4,
+  .monaco-editor .view-lines .morph-jsx-tag-4 span { color: #ff9d00 !important; }
+  .monaco-editor .view-lines .morph-jsx-tag-5,
+  .monaco-editor .view-lines .morph-jsx-tag-5 span { color: #00d7ff !important; }
 }
