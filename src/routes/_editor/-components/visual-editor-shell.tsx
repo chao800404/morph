@@ -10,18 +10,44 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Separator } from "@/components/ui/separator";
-import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
-import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
-import { cn } from "@/lib/utils";
-import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
-  ArrowLeft,
+  addThemeRouteSection,
+  deriveThemeRouteSections,
+  listThemeRouteSectionOptions,
+  mergeDocumentWithRouteSections,
+  reorderThemeRouteSections,
+  type ThemeRouteSectionOption,
+} from "@/lib/storefront/compiler/theme-route-sections";
+import type {
+  StorefrontCommentGroupDTO,
+  StorefrontCommentThreadDTO,
+} from "@/lib/storefront/dto/storefront-comment.dto";
+import type {
+  StorefrontThemeBuildDTO,
+  StorefrontThemeBuildPreviewDTO,
+} from "@/lib/storefront/dto/storefront-theme-build.dto";
+import type {
+  StorefrontThemeFileDTO,
+  StorefrontThemeFileTreeNode,
+} from "@/lib/storefront/dto/storefront-theme-file.dto";
+import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import { dragAutoScrollStep } from "@/lib/storefront/editor/drag-autoscroll";
+import {
+  sectionHistoryScope,
+  themeFileHistoryScope,
+} from "@/lib/storefront/editor/editor-history";
+import { cn } from "@/lib/utils";
+import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import {
   AppWindow,
+  ArrowLeft,
   CheckCircle2,
-  CircleCheck,
-  CircleAlert,
   ChevronDown,
+  CircleAlert,
+  CircleCheck,
   Code2,
   ExternalLink,
   History,
@@ -41,52 +67,27 @@ import {
   Unlock,
 } from "lucide-react";
 import {
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { toast } from "sonner";
-import { dragAutoScrollStep } from "@/lib/storefront/editor/drag-autoscroll";
 import { useEditorHistory } from "./use-editor-history";
-import {
-  sectionHistoryScope,
-  themeFileHistoryScope,
-} from "@/lib/storefront/editor/editor-history";
-import type {
-  StorefrontCommentGroupDTO,
-  StorefrontCommentThreadDTO,
-} from "@/lib/storefront/dto/storefront-comment.dto";
-import type {
-  StorefrontThemeFileDTO,
-  StorefrontThemeFileTreeNode,
-} from "@/lib/storefront/dto/storefront-theme-file.dto";
-import type {
-  StorefrontThemeBuildDTO,
-  StorefrontThemeBuildPreviewDTO,
-} from "@/lib/storefront/dto/storefront-theme-build.dto";
-import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
-import {
-  addThemeRouteSection,
-  deriveThemeRouteSections,
-  listThemeRouteSectionOptions,
-  mergeDocumentWithRouteSections,
-  reorderThemeRouteSections,
-  type ThemeRouteSectionOption,
-} from "@/lib/storefront/compiler/theme-route-sections";
 
-import {
-  publishStorefrontThemeTemplate,
-  updateStorefrontThemeSectionProps,
-} from "@/server/storefront/storefront-themes.serverFn";
 import {
   createStorefrontCommentGroup,
   updateStorefrontCommentGroup,
 } from "@/server/storefront/storefront-comments.serverFn";
+import {
+  createPreviewBuild,
+  getPreviewBuildToken,
+  getThemeBuild,
+} from "@/server/storefront/storefront-theme-builds.serverFn";
 import {
   createStorefrontThemeRevision,
   getStorefrontThemeFile,
@@ -94,15 +95,36 @@ import {
   saveStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import {
-  createPreviewBuild,
-  getPreviewBuildToken,
-  getThemeBuild,
-} from "@/server/storefront/storefront-theme-builds.serverFn";
+  publishStorefrontThemeTemplate,
+  updateStorefrontThemeSectionProps,
+} from "@/server/storefront/storefront-themes.serverFn";
 
+import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
   patchElementClassNameResult,
   swapSiblingMorphNodes,
 } from "@/lib/storefront/ast/theme-ast-transformer";
+import {
+  hasInlineTextDocumentTarget,
+  isInlineTextEditCandidate,
+} from "@/lib/storefront/editor/inline-text-edit";
+import {
+  buildLivePreviewUrl,
+  resolveLivePreviewSecurity,
+} from "@/lib/storefront/editor/live-preview-security";
+import {
+  parsePreviewSectionProps,
+  type PreviewEditableNode,
+  type PreviewSectionProps,
+  type PreviewSelectionRestoreTarget,
+  type PreviewSpacingOverlayMode,
+} from "@/lib/storefront/editor/preview-protocol";
+import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
+import {
+  setFieldPathValue,
+  type EditorSelectionDescriptor,
+} from "@/lib/storefront/editor/selection-taxonomy";
+import { isPreviewSpacingOverlayMode } from "@/lib/storefront/editor/spacing-overlay";
 import {
   findLegacyThemeInstanceStyleSheet,
   patchThemeInstanceStyleClasses,
@@ -111,62 +133,40 @@ import {
   removeLegacyThemeInstanceStyleImport,
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
-import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
 import {
   toWorkspaceKey,
   useThemeWorkspaceStore,
 } from "@/lib/storefront/store/theme-workspace-store";
-import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
+import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import {
   EditorAssistantPanel,
   type EditorAssistantPanelTab,
 } from "./editor-assistant-panel";
+import { EditorCanvasComments } from "./editor-canvas-comments";
+import { resolveCodeSelectionTarget } from "./editor-code-selection";
+import { EditorCodeWorkspace } from "./editor-code-workspace";
+import { EditorPathNavigator } from "./editor-path-navigator";
+import { EditorReleaseHistoryDialog } from "./editor-release-history";
+import { EditorSectionsPanel } from "./editor-sections-panel";
 import type { InspectorPropsChangeOptions } from "./editor-style-inspector";
 import { resolveStylesSelectionTransition } from "./editor-styles-selection-mode";
-import {
-  isPreviewHandshakePending,
-  isLatestStyleRevision,
-  shouldRevealPreviewForStyleAck,
-} from "./style-revision";
-import {
-  setFieldPathValue,
-  type EditorSelectionDescriptor,
-} from "@/lib/storefront/editor/selection-taxonomy";
-import {
-  hasInlineTextDocumentTarget,
-  isInlineTextEditCandidate,
-} from "@/lib/storefront/editor/inline-text-edit";
-import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
-import {
-  parsePreviewSectionProps,
-  type PreviewEditableNode,
-  type PreviewSelectionRestoreTarget,
-  type PreviewSectionProps,
-  type PreviewSpacingOverlayMode,
-} from "@/lib/storefront/editor/preview-protocol";
-import { isPreviewSpacingOverlayMode } from "@/lib/storefront/editor/spacing-overlay";
-import {
-  buildLivePreviewUrl,
-  resolveLivePreviewSecurity,
-} from "@/lib/storefront/editor/live-preview-security";
-import {
-  useLivePreviewMessageBridge,
-  useStableLivePreviewSession,
-} from "./use-live-preview-message-bridge";
-import { EditorCanvasComments } from "./editor-canvas-comments";
-import { EditorReleaseHistoryDialog } from "./editor-release-history";
-import { EditorCodeWorkspace } from "./editor-code-workspace";
-import { resolveCodeSelectionTarget } from "./editor-code-selection";
-import { EditorPathNavigator } from "./editor-path-navigator";
-import { EditorSectionsPanel } from "./editor-sections-panel";
 import { resolveEditorTemplate } from "./editor-template";
 import {
   EditorToolbar,
   EditorToolbarGroup,
   EditorToolbarMode,
 } from "./editor-toolbar";
+import {
+  isLatestStyleRevision,
+  isPreviewHandshakePending,
+  shouldRevealPreviewForStyleAck,
+} from "./style-revision";
+import {
+  useLivePreviewMessageBridge,
+  useStableLivePreviewSession,
+} from "./use-live-preview-message-bridge";
 
 export function EditorModeSurface({
   active,
@@ -180,11 +180,19 @@ export function EditorModeSurface({
   return (
     <div
       aria-hidden={!active}
-      hidden={!active}
       inert={!active}
       className={cn(
-        "col-start-1 row-start-2 min-h-0 min-w-0 flex",
-        active ? "visible" : "pointer-events-none",
+        "col-start-1 row-start-2 min-h-0 min-w-0 flex relative",
+        // Keep the iframe/Monaco layout alive while the other mode is shown.
+        // `hidden` would set display:none, causing the preview's size bridge
+        // to measure its viewport at the minimum height and briefly expose a
+        // dark canvas gap when switching modes. Opacity makes the inactive
+        // grid layer fully transparent even for composited children such as
+        // Monaco and the iframe, while z-index gives the active layer a
+        // deterministic stacking order.
+        active
+          ? "visible z-10 opacity-100"
+          : "invisible z-0 opacity-0 pointer-events-none",
         className,
       )}
       data-editor-mode-surface="true"

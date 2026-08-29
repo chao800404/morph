@@ -22,7 +22,12 @@ describe("EditorModeSurface", () => {
     const surfaces = document.querySelectorAll("[data-editor-mode-surface]");
     expect(surfaces).toHaveLength(2);
     expect(surfaces[0].classList.contains("hidden")).toBe(false);
-    expect(surfaces[1].hasAttribute("hidden")).toBe(true);
+    expect(surfaces[0].classList.contains("opacity-100")).toBe(true);
+    expect(surfaces[0].classList.contains("z-10")).toBe(true);
+    expect(surfaces[1].classList.contains("invisible")).toBe(true);
+    expect(surfaces[1].classList.contains("opacity-0")).toBe(true);
+    expect(surfaces[1].classList.contains("z-0")).toBe(true);
+    expect(surfaces[1].hasAttribute("hidden")).toBe(false);
     expect(surfaces[0].getAttribute("aria-hidden")).toBe("false");
     expect(surfaces[1].getAttribute("aria-hidden")).toBe("true");
     expect(surfaces[1].hasAttribute("inert")).toBe(true);
@@ -40,7 +45,13 @@ describe("EditorModeSurface", () => {
     );
 
     expect(screen.getByTestId("preview-frame")).toBe(frame);
-    expect(surfaces[0].hasAttribute("hidden")).toBe(true);
+    expect(surfaces[0].classList.contains("invisible")).toBe(true);
+    expect(surfaces[0].classList.contains("opacity-0")).toBe(true);
+    expect(surfaces[0].classList.contains("z-0")).toBe(true);
+    expect(surfaces[0].hasAttribute("hidden")).toBe(false);
+    expect(surfaces[1].classList.contains("invisible")).toBe(false);
+    expect(surfaces[1].classList.contains("opacity-100")).toBe(true);
+    expect(surfaces[1].classList.contains("z-10")).toBe(true);
     expect(surfaces[1].hasAttribute("hidden")).toBe(false);
     expect(surfaces[0].hasAttribute("inert")).toBe(true);
     expect(surfaces[1].hasAttribute("inert")).toBe(false);
