@@ -169,6 +169,7 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
         data.files,
         {
           expectedSourceGeneration: data.expectedSourceGeneration,
+          deletions: data.deletions,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,

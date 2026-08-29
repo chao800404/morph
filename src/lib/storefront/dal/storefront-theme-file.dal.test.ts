@@ -157,6 +157,52 @@ describe("storefront theme file DAL", () => {
     ).toBe(2);
   });
 
+  it("writes and removes in one batch, which is what a move is", async () => {
+    const [created] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/components/Card.tsx",
+          content: "export default function Card() { return <div />; }",
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+
+    await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/components/ui/Card.tsx",
+          content: created.content,
+          expectMissing: true,
+        },
+      ],
+      {
+        expectedSourceGeneration: 2,
+        deletions: [
+          {
+            path: created.path,
+            expectedFileId: created.id,
+            expectedVersion: created.version,
+          },
+        ],
+      },
+    );
+
+    const paths = (
+      await storefrontThemeFileDal.listFiles("storefront-a", "theme-a")
+    ).map((file) => file.path);
+
+    // Both halves land together: writing without removing duplicates the file,
+    // removing without writing loses it.
+    expect(paths).toContain("src/components/ui/Card.tsx");
+    expect(paths).not.toContain("src/components/Card.tsx");
+  });
+
   it("strictly requires expectedSourceGeneration at the DAL layer", async () => {
     await expect(
       storefrontThemeFileDal.saveFilesBatch(

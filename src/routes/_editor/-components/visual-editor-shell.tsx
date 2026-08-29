@@ -130,7 +130,14 @@ import {
   isLatestStyleRevision,
   shouldRevealPreviewForStyleAck,
 } from "./style-revision";
-import { type EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
+import {
+  setFieldPathValue,
+  type EditorSelectionDescriptor,
+} from "@/lib/storefront/editor/selection-taxonomy";
+import {
+  hasInlineTextDocumentTarget,
+  isInlineTextEditCandidate,
+} from "@/lib/storefront/editor/inline-text-edit";
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
   parsePreviewSectionProps,
@@ -1190,6 +1197,14 @@ export function VisualEditorShell({
   const sectionSwapHandlerRef = useRef<
     (draggedSectionId: string, targetSectionId: string) => void
   >(() => {});
+  const inlineTextCommitHandlerRef = useRef<
+    (message: {
+      sectionId: string;
+      fieldKey: string;
+      fieldPath: string;
+      value: string;
+    }) => void
+  >(() => {});
   const previewSelectionStyle = useCallback(
     (styles: Record<string, string>, targetElement: string) => {
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -1212,6 +1227,7 @@ export function VisualEditorShell({
         fieldPath,
         value,
       });
+      schedulePreviewRemeasureRef.current();
     },
     [],
   );
@@ -2703,6 +2719,12 @@ export function VisualEditorShell({
         return;
       }
 
+      if (message.type === "morph:storefront-preview-commit-inline-text") {
+        reportAuthenticatedUserActivity();
+        inlineTextCommitHandlerRef.current(message);
+        return;
+      }
+
       if (message.type === "morph:storefront-preview-commit-section-reorder") {
         reportAuthenticatedUserActivity();
         void sectionSwapHandlerRef.current(
@@ -2907,6 +2929,7 @@ export function VisualEditorShell({
       type: "morph:storefront-preview-set-section-order",
       sectionIds,
     });
+    schedulePreviewRemeasureRef.current();
   }, []);
 
   const syncPreviewSectionProps = useCallback(
@@ -2917,6 +2940,12 @@ export function VisualEditorShell({
         props,
         enabled,
       });
+      // Anything that changes what the canvas renders has to re-measure, not
+      // just a file write. The theme's own `min-h-screen` resolves against the
+      // frame, so content that becomes shorter cannot report itself shorter —
+      // hiding a section or shortening a heading would otherwise leave the
+      // space it used to occupy behind.
+      schedulePreviewRemeasureRef.current();
     },
     [],
   );
@@ -3012,6 +3041,62 @@ export function VisualEditorShell({
       updatePropsMutation,
     ],
   );
+
+  useEffect(() => {
+    inlineTextCommitHandlerRef.current = (message) => {
+      const selection = activeSelection;
+      const lastSelection = lastPreviewSelectionRef.current;
+      if (
+        !selection ||
+        !activeTemplate ||
+        !isInlineTextEditCandidate({
+          selectionEnabled: isSelectionMode,
+          kind: selection.kind,
+          sectionId: selection.sectionId,
+          fieldKey: selection.fieldKey,
+          fieldPath: selection.fieldPath,
+          // An older/stale selection without descendant metadata is not safe
+          // to treat as a direct text field; fail closed until Preview sends
+          // the complete descriptor again.
+          descendantFieldCount: selection.descendantFields?.length ?? 1,
+          isSection: selection.isSection,
+        }) ||
+        selection.sectionId !== message.sectionId ||
+        selection.fieldKey !== message.fieldKey ||
+        selection.fieldPath !== message.fieldPath ||
+        lastSelection?.sectionId !== message.sectionId ||
+        lastSelection.fieldKey !== message.fieldKey ||
+        lastSelection.fieldPath !== message.fieldPath ||
+        !hasInlineTextDocumentTarget(
+          message.sectionId,
+          activeTemplate.document.sections.map((section) => section.id),
+          activeRouteSections.map((section) => section.slotId),
+        )
+      ) {
+        return;
+      }
+
+      const key = `${activeTemplate.id}:${message.sectionId}`;
+      const currentProps = {
+        ...sectionPropsSnapshot(message.sectionId),
+        ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
+      };
+      handleSectionPropsChange(
+        message.sectionId,
+        setFieldPathValue(currentProps, message.fieldPath, message.value),
+      );
+    };
+    return () => {
+      inlineTextCommitHandlerRef.current = () => {};
+    };
+  }, [
+    activeSelection,
+    activeTemplate,
+    activeRouteSections,
+    handleSectionPropsChange,
+    isSelectionMode,
+    sectionPropsSnapshot,
+  ]);
 
   /**
    * Retires a section's history after something rewrote its stored props

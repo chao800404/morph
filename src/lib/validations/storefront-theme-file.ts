@@ -100,11 +100,31 @@ const batchFileSchema = z
 export const saveThemeFilesBatchInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
-  files: z.array(batchFileSchema).min(1, "Batch must contain at least one file"),
+  files: z.array(batchFileSchema),
+  /**
+   * Paths to remove once the writes land.
+   *
+   * A move is a write at the new path and a removal at the old one, and both
+   * have to be one transaction: a batch that wrote without removing would
+   * duplicate every moved file, and one that removed without writing would
+   * lose it.
+   */
+  deletions: z
+    .array(
+      z.object({
+        path: safeThemeFilePathSchema,
+        expectedFileId: z.string().uuid(),
+        expectedVersion: z.number().int().min(1),
+      }),
+    )
+    .optional(),
   expectedSourceGeneration: z.number().int().min(1),
   createRevision: z.boolean().optional().default(false),
   revisionMessage: z.string().max(200).optional(),
-});
+}).refine(
+  (input) => input.files.length > 0 || (input.deletions?.length ?? 0) > 0,
+  { message: "Batch must contain at least one file or deletion" },
+);
 
 export const deleteThemeFileInputSchema = z.object({
   storefrontId: z.string().min(1),

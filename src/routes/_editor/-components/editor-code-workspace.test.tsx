@@ -7,6 +7,7 @@ import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-s
 import {
   deleteStorefrontThemeFile,
   saveStorefrontThemeFile,
+  saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { configureThemeTypeScript } from "./editor-code-language-support";
@@ -25,6 +26,7 @@ vi.mock(
     >()),
     deleteStorefrontThemeFile: vi.fn(),
     saveStorefrontThemeFile: vi.fn(),
+    saveStorefrontThemeFilesBatch: vi.fn(),
   }),
 );
 
@@ -464,6 +466,8 @@ describe("EditorCodeWorkspace file creation", () => {
 
   beforeEach(() => {
     vi.mocked(saveStorefrontThemeFile).mockReset();
+    vi.mocked(saveStorefrontThemeFilesBatch).mockReset();
+    window.localStorage.clear();
     useThemeWorkspaceStore.setState({ files: {} });
   });
 
@@ -477,7 +481,7 @@ describe("EditorCodeWorkspace file creation", () => {
     renderTree();
     fireEvent.click(screen.getByRole("button", { name: "New file" }));
 
-    const input = screen.getByPlaceholderText("src/components/Promo.tsx");
+    const input = screen.getByPlaceholderText("Filename.tsx");
     fireEvent.change(input, {
       target: { value: "src/components/Promo.tsx" },
     });
@@ -497,11 +501,41 @@ describe("EditorCodeWorkspace file creation", () => {
     expect(String(payload.data.content)).toContain("export const contentFields");
   });
 
+  it("keeps the parent folder prefix out of the inline file name input", async () => {
+    vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: {
+        ...file,
+        id: "file-2",
+        path: "src/components/Promo.tsx",
+      },
+    } as never);
+
+    renderTree();
+    fireEvent.contextMenu(screen.getByText("components"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New File" }));
+
+    const input = screen.getByPlaceholderText("Filename.tsx");
+    expect((input as HTMLInputElement).value).toBe("");
+    fireEvent.change(input, { target: { value: "Promo.tsx" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(saveStorefrontThemeFile).mock.calls[0]![0]).toEqual({
+      data: expect.objectContaining({
+        path: "src/components/Promo.tsx",
+      }),
+    });
+  });
+
   it("refuses an invalid path before contacting the server", async () => {
     renderTree();
     fireEvent.click(screen.getByRole("button", { name: "New file" }));
 
-    const input = screen.getByPlaceholderText("src/components/Promo.tsx");
+    const input = screen.getByPlaceholderText("Filename.tsx");
     fireEvent.change(input, { target: { value: "../escape.tsx" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -514,7 +548,7 @@ describe("EditorCodeWorkspace file creation", () => {
     renderTree();
     fireEvent.click(screen.getByRole("button", { name: "New file" }));
 
-    const input = screen.getByPlaceholderText("src/components/Promo.tsx");
+    const input = screen.getByPlaceholderText("Filename.tsx");
     fireEvent.change(input, { target: { value: file.path } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -527,14 +561,199 @@ describe("EditorCodeWorkspace file creation", () => {
     renderTree();
     fireEvent.click(screen.getByRole("button", { name: "New file" }));
 
-    const input = screen.getByPlaceholderText("src/components/Promo.tsx");
+    const input = screen.getByPlaceholderText("Filename.tsx");
     fireEvent.keyDown(input, { key: "Escape" });
 
     await waitFor(() => {
       expect(
-        screen.queryByPlaceholderText("src/components/Promo.tsx"),
+        screen.queryByPlaceholderText("Filename.tsx"),
       ).toBeNull();
     });
     expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
+  });
+
+  it("opens an inline folder input instead of prompting", async () => {
+    const promptSpy = vi.spyOn(window, "prompt");
+    renderTree();
+
+    fireEvent.click(screen.getByRole("button", { name: "New folder" }));
+
+    const input = screen.getByRole("textbox", { name: "New folder name" });
+    expect(promptSpy).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "pages" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(screen.getByText("pages")).toBeTruthy();
+    });
+    expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
+    expect(
+      window.localStorage.getItem("morph:pending-folders:store-1:theme-1"),
+    ).toContain("pages");
+    promptSpy.mockRestore();
+  });
+
+  it("cancels an inline folder input with Escape", async () => {
+    renderTree();
+    fireEvent.click(screen.getByRole("button", { name: "New folder" }));
+
+    const input = screen.getByRole("textbox", { name: "New folder name" });
+    fireEvent.change(input, { target: { value: "pages" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("textbox", { name: "New folder name" }),
+      ).toBeNull();
+    });
+    expect(
+      window.localStorage.getItem("morph:pending-folders:store-1:theme-1"),
+    ).toBeNull();
+  });
+
+  it("offers folder creation and deletion without a move action", async () => {
+    renderTree();
+    fireEvent.contextMenu(screen.getByText("components"));
+
+    expect(
+      await screen.findByRole("menuitem", { name: "New Folder" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("menuitem", { name: "Delete Folder" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("menuitem", { name: "Move Folder" }),
+    ).toBeNull();
+  });
+
+  it("deletes a folder and all of its files in one batch", async () => {
+    vi.mocked(saveStorefrontThemeFilesBatch).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { sourceGeneration: 8, files: [] },
+    } as never);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderTree();
+
+    fireEvent.contextMenu(screen.getByText("components"));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Delete Folder" }),
+    );
+
+    await waitFor(() =>
+      expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
+    );
+    const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock.calls[0]![0] as {
+      data: { deletions: Array<{ path: string }> };
+    };
+    expect(payload.data.deletions).toEqual([
+      expect.objectContaining({ path: "src/components/Hero.tsx" }),
+    ]);
+    confirmSpy.mockRestore();
+  });
+
+  it("duplicates a file through the create precondition", async () => {
+    vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { ...file, id: "file-2", path: "src/components/Hero-copy.tsx" },
+    } as never);
+    renderTree();
+    fireEvent.contextMenu(screen.getAllByText("Hero.tsx")[0]!);
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Duplicate" }),
+    );
+
+    await waitFor(() => {
+      expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(saveStorefrontThemeFile).mock.calls[0]![0]).toEqual({
+      data: expect.objectContaining({
+        path: "src/components/Hero-copy.tsx",
+        content: file.content,
+        expectMissing: true,
+      }),
+    });
+  });
+
+  it("duplicates the active file's unsaved editor buffer", async () => {
+    vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { ...file, id: "file-2", path: "src/components/Hero-copy.tsx" },
+    } as never);
+    renderTree();
+    fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), {
+      target: { value: "unsaved draft" },
+    });
+    fireEvent.contextMenu(screen.getAllByText("Hero.tsx")[0]!);
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Duplicate" }),
+    );
+
+    await waitFor(() => {
+      expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(saveStorefrontThemeFile).mock.calls[0]![0]).toEqual({
+      data: expect.objectContaining({
+        path: "src/components/Hero-copy.tsx",
+        content: "unsaved draft",
+      }),
+    });
+  });
+
+  it("does not offer New File Here from a file context menu", async () => {
+    renderTree();
+    fireEvent.contextMenu(screen.getAllByText("Hero.tsx")[0]!);
+
+    expect(
+      await screen.findByRole("menuitem", { name: "Duplicate" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("menuitem", { name: "New File Here" }),
+    ).toBeNull();
+  });
+
+  it("offers Rename inline without a move prompt", async () => {
+    const promptSpy = vi.spyOn(window, "prompt");
+    vi.mocked(saveStorefrontThemeFilesBatch).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { sourceGeneration: 8 },
+    } as never);
+    renderTree();
+
+    fireEvent.contextMenu(screen.getAllByText("Hero.tsx")[0]!);
+    expect(
+      await screen.findByRole("menuitem", { name: "Rename" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Move or Rename" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Move File" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", {
+      name: "Rename src/components/Hero.tsx",
+    });
+    expect(promptSpy).not.toHaveBeenCalled();
+    expect((input as HTMLInputElement).value).toBe("Hero.tsx");
+    fireEvent.change(input, { target: { value: "Banner.tsx" } });
+    expect(document.body.contains(input)).toBe(true);
+    expect((input as HTMLInputElement).value).toBe("Banner.tsx");
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1);
+    });
+    const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
+      .calls[0]![0] as { data: Record<string, unknown> };
+    expect(payload.data.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "src/components/Banner.tsx" }),
+      ]),
+    );
+    expect(payload.data.deletions).toEqual([
+      expect.objectContaining({ path: "src/components/Hero.tsx" }),
+    ]);
+    promptSpy.mockRestore();
   });
 });

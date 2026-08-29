@@ -248,6 +248,13 @@ export type PreviewToEditorMessage =
     }
   | PreviewSelectionMessage
   | {
+      type: "morph:storefront-preview-commit-inline-text";
+      sectionId: string;
+      fieldKey: string;
+      fieldPath: string;
+      value: string;
+    }
+  | {
       type: "morph:storefront-preview-commit-sibling-reorder";
       sectionId: string;
       sourceFilePath: string;
@@ -778,6 +785,22 @@ export function parsePreviewToEditorMessage(
         sectionComputedStyle: value.sectionComputedStyle,
       };
     }
+    case "morph:storefront-preview-commit-inline-text":
+      return isBoundedString(value.sectionId, 100) &&
+        value.sectionId.length > 0 &&
+        isBoundedString(value.fieldKey, 200) &&
+        value.fieldKey.length > 0 &&
+        isBoundedString(value.fieldPath, 500) &&
+        value.fieldPath.length > 0 &&
+        isBoundedString(value.value, 10_000)
+        ? {
+            type: value.type,
+            sectionId: value.sectionId,
+            fieldKey: value.fieldKey,
+            fieldPath: value.fieldPath,
+            value: value.value,
+          }
+        : null;
     case "morph:storefront-preview-commit-sibling-reorder":
       return isBoundedString(value.sectionId, 100) &&
         isBoundedString(value.sourceFilePath, 1_000) &&

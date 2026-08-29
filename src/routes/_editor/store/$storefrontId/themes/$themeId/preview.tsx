@@ -23,6 +23,13 @@ import {
 } from "@/lib/storefront/editor/selection-taxonomy";
 import { createSelectionOverlaySettler } from "@/lib/storefront/editor/selection-overlay-settler";
 import {
+  isSelectionOverlayTextFallbackCandidate,
+  selectionOverlayGeometry,
+  type SelectionOverlayBounds,
+  INLINE_EDIT_OUTSET_PX,
+  outsetOverlayBounds,
+} from "@/lib/storefront/editor/selection-overlay-geometry";
+import {
   buildSpacingOverlayStrips,
   cssPixelValue,
   formatSpacingOverlayValue,
@@ -45,6 +52,17 @@ import {
   type PreviewStyleSnapshot,
 } from "@/lib/storefront/editor/preview-protocol";
 import { parseArrayItemFieldPath } from "@/lib/storefront/editor/reorder-array-items";
+import { readSelectionContentValue } from "@/lib/storefront/editor/selection-content-value";
+import {
+  PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE,
+  syncPreviewEmptyTextLines,
+} from "@/lib/storefront/editor/preview-empty-text-layout";
+import {
+  INLINE_TEXT_EDIT_MAX_LENGTH,
+  isInlineTextEditCandidate,
+  normalizeInlineTextEditValue,
+  shouldNormalizeInlineTextInput,
+} from "@/lib/storefront/editor/inline-text-edit";
 
 const PREVIEW_GEOMETRY_MUTATION_MESSAGES = new Set([
   "morph:storefront-preview-update-theme-files",
@@ -693,6 +711,23 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       html[data-storefront-editor-panning="true"] body * {
         cursor: grabbing !important;
       }
+      [${PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE}]::before {
+        content: "\\00a0";
+      }
+      [${PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE}][data-storefront-editor-inline-editing="true"]::before {
+        content: none;
+      }
+      [data-storefront-editor-inline-editing="true"] {
+        cursor: text !important;
+        user-select: text !important;
+        /* The editor already draws its own ring and badge around this element,
+           so the browser's focus outline is a second border on top of it — and
+           it follows the Theme's own border-radius, which is why it showed up
+           as a stray rounded line around a heading with rounded corners.
+           Focus stays visible; it is the editor drawing it rather than the UA. */
+        outline: none !important;
+        box-shadow: none !important;
+      }
     `;
     document.head.appendChild(style);
 
@@ -889,11 +924,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       inputType: string | null;
     };
 
-    const selectionMetadata = (item: SelectableInfo) => {
-      const sourceElement = item.element.closest<HTMLElement>(
-        "[data-morph-source-file]",
-      );
-      const kind = selectionKindFromElement({
+    const selectionKindOf = (item: SelectableInfo) =>
+      selectionKindFromElement({
         component: item.type,
         morphElement: item.elementKey,
         tagName: item.tagName,
@@ -901,6 +933,12 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         inputType: item.inputType,
         isSection: item.element === item.section,
       });
+
+    const selectionMetadata = (item: SelectableInfo) => {
+      const sourceElement = item.element.closest<HTMLElement>(
+        "[data-morph-source-file]",
+      );
+      const kind = selectionKindOf(item);
       return {
         kind,
         sourceFilePath:
@@ -913,7 +951,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         fieldPath: item.fieldPath,
         contentValue:
           item.descendantFields.length === 0 && item.fieldKey
-            ? (item.element.textContent ?? "").slice(0, 10_000)
+            ? readSelectionContentValue(item.element)
             : null,
       };
     };
@@ -940,6 +978,16 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
      * for a moment and the value visibly jumps.
      */
     let selectionEnabled = false;
+    let inlineTextEdit: {
+      element: HTMLElement;
+      item: SelectableInfo;
+      originalValue: string;
+      originalChildren: Node[];
+      previousContentEditable: string | null;
+      previousSpellcheck: string | null;
+      isComposing: boolean;
+      abortController: AbortController;
+    } | null = null;
     let spacingOverlayMode: PreviewSpacingOverlayMode = "off";
     const selectionStylePreview = createSelectionStylePreview();
     let overlaySettler: ReturnType<
@@ -1461,6 +1509,249 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       return null;
     };
 
+    const emptyTextCandidateSelector = [
+      PREVIEW_EDITABLE_NODE_SELECTOR,
+      "h1, h2, h3, h4, h5, h6, p, blockquote, code, pre, label",
+      `[${PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE}]`,
+    ].join(",");
+
+    /**
+     * Keeps one real rendered line for every empty editable text element. The
+     * marker only drives an editor-only pseudo-element, so content metadata and
+     * persisted props continue to observe the authored empty string.
+     */
+    const syncEmptyTextLines = () => {
+      const elements = Array.from(
+        document.querySelectorAll<HTMLElement>(emptyTextCandidateSelector),
+      );
+      const candidates = elements.map((element) => {
+        const selectable = resolveSelectable(element);
+        return {
+          element,
+          kind:
+            selectable?.element === element
+              ? selectionKindOf(selectable)
+              : ("container" as const),
+        };
+      });
+      return syncPreviewEmptyTextLines(candidates);
+    };
+
+    const editableElementText = (element: HTMLElement) =>
+      normalizeInlineTextEditValue(
+        element.innerText ?? element.textContent ?? "",
+      );
+
+    const finishInlineTextEdit = (commit: boolean) => {
+      const edit = inlineTextEdit;
+      if (!edit) return;
+      inlineTextEdit = null;
+      edit.abortController.abort();
+
+      const editedValue = editableElementText(edit.element);
+      const value = commit ? editedValue : edit.originalValue;
+      if (!commit && editedValue !== edit.originalValue) {
+        edit.element.replaceChildren(...edit.originalChildren);
+      } else if (commit && value !== edit.originalValue) {
+        // The persisted contract is text, never the browser-created editing
+        // markup (`div`, `br`, or pasted HTML in older engines).
+        edit.element.textContent = value;
+      }
+      edit.element.removeAttribute("data-storefront-editor-inline-editing");
+      if (edit.previousContentEditable === null) {
+        edit.element.removeAttribute("contenteditable");
+      } else {
+        edit.element.setAttribute(
+          "contenteditable",
+          edit.previousContentEditable,
+        );
+      }
+      if (edit.previousSpellcheck === null) {
+        edit.element.removeAttribute("spellcheck");
+      } else {
+        edit.element.setAttribute("spellcheck", edit.previousSpellcheck);
+      }
+
+      syncEmptyTextLines();
+      positionOverlays();
+      if (
+        commit &&
+        value !== edit.originalValue &&
+        edit.item.sectionId &&
+        edit.item.fieldKey &&
+        edit.item.fieldPath
+      ) {
+        postPreviewToEditorMessage({
+          type: "morph:storefront-preview-commit-inline-text",
+          sectionId: edit.item.sectionId,
+          fieldKey: edit.item.fieldKey,
+          fieldPath: edit.item.fieldPath,
+          value,
+        });
+      }
+    };
+
+    const insertPlainTextAtSelection = (text: string) => {
+      const selection = window.getSelection();
+      if (!selection?.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+
+    const normalizeEditableElement = (element: HTMLElement) => {
+      const value = editableElementText(element);
+      if ((element.innerText ?? element.textContent ?? "") !== value) {
+        element.textContent = value;
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        range.collapse(false);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+      positionOverlays();
+    };
+
+    const startInlineTextEdit = (item: SelectableInfo) => {
+      const kind = selectionKindOf(item);
+      if (
+        !isInlineTextEditCandidate({
+          selectionEnabled,
+          kind,
+          sectionId: item.sectionId,
+          fieldKey: item.fieldKey,
+          fieldPath: item.fieldPath,
+          descendantFieldCount: item.descendantFields.length,
+          isSection: item.element === item.section,
+        })
+      ) {
+        return false;
+      }
+
+      finishInlineTextEdit(false);
+      const element = item.element;
+      const originalValue = editableElementText(element);
+      const abortController = new AbortController();
+      inlineTextEdit = {
+        element,
+        item,
+        originalValue,
+        originalChildren: Array.from(element.childNodes, (node) =>
+          node.cloneNode(true),
+        ),
+        previousContentEditable: element.getAttribute("contenteditable"),
+        previousSpellcheck: element.getAttribute("spellcheck"),
+        isComposing: false,
+        abortController,
+      };
+
+      element.setAttribute("data-storefront-editor-inline-editing", "true");
+      element.removeAttribute(PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE);
+      element.setAttribute("contenteditable", "plaintext-only");
+      element.setAttribute("spellcheck", "true");
+
+      element.addEventListener(
+        "compositionstart",
+        () => {
+          if (inlineTextEdit?.element === element)
+            inlineTextEdit.isComposing = true;
+        },
+        { signal: abortController.signal },
+      );
+      element.addEventListener(
+        "compositionend",
+        () => {
+          if (inlineTextEdit?.element === element) {
+            inlineTextEdit.isComposing = false;
+            normalizeEditableElement(element);
+          }
+        },
+        { signal: abortController.signal },
+      );
+      for (const eventName of ["pointerdown", "click", "dblclick"] as const) {
+        element.addEventListener(
+          eventName,
+          (event) => event.stopPropagation(),
+          { signal: abortController.signal },
+        );
+      }
+      element.addEventListener(
+        "keydown",
+        (event) => {
+          event.stopPropagation();
+          if (event.key === "Escape") {
+            event.preventDefault();
+            finishInlineTextEdit(false);
+            return;
+          }
+          if (
+            event.key === "Enter" &&
+            !event.shiftKey &&
+            !event.isComposing &&
+            !inlineTextEdit?.isComposing
+          ) {
+            event.preventDefault();
+            finishInlineTextEdit(true);
+          }
+        },
+        { capture: true, signal: abortController.signal },
+      );
+      element.addEventListener(
+        "paste",
+        (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const remaining = Math.max(
+            0,
+            INLINE_TEXT_EDIT_MAX_LENGTH - editableElementText(element).length,
+          );
+          insertPlainTextAtSelection(
+            normalizeInlineTextEditValue(
+              event.clipboardData?.getData("text/plain") ?? "",
+            ).slice(0, remaining),
+          );
+          positionOverlays();
+        },
+        { signal: abortController.signal },
+      );
+      element.addEventListener(
+        "input",
+        (event) => {
+          if (
+            !shouldNormalizeInlineTextInput(
+              inlineTextEdit?.isComposing ?? false,
+              event instanceof InputEvent && event.isComposing,
+            )
+          ) {
+            // Replacing textContent during an active composition destroys the
+            // browser's marked range and drops partially composed CJK text.
+            positionOverlays();
+            return;
+          }
+          normalizeEditableElement(element);
+        },
+        { signal: abortController.signal },
+      );
+      element.addEventListener("blur", () => finishInlineTextEdit(true), {
+        signal: abortController.signal,
+      });
+
+      element.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      positionOverlays();
+      return true;
+    };
+
     const sourceFilePathFor = (element: HTMLElement) =>
       element.closest<HTMLElement>("[data-morph-source-file]")?.dataset
         .morphSourceFile ??
@@ -1793,19 +2084,52 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       // together avoids a selected-overlay write forcing the following hover
       // measurement to synchronously recalculate layout.
       const selectedElementForOverlay = selectedItem?.element ?? null;
-      const selectedBounds =
+      const selectedRawBounds =
         selectedElementForOverlay &&
         !overlaySettler?.isFrozen() &&
         document.body.contains(selectedElementForOverlay)
           ? selectedElementForOverlay.getBoundingClientRect()
           : null;
       const hoverElementForOverlay = hoveredItem?.element ?? null;
-      const hoverBounds =
+      const hoverRawBounds =
         hoverElementForOverlay &&
         document.body.contains(hoverElementForOverlay) &&
         hoverElementForOverlay !== selectedElementForOverlay
           ? hoverElementForOverlay.getBoundingClientRect()
           : null;
+
+      const resolveOverlayGeometry = (
+        item: SelectableInfo | null,
+        element: HTMLElement | null,
+        bounds: SelectionOverlayBounds | null,
+      ) => {
+        if (!item || !element || !bounds) return null;
+        const candidate = {
+          bounds,
+          kind: selectionKindOf(item),
+          content: element.textContent ?? "",
+          inlineHeight: element.style.height,
+          inlineMaxHeight: element.style.maxHeight,
+        };
+        if (!isSelectionOverlayTextFallbackCandidate(candidate)) return bounds;
+        const computed = window.getComputedStyle(element);
+        return selectionOverlayGeometry({
+          ...candidate,
+          lineHeight: computed.lineHeight,
+          fontSize: computed.fontSize,
+          display: computed.display,
+        });
+      };
+      const selectedBounds = resolveOverlayGeometry(
+        selectedItem,
+        selectedElementForOverlay,
+        selectedRawBounds,
+      );
+      const hoverBounds = resolveOverlayGeometry(
+        hoveredItem,
+        hoverElementForOverlay,
+        hoverRawBounds,
+      );
 
       // Keep the last stable selected geometry while live authoring replaces
       // the selected DOM node. The settled pass below rebinds its identity and
@@ -1814,11 +2138,17 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         selectedOverlay.style.display = "block";
         updateOverlayLabel(selectedLabelName, selectedLabelTag, selectedItem);
       } else if (selectedItem && selectedBounds) {
+        const ring = outsetOverlayBounds(
+          selectedBounds,
+          inlineTextEdit?.element === selectedElementForOverlay
+            ? INLINE_EDIT_OUTSET_PX
+            : undefined,
+        );
         selectedOverlay.style.display = "block";
-        selectedOverlay.style.left = `${selectedBounds.left}px`;
-        selectedOverlay.style.top = `${selectedBounds.top}px`;
-        selectedOverlay.style.width = `${selectedBounds.width}px`;
-        selectedOverlay.style.height = `${selectedBounds.height}px`;
+        selectedOverlay.style.left = `${ring.left}px`;
+        selectedOverlay.style.top = `${ring.top}px`;
+        selectedOverlay.style.width = `${ring.width}px`;
+        selectedOverlay.style.height = `${ring.height}px`;
         updateOverlayLabel(selectedLabelName, selectedLabelTag, selectedItem);
       } else {
         selectedOverlay.style.display = "none";
@@ -1826,11 +2156,12 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
       // 2. Position Hover Overlay (dashed + mask, hidden if hovering over selected item)
       if (hoveredItem && hoverBounds) {
+        const ring = outsetOverlayBounds(hoverBounds);
         hoverOverlay.style.display = "block";
-        hoverOverlay.style.left = `${hoverBounds.left}px`;
-        hoverOverlay.style.top = `${hoverBounds.top}px`;
-        hoverOverlay.style.width = `${hoverBounds.width}px`;
-        hoverOverlay.style.height = `${hoverBounds.height}px`;
+        hoverOverlay.style.left = `${ring.left}px`;
+        hoverOverlay.style.top = `${ring.top}px`;
+        hoverOverlay.style.width = `${ring.width}px`;
+        hoverOverlay.style.height = `${ring.height}px`;
         updateOverlayLabel(hoverLabelName, hoverLabelTag, hoveredItem);
       } else {
         hoverOverlay.style.display = "none";
@@ -1919,6 +2250,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     );
 
     const handlePointerMove = (event: PointerEvent) => {
+      if (inlineTextEdit) return;
       if (!selectionEnabled && panGesture?.pointerId === event.pointerId) {
         panGesture.didMove ||=
           Math.hypot(
@@ -1948,6 +2280,13 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const handlePointerDown = (event: PointerEvent) => {
+      if (
+        inlineTextEdit &&
+        event.target instanceof Node &&
+        inlineTextEdit.element.contains(event.target)
+      ) {
+        return;
+      }
       if (
         selectionEnabled ||
         event.button !== 0 ||
@@ -1996,6 +2335,13 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const handleClick = (event: MouseEvent) => {
+      if (
+        inlineTextEdit &&
+        event.target instanceof Node &&
+        inlineTextEdit.element.contains(event.target)
+      ) {
+        return;
+      }
       if (!selectionEnabled) {
         if (suppressNextClick) {
           event.preventDefault();
@@ -2092,7 +2438,20 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const handleDoubleClick = (event: MouseEvent) => {
-      if (selectionEnabled) return;
+      if (
+        inlineTextEdit &&
+        event.target instanceof Node &&
+        inlineTextEdit.element.contains(event.target)
+      ) {
+        return;
+      }
+      if (selectionEnabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        const selectable = resolveSelectable(event.target);
+        if (selectable) startInlineTextEdit(selectable);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       postPreviewToEditorMessage({
@@ -2101,6 +2460,11 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const handleDragStart = (event: DragEvent) => {
+      if (inlineTextEdit) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (!selectionEnabled || !selectedElement) {
         event.preventDefault();
         return;
@@ -2404,6 +2768,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         } else {
           target.textContent = message.value;
         }
+        syncEmptyTextLines();
         positionOverlays();
         return;
       }
@@ -2444,6 +2809,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         const previewStyles = message.styles;
         selectionStylePreview.apply(previewTarget, previewStyles);
         if (selectionStylePreviewNeedsOverlayUpdate(previewStyles)) {
+          syncEmptyTextLines();
           positionOverlays();
         }
         return;
@@ -2503,6 +2869,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       }
 
       if (message.type === "morph:storefront-preview-set-selection-mode") {
+        if (!message.enabled) finishInlineTextEdit(false);
         selectionEnabled = message.enabled;
         document.documentElement.toggleAttribute(
           "data-storefront-editor-selection-enabled",
@@ -2586,15 +2953,34 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       SELECTION_STYLE_APPLIED_EVENT,
       handleSelectionStyleApplied,
     );
-    const structureObserver = new MutationObserver(() => {
+    const structureObserver = new MutationObserver((mutations) => {
+      if (inlineTextEdit && !inlineTextEdit.element.isConnected) {
+        finishInlineTextEdit(false);
+      }
+      if (
+        inlineTextEdit &&
+        mutations.every(
+          (mutation) =>
+            mutation.target === inlineTextEdit?.element ||
+            inlineTextEdit?.element.contains(mutation.target),
+        )
+      ) {
+        // Typing is intentionally DOM-local until commit. The input handler
+        // already moves the overlay; rescanning the whole preview structure on
+        // every character would turn one contenteditable keystroke into O(DOM).
+        return;
+      }
       // Re-attach synchronously: publishing the structure is throttled to a
       // frame, and waiting that long leaves the element unstyled for one paint.
       reattachSelectionIfDetached();
+      if (syncEmptyTextLines()) schedulePositionOverlays();
       scheduleEditableStructure();
     });
+    syncEmptyTextLines();
     structureObserver.observe(document.body, {
       subtree: true,
       childList: true,
+      characterData: true,
       attributes: true,
       attributeFilter: [
         "data-morph-node",
@@ -2632,6 +3018,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       structureObserver.disconnect();
       cancelAnimationFrame(structurePublishFrame);
       selectionStylePreview.restore();
+      finishInlineTextEdit(false);
       overlaySettler?.cancel();
       document.documentElement.removeAttribute(
         "data-storefront-editor-selection-enabled",

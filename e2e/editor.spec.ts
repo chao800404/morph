@@ -77,6 +77,44 @@ test.describe("visual editor", () => {
       .toBeLessThan(4);
   });
 
+  test("the frame follows content that shrinks, not only content that grows", async ({
+    page,
+  }) => {
+    await openEditor(page);
+
+    const frame = page.locator("iframe").first();
+    const measure = async () => {
+      const frameHeight = await frame.evaluate((el) =>
+        Math.round(el.getBoundingClientRect().height),
+      );
+      const contentHeight = await previewFrame(page)
+        .locator("[data-storefront-preview-root]")
+        .evaluate((el) => Math.round(el.getBoundingClientRect().height));
+      return { frameHeight, contentHeight };
+    };
+
+    const before = await settleHeight(page, measure);
+    const hide = page.getByRole("button", { name: /^Hide section / }).first();
+    await hide.click();
+
+    try {
+      // The theme's own `min-h-screen` resolves against the frame, so content
+      // that becomes shorter cannot report itself shorter while the frame is
+      // still tall. Without a re-measure the removed section's space stays
+      // behind as blank canvas, and only a file write ever cleared it.
+      const after = await settleHeight(page, measure);
+      expect(
+        after.frameHeight,
+        "the frame kept the height of a section that is no longer rendered",
+      ).toBeLessThan(before.frameHeight);
+      expect(Math.abs(after.frameHeight - after.contentHeight)).toBeLessThan(4);
+    } finally {
+      const show = page.getByRole("button", { name: /^Show section / }).first();
+      if (await show.count()) await show.click();
+      await page.waitForTimeout(2_000);
+    }
+  });
+
   test("a style edit reaches the canvas and can be reversed", async ({
     page,
   }) => {
@@ -254,4 +292,21 @@ async function settleAfterWrite(page: Page) {
     if (current.join("\u0000") === previous.join("\u0000")) return;
     previous = current;
   }
+}
+
+/** Reads a measurement repeatedly until two consecutive reads agree. */
+async function settleHeight(
+  page: Page,
+  measure: () => Promise<{ frameHeight: number; contentHeight: number }>,
+) {
+  let previous = "";
+  let latest = await measure();
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    await page.waitForTimeout(600);
+    latest = await measure();
+    const now = `${latest.frameHeight}/${latest.contentHeight}`;
+    if (now === previous) return latest;
+    previous = now;
+  }
+  return latest;
 }

@@ -318,6 +318,36 @@ describe("preview protocol", () => {
     ).toBeNull();
   });
 
+  it("accepts only a bounded inline text commit", () => {
+    const message = {
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "content.heading",
+      value: "Edited in the canvas",
+    };
+
+    expect(parsePreviewToEditorMessage(message)).toEqual(message);
+    expect(
+      parsePreviewToEditorMessage({ ...message, sectionId: "x".repeat(101) }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, fieldKey: "x".repeat(201) }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, fieldPath: "x".repeat(501) }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, value: "x".repeat(10_001) }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, value: { html: "<b>x</b>" } }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, fieldPath: "" }),
+    ).toBeNull();
+  });
+
   it("accepts a drag autoscroll report only with a usable pointer", () => {
     const message = {
       type: "morph:storefront-preview-drag-autoscroll",

@@ -1,3 +1,16 @@
+import {
+  planDropMoves,
+  planThemeFileMove,
+} from "@/lib/storefront/ast/theme-file-move";
+import {
+  folderMoveDestination,
+  movePendingFolderPaths,
+  pendingFolderStorageKey,
+  readPendingFolders,
+  removePendingFolderPaths,
+  withPendingFolders,
+  writePendingFolders,
+} from "@/lib/storefront/editor/pending-theme-folders";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -16,8 +29,16 @@ import {
   deleteStorefrontThemeFile,
   initStorefrontStarterTheme,
   saveStorefrontThemeFile,
+  saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
+import { PointerActivationConstraints } from "@dnd-kit/dom";
+import {
+  DragDropProvider,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+} from "@dnd-kit/react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
@@ -25,6 +46,7 @@ import {
   Code2,
   Copy,
   FilePlus2,
+  FolderPlus,
   Trash2,
   FileCode2,
   FileJson,
@@ -48,7 +70,10 @@ import {
   registerTailwindCompletionProvider,
 } from "./editor-code-language-support";
 import { formatEditorCode } from "./editor-code-formatter";
+import { prepareDuplicateThemeFile } from "@/lib/storefront/editor/duplicate-theme-file";
 import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
+import { prepareNewThemeFolder } from "@/lib/storefront/editor/new-theme-folder";
+import { prepareThemeFileRename } from "@/lib/storefront/editor/rename-theme-file";
 
 type EditorCodeWorkspaceProps = {
   storefrontId: string;
@@ -157,8 +182,28 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     Record<string, boolean>
   >({});
   /** Folder the inline create input is anchored to; "" is the workspace root. */
+  const pendingFolderKey = pendingFolderStorageKey(storefrontId, themeId);
+  const [pendingFolders, setPendingFolders] = useState<string[]>(() =>
+    readPendingFolders(pendingFolderKey),
+  );
+  // A short distance before a drag begins, so opening a file with a click that
+  // moves a pixel does not start dragging it somewhere instead.
+  const dragSensors = useMemo(
+    () => [
+      PointerSensor.configure({
+        activationConstraints: [
+          new PointerActivationConstraints.Distance({ value: 6 }),
+        ],
+      }),
+    ],
+    [],
+  );
   const [creatingInFolder, setCreatingInFolder] = useState<string | null>(null);
   const [newFilePath, setNewFilePath] = useState("");
+  const [creatingFolderIn, setCreatingFolderIn] = useState<string | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [renameName, setRenameName] = useState("");
   const [dirtyPaths, setDirtyPaths] = useState<string[]>(() =>
     useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
   );
@@ -168,6 +213,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const combinedDirtyPathsRef = useRef(dirtyPaths);
   const suppressModelChangeRef = useRef(false);
   const saveInFlightRef = useRef(false);
+  const renameJustStartedRef = useRef(false);
 
   const handleEditorWillMount = useCallback(
     (monaco: Monaco) => {
@@ -570,6 +616,277 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       ),
   });
 
+  const deleteFolderMutation = useMutation({
+    mutationFn: async (folderPath: string) => {
+      const folderPrefix = `${folderPath}/`;
+      const filesToDelete = files.filter((file) =>
+        file.path.startsWith(folderPrefix),
+      );
+      const workspaceFiles = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+      const deletions = filesToDelete.map((file) => {
+        const workspaceFile = workspaceFiles[file.path];
+        if (
+          !workspaceFile?.serverExists ||
+          !workspaceFile.serverFileId
+        ) {
+          throw new Error(`File "${file.path}" is not available for deletion.`);
+        }
+        return {
+          path: file.path,
+          expectedFileId: workspaceFile.serverFileId,
+          expectedVersion: workspaceFile.serverVersion ?? file.version,
+        };
+      });
+
+      if (deletions.length === 0) {
+        return {
+          folderPath,
+          deletedPaths: [] as string[],
+          sourceGeneration: undefined as number | undefined,
+        };
+      }
+
+      const result = await saveStorefrontThemeFilesBatch({
+        data: {
+          storefrontId,
+          themeId,
+          files: [],
+          deletions,
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+          createRevision: true,
+          revisionMessage: `Delete folder ${folderPath}`,
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      return {
+        folderPath,
+        deletedPaths: filesToDelete.map((file) => file.path),
+        sourceGeneration: result.data.sourceGeneration,
+      };
+    },
+    onSuccess: async ({ folderPath, deletedPaths, sourceGeneration }) => {
+      if (sourceGeneration !== undefined) {
+        useThemeWorkspaceStore
+          .getState()
+          .acceptRemoteGeneration(sourceGeneration, workspaceScope);
+      }
+
+      if (deletedPaths.length > 0) {
+        const deletedPathSet = new Set(deletedPaths);
+        const nextTabs = openTabs.filter((path) => !deletedPathSet.has(path));
+        for (const path of deletedPaths) {
+          delete draftContentsRef.current[path];
+          delete draftDirtyRef.current[path];
+          delete draftRevisionRef.current[path];
+          discardWorkspaceLocal(path, workspaceScope);
+        }
+        syncCombinedDirtyPaths(
+          useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+        );
+        for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
+          const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
+          if (
+            deletedPaths.some(
+              (path) => modelPath === path || modelPath.endsWith("/" + path),
+            )
+          ) {
+            model.dispose?.();
+          }
+        }
+        setOpenTabs(nextTabs);
+        if (deletedPathSet.has(activeFilePath)) {
+          setActiveFilePath(nextTabs[nextTabs.length - 1] ?? "");
+        }
+      }
+
+      setPendingFolders((current) =>
+        removePendingFolderPaths(current, folderPath),
+      );
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
+      });
+      toast.success(`Deleted folder ${folderPath}`);
+      if (deletedPaths.length > 0) onRefreshPreview?.();
+    },
+    onError: (error) =>
+      toast.error(
+        error instanceof Error ? error.message : "Failed to delete folder",
+      ),
+  });
+
+  const moveMutation = useMutation({
+    mutationFn: async (moves: ReadonlyArray<{ from: string; to: string }>) => {
+      const workspaceFiles = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+      const plan = planThemeFileMove(
+        files.map((file) => ({
+          path: file.path,
+          // A move must rewrite the newest editor buffer, not an older server
+          // snapshot, or it can save an import graph that no longer matches
+          // what the author sees in Monaco.
+          content:
+            draftContentsRef.current[file.path] ??
+            workspaceFiles[file.path]?.localContent ??
+            file.content,
+        })),
+        moves,
+      );
+      if (!plan.ok) throw new Error(plan.reason);
+
+      const byPath = new Map(files.map((file) => [file.path, file]));
+      const deletions = plan.deletions.map((path) => {
+        const file = byPath.get(path);
+        if (!file) throw new Error(`${path} is no longer in the workspace.`);
+        return {
+          path,
+          expectedFileId: file.id,
+          expectedVersion: file.version,
+        };
+      });
+
+      // One batch: the writes at the new paths and the removals at the old ones
+      // land together or not at all. Two calls would leave the Theme with
+      // duplicates, or with nothing, for as long as the gap lasted.
+      const result = await saveStorefrontThemeFilesBatch({
+        data: {
+          storefrontId,
+          themeId,
+          // Each write states what it expects to find. An importer being
+          // rewritten must still be the version this plan was made from, and
+          // the destination must still be free — otherwise a move made while
+          // someone else was editing would quietly discard their work.
+          files: plan.writes.map((file) => {
+            const existing = byPath.get(file.path);
+            return existing
+              ? {
+                  path: file.path,
+                  content: file.content,
+                  mimeType: existing.mimeType,
+                  expectedFileId: existing.id,
+                  expectedVersion: existing.version,
+                }
+              : {
+                  path: file.path,
+                  content: file.content,
+                  mimeType:
+                    byPath.get(
+                      plan.deletions.find(
+                        (from) =>
+                          from.slice(from.lastIndexOf("/") + 1) ===
+                          file.path.slice(file.path.lastIndexOf("/") + 1),
+                      ) ?? "",
+                    )?.mimeType ?? "text/typescript",
+                  expectMissing: true,
+                };
+          }),
+          deletions,
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+          createRevision: true,
+          revisionMessage:
+            moves.length === 1
+              ? `Move ${moves[0].from} to ${moves[0].to}`
+              : `Move ${moves.length} files`,
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      return { ...result.data, plan, moves };
+    },
+    onSuccess: async ({
+      sourceGeneration,
+      plan,
+      moves,
+      files: savedFiles = [],
+    }: {
+      sourceGeneration: number;
+      plan: Extract<ReturnType<typeof planThemeFileMove>, { ok: true }>;
+      moves: ReadonlyArray<{ from: string; to: string }>;
+      files: StorefrontThemeFileDTO[];
+    }) => {
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(sourceGeneration, workspaceScope);
+
+      const moved = new Map(moves.map((move) => [move.from, move.to]));
+      const movedDrafts = new Map<string, string>();
+      for (const [from, to] of moved) {
+        // The editor's own state is keyed by path, so anything remembering the
+        // old one now points at a file that does not exist.
+        const draft = draftContentsRef.current[from];
+        if (draft !== undefined) movedDrafts.set(to, draft);
+        delete draftContentsRef.current[from];
+        delete draftDirtyRef.current[from];
+        delete draftRevisionRef.current[from];
+        discardWorkspaceLocal(from, workspaceScope);
+        for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
+          const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
+          if (modelPath === from || modelPath.endsWith("/" + from)) {
+            model.dispose?.();
+          }
+        }
+      }
+
+      // The batch also rewrites importers that stayed at the same path. Update
+      // their existing Monaco models immediately; the query refresh alone
+      // cannot do this because model registration intentionally preserves the
+      // current buffer for normal edits.
+      for (const saved of savedFiles) {
+        const currentDraft =
+          draftContentsRef.current[saved.path] ?? movedDrafts.get(saved.path);
+        if (currentDraft !== undefined) {
+          draftContentsRef.current[saved.path] = currentDraft;
+        }
+        const hasNewerDraft =
+          currentDraft !== undefined && currentDraft !== saved.content;
+        if (!hasNewerDraft) {
+          suppressModelChangeRef.current = true;
+          for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
+            const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
+            if (
+              modelPath === saved.path ||
+              modelPath.endsWith("/" + saved.path)
+            ) {
+              model.setValue?.(saved.content);
+            }
+          }
+          suppressModelChangeRef.current = false;
+          draftContentsRef.current[saved.path] = saved.content;
+          draftDirtyRef.current[saved.path] = false;
+          delete draftRevisionRef.current[saved.path];
+        } else {
+          draftDirtyRef.current[saved.path] = true;
+        }
+        markWorkspaceSaved(saved, workspaceScope);
+      }
+      setOpenTabs((tabs) => tabs.map((tab) => moved.get(tab) ?? tab));
+      setActiveFilePath((current) => moved.get(current) ?? current);
+      syncCombinedDirtyPaths(
+        useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+      );
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
+      });
+      toast.success(
+        plan.rewrites.length > 0
+          ? `Moved ${moves.length === 1 ? moves[0].to : `${moves.length} files`}; updated ${plan.rewrites.length} import${plan.rewrites.length === 1 ? "" : "s"}`
+          : `Moved ${moves.length === 1 ? moves[0].to : `${moves.length} files`}`,
+      );
+      onRefreshPreview?.();
+    },
+    onError: (error) =>
+      toast.error(
+        error instanceof Error ? error.message : "Failed to move file",
+      ),
+  });
+
   const createMutation = useMutation({
     mutationFn: async ({
       path,
@@ -606,6 +923,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       });
       setCreatingInFolder(null);
       setNewFilePath("");
+      setCreatingFolderIn(null);
+      setNewFolderName("");
       setActiveFilePath(saved.path);
       setOpenTabs((prev) =>
         prev.includes(saved.path) ? prev : [...prev, saved.path],
@@ -620,11 +939,41 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   });
 
   const startCreatingIn = useCallback((folderPath: string) => {
+    setCreatingFolderIn(null);
+    setNewFolderName("");
+    setRenamingPath(null);
+    setRenameName("");
+    renameJustStartedRef.current = false;
     setCreatingInFolder(folderPath);
     setNewFilePath(folderPath ? `${folderPath}/` : "");
     if (folderPath) {
       setCollapsedFolders((prev) => ({ ...prev, [folderPath]: false }));
     }
+  }, []);
+
+  const startCreatingFolder = useCallback((parentPath: string) => {
+    setCreatingInFolder(null);
+    setNewFilePath("");
+    setRenamingPath(null);
+    setRenameName("");
+    renameJustStartedRef.current = false;
+    setCreatingFolderIn(parentPath);
+    setNewFolderName("");
+    if (parentPath) {
+      setCollapsedFolders((prev) => ({ ...prev, [parentPath]: false }));
+    }
+  }, []);
+
+  const startRenamingFile = useCallback((path: string) => {
+    setCreatingInFolder(null);
+    setNewFilePath("");
+    setCreatingFolderIn(null);
+    setNewFolderName("");
+    setRenamingPath(path);
+    setRenameName(path.slice(path.lastIndexOf("/") + 1));
+    // Radix restores focus to the context-menu trigger as it closes. The
+    // first blur belongs to that hand-off, not to the user's rename action.
+    renameJustStartedRef.current = true;
   }, []);
 
   const submitNewFile = useCallback(() => {
@@ -644,33 +993,86 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     });
   }, [createMutation, files, newFilePath]);
 
+  const submitNewFolder = useCallback(() => {
+    if (createMutation.isPending) return;
+    if (creatingFolderIn === null) return;
+    const prepared = prepareNewThemeFolder(
+      newFolderName,
+      creatingFolderIn,
+      files.map((file) => file.path),
+      pendingFolders,
+    );
+    if (!prepared.ok) {
+      toast.error(prepared.message);
+      return;
+    }
+    setPendingFolders((current) =>
+      current.includes(prepared.path) ? current : [...current, prepared.path],
+    );
+    setCollapsedFolders((prev) => ({ ...prev, [prepared.path]: false }));
+    setCreatingFolderIn(null);
+    setNewFolderName("");
+  }, [
+    createMutation.isPending,
+    creatingFolderIn,
+    files,
+    newFolderName,
+    pendingFolders,
+  ]);
+
+  const submitRename = useCallback(() => {
+    if (moveMutation.isPending || renamingPath === null) return;
+    const prepared = prepareThemeFileRename(
+      renameName,
+      renamingPath,
+      files.map((file) => file.path),
+    );
+    if (!prepared.ok) {
+      toast.error(prepared.message);
+      return;
+    }
+    renameJustStartedRef.current = false;
+    if (prepared.path === renamingPath) {
+      setRenamingPath(null);
+      setRenameName("");
+      return;
+    }
+
+    moveMutation.mutate(
+      [{ from: renamingPath, to: prepared.path }],
+      {
+        onSuccess: () => {
+          setRenamingPath(null);
+          setRenameName("");
+        },
+      },
+    );
+  }, [files, moveMutation, renameName, renamingPath]);
+
   const handleDuplicateFile = useCallback(
     (path: string) => {
       if (createMutation.isPending) return;
-      const extensionIndex = path.lastIndexOf(".");
-      const candidate =
-        extensionIndex === -1
-          ? `${path}-copy`
-          : `${path.slice(0, extensionIndex)}-copy${path.slice(extensionIndex)}`;
-      const prepared = prepareNewThemeFile(
-        candidate,
+      const prepared = prepareDuplicateThemeFile(
+        path,
         files.map((file) => file.path),
       );
       if (!prepared.ok) {
         toast.error(prepared.message);
         return;
       }
-      // Duplicate the file as it stands on the server, not a transient draft,
-      // so the copy matches what the build would use.
+      // Match VS Code's duplicate behavior by copying the current editor
+      // buffer when this is the active file, including an unsaved draft.
       const source =
-        files.find((file) => file.path === path)?.content ?? prepared.content;
+        getCurrentEditorContent(path) ??
+        files.find((file) => file.path === path)?.content ??
+        prepared.content;
       createMutation.mutate({
         path: prepared.path,
         content: source,
         mimeType: prepared.mimeType,
       });
     },
-    [createMutation, files],
+    [createMutation, files, getCurrentEditorContent],
   );
 
   const handleContentChange = (value?: string) => {
@@ -855,6 +1257,33 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     });
   };
 
+  const handleDeleteFolder = (path: string) => {
+    if (deleteFolderMutation.isPending || deleteMutation.isPending) return;
+    const filesInFolder = files.filter((file) =>
+      file.path.startsWith(`${path}/`),
+    );
+    const hasPendingFolder = pendingFolders.some(
+      (folder) => folder === path || folder.startsWith(`${path}/`),
+    );
+    if (filesInFolder.length === 0 && !hasPendingFolder) {
+      toast.error("This folder is not available for deletion.");
+      return;
+    }
+
+    const fileLabel =
+      filesInFolder.length === 1
+        ? "1 file"
+        : `${filesInFolder.length} files`;
+    if (
+      !window.confirm(
+        `Delete folder "${path}" and its ${fileLabel}? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    deleteFolderMutation.mutate(path);
+  };
+
   const toggleFolder = (path: string) => {
     setCollapsedFolders((prev) => ({
       ...prev,
@@ -862,42 +1291,267 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }));
   };
 
-  const renderCreateInput = (depth: number) => (
+  const renderCreateInput = (depth: number, parentPath: string) => {
+    const prefix = parentPath ? `${parentPath}/` : "";
+    const visibleName =
+      prefix && newFilePath.startsWith(prefix)
+        ? newFilePath.slice(prefix.length)
+        : newFilePath;
+
+    return (
+      <div
+        className="flex items-center gap-1.5 py-1 pr-2"
+        style={{ paddingLeft: depth * 12 + 18 }}
+      >
+        <FilePlus2 className="size-3.5 shrink-0 text-primary" />
+        <input
+          autoFocus
+          value={visibleName}
+          placeholder="Filename.tsx"
+          aria-label={
+            parentPath ? `New file inside ${parentPath}` : "New file name"
+          }
+          disabled={createMutation.isPending}
+          onChange={(event) =>
+            setNewFilePath(
+              parentPath
+                ? `${parentPath}/${event.target.value}`
+                : event.target.value,
+            )
+          }
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submitNewFile();
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setCreatingInFolder(null);
+              setNewFilePath("");
+            }
+          }}
+          onBlur={() => {
+            if (!createMutation.isPending) setCreatingInFolder(null);
+          }}
+          className="h-6 w-full min-w-0 rounded-sm border bg-background px-1.5 font-mono text-[11px] outline-none focus:border-primary"
+        />
+      </div>
+    );
+  };
+
+  const renderFolderCreateInput = (depth: number, parentPath: string) => (
     <div
       className="flex items-center gap-1.5 py-1 pr-2"
       style={{ paddingLeft: depth * 12 + 18 }}
     >
-      <FilePlus2 className="size-3.5 shrink-0 text-primary" />
+      <FolderPlus className="size-3.5 shrink-0 text-primary" />
       <input
         autoFocus
-        value={newFilePath}
-        placeholder="src/components/Promo.tsx"
+        value={newFolderName}
+        placeholder="Folder name"
+        aria-label={
+          parentPath ? `New folder inside ${parentPath}` : "New folder name"
+        }
         disabled={createMutation.isPending}
-        onChange={(event) => setNewFilePath(event.target.value)}
+        onChange={(event) => setNewFolderName(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
             event.preventDefault();
-            submitNewFile();
+            submitNewFolder();
           }
           if (event.key === "Escape") {
             event.preventDefault();
-            setCreatingInFolder(null);
-            setNewFilePath("");
+            setCreatingFolderIn(null);
+            setNewFolderName("");
           }
         }}
         onBlur={() => {
-          if (!createMutation.isPending) setCreatingInFolder(null);
+          if (!createMutation.isPending) {
+            setCreatingFolderIn(null);
+            setNewFolderName("");
+          }
         }}
         className="h-6 w-full min-w-0 rounded-sm border bg-background px-1.5 font-mono text-[11px] outline-none focus:border-primary"
       />
     </div>
   );
 
+  const renderRenameInput = (path: string, depth: number) => (
+    <div
+      className="flex items-center gap-1.5 py-1 pr-2"
+      style={{ paddingLeft: depth * 12 + 18 }}
+    >
+      {getFileIcon(path.split("/").pop() ?? path)}
+      <input
+        autoFocus
+        value={renameName}
+        aria-label={`Rename ${path}`}
+        disabled={moveMutation.isPending}
+        onChange={(event) => setRenameName(event.target.value)}
+        onFocus={(event) => event.currentTarget.select()}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submitRename();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            renameJustStartedRef.current = false;
+            setRenamingPath(null);
+            setRenameName("");
+          }
+        }}
+        onBlur={() => {
+          if (renameJustStartedRef.current) return;
+          if (!moveMutation.isPending) {
+            // Commit after focus has settled so clicking another explorer
+            // action behaves like VS Code's inline rename field.
+            window.setTimeout(() => {
+              if (!moveMutation.isPending) submitRename();
+            }, 0);
+          }
+        }}
+        className="h-6 w-full min-w-0 rounded-sm border bg-background px-1.5 font-mono text-[11px] outline-none focus:border-primary"
+      />
+    </div>
+  );
+
+  // Explicitly created folders are merged in for display. Keeping this local
+  // record after a file lands there means deleting that file does not remove
+  // the folder the author created.
+  const visibleTree = useMemo(
+    () => withPendingFolders(tree, pendingFolders),
+    [tree, pendingFolders],
+  );
+  useEffect(() => {
+    writePendingFolders(pendingFolderKey, pendingFolders);
+  }, [pendingFolderKey, pendingFolders]);
+
+  /** Turns a drop into the moves it stands for, then applies them as one batch. */
+  const handleDropOnFolder = (draggedPath: string, folderPath: string) => {
+    if (moveMutation.isPending) return;
+    const draggedIsFolder = !files.some((file) => file.path === draggedPath);
+    const moves = planDropMoves(
+      files.map((file) => file.path),
+      draggedPath,
+      folderPath,
+    );
+    const pendingDestination = draggedIsFolder
+      ? folderMoveDestination(draggedPath, folderPath)
+      : null;
+
+    // An explicitly created empty folder has no backend file to move. Keep
+    // that operation local, while preserving the same drag-and-drop behavior.
+    if (moves.length === 0) {
+      if (
+        pendingDestination &&
+        pendingFolders.some(
+          (path) =>
+            path === draggedPath || path.startsWith(`${draggedPath}/`),
+        )
+      ) {
+        setPendingFolders((current) =>
+          movePendingFolderPaths(current, draggedPath, folderPath),
+        );
+      }
+      return;
+    }
+
+    moveMutation.mutate(moves, {
+      onSuccess: () => {
+        if (pendingDestination) {
+          setPendingFolders((current) =>
+            movePendingFolderPaths(current, draggedPath, folderPath),
+          );
+        }
+      },
+    });
+  };
+
+  /**
+   * A folder row: draggable like a file, and a drop target for both.
+   *
+   * Pointer-based rather than native drag and drop, matching the sections tree:
+   * native drag events carry their own image and cannot be driven from a test,
+   * and this list already lives beside one that works this way.
+   */
+  const FolderRow = ({
+    node,
+    children,
+  }: {
+    node: StorefrontThemeFileTreeNode;
+    children: React.ReactNode;
+  }) => {
+    const { ref: dragRef, isDragging } = useDraggable({
+      id: `path:${node.path}`,
+      data: { path: node.path },
+      disabled: moveMutation.isPending,
+    });
+    const { ref: dropRef, isDropTarget } = useDroppable({
+      id: `folder:${node.path}`,
+      data: { folder: node.path },
+      accept: () => true,
+    });
+
+    return (
+      <div
+        ref={(element) => {
+          dragRef(element);
+          dropRef(element);
+        }}
+        // The header alone is the drop zone. Wrapping the whole subtree would
+        // make dropping on any descendant mean "into this folder" and would
+        // highlight everything under it, which says nothing about where the
+        // file is going.
+        //
+        // The attribute names the row for anything that needs to address it
+        // precisely — a drop target is a position, and a label is not one.
+        data-file-tree-folder={node.path}
+        data-drop-target={isDropTarget ? "true" : undefined}
+        className={cn(
+          "rounded-sm",
+          isDragging && "opacity-50",
+          isDropTarget && "bg-primary/10 ring-1 ring-primary/40",
+        )}
+      >
+        {children}
+      </div>
+    );
+  };
+
+  const FileRow = ({
+    path,
+    disabled = false,
+    children,
+  }: {
+    path: string;
+    disabled?: boolean;
+    children: React.ReactNode;
+  }) => {
+    const { ref, isDragging } = useDraggable({
+      id: `path:${path}`,
+      data: { path },
+      disabled: moveMutation.isPending || disabled,
+    });
+    return (
+      <div
+        ref={ref}
+        data-file-tree-file={path}
+        className={cn(isDragging && "opacity-50")}
+      >
+        {children}
+      </div>
+    );
+  };
+
   const renderTreeNode = (node: StorefrontThemeFileTreeNode, depth = 0) => {
     if (node.isDirectory) {
       const isCollapsed = Boolean(collapsedFolders[node.path]);
       return (
         <div key={node.path} className="select-none">
+          <FolderRow node={node}>
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <div
@@ -926,10 +1580,30 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                 <FilePlus2 className="size-3.5" />
                 New File
               </ContextMenuItem>
+                <ContextMenuItem
+                  disabled={createMutation.isPending}
+                  onClick={() => startCreatingFolder(node.path)}
+                >
+                  <FolderPlus className="size-3.5" />
+                  New Folder
+                </ContextMenuItem>
+                <ContextMenuItem
+                  variant="destructive"
+                  disabled={
+                    deleteFolderMutation.isPending || deleteMutation.isPending
+                  }
+                  onClick={() => handleDeleteFolder(node.path)}
+                >
+                  <Trash2 className="size-3.5" />
+                  Delete Folder
+                </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
+          </FolderRow>
           {creatingInFolder === node.path
-            ? renderCreateInput(depth + 1)
+            ? renderCreateInput(depth + 1, node.path)
+            : creatingFolderIn === node.path
+              ? renderFolderCreateInput(depth + 1, node.path)
             : null}
           {!isCollapsed && node.children ? (
             <div>
@@ -942,9 +1616,23 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
     const isActive = activeFilePath === node.path;
     const isDirty = dirtyPathSet.has(node.path);
+    const isRenaming = renamingPath === node.path;
+
+    if (isRenaming) {
+      // Keep the editing control outside the inner FileRow component. That
+      // component is declared inside the workspace and is recreated whenever
+      // its parent renders; nesting a controlled input inside it would remount
+      // the input on every keystroke and drop focus.
+      return (
+        <div key={node.path} data-file-tree-file={node.path}>
+          {renderRenameInput(node.path, depth)}
+        </div>
+      );
+    }
 
     return (
-      <ContextMenu key={node.path}>
+      <FileRow key={node.path} path={node.path}>
+      <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
             onClick={() => handleOpenFile(node.path)}
@@ -965,26 +1653,27 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             ) : null}
           </div>
         </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem
-            disabled={createMutation.isPending}
-            onClick={() =>
-              startCreatingIn(
-                node.path.includes("/")
-                  ? node.path.slice(0, node.path.lastIndexOf("/"))
-                  : "",
-              )
+        <ContextMenuContent
+          onCloseAutoFocus={(event) => {
+            if (renameJustStartedRef.current) {
+              event.preventDefault();
+              renameJustStartedRef.current = false;
             }
-          >
-            <FilePlus2 className="size-3.5" />
-            New File Here
-          </ContextMenuItem>
+          }}
+        >
           <ContextMenuItem
             disabled={createMutation.isPending}
             onClick={() => handleDuplicateFile(node.path)}
           >
             <Copy className="size-3.5" />
             Duplicate
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={moveMutation.isPending}
+            onClick={() => startRenamingFile(node.path)}
+          >
+            <FileText className="size-3.5" />
+            Rename
           </ContextMenuItem>
           <ContextMenuItem
             variant="destructive"
@@ -996,10 +1685,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+      </FileRow>
     );
   };
 
-  if (files.length === 0) {
+  if (files.length === 0 && pendingFolders.length === 0) {
     return (
       <div className="flex h-full w-full min-h-0 flex-col items-center justify-center p-8 text-center bg-background text-foreground">
         <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-4 shadow-xs">
@@ -1049,6 +1739,16 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             </span>
             <button
               type="button"
+              title="New folder"
+              aria-label="New folder"
+              disabled={createMutation.isPending}
+              onClick={() => startCreatingFolder("")}
+              className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <FolderPlus className="size-3.5" />
+            </button>
+            <button
+              type="button"
               title="New file"
               aria-label="New file"
               disabled={createMutation.isPending}
@@ -1060,10 +1760,29 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           </div>
         </div>
         <ScrollArea className="flex-1 p-1">
+          <DragDropProvider
+            sensors={dragSensors}
+            onDragEnd={(event) => {
+              const draggedPath = (
+                event.operation.source?.data as { path?: string } | undefined
+              )?.path;
+              const folder = (
+                event.operation.target?.data as { folder?: string } | undefined
+              )?.folder;
+              if (event.canceled || !draggedPath || folder === undefined)
+                return;
+              handleDropOnFolder(draggedPath, folder);
+            }}
+          >
           <div className="space-y-0.5">
-            {creatingInFolder === "" ? renderCreateInput(0) : null}
-            {tree.map((node) => renderTreeNode(node, 0))}
+              {creatingInFolder === ""
+                ? renderCreateInput(0, "")
+                : creatingFolderIn === ""
+                  ? renderFolderCreateInput(0, "")
+                  : null}
+              {visibleTree.map((node) => renderTreeNode(node, 0))}
           </div>
+          </DragDropProvider>
         </ScrollArea>
       </div>
 

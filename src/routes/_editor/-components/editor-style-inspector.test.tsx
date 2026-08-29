@@ -212,6 +212,71 @@ describe("code-authored text content", () => {
     });
   });
 
+  it("does not persist untouched default text controls but does persist an intentional clear", () => {
+    const onPropsChange = vi.fn();
+    const themeFileBase = {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      mimeType: "text/typescript",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      updatedAt: "2026-08-25T00:00:00.000Z",
+    };
+    render(
+      <EditorStyleInspector
+        section={baseSection("promo", {})}
+        themeFiles={[
+          {
+            ...themeFileBase,
+            id: "manifest",
+            path: "morph.theme.json",
+            mimeType: "application/json",
+            content: JSON.stringify({
+              components: {
+                "promo.default": {
+                  source: "src/components/Promo.tsx",
+                  contentFields: {
+                    label: { type: "text", label: "Promo label" },
+                    heading: { type: "textarea", label: "Promo heading" },
+                  },
+                },
+              },
+            }),
+          },
+          {
+            ...themeFileBase,
+            id: "promo-source",
+            path: "src/components/Promo.tsx",
+            content: `export default function Promo({ label = "Default label", heading = "Default heading" }) {
+              return <section data-morph-node="promo-root"><span data-morph-element="label">{label}</span><h2 data-morph-element="heading">{heading}</h2></section>;
+            }`,
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "section",
+          tagName: "section",
+          sourceFilePath: "src/components/Promo.tsx",
+          nodeId: "promo-root",
+          isSection: true,
+        })}
+        onPropsChange={onPropsChange}
+      />,
+    );
+
+    const label = screen.getByDisplayValue("Default label");
+    const heading = screen.getByDisplayValue("Default heading");
+    fireEvent.focus(label);
+    fireEvent.blur(label);
+    fireEvent.focus(heading);
+    fireEvent.blur(heading);
+    expect(onPropsChange).not.toHaveBeenCalled();
+
+    fireEvent.input(heading, { target: { value: "" } });
+    fireEvent.blur(heading);
+    expect(onPropsChange).toHaveBeenCalledWith({ heading: "" });
+  });
+
   it("persists a custom text field while it is edited", () => {
     const onPreviewSelectionField = vi.fn();
     const onPropsChange = vi.fn();

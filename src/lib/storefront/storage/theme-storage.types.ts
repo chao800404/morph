@@ -24,6 +24,18 @@ export type SaveThemeSourceFilesBatchItem = {
 
 export type SaveThemeSourceFilesBatchOptions = {
   expectedSourceGeneration: number;
+  /**
+   * Paths to remove once the writes land, in the same transaction.
+   *
+   * Moving a file is a write at its new path and a removal at the old one.
+   * Splitting those into two calls would leave the Theme duplicated or missing
+   * a file for as long as the gap lasts, and permanently if the second fails.
+   */
+  deletions?: Array<{
+    path: string;
+    expectedFileId: string;
+    expectedVersion: number;
+  }>;
   createRevision?: boolean;
   revisionMessage?: string;
   createdBy?: string;

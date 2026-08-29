@@ -1361,6 +1361,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     [onPropsChange],
   );
 
+  const handleTextFieldBlur = useCallback(
+    (field: string, displayedValue: unknown, nextValue: string) => {
+      if (nextValue === String(displayedValue ?? "")) return;
+      handleFieldChange(field, nextValue);
+    },
+    [handleFieldChange],
+  );
+
   return (
     <div className="space-y-3 p-3 text-xs">
       {/* Component Header & Code Bridge */}
@@ -1900,7 +1908,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       )
                     }
                     onBlur={(e) =>
-                      handleFieldChange("eyebrow", e.currentTarget.value)
+                      handleTextFieldBlur(
+                        "eyebrow",
+                        contentFieldDisplayValue("eyebrow"),
+                        e.currentTarget.value,
+                      )
                     }
                     disabled={disabled}
                     placeholder="Eyebrow text..."
@@ -1931,7 +1943,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       )
                     }
                     onBlur={(e) =>
-                      handleFieldChange("label", e.currentTarget.value)
+                      handleTextFieldBlur(
+                        "label",
+                        contentFieldDisplayValue("label"),
+                        e.currentTarget.value,
+                      )
                     }
                     disabled={disabled}
                     placeholder="Section label..."
@@ -1962,7 +1978,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       )
                     }
                     onBlur={(e) =>
-                      handleFieldChange("heading", e.currentTarget.value)
+                      handleTextFieldBlur(
+                        "heading",
+                        contentFieldDisplayValue("heading"),
+                        e.currentTarget.value,
+                      )
                     }
                     disabled={disabled}
                     placeholder="Main headline..."
@@ -1996,7 +2016,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       )
                     }
                     onBlur={(e) =>
-                      handleFieldChange("description", e.currentTarget.value)
+                      handleTextFieldBlur(
+                        "description",
+                        contentFieldDisplayValue("description"),
+                        e.currentTarget.value,
+                      )
                     }
                     disabled={disabled}
                     placeholder="Body description..."
@@ -2030,7 +2054,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       )
                     }
                     onBlur={(e) =>
-                      handleFieldChange("body", e.currentTarget.value)
+                      handleTextFieldBlur(
+                        "body",
+                        contentFieldDisplayValue("body"),
+                        e.currentTarget.value,
+                      )
                     }
                     disabled={disabled}
                     placeholder="Section body text..."
@@ -2073,8 +2101,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                           )
                         }
                         onBlur={(e) =>
-                          handleFieldChange(
+                          handleTextFieldBlur(
                             "actionLabel",
+                            selectedFieldValue("actionLabel"),
                             e.currentTarget.value,
                           )
                         }
@@ -2092,7 +2121,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                           selectedFieldValue("actionHref") ?? "",
                         )}
                         onBlur={(e) =>
-                          handleFieldChange("actionHref", e.currentTarget.value)
+                          handleTextFieldBlur(
+                            "actionHref",
+                            selectedFieldValue("actionHref"),
+                            e.currentTarget.value,
+                          )
                         }
                         disabled={disabled}
                         placeholder="/collections/all"
