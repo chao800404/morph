@@ -180,9 +180,11 @@ export function EditorModeSurface({
   return (
     <div
       aria-hidden={!active}
+      hidden={!active}
+      inert={!active}
       className={cn(
         "col-start-1 row-start-2 min-h-0 min-w-0 flex",
-        active ? "visible" : "invisible pointer-events-none",
+        active ? "visible" : "pointer-events-none",
         className,
       )}
       data-editor-mode-surface="true"
@@ -195,12 +197,14 @@ export function EditorModeSurface({
 export function createSelectionRestoreMessages(
   selectionMode: boolean,
   restoreTarget: PreviewSelectionRestoreTarget | null,
+  selectionRevision?: number,
 ) {
   const messages: Array<
     | {
         type: "morph:storefront-preview-set-selection-mode";
         enabled: boolean;
         restoreTarget?: PreviewSelectionRestoreTarget;
+        selectionRevision?: number;
       }
     | { type: "morph:storefront-preview-request-selection-style" }
   > = [
@@ -208,6 +212,7 @@ export function createSelectionRestoreMessages(
       type: "morph:storefront-preview-set-selection-mode",
       enabled: selectionMode,
       restoreTarget: selectionMode ? (restoreTarget ?? undefined) : undefined,
+      ...(selectionRevision === undefined ? {} : { selectionRevision }),
     },
   ];
   if (selectionMode && restoreTarget) {
@@ -940,9 +945,25 @@ export function VisualEditorShell({
   const [activeSelection, setActiveSelection] =
     useState<EditorSelectionDescriptor | null>(null);
   const editableSelection = isImmutableBuildPreview ? null : activeSelection;
+  const previewSelectionRevisionRef = useRef(0);
+  const nextPreviewSelectionRevision = useCallback(() => {
+    previewSelectionRevisionRef.current += 1;
+    return previewSelectionRevisionRef.current;
+  }, []);
   const lastPreviewSelectionRef = useRef<PreviewSelectionRestoreTarget | null>(
     null,
   );
+  /**
+   * The last inline style preview is already painted in the iframe. When its
+   * source patch commits, the iframe can compile the new CSS without asking
+   * React to rebuild the entire Theme tree. Empty values are excluded because
+   * removing an old utility requires the source render to remove its class.
+   */
+  const pendingSelectionStyleRef = useRef<{
+    selectionKey: string;
+    targetElement: string;
+    styles: Record<string, string>;
+  } | null>(null);
   const previousTemplateIdRef = useRef(search.templateId);
   const previewSelectionSectionSyncRef = useRef<string | null>(null);
   const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
@@ -1109,9 +1130,7 @@ export function VisualEditorShell({
       themeRouteRegistry.routes.find(
         (route) =>
           route.kind === "route" &&
-          (prefix === "/"
-            ? route.path === "/"
-            : route.path.startsWith(prefix)),
+          (prefix === "/" ? route.path === "/" : route.path.startsWith(prefix)),
       ) ?? null
     );
   }, [activeTemplate, themeRouteRegistry.routes]);
@@ -1184,6 +1203,41 @@ export function VisualEditorShell({
     parseMessage: parseLivePreviewMessage,
     postMessage: postEditorToPreviewMessage,
   } = useLivePreviewMessageBridge(livePreviewChannel, previewIframeRef);
+
+  // Code and Design intentionally keep their child trees mounted so switching
+  // modes does not reset the editor cursor, preview scroll, or canvas state.
+  // The selection is transient, though: leaving Design must not leave the
+  // Inspector pointing at an image while the source is being edited.
+  const previousEditorModeRef = useRef(editorMode);
+  useEffect(() => {
+    const previousMode = previousEditorModeRef.current;
+    previousEditorModeRef.current = editorMode;
+    if (previousMode === editorMode || editorMode !== "code") return;
+
+    setActiveSelection(null);
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-set-selection-mode",
+      enabled: false,
+      selectionRevision: nextPreviewSelectionRevision(),
+    });
+  }, [editorMode, nextPreviewSelectionRevision, postEditorToPreviewMessage]);
+
+  // A surface stays mounted so Monaco and the preview keep their local state,
+  // but focus must not remain inside the surface that just became hidden. A
+  // focused hidden descendant can keep browser/Monaco paint state alive and
+  // make the next mode appear over the previous one.
+  useEffect(() => {
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement)) return;
+    if (
+      focused.closest<HTMLElement>(
+        '[data-editor-mode-surface][aria-hidden="true"]',
+      )
+    ) {
+      focused.blur();
+    }
+  }, [editorMode]);
+
   const arrayItemReorderHandlerRef = useRef<
     (
       sectionId: string,
@@ -1207,6 +1261,25 @@ export function VisualEditorShell({
   >(() => {});
   const previewSelectionStyle = useCallback(
     (styles: Record<string, string>, targetElement: string) => {
+      const selection = lastPreviewSelectionRef.current;
+      const sourceLocation = selection?.sourceLocation ?? null;
+      const selectionKey = [
+        selection?.sectionId ?? "",
+        sourceLocation ?? "",
+        selection?.nodeId ?? "",
+        selection?.elementKey ?? "",
+        selection?.fieldPath ?? "",
+        targetElement,
+      ].join("|");
+      const current = pendingSelectionStyleRef.current;
+      pendingSelectionStyleRef.current = {
+        selectionKey,
+        targetElement,
+        styles:
+          current?.selectionKey === selectionKey
+            ? { ...current.styles, ...styles }
+            : { ...styles },
+      };
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-selection-style",
         styles,
@@ -1232,17 +1305,30 @@ export function VisualEditorShell({
     [],
   );
   // Assigned below, where the canvas geometry it needs is in scope.
-  const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
+  const schedulePreviewRemeasureRef = useRef<
+    (options?: { shrinkToFloor?: boolean }) => void
+  >(() => {});
   const postPreviewThemeFiles = useCallback(
-    (files: Array<{ path: string; content: string }>) => {
+    (
+      files: Array<{ path: string; content: string }>,
+      options?: { renderDocument?: boolean },
+    ) => {
       const styleRevision = latestStyleRevisionRef.current + 1;
       latestStyleRevisionRef.current = styleRevision;
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-theme-files",
         files,
         styleRevision,
+        ...(options?.renderDocument === undefined
+          ? {}
+          : { renderDocument: options.renderDocument }),
       });
-      schedulePreviewRemeasureRef.current();
+      schedulePreviewRemeasureRef.current({
+        // Style-only updates keep the rendered tree mounted. Measuring them
+        // must not first collapse the frame to the viewport floor, otherwise
+        // the canvas shows a black gap until the iframe reports its new size.
+        shrinkToFloor: options?.renderDocument !== false,
+      });
       return styleRevision;
     },
     [],
@@ -2284,7 +2370,27 @@ export function VisualEditorShell({
             content: updatedContent,
           });
         }
-        const styleRevision = postPreviewThemeFiles(previewFiles);
+        const selection = lastPreviewSelectionRef.current;
+        const selectionKey = [
+          selection?.sectionId ?? "",
+          selection?.sourceLocation ?? "",
+          selection?.nodeId ?? "",
+          selection?.elementKey ?? "",
+          selection?.fieldPath ?? "",
+          elementName,
+        ].join("|");
+        const pendingSelectionStyle = pendingSelectionStyleRef.current;
+        const canKeepPreviewTree =
+          !instanceTarget &&
+          pendingSelectionStyle?.selectionKey === selectionKey &&
+          pendingSelectionStyle.targetElement === elementName &&
+          Object.values(pendingSelectionStyle.styles).every(
+            (value) => value !== "",
+          );
+        const styleRevision = postPreviewThemeFiles(previewFiles, {
+          renderDocument: !canKeepPreviewTree,
+        });
+        pendingSelectionStyleRef.current = null;
 
         // Debounce save to database (300ms)
         const opKey = getScopedOpKey(targetFilePath);
@@ -2326,16 +2432,19 @@ export function VisualEditorShell({
             targetFilePath,
             updatedContent,
             nextRevision,
-          ).then((result) => {
-            // A conflicted write never landed, so there is nothing to reverse;
-            // leaving the entry would undo a change that never happened.
-            if (result.status === "source-conflict") history.discard(historyId);
-          }).catch((err) => {
-            history.discard(historyId);
-            toast.error(
-              `Failed to save source file ${targetFilePath}: ${err.message}`,
-            );
-          });
+          )
+            .then((result) => {
+              // A conflicted write never landed, so there is nothing to reverse;
+              // leaving the entry would undo a change that never happened.
+              if (result.status === "source-conflict")
+                history.discard(historyId);
+            })
+            .catch((err) => {
+              history.discard(historyId);
+              toast.error(
+                `Failed to save source file ${targetFilePath}: ${err.message}`,
+              );
+            });
         }, 300);
 
         pendingSaveTimersRef.current.set(opKey, newTimer);
@@ -2492,37 +2601,45 @@ export function VisualEditorShell({
   // the empty space behind forever. Measuring from a floor first is what makes
   // the number the content's own height rather than a confirmation of the
   // height it was given.
-  const schedulePreviewRemeasure = useCallback(() => {
-    if (previewRemeasureTimerRef.current) {
-      clearTimeout(previewRemeasureTimerRef.current);
-    }
-    previewRemeasureTimerRef.current = setTimeout(() => {
-      previewRemeasureTimerRef.current = null;
-      const key = previewKeyRef.current;
-      const frameWindow = previewIframeRef.current?.contentWindow;
-      if (!key || !frameWindow) return;
-      const floor = Math.max(
-        MIN_PREVIEW_FRAME_HEIGHT,
-        Math.round(
-          canvasViewportHeightRef.current || DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
-        ),
-      );
-      setPreviewContentSize((current) =>
-        current?.key === key && current.height <= floor
-          ? current
-          : { key, height: floor },
-      );
-      // Two frames: one for the shrunk frame to lay out, one for the theme's
-      // viewport-relative rules to settle against it.
-      requestAnimationFrame(() =>
+  const schedulePreviewRemeasure = useCallback(
+    (options?: { shrinkToFloor?: boolean }) => {
+      if (previewRemeasureTimerRef.current) {
+        clearTimeout(previewRemeasureTimerRef.current);
+      }
+      previewRemeasureTimerRef.current = setTimeout(() => {
+        previewRemeasureTimerRef.current = null;
+        const key = previewKeyRef.current;
+        const frameWindow = previewIframeRef.current?.contentWindow;
+        if (!key || !frameWindow) return;
+        const floor = Math.max(
+          MIN_PREVIEW_FRAME_HEIGHT,
+          Math.round(
+            canvasViewportHeightRef.current || DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
+          ),
+        );
+        if (options?.shrinkToFloor !== false) {
+          setPreviewContentSize((current) =>
+            current?.key === key && current.height <= floor
+              ? current
+              : { key, height: floor },
+          );
+        }
+        // Two frames give the iframe's layout and viewport-relative rules time
+        // to settle before the new content height is requested.
         requestAnimationFrame(() =>
-          postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-            type: "morph:storefront-preview-request-size",
-          }),
-        ),
-      );
-    }, PREVIEW_REMEASURE_DELAY_MS);
-  }, []);
+          requestAnimationFrame(() =>
+            postEditorToPreviewMessage(
+              previewIframeRef.current?.contentWindow,
+              {
+                type: "morph:storefront-preview-request-size",
+              },
+            ),
+          ),
+        );
+      }, PREVIEW_REMEASURE_DELAY_MS);
+    },
+    [],
+  );
 
   useEffect(() => {
     schedulePreviewRemeasureRef.current = schedulePreviewRemeasure;
@@ -2803,6 +2920,10 @@ export function VisualEditorShell({
         )
       )
         return;
+      const responseSelectionRevision = message.selectionRevision ?? 0;
+      if (responseSelectionRevision < previewSelectionRevisionRef.current) {
+        return;
+      }
       const sectionId = message.sectionId;
       const nodeId = message.nodeId ?? null;
       const sourceFilePath = message.sourceFilePath;
@@ -2909,19 +3030,26 @@ export function VisualEditorShell({
   const handleEditableNodeSelect = useCallback(
     (target: PreviewSelectionRestoreTarget) => {
       reportAuthenticatedUserActivity();
+      setActiveSelection(null);
+      setActiveComputedStyleRevision(0);
       lastPreviewSelectionRef.current = target;
       if (target.sectionId !== search.section) {
         previewSelectionSectionSyncRef.current = target.sectionId;
         onSearchChange({ section: target.sectionId });
       }
       setIsSelectionMode(true);
-      for (const message of createSelectionRestoreMessages(true, target)) {
+      const selectionRevision = nextPreviewSelectionRevision();
+      for (const message of createSelectionRestoreMessages(
+        true,
+        target,
+        selectionRevision,
+      )) {
         postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
           ...message,
         });
       }
     },
-    [onSearchChange, search.section],
+    [nextPreviewSelectionRevision, onSearchChange, search.section],
   );
 
   const syncPreviewSectionOrder = useCallback((sectionIds: string[]) => {
@@ -3296,8 +3424,10 @@ export function VisualEditorShell({
         history.record({
           label: enabled ? "Show section" : "Hide section",
           scope: sectionHistoryScope(sectionId),
-          undo: () => handleSectionToggleEnabledRef.current?.(sectionId, !enabled),
-          redo: () => handleSectionToggleEnabledRef.current?.(sectionId, enabled),
+          undo: () =>
+            handleSectionToggleEnabledRef.current?.(sectionId, !enabled),
+          redo: () =>
+            handleSectionToggleEnabledRef.current?.(sectionId, enabled),
         });
       }
     },
@@ -3322,7 +3452,8 @@ export function VisualEditorShell({
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === activeThemeRoute.sourcePath,
       );
-      if (!routeFile) throw new Error("The active route source is unavailable.");
+      if (!routeFile)
+        throw new Error("The active route source is unavailable.");
       const result = reorderThemeRouteSections(
         routeFile.content,
         effectiveThemeFiles,
@@ -3380,8 +3511,11 @@ export function VisualEditorShell({
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === activeThemeRoute.sourcePath,
       );
-      if (!routeFile) throw new Error("The active route source is unavailable.");
-      const usedSlots = new Set(activeRouteSections.map((section) => section.slotId));
+      if (!routeFile)
+        throw new Error("The active route source is unavailable.");
+      const usedSlots = new Set(
+        activeRouteSections.map((section) => section.slotId),
+      );
       const baseSlot = option.sectionType || "section";
       let slotId = baseSlot;
       let suffix = 2;
@@ -3422,14 +3556,16 @@ export function VisualEditorShell({
   }, [previewKey, search.section, syncPreviewSection]);
 
   const syncPreviewSelectionMode = useCallback(() => {
+    const selectionRevision = nextPreviewSelectionRevision();
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-selection-mode",
       enabled: isSelectionMode,
+      selectionRevision,
       restoreTarget: isSelectionMode
         ? (lastPreviewSelectionRef.current ?? undefined)
         : undefined,
     });
-  }, [isSelectionMode]);
+  }, [isSelectionMode, nextPreviewSelectionRevision]);
 
   const syncPreviewSpacingOverlay = useCallback(() => {
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -3441,17 +3577,24 @@ export function VisualEditorShell({
   const handleSwitchToDesign = useCallback(() => {
     setEditorMode("design");
     syncPreviewSpacingOverlay();
+    const selectionRevision = nextPreviewSelectionRevision();
     if (isCommentMode) return;
 
     for (const message of createSelectionRestoreMessages(
       isSelectionMode,
       lastPreviewSelectionRef.current,
+      selectionRevision,
     )) {
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         ...message,
       });
     }
-  }, [isCommentMode, isSelectionMode, syncPreviewSpacingOverlay]);
+  }, [
+    isCommentMode,
+    isSelectionMode,
+    nextPreviewSelectionRevision,
+    syncPreviewSpacingOverlay,
+  ]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -3695,8 +3838,7 @@ export function VisualEditorShell({
       const viewportBounds = viewport.getBoundingClientRect();
       const frameBounds = frame.getBoundingClientRect();
       const step = dragAutoScrollStep({
-        pointerY:
-          frameBounds.top + pointerY * canvasTransformRef.current.scale,
+        pointerY: frameBounds.top + pointerY * canvasTransformRef.current.scale,
         viewportTop: viewportBounds.top,
         viewportBottom: viewportBounds.bottom,
       });
@@ -4375,9 +4517,7 @@ export function VisualEditorShell({
             onClick={history.undo}
             aria-label="Undo"
             title={
-              historyState.undoLabel
-                ? `Undo ${historyState.undoLabel}`
-                : "Undo"
+              historyState.undoLabel ? `Undo ${historyState.undoLabel}` : "Undo"
             }
           >
             <Undo2 />
@@ -4389,9 +4529,7 @@ export function VisualEditorShell({
             onClick={history.redo}
             aria-label="Redo"
             title={
-              historyState.redoLabel
-                ? `Redo ${historyState.redoLabel}`
-                : "Redo"
+              historyState.redoLabel ? `Redo ${historyState.redoLabel}` : "Redo"
             }
           >
             <Redo2 />
@@ -4526,7 +4664,9 @@ export function VisualEditorShell({
           onSearchChange={handleSectionsSearchChange}
           onSectionOrderChange={syncPreviewSectionOrder}
           onSaveStateChange={setDraftSaveState}
-          onReorderSections={activeThemeRoute ? handleReorderSections : undefined}
+          onReorderSections={
+            activeThemeRoute ? handleReorderSections : undefined
+          }
           onToggleSectionEnabled={handleSectionToggleEnabled}
           editableNodes={
             previewStructure?.key === previewKey

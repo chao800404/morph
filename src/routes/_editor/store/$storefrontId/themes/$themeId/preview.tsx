@@ -160,8 +160,6 @@ const PREVIEW_EDITABLE_NODE_SELECTOR = [
   "[data-morph-loc]",
 ].join(",");
 
-
-
 /**
  * Elements that act as a selectable section root.
  *
@@ -281,10 +279,7 @@ export function collectPreviewEditableNodes(root: {
     if (!sectionId || sectionId.length > 100) continue;
     const candidates = Array.from(
       section.querySelectorAll<HTMLElement>(PREVIEW_EDITABLE_NODE_SELECTOR),
-    ).filter(
-      (candidate) =>
-        closestPreviewSectionRoot(candidate) === section,
-    );
+    ).filter((candidate) => closestPreviewSectionRoot(candidate) === section);
     const morphNodeCounts = new Map<string, number>();
     const fieldKeyCounts = new Map<string, number>();
     const sourceLocationCounts = new Map<string, number>();
@@ -484,6 +479,7 @@ function ReadyStorefrontPreview({
   const previewDocument = usePreviewDocument(template?.document);
   const {
     themeFiles: previewThemeFiles,
+    renderThemeFiles,
     sourceGeneration,
     styleRevision,
     acknowledgeStyleRevision,
@@ -531,7 +527,7 @@ function ReadyStorefrontPreview({
         templateId={templateId}
         viewportHeight={viewportHeight}
         document={previewDocument}
-        themeFiles={previewThemeFiles}
+        themeFiles={renderThemeFiles}
       />
     </>
   );
@@ -544,17 +540,22 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
   const [themeFiles, setThemeFiles] = useState<
     Array<{ path: string; content: string }>
   >([]);
+  const [renderThemeFiles, setRenderThemeFiles] = useState<
+    Array<{ path: string; content: string }>
+  >([]);
   const [sourceGeneration, setSourceGeneration] = useState<number | undefined>(
     undefined,
   );
   const [styleRevision, setStyleRevision] = useState<number | undefined>();
   const latestRequestedStyleRevisionRef = useRef<number | undefined>(undefined);
+  const renderDocumentRef = useRef(true);
   const hasReceivedEditorFilesRef = useRef(false);
 
   useEffect(() => {
     if (hasReceivedEditorFilesRef.current) return;
     if (fileQuery.data?.files) {
       setThemeFiles(fileQuery.data.files);
+      setRenderThemeFiles(fileQuery.data.files);
     }
     if (typeof fileQuery.data?.sourceGeneration === "number") {
       setSourceGeneration(fileQuery.data.sourceGeneration);
@@ -572,6 +573,17 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
       ) {
         hasReceivedEditorFilesRef.current = true;
         setThemeFiles(message.files);
+        renderDocumentRef.current = message.renderDocument !== false;
+        if (message.renderDocument !== false) {
+          setRenderThemeFiles(message.files);
+        } else {
+          // Compile and inject the new CSS while leaving the existing React
+          // preview tree mounted. This keeps numeric inspector edits from
+          // replacing the whole live canvas.
+          setRenderThemeFiles((current) =>
+            current.length === 0 ? message.files : current,
+          );
+        }
         latestRequestedStyleRevisionRef.current = message.styleRevision;
         setStyleRevision(message.styleRevision);
         if (typeof message.sourceGeneration === "number") {
@@ -589,7 +601,9 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
     (appliedRevision: number, didApplySource: boolean) => {
       if (latestRequestedStyleRevisionRef.current !== appliedRevision) return;
       if (didApplySource) {
-        window.dispatchEvent(new Event(SELECTION_STYLE_APPLIED_EVENT));
+        if (renderDocumentRef.current) {
+          window.dispatchEvent(new Event(SELECTION_STYLE_APPLIED_EVENT));
+        }
         document.documentElement.dataset.storefrontStyleRevision =
           String(appliedRevision);
       }
@@ -605,6 +619,7 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
 
   return {
     themeFiles,
+    renderThemeFiles,
     sourceGeneration,
     styleRevision,
     acknowledgeStyleRevision,
@@ -960,6 +975,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     let selectedItem: SelectableInfo | null = null;
     let selectedElement: HTMLElement | null = null;
     let selectedSectionId: string | null = null;
+    let selectionRevision = 0;
     /**
      * Last selection expressed as a restore target.
      *
@@ -2360,6 +2376,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       event.stopPropagation();
       const selectable = resolveSelectable(event.target);
       if (!selectable) return;
+      selectionRevision += 1;
 
       // Read the style snapshots before updating selection markers or overlay
       // DOM so this click does not become a write -> layout read cycle.
@@ -2379,6 +2396,12 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           )
         : null;
       const previousSelectedElement = selectedElement;
+      if (
+        previousSelectedElement &&
+        previousSelectedElement !== selectable.element
+      ) {
+        selectionStylePreview.clear();
+      }
       selectedElement = selectable.element;
       selectedItem = selectable;
       selectedSectionId = selectable.sectionId;
@@ -2413,6 +2436,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         postPreviewToEditorMessage({
           type: "morph:storefront-preview-select-section",
           sectionId: selectable.sectionId,
+          selectionRevision,
           componentType: selectable.type,
           nodeId: morphNodeId,
           sourceLocation: selectable.element.dataset.morphLoc ?? null,
@@ -2633,6 +2657,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const restoreSelectedSection = () => {
+      const previousSelectedElement = selectedElement;
       selectedElement?.removeAttribute("data-storefront-editor-selected");
       hideSelectedDragHandle();
       clearReorderFeedback();
@@ -2649,15 +2674,34 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           selectedItem = resolveSelectable(sectionEl);
         } else {
           selectedItem = null;
+          selectedElement = null;
         }
       } else {
         selectedItem = null;
+        selectedElement = null;
+      }
+      if (
+        previousSelectedElement &&
+        previousSelectedElement !== selectedElement
+      ) {
+        selectionStylePreview.clear();
       }
       positionOverlays();
       syncSelectedDraggable();
     };
 
     const restoreSelectedTarget = (target: PreviewSelectionRestoreTarget) => {
+      const previousTarget = lastRestoreTarget;
+      const targetChanged =
+        !previousTarget ||
+        previousTarget.sectionId !== target.sectionId ||
+        previousTarget.sourceLocation !== target.sourceLocation ||
+        previousTarget.nodeId !== target.nodeId ||
+        previousTarget.fieldPath !== target.fieldPath ||
+        previousTarget.elementKey !== target.elementKey ||
+        previousTarget.fieldKey !== target.fieldKey ||
+        previousTarget.isSection !== target.isSection;
+      if (targetChanged) selectionStylePreview.clear();
       lastRestoreTarget = target;
       selectedElement?.removeAttribute("data-storefront-editor-selected");
       hideSelectedDragHandle();
@@ -2839,6 +2883,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           postPreviewToEditorMessage({
             type: "morph:storefront-preview-select-section",
             sectionId: selectedItem.sectionId,
+            selectionRevision,
             componentType: selectedItem.type,
             sourceLocation: selectedItem.element.dataset.morphLoc ?? null,
             nodeId:
@@ -2869,7 +2914,19 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       }
 
       if (message.type === "morph:storefront-preview-set-selection-mode") {
-        if (!message.enabled) finishInlineTextEdit(false);
+        if (message.selectionRevision !== undefined) {
+          selectionRevision = Math.max(
+            selectionRevision,
+            message.selectionRevision,
+          );
+        }
+        if (!message.enabled) {
+          finishInlineTextEdit(false);
+          // Mode changes do not unmount this iframe. Restore any drag-time
+          // inline styles now, otherwise the old image/layout can reappear
+          // when Design becomes visible again.
+          selectionStylePreview.clear();
+        }
         selectionEnabled = message.enabled;
         document.documentElement.toggleAttribute(
           "data-storefront-editor-selection-enabled",
@@ -2923,7 +2980,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
      * shortcut works from the toolbar but appears dead from the keyboard.
      */
     const handleHistoryShortcut = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.key.toLowerCase() !== "z"
+      ) {
         return;
       }
       if (shouldDeferUndoShortcut(event.target as HTMLElement | null)) return;

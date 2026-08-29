@@ -73,6 +73,21 @@ describe("preview protocol", () => {
     });
     expect(
       parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-update-theme-files",
+        files: [
+          { path: "src/components/Hero.tsx", content: "export default 2" },
+        ],
+        styleRevision: 5,
+        renderDocument: false,
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-update-theme-files",
+      files: [{ path: "src/components/Hero.tsx", content: "export default 2" }],
+      styleRevision: 5,
+      renderDocument: false,
+    });
+    expect(
+      parseEditorToPreviewMessage({
         type: "morph:storefront-preview-reset-selection-style-preview",
       }),
     ).toEqual({
@@ -241,6 +256,7 @@ describe("preview protocol", () => {
       field: "heading",
       fieldPath: "heading",
       contentValue: "Current heading",
+      selectionRevision: 4,
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       tagName: "h1",
       role: null,
@@ -258,6 +274,7 @@ describe("preview protocol", () => {
       styleRevision: 3,
       contentValue: "Current heading",
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
+      selectionRevision: 4,
     });
     expect(
       parsePreviewToEditorMessage({
@@ -291,6 +308,9 @@ describe("preview protocol", () => {
           fieldPath: `field-${index}`,
         })),
       }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...selection, selectionRevision: -1 }),
     ).toBeNull();
   });
 
@@ -682,7 +702,9 @@ describe("stable identity on a structure node", () => {
   it("carries the identity through so the panel can mark it", () => {
     // Only an element with an identity that survives edits can carry a style
     // bound to one instance, so which elements have one is worth showing.
-    const parsed: any = parsePreviewToEditorMessage(withIdentity("hero-heading"));
+    const parsed: any = parsePreviewToEditorMessage(
+      withIdentity("hero-heading"),
+    );
 
     expect(parsed.nodes[0].stableId).toBe("hero-heading");
   });
@@ -696,6 +718,8 @@ describe("stable identity on a structure node", () => {
 
   it("rejects an identity that is not a bounded string", () => {
     expect(parsePreviewToEditorMessage(withIdentity(42))).toBeNull();
-    expect(parsePreviewToEditorMessage(withIdentity("x".repeat(201)))).toBeNull();
+    expect(
+      parsePreviewToEditorMessage(withIdentity("x".repeat(201))),
+    ).toBeNull();
   });
 });

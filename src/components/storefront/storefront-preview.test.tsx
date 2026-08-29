@@ -57,9 +57,16 @@ describe("StorefrontPreview stored starter composition", () => {
       />,
     );
 
-    expect(html).toContain('data-morph-node="page-root"');
-    expect(html).toContain('data-morph-node="header-root"');
-    expect(html).toContain('data-morph-node="footer-root"');
+    expect(html).toContain(
+      'data-morph-source-file="src/layouts/StorefrontLayout.tsx"',
+    );
+    expect(html).toContain(
+      'data-morph-source-file="src/components/Header.tsx"',
+    );
+    expect(html).toContain(
+      'data-morph-source-file="src/components/Footer.tsx"',
+    );
+    expect(html).not.toContain('data-morph-node="page-root"');
     expect(html).toContain("Stored test shop");
     expect(html).toContain("Heading from D1");
     for (const section of document.sections) {

@@ -33,17 +33,6 @@ export function themeFileMimeType(path: string): string {
   }
 }
 
-/** kebab-case identity used for the component's editor markers. */
-function componentSlugFrom(path: string): string {
-  const base = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
-  const slug = base
-    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase();
-  return slug || "component";
-}
-
 function componentNameFrom(path: string): string {
   const base = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
   const cleaned = base.replace(/[^a-zA-Z0-9]/g, " ").trim();
@@ -68,10 +57,9 @@ export function scaffoldThemeFile(path: string): string {
   if (extension === ".ts") return "export {};\n";
 
   const name = componentNameFrom(path);
-  const slug = componentSlugFrom(path);
-  // The editor locates selectable elements by `data-morph-node`, and binds a
-  // rendered subtree to its section by `data-morph-section`. Scaffolding
-  // without them produces a component that renders but can never be selected.
+  // Live Preview injects source locations for selection, while content fields
+  // are inferred from the component props. New Theme files therefore do not
+  // need hand-written data-morph identity markers.
   return `export const contentFields = {
   heading: { type: "text", label: "Heading" },
 } as const;
@@ -82,16 +70,8 @@ export type ${name}Props = {
 
 export default function ${name}({ heading = "${name}" }: ${name}Props) {
   return (
-    <section
-      data-morph-section="${slug}"
-      data-morph-node="${slug}-root"
-      className="px-6 py-16"
-    >
-      <h2
-        data-morph-node="${slug}-heading"
-        data-morph-element="heading"
-        className="text-2xl font-semibold"
-      >
+    <section className="px-6 py-16">
+      <h2 className="text-2xl font-semibold">
         {heading}
       </h2>
     </section>

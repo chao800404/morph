@@ -96,29 +96,21 @@ export default function Hero({
 }: HeroProps) {
   return (
     <section
-      data-morph-section="hero"
-      data-morph-node="hero-root"
       className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]"
     >
       <div className="flex items-center px-[clamp(1.75rem,6vw,6rem)] py-20">
         <div className="max-w-xl">
           <p
-            data-morph-node="hero-eyebrow"
-            data-morph-element="eyebrow"
             className="text-xs font-medium uppercase tracking-[0.24em] text-stone-500"
           >
             {eyebrow}
           </p>
           <h1
-            data-morph-node="hero-heading"
-            data-morph-element="heading"
             className="mt-6 font-serif text-[clamp(3.25rem,7vw,7rem)] leading-[0.88] tracking-[-0.055em] text-stone-950"
           >
             {heading}
           </h1>
           <p
-            data-morph-node="hero-description"
-            data-morph-element="description"
             className="mt-7 max-w-md text-base leading-7 text-stone-600"
           >
             {description}
@@ -126,8 +118,6 @@ export default function Hero({
           <div className="mt-8">
             <a
               href={actionHref}
-              data-morph-node="hero-action"
-              data-morph-element="action"
               className="inline-flex items-center justify-center rounded-md bg-stone-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-stone-800"
             >
               {actionLabel}
@@ -136,8 +126,6 @@ export default function Hero({
         </div>
       </div>
       <div
-        data-morph-node="hero-image"
-        data-morph-element="image"
         className="min-h-[30rem] overflow-hidden lg:min-h-0"
       >
         <img
@@ -183,43 +171,31 @@ export default function Principles({
 }: PrinciplesProps) {
   return (
     <section
-      data-morph-section="principles"
-      data-morph-node="principles-root"
       className="bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]"
     >
       <p
         data-storefront-field="label"
-        data-morph-node="principles-label"
-        data-morph-element="label"
         className="mb-14 text-xs font-medium uppercase tracking-[0.22em] text-stone-500"
       >
         {label}
       </p>
       <div
-        data-morph-node="principles-grid"
-        data-morph-element="grid"
         className="grid border-t border-stone-300 lg:grid-cols-3"
       >
         {items.map((item, idx) => (
           <article
             key={item.id ?? item.number ?? idx}
-            data-morph-node="principle-card"
-            data-morph-element="principle-card"
             className={cn(
               "border-b border-stone-300 py-8 lg:border-b-0 lg:border-r lg:px-8 lg:first:pl-0 lg:last:border-r-0",
               morphInstanceClasses[\`\${item.id}:principle-card\`],
             )}
           >
             <span
-              data-morph-node="principle-number"
-              data-morph-element="number"
               className="text-xs text-stone-400"
             >
               {item.number ?? ("0" + (idx + 1))}
             </span>
             <h3
-              data-morph-node="principle-title"
-              data-morph-element="title"
               className={cn(
                 "mt-12 font-serif text-3xl tracking-tight text-stone-950",
                 morphInstanceClasses[\`\${item.id}:principle-title\`],
@@ -228,8 +204,6 @@ export default function Principles({
               {item.title ?? ""}
             </h3>
             <p
-              data-morph-node="principle-body"
-              data-morph-element="body"
               className={cn(
                 "mt-4 max-w-sm text-sm leading-6 text-stone-600",
                 morphInstanceClasses[\`\${item.id}:principle-body\`],

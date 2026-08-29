@@ -27,20 +27,14 @@ export const STARTER_THEME_HEADER_SOURCE = `export type HeaderProps = {
 export default function Header({ storeName = "Online Store" }: HeaderProps) {
   return (
     <header
-      data-morph-section="header"
-      data-morph-node="header-root"
       className="flex h-16 items-center justify-between border-b border-neutral-200 bg-stone-50 px-5 sm:px-8"
     >
       <span
-        data-morph-node="header-brand"
-        data-morph-element="brand"
         className="font-serif text-lg font-semibold tracking-tight"
       >
         {storeName}
       </span>
       <nav
-        data-morph-node="header-navigation"
-        data-morph-element="navigation"
         className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
         aria-label="Storefront navigation"
       >
@@ -50,8 +44,6 @@ export default function Header({ storeName = "Online Store" }: HeaderProps) {
       </nav>
       <a
         href="/cart"
-        data-morph-node="header-cart"
-        data-morph-element="action"
         className="text-xs text-neutral-600 hover:text-neutral-950"
       >
         Cart (0)
@@ -98,19 +90,15 @@ export default function Footer({
 }: FooterProps) {
   return (
     <footer
-      data-morph-section="footer"
-      data-morph-node="footer-root"
       className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]"
     >
-      <div data-morph-node="footer-brand" data-morph-element="content">
+      <div>
         <p className="font-serif text-3xl text-stone-100">{storeName}</p>
         <p className="mt-4 max-w-xs text-sm leading-6 text-stone-500">
           Objects with lasting character for thoughtful, everyday living.
         </p>
       </div>
       <div
-        data-morph-node="footer-explore"
-        data-morph-element="navigation"
         className="text-sm leading-8"
       >
         <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Explore</p>
@@ -119,8 +107,6 @@ export default function Footer({
         <a className="block hover:text-white" href="/blogs/journal">Journal</a>
       </div>
       <div
-        data-morph-node="footer-help"
-        data-morph-element="navigation"
         className="text-sm leading-8"
       >
         <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Help</p>
@@ -129,8 +115,6 @@ export default function Footer({
         <a className="block hover:text-white" href="/pages/returns">Returns</a>
       </div>
       <div
-        data-morph-node="footer-copyright"
-        data-morph-element="text"
         className="border-t border-stone-800 pt-6 text-xs text-stone-600 sm:col-span-2 lg:col-span-3"
       >
         {copyrightText}
@@ -174,7 +158,6 @@ export default function HomePage({
 }: HomePageProps) {
   return (
     <div
-      data-morph-node="page-root"
       className="min-h-screen bg-stone-50 text-neutral-950"
     >
       <Header storeName={storeName} />
@@ -337,7 +320,7 @@ export const Route = createFileRoute("/")({
 });
 
 function HomeRoute() {
-  return <main data-morph-node="home-route" />;
+  return <main />;
 }
 `;
 
@@ -374,7 +357,7 @@ export const Route = createFileRoute("/")({
 
 function HomeRoute() {
   return (
-    <main data-morph-node="home-route">
+    <main>
       <Hero />
       <EditorialIntro />
       <CategoryShowcase />
@@ -482,7 +465,7 @@ export const Route = createFileRoute("/")({
 
 function HomeRoute() {
   return (
-    <main data-morph-node="home-route">
+    <main>
       <Hero {...content("starter-hero")} />
       <EditorialIntro {...content("starter-introduction")} />
       <CategoryShowcase {...content("starter-categories")} />
@@ -540,32 +523,24 @@ export default function EditorialIntro({
 }: EditorialIntroProps) {
   return (
     <section
-      data-morph-section="editorial-intro"
-      data-morph-node="editorial-intro-root"
       className="bg-stone-50 px-[clamp(1.75rem,7vw,7rem)] py-[clamp(6rem,12vw,11rem)]"
     >
       <div className="grid gap-10 border-t border-stone-300 pt-8 lg:grid-cols-[0.55fr_1.45fr]">
         <p
           data-storefront-field="label"
-          data-morph-node="editorial-intro-label"
-          data-morph-element="label"
           className="text-xs font-medium uppercase tracking-[0.22em] text-stone-500"
         >
           {label}
         </p>
-        <div data-morph-node="editorial-intro-content" data-morph-element="content">
+        <div>
           <h2
             data-storefront-field="heading"
-            data-morph-node="editorial-intro-heading"
-            data-morph-element="heading"
             className="max-w-4xl font-serif text-[clamp(3rem,6vw,6.5rem)] leading-[0.92] tracking-[-0.045em] text-stone-950"
           >
             {heading}
           </h2>
           <p
             data-storefront-field="body"
-            data-morph-node="editorial-intro-body"
-            data-morph-element="body"
             className="ml-auto mt-10 max-w-xl text-lg leading-8 text-stone-600"
           >
             {body}
@@ -600,15 +575,11 @@ export default function CategoryShowcase({
 }: CategoryShowcaseProps) {
   return (
     <section
-      data-morph-section="category-showcase"
-      data-morph-node="category-showcase-root"
       className="bg-stone-900 px-[clamp(1.25rem,4vw,4rem)] py-[clamp(5rem,9vw,9rem)] text-stone-100"
     >
       <div className="mb-12 flex items-end justify-between border-b border-stone-700 pb-6">
         <h2
           data-storefront-field="heading"
-          data-morph-node="category-showcase-heading"
-          data-morph-element="heading"
           className="font-serif text-[clamp(2.5rem,5vw,5rem)] tracking-[-0.04em]"
         >
           {heading}
@@ -618,8 +589,6 @@ export default function CategoryShowcase({
         </span>
       </div>
       <div
-        data-morph-node="category-showcase-grid"
-        data-morph-element="grid"
         className="grid gap-4 lg:grid-cols-3"
       >
         {items.map((item, index) => (
@@ -627,8 +596,6 @@ export default function CategoryShowcase({
             key={item.href ?? index}
             href={item.href ?? "#"}
             data-storefront-field-path={\`items.\${index}\`}
-            data-morph-node="category-showcase-item"
-            data-morph-element="collection-item"
             className="group block border-t border-stone-700 pt-4 lg:border-t-0 lg:pt-0"
           >
             <div className="aspect-[4/5] overflow-hidden bg-stone-800">
@@ -690,13 +657,9 @@ export default function ImageWithText({
 }: ImageWithTextProps) {
   return (
     <section
-      data-morph-section="image-with-text"
-      data-morph-node="image-with-text-root"
       className="grid bg-[#d8d0c3] lg:grid-cols-2"
     >
       <div
-        data-morph-node="image-with-text-image"
-        data-morph-element="image"
         className="min-h-[32rem] overflow-hidden lg:min-h-[52rem]"
       >
         <img
@@ -707,27 +670,21 @@ export default function ImageWithText({
         />
       </div>
       <div className="flex items-center px-[clamp(2rem,7vw,7rem)] py-20">
-        <div data-morph-node="image-with-text-content" data-morph-element="content" className="max-w-xl">
+        <div className="max-w-xl">
           <p
             data-storefront-field="eyebrow"
-            data-morph-node="image-with-text-eyebrow"
-            data-morph-element="eyebrow"
             className="text-xs font-medium uppercase tracking-[0.22em] text-stone-600"
           >
             {eyebrow}
           </p>
           <h2
             data-storefront-field="heading"
-            data-morph-node="image-with-text-heading"
-            data-morph-element="heading"
             className="mt-5 font-serif text-[clamp(3rem,5vw,5.5rem)] leading-[0.94] tracking-[-0.045em] text-stone-950"
           >
             {heading}
           </h2>
           <p
             data-storefront-field="body"
-            data-morph-node="image-with-text-body"
-            data-morph-element="body"
             className="mt-7 text-base leading-7 text-stone-700"
           >
             {body}
@@ -735,8 +692,6 @@ export default function ImageWithText({
           <a
             href={actionHref}
             data-storefront-field="actionLabel"
-            data-morph-node="image-with-text-action"
-            data-morph-element="action"
             className="mt-9 inline-flex border-b border-current pb-1 text-sm font-medium"
           >
             {actionLabel}
@@ -768,38 +723,28 @@ export default function Newsletter({
 }: NewsletterProps) {
   return (
     <section
-      data-morph-section="newsletter"
-      data-morph-node="newsletter-root"
       className="bg-[#b7ad9d] px-[clamp(1.75rem,8vw,8rem)] py-[clamp(6rem,11vw,10rem)]"
     >
-      <div data-morph-node="newsletter-content" data-morph-element="content" className="mx-auto max-w-4xl text-center">
+      <div className="mx-auto max-w-4xl text-center">
         <p
           data-storefront-field="eyebrow"
-          data-morph-node="newsletter-eyebrow"
-          data-morph-element="eyebrow"
           className="text-xs font-medium uppercase tracking-[0.24em] text-stone-700"
         >
           {eyebrow}
         </p>
         <h2
           data-storefront-field="heading"
-          data-morph-node="newsletter-heading"
-          data-morph-element="heading"
           className="mt-6 font-serif text-[clamp(3rem,6vw,6rem)] leading-[0.92] tracking-[-0.045em] text-stone-950"
         >
           {heading}
         </h2>
         <p
           data-storefront-field="body"
-          data-morph-node="newsletter-body"
-          data-morph-element="body"
           className="mx-auto mt-6 max-w-lg text-base leading-7 text-stone-700"
         >
           {body}
         </p>
         <div
-          data-morph-node="newsletter-form"
-          data-morph-element="form"
           className="mx-auto mt-10 flex max-w-xl border-b border-stone-800 py-3 text-left"
           aria-label={placeholder}
         >

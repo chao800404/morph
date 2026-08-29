@@ -18,12 +18,12 @@ describe("prepareNewThemeFile", () => {
     // away, with nothing to register anywhere.
     expect(result.content).toContain("export const contentFields");
     expect(result.content).toContain("export default function Promo");
-    // Selection locates elements by these markers; a component scaffolded
-    // without them renders but can never be selected in the editor.
-    expect(result.content).toContain('data-morph-section="promo"');
-    expect(result.content).toContain('data-morph-node="promo-root"');
-    expect(result.content).toContain('data-morph-node="promo-heading"');
-    expect(result.content).toContain('data-morph-element="heading"');
+    // Live Preview supplies source-location identity and infers the heading
+    // field from the component props, so new files stay free of hand-written
+    // editor markers.
+    expect(result.content).not.toContain("data-morph-section");
+    expect(result.content).not.toContain("data-morph-node");
+    expect(result.content).not.toContain("data-morph-element");
   });
 
   it("normalizes a leading slash and backslashes", () => {
@@ -95,13 +95,16 @@ describe("scaffoldThemeFile", () => {
     );
   });
 
-  it("derives kebab-case editor markers for any filename style", () => {
-    const fromPascal = scaffoldThemeFile("src/components/PromoBanner.tsx");
-    expect(fromPascal).toContain('data-morph-section="promo-banner"');
-    expect(fromPascal).toContain('data-morph-node="promo-banner-root"');
-
-    const fromKebab = scaffoldThemeFile("src/components/promo-banner.tsx");
-    expect(fromKebab).toContain('data-morph-section="promo-banner"');
+  it("does not require editor markers for any filename style", () => {
+    for (const path of [
+      "src/components/PromoBanner.tsx",
+      "src/components/promo-banner.tsx",
+    ]) {
+      const content = scaffoldThemeFile(path);
+      expect(content).not.toContain("data-morph-section");
+      expect(content).not.toContain("data-morph-node");
+      expect(content).not.toContain("data-morph-element");
+    }
   });
 
   it("produces empty or minimal seeds for non-component files", () => {

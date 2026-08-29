@@ -4,7 +4,7 @@ import {
   getComponentFilePath,
   getThemeDocumentLayoutFilePath,
 } from "@/lib/storefront/ast/theme-ast-transformer";
-import type { CSSProperties, ReactNode } from "react";
+import { memo, type CSSProperties, type ReactNode } from "react";
 import { renderSafeThemeComponent } from "./safe-theme-component-renderer";
 import { renderSafeThemeRoute } from "./safe-theme-route-renderer";
 import { StorefrontDocumentRenderer } from "./storefront-document-renderer";
@@ -21,7 +21,7 @@ type StorefrontPreviewStyle = CSSProperties & {
   "--storefront-preview-viewport-height": string;
 };
 
-export function StorefrontPreview({
+export const StorefrontPreview = memo(function StorefrontPreview({
   context,
   templateId,
   viewportHeight,
@@ -91,7 +91,7 @@ export function StorefrontPreview({
       )}
     </div>
   );
-}
+});
 
 function usesThemeRouteRuntime(
   themeFiles?: Array<{ path: string; content: string }>,

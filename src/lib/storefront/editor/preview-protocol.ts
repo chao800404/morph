@@ -145,6 +145,8 @@ export type EditorToPreviewMessage =
       type: "morph:storefront-preview-set-selection-mode";
       enabled: boolean;
       restoreTarget?: PreviewSelectionRestoreTarget;
+      /** Monotonically increasing editor intent, used to reject stale replies. */
+      selectionRevision?: number;
     }
   | {
       type: "morph:storefront-preview-set-spacing-overlay";
@@ -169,6 +171,11 @@ export type EditorToPreviewMessage =
       files: PreviewThemeFile[];
       styleRevision: number;
       sourceGeneration?: number;
+      /**
+       * Style-only updates compile CSS without replacing the rendered Theme
+       * tree. The selected element already carries the final value inline.
+       */
+      renderDocument?: boolean;
     }
   | {
       type: "morph:storefront-preview-update-selection-style";
@@ -205,6 +212,8 @@ export type PreviewSelectionMessage = {
   field: string | null;
   fieldPath: string | null;
   contentValue?: string | null;
+  /** Monotonically increasing editor intent, used to reject stale replies. */
+  selectionRevision?: number;
   descendantFields: readonly EditableDescendantField[];
   tagName: string;
   role: string | null;
@@ -592,15 +601,25 @@ export function parseEditorToPreviewMessage(
         ? { type: value.type, styleRevision: value.styleRevision }
         : null;
     case "morph:storefront-preview-set-selection-mode":
-      if (typeof value.enabled !== "boolean") return null;
+      if (
+        typeof value.enabled !== "boolean" ||
+        (value.selectionRevision !== undefined &&
+          !isSafeRevision(value.selectionRevision))
+      )
+        return null;
       {
         const restoreTarget = parsePreviewSelectionRestoreTarget(
           value.restoreTarget,
         );
         if (restoreTarget === null) return null;
-        return restoreTarget === undefined
-          ? { type: value.type, enabled: value.enabled }
-          : { type: value.type, enabled: value.enabled, restoreTarget };
+        return {
+          type: value.type,
+          enabled: value.enabled,
+          ...(restoreTarget === undefined ? {} : { restoreTarget }),
+          ...(value.selectionRevision === undefined
+            ? {}
+            : { selectionRevision: value.selectionRevision }),
+        };
       }
     case "morph:storefront-preview-set-spacing-overlay":
       return isPreviewSpacingOverlayMode(value.mode)
@@ -660,6 +679,9 @@ export function parseEditorToPreviewMessage(
             files: value.files,
             styleRevision: value.styleRevision,
             sourceGeneration: value.sourceGeneration,
+            ...(typeof value.renderDocument === "boolean"
+              ? { renderDocument: value.renderDocument }
+              : {}),
           }
         : null;
     case "morph:storefront-preview-update-selection-style":
@@ -737,6 +759,8 @@ export function parsePreviewToEditorMessage(
         !isNullableBoundedString(value.fieldPath, 500) ||
         (value.contentValue !== undefined &&
           !isNullableBoundedString(value.contentValue, 10_000)) ||
+        (value.selectionRevision !== undefined &&
+          !isSafeRevision(value.selectionRevision)) ||
         descendantFields === null ||
         !isBoundedString(value.tagName, 100) ||
         !isNullableBoundedString(value.role, 100) ||
@@ -772,6 +796,9 @@ export function parsePreviewToEditorMessage(
         field: value.field,
         fieldPath: value.fieldPath,
         contentValue: value.contentValue ?? null,
+        ...(value.selectionRevision === undefined
+          ? {}
+          : { selectionRevision: value.selectionRevision }),
         descendantFields,
         tagName: value.tagName,
         role: value.role,

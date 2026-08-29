@@ -21,7 +21,7 @@ import {
 } from "./starter-theme-v3-files";
 
 describe("starter Principles theme source", () => {
-  it("registers the principles component and exposes stable editable nodes", () => {
+  it("registers the principles component and exposes editable source locations", () => {
     const manifest = JSON.parse(
       STARTER_THEME_FILES.find((file) => file.path === "morph.theme.json")!
         .content,
@@ -43,14 +43,25 @@ describe("starter Principles theme source", () => {
     )!.content;
     const parsed = parseComponentSource(source);
     expect(parsed.parseOk).toBe(true);
-    expect(parsed.nodeMap["principles-root"]?.className).toContain(
-      "bg-stone-50",
-    );
-    expect(parsed.nodeMap["principle-card"]?.className).toContain("border-b");
-    expect(parsed.nodeMap["principle-title"]?.className).toContain(
-      "font-serif",
-    );
-    expect(parsed.nodeMap["principle-body"]?.className).toContain("leading-6");
+    const located = Object.values(parsed.locationMap);
+    expect(
+      located.some((element) => element.className.includes("bg-stone-50")),
+    ).toBe(true);
+    expect(
+      located.some((element) => element.className.includes("border-b")),
+    ).toBe(true);
+    expect(
+      located.some((element) => element.className.includes("font-serif")),
+    ).toBe(true);
+    expect(
+      located.some((element) => element.className.includes("leading-6")),
+    ).toBe(true);
+  });
+
+  it("keeps the current starter source free of hand-written identity markers", () => {
+    for (const file of STARTER_THEME_FILES) {
+      expect(file.content).not.toMatch(/data-morph-(section|node|element)/);
+    }
   });
 
   it("stores the complete preview shell and every starter section in the workspace", () => {
