@@ -5,6 +5,7 @@ import {
   patchComponentDefaultProp,
   patchElementClassName,
   patchElementClassNameResult,
+  removeJsxElement,
   swapSiblingMorphNodes,
   updateTailwindClass,
 } from "./theme-ast-transformer";
@@ -184,6 +185,62 @@ describe("theme-ast-transformer (TSX AST)", () => {
     const result = swapSiblingMorphNodes(source, "nested", "peer");
 
     expect(result).toMatchObject({ editable: false, reason: "not-siblings" });
+    expect(result.code).toBe(source);
+  });
+
+  it("removes one direct JSX element and all of its children", () => {
+    const source = `export default function Example() {
+  return (
+    <div>
+      <h2 data-morph-node="title">Title <strong>now</strong></h2>
+      <p data-morph-node="body">Body</p>
+    </div>
+  );
+}`;
+    const result = removeJsxElement(source, "title");
+
+    expect(result.editable).toBe(true);
+    expect(result.code).not.toContain('data-morph-node="title"');
+    expect(result.code).not.toContain("Title");
+    expect(result.code).toContain('<p data-morph-node="body">Body</p>');
+  });
+
+  it("removes an unmarked self-closing element by source position", () => {
+    const source = `export default function Example() {
+  return (
+    <div>
+      <Image src="hero.png" />
+      <p>Body</p>
+    </div>
+  );
+}`;
+    const result = removeJsxElement(source, "4:7");
+
+    expect(result.editable).toBe(true);
+    expect(result.code).not.toContain('<Image src="hero.png" />');
+    expect(result.code).toContain("<p>Body</p>");
+  });
+
+  it("rejects an element inside a JSX expression to keep TSX valid", () => {
+    const source = `export default function Example({ show }: { show: boolean }) {
+  return <div>{show && <p data-morph-node="conditional">Body</p>}</div>;
+}`;
+    const result = removeJsxElement(source, "conditional");
+
+    expect(result).toMatchObject({
+      editable: false,
+      reason: "not-direct-child",
+      code: source,
+    });
+  });
+
+  it("rejects duplicate node identities instead of deleting an arbitrary match", () => {
+    const source = `export default function Example() {
+  return <div><span data-morph-node="item" /><span data-morph-node="item" /></div>;
+}`;
+    const result = removeJsxElement(source, "item");
+
+    expect(result).toMatchObject({ editable: false, reason: "not-found" });
     expect(result.code).toBe(source);
   });
 

@@ -82,9 +82,8 @@ vi.mock("@monaco-editor/react", () => ({
       const monaco = {
         editor: {
           getModels: () => [model],
-          deltaDecorations: vi.fn(
-            (_oldIds: string[], next: unknown[]) =>
-              next.map((_decoration, index) => String(index)),
+          deltaDecorations: vi.fn((_oldIds: string[], next: unknown[]) =>
+            next.map((_decoration, index) => String(index)),
           ),
         },
       };
@@ -97,7 +96,7 @@ vi.mock("@monaco-editor/react", () => ({
         },
       };
       beforeMount?.(monaco);
-      (onMount as unknown as ((editor: unknown, monaco: unknown) => void))?.(
+      (onMount as unknown as (editor: unknown, monaco: unknown) => void)?.(
         {
           getModel: () => model,
           getAction: (id: string) =>
@@ -194,8 +193,10 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
   it("uses Monaco's built-in dark theme without defining a custom theme", () => {
     renderWorkspace();
     expect(
-      screen.getByRole("textbox", { name: "Code editor" }).getAttribute("data-theme"),
-    ).toBe("vs-dark" );
+      screen
+        .getByRole("textbox", { name: "Code editor" })
+        .getAttribute("data-theme"),
+    ).toBe("vs-dark");
   });
 
   it("keeps repeated typing out of the global workspace and saves the latest model once", async () => {
@@ -239,10 +240,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     fireEvent.click(screen.getByRole("button", { name: /Save/ }));
 
     await waitFor(() =>
-      expect(onSaveFile).toHaveBeenCalledWith(
-        file.path,
-        "formatted(draft)",
-      ),
+      expect(onSaveFile).toHaveBeenCalledWith(file.path, "formatted(draft)"),
     );
     await waitFor(() =>
       expect(
@@ -266,10 +264,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     fireEvent.click(screen.getByRole("button", { name: /Save/ }));
 
     await waitFor(() =>
-      expect(onSaveFile).toHaveBeenCalledWith(
-        file.path,
-        "unformatted draft",
-      ),
+      expect(onSaveFile).toHaveBeenCalledWith(file.path, "unformatted draft"),
     );
   });
 
@@ -383,6 +378,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     fireEvent.click(
       await screen.findByRole("menuitem", { name: /Delete File/i }),
     );
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() =>
       expect(deleteStorefrontThemeFile).toHaveBeenCalledWith({
@@ -413,7 +409,6 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
       message: "Theme file deleted",
       data: { path: file.path, sourceGeneration: 8 },
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     renderWorkspace();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), {
@@ -423,9 +418,9 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     fireEvent.click(
       await screen.findByRole("menuitem", { name: /Delete File/i }),
     );
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
     expect(deleteStorefrontThemeFile).not.toHaveBeenCalled();
-    confirmSpy.mockRestore();
   });
 });
 
@@ -440,9 +435,7 @@ describe("EditorCodeWorkspace file creation", () => {
           name: "components",
           path: "src/components",
           isDirectory: true,
-          children: [
-            { name: "Hero.tsx", path: file.path, isDirectory: false },
-          ],
+          children: [{ name: "Hero.tsx", path: file.path, isDirectory: false }],
         },
       ],
     },
@@ -450,7 +443,10 @@ describe("EditorCodeWorkspace file creation", () => {
 
   function renderTree() {
     const client = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
     });
     return render(
       <QueryClientProvider client={client}>
@@ -498,7 +494,9 @@ describe("EditorCodeWorkspace file creation", () => {
     // Without this precondition a create could silently overwrite a file.
     expect(payload.data.expectMissing).toBe(true);
     // Scaffolded so the new component is editable in the Inspector at once.
-    expect(String(payload.data.content)).toContain("export const contentFields");
+    expect(String(payload.data.content)).toContain(
+      "export const contentFields",
+    );
   });
 
   it("keeps the parent folder prefix out of the inline file name input", async () => {
@@ -565,9 +563,7 @@ describe("EditorCodeWorkspace file creation", () => {
     fireEvent.keyDown(input, { key: "Escape" });
 
     await waitFor(() => {
-      expect(
-        screen.queryByPlaceholderText("Filename.tsx"),
-      ).toBeNull();
+      expect(screen.queryByPlaceholderText("Filename.tsx")).toBeNull();
     });
     expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
   });
@@ -621,9 +617,7 @@ describe("EditorCodeWorkspace file creation", () => {
     expect(
       screen.getByRole("menuitem", { name: "Delete Folder" }),
     ).toBeTruthy();
-    expect(
-      screen.queryByRole("menuitem", { name: "Move Folder" }),
-    ).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Move Folder" })).toBeNull();
   });
 
   it("deletes a folder and all of its files in one batch", async () => {
@@ -632,24 +626,24 @@ describe("EditorCodeWorkspace file creation", () => {
       message: "ok",
       data: { sourceGeneration: 8, files: [] },
     } as never);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     renderTree();
 
     fireEvent.contextMenu(screen.getByText("components"));
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Delete Folder" }),
     );
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() =>
       expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
     );
-    const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock.calls[0]![0] as {
+    const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
+      .calls[0]![0] as {
       data: { deletions: Array<{ path: string }> };
     };
     expect(payload.data.deletions).toEqual([
       expect.objectContaining({ path: "src/components/Hero.tsx" }),
     ]);
-    confirmSpy.mockRestore();
   });
 
   it("duplicates a file through the create precondition", async () => {
@@ -660,9 +654,7 @@ describe("EditorCodeWorkspace file creation", () => {
     } as never);
     renderTree();
     fireEvent.contextMenu(screen.getAllByText("Hero.tsx")[0]!);
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "Duplicate" }),
-    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Duplicate" }));
 
     await waitFor(() => {
       expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
@@ -687,9 +679,7 @@ describe("EditorCodeWorkspace file creation", () => {
       target: { value: "unsaved draft" },
     });
     fireEvent.contextMenu(screen.getAllByText("Hero.tsx")[0]!);
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "Duplicate" }),
-    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Duplicate" }));
 
     await waitFor(() => {
       expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
@@ -727,7 +717,9 @@ describe("EditorCodeWorkspace file creation", () => {
     expect(
       await screen.findByRole("menuitem", { name: "Rename" }),
     ).toBeTruthy();
-    expect(screen.queryByRole("menuitem", { name: "Move or Rename" })).toBeNull();
+    expect(
+      screen.queryByRole("menuitem", { name: "Move or Rename" }),
+    ).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Move File" })).toBeNull();
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));

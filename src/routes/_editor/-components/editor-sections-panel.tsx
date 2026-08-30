@@ -18,6 +18,22 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -75,6 +91,7 @@ import {
   Type,
   Video,
   FileCode2,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
@@ -102,10 +119,23 @@ export type EditorSectionsPanelProps = {
   onOpenThemeRoute?: (route: ThemeRouteRecord) => void;
   sectionOptions?: readonly ThemeRouteSectionOption[];
   onAddSection?: (option: ThemeRouteSectionOption) => Promise<unknown>;
+  onDeleteSection?: (
+    sectionId: string,
+  ) => Promise<EditorEditableNodeDeleteResult>;
+  onDeleteEditableNode?: (
+    node: PreviewEditableNode,
+  ) => Promise<EditorEditableNodeDeleteResult>;
 };
+
+export type EditorEditableNodeDeleteResult =
+  { success: true } | { success: false; message: string };
 
 type EditorSection =
   StorefrontThemeEditorDTO["templates"][number]["document"]["sections"][number];
+
+type EditorDeleteCandidate =
+  | { kind: "section"; sectionId: string; label: string }
+  | { kind: "node"; node: PreviewEditableNode; label: string };
 
 type EditableNodeIcon = Readonly<{
   component: LucideIcon;
@@ -204,6 +234,8 @@ function SortableSectionRow({
   onSelect,
   onToggleExpanded,
   onToggleEnabled,
+  onRequestDelete,
+  deleteDisabled,
   children,
 }: {
   section: EditorSection;
@@ -215,6 +247,8 @@ function SortableSectionRow({
   onSelect: () => void;
   onToggleExpanded: () => void;
   onToggleEnabled: () => void;
+  onRequestDelete: () => void;
+  deleteDisabled?: boolean;
   children?: React.ReactNode;
 }) {
   const { ref, handleRef, isDragging } = useSortable({
@@ -225,64 +259,87 @@ function SortableSectionRow({
   return (
     <SidebarMenuItem ref={ref} className={cn(isDragging && "opacity-40")}>
       <Collapsible open={expanded} onOpenChange={onToggleExpanded}>
-        <div className="group/section flex min-w-0 items-center">
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
-              aria-label={`${expanded ? "Collapse" : "Expand"} section ${section.type}`}
-              aria-expanded={hasChildren ? expanded : undefined}
-              disabled={!hasChildren}
-              onPointerDown={(event) => event.stopPropagation()}
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div
+              className="group/section flex min-w-0 items-center"
+              onClick={onSelect}
+              onContextMenu={onSelect}
             >
-              {expanded ? (
-                <ChevronDown className="size-3.5" />
-              ) : (
-                <ChevronRight className="size-3.5" />
-              )}
-            </button>
-          </CollapsibleTrigger>
-          <SidebarMenuButton
-            ref={handleRef}
-            type="button"
-            size="sm"
-            isActive={selected}
-            onClick={onSelect}
-            className={cn(
-              "min-w-0 flex-1 px-1.5",
-              isDragging ? "cursor-grabbing" : "cursor-pointer",
-            )}
-            title={`Select ${section.type}; drag to reorder`}
-          >
-            <Blocks
-              className="shrink-0 text-muted-foreground"
-              data-editor-tree-icon="section"
-              aria-hidden="true"
-            />
-            <span>{section.type}</span>
-          </SidebarMenuButton>
-          <SidebarMenuAction
-            type="button"
-            showOnHover
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleEnabled();
-            }}
-            className={cn(
-              "top-1 right-1 size-5",
-              section.enabled === false && "opacity-100",
-            )}
-            aria-label={
-              section.enabled === false
-                ? "Show section " + section.type
-                : "Hide section " + section.type
-            }
-            title={section.enabled === false ? "Show section" : "Hide section"}
-          >
-            {section.enabled === false ? <EyeOff /> : <Eye />}
-          </SidebarMenuAction>
-        </div>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
+                  aria-label={`${expanded ? "Collapse" : "Expand"} section ${section.type}`}
+                  aria-expanded={hasChildren ? expanded : undefined}
+                  disabled={!hasChildren}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {expanded ? (
+                    <ChevronDown className="size-3.5" />
+                  ) : (
+                    <ChevronRight className="size-3.5" />
+                  )}
+                </button>
+              </CollapsibleTrigger>
+              <SidebarMenuButton
+                ref={handleRef}
+                type="button"
+                size="sm"
+                isActive={selected}
+                className={cn(
+                  "min-w-0 flex-1 px-1.5",
+                  isDragging ? "cursor-grabbing" : "cursor-pointer",
+                )}
+                title={`Select ${section.type}; drag to reorder`}
+              >
+                <Blocks
+                  className="shrink-0 text-muted-foreground"
+                  data-editor-tree-icon="section"
+                  aria-hidden="true"
+                />
+                <span>{section.type}</span>
+              </SidebarMenuButton>
+              <SidebarMenuAction
+                type="button"
+                showOnHover
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggleEnabled();
+                }}
+                className={cn(
+                  "top-1 right-1 size-5",
+                  section.enabled === false && "opacity-100",
+                )}
+                aria-label={
+                  section.enabled === false
+                    ? "Show section " + section.type
+                    : "Hide section " + section.type
+                }
+                title={
+                  section.enabled === false ? "Show section" : "Hide section"
+                }
+              >
+                {section.enabled === false ? <EyeOff /> : <Eye />}
+              </SidebarMenuAction>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="w-44">
+            <ContextMenuItem
+              variant="destructive"
+              disabled={deleteDisabled}
+              onSelect={onRequestDelete}
+            >
+              <Trash2 className="size-3.5" />
+              <span>Delete</span>
+              <span className="ml-auto text-[10px] text-muted-foreground">
+                Del
+              </span>
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
         <CollapsibleContent>{children}</CollapsibleContent>
       </Collapsible>
     </SidebarMenuItem>
@@ -342,6 +399,8 @@ function EditableNodeRow({
   hasChildren,
   onSelect,
   onToggleExpanded,
+  onRequestDelete,
+  deleteDisabled,
   children,
 }: {
   node: PreviewEditableNode;
@@ -350,6 +409,8 @@ function EditableNodeRow({
   hasChildren: boolean;
   onSelect: () => void;
   onToggleExpanded: () => void;
+  onRequestDelete: () => void;
+  deleteDisabled?: boolean;
   children?: React.ReactNode;
 }) {
   const icon = editableNodeIcon(node);
@@ -365,72 +426,90 @@ function EditableNodeRow({
         onOpenChange={onToggleExpanded}
         className="w-full"
       >
-        <div
-          className="flex h-8 w-full min-w-0 cursor-pointer items-center"
-          onClick={onSelect}
-        >
-          {hasChildren ? (
-            <CollapsibleTrigger asChild>
-              <button
-                type="button"
-                aria-label={`${expanded ? "Collapse" : "Expand"} ${node.label}`}
-                className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={(event) => event.stopPropagation()}
-              >
-                {expanded ? (
-                  <ChevronDown className="size-3.5" />
-                ) : (
-                  <ChevronRight className="size-3.5" />
-                )}
-              </button>
-            </CollapsibleTrigger>
-          ) : (
-            <span
-              className="flex size-6 shrink-0 items-center justify-center"
-              aria-hidden="true"
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div
+              className="flex h-8 w-full min-w-0 cursor-pointer items-center"
+              onClick={onSelect}
+              onContextMenu={onSelect}
             >
-              <span className="size-1 rounded-full bg-muted-foreground/50" />
-            </span>
-          )}
-          <SidebarMenuSubButton asChild size="sm" isActive={selected}>
-            <button
-              type="button"
-              aria-current={selected ? "true" : undefined}
-              className="h-8 min-w-0 flex-1 cursor-pointer text-left"
-              title={
-                node.stableId
-                  ? `${node.label} · ${node.stableId}${
-                      isGeneratedElementName(node.stableId)
-                        ? " (added by the editor)"
-                        : ""
-                    }`
-                  : node.label
-              }
-            >
-              <NodeIcon
-                className="shrink-0 text-muted-foreground"
-                data-editor-tree-icon={icon.name}
-                aria-hidden="true"
-              />
-              <span className="min-w-0 flex-1 truncate">{node.label}</span>
-              {node.stableId ? (
-                // Marked rather than named: a style bound to one instance needs
-                // an identity that survives edits, so which elements have one is
-                // worth seeing — but `el-a3f9c2b4d1e0` names nothing, and in
-                // place of "Heading" it would make the tree unreadable.
+              {hasChildren ? (
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={`${expanded ? "Collapse" : "Expand"} ${node.label}`}
+                    className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {expanded ? (
+                      <ChevronDown className="size-3.5" />
+                    ) : (
+                      <ChevronRight className="size-3.5" />
+                    )}
+                  </button>
+                </CollapsibleTrigger>
+              ) : (
                 <span
+                  className="flex size-6 shrink-0 items-center justify-center"
                   aria-hidden="true"
-                  data-editor-tree-identity={
-                    isGeneratedElementName(node.stableId)
-                      ? "generated"
-                      : "authored"
+                >
+                  <span className="size-1 rounded-full bg-muted-foreground/50" />
+                </span>
+              )}
+              <SidebarMenuSubButton asChild size="sm" isActive={selected}>
+                <button
+                  type="button"
+                  aria-current={selected ? "true" : undefined}
+                  className="h-8 min-w-0 flex-1 cursor-pointer text-left"
+                  title={
+                    node.stableId
+                      ? `${node.label} · ${node.stableId}${
+                          isGeneratedElementName(node.stableId)
+                            ? " (added by the editor)"
+                            : ""
+                        }`
+                      : node.label
                   }
-                  className="mr-1 size-1 shrink-0 rounded-full bg-muted-foreground/40 data-[editor-tree-identity=authored]:bg-muted-foreground/70"
-                />
-              ) : null}
-            </button>
-          </SidebarMenuSubButton>
-        </div>
+                >
+                  <NodeIcon
+                    className="shrink-0 text-muted-foreground"
+                    data-editor-tree-icon={icon.name}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{node.label}</span>
+                  {node.stableId ? (
+                    // Marked rather than named: a style bound to one instance needs
+                    // an identity that survives edits, so which elements have one is
+                    // worth seeing — but `el-a3f9c2b4d1e0` names nothing, and in
+                    // place of "Heading" it would make the tree unreadable.
+                    <span
+                      aria-hidden="true"
+                      data-editor-tree-identity={
+                        isGeneratedElementName(node.stableId)
+                          ? "generated"
+                          : "authored"
+                      }
+                      className="mr-1 size-1 shrink-0 rounded-full bg-muted-foreground/40 data-[editor-tree-identity=authored]:bg-muted-foreground/70"
+                    />
+                  ) : null}
+                </button>
+              </SidebarMenuSubButton>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="w-44">
+            <ContextMenuItem
+              variant="destructive"
+              disabled={deleteDisabled}
+              onSelect={onRequestDelete}
+            >
+              <Trash2 className="size-3.5" />
+              <span>Delete</span>
+              <span className="ml-auto text-[10px] text-muted-foreground">
+                Del
+              </span>
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
         <CollapsibleContent>{children}</CollapsibleContent>
       </Collapsible>
     </SidebarMenuSubItem>
@@ -454,6 +533,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onOpenThemeRoute,
   sectionOptions = [],
   onAddSection,
+  onDeleteSection,
+  onDeleteEditableNode,
 }: EditorSectionsPanelProps) {
   const activeTemplate = resolveEditorTemplate(context, search);
   const sourceSections = activeTemplate?.document.sections ?? [];
@@ -477,6 +558,9 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   const [optimisticSectionId, setOptimisticSectionId] = useState<string | null>(
     null,
   );
+  const [deleteCandidate, setDeleteCandidate] =
+    useState<EditorDeleteCandidate | null>(null);
+  const [isDeletePending, setIsDeletePending] = useState(false);
   const optimisticSectionTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -574,9 +658,35 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     onSuccess: () => onSaveStateChange("idle"),
     onError: (error) => {
       onSaveStateChange("error");
-      toast.error(error instanceof Error ? error.message : "Failed to add section");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to add section",
+      );
     },
   });
+
+  const confirmDelete = async () => {
+    if (!deleteCandidate || isDeletePending) return;
+
+    setIsDeletePending(true);
+    try {
+      const result =
+        deleteCandidate.kind === "section"
+          ? onDeleteSection
+            ? await onDeleteSection(deleteCandidate.sectionId)
+            : null
+          : onDeleteEditableNode
+            ? await onDeleteEditableNode(deleteCandidate.node)
+            : null;
+      if (!result) return;
+      if (result.success) {
+        setDeleteCandidate(null);
+        return;
+      }
+      toast.error(result.message);
+    } finally {
+      setIsDeletePending(false);
+    }
+  };
 
   useEffect(() => {
     sectionsRef.current = sourceSections;
@@ -703,6 +813,18 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   else next.add(node.id);
                   return next;
                 })
+              }
+              onRequestDelete={() =>
+                setDeleteCandidate({
+                  kind: "node",
+                  node,
+                  label: node.label,
+                })
+              }
+              deleteDisabled={
+                isDeletePending ||
+                !onDeleteEditableNode ||
+                (!node.target.nodeId && !node.target.sourceLocation)
               }
             >
               {hasChildren ? renderEditableNodes(sectionId, node.id) : null}
@@ -859,10 +981,13 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                             if (optimisticSectionTimerRef.current) {
                               clearTimeout(optimisticSectionTimerRef.current);
                             }
-                            optimisticSectionTimerRef.current = setTimeout(() => {
-                              setOptimisticSectionId(null);
-                              optimisticSectionTimerRef.current = null;
-                            }, OPTIMISTIC_SELECTION_TIMEOUT_MS);
+                            optimisticSectionTimerRef.current = setTimeout(
+                              () => {
+                                setOptimisticSectionId(null);
+                                optimisticSectionTimerRef.current = null;
+                              },
+                              OPTIMISTIC_SELECTION_TIMEOUT_MS,
+                            );
                             onSearchChange({ section: section.id });
                           }}
                           onToggleExpanded={() =>
@@ -878,6 +1003,18 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                               section.id,
                               section.enabled === false,
                             )
+                          }
+                          onRequestDelete={() =>
+                            setDeleteCandidate({
+                              kind: "section",
+                              sectionId: section.id,
+                              label: section.type,
+                            })
+                          }
+                          deleteDisabled={
+                            isDeletePending ||
+                            reorderMutation.isPending ||
+                            !onDeleteSection
                           }
                         >
                           {sectionNodes.length > 0
@@ -928,6 +1065,41 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
             </DropdownMenu>
           </SidebarFooter>
         </Sidebar>
+
+        <AlertDialog
+          open={deleteCandidate !== null}
+          onOpenChange={(open) => {
+            if (!open && !isDeletePending) setDeleteCandidate(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Delete “{deleteCandidate?.label ?? "element"}”?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {deleteCandidate?.kind === "section"
+                  ? "This removes the section from the Theme route source and its content from this page. The change can be undone from the editor history."
+                  : "This removes the selected element and all of its nested content from the Theme source. The change can be undone from the editor history."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isDeletePending}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={isDeletePending}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={(event) => {
+                  event.preventDefault();
+                  void confirmDelete();
+                }}
+              >
+                {isDeletePending ? "Deleting…" : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SidebarProvider>
     </aside>
   );

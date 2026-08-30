@@ -67,6 +67,9 @@ describe("StorefrontPreview stored starter composition", () => {
       'data-morph-source-file="src/components/Footer.tsx"',
     );
     expect(html).not.toContain('data-morph-node="page-root"');
+    expect(html).not.toContain(
+      "min-h-[var(--storefront-preview-viewport-height",
+    );
     expect(html).toContain("Stored test shop");
     expect(html).toContain("Heading from D1");
     for (const section of document.sections) {

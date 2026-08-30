@@ -3,6 +3,7 @@ import type { editor, Position } from "monaco-editor";
 import { suggestTailwindClasses } from "@/lib/storefront/ast/tailwind-class-suggestions";
 import {
   DEFAULT_THEME_TYPE_PACKAGE_NAMES,
+  getGeneratedThemePackageDeclarations,
   renderThemePackageTypeDeclarations,
 } from "./editor-code-package-types";
 
@@ -21,6 +22,7 @@ declare namespace JSX {
   }
 
   type ThemeIntrinsicProps = {
+    key?: string | number;
     id?: string;
     title?: string;
     role?: string;
@@ -29,6 +31,8 @@ declare namespace JSX {
     children?: unknown;
     "aria-label"?: string;
     "aria-hidden"?: boolean | "true" | "false";
+    [attributeName: \`aria-\${string}\`]: string | number | boolean | undefined;
+    [attributeName: \`data-\${string}\`]: string | number | boolean | undefined;
     onClick?: (event: unknown) => void;
     onChange?: (event: unknown) => void;
     onSubmit?: (event: unknown) => void;
@@ -132,6 +136,7 @@ declare module "clsx" {
 
 declare module "@tanstack/react-router" {
   export type LinkElementProps = {
+    key?: string | number;
     href?: string;
     target?: string;
     rel?: string;
@@ -146,6 +151,8 @@ declare module "@tanstack/react-router" {
     onMouseLeave?: (event: unknown) => void;
     "aria-label"?: string;
     "aria-current"?: string | boolean;
+    "data-storefront-field"?: string;
+    "data-storefront-field-path"?: string;
   };
 
   export type LinkOptions = {
@@ -193,25 +200,83 @@ declare module "@tanstack/react-router" {
     basepath?: string;
   };
 
-  export type RouteAuthoringOptions = {
-    component?: (props: Record<string, unknown>) => JSX.Element;
-    pendingComponent?: (props: Record<string, unknown>) => JSX.Element;
-    errorComponent?: (props: Record<string, unknown>) => JSX.Element;
-    notFoundComponent?: (props: Record<string, unknown>) => JSX.Element;
-    loader?: (context: Record<string, unknown>) => unknown | Promise<unknown>;
-    loaderDeps?: (context: Record<string, unknown>) => Record<string, unknown>;
-    beforeLoad?: (context: Record<string, unknown>) => unknown | Promise<unknown>;
+  export type RouteLocation = {
+    href?: string;
+    pathname: string;
+    search?: Record<string, unknown>;
+    searchStr?: string;
+    hash?: string;
+    state?: unknown;
+  };
+
+  export type RouteBeforeLoadContext = {
+    location: RouteLocation;
+    params?: Record<string, string>;
+    search?: Record<string, unknown>;
+    context?: Record<string, unknown>;
+    preload?: boolean;
+    cause?: "preload" | "enter" | "stay";
+  };
+
+  export type RouteHeadResult = {
+    meta?: readonly Record<string, unknown>[];
+    links?: readonly Record<string, unknown>[];
+    scripts?: readonly Record<string, unknown>[];
+  };
+
+  export type RouteComponent = (props: Record<string, unknown>) => unknown;
+
+  export type RouteAuthoringOptions<
+    TContext = Record<string, unknown>,
+  > = {
+    component?: RouteComponent;
+    pendingComponent?: RouteComponent;
+    errorComponent?: RouteComponent;
+    notFoundComponent?: RouteComponent;
+    loader?: (context: RouteBeforeLoadContext) => unknown | Promise<unknown>;
+    loaderDeps?: (context: RouteBeforeLoadContext) => Record<string, unknown>;
+    beforeLoad?: (
+      context: RouteBeforeLoadContext,
+    ) => TContext | Promise<TContext>;
     validateSearch?: (search: Record<string, unknown>) => unknown;
-    head?: (context: Record<string, unknown>) => Record<string, unknown>;
-    meta?: (context: Record<string, unknown>) => readonly Record<string, unknown>[];
-    links?: (context: Record<string, unknown>) => readonly Record<string, unknown>[];
-    scripts?: (context: Record<string, unknown>) => readonly Record<string, unknown>[];
+    head?: (context: RouteBeforeLoadContext) => RouteHeadResult;
+    meta?: (
+      context: RouteBeforeLoadContext,
+    ) => readonly Record<string, unknown>[];
+    links?: (
+      context: RouteBeforeLoadContext,
+    ) => readonly Record<string, unknown>[];
+    scripts?: (
+      context: RouteBeforeLoadContext,
+    ) => readonly Record<string, unknown>[];
+    shellComponent?: (...args: never[]) => unknown;
     staleTime?: number;
     gcTime?: number;
     preload?: boolean;
   };
 
-  export type RouteOptions = RouteAuthoringOptions;
+  export type RouteContextFromOptions<TOptions> =
+    TOptions extends {
+      beforeLoad?: (...args: infer _Args) => infer TResult;
+    }
+      ? Awaited<TResult>
+      : Record<string, unknown>;
+
+  export type ThemeRoute<TContext = Record<string, unknown>> = {
+    useRouteContext: () => TContext;
+    useLoaderData: () => unknown;
+    useLoaderDeps: () => Record<string, unknown>;
+    useSearch: () => Record<string, unknown>;
+    useParams: () => Record<string, string>;
+    useNavigate: () => (options: LinkOptions) => unknown;
+  };
+
+  export type RootRoute<TContext = Record<string, unknown>> = ThemeRoute<TContext>;
+  export type RouteOptions<TContext = Record<string, unknown>> =
+    RouteAuthoringOptions<TContext>;
+  export type ThemeRouter<TRouteTree = unknown> = {
+    routeTree: TRouteTree;
+  };
   export type RouterOptions = {
     routeTree: unknown;
     context?: Record<string, unknown>;
@@ -226,14 +291,6 @@ declare module "@tanstack/react-router" {
   export const Outlet: (props: Record<string, never>) => JSX.Element;
   export const RouterProvider: (props: RouterProviderProps) => JSX.Element;
   export const Scripts: (props: Record<string, never>) => JSX.Element;
-  export function createRootRoute(options?: RouteAuthoringOptions): unknown;
-  export function createRootRouteWithContext<TContext>(): (
-    options?: RouteAuthoringOptions,
-  ) => unknown;
-  export function createFileRoute<TPath extends string>(
-    path: TPath,
-  ): (options?: RouteAuthoringOptions) => unknown;
-  export function createRouter(options: RouterOptions): unknown;
 }
 
 declare module "@tanstack/react-start" {
@@ -246,6 +303,7 @@ declare module "@tanstack/react-start" {
   };
   export function createServerFn(options?: ServerFnOptions): ServerFnBuilder;
 }
+
 `;
 
 type ThemeModelFile = {
@@ -257,6 +315,14 @@ type ThemeModelScope = {
   storefrontId: string;
   themeId: string;
 };
+
+const GENERATED_ROUTE_TREE_PATH = "src/routeTree.gen.ts";
+const GENERATED_ROUTE_TREE_SOURCE = `
+// Generated by the Theme build toolchain. This virtual model exists only so
+// relative imports resolve in Code Mode; the build produces the authoritative
+// route tree from src/routes/**.
+export const routeTree: unknown = undefined as unknown;
+`;
 
 function normalizeThemeFilePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -283,7 +349,18 @@ export function ensureThemeWorkspaceModels(
   scope: ThemeModelScope,
   files: readonly ThemeModelFile[],
 ): void {
+  const normalizedFiles = new Map<string, ThemeModelFile>();
   for (const file of files) {
+    normalizedFiles.set(normalizeThemeFilePath(file.path), file);
+  }
+  if (!normalizedFiles.has(GENERATED_ROUTE_TREE_PATH)) {
+    normalizedFiles.set(GENERATED_ROUTE_TREE_PATH, {
+      path: GENERATED_ROUTE_TREE_PATH,
+      content: GENERATED_ROUTE_TREE_SOURCE,
+    });
+  }
+
+  for (const file of normalizedFiles.values()) {
     const uri = monaco.Uri.parse(getThemeModelUri(scope, file.path));
     if (monaco.editor.getModel(uri)) continue;
     monaco.editor.createModel(
@@ -588,6 +665,12 @@ export function configureThemeTypeScript(
       .join("\n\n"),
     "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
   );
+  for (const declaration of getGeneratedThemePackageDeclarations(packageNames)) {
+    defaults.addExtraLib(
+      declaration.content,
+      `file://${declaration.path}`,
+    );
+  }
 }
 
 export function registerTailwindCompletionProvider(monaco: Monaco) {

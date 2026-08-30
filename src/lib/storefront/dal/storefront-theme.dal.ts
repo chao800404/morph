@@ -62,10 +62,15 @@ function deriveTemplateDocumentFromRoutes(args: {
   );
   if (!route) return args.document;
   const derived = deriveThemeRouteSections(args.files, route.sourcePath);
-  if (derived.diagnostics.length > 0 || derived.sections.length === 0) {
+  if (
+    derived.diagnostics.length > 0 ||
+    (derived.sections.length === 0 && !derived.hasContentImport)
+  ) {
     return args.document;
   }
-  return mergeDocumentWithRouteSections(args.document, derived.sections);
+  return mergeDocumentWithRouteSections(args.document, derived.sections, {
+    routeOwnsStructure: derived.hasContentImport,
+  });
 }
 
 export interface ComponentContentManifest {
@@ -907,10 +912,9 @@ export const storefrontThemeDal = {
     // workspace, and the client cannot influence which paths are loaded.
     const themeCapabilityState = await resolveThemeContentCapabilities({
       manifestContent: manifestState.manifestContent,
-      additionalSourcePaths:
-        targetSection.componentRef?.startsWith("src/")
-          ? [targetSection.componentRef]
-          : [],
+      additionalSourcePaths: targetSection.componentRef?.startsWith("src/")
+        ? [targetSection.componentRef]
+        : [],
       readSource: async (path) => {
         const row = await env.DATABASE.prepare(
           `

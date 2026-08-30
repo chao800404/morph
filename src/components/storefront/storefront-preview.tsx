@@ -63,10 +63,13 @@ export const StorefrontPreview = memo(function StorefrontPreview({
     document: storedDocument,
   });
 
+  // The editor sizes the iframe from this root's measured content. A
+  // viewport-sized minimum here leaves a false trailing section visible after
+  // a real section is deleted, so the root must remain content-sized.
   return (
     <div
       data-storefront-preview-root
-      className="min-h-[var(--storefront-preview-viewport-height,100svh)] bg-stone-50 text-neutral-950"
+      className="bg-stone-50 text-neutral-950"
       style={previewStyle}
     >
       {storedRoute ?? storedLayout ?? (

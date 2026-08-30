@@ -168,7 +168,11 @@ function readComponentSources(
       return new Map();
     }
     const components = (parsed as Record<string, unknown>).components;
-    if (!components || typeof components !== "object" || Array.isArray(components)) {
+    if (
+      !components ||
+      typeof components !== "object" ||
+      Array.isArray(components)
+    ) {
       return new Map();
     }
     return new Map(
@@ -214,8 +218,7 @@ function createDocumentComponentResolver(args: {
       section: {
         sectionId: section.id,
         sectionType: section.type,
-        componentRef:
-          section.componentRef ?? `${section.type}.default`,
+        componentRef: section.componentRef ?? `${section.type}.default`,
       },
     };
   };
@@ -277,7 +280,8 @@ function routeMatchesPath(routePath: string, pathname: string): boolean {
   const pathSegments = pathname.split("/").filter(Boolean);
   if (routeSegments.length !== pathSegments.length) return false;
   return routeSegments.every(
-    (segment, index) => segment.startsWith("$") || segment === pathSegments[index],
+    (segment, index) =>
+      segment.startsWith("$") || segment === pathSegments[index],
   );
 }
 
@@ -285,7 +289,10 @@ function routeDepth(path: string): number {
   return path.split("/").filter(Boolean).length;
 }
 
-function parentRoutePath(path: string, candidates: readonly string[]): string | null {
+function parentRoutePath(
+  path: string,
+  candidates: readonly string[],
+): string | null {
   const normalized = path.replace(/\/$/, "");
   return (
     candidates
@@ -353,6 +360,7 @@ export function renderSafeThemeRoute(args: {
   const routeDocument = mergeDocumentWithRouteSections(
     args.document,
     routeSections.sections,
+    { routeOwnsStructure: routeSections.hasContentImport },
   );
   const resolveComponent = createDocumentComponentResolver({
     files: args.files,

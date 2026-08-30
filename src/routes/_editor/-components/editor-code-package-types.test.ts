@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractThemeDependencyNames,
+  getGeneratedThemePackageDeclarations,
   renderThemePackageTypeDeclarations,
 } from "./editor-code-package-types";
 
@@ -60,12 +61,21 @@ describe("renderThemePackageTypeDeclarations", () => {
     expect(source).toContain(
       "export const Link: (props: LinkProps) => JSX.Element;",
     );
+    expect(source).toContain(
+      "export const createRootRoute: <TOptions extends RouteAuthoringOptions = RouteAuthoringOptions>(options?: TOptions) => ThemeRoute<RouteContextFromOptions<TOptions>>;",
+    );
+    expect(source).toContain("export interface Register {}");
     expect(source).toContain("export type AwaitProps = AwaitOptions &");
     expect(source).toContain("export type LucideProps = {");
     expect(source).toContain("size?: string | number;");
     expect(source).toContain("export type HydrateProps = HydrateOptions &");
     expect(source).toContain(
       "export const Hydrate: (props: HydrateProps) => JSX.Element;",
+    );
+    expect(source).toContain('declare module "@tanstack/react-start/server"');
+    expect(source).toContain("export const getRequest: () => Request;");
+    expect(source).toContain(
+      "export const createIsomorphicFn: () => IsomorphicFnBase;",
     );
     expect(source).not.toContain("export type LinkOptions = unknown;");
     expect(source).not.toContain("export const LinkOptions:");
@@ -80,5 +90,23 @@ describe("renderThemePackageTypeDeclarations", () => {
     expect(source).toContain("export const useState:");
     expect(source).toContain("export const createRoot:");
     expect(source).not.toContain("declare const React");
+  });
+
+  it("keeps chained React contexts type-safe", () => {
+    const source = renderThemePackageTypeDeclarations(["react"]);
+
+    expect(source).toContain("export type Context<T> = { Provider:");
+    expect(source).toContain(
+      "export const createContext: <T>(defaultValue: T) => Context<T>;",
+    );
+    expect(source).toContain(
+      "export const useContext: <T>(context: Context<T>) => T;",
+    );
+  });
+});
+
+describe("generated package declarations", () => {
+  it("does not expose declarations unless the package is in the generated registry", () => {
+    expect(getGeneratedThemePackageDeclarations(["not-approved"])).toEqual([]);
   });
 });

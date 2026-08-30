@@ -8,12 +8,17 @@
     "pnpm": ">=9.0.0"
   },
   "scripts": {
+    "generate:theme-types": "node scripts/generate-theme-package-types.mjs",
     "dev": "vite dev --port 3000",
+    "predev": "pnpm generate:theme-types",
     "build": "vite build && node scripts/check-client-bundle.mjs",
+    "prebuild": "pnpm generate:theme-types",
     "check:bundle": "node scripts/check-client-bundle.mjs",
     "serve": "vite preview",
     "test": "vitest run",
+    "pretest": "pnpm generate:theme-types",
     "typecheck": "tsc --noEmit",
+    "pretypecheck": "pnpm generate:theme-types",
     "deploy": "pnpm run build && wrangler deploy",
     "preview": "pnpm run build && vite preview",
     "theme:pull": "node scripts/theme-artifact-pull.mjs",

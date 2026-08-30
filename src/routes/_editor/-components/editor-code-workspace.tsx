@@ -13,6 +13,16 @@ import {
 } from "@/lib/storefront/editor/pending-theme-folders";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
@@ -41,12 +51,20 @@ import {
 } from "@dnd-kit/react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
+  Braces,
   ChevronDown,
   ChevronRight,
   Code2,
+  Command as CommandIcon,
   Copy,
+  Files,
   FilePlus2,
   FolderPlus,
+  ListChecks,
+  PanelBottomOpen,
+  Search as SearchIcon,
+  SaveAll,
   Trash2,
   FileCode2,
   FileJson,
@@ -75,6 +93,21 @@ import { prepareDuplicateThemeFile } from "@/lib/storefront/editor/duplicate-the
 import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
 import { prepareNewThemeFolder } from "@/lib/storefront/editor/new-theme-folder";
 import { prepareThemeFileRename } from "@/lib/storefront/editor/rename-theme-file";
+import { planThemeFileCopies } from "@/lib/storefront/editor/theme-file-copy";
+import {
+  EditorCodeCommandCenter,
+  type EditorCodeCommand,
+} from "./editor-code-command-center";
+import {
+  replaceEditorCodeMatches,
+  type EditorCodeSearchMatch,
+  type EditorCodeSearchOptions,
+} from "./editor-code-search";
+import { EditorCodeSearchPanel } from "./editor-code-search-panel";
+import {
+  EditorCodeStatusPanel,
+  type EditorCodeDiagnostic,
+} from "./editor-code-status-panel";
 
 type EditorCodeWorkspaceProps = {
   storefrontId: string;
@@ -97,6 +130,8 @@ type EditorCodeWorkspaceProps = {
     path: string,
     content: string,
   ) => Promise<StorefrontThemeFileDTO | null>;
+  onBuildPreview?: () => void;
+  externalDiagnostics?: unknown;
 };
 
 function getFileIcon(filename: string) {
@@ -133,13 +168,17 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   onRefreshPreview,
   onDirtyFilesChange,
   onSaveFile,
+  onBuildPreview,
+  externalDiagnostics,
 }: EditorCodeWorkspaceProps) {
   const queryClient = useQueryClient();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
-  const jsxTagDecorationsRef =
-    useRef<ReturnType<typeof createJsxTagDecorations> | null>(null);
+  const jsxTagDecorationsRef = useRef<ReturnType<
+    typeof createJsxTagDecorations
+  > | null>(null);
+  const editorDisposablesRef = useRef<Array<{ dispose: () => void }>>([]);
 
   // Find initial active file (default to Hero.tsx or index.tsx)
   const defaultFile = useMemo(() => {
@@ -206,6 +245,31 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [newFolderName, setNewFolderName] = useState("");
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
+  const [sideView, setSideView] = useState<"explorer" | "search">("explorer");
+  const [commandCenterMode, setCommandCenterMode] = useState<
+    "closed" | "files" | "commands"
+  >("closed");
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
+  const [bottomPanelTab, setBottomPanelTab] = useState<"problems" | "output">(
+    "problems",
+  );
+  const [diagnostics, setDiagnostics] = useState<EditorCodeDiagnostic[]>([]);
+  const [outputLines, setOutputLines] = useState<string[]>([
+    "Theme workspace ready.",
+  ]);
+  const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [copiedPaths, setCopiedPaths] = useState<string[]>([]);
+  const [searchRevision, setSearchRevision] = useState(0);
+  const searchRevisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const [pendingConfirmation, setPendingConfirmation] = useState<
+    | { kind: "close-file"; path: string }
+    | { kind: "delete-file"; path: string }
+    | { kind: "delete-folder"; path: string; fileCount: number }
+    | null
+  >(null);
   const [dirtyPaths, setDirtyPaths] = useState<string[]>(() =>
     useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
   );
@@ -216,6 +280,20 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const suppressModelChangeRef = useRef(false);
   const saveInFlightRef = useRef(false);
   const renameJustStartedRef = useRef(false);
+  const selectedPathsRef = useRef(selectedPaths);
+  selectedPathsRef.current = selectedPaths;
+
+  const appendOutput = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    setOutputLines((current) => [
+      ...current.slice(-199),
+      `[${timestamp}] ${message}`,
+    ]);
+  }, []);
 
   const handleEditorWillMount = useCallback(
     (monaco: Monaco) => {
@@ -235,6 +313,54 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     [files, workspaceScope],
   );
 
+  const refreshDiagnostics = useCallback(
+    (monaco: Monaco) => {
+      const workspacePrefix = getThemeModelUri(workspaceScope, "");
+      const next: EditorCodeDiagnostic[] = [];
+      const markers =
+        typeof monaco.editor.getModelMarkers === "function"
+          ? monaco.editor.getModelMarkers({})
+          : [];
+      for (const marker of markers) {
+        const uri = marker.resource.toString();
+        if (!uri.startsWith(workspacePrefix)) continue;
+        const path = files.find((file) =>
+          marker.resource.path.endsWith(`/${file.path}`),
+        )?.path;
+        if (!path) continue;
+        const severity =
+          marker.severity === monaco.MarkerSeverity.Error
+            ? "error"
+            : marker.severity === monaco.MarkerSeverity.Warning
+              ? "warning"
+              : "info";
+        next.push({
+          id: `${uri}:${marker.startLineNumber}:${marker.startColumn}:${marker.message}`,
+          path,
+          line: marker.startLineNumber,
+          column: marker.startColumn,
+          endLine: marker.endLineNumber,
+          endColumn: marker.endColumn,
+          message: marker.message,
+          source: marker.source,
+          severity,
+        });
+      }
+      next.sort((left, right) => {
+        if (left.severity !== right.severity) {
+          return left.severity === "error"
+            ? -1
+            : right.severity === "error"
+              ? 1
+              : 0;
+        }
+        return left.path.localeCompare(right.path) || left.line - right.line;
+      });
+      setDiagnostics(next);
+    },
+    [files, workspaceScope],
+  );
+
   const handleEditorDidMount = useCallback<OnMount>(
     (editor, monaco) => {
       editorRef.current = editor;
@@ -244,6 +370,26 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         registerTailwindCompletionProvider(monaco);
       jsxTagDecorationsRef.current?.dispose();
       jsxTagDecorationsRef.current = createJsxTagDecorations(editor);
+      editorDisposablesRef.current.forEach((disposable) =>
+        disposable.dispose(),
+      );
+      editorDisposablesRef.current = [];
+      if (typeof monaco.editor.onDidChangeMarkers === "function") {
+        editorDisposablesRef.current.push(
+          monaco.editor.onDidChangeMarkers(() => refreshDiagnostics(monaco)),
+        );
+      }
+      if (typeof editor.onDidChangeCursorPosition === "function") {
+        editorDisposablesRef.current.push(
+          editor.onDidChangeCursorPosition((event) =>
+            setCursorPosition({
+              line: event.position.lineNumber,
+              column: event.position.column,
+            }),
+          ),
+        );
+      }
+      refreshDiagnostics(monaco);
       if (jumpLocation?.line && jumpLocation.filePath === activeFilePath) {
         editor.revealPositionInCenter({
           lineNumber: jumpLocation.line,
@@ -256,7 +402,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         editor.focus();
       }
     },
-    [activeFilePath, jumpLocation],
+    [activeFilePath, jumpLocation, refreshDiagnostics],
   );
 
   useEffect(
@@ -265,6 +411,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       completionProviderRef.current = null;
       jsxTagDecorationsRef.current?.dispose();
       jsxTagDecorationsRef.current = null;
+      editorDisposablesRef.current.forEach((disposable) =>
+        disposable.dispose(),
+      );
+      editorDisposablesRef.current = [];
+      if (searchRevisionTimerRef.current) {
+        clearTimeout(searchRevisionTimerRef.current);
+      }
       if (monacoRef.current) {
         disposeThemeWorkspaceModels(monacoRef.current, workspaceScope);
       }
@@ -286,6 +439,18 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       })),
     );
   }, [files, workspaceScope]);
+
+  useEffect(() => {
+    if (externalDiagnostics === null || externalDiagnostics === undefined)
+      return;
+    const message =
+      typeof externalDiagnostics === "string"
+        ? externalDiagnostics
+        : JSON.stringify(externalDiagnostics, null, 2);
+    appendOutput(`Build diagnostics\n${message}`);
+    setBottomPanelTab("output");
+    setBottomPanelOpen(true);
+  }, [appendOutput, externalDiagnostics]);
 
   useEffect(() => {
     if (initialActiveFilePath) {
@@ -415,6 +580,42 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       onDirtyFilesChange?.(next);
     },
     [onDirtyFilesChange],
+  );
+
+  const applyDraftContent = useCallback(
+    (path: string, value: string) => {
+      draftContentsRef.current[path] = value;
+      draftRevisionRef.current[path] =
+        (draftRevisionRef.current[path] ?? 0) + 1;
+      draftDirtyRef.current[path] = value !== getFileBaseline(path);
+
+      const monaco = monacoRef.current;
+      if (monaco) {
+        const uri = monaco.Uri.parse(getThemeModelUri(workspaceScope, path));
+        const model = monaco.editor.getModel(uri);
+        if (model && model.getValue() !== value) {
+          suppressModelChangeRef.current = true;
+          model.setValue(value);
+          suppressModelChangeRef.current = false;
+        }
+      }
+      syncCombinedDirtyPaths(
+        useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+      );
+    },
+    [getFileBaseline, syncCombinedDirtyPaths, workspaceScope],
+  );
+
+  const searchFiles = useMemo(
+    () =>
+      files.map((file) => ({
+        path: file.path,
+        content: getCurrentEditorContent(file.path),
+      })),
+    // `searchRevision` is a debounced view-only signal. Monaco remains the
+    // owner of every transient buffer; the full contents never enter React
+    // state while the person types.
+    [files, getCurrentEditorContent, searchRevision],
   );
 
   useEffect(() => {
@@ -636,10 +837,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
       const deletions = filesToDelete.map((file) => {
         const workspaceFile = workspaceFiles[file.path];
-        if (
-          !workspaceFile?.serverExists ||
-          !workspaceFile.serverFileId
-        ) {
+        if (!workspaceFile?.serverExists || !workspaceFile.serverFileId) {
           throw new Error(`File "${file.path}" is not available for deletion.`);
         }
         return {
@@ -896,6 +1094,77 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       ),
   });
 
+  const copyMutation = useMutation({
+    mutationFn: async ({
+      paths,
+      destinationFolder,
+    }: {
+      paths: readonly string[];
+      destinationFolder: string;
+    }) => {
+      const plan = planThemeFileCopies({
+        files: files.map((file) => ({
+          path: file.path,
+          content: getCurrentEditorContent(file.path),
+          mimeType: file.mimeType,
+        })),
+        selectedPaths: paths,
+        destinationFolder,
+        pendingFolders,
+      });
+      if (!plan.ok) throw new Error(plan.reason);
+      if (plan.files.length === 0) return { plan, result: null };
+      const result = await saveStorefrontThemeFilesBatch({
+        data: {
+          storefrontId,
+          themeId,
+          files: plan.files.map((file) => ({
+            path: file.path,
+            content: file.content,
+            mimeType: file.mimeType,
+            expectMissing: true,
+          })),
+          deletions: [],
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+          createRevision: true,
+          revisionMessage: `Copy ${paths.length === 1 ? paths[0] : `${paths.length} items`}`,
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      return { plan, result: result.data };
+    },
+    onSuccess: async ({ plan, result }) => {
+      if (result) {
+        useThemeWorkspaceStore
+          .getState()
+          .acceptRemoteGeneration(result.sourceGeneration, workspaceScope);
+        for (const saved of result.files ?? []) {
+          markWorkspaceSaved(saved, workspaceScope);
+        }
+      }
+      setPendingFolders((current) => [
+        ...current,
+        ...plan.createdFolders.filter((path) => !current.includes(path)),
+      ]);
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
+      });
+      const createdCount = plan.files.length + plan.createdFolders.length;
+      appendOutput(
+        `Copied ${createdCount} workspace item${createdCount === 1 ? "" : "s"}.`,
+      );
+      toast.success(
+        `Pasted ${createdCount} item${createdCount === 1 ? "" : "s"}`,
+      );
+      onRefreshPreview?.();
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Failed to paste"),
+  });
+
   const createMutation = useMutation({
     mutationFn: async ({
       path,
@@ -1047,15 +1316,12 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       return;
     }
 
-    moveMutation.mutate(
-      [{ from: renamingPath, to: prepared.path }],
-      {
-        onSuccess: () => {
-          setRenamingPath(null);
-          setRenameName("");
-        },
+    moveMutation.mutate([{ from: renamingPath, to: prepared.path }], {
+      onSuccess: () => {
+        setRenamingPath(null);
+        setRenameName("");
       },
-    );
+    });
   }, [files, moveMutation, renameName, renamingPath]);
 
   const handleDuplicateFile = useCallback(
@@ -1104,6 +1370,15 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
       );
     }
+    if (sideView === "search") {
+      if (searchRevisionTimerRef.current) {
+        clearTimeout(searchRevisionTimerRef.current);
+      }
+      searchRevisionTimerRef.current = setTimeout(
+        () => setSearchRevision((current) => current + 1),
+        150,
+      );
+    }
   };
 
   useEffect(() => {
@@ -1130,8 +1405,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     let content = originalContent;
     const editor = editorRef.current;
     const model = editor?.getModel?.();
-    const initialDraftRevision =
-      draftRevisionRef.current[activeFilePath] ?? 0;
+    const initialDraftRevision = draftRevisionRef.current[activeFilePath] ?? 0;
 
     try {
       try {
@@ -1185,17 +1459,110 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     workspaceScope,
   ]);
 
-  // Keyboard shortcut Ctrl+S / Cmd+S
+  const handleSaveAll = useCallback(async () => {
+    if (saveInFlightRef.current || saveMutation.isPending) return;
+    const paths = combinedDirtyPathsRef.current.filter(
+      (path) => !externalConflictFiles?.[path],
+    );
+    if (paths.length === 0) return;
+
+    saveInFlightRef.current = true;
+    appendOutput(
+      `Saving ${paths.length} file${paths.length === 1 ? "" : "s"}…`,
+    );
+    try {
+      for (const path of paths) {
+        const content = getCurrentEditorContent(path);
+        const draftRevision = draftRevisionRef.current[path] ?? 0;
+        updateWorkspaceLocal(path, content, workspaceScope);
+        await saveMutation.mutateAsync({ path, content, draftRevision });
+      }
+      appendOutput(
+        `Saved ${paths.length} file${paths.length === 1 ? "" : "s"}.`,
+      );
+    } finally {
+      saveInFlightRef.current = false;
+    }
+  }, [
+    appendOutput,
+    externalConflictFiles,
+    getCurrentEditorContent,
+    saveMutation,
+    updateWorkspaceLocal,
+    workspaceScope,
+  ]);
+
+  const handleOpenLocation = useCallback(
+    (path: string, line = 1, column = 1) => {
+      setActiveFilePath(path);
+      setOpenTabs((current) =>
+        current.includes(path) ? current : [...current, path],
+      );
+      window.setTimeout(() => {
+        editorRef.current?.revealPositionInCenter({
+          lineNumber: line,
+          column,
+        });
+        editorRef.current?.setPosition({ lineNumber: line, column });
+        editorRef.current?.focus();
+      }, 0);
+    },
+    [],
+  );
+
+  const handleReplaceAll = useCallback(
+    (query: string, replacement: string, options: EditorCodeSearchOptions) => {
+      const replacements = replaceEditorCodeMatches(
+        searchFiles,
+        query,
+        replacement,
+        options,
+      );
+      for (const item of replacements) {
+        applyDraftContent(item.path, item.content);
+      }
+      if (replacements.length > 0) {
+        setSearchRevision((current) => current + 1);
+        appendOutput(
+          `Replaced ${replacements.reduce((total, item) => total + item.replacementCount, 0)} occurrence${replacements.length === 1 ? "" : "s"} in ${replacements.length} file${replacements.length === 1 ? "" : "s"}.`,
+        );
+      }
+      return replacements.reduce(
+        (total, item) => total + item.replacementCount,
+        0,
+      );
+    },
+    [appendOutput, applyDraftContent, searchFiles],
+  );
+
+  // Workspace-level shortcuts mirror VS Code without replacing Monaco's own
+  // editing shortcuts.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      const commandKey = e.ctrlKey || e.metaKey;
+      if (commandKey && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
-        handleSaveCurrentFile();
+        setCommandCenterMode("commands");
+      } else if (commandKey && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSideView("search");
+      } else if (commandKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        setCommandCenterMode("files");
+      } else if (commandKey && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        setBottomPanelOpen((current) => !current);
+      } else if (commandKey && e.altKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void handleSaveAll();
+      } else if (commandKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void handleSaveCurrentFile();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleSaveCurrentFile]);
+  }, [handleSaveAll, handleSaveCurrentFile]);
 
   const handleOpenFile = (path: string) => {
     setActiveFilePath(path);
@@ -1204,15 +1571,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
   };
 
-  const handleCloseTab = (path: string, event: React.MouseEvent) => {
-    event.stopPropagation();
-    const workspaceFile = useThemeWorkspaceStore.getState().files[path];
-    if (workspaceFile?.dirty || draftDirtyRef.current[path]) {
-      const confirmed = window.confirm(
-        `File "${path}" has unsaved changes. Discard changes and close tab?`,
-      );
-      if (!confirmed) return;
-    }
+  const performCloseTab = (path: string) => {
     const nextTabs = openTabs.filter((p) => p !== path);
     setOpenTabs(nextTabs);
     const baseline = getFileBaseline(path);
@@ -1224,8 +1583,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     );
     discardWorkspaceLocal(path, workspaceScope);
 
-    const models = monacoRef.current?.editor?.getModels?.() ?? [];
-    for (const model of models) {
+    for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
       const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
       if (modelPath === path || modelPath.endsWith(`/${path}`)) {
         suppressModelChangeRef.current = true;
@@ -1233,13 +1591,22 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         suppressModelChangeRef.current = false;
       }
     }
-
     if (activeFilePath === path) {
       setActiveFilePath(nextTabs[nextTabs.length - 1] ?? "");
     }
   };
 
-  const handleDeleteFile = (path: string) => {
+  const handleCloseTab = (path: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    const workspaceFile = useThemeWorkspaceStore.getState().files[path];
+    if (workspaceFile?.dirty || draftDirtyRef.current[path]) {
+      setPendingConfirmation({ kind: "close-file", path });
+      return;
+    }
+    performCloseTab(path);
+  };
+
+  const performDeleteFile = (path: string) => {
     if (deleteMutation.isPending) return;
     const file = files.find((candidate) => candidate.path === path);
     const workspaceFile = useThemeWorkspaceStore
@@ -1251,19 +1618,16 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       toast.error("This file is not available for deletion.");
       return;
     }
-    if (workspaceFile.dirty || draftDirtyRef.current[path]) {
-      if (
-        !window.confirm(
-          'File "' + path + '" has unsaved changes. Delete it anyway?',
-        )
-      )
-        return;
-    }
     deleteMutation.mutate({
       path,
       expectedFileId: workspaceFile.serverFileId,
       expectedVersion: workspaceFile.serverVersion ?? file.version,
     });
+  };
+
+  const handleDeleteFile = (path: string) => {
+    if (deleteMutation.isPending) return;
+    setPendingConfirmation({ kind: "delete-file", path });
   };
 
   const handleDeleteFolder = (path: string) => {
@@ -1279,25 +1643,151 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       return;
     }
 
-    const fileLabel =
-      filesInFolder.length === 1
-        ? "1 file"
-        : `${filesInFolder.length} files`;
-    if (
-      !window.confirm(
-        `Delete folder "${path}" and its ${fileLabel}? This cannot be undone.`,
-      )
-    ) {
-      return;
-    }
-    deleteFolderMutation.mutate(path);
+    setPendingConfirmation({
+      kind: "delete-folder",
+      path,
+      fileCount: filesInFolder.length,
+    });
   };
+
+  const handleCopyPaths = useCallback(
+    (paths: readonly string[]) => {
+      const next = [...new Set(paths)];
+      setCopiedPaths(next);
+      appendOutput(
+        `Copied ${next.length} item${next.length === 1 ? "" : "s"} to the Explorer clipboard.`,
+      );
+    },
+    [appendOutput],
+  );
+
+  const handlePasteInto = useCallback(
+    (destinationFolder: string) => {
+      if (copiedPaths.length === 0 || copyMutation.isPending) return;
+      copyMutation.mutate({ paths: copiedPaths, destinationFolder });
+    },
+    [copiedPaths, copyMutation],
+  );
+
+  const editorCommands = useMemo<EditorCodeCommand[]>(
+    () => [
+      {
+        id: "quick-open",
+        label: "Quick Open…",
+        shortcut: "Ctrl+P",
+        icon: Files,
+        run: () => setCommandCenterMode("files"),
+      },
+      {
+        id: "search",
+        label: "Search: Find in Files",
+        shortcut: "Ctrl+Shift+F",
+        icon: SearchIcon,
+        run: () => setSideView("search"),
+      },
+      {
+        id: "save",
+        label: "File: Save",
+        shortcut: "Ctrl+S",
+        icon: Save,
+        disabled: !activeFilePath || !dirtyPathSet.has(activeFilePath),
+        run: () => void handleSaveCurrentFile(),
+      },
+      {
+        id: "save-all",
+        label: "File: Save All",
+        shortcut: "Ctrl+Alt+S",
+        icon: SaveAll,
+        disabled: dirtyPaths.length === 0,
+        run: () => void handleSaveAll(),
+      },
+      {
+        id: "new-file",
+        label: "Explorer: New File",
+        icon: FilePlus2,
+        run: () => {
+          setSideView("explorer");
+          startCreatingIn("");
+        },
+      },
+      {
+        id: "new-folder",
+        label: "Explorer: New Folder",
+        icon: FolderPlus,
+        run: () => {
+          setSideView("explorer");
+          startCreatingFolder("");
+        },
+      },
+      {
+        id: "format",
+        label: "Format Document",
+        shortcut: "Shift+Alt+F",
+        icon: Braces,
+        disabled: !activeFilePath,
+        run: () =>
+          editorRef.current?.getAction?.("editor.action.formatDocument")?.run(),
+      },
+      {
+        id: "organize-imports",
+        label: "Source Action: Organize Imports",
+        icon: ListChecks,
+        disabled: !/\.[jt]sx?$/.test(activeFilePath),
+        run: () =>
+          editorRef.current
+            ?.getAction?.("editor.action.organizeImports")
+            ?.run(),
+      },
+      {
+        id: "toggle-panel",
+        label: "View: Toggle Panel",
+        shortcut: "Ctrl+J",
+        icon: PanelBottomOpen,
+        run: () => setBottomPanelOpen((current) => !current),
+      },
+      ...(onBuildPreview
+        ? [
+            {
+              id: "build-preview",
+              label: "Theme: Build Preview",
+              icon: Code2,
+              run: onBuildPreview,
+            } satisfies EditorCodeCommand,
+          ]
+        : []),
+    ],
+    [
+      activeFilePath,
+      dirtyPathSet,
+      dirtyPaths.length,
+      handleSaveAll,
+      handleSaveCurrentFile,
+      onBuildPreview,
+      startCreatingFolder,
+      startCreatingIn,
+    ],
+  );
 
   const toggleFolder = (path: string) => {
     setCollapsedFolders((prev) => ({
       ...prev,
       [path]: !prev[path],
     }));
+  };
+
+  const selectExplorerPath = (
+    path: string,
+    event: React.MouseEvent<HTMLElement>,
+  ) => {
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedPaths((current) =>
+        current.includes(path)
+          ? current.filter((item) => item !== path)
+          : [...current, path],
+      );
+      return;
+    }
+    setSelectedPaths([path]);
   };
 
   const renderCreateInput = (depth: number, parentPath: string) => {
@@ -1434,6 +1924,65 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     () => withPendingFolders(tree, pendingFolders),
     [tree, pendingFolders],
   );
+  const visibleExplorerPaths = useMemo(() => {
+    const result: string[] = [];
+    const visit = (nodes: readonly StorefrontThemeFileTreeNode[]) => {
+      for (const node of nodes) {
+        result.push(node.path);
+        if (node.isDirectory && !collapsedFolders[node.path] && node.children) {
+          visit(node.children);
+        }
+      }
+    };
+    visit(visibleTree);
+    return result;
+  }, [collapsedFolders, visibleTree]);
+
+  const handleExplorerKeyDown = (event: React.KeyboardEvent) => {
+    if (event.target instanceof HTMLInputElement) return;
+    const current = selectedPathsRef.current[0];
+    const currentIndex = Math.max(0, visibleExplorerPaths.indexOf(current));
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = Math.min(
+        visibleExplorerPaths.length - 1,
+        Math.max(0, currentIndex + delta),
+      );
+      const next = visibleExplorerPaths[nextIndex];
+      if (next) setSelectedPaths([next]);
+      return;
+    }
+    if (!current) return;
+    const isFile = files.some((file) => file.path === current);
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (isFile) handleOpenFile(current);
+      else toggleFolder(current);
+    } else if (event.key === "F2" && isFile) {
+      event.preventDefault();
+      startRenamingFile(current);
+    } else if (event.key === "Delete") {
+      event.preventDefault();
+      if (isFile) handleDeleteFile(current);
+      else handleDeleteFolder(current);
+    } else if (
+      (event.ctrlKey || event.metaKey) &&
+      event.key.toLowerCase() === "c"
+    ) {
+      event.preventDefault();
+      handleCopyPaths(selectedPathsRef.current);
+    } else if (
+      (event.ctrlKey || event.metaKey) &&
+      event.key.toLowerCase() === "v"
+    ) {
+      event.preventDefault();
+      const destination = isFile
+        ? current.slice(0, Math.max(0, current.lastIndexOf("/")))
+        : current;
+      handlePasteInto(destination);
+    }
+  };
   useEffect(() => {
     writePendingFolders(pendingFolderKey, pendingFolders);
   }, [pendingFolderKey, pendingFolders]);
@@ -1457,8 +2006,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       if (
         pendingDestination &&
         pendingFolders.some(
-          (path) =>
-            path === draggedPath || path.startsWith(`${draggedPath}/`),
+          (path) => path === draggedPath || path.startsWith(`${draggedPath}/`),
         )
       ) {
         setPendingFolders((current) =>
@@ -1561,40 +2109,58 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       return (
         <div key={node.path} className="select-none">
           <FolderRow node={node}>
-          <ContextMenu>
-            <ContextMenuTrigger asChild>
-              <div
-                onClick={() => toggleFolder(node.path)}
-                className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
-                style={{ paddingLeft: `${depth * 12 + 8}px` }}
-              >
-                {isCollapsed ? (
-                  <ChevronRight className="size-3 shrink-0" />
-                ) : (
-                  <ChevronDown className="size-3 shrink-0" />
-                )}
-                {isCollapsed ? (
-                  <Folder className="size-3.5 text-amber-500/80 shrink-0" />
-                ) : (
-                  <FolderOpen className="size-3.5 text-amber-500 shrink-0" />
-                )}
-                <span className="font-medium truncate">{node.name}</span>
-              </div>
-            </ContextMenuTrigger>
-            <ContextMenuContent>
-              <ContextMenuItem
-                disabled={createMutation.isPending}
-                onClick={() => startCreatingIn(node.path)}
-              >
-                <FilePlus2 className="size-3.5" />
-                New File
-              </ContextMenuItem>
+            <ContextMenu>
+              <ContextMenuTrigger asChild>
+                <div
+                  onClick={(event) => {
+                    selectExplorerPath(node.path, event);
+                    toggleFolder(node.path);
+                  }}
+                  className={cn(
+                    "flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors",
+                    selectedPaths.includes(node.path) &&
+                      "bg-accent text-accent-foreground",
+                  )}
+                  style={{ paddingLeft: `${depth * 12 + 8}px` }}
+                >
+                  {isCollapsed ? (
+                    <ChevronRight className="size-3 shrink-0" />
+                  ) : (
+                    <ChevronDown className="size-3 shrink-0" />
+                  )}
+                  {isCollapsed ? (
+                    <Folder className="size-3.5 text-amber-500/80 shrink-0" />
+                  ) : (
+                    <FolderOpen className="size-3.5 text-amber-500 shrink-0" />
+                  )}
+                  <span className="font-medium truncate">{node.name}</span>
+                </div>
+              </ContextMenuTrigger>
+              <ContextMenuContent>
+                <ContextMenuItem
+                  disabled={createMutation.isPending}
+                  onClick={() => startCreatingIn(node.path)}
+                >
+                  <FilePlus2 className="size-3.5" />
+                  New File
+                </ContextMenuItem>
                 <ContextMenuItem
                   disabled={createMutation.isPending}
                   onClick={() => startCreatingFolder(node.path)}
                 >
                   <FolderPlus className="size-3.5" />
                   New Folder
+                </ContextMenuItem>
+                <ContextMenuItem onClick={() => handleCopyPaths([node.path])}>
+                  <Copy className="size-3.5" />
+                  Copy
+                </ContextMenuItem>
+                <ContextMenuItem
+                  disabled={copiedPaths.length === 0 || copyMutation.isPending}
+                  onClick={() => handlePasteInto(node.path)}
+                >
+                  <Files className="size-3.5" />
+                  Paste
                 </ContextMenuItem>
                 <ContextMenuItem
                   variant="destructive"
@@ -1606,14 +2172,14 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
                   <Trash2 className="size-3.5" />
                   Delete Folder
                 </ContextMenuItem>
-            </ContextMenuContent>
-          </ContextMenu>
+              </ContextMenuContent>
+            </ContextMenu>
           </FolderRow>
           {creatingInFolder === node.path
             ? renderCreateInput(depth + 1, node.path)
             : creatingFolderIn === node.path
               ? renderFolderCreateInput(depth + 1, node.path)
-            : null}
+              : null}
           {!isCollapsed && node.children ? (
             <div>
               {node.children.map((child) => renderTreeNode(child, depth + 1))}
@@ -1641,59 +2207,66 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
     return (
       <FileRow key={node.path} path={node.path}>
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <div
-            onClick={() => handleOpenFile(node.path)}
-            className={cn(
-              "flex cursor-pointer items-center justify-between rounded-sm px-2 py-1 text-xs select-none transition-colors",
-              isActive
-                ? "bg-accent text-accent-foreground font-medium"
-                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-            )}
-            style={{ paddingLeft: depth * 12 + 18 }}
-          >
-            <div className="flex items-center gap-1.5 min-w-0 flex-1">
-              {getFileIcon(node.name)}
-              <span className="truncate">{node.name}</span>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div
+              onClick={(event) => {
+                selectExplorerPath(node.path, event);
+                handleOpenFile(node.path);
+              }}
+              className={cn(
+                "flex cursor-pointer items-center justify-between rounded-sm px-2 py-1 text-xs select-none transition-colors",
+                isActive || selectedPaths.includes(node.path)
+                  ? "bg-accent text-accent-foreground font-medium"
+                  : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+              )}
+              style={{ paddingLeft: depth * 12 + 18 }}
+            >
+              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                {getFileIcon(node.name)}
+                <span className="truncate">{node.name}</span>
+              </div>
+              {isDirty ? (
+                <span className="size-1.5 rounded-full bg-primary shrink-0" />
+              ) : null}
             </div>
-            {isDirty ? (
-              <span className="size-1.5 rounded-full bg-primary shrink-0" />
-            ) : null}
-          </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent
-          onCloseAutoFocus={(event) => {
-            if (renameJustStartedRef.current) {
-              event.preventDefault();
-              renameJustStartedRef.current = false;
-            }
-          }}
-        >
-          <ContextMenuItem
-            disabled={createMutation.isPending}
-            onClick={() => handleDuplicateFile(node.path)}
+          </ContextMenuTrigger>
+          <ContextMenuContent
+            onCloseAutoFocus={(event) => {
+              if (renameJustStartedRef.current) {
+                event.preventDefault();
+                renameJustStartedRef.current = false;
+              }
+            }}
           >
-            <Copy className="size-3.5" />
-            Duplicate
-          </ContextMenuItem>
-          <ContextMenuItem
-            disabled={moveMutation.isPending}
-            onClick={() => startRenamingFile(node.path)}
-          >
-            <FileText className="size-3.5" />
-            Rename
-          </ContextMenuItem>
-          <ContextMenuItem
-            variant="destructive"
-            disabled={deleteMutation.isPending}
-            onClick={() => handleDeleteFile(node.path)}
-          >
-            <Trash2 className="size-3.5" />
-            Delete File
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+            <ContextMenuItem onClick={() => handleCopyPaths([node.path])}>
+              <Copy className="size-3.5" />
+              Copy
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={createMutation.isPending}
+              onClick={() => handleDuplicateFile(node.path)}
+            >
+              <Copy className="size-3.5" />
+              Duplicate
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={moveMutation.isPending}
+              onClick={() => startRenamingFile(node.path)}
+            >
+              <FileText className="size-3.5" />
+              Rename
+            </ContextMenuItem>
+            <ContextMenuItem
+              variant="destructive"
+              disabled={deleteMutation.isPending}
+              onClick={() => handleDeleteFile(node.path)}
+            >
+              <Trash2 className="size-3.5" />
+              Delete File
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
       </FileRow>
     );
   };
@@ -1733,66 +2306,138 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   return (
     <div className="flex h-full w-full min-h-0 bg-background text-foreground overflow-hidden">
-      {/* Left: Theme File Tree Explorer */}
+      <nav
+        className="flex w-11 shrink-0 flex-col items-center border-r bg-card py-1"
+        aria-label="Code workspace views"
+      >
+        <button
+          type="button"
+          className={cn(
+            "relative flex size-9 items-center justify-center text-muted-foreground hover:text-foreground",
+            sideView === "explorer" &&
+              "text-foreground before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:bg-primary",
+          )}
+          aria-label="Explorer"
+          title="Explorer"
+          onClick={() => setSideView("explorer")}
+        >
+          <Files className="size-5" />
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "relative flex size-9 items-center justify-center text-muted-foreground hover:text-foreground",
+            sideView === "search" &&
+              "text-foreground before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:bg-primary",
+          )}
+          aria-label="Search"
+          title="Search (Ctrl+Shift+F)"
+          onClick={() => setSideView("search")}
+        >
+          <SearchIcon className="size-5" />
+        </button>
+        <button
+          type="button"
+          className="mt-auto flex size-9 items-center justify-center text-muted-foreground hover:text-foreground"
+          aria-label="Command Palette"
+          title="Command Palette (Ctrl+Shift+P)"
+          onClick={() => setCommandCenterMode("commands")}
+        >
+          <CommandIcon className="size-5" />
+        </button>
+      </nav>
+
+      {/* Left: Theme Workspace side bar */}
       <div className="flex w-60 shrink-0 flex-col border-r bg-card/60">
         <div className="flex h-10 items-center justify-between border-b px-3 text-xs font-semibold text-muted-foreground">
           <div className="flex items-center gap-1.5">
             <Code2 className="size-3.5 text-primary" />
             <span className="uppercase tracking-wider text-[11px]">
-              Explorer
+              {sideView === "explorer" ? "Explorer" : "Search"}
             </span>
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
-              {files.length} files
-            </span>
-            <button
-              type="button"
-              title="New folder"
-              aria-label="New folder"
-              disabled={createMutation.isPending}
-              onClick={() => startCreatingFolder("")}
-              className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <FolderPlus className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              title="New file"
-              aria-label="New file"
-              disabled={createMutation.isPending}
-              onClick={() => startCreatingIn("")}
-              className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-            >
-              <FilePlus2 className="size-3.5" />
-            </button>
-          </div>
+          {sideView === "explorer" ? (
+            <div className="flex items-center gap-1.5">
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+                {files.length} files
+              </span>
+              <button
+                type="button"
+                title="New folder"
+                aria-label="New folder"
+                disabled={createMutation.isPending}
+                onClick={() => startCreatingFolder("")}
+                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <FolderPlus className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                title="New file"
+                aria-label="New file"
+                disabled={createMutation.isPending}
+                onClick={() => startCreatingIn("")}
+                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              >
+                <FilePlus2 className="size-3.5" />
+              </button>
+              {copiedPaths.length > 0 ? (
+                <button
+                  type="button"
+                  title="Paste into workspace root"
+                  aria-label="Paste into workspace root"
+                  disabled={copyMutation.isPending}
+                  onClick={() => handlePasteInto("")}
+                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                >
+                  <Files className="size-3.5" />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-        <ScrollArea className="flex-1 p-1">
-          <DragDropProvider
-            sensors={dragSensors}
-            onDragEnd={(event) => {
-              const draggedPath = (
-                event.operation.source?.data as { path?: string } | undefined
-              )?.path;
-              const folder = (
-                event.operation.target?.data as { folder?: string } | undefined
-              )?.folder;
-              if (event.canceled || !draggedPath || folder === undefined)
-                return;
-              handleDropOnFolder(draggedPath, folder);
-            }}
-          >
-          <div className="space-y-0.5">
-              {creatingInFolder === ""
-                ? renderCreateInput(0, "")
-                : creatingFolderIn === ""
-                  ? renderFolderCreateInput(0, "")
-                  : null}
-              {visibleTree.map((node) => renderTreeNode(node, 0))}
-          </div>
-          </DragDropProvider>
-        </ScrollArea>
+        {sideView === "search" ? (
+          <EditorCodeSearchPanel
+            files={searchFiles}
+            onOpenMatch={(match: EditorCodeSearchMatch) =>
+              handleOpenLocation(match.path, match.line, match.column)
+            }
+            onReplaceAll={handleReplaceAll}
+          />
+        ) : (
+          <ScrollArea className="flex-1 p-1">
+            <DragDropProvider
+              sensors={dragSensors}
+              onDragEnd={(event) => {
+                const draggedPath = (
+                  event.operation.source?.data as { path?: string } | undefined
+                )?.path;
+                const folder = (
+                  event.operation.target?.data as
+                    { folder?: string } | undefined
+                )?.folder;
+                if (event.canceled || !draggedPath || folder === undefined)
+                  return;
+                handleDropOnFolder(draggedPath, folder);
+              }}
+            >
+              <div
+                className="space-y-0.5 outline-none"
+                tabIndex={0}
+                role="tree"
+                aria-label="Theme files"
+                onKeyDown={handleExplorerKeyDown}
+              >
+                {creatingInFolder === ""
+                  ? renderCreateInput(0, "")
+                  : creatingFolderIn === ""
+                    ? renderFolderCreateInput(0, "")
+                    : null}
+                {visibleTree.map((node) => renderTreeNode(node, 0))}
+              </div>
+            </DragDropProvider>
+          </ScrollArea>
+        )}
       </div>
 
       {/* Right: Monaco Editor Workspace */}
@@ -1858,6 +2503,17 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               )}
               <span>Save</span>
               <span className="text-[10px] opacity-70">Ctrl+S</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              title="Save All (Ctrl+Alt+S)"
+              aria-label="Persist all dirty files"
+              disabled={saveMutation.isPending || dirtyPaths.length === 0}
+              onClick={() => void handleSaveAll()}
+            >
+              <SaveAll className="size-3.5" />
             </Button>
           </div>
         </div>
@@ -1952,7 +2608,102 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             </div>
           )}
         </div>
+        <EditorCodeStatusPanel
+          open={bottomPanelOpen}
+          activeTab={bottomPanelTab}
+          onActiveTabChange={setBottomPanelTab}
+          onClose={() => setBottomPanelOpen(false)}
+          diagnostics={diagnostics}
+          output={outputLines}
+          onOpenDiagnostic={(diagnostic) =>
+            handleOpenLocation(
+              diagnostic.path,
+              diagnostic.line,
+              diagnostic.column,
+            )
+          }
+        />
+        <footer className="flex h-6 shrink-0 items-center border-t bg-card px-2 text-[10px] text-muted-foreground">
+          <button
+            type="button"
+            className="flex h-full items-center gap-1 px-1.5 hover:bg-muted hover:text-foreground"
+            onClick={() => {
+              setBottomPanelTab("problems");
+              setBottomPanelOpen(true);
+            }}
+          >
+            <AlertCircle className="size-3" />
+            {diagnostics.filter((item) => item.severity === "error").length}
+            <span className="ml-1">△</span>
+            {diagnostics.filter((item) => item.severity === "warning").length}
+          </button>
+          {dirtyPaths.length > 0 ? (
+            <span className="ml-2">{dirtyPaths.length} unsaved</span>
+          ) : null}
+          <span className="ml-auto px-1.5">
+            Ln {cursorPosition.line}, Col {cursorPosition.column}
+          </span>
+          <span className="px-1.5">UTF-8</span>
+          <span className="px-1.5 capitalize">
+            {activeFilePath ? getLanguage(activeFilePath) : "Plain Text"}
+          </span>
+        </footer>
       </div>
+      <EditorCodeCommandCenter
+        mode={commandCenterMode}
+        onModeChange={setCommandCenterMode}
+        files={files}
+        commands={editorCommands}
+        onOpenFile={handleOpenFile}
+      />
+      <AlertDialog
+        open={pendingConfirmation !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingConfirmation(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingConfirmation?.kind === "close-file"
+                ? "Discard unsaved changes?"
+                : pendingConfirmation?.kind === "delete-folder"
+                  ? "Delete folder?"
+                  : "Delete file?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingConfirmation?.kind === "close-file"
+                ? `Close “${pendingConfirmation.path}” and discard its unsaved changes?`
+                : pendingConfirmation?.kind === "delete-folder"
+                  ? `Delete “${pendingConfirmation.path}” and its ${pendingConfirmation.fileCount} file${pendingConfirmation.fileCount === 1 ? "" : "s"}? This cannot be undone.`
+                  : pendingConfirmation
+                    ? `Delete “${pendingConfirmation.path}”? This cannot be undone.`
+                    : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const confirmation = pendingConfirmation;
+                setPendingConfirmation(null);
+                if (!confirmation) return;
+                if (confirmation.kind === "close-file") {
+                  performCloseTab(confirmation.path);
+                } else if (confirmation.kind === "delete-file") {
+                  performDeleteFile(confirmation.path);
+                } else {
+                  deleteFolderMutation.mutate(confirmation.path);
+                }
+              }}
+            >
+              {pendingConfirmation?.kind === "close-file"
+                ? "Discard"
+                : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 });

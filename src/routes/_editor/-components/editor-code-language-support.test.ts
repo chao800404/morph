@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import * as ts from "typescript";
+import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "@/lib/storefront/starter-theme-v3-files";
 import type { Monaco } from "@monaco-editor/react";
 import {
   collectJsxTagSemanticTokens,
@@ -209,9 +211,160 @@ describe("configureThemeTypeScript", () => {
       "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
     );
     expect(addExtraLib).toHaveBeenCalledWith(
+      expect.stringContaining("export type RouteBeforeLoadContext ="),
+      "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
+    );
+    expect(addExtraLib).toHaveBeenCalledWith(
+      expect.stringContaining("shellComponent?:"),
+      "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
+    );
+    expect(addExtraLib).toHaveBeenCalledWith(
       expect.stringContaining('declare module "@tanstack/react-start"'),
       "file:///node_modules/@types/morph-theme-dependencies/index.d.ts",
     );
+    expect(addExtraLib).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "data-${string}",
+      ),
+      "file:///node_modules/@morph/theme-jsx/index.d.ts",
+    );
+  });
+
+  it("types root route context and shell options like TanStack Router", () => {
+    const addExtraLib = vi.fn();
+    const monaco = {
+      languages: {
+        typescript: {
+          typescriptDefaults: {
+            setEagerModelSync: vi.fn(),
+            setDiagnosticsOptions: vi.fn(),
+            setModeConfiguration: vi.fn(),
+            setInlayHintsOptions: vi.fn(),
+            setCompilerOptions: vi.fn(),
+            addExtraLib,
+          },
+          JsxEmit: { Preserve: 1 },
+          ModuleKind: { ESNext: 99 },
+          ModuleResolutionKind: { NodeJs: 2 },
+          ScriptTarget: { ES2022: 9 },
+        },
+      },
+    } as unknown as Monaco;
+
+    configureThemeTypeScript(monaco);
+    const jsxDeclarations = addExtraLib.mock.calls[0]?.[0] as string;
+    const dependencyDeclarations = addExtraLib.mock.calls[1]?.[0] as string;
+    const files: Record<string, string> = {
+      "/workspace/types.d.ts": `${jsxDeclarations}\n${dependencyDeclarations}`,
+      "/workspace/src/morph/content.ts": STARTER_THEME_CONTENT_MODULE_SOURCE,
+      "/workspace/src/routeTree.gen.ts": `
+        export const routeTree: unknown = undefined as unknown;
+      `,
+      "/workspace/src/routes/router.ts": `
+        import { createRouter } from "@tanstack/react-router";
+        import { routeTree } from "../routeTree.gen";
+
+        export function getRouter() {
+          return createRouter({ routeTree });
+        }
+
+        declare module "@tanstack/react-router" {
+          interface Register {
+            router: ReturnType<typeof getRouter>;
+          }
+        }
+      `,
+      "/workspace/src/routes/_root.tsx": `
+        import type { ReactNode } from "react";
+        import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
+        import { MorphContentProvider, loadContentSlots } from "../morph/content";
+
+        export const Route = createRootRoute({
+          beforeLoad: async ({ location }) => ({
+            morphContent: await loadContentSlots(location.pathname),
+          }),
+          component: RootComponent,
+          shellComponent: RootDocument,
+        });
+
+        function RootComponent() {
+          const { morphContent } = Route.useRouteContext();
+          return <MorphContentProvider value={morphContent}><Outlet /></MorphContentProvider>;
+        }
+
+        function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
+          return <html><head><HeadContent /></head><body>{children}<Scripts /></body></html>;
+        }
+      `,
+    };
+    const compilerOptions: ts.CompilerOptions = {
+      jsx: ts.JsxEmit.Preserve,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      noEmit: true,
+      strict: true,
+      target: ts.ScriptTarget.ES2022,
+      skipLibCheck: true,
+      types: [],
+    };
+    const defaultHost = ts.createCompilerHost(compilerOptions);
+    const host: ts.CompilerHost = {
+      ...defaultHost,
+      fileExists: (fileName) =>
+        fileName in files || defaultHost.fileExists(fileName),
+      readFile: (fileName) => files[fileName] ?? defaultHost.readFile(fileName),
+      getSourceFile: (fileName, languageVersion, onError, shouldCreateNew) => {
+        const source = files[fileName];
+        return source === undefined
+          ? defaultHost.getSourceFile(
+              fileName,
+              languageVersion,
+              onError,
+              shouldCreateNew,
+            )
+          : ts.createSourceFile(fileName, source, languageVersion, true);
+      },
+      resolveModuleNames: (moduleNames, containingFile) =>
+        moduleNames.map((moduleName) => {
+          if (moduleName === "../morph/content") {
+            return {
+              resolvedFileName: "/workspace/src/morph/content.ts",
+              extension: ts.Extension.Ts,
+            };
+          }
+          if (moduleName === "../routeTree.gen") {
+            return {
+              resolvedFileName: "/workspace/src/routeTree.gen.ts",
+              extension: ts.Extension.Ts,
+            };
+          }
+          return ts.resolveModuleName(
+            moduleName,
+            containingFile,
+            compilerOptions,
+            host,
+          ).resolvedModule;
+        }),
+    };
+    const program = ts.createProgram(
+      [
+        "/workspace/types.d.ts",
+        "/workspace/src/routes/router.ts",
+        "/workspace/src/routes/_root.tsx",
+      ],
+      compilerOptions,
+      host,
+    );
+    const diagnostics = [
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+    ];
+
+    expect(
+      diagnostics.map((diagnostic) =>
+        ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -258,7 +411,14 @@ describe("theme workspace Monaco models", () => {
 
     ensureThemeWorkspaceModels(monaco, scope, files);
     ensureThemeWorkspaceModels(monaco, scope, files);
-    expect(createModel).toHaveBeenCalledTimes(2);
+    expect(createModel).toHaveBeenCalledTimes(3);
+    expect(createModel).toHaveBeenCalledWith(
+      expect.stringContaining("export const routeTree"),
+      "typescript",
+      expect.objectContaining({
+        toString: expect.any(Function),
+      }),
+    );
 
     existingModels.set("file:///morph-theme/other/theme/src/index.tsx", {
       dispose: vi.fn(),

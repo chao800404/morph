@@ -635,6 +635,12 @@ export type SwapSiblingMorphNodesResult = {
   reason?: "parse-error" | "not-found" | "not-siblings" | "same-node";
 };
 
+export type RemoveJsxElementResult = {
+  code: string;
+  editable: boolean;
+  reason?: "parse-error" | "not-found" | "not-direct-child";
+};
+
 /**
  * `line:column` of a JSX element's opening tag.
  *
@@ -658,6 +664,65 @@ function jsxElementLocationKey(node: any): string | null {
 function jsxElementMatchesTargetKey(node: any, targetKey: string): boolean {
   if (staticMorphNodeId(node) === targetKey) return true;
   return jsxElementLocationKey(node) === targetKey;
+}
+
+function walkWithParent(
+  node: any,
+  parent: any,
+  visitor: (node: any, parent: any) => void,
+) {
+  if (!node || typeof node !== "object") return;
+  visitor(node, parent);
+
+  for (const key of Object.keys(node)) {
+    if (key === "loc" || key === "comments" || key === "openingElement") {
+      continue;
+    }
+    const value = node[key];
+    if (Array.isArray(value)) {
+      for (const child of value) walkWithParent(child, node, visitor);
+    } else if (value && typeof value === "object") {
+      walkWithParent(value, node, visitor);
+    }
+  }
+}
+
+function staticMorphNodeIdForDeletion(node: any): string | null {
+  const openingElement =
+    node?.type === "JSXElement" ? node.openingElement : node;
+  if (
+    !openingElement ||
+    (node.type !== "JSXElement" && node.type !== "JSXSelfClosingElement")
+  ) {
+    return null;
+  }
+
+  for (const attribute of openingElement.attributes ?? []) {
+    if (
+      attribute.type !== "JSXAttribute" ||
+      attribute.name?.type !== "JSXIdentifier" ||
+      attribute.name.name !== "data-morph-node"
+    ) {
+      continue;
+    }
+    if (attribute.value?.type === "StringLiteral") {
+      return attribute.value.value;
+    }
+    if (
+      attribute.value?.type === "JSXExpressionContainer" &&
+      attribute.value.expression?.type === "StringLiteral"
+    ) {
+      return attribute.value.expression.value;
+    }
+  }
+  return null;
+}
+
+function jsxElementMatchesDeletionTarget(node: any, targetKey: string) {
+  return (
+    staticMorphNodeIdForDeletion(node) === targetKey ||
+    jsxElementLocationKey(node) === targetKey
+  );
 }
 
 function staticMorphNodeId(node: any): string | null {
@@ -769,6 +834,71 @@ export function swapSiblingMorphNodes(
         sourceCode.slice(earlier.end, later.start) +
         earlierSource +
         sourceCode.slice(later.end),
+      editable: true,
+    };
+  } catch {
+    return { code: sourceCode, editable: false, reason: "parse-error" };
+  }
+}
+
+/**
+ * Removes one statically-addressable JSX child without reformatting the rest
+ * of the source file. Deletion is intentionally limited to an element that is
+ * a direct child of a JSX element/fragment; removing an expression such as
+ * `condition && <Thing />` would otherwise leave invalid TSX behind.
+ */
+export function removeJsxElement(
+  sourceCode: string,
+  targetKey: string,
+): RemoveJsxElementResult {
+  if (!targetKey.trim()) {
+    return { code: sourceCode, editable: false, reason: "not-found" };
+  }
+
+  try {
+    const ast = parseAst(sourceCode);
+    const matches: Array<{ node: any; parent: any }> = [];
+
+    walkWithParent(ast, null, (node, parent) => {
+      if (
+        (node.type === "JSXElement" || node.type === "JSXSelfClosingElement") &&
+        jsxElementMatchesDeletionTarget(node, targetKey)
+      ) {
+        matches.push({ node, parent });
+      }
+    });
+
+    if (matches.length !== 1) {
+      return { code: sourceCode, editable: false, reason: "not-found" };
+    }
+
+    const { node, parent } = matches[0];
+    if (
+      !parent ||
+      (parent.type !== "JSXElement" && parent.type !== "JSXFragment") ||
+      !Array.isArray(parent.children) ||
+      !parent.children.includes(node)
+    ) {
+      return {
+        code: sourceCode,
+        editable: false,
+        reason: "not-direct-child",
+      };
+    }
+
+    const start = node.start;
+    const end = node.end;
+    if (
+      typeof start !== "number" ||
+      typeof end !== "number" ||
+      start < 0 ||
+      end <= start
+    ) {
+      return { code: sourceCode, editable: false, reason: "not-found" };
+    }
+
+    return {
+      code: sourceCode.slice(0, start) + sourceCode.slice(end),
       editable: true,
     };
   } catch {

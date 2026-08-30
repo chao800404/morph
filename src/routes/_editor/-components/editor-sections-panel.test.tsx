@@ -510,4 +510,67 @@ describe("EditorSectionsPanel editable node tree", () => {
 
     expect(heroRow.getAttribute("data-active")).toBe("true");
   });
+
+  it("offers a VS Code-style delete action for DOM nodes and confirms it in a dialog", async () => {
+    const onDeleteEditableNode = vi.fn().mockResolvedValue({ success: true });
+    renderPanel(vi.fn(), vi.fn(), {
+      editableNodes,
+      onDeleteEditableNode,
+    });
+
+    const contentButton = screen.getByRole("button", { name: "Content" });
+    fireEvent.contextMenu(contentButton.parentElement!);
+
+    const deleteMenuItem = await screen.findByRole("menuitem", {
+      name: /Delete/,
+    });
+    fireEvent.click(deleteMenuItem);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Delete “Content”?",
+      }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(onDeleteEditableNode).toHaveBeenCalledWith(editableNodes[0]),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: "Delete “Content”?" }),
+      ).toBeNull(),
+    );
+  });
+
+  it("offers a separate delete action for top-level sections", async () => {
+    const onDeleteSection = vi.fn().mockResolvedValue({ success: true });
+    renderPanel(vi.fn(), vi.fn(), {
+      onDeleteSection,
+    });
+
+    const heroButton = screen.getByRole("button", { name: "hero" });
+    fireEvent.contextMenu(heroButton.parentElement!);
+
+    const deleteMenuItem = await screen.findByRole("menuitem", {
+      name: /^Delete/,
+    });
+    fireEvent.click(deleteMenuItem);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Delete “hero”?",
+      }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(onDeleteSection).toHaveBeenCalledWith("section-1"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: "Delete “hero”?" }),
+      ).toBeNull(),
+    );
+  });
 });

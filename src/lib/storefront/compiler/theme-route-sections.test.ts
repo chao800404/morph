@@ -4,6 +4,7 @@ import {
   deriveThemeRouteSections,
   listThemeRouteSectionOptions,
   mergeDocumentWithRouteSections,
+  removeThemeRouteSection,
   reorderThemeRouteSections,
 } from "./theme-route-sections";
 
@@ -37,8 +38,14 @@ const files = [
   { path: "morph.theme.json", content: manifest },
   { path: "src/routes/index.tsx", content: route },
   { path: "src/morph/content.ts", content: "export function content() {}" },
-  { path: "src/components/Hero.tsx", content: "export default function Hero() {}" },
-  { path: "src/components/Promo.tsx", content: "export default function Promo() {}" },
+  {
+    path: "src/components/Hero.tsx",
+    content: "export default function Hero() {}",
+  },
+  {
+    path: "src/components/Promo.tsx",
+    content: "export default function Promo() {}",
+  },
 ];
 
 describe("route-authored Theme sections", () => {
@@ -163,6 +170,61 @@ describe("route-authored Theme sections", () => {
     expect(result.diagnostic).toBeUndefined();
     expect(result.code).toContain('<Promo {...content("promo")} />');
   });
+
+  it("removes one route-owned section without leaving a blank authored row", () => {
+    const result = removeThemeRouteSection(
+      route,
+      files,
+      "src/routes/index.tsx",
+      "promo-slot",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.diagnostic).toBeUndefined();
+    expect(result.code).not.toContain('content("promo-slot")');
+    expect(result.code).not.toContain(
+      'import Promo from "../components/Promo"',
+    );
+    expect(result.code).toContain('      <Hero {...content("hero-slot")} />');
+    expect(result.code).not.toContain("\n\n      <Hero");
+
+    const empty = removeThemeRouteSection(
+      result.code,
+      files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: result.code }
+          : file,
+      ),
+      "src/routes/index.tsx",
+      "hero-slot",
+    );
+    expect(empty.changed).toBe(true);
+    expect(empty.code).not.toContain('import Hero from "../components/Hero"');
+    expect(empty.code).toContain('import { content } from "../morph/content"');
+
+    const derivedEmpty = deriveThemeRouteSections(
+      files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: empty.code }
+          : file,
+      ),
+      "src/routes/index.tsx",
+    );
+    expect(derivedEmpty.sections).toEqual([]);
+    expect(derivedEmpty.hasContentImport).toBe(true);
+    expect(
+      mergeDocumentWithRouteSections(
+        {
+          version: 1,
+          sections: [
+            { id: "hero-slot", type: "hero", enabled: true, props: {} },
+          ],
+        },
+        derivedEmpty.sections,
+        { routeOwnsStructure: derivedEmpty.hasContentImport },
+      ).sections,
+    ).toEqual([]);
+  });
 });
 
 describe("addable section options", () => {
@@ -220,7 +282,12 @@ describe("routes that have not adopted slots", () => {
     const stored = {
       version: 1 as const,
       sections: [
-        { id: "starter-hero", type: "hero", enabled: true, props: { heading: "Stored" } },
+        {
+          id: "starter-hero",
+          type: "hero",
+          enabled: true,
+          props: { heading: "Stored" },
+        },
       ],
     };
 
@@ -231,7 +298,12 @@ describe("routes that have not adopted slots", () => {
     const stored = {
       version: 1 as const,
       sections: [
-        { id: "starter-hero", type: "hero", enabled: true, props: { heading: "Stored" } },
+        {
+          id: "starter-hero",
+          type: "hero",
+          enabled: true,
+          props: { heading: "Stored" },
+        },
         { id: "gone", type: "promo", enabled: true, props: {} },
       ],
     };
@@ -254,9 +326,18 @@ describe("routes that have not adopted slots", () => {
 
 describe("reorder validation", () => {
   const files = [
-    { path: "morph.theme.json", content: JSON.stringify({ components: {}, sections: {} }) },
-    { path: "src/components/Hero.tsx", content: "export default function Hero(){return null;}" },
-    { path: "src/components/Promo.tsx", content: "export default function Promo(){return null;}" },
+    {
+      path: "morph.theme.json",
+      content: JSON.stringify({ components: {}, sections: {} }),
+    },
+    {
+      path: "src/components/Hero.tsx",
+      content: "export default function Hero(){return null;}",
+    },
+    {
+      path: "src/components/Promo.tsx",
+      content: "export default function Promo(){return null;}",
+    },
   ];
   const route = `import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
@@ -276,10 +357,12 @@ function Home() {
   it("refuses an order that names one section twice", () => {
     // It passes every other check — same length, every id known, no duplicate
     // in the source — and would write the displaced section out of the route.
-    const result = reorderThemeRouteSections(route, all, "src/routes/index.tsx", [
-      "a",
-      "a",
-    ]);
+    const result = reorderThemeRouteSections(
+      route,
+      all,
+      "src/routes/index.tsx",
+      ["a", "a"],
+    );
 
     expect(result.changed).toBe(false);
     expect(result.diagnostic).toBeDefined();
@@ -287,23 +370,47 @@ function Home() {
   });
 
   it("reorders siblings without losing either", () => {
-    const result = reorderThemeRouteSections(route, all, "src/routes/index.tsx", [
-      "b",
-      "a",
-    ]);
+    const result = reorderThemeRouteSections(
+      route,
+      all,
+      "src/routes/index.tsx",
+      ["b", "a"],
+    );
 
     expect(result.changed).toBe(true);
     expect(
       [...result.code.matchAll(/content\("(\w)"\)/g)].map((m) => m[1]),
     ).toEqual(["b", "a"]);
   });
+
+  it("refuses to remove a section when the route source mapping is invalid", () => {
+    const result = removeThemeRouteSection(
+      route,
+      all,
+      "src/routes/index.tsx",
+      "missing",
+    );
+
+    expect(result.changed).toBe(false);
+    expect(result.diagnostic).toBeDefined();
+    expect(result.code).toBe(route);
+  });
 });
 
 describe("added section formatting", () => {
   const addFiles = [
-    { path: "morph.theme.json", content: JSON.stringify({ components: {}, sections: {} }) },
-    { path: "src/morph/content.ts", content: "export function content(){return {};}" },
-    { path: "src/components/Promo.tsx", content: "export default function Promo(){return null;}" },
+    {
+      path: "morph.theme.json",
+      content: JSON.stringify({ components: {}, sections: {} }),
+    },
+    {
+      path: "src/morph/content.ts",
+      content: "export function content(){return {};}",
+    },
+    {
+      path: "src/components/Promo.tsx",
+      content: "export default function Promo(){return null;}",
+    },
   ];
   const bare = `import { createFileRoute } from "@tanstack/react-router";
 export const Route = createFileRoute("/")({ component: Home });

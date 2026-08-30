@@ -20,6 +20,8 @@ export type ThemeRouteSection = Readonly<{
 export type ThemeRouteSectionResult = Readonly<{
   sections: readonly ThemeRouteSection[];
   diagnostics: readonly string[];
+  /** True when the route imports the Theme content contract, even if it has no slots yet. */
+  hasContentImport: boolean;
 }>;
 
 export type ThemeRouteSectionOption = Readonly<{
@@ -37,12 +39,15 @@ export type ThemeRouteSectionOption = Readonly<{
 export function mergeDocumentWithRouteSections(
   document: StorefrontPageDocument,
   routeSections: readonly ThemeRouteSection[],
+  options?: Readonly<{ routeOwnsStructure?: boolean }>,
 ): StorefrontPageDocument {
   // A route that declares no slots has not adopted route-owned structure, so
   // its stored sections stand. Returning nothing here would silently strip
   // every editable section from a Theme whose routes simply render components
   // directly — which is every Theme before it migrates.
-  if (routeSections.length === 0) return document;
+  if (routeSections.length === 0 && !options?.routeOwnsStructure) {
+    return document;
+  }
 
   const storedById = new Map(
     document.sections.map((section) => [section.id, section] as const),
@@ -102,7 +107,12 @@ function resolveLocalImport(
     const candidate = `${base}${extension}`;
     if (filePaths.has(candidate)) return candidate;
   }
-  for (const extension of ["/index.tsx", "/index.ts", "/index.jsx", "/index.js"] as const) {
+  for (const extension of [
+    "/index.tsx",
+    "/index.ts",
+    "/index.jsx",
+    "/index.js",
+  ] as const) {
     const candidate = `${base}${extension}`;
     if (filePaths.has(candidate)) return candidate;
   }
@@ -117,7 +127,10 @@ function kebabCase(value: string): string {
     .toLowerCase();
 }
 
-function sectionTypeFromRef(componentRef: string, componentName: string): string {
+function sectionTypeFromRef(
+  componentRef: string,
+  componentName: string,
+): string {
   if (!componentRef.startsWith("src/")) {
     const prefix = componentRef.split(".")[0]?.trim();
     if (prefix) return prefix;
@@ -126,8 +139,9 @@ function sectionTypeFromRef(componentRef: string, componentName: string): string
 }
 
 function readManifestContent(files: readonly ThemeSourceFile[]): string | null {
-  const content = files.find((file) => normalizePath(file.path) === "morph.theme.json")
-    ?.content;
+  const content = files.find(
+    (file) => normalizePath(file.path) === "morph.theme.json",
+  )?.content;
   return typeof content === "string" ? content : null;
 }
 
@@ -180,7 +194,12 @@ function jsxIdentifier(node: any): string | null {
 function parsePositionedSections(
   files: readonly ThemeSourceFile[],
   routeSourcePath: string,
-): { sections: PositionedSection[]; diagnostics: string[]; ast: any | null } {
+): {
+  sections: PositionedSection[];
+  diagnostics: string[];
+  ast: any | null;
+  hasContentImport: boolean;
+} {
   const normalizedRoutePath = normalizePath(routeSourcePath);
   const routeFile = files.find(
     (file) => normalizePath(file.path) === normalizedRoutePath,
@@ -190,6 +209,7 @@ function parsePositionedSections(
       sections: [],
       diagnostics: [`Theme route "${normalizedRoutePath}" is unavailable.`],
       ast: null,
+      hasContentImport: false,
     };
   }
 
@@ -206,6 +226,7 @@ function parsePositionedSections(
         `${normalizedRoutePath}: ${error instanceof Error ? error.message : "Invalid route source"}`,
       ],
       ast: null,
+      hasContentImport: false,
     };
   }
 
@@ -224,7 +245,7 @@ function parsePositionedSections(
       const imported =
         specifier.type === "ImportDefaultSpecifier"
           ? "default"
-          : specifier.imported?.name ?? specifier.imported?.value;
+          : (specifier.imported?.name ?? specifier.imported?.value);
       if (typeof imported === "string") {
         imports.set(specifier.local.name, { imported, sourcePath: resolved });
       }
@@ -243,6 +264,11 @@ function parsePositionedSections(
 
   const diagnostics: string[] = [];
   const sections: PositionedSection[] = [];
+  const hasContentImport = Array.from(imports.values()).some(
+    ({ imported, sourcePath }) =>
+      imported === "content" &&
+      normalizePath(sourcePath) === "src/morph/content.ts",
+  );
   const seenSlots = new Set<string>();
   walkWithParent(ast.program, null, (node, parent) => {
     const slotId = readSlotId(node);
@@ -283,7 +309,7 @@ function parsePositionedSections(
     });
   });
 
-  return { sections, diagnostics, ast };
+  return { sections, diagnostics, ast, hasContentImport };
 }
 
 /**
@@ -296,10 +322,11 @@ export function deriveThemeRouteSections(
 ): ThemeRouteSectionResult {
   const parsed = parsePositionedSections(files, routeSourcePath);
   return {
-    sections: parsed.sections.map(({ node: _node, parent: _parent, ...section }) =>
-      section,
+    sections: parsed.sections.map(
+      ({ node: _node, parent: _parent, ...section }) => section,
     ),
     diagnostics: parsed.diagnostics,
+    hasContentImport: parsed.hasContentImport,
   };
 }
 
@@ -320,7 +347,10 @@ function readRowComponentPaths(
     if (!componentRef.startsWith("src/")) continue;
     for (const definition of Object.values(capability.fields)) {
       if (definition.type !== "array" || !definition.of) continue;
-      const resolved = resolveRelativeComponentPath(componentRef, definition.of);
+      const resolved = resolveRelativeComponentPath(
+        componentRef,
+        definition.of,
+      );
       if (resolved) rowPaths.add(resolved);
     }
   }
@@ -438,17 +468,24 @@ export function reorderThemeRouteSections(
     return {
       code: source,
       changed: false,
-      diagnostic: "Only section components that are direct JSX siblings can be reordered.",
+      diagnostic:
+        "Only section components that are direct JSX siblings can be reordered.",
     };
   }
-  const sorted = [...parsed.sections].sort((a, b) => a.node.start - b.node.start);
+  const sorted = [...parsed.sections].sort(
+    (a, b) => a.node.start - b.node.start,
+  );
   for (let index = 0; index < sorted.length - 1; index += 1) {
-    const between = source.slice(sorted[index]!.node.end, sorted[index + 1]!.node.start);
+    const between = source.slice(
+      sorted[index]!.node.end,
+      sorted[index + 1]!.node.start,
+    );
     if (!/^\s*$/.test(between)) {
       return {
         code: source,
         changed: false,
-        diagnostic: "Comments or expressions between route sections must be moved in Code mode.",
+        diagnostic:
+          "Comments or expressions between route sections must be moved in Code mode.",
       };
     }
   }
@@ -462,7 +499,9 @@ export function reorderThemeRouteSections(
       source.slice(section.node.start, section.node.end),
     ]),
   );
-  const replacement = orderedSlotIds.map((id) => snippets.get(id)!).join(separator);
+  const replacement = orderedSlotIds
+    .map((id) => snippets.get(id)!)
+    .join(separator);
   const first = sorted[0]!;
   const last = sorted[sorted.length - 1]!;
   return {
@@ -471,9 +510,234 @@ export function reorderThemeRouteSections(
   };
 }
 
+/** Removes one route-owned section while preserving the surrounding source. */
+export function removeThemeRouteSection(
+  source: string,
+  files: readonly ThemeSourceFile[],
+  routeSourcePath: string,
+  slotId: string,
+): { code: string; changed: boolean; diagnostic?: string } {
+  if (!isValidThemeContentSlotId(slotId)) {
+    return {
+      code: source,
+      changed: false,
+      diagnostic: "Invalid content slot id.",
+    };
+  }
+
+  const normalizedRoutePath = normalizePath(routeSourcePath);
+  const sourceFiles = files.map((file) =>
+    normalizePath(file.path) === normalizedRoutePath
+      ? { ...file, content: source }
+      : file,
+  );
+  const parsed = parsePositionedSections(sourceFiles, normalizedRoutePath);
+  if (parsed.diagnostics.length > 0) {
+    return {
+      code: source,
+      changed: false,
+      diagnostic: parsed.diagnostics[0],
+    };
+  }
+
+  const section = parsed.sections.find(
+    (candidate) => candidate.slotId === slotId,
+  );
+  if (!section) {
+    return {
+      code: source,
+      changed: false,
+      diagnostic: `Section "${slotId}" no longer exists in the route source.`,
+    };
+  }
+  if (
+    !section.parent ||
+    (section.parent.type !== "JSXElement" &&
+      section.parent.type !== "JSXFragment") ||
+    !Array.isArray(section.parent.children) ||
+    !section.parent.children.includes(section.node)
+  ) {
+    return {
+      code: source,
+      changed: false,
+      diagnostic:
+        "Only sections that are direct JSX children can be removed from the tree.",
+    };
+  }
+
+  const start = section.node.start;
+  const end = section.node.end;
+  if (
+    typeof start !== "number" ||
+    typeof end !== "number" ||
+    start < 0 ||
+    end <= start
+  ) {
+    return {
+      code: source,
+      changed: false,
+      diagnostic: "The section source range is unavailable.",
+    };
+  }
+
+  // When the section occupies a complete line, remove its indentation and
+  // trailing newline too. This avoids leaving a blank row in the authored
+  // route while still preserving inline JSX and comments exactly as written.
+  const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+  const lineEnd = source.indexOf("\n", end);
+  const before = source.slice(lineStart, start);
+  const after = source.slice(end, lineEnd < 0 ? source.length : lineEnd);
+  const isOwnLine = before.trim() === "" && after.trim() === "";
+  const removeStart = isOwnLine ? lineStart : start;
+  const removeEnd = isOwnLine
+    ? lineEnd < 0
+      ? source.length
+      : lineEnd + 1
+    : end;
+
+  const withoutSection = replaceRange(source, removeStart, removeEnd, "");
+  return {
+    code: removeUnusedLocalImport(
+      withoutSection,
+      files,
+      normalizedRoutePath,
+      section.componentName,
+      section.componentSourcePath,
+    ),
+    changed: true,
+  };
+}
+
+/**
+ * A route component import becomes unused when its only JSX occurrence was
+ * removed. Keep the generated route type-safe by removing that import too,
+ * but only after parsing the edited source and proving there are no remaining
+ * references to the same local binding.
+ */
+function removeUnusedLocalImport(
+  source: string,
+  files: readonly ThemeSourceFile[],
+  routeSourcePath: string,
+  localName: string,
+  componentSourcePath: string,
+): string {
+  let ast: any;
+  try {
+    ast = parse(source, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+  } catch {
+    return source;
+  }
+
+  const filePaths = new Set(files.map((file) => normalizePath(file.path)));
+  const normalizedComponentPath = normalizePath(componentSourcePath);
+  const declaration = (ast.program.body ?? []).find(
+    (statement: any) =>
+      statement?.type === "ImportDeclaration" &&
+      resolveLocalImport(
+        normalizePath(routeSourcePath),
+        statement.source?.value ?? "",
+        filePaths,
+      ) === normalizedComponentPath &&
+      statement.specifiers?.some(
+        (specifier: any) => specifier.local?.name === localName,
+      ),
+  );
+  if (!declaration) return source;
+
+  const specifier = declaration.specifiers.find(
+    (candidate: any) => candidate.local?.name === localName,
+  );
+  if (!specifier) return source;
+
+  let hasReference = false;
+  walkWithParent(ast.program, null, (node, parent) => {
+    if (
+      hasReference ||
+      (node.type !== "Identifier" && node.type !== "JSXIdentifier") ||
+      node.name !== localName ||
+      parent?.type?.startsWith("Import")
+    ) {
+      return;
+    }
+    hasReference = true;
+  });
+  if (hasReference) return source;
+
+  const specifiers = declaration.specifiers as any[];
+  const specifierIndex = specifiers.indexOf(specifier);
+  const start = specifier.start;
+  const end = specifier.end;
+  if (typeof start !== "number" || typeof end !== "number") return source;
+
+  if (specifiers.length === 1) {
+    const lineStart = source.lastIndexOf("\n", declaration.start - 1) + 1;
+    const lineEnd = source.indexOf("\n", declaration.end);
+    const before = source.slice(lineStart, declaration.start);
+    const after = source.slice(
+      declaration.end,
+      lineEnd < 0 ? source.length : lineEnd,
+    );
+    const ownLine = before.trim() === "" && after.trim() === "";
+    return replaceRange(
+      source,
+      ownLine ? lineStart : declaration.start,
+      ownLine ? (lineEnd < 0 ? source.length : lineEnd + 1) : declaration.end,
+      "",
+    );
+  }
+
+  if (specifier.type === "ImportSpecifier") {
+    const namedSpecifiers = specifiers.filter(
+      (candidate) => candidate.type === "ImportSpecifier",
+    );
+    if (namedSpecifiers.length === 1) {
+      const openBrace = source.lastIndexOf("{", start);
+      const closeBrace = source.indexOf("}", end);
+      if (openBrace >= declaration.start && closeBrace > end) {
+        const preceding = source.slice(declaration.start, openBrace);
+        const comma = preceding.lastIndexOf(",");
+        return replaceRange(
+          source,
+          comma >= 0 ? comma : openBrace,
+          closeBrace + 1,
+          "",
+        );
+      }
+    }
+    const nextNamed = namedSpecifiers.find(
+      (candidate) => candidate.start > start,
+    );
+    const previousNamed = [...namedSpecifiers]
+      .reverse()
+      .find((candidate) => candidate.end < end);
+    return nextNamed
+      ? replaceRange(source, start, nextNamed.start, "")
+      : previousNamed
+        ? replaceRange(source, previousNamed.end, end, "")
+        : source;
+  }
+
+  // Removing a default/namespace binding while keeping named imports should
+  // preserve the named import braces (`import { Other } from ...`).
+  const openBrace = source.indexOf("{", end);
+  if (openBrace >= end && openBrace < declaration.end) {
+    return replaceRange(source, start, openBrace, "");
+  }
+  const nextSpecifier = specifiers[specifierIndex + 1];
+  return nextSpecifier
+    ? replaceRange(source, start, nextSpecifier.start, "")
+    : source;
+}
+
 function relativeImport(fromPath: string, targetPath: string): string {
   const from = dirname(fromPath).split("/").filter(Boolean);
-  const target = targetPath.replace(/\.(?:tsx?|jsx?)$/, "").split("/").filter(Boolean);
+  const target = targetPath
+    .replace(/\.(?:tsx?|jsx?)$/, "")
+    .split("/")
+    .filter(Boolean);
   while (from.length && target.length && from[0] === target[0]) {
     from.shift();
     target.shift();
@@ -491,7 +755,11 @@ export function addThemeRouteSection(args: {
   slotId: string;
 }): { code: string; changed: boolean; diagnostic?: string } {
   if (!isValidThemeContentSlotId(args.slotId)) {
-    return { code: args.source, changed: false, diagnostic: "Invalid content slot id." };
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: "Invalid content slot id.",
+    };
   }
   const normalizedRoutePath = normalizePath(args.routeSourcePath);
   const sourceFiles = args.files.map((file) =>
@@ -501,7 +769,11 @@ export function addThemeRouteSection(args: {
   );
   const current = parsePositionedSections(sourceFiles, normalizedRoutePath);
   if (current.sections.some((section) => section.slotId === args.slotId)) {
-    return { code: args.source, changed: false, diagnostic: "That content slot already exists." };
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: "That content slot already exists.",
+    };
   }
   let ast: any;
   try {
@@ -513,17 +785,21 @@ export function addThemeRouteSection(args: {
     return {
       code: args.source,
       changed: false,
-      diagnostic: error instanceof Error ? error.message : "Invalid route source",
+      diagnostic:
+        error instanceof Error ? error.message : "Invalid route source",
     };
   }
 
   const usedNames = new Set<string>();
-  const filePaths = new Set(sourceFiles.map((file) => normalizePath(file.path)));
+  const filePaths = new Set(
+    sourceFiles.map((file) => normalizePath(file.path)),
+  );
   let existingComponentName: string | null = null;
   for (const statement of ast.program.body ?? []) {
     if (statement.type === "ImportDeclaration") {
       for (const specifier of statement.specifiers ?? []) {
-        if (specifier.local?.type === "Identifier") usedNames.add(specifier.local.name);
+        if (specifier.local?.type === "Identifier")
+          usedNames.add(specifier.local.name);
       }
       if (
         resolveLocalImport(
@@ -558,12 +834,14 @@ export function addThemeRouteSection(args: {
     return {
       code: args.source,
       changed: false,
-      diagnostic: "The route must return a JSX container before a section can be added.",
+      diagnostic:
+        "The route must return a JSX container before a section can be added.",
     };
   }
 
   const lineStart = args.source.lastIndexOf("\n", closeStart - 1) + 1;
-  const closingIndent = args.source.slice(lineStart, closeStart).match(/^\s*/)?.[0] ?? "";
+  const closingIndent =
+    args.source.slice(lineStart, closeStart).match(/^\s*/)?.[0] ?? "";
   const childIndent = `${closingIndent}  `;
   // Inserted as a whole line above the closing tag rather than at the tag's
   // own offset: appending there leaves the new element sharing a line with
@@ -606,7 +884,12 @@ export function addThemeRouteSection(args: {
       .reverse()
       .find((statement: any) => statement.type === "ImportDeclaration");
     const insertAt = typeof lastImport?.end === "number" ? lastImport.end : 0;
-    code = replaceRange(code, insertAt, insertAt, `${insertAt ? "\n" : ""}${imports.join("\n")}`);
+    code = replaceRange(
+      code,
+      insertAt,
+      insertAt,
+      `${insertAt ? "\n" : ""}${imports.join("\n")}`,
+    );
   }
   return { code, changed: true };
 }

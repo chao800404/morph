@@ -16,6 +16,7 @@ import {
   deriveThemeRouteSections,
   listThemeRouteSectionOptions,
   mergeDocumentWithRouteSections,
+  removeThemeRouteSection,
   reorderThemeRouteSections,
   type ThemeRouteSectionOption,
 } from "@/lib/storefront/compiler/theme-route-sections";
@@ -102,8 +103,10 @@ import {
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
   patchElementClassNameResult,
+  removeJsxElement,
   swapSiblingMorphNodes,
 } from "@/lib/storefront/ast/theme-ast-transformer";
+import { sourceLocationKey } from "@/lib/storefront/ast/element-target";
 import {
   hasInlineTextDocumentTarget,
   isInlineTextEditCandidate,
@@ -133,6 +136,7 @@ import {
   removeLegacyThemeInstanceStyleImport,
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
+import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
   toWorkspaceKey,
   useThemeWorkspaceStore,
@@ -149,7 +153,10 @@ import { resolveCodeSelectionTarget } from "./editor-code-selection";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { EditorPathNavigator } from "./editor-path-navigator";
 import { EditorReleaseHistoryDialog } from "./editor-release-history";
-import { EditorSectionsPanel } from "./editor-sections-panel";
+import {
+  EditorSectionsPanel,
+  type EditorEditableNodeDeleteResult,
+} from "./editor-sections-panel";
 import type { InspectorPropsChangeOptions } from "./editor-style-inspector";
 import { resolveStylesSelectionTransition } from "./editor-styles-selection-mode";
 import { resolveEditorTemplate } from "./editor-template";
@@ -1142,18 +1149,25 @@ export function VisualEditorShell({
       ) ?? null
     );
   }, [activeTemplate, themeRouteRegistry.routes]);
-  const activeRouteSections = useMemo(
+  const activeRouteStructure = useMemo(
     () =>
       activeThemeRoute
         ? deriveThemeRouteSections(
             effectiveThemeFiles,
             activeThemeRoute.sourcePath,
-          ).sections
-        : [],
+          )
+        : { sections: [], diagnostics: [], hasContentImport: false },
     [activeThemeRoute, effectiveThemeFiles],
   );
+  const activeRouteSections = activeRouteStructure.sections;
   const routeBackedContext = useMemo<StorefrontThemeEditorDTO>(() => {
-    if (!activeTemplate || activeRouteSections.length === 0) return context;
+    if (
+      !activeTemplate ||
+      (activeRouteSections.length === 0 &&
+        !activeRouteStructure.hasContentImport)
+    ) {
+      return context;
+    }
     return {
       ...context,
       templates: context.templates.map((template) =>
@@ -1163,12 +1177,18 @@ export function VisualEditorShell({
               document: mergeDocumentWithRouteSections(
                 template.document,
                 activeRouteSections,
+                { routeOwnsStructure: activeRouteStructure.hasContentImport },
               ),
             }
           : template,
       ),
     };
-  }, [activeRouteSections, activeTemplate, context]);
+  }, [
+    activeRouteSections,
+    activeRouteStructure.hasContentImport,
+    activeTemplate,
+    context,
+  ]);
   const routeSectionOptions = useMemo(
     () => listThemeRouteSectionOptions(effectiveThemeFiles),
     [effectiveThemeFiles],
@@ -1314,12 +1334,18 @@ export function VisualEditorShell({
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<
-    (options?: { shrinkToFloor?: boolean }) => void
+    (options?: {
+      shrinkToFloor?: boolean;
+      preserveCanvasPosition?: boolean;
+    }) => void
   >(() => {});
   const postPreviewThemeFiles = useCallback(
     (
       files: Array<{ path: string; content: string }>,
-      options?: { renderDocument?: boolean },
+      options?: {
+        renderDocument?: boolean;
+        preserveCanvasPosition?: boolean;
+      },
     ) => {
       const styleRevision = latestStyleRevisionRef.current + 1;
       latestStyleRevisionRef.current = styleRevision;
@@ -1336,6 +1362,7 @@ export function VisualEditorShell({
         // must not first collapse the frame to the viewport floor, otherwise
         // the canvas shows a black gap until the iframe reports its new size.
         shrinkToFloor: options?.renderDocument !== false,
+        preserveCanvasPosition: options?.preserveCanvasPosition,
       });
       return styleRevision;
     },
@@ -1653,7 +1680,10 @@ export function VisualEditorShell({
     | ((
         filePath: string,
         content: string,
-        options?: { fromHistory?: boolean },
+        options?: {
+          fromHistory?: boolean;
+          preserveCanvasPosition?: boolean;
+        },
       ) => Promise<unknown>)
     | null
   >(null);
@@ -1662,7 +1692,10 @@ export function VisualEditorShell({
     async (
       filePath: string,
       content: string,
-      options?: { fromHistory?: boolean },
+      options?: {
+        fromHistory?: boolean;
+        preserveCanvasPosition?: boolean;
+      },
     ) => {
       // Recorded here rather than at each call site: reordering siblings,
       // reordering sections, adding one and saving in Code mode all write a
@@ -1705,6 +1738,7 @@ export function VisualEditorShell({
                 workspaceScope.themeId,
               )[file.path]?.localContent ?? file.content,
         })),
+        { preserveCanvasPosition: options?.preserveCanvasPosition },
       );
 
       const nextRevision = (fileRevisionRef.current.get(opKey) ?? 0) + 1;
@@ -2501,6 +2535,13 @@ export function VisualEditorShell({
   const previewRemeasureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  // Structural edits briefly measure the iframe from a viewport-sized floor.
+  // Keep that temporary height from clamping the user's current canvas
+  // position; the real iframe measurement still performs the final clamp.
+  const previewFloorMeasurementRef = useRef<{
+    key: string;
+    height: number;
+  } | null>(null);
   const previewKeyRef = useRef(previewKey);
   useEffect(() => {
     previewKeyRef.current = previewKey;
@@ -2610,7 +2651,13 @@ export function VisualEditorShell({
   // the number the content's own height rather than a confirmation of the
   // height it was given.
   const schedulePreviewRemeasure = useCallback(
-    (options?: { shrinkToFloor?: boolean }) => {
+    (options?: {
+      shrinkToFloor?: boolean;
+      preserveCanvasPosition?: boolean;
+    }) => {
+      if (!options?.preserveCanvasPosition) {
+        previewFloorMeasurementRef.current = null;
+      }
       if (previewRemeasureTimerRef.current) {
         clearTimeout(previewRemeasureTimerRef.current);
       }
@@ -2626,6 +2673,9 @@ export function VisualEditorShell({
           ),
         );
         if (options?.shrinkToFloor !== false) {
+          previewFloorMeasurementRef.current = options?.preserveCanvasPosition
+            ? { key, height: floor }
+            : null;
           setPreviewContentSize((current) =>
             current?.key === key && current.height <= floor
               ? current
@@ -2695,6 +2745,16 @@ export function VisualEditorShell({
 
   useEffect(() => {
     previewFrameHeightRef.current = previewFrameHeight;
+    const pendingFloorMeasurement = previewFloorMeasurementRef.current;
+    if (
+      pendingFloorMeasurement?.key === previewKey &&
+      pendingFloorMeasurement.height === previewFrameHeight
+    ) {
+      return;
+    }
+    if (pendingFloorMeasurement?.key === previewKey) {
+      previewFloorMeasurementRef.current = null;
+    }
     if (activeCommentThreadId) {
       const activeThread = commentThreads.find(
         (t) => t.id === activeCommentThreadId,
@@ -2707,6 +2767,7 @@ export function VisualEditorShell({
     scheduleCanvasTransform((current) => current);
   }, [
     previewFrameHeight,
+    previewKey,
     activeCommentThreadId,
     commentThreads,
     centerCanvasOnThread,
@@ -2793,6 +2854,9 @@ export function VisualEditorShell({
       if (message?.type !== "morph:storefront-preview-size") return;
 
       const height = Math.min(30_000, Math.max(320, Math.ceil(message.height)));
+      // A size response after the floor write is the real measurement, even
+      // when the content happens to be exactly floor-sized.
+      previewFloorMeasurementRef.current = null;
       setPreviewContentSize((current) =>
         current?.key === previewKey && Math.abs(current.height - height) < 1
           ? current
@@ -3058,6 +3122,186 @@ export function VisualEditorShell({
       }
     },
     [nextPreviewSelectionRevision, onSearchChange, search.section],
+  );
+
+  const handleDeleteEditableNode = useCallback(
+    async (
+      node: PreviewEditableNode,
+    ): Promise<EditorEditableNodeDeleteResult> => {
+      reportAuthenticatedUserActivity();
+
+      if (node.target.isSection) {
+        return {
+          success: false,
+          message: "Sections are managed from the page structure tree.",
+        };
+      }
+
+      // A repeated runtime item is rendered from one shared JSX node. Deleting
+      // it from the source would silently remove every item, so keep this
+      // destructive action bounded to the shared, non-repeated component tree.
+      if (
+        node.target.fieldPath?.split(".").some((part) => /^\d+$/.test(part))
+      ) {
+        return {
+          success: false,
+          message:
+            "Repeated items cannot be deleted from one preview row. Use Code mode to remove the shared component safely.",
+        };
+      }
+
+      const sourceLocation = parseThemeSourceLocation(
+        node.target.sourceLocation,
+      );
+      const filePath = sourceLocation?.filePath ?? null;
+      const targetKey =
+        node.target.nodeId ?? sourceLocationKey(node.target.sourceLocation);
+      if (!filePath || !targetKey) {
+        return {
+          success: false,
+          message:
+            "This element has no stable source mapping. Open Code mode to remove it safely.",
+        };
+      }
+
+      const sourceFile = effectiveThemeFiles.find(
+        (file) => file.path === filePath,
+      );
+      const currentSource =
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath]?.localContent ?? sourceFile?.content;
+      if (!sourceFile || currentSource === undefined) {
+        return {
+          success: false,
+          message: `The source file ${filePath} is unavailable.`,
+        };
+      }
+
+      const result = removeJsxElement(currentSource, targetKey);
+      if (!result.editable) {
+        const message =
+          result.reason === "parse-error"
+            ? `Cannot delete from ${filePath}: fix its TSX syntax in Code mode first.`
+            : result.reason === "not-direct-child"
+              ? "This element is inside a dynamic expression and cannot be removed safely from the tree."
+              : "This element no longer maps to one unique source node. Refresh the preview and try again.";
+        return { success: false, message };
+      }
+
+      try {
+        const saved = await handleUnifiedSaveFile(filePath, result.code, {
+          preserveCanvasPosition: true,
+        });
+        if (saved === null) {
+          return {
+            success: false,
+            message: `Could not delete from ${filePath} because the source changed remotely.`,
+          };
+        }
+      } catch (error) {
+        return {
+          success: false,
+          message:
+            error instanceof Error
+              ? error.message
+              : `Failed to delete from ${filePath}.`,
+        };
+      }
+
+      lastPreviewSelectionRef.current = null;
+      setActiveSelection(null);
+      setActiveComputedStyleRevision(0);
+      return { success: true };
+    },
+    [effectiveThemeFiles, handleUnifiedSaveFile, workspaceScope],
+  );
+
+  const handleDeleteSection = useCallback(
+    async (sectionId: string): Promise<EditorEditableNodeDeleteResult> => {
+      reportAuthenticatedUserActivity();
+
+      if (!activeThemeRoute) {
+        return {
+          success: false,
+          message: "The active template has no source-authored route.",
+        };
+      }
+      if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+
+      const routeFile = effectiveThemeFiles.find(
+        (file) => file.path === activeThemeRoute.sourcePath,
+      );
+      if (!routeFile) {
+        return {
+          success: false,
+          message: "The active route source is unavailable.",
+        };
+      }
+
+      const result = removeThemeRouteSection(
+        routeFile.content,
+        effectiveThemeFiles,
+        activeThemeRoute.sourcePath,
+        sectionId,
+      );
+      if (result.diagnostic) {
+        return { success: false, message: result.diagnostic };
+      }
+      if (!result.changed) {
+        return {
+          success: false,
+          message: `Section "${sectionId}" could not be removed from the route source.`,
+        };
+      }
+
+      try {
+        const saved = await handleUnifiedSaveFile(
+          activeThemeRoute.sourcePath,
+          result.code,
+          { preserveCanvasPosition: true },
+        );
+        if (saved === null) {
+          return {
+            success: false,
+            message:
+              "Could not delete the section because the source changed remotely.",
+          };
+        }
+      } catch (error) {
+        return {
+          success: false,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Failed to delete the section from the route source.",
+        };
+      }
+
+      if (search.section === sectionId) {
+        const nextSectionId = activeRouteSections.find(
+          (section) => section.slotId !== sectionId,
+        )?.slotId;
+        onSearchChange({ section: nextSectionId ?? "" });
+      }
+      lastPreviewSelectionRef.current = null;
+      setActiveSelection(null);
+      setActiveComputedStyleRevision(0);
+      return { success: true };
+    },
+    [
+      activeRouteSections,
+      activeTemplate,
+      activeThemeRoute,
+      effectiveThemeFiles,
+      flushTemplatePendingProps,
+      handleUnifiedSaveFile,
+      onSearchChange,
+      search.section,
+    ],
   );
 
   const syncPreviewSectionOrder = useCallback((sectionIds: string[]) => {
@@ -4269,12 +4513,10 @@ export function VisualEditorShell({
       data-morph-editor
       className="grid h-svh min-h-0 grid-rows-[3.5rem_minmax(0,1fr)] bg-background"
     >
-      {/* The controls size to their content and the storefront name absorbs
-          what is left over. Giving the two outer columns an equal share instead
-          meant the right-hand group was handed less width than its buttons
-          need, and it overflowed leftwards — printing the save status on top of
-          the mode switch. */}
-      <header className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 border-b bg-component px-3 lg:px-4">
+      {/* Keep the canvas controls in a dedicated auto-sized center track with
+          equal flexible gutters. The storefront name stays left and the save
+          and publish actions stay right without shifting the center controls. */}
+      <header className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b bg-component px-3 lg:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="ghost" size="icon" asChild>
             <Link
@@ -4294,7 +4536,7 @@ export function VisualEditorShell({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 justify-self-center">
           <div className="flex h-9 items-center rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm">
             <div
               role="group"
@@ -4658,6 +4900,8 @@ export function VisualEditorShell({
           }
           onDirtyFilesChange={setMonacoDirtyFiles}
           onSaveFile={handleUnifiedSaveFile}
+          onBuildPreview={handleBuildPreview}
+          externalDiagnostics={buildDiagnostics}
         />
       </EditorModeSurface>
 
@@ -4689,6 +4933,12 @@ export function VisualEditorShell({
           onOpenThemeRoute={(route) => handleJumpToCode(route.sourcePath, 1, 1)}
           sectionOptions={routeSectionOptions}
           onAddSection={activeThemeRoute ? handleAddSection : undefined}
+          onDeleteSection={
+            activeThemeRoute && activeRouteSections.length > 0
+              ? handleDeleteSection
+              : undefined
+          }
+          onDeleteEditableNode={handleDeleteEditableNode}
         />
 
         {/* Left Panel Resizer */}

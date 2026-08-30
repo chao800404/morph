@@ -5,6 +5,11 @@
  * worker. Keep additions aligned with the compiler allowlist and pinned
  * Theme toolchain instead of exposing arbitrary package names.
  */
+import {
+  GENERATED_THEME_PACKAGE_DECLARATIONS,
+  GENERATED_THEME_PACKAGE_NAMES,
+} from "./editor-code-package-types.generated";
+
 export type ThemePackageTypeManifest = {
   readonly values: readonly string[];
   readonly types: readonly string[];
@@ -42,6 +47,20 @@ const TANSTACK_REACT_ROUTER_VALUES = [
 const TANSTACK_REACT_START_VALUES = [
   "Hydrate", "HydrateOptions", "HydrateProps", "HydrationInteractionEvent", "HydrationInteractionEvents", "HydrationPrefetchStrategy", "HydrationStrategy", "HydrationWhen", "createClientOnlyFn", "createCsrfMiddleware", "createIsomorphicFn", "createMiddleware",
   "createServerFn", "createServerOnlyFn", "createStart", "useServerFn",
+] as const;
+
+const TANSTACK_REACT_START_SERVER_VALUES = [
+  "getRequest", "getRequestHeaders", "getRequestHeader", "getRequestIP",
+  "getRequestHost", "getRequestUrl", "getRequestProtocol", "setResponseHeaders",
+  "getResponseHeaders", "getResponseHeader", "setResponseHeader",
+  "removeResponseHeader", "clearResponseHeaders", "getResponseStatus",
+  "setResponseStatus", "getCookies", "getCookie", "setCookie", "deleteCookie",
+  "useSession", "getSession", "updateSession", "sealSession", "unsealSession",
+  "clearSession", "getResponse", "getValidatedQuery",
+] as const;
+
+const TANSTACK_REACT_START_SERVER_TYPES = [
+  "RequestHeaderName", "ResponseHeaderName",
 ] as const;
 
 const LUCIDE_REACT_VALUES = [
@@ -588,6 +607,7 @@ const CLSX_TYPES = [
 const PACKAGE_MODULE_ALIASES: Readonly<Record<string, readonly string[]>> = {
   react: ["react", "react/jsx-runtime", "react/jsx-dev-runtime"],
   "react-dom": ["react-dom", "react-dom/client"],
+  "@tanstack/react-start": ["@tanstack/react-start", "@tanstack/react-start/server"],
 };
 
 const BASE_DECLARED_EXPORTS: Readonly<Record<string, {
@@ -611,6 +631,10 @@ const BASE_DECLARED_EXPORTS: Readonly<Record<string, {
   "@tanstack/react-start": {
     values: new Set(["createServerFn"]),
     types: new Set(["ServerFnBuilder", "ServerFnOptions"]),
+  },
+  "@tanstack/react-start/server": {
+    values: new Set(),
+    types: new Set(),
   },
 };
 const TYPE_ONLY_EXPORTS: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -636,6 +660,7 @@ const TYPE_ONLY_EXPORTS: Readonly<Record<string, ReadonlySet<string>>> = {
   "@tanstack/react-start": new Set([
     "HydrateOptions", "HydrateProps", "HydrationInteractionEvent", "HydrationInteractionEvents", "HydrationPrefetchStrategy", "HydrationStrategy", "HydrationWhen",
   ]),
+  "@tanstack/react-start/server": new Set(),
   "tailwind-merge": new Set([
     "ClassNameValue", "ClassValidator", "Config", "ConfigExtension", "DefaultClassGroupIds", "DefaultThemeGroupIds", "ExperimentalParseClassNameParam", "ExperimentalParsedClassName",
   ]),
@@ -697,6 +722,8 @@ const RICH_TYPE_DECLARATIONS: Readonly<
       "export type NavigateOptions = { to?: string; from?: string; params?: Record<string, unknown>; search?: unknown; hash?: string; state?: unknown; replace?: boolean; resetScroll?: boolean; startTransition?: boolean; viewTransition?: boolean; reloadDocument?: boolean; };",
     RouterProps:
       "export type RouterProps = { router: unknown; context?: Record<string, unknown>; routeTree?: unknown; defaultPreload?: boolean | 'intent' | 'viewport' | 'render'; defaultPreloadDelay?: number; basepath?: string; };",
+    Register:
+      "export interface Register {}",
     ScrollRestorationOptions:
       "export type ScrollRestorationOptions = { getKey?: (location: unknown) => string; };",
   },
@@ -713,6 +740,18 @@ const RICH_TYPE_DECLARATIONS: Readonly<
       "export type HydrateOptions = { when: HydrationWhen; fallback?: unknown; onHydrated?: () => void; prefetch?: HydrationPrefetchStrategy | HydrationPrefetchFunction; split?: boolean; };",
     HydrateProps:
       "export type HydrateProps = HydrateOptions & { children: unknown; };",
+    IsomorphicFn:
+      "export type IsomorphicFn<TArgs extends unknown[] = [], TServer = undefined, TClient = undefined> = (...args: TArgs) => TServer | TClient;",
+    ServerOnlyFn:
+      "export type ServerOnlyFn<TArgs extends unknown[], TServer> = IsomorphicFn<TArgs, TServer> & { client: <TClient>(clientImpl: (...args: TArgs) => TClient) => IsomorphicFn<TArgs, TServer, TClient>; };",
+    ClientOnlyFn:
+      "export type ClientOnlyFn<TArgs extends unknown[], TClient> = IsomorphicFn<TArgs, undefined, TClient> & { server: <TServer>(serverImpl: (...args: TArgs) => TServer) => IsomorphicFn<TArgs, TServer, TClient>; };",
+    IsomorphicFnBase:
+      "export type IsomorphicFnBase = { server: <TArgs extends unknown[], TServer>(serverImpl: (...args: TArgs) => TServer) => ServerOnlyFn<TArgs, TServer>; client: <TArgs extends unknown[], TClient>(clientImpl: (...args: TArgs) => TClient) => ClientOnlyFn<TArgs, TClient>; };",
+  },
+  "@tanstack/react-start/server": {
+    RequestHeaderName: "export type RequestHeaderName = string;",
+    ResponseHeaderName: "export type ResponseHeaderName = string;",
   },
   "lucide-react": {
     IconNode:
@@ -760,6 +799,8 @@ const RICH_TYPE_DECLARATIONS: Readonly<
       "export type SVGAttributes<T = unknown> = HTMLAttributes<T> & { viewBox?: string; width?: string | number; height?: string | number; fill?: string; stroke?: string; strokeWidth?: string | number; };",
     TextareaHTMLAttributes:
       "export type TextareaHTMLAttributes<T = unknown> = HTMLAttributes<T> & { value?: string | number; defaultValue?: string | number; placeholder?: string; rows?: number; cols?: number; disabled?: boolean; readOnly?: boolean; required?: boolean; onChange?: (event: unknown) => void; };",
+    Context:
+      "export type Context<T> = { Provider: (props: { value: T; children?: ReactNode }) => ReactElement; Consumer: (props: { children: (value: T) => ReactNode }) => ReactElement; _currentValue?: T; };",
   },
 };
 
@@ -774,6 +815,16 @@ const RICH_VALUE_TYPES: Readonly<
     Link: "(props: LinkProps) => JSX.Element",
     Navigate: "(props: NavigateOptions) => JSX.Element",
     ScrollRestoration: "(props: ScrollRestorationOptions) => JSX.Element",
+    createRootRoute:
+      "<TOptions extends RouteAuthoringOptions = RouteAuthoringOptions>(options?: TOptions) => ThemeRoute<RouteContextFromOptions<TOptions>>",
+    createRootRouteWithContext:
+      "<TContext extends Record<string, unknown> = Record<string, unknown>>() => <TOptions extends RouteAuthoringOptions<TContext> = RouteAuthoringOptions<TContext>>(options?: TOptions) => ThemeRoute<TContext & RouteContextFromOptions<TOptions>>",
+    createFileRoute:
+      "<TPath extends string>(path?: TPath) => <TOptions extends RouteAuthoringOptions = RouteAuthoringOptions>(options?: TOptions) => ThemeRoute<RouteContextFromOptions<TOptions>>",
+    createRoute:
+      "<TOptions extends RouteAuthoringOptions = RouteAuthoringOptions>(options?: TOptions) => ThemeRoute<RouteContextFromOptions<TOptions>>",
+    createRouter:
+      "<TOptions extends RouterOptions>(options: TOptions) => ThemeRouter<TOptions['routeTree']>",
     linkOptions: "<T extends LinkOptions>(options: T) => T",
     useLinkProps: "(options: LinkOptions, forwardedRef?: unknown) => LinkElementProps",
     useNavigate:
@@ -782,6 +833,47 @@ const RICH_VALUE_TYPES: Readonly<
   "@tanstack/react-start": {
     Hydrate: "(props: HydrateProps) => JSX.Element",
     createServerFn: "(options?: ServerFnOptions) => ServerFnBuilder",
+    createIsomorphicFn: "() => IsomorphicFnBase",
+  },
+  "@tanstack/react-start/server": {
+    getRequest: "() => Request",
+    getRequestHeaders: "() => Headers",
+    getRequestHeader: "(name: RequestHeaderName) => string | undefined",
+    getRequestIP: "(opts?: { xForwardedFor?: boolean }) => string | undefined",
+    getRequestHost: "(opts?: { xForwardedHost?: boolean }) => string",
+    getRequestUrl:
+      "(opts?: { xForwardedHost?: boolean; xForwardedProto?: boolean }) => URL",
+    getRequestProtocol: "(opts?: { xForwardedProto?: boolean }) => string",
+    setResponseHeaders: "(headers: Headers) => void",
+    getResponseHeaders: "() => Headers",
+    getResponseHeader: "(name: ResponseHeaderName) => string | undefined",
+    setResponseHeader:
+      "(name: ResponseHeaderName, value: string | string[]) => void",
+    removeResponseHeader: "(name: ResponseHeaderName) => void",
+    clearResponseHeaders: "(headerNames?: string[]) => void",
+    getResponseStatus: "() => number",
+    setResponseStatus: "(code?: number, text?: string) => void",
+    getCookies: "() => Record<string, string>",
+    getCookie: "(name: string) => string | undefined",
+    setCookie:
+      "(name: string, value: string, options?: Record<string, unknown>) => void",
+    deleteCookie:
+      "(name: string, options?: Record<string, unknown>) => void",
+    useSession:
+      "<TSessionData extends Record<string, unknown> = Record<string, unknown>>(config: Record<string, unknown>) => Promise<TSessionData>",
+    getSession:
+      "<TSessionData extends Record<string, unknown> = Record<string, unknown>>(config: Record<string, unknown>) => Promise<TSessionData>",
+    updateSession:
+      "<TSessionData extends Record<string, unknown> = Record<string, unknown>>(config: Record<string, unknown>, update?: Record<string, unknown>) => Promise<TSessionData>",
+    sealSession:
+      "(config: Record<string, unknown>) => Promise<string>",
+    unsealSession:
+      "(config: Record<string, unknown>, sealed: string) => Promise<Record<string, unknown>>",
+    clearSession:
+      "(config: Record<string, unknown>) => Promise<void>",
+    getResponse:
+      "() => { status?: number; statusText?: string; headers: Headers; errHeaders: Headers }",
+    getValidatedQuery: "<TSchema>(schema: TSchema) => Promise<unknown>",
   },
   react: {
     cloneElement:
@@ -789,14 +881,14 @@ const RICH_VALUE_TYPES: Readonly<
     createElement:
       "(type: unknown, props?: Record<string, unknown> | null, ...children: ReactNode[]) => ReactElement",
     createContext:
-      "<T>(defaultValue: T) => { Provider: (props: { value: T; children?: ReactNode }) => ReactElement; Consumer: (props: { children: (value: T) => ReactNode }) => ReactElement; }",
+      "<T>(defaultValue: T) => Context<T>",
     forwardRef:
       "<T = unknown, P = Record<string, unknown>>(render: (props: P, ref: Ref<T>) => ReactElement | null) => (props: P) => ReactElement | null",
     memo:
       "<P = Record<string, unknown>>(component: (props: P) => ReactElement | null) => (props: P) => ReactElement | null",
     useCallback:
       "<T extends (...args: readonly unknown[]) => unknown>(callback: T, deps: readonly unknown[]) => T",
-    useContext: "<T>(context: { _currentValue?: T }) => T",
+    useContext: "<T>(context: Context<T>) => T",
     useDeferredValue: "<T>(value: T, initialValue?: T) => T",
     useEffect:
       "(effect: () => void | (() => void), deps?: readonly unknown[]) => void",
@@ -823,6 +915,10 @@ export const THEME_PACKAGE_TYPE_MANIFEST: Readonly<Record<string, ThemePackageTy
   "@tanstack/react-start": {
     values: TANSTACK_REACT_START_VALUES,
     types: [],
+  },
+  "@tanstack/react-start/server": {
+    values: TANSTACK_REACT_START_SERVER_VALUES,
+    types: TANSTACK_REACT_START_SERVER_TYPES,
   },
   "lucide-react": {
     values: LUCIDE_REACT_VALUES,
@@ -863,7 +959,10 @@ export const THEME_PACKAGE_TYPE_MANIFEST: Readonly<Record<string, ThemePackageTy
 };
 
 export const DEFAULT_THEME_TYPE_PACKAGE_NAMES = Object.freeze(
-  Object.keys(THEME_PACKAGE_TYPE_MANIFEST),
+  [...new Set([
+    ...Object.keys(THEME_PACKAGE_TYPE_MANIFEST),
+    ...GENERATED_THEME_PACKAGE_NAMES,
+  ])],
 ) as readonly string[];
 
 type ThemePackageFile = {
@@ -999,4 +1098,31 @@ export function renderThemePackageTypeDeclarations(
     .map(renderModuleDeclaration)
     .filter(Boolean)
     .join("\n\n");
+}
+
+/**
+ * Returns the declaration files generated from the installed, approved Theme
+ * toolchain. The files are kept separate so Monaco can resolve relative
+ * imports inside a package's real `.d.ts` graph instead of reducing it to an
+ * unsafe `any` declaration.
+ */
+export function getGeneratedThemePackageDeclarations(
+  packageNames: readonly string[] = GENERATED_THEME_PACKAGE_NAMES,
+): readonly { readonly path: string; readonly content: string }[] {
+  if (GENERATED_THEME_PACKAGE_DECLARATIONS.length === 0) return [];
+  const requestedRoots = new Set(
+    packageNames.map((packageName) =>
+      packageName.startsWith("@")
+        ? packageName.split("/").slice(0, 2).join("/")
+        : packageName.split("/")[0],
+    ),
+  );
+  const hasGeneratedPackage = GENERATED_THEME_PACKAGE_NAMES.some((name) =>
+    requestedRoots.has(
+      name.startsWith("@")
+        ? name.split("/").slice(0, 2).join("/")
+        : name.split("/")[0],
+    ),
+  );
+  return hasGeneratedPackage ? GENERATED_THEME_PACKAGE_DECLARATIONS : [];
 }
