@@ -62,8 +62,7 @@ describe("Theme router build bootstrap", () => {
         },
         {
           path: "src/routes/blog/$slug.tsx",
-          content:
-            'export const Route = createFileRoute("/blog/$slug")({});',
+          content: 'export const Route = createFileRoute("/blog/$slug")({});',
         },
       ],
     });
@@ -72,6 +71,95 @@ describe("Theme router build bootstrap", () => {
     expect(result.content).toContain('path: "/$slug"');
     expect(result.content).toContain(
       "rootRouteImport.addChildren([route0.addChildren([route1])])",
+    );
+  });
+
+  it("supports flat-file index, pathless layout, and splat routes", () => {
+    const result = createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ router: { framework: "tanstack-start" } }),
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/posts.tsx",
+          content: 'export const Route = createFileRoute("/posts")({});',
+        },
+        {
+          path: "src/routes/posts.index.tsx",
+          content: 'export const Route = createFileRoute("/posts")({});',
+        },
+        {
+          path: "src/routes/_marketing.tsx",
+          content: 'export const Route = createFileRoute("/_marketing")({});',
+        },
+        {
+          path: "src/routes/_marketing.about.tsx",
+          content:
+            'export const Route = createFileRoute("/_marketing/about")({});',
+        },
+        {
+          path: "src/routes/files/$.tsx",
+          content: 'export const Route = createFileRoute("/files/$")({});',
+        },
+      ],
+    });
+
+    expect(result.routeRegistry?.valid).toBe(true);
+    expect(result.content).toContain('path: "/files/$"');
+    // The pathless layout is a real parent node but contributes no URL path.
+    expect(result.content).toMatch(/id: "\/_marketing",\n\s*getParentRoute/);
+    expect(result.content).toContain('id: "/",\n  path: "/"');
+  });
+
+  it("wires route pieces into the temporary tree like TanStack's generator", () => {
+    const result = createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ router: { framework: "tanstack-start" } }),
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+        {
+          path: "src/routes/index.lazy.tsx",
+          content: 'export const Route = createLazyFileRoute("/")({});',
+        },
+        {
+          path: "src/routes/index.loader.tsx",
+          content: "export const loader = () => ({ title: 'Home' });",
+        },
+        {
+          path: "src/routes/contact.lazy.tsx",
+          content: 'export const Route = createLazyFileRoute("/contact")({});',
+        },
+      ],
+    });
+
+    expect(result.content).toContain("lazyFn");
+    expect(result.content).toContain('import("./src/routes/index.loader")');
+    expect(result.content).toContain(
+      '.lazy(() => import("./src/routes/index.lazy")',
+    );
+    expect(result.content).toContain(
+      'createFileRoute("/contact")({}).update({',
+    );
+    expect(result.content).toContain(
+      '.lazy(() => import("./src/routes/contact.lazy").then((module) => module.Route))',
     );
   });
 });

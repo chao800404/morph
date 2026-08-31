@@ -1,4 +1,5 @@
 import { parse } from "@babel/parser";
+import { parseThemeRouteSourcePath } from "@/lib/storefront/compiler/theme-route-registry";
 
 /**
  * Moving a Theme file, with every reference to it brought along.
@@ -183,6 +184,82 @@ function replaceRanges(
 }
 
 /**
+ * TanStack's generator rewrites a route file's createFileRoute literal when
+ * its filename changes. Keep that invariant in Code Mode as well, otherwise
+ * moving `routes/about.tsx` to `routes/company/about.tsx` leaves a stale route
+ * id and TypeScript reports a type error until a build happens.
+ */
+export function rewriteThemeRouteFactoryPath(
+  source: string,
+  routeId: string,
+): { content: string; changed: boolean } | { error: string } {
+  const ast = parseModule(source);
+  let routeArgument: { start: number; end: number; value: string } | null = null;
+  let dynamicRouteArgument = false;
+
+  const visit = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (
+      !routeArgument &&
+      node.type === "CallExpression" &&
+      node.callee?.type === "Identifier" &&
+      (node.callee.name === "createFileRoute" ||
+        node.callee.name === "createLazyFileRoute")
+    ) {
+      const argument = node.arguments?.[0];
+      if (
+        argument?.type === "StringLiteral" ||
+        (argument?.type === "TemplateLiteral" &&
+          argument.expressions?.length === 0)
+      ) {
+        routeArgument = {
+          start: argument.start,
+          end: argument.end,
+          value:
+            argument.type === "StringLiteral"
+              ? argument.value
+              : argument.quasis?.[0]?.value?.cooked ?? "",
+        };
+      } else if (argument) {
+        dynamicRouteArgument = true;
+      }
+    }
+    for (const key of Object.keys(node)) {
+      if (key === "loc" || key === "comments") continue;
+      const value = node[key];
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === "object") visit(value);
+    }
+  };
+  visit(ast);
+
+  if (dynamicRouteArgument && !routeArgument) {
+    return {
+      error:
+        "Cannot move a route whose createFileRoute path is not a string literal.",
+    };
+  }
+  const resolvedRouteArgument = routeArgument as {
+    start: number;
+    end: number;
+    value: string;
+  } | null;
+  if (!resolvedRouteArgument || resolvedRouteArgument.value === routeId) {
+    return { content: source, changed: false };
+  }
+  return {
+    content: replaceRanges(source, [
+      {
+        start: resolvedRouteArgument.start,
+        end: resolvedRouteArgument.end,
+        text: JSON.stringify(routeId),
+      },
+    ]),
+    changed: true,
+  };
+}
+
+/**
  * Plans a move of one or more Theme files.
  *
  * Returns every file that has to be written and every old path that has to go,
@@ -234,9 +311,41 @@ export function planThemeFileMove(
     if (file.path === MANIFEST_PATH) {
       content = rewriteManifestPaths(content, movesByFrom);
     } else if (isSource) {
+      const oldRouteMetadata = parseThemeRouteSourcePath(file.path);
+      const newRouteMetadata = parseThemeRouteSourcePath(destination);
+      if (
+        oldRouteMetadata &&
+        newRouteMetadata &&
+        oldRouteMetadata.routeType !== "root" &&
+        newRouteMetadata.routeType !== "root"
+      ) {
+        let routeRewrite: ReturnType<typeof rewriteThemeRouteFactoryPath>;
+        try {
+          routeRewrite = rewriteThemeRouteFactoryPath(
+            content,
+            newRouteMetadata.routeId,
+          );
+        } catch {
+          return {
+            ok: false,
+            reason: `Cannot move: ${file.path} contains a syntax error.`,
+          };
+        }
+        if ("error" in routeRewrite) {
+          return { ok: false, reason: routeRewrite.error };
+        }
+        if (routeRewrite.changed) {
+          rewrites.push({
+            file: destination,
+            from: oldRouteMetadata.routeId,
+            to: newRouteMetadata.routeId,
+          });
+          content = routeRewrite.content;
+        }
+      }
       let sites: SpecifierSite[];
       try {
-        sites = readSpecifierSites(file.content);
+        sites = readSpecifierSites(content);
       } catch {
         return {
           ok: false,

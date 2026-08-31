@@ -65,6 +65,7 @@ describe("live preview security", () => {
         storefrontId: "store 1",
         themeId: "theme/1",
         templateId: "11111111-1111-4111-8111-111111111111",
+        routePath: "/about",
         viewportHeight: 900,
         editorOrigin: "https://editor.example.com",
         previewSession: "22222222-2222-4222-8222-222222222222",
@@ -72,6 +73,7 @@ describe("live preview security", () => {
     );
     expect(url.origin).toBe("https://preview.example.net");
     expect(url.pathname).toBe("/store/store%201/themes/theme%2F1/preview");
+    expect(url.searchParams.get("routePath")).toBe("/about");
     expect(url.searchParams.get("editorOrigin")).toBe(
       "https://editor.example.com",
     );

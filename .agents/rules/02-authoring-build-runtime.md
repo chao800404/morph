@@ -74,11 +74,14 @@ React / TSX / CSS / Tailwind Theme Source 是 Code Mode、Live Preview、Visual 
 
 ### 5.3.2 Theme content field capability
 
-Customer Theme 若要讓 code-authored component props 可由 Design Mode 編輯，必須在同一份 Theme Source 的 `morph.theme.json` 宣告 bounded `contentFields` capability。
+Customer Theme 若要讓 code-authored component props 可由 Design Mode 編輯，必須提供 bounded
+`contentFields` capability。新的元件應在自己的 source file 宣告 `export const contentFields`；
+`morph.theme.json` 內的 `contentFields` 只作為尚未遷移元件的 compatibility fallback，不得成為
+新的唯一宣告來源。
 
 - `contentFields` 只描述 content authoring capability：欄位 key、控制型別、label、長度／數值限制與有限選項；不得包含 callback、任意 validator、JS expression、HTML renderer 或 presentation implementation。
 - Theme component 的程式碼 default prop 仍是 source fallback。儲存 Theme source 不得自動把 default 寫入 D1；只有使用者首次確認 Design content 修改時，才透過既有 versioned Page／Template Document draft 與 OCC/CAS 建立 override。
-- Client manifest 解析只負責呈現 Inspector。Server mutation 必須從該 storefront／theme 的已保存 Theme Workspace 或對應 immutable source revision 重新讀取並驗證 capability，不得相信 client 傳入的 field definition。
+- Client 解析只負責呈現 Inspector。Server mutation 必須從該 storefront／theme 的已保存 Theme Workspace 或對應 immutable source revision 重新讀取，使用與 client 相同的 resolver 驗證 source-colocated capability；若沒有 source declaration 才可使用 manifest fallback，不得相信 client 傳入的 field definition。
 - `contentFields` 是可寫欄位 allowlist，不是完整 runtime props schema。Content mutation 只能新增或修改已宣告欄位，但不得因 partial edit 刪除 Document 中既有的非 editable reference／assembly props。
 - 未知 `componentRef`、未宣告欄位、錯誤型別、超過限制或不安全 URL 必須 fail closed；presentation class、任意 object 或 executable value 不得藉由 content mutation 寫入 Document。
 - Capability 變更與 content mutation 的競態必須由 server-side source generation guard 處理；不可只靠 Inspector 當下看到的 manifest。
@@ -256,6 +259,21 @@ Theme route source save
 - AI 新增 route 必須走與人類 Code Mode 相同的 workspace mutation、OCC、diagnostics、Preview、revision、build 與 Publish 流程；不得直接修改 generated route tree 或 active release。
 - 由 Visual Editor 建立的一般內容頁應建立 versioned D1 Page Document，並由已存在的 dynamic route 解析；不得為了新增文案頁而無條件產生 route source 或要求 Theme rebuild。
 
+### 6.0.1 Code Mode generated route tree
+
+- `src/routes/**` 是作者可編輯的 route source，也是 route path、parent 與頁面結構的 SSOT。
+- Code Mode 可以在 Explorer 顯示唯讀虛擬 `src/routeTree.gen.ts`，讓 Monaco 取得 TanStack
+  Router 的 literal path/type 補全；這個 model 是 editor projection，不是 persisted Theme
+  Workspace，使用者與 AI 不得直接儲存、修改或刪除它。
+- 虛擬 route tree 與正式 build 必須共用同一份 bounded route registry。正式的
+  `routeTree.gen.ts` 只能由固定版本的 Theme build toolchain 在暫存 build workspace 產生，
+  不得手動編輯或寫回 Morph Core 的 generated route tree。
+- editor projection 可以使用受管理的 declaration 與明確標註的 type-only fallback 來提供
+  補全，但不得以 `any`、空 route tree 或關閉 semantic diagnostics 掩蓋真正的 route/build
+  錯誤；Build Preview 才是正式 route tree 的最終驗證。
+- 新增 route 後，只有在 route scan、diagnostics、Preview 與 immutable build 均成功時，才可
+  視為可執行 route；只更新 editor React state 不算完成。
+
 ### 6.1 Content-only mutation
 
 例如：
@@ -376,6 +394,21 @@ AI 不得自行加入任意 npm dependency 並直接 production build。
 2. 固定 / 管理版本。
 3. 評估 bundle size、license、安全與 Cloudflare runtime compatibility。
 4. 加 negative test。
+
+#### 7.4.1 Customer dependency request
+
+- `cms.config.ts` 是平台擁有的核准套件目錄與精確版本來源；client 不得提交任意 npm 名稱或
+  版本，Theme workspace 也不得藉由 package manifest 繞過 allowlist。
+- 已登入且具備 CMS 管理權限的請求，才能啟用核准目錄中的套件；server 必須重新從
+  `cms.config.ts` 驗證名稱與版本，不能信任前端傳入的 catalog 或 field。
+- 請求必須建立可追蹤的 dependency state，並與 immutable source revision 的 build 綁定：
+  `requested → building → ready` 或 `requested/building → failed`。在 build 成功前不得宣稱
+  套件可用，失敗不得取代上一個成功 build。
+- Cloudflare Queue 與 local runner 都必須使用相同的 build service、OCC、ownership、resource
+  limit 與 artifact boundary。Queue enqueue 失敗要明確標記 failed，不得留在假成功狀態。
+- 目前平台核准模型是 `cms.config.ts` allowlist 加上 CMS admin server capability；若未來要
+  由另一個平台人員逐案允許，必須增加獨立 review role、approval state、audit 與 UI，不得把
+  `building` 誤當成 approval。
 
 ### 7.5 Artifact
 

@@ -10,7 +10,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Separator } from "@/components/ui/separator";
-import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  buildThemeRouteRegistry,
+  type ThemeRouteRecord,
+} from "@/lib/storefront/compiler/theme-route-registry";
 import {
   addThemeRouteSection,
   deriveThemeRouteSections,
@@ -159,7 +162,11 @@ import {
 } from "./editor-sections-panel";
 import type { InspectorPropsChangeOptions } from "./editor-style-inspector";
 import { resolveStylesSelectionTransition } from "./editor-styles-selection-mode";
-import { resolveEditorTemplate } from "./editor-template";
+import {
+  resolveEditorTemplate,
+  templateTypeForRoute,
+  toEditorRouteSearch,
+} from "./editor-template";
 import {
   EditorToolbar,
   EditorToolbarGroup,
@@ -555,6 +562,19 @@ export function VisualEditorShell({
 
   const activeTemplate = resolveEditorTemplate(context, search);
   const queryClient = useQueryClient();
+  const [pendingRoutePath, setPendingRoutePath] = useState<string | null>(null);
+  const handleRouteIntent = useCallback((routePath?: string) => {
+    setPendingRoutePath(routePath ?? null);
+  }, []);
+
+  useEffect(() => {
+    if (
+      pendingRoutePath !== null &&
+      pendingRoutePath === (search.routePath ?? null)
+    ) {
+      setPendingRoutePath(null);
+    }
+  }, [pendingRoutePath, search.routePath]);
 
   const commentGroupsQuery = useQuery({
     ...storefrontCommentQueries.groups(
@@ -871,13 +891,43 @@ export function VisualEditorShell({
       : (context.previewChannel?.editorOrigin ?? ""),
     previewSession: stablePreviewSession,
   };
+  // Keep the iframe document stable while the editor changes route search
+  // state. The initial path still travels in the URL for a correct first
+  // paint; subsequent paths are switched in-place through the preview bridge.
+  const previewRouteSeedRef = useRef<{
+    templateId: string | null;
+    routePath?: string;
+  }>({
+    templateId: activeTemplate?.id ?? null,
+    routePath: search.routePath,
+  });
+  const previewTemplateId = activeTemplate?.id ?? null;
+  if (previewRouteSeedRef.current.templateId === null && previewTemplateId) {
+    previewRouteSeedRef.current = {
+      templateId: previewTemplateId,
+      routePath: search.routePath,
+    };
+  }
+  const previewSeedRevisionRef = useRef(previewRevision);
+  if (previewSeedRevisionRef.current !== previewRevision) {
+    // A deliberate preview refresh recreates the iframe. Carry the current
+    // route/template into that new document instead of returning to the path
+    // that happened to be open on the first editor paint.
+    previewSeedRevisionRef.current = previewRevision;
+    previewRouteSeedRef.current = {
+      templateId: previewTemplateId,
+      routePath: search.routePath,
+    };
+  }
   const previewUrl =
     activeTemplate && livePreviewSecurity.enabled
       ? buildLivePreviewUrl({
           previewOrigin: livePreviewSecurity.previewOrigin,
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
-          templateId: activeTemplate.id,
+          templateId:
+            previewRouteSeedRef.current.templateId ?? activeTemplate.id,
+          routePath: previewRouteSeedRef.current.routePath,
           viewportHeight: DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
           editorOrigin: context.previewChannel?.editorOrigin ?? "",
           previewSession: stablePreviewSession,
@@ -980,6 +1030,7 @@ export function VisualEditorShell({
     styles: Record<string, string>;
   } | null>(null);
   const previousTemplateIdRef = useRef(search.templateId);
+  const previousRoutePathRef = useRef(search.routePath);
   const previewSelectionSectionSyncRef = useRef<string | null>(null);
   const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
     useState(0);
@@ -1078,6 +1129,36 @@ export function VisualEditorShell({
     [context.storefront.id, context.theme.id],
   );
 
+  // Package requests must be tied to the exact source snapshot that was
+  // successfully built.  Once source files move on (or a conflict/error is
+  // present), fail closed until the user saves and builds a fresh preview.
+  const dependencySourceRevisionId = useMemo(() => {
+    if (
+      !activeBuildPreview ||
+      activeBuildPreview.status !== "succeeded" ||
+      activeBuildSourceGeneration === null ||
+      monacoDirtyFiles.length > 0
+    ) {
+      return undefined;
+    }
+    const workspace = useThemeWorkspaceStore.getState();
+    if (
+      activeBuildSourceGeneration !==
+        workspace.getBaseSourceGeneration(workspaceScope) ||
+      workspace.hasUnsavedEdits(workspaceScope) ||
+      workspace.hasActiveConflictsOrErrors(workspaceScope)
+    ) {
+      return undefined;
+    }
+    return activeBuildPreview.sourceRevisionId;
+  }, [
+    activeBuildPreview,
+    activeBuildSourceGeneration,
+    monacoDirtyFiles.length,
+    workspaceScope,
+    workspaceFiles,
+  ]);
+
   useEffect(() => {
     setActiveWorkspace(context.storefront.id, context.theme.id);
   }, [context.storefront.id, context.theme.id, setActiveWorkspace]);
@@ -1126,8 +1207,66 @@ export function VisualEditorShell({
     () => buildThemeRouteRegistry(effectiveThemeFiles),
     [effectiveThemeFiles],
   );
+  // Parse every source route once per workspace revision. Route switching then
+  // reads from this derived cache instead of waiting for a second render or a
+  // preview round-trip to rebuild the left-hand tree.
+  const themeRouteStructureCache = useMemo(() => {
+    const cache = new Map<
+      string,
+      ReturnType<typeof deriveThemeRouteSections>
+    >();
+    for (const route of themeRouteRegistry.routes) {
+      if (route.kind !== "route") continue;
+      cache.set(
+        route.sourcePath,
+        deriveThemeRouteSections(effectiveThemeFiles, route.sourcePath),
+      );
+    }
+    return cache;
+  }, [effectiveThemeFiles, themeRouteRegistry.routes]);
+  const handlePrefetchThemeRoute = useCallback(
+    (route: ThemeRouteRecord) => {
+      // The editor and preview loaders already hydrate these queries in
+      // parallel. ensureQueryData is intentionally used here so hover/focus
+      // never forces a refetch of a fresh workspace; this is an intent signal
+      // for future route-specific data loaders as well.
+      void queryClient
+        .ensureQueryData(
+          storefrontThemeQueries.detail(
+            context.storefront.id,
+            context.theme.id,
+          ),
+        )
+        .catch(() => undefined);
+      void queryClient
+        .ensureQueryData(
+          storefrontThemeFileQueries.tree(
+            context.storefront.id,
+            context.theme.id,
+          ),
+        )
+        .catch(() => undefined);
+      // Touch the derived entry so this callback remains useful even when the
+      // route is not yet the active one. The map is populated synchronously
+      // above and therefore does not trigger a render or a loading state.
+      void themeRouteStructureCache.get(route.sourcePath);
+    },
+    [
+      context.storefront.id,
+      context.theme.id,
+      queryClient,
+      themeRouteStructureCache,
+    ],
+  );
   const activeThemeRoute = useMemo(() => {
     if (!activeTemplate) return null;
+    if (search.routePath) {
+      const route = themeRouteRegistry.routes.find(
+        (candidate) =>
+          candidate.kind === "route" && candidate.path === search.routePath,
+      );
+      if (route) return route;
+    }
     const prefix =
       activeTemplate.type === "index"
         ? "/"
@@ -1148,23 +1287,57 @@ export function VisualEditorShell({
           (prefix === "/" ? route.path === "/" : route.path.startsWith(prefix)),
       ) ?? null
     );
-  }, [activeTemplate, themeRouteRegistry.routes]);
+  }, [activeTemplate, search.routePath, themeRouteRegistry.routes]);
+  const pendingThemeRoute = useMemo(
+    () =>
+      pendingRoutePath
+        ? (themeRouteRegistry.routes.find(
+            (route) =>
+              route.kind === "route" && route.path === pendingRoutePath,
+          ) ?? null)
+        : null,
+    [pendingRoutePath, themeRouteRegistry.routes],
+  );
+  const routeStructurePending = Boolean(
+    (pendingRoutePath !== null &&
+      pendingRoutePath !== search.routePath &&
+      (!pendingThemeRoute ||
+        !themeRouteStructureCache.has(pendingThemeRoute.sourcePath))) ||
+    (search.routePath &&
+      !activeThemeRoute &&
+      (!themeFilesQuery.data ||
+        (effectiveThemeFiles.length === 0 &&
+          !starterInitMutation.isSuccess &&
+          !starterInitMutation.isError))),
+  );
   const activeRouteStructure = useMemo(
     () =>
       activeThemeRoute
-        ? deriveThemeRouteSections(
+        ? (themeRouteStructureCache.get(activeThemeRoute.sourcePath) ??
+          deriveThemeRouteSections(
             effectiveThemeFiles,
             activeThemeRoute.sourcePath,
-          )
+          ))
         : { sections: [], diagnostics: [], hasContentImport: false },
-    [activeThemeRoute, effectiveThemeFiles],
+    [activeThemeRoute, effectiveThemeFiles, themeRouteStructureCache],
   );
   const activeRouteSections = activeRouteStructure.sections;
+  // A source-authored route is the structure owner even when it does not use
+  // `content(...)` slots.  The editor still needs to scope the Sections panel
+  // to that route; otherwise the template document's legacy sections (for
+  // example Home's `hero`/`promo`) leak into every direct route such as
+  // `/product`.
+  const routeOwnsStructure = Boolean(
+    search.routePath &&
+    activeThemeRoute?.kind === "route" &&
+    activeThemeRoute.path === search.routePath,
+  );
   const routeBackedContext = useMemo<StorefrontThemeEditorDTO>(() => {
+    const routeStructureIsAuthoritative =
+      activeRouteStructure.hasContentImport || routeOwnsStructure;
     if (
       !activeTemplate ||
-      (activeRouteSections.length === 0 &&
-        !activeRouteStructure.hasContentImport)
+      (activeRouteSections.length === 0 && !routeStructureIsAuthoritative)
     ) {
       return context;
     }
@@ -1177,7 +1350,7 @@ export function VisualEditorShell({
               document: mergeDocumentWithRouteSections(
                 template.document,
                 activeRouteSections,
-                { routeOwnsStructure: activeRouteStructure.hasContentImport },
+                { routeOwnsStructure: routeStructureIsAuthoritative },
               ),
             }
           : template,
@@ -1187,11 +1360,28 @@ export function VisualEditorShell({
     activeRouteSections,
     activeRouteStructure.hasContentImport,
     activeTemplate,
+    routeOwnsStructure,
     context,
   ]);
   const routeSectionOptions = useMemo(
     () => listThemeRouteSectionOptions(effectiveThemeFiles),
     [effectiveThemeFiles],
+  );
+  const handleOpenThemeRoute = useCallback(
+    (route: ThemeRouteRecord) => {
+      setPendingRoutePath(route.path);
+      const routeTemplate =
+        context.templates.find(
+          (template) => template.type === templateTypeForRoute(route.path),
+        ) ??
+        activeTemplate ??
+        context.templates[0];
+      if (routeTemplate) {
+        onSearchChange(toEditorRouteSearch(routeTemplate, route.path));
+      }
+      handleJumpToCode(route.sourcePath, 1, 1);
+    },
+    [activeTemplate, context.templates, handleJumpToCode, onSearchChange],
   );
   const handleOpenSelectedCode = useCallback(() => {
     const selectedSection = activeTemplate?.document.sections.find(
@@ -2547,6 +2737,7 @@ export function VisualEditorShell({
     previewKeyRef.current = previewKey;
   }, [previewKey]);
   const previewWidthRenderFrameRef = useRef(0);
+  const lastPreviewWheelActivityAtRef = useRef(0);
   const panOriginRef = useRef<{
     pointerId: number;
     pointerX: number;
@@ -2722,6 +2913,18 @@ export function VisualEditorShell({
     [scheduleCanvasTransform],
   );
 
+  /**
+   * Route navigation keeps the preview iframe mounted, so the editor canvas
+   * transform would otherwise carry the previous page's vertical scroll into
+   * the newly rendered route. Keep the current zoom and horizontal position,
+   * but always start a different route at the top of the canvas.
+   */
+  const resetCanvasScrollPosition = useCallback(() => {
+    scheduleCanvasTransform((current) =>
+      current.y === 0 ? current : { ...current, y: 0 },
+    );
+  }, [scheduleCanvasTransform]);
+
   const centerCanvasOnThread = useCallback(
     (thread: StorefrontCommentThreadDTO, frameHeight: number) => {
       if (typeof thread.positionY !== "number") return;
@@ -2795,9 +2998,19 @@ export function VisualEditorShell({
     ) {
       lastPreviewSelectionRef.current = null;
       setActiveSelection(null);
+      resetCanvasScrollPosition();
     }
     previousTemplateIdRef.current = search.templateId;
-  }, [search.templateId]);
+  }, [resetCanvasScrollPosition, search.templateId]);
+
+  useEffect(() => {
+    if (previousRoutePathRef.current !== search.routePath) {
+      lastPreviewSelectionRef.current = null;
+      setActiveSelection(null);
+      resetCanvasScrollPosition();
+    }
+    previousRoutePathRef.current = search.routePath;
+  }, [resetCanvasScrollPosition, search.routePath]);
 
   useEffect(() => {
     if (activeTemplate && search.templateId !== activeTemplate.id) {
@@ -2938,9 +3151,6 @@ export function VisualEditorShell({
           key: previewKey,
           sequence: current?.key === previewKey ? current.sequence + 1 : 1,
         }));
-        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-          type: "morph:storefront-preview-request-structure",
-        });
         return;
       }
       if (message.type === "morph:storefront-preview-structure") {
@@ -3074,6 +3284,37 @@ export function VisualEditorShell({
     previewKey,
     search.section,
     search.viewport,
+  ]);
+
+  const syncPreviewRoute = useCallback(() => {
+    if (!activeTemplate) return;
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-set-route",
+      templateId: activeTemplate.id,
+      routePath: search.routePath ?? null,
+    });
+  }, [activeTemplate, postEditorToPreviewMessage, search.routePath]);
+
+  useEffect(() => {
+    if (!previewKey || previewFrameReady?.key !== previewKey) return;
+
+    syncPreviewRoute();
+    // Let the preview commit the route state before asking for its structure
+    // and size. This avoids reading the previous page's DOM in the same task.
+    const frame = window.requestAnimationFrame(() => {
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-request-structure",
+      });
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-request-size",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    postEditorToPreviewMessage,
+    previewFrameReady?.key,
+    previewKey,
+    syncPreviewRoute,
   ]);
 
   const syncPreviewSection = useCallback(() => {
@@ -4011,7 +4252,15 @@ export function VisualEditorShell({
     const handlePreviewWheel = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (message?.type !== "morph:storefront-preview-wheel") return;
-      reportAuthenticatedUserActivity();
+      // Wheel messages can arrive once per display frame. Resetting the
+      // authenticated idle timer for every one also performs its timer and
+      // cross-tab bookkeeping at scroll frequency, even though one reset per
+      // second is enough to keep an active editor session alive.
+      const now = Date.now();
+      if (now - lastPreviewWheelActivityAtRef.current >= 1_000) {
+        lastPreviewWheelActivityAtRef.current = now;
+        reportAuthenticatedUserActivity();
+      }
 
       const viewport = canvasViewportRef.current;
       const frame = previewIframeRef.current;
@@ -4902,6 +5151,7 @@ export function VisualEditorShell({
           onSaveFile={handleUnifiedSaveFile}
           onBuildPreview={handleBuildPreview}
           externalDiagnostics={buildDiagnostics}
+          dependencySourceRevisionId={dependencySourceRevisionId}
         />
       </EditorModeSurface>
 
@@ -4920,6 +5170,8 @@ export function VisualEditorShell({
             activeThemeRoute ? handleReorderSections : undefined
           }
           onToggleSectionEnabled={handleSectionToggleEnabled}
+          activeRoute={activeThemeRoute}
+          routeStructurePending={routeStructurePending}
           editableNodes={
             previewStructure?.key === previewKey
               ? previewStructure.nodes
@@ -4930,7 +5182,8 @@ export function VisualEditorShell({
           themeRoutes={themeRouteRegistry.routes.filter(
             (route) => route.kind === "route",
           )}
-          onOpenThemeRoute={(route) => handleJumpToCode(route.sourcePath, 1, 1)}
+          onPrefetchThemeRoute={handlePrefetchThemeRoute}
+          onOpenThemeRoute={handleOpenThemeRoute}
           sectionOptions={routeSectionOptions}
           onAddSection={activeThemeRoute ? handleAddSection : undefined}
           onDeleteSection={
@@ -5313,6 +5566,11 @@ export function VisualEditorShell({
             context={context}
             search={search}
             onSearchChange={onSearchChange}
+            onRouteIntent={handleRouteIntent}
+            onPrefetchRoute={handlePrefetchThemeRoute}
+            themeRoutes={themeRouteRegistry.routes.filter(
+              (route) => route.kind === "route",
+            )}
             isSelectionMode={isSelectionMode}
             onSelectionModeChange={(enabled) => {
               autoEnabledSelectionForStylesRef.current = false;
@@ -5516,6 +5774,9 @@ function EditorControls({
   context,
   search,
   onSearchChange,
+  onRouteIntent,
+  onPrefetchRoute,
+  themeRoutes,
   isSelectionMode,
   onSelectionModeChange,
   spacingOverlayMode,
@@ -5527,6 +5788,9 @@ function EditorControls({
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
+  onRouteIntent: (routePath?: string) => void;
+  onPrefetchRoute: (route: ThemeRouteRecord) => void;
+  themeRoutes: readonly ThemeRouteRecord[];
   isSelectionMode: boolean;
   onSelectionModeChange: (enabled: boolean) => void;
   spacingOverlayMode: PreviewSpacingOverlayMode;
@@ -5654,7 +5918,10 @@ function EditorControls({
           context={context}
           search={search}
           onSearchChange={onSearchChange}
+          onRouteIntent={onRouteIntent}
+          onPrefetchRoute={onPrefetchRoute}
           onRefresh={onRefresh}
+          themeRoutes={themeRoutes}
         />
       </EditorToolbar>
     </div>

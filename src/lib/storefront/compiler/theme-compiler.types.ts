@@ -15,6 +15,7 @@ export type ThemeCompilerFile = {
 export type ThemeCompilerInput = {
   files: ThemeCompilerFile[];
   entry?: string;
+  dependencies?: Readonly<Record<string, string>>;
   sourceGeneration?: number;
   compilerId?: string;
   compilerVersion?: string;

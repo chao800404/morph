@@ -4,13 +4,16 @@ import {
   themeRevisionStore,
   themeSourceStore,
 } from "@/lib/storefront/storage/theme-storage.server";
+import { createStarterThemeWorkspaceBootstrapPlan } from "@/lib/storefront/starter-theme-files";
 import {
+  applyStarterThemeWorkspaceInputSchema,
   createThemeRevisionInputSchema,
   deleteThemeFileInputSchema,
   getThemeFileInputSchema,
   initStarterThemeFilesInputSchema,
   listThemeFilesInputSchema,
   listThemeRevisionsInputSchema,
+  previewStarterThemeWorkspaceInputSchema,
   rollbackThemeRevisionInputSchema,
   saveThemeFileInputSchema,
   saveThemeFilesBatchInputSchema,
@@ -75,6 +78,130 @@ export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
         error,
         "INIT_FAILED",
         "Failed to initialize starter theme",
+      );
+    }
+  });
+
+/**
+ * Preview the additive Starter Theme bootstrap before mutating the workspace.
+ * The plan is always calculated from server files; the browser cannot choose
+ * which template files or package versions are written.
+ */
+export const previewStarterThemeWorkspace = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    previewStarterThemeWorkspaceInputSchema.parse(data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const [files, sourceGeneration] = await Promise.all([
+        themeSourceStore.listFiles(data.storefrontId, data.themeId),
+        themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
+      ]);
+      if (sourceGeneration === null) {
+        throw new Error("Theme not found or does not belong to storefront");
+      }
+
+      const plan = createStarterThemeWorkspaceBootstrapPlan(files);
+      return ok("Starter theme bootstrap plan ready", {
+        sourceGeneration,
+        files: plan.files.map((file) => ({
+          path: file.path,
+          operation: file.expectMissing ? "create" : "update",
+        })),
+        deletions: plan.deletions.map((file) => ({ path: file.path })),
+      });
+    } catch (error) {
+      return failure(
+        "Preview starter theme bootstrap error",
+        error,
+        "STARTER_BOOTSTRAP_PREVIEW_FAILED",
+        "Failed to prepare the starter theme files",
+      );
+    }
+  });
+
+/**
+ * Apply the server-calculated Starter Theme bootstrap as one OCC-protected
+ * batch. Existing authored files are preserved and all writes/deletions land
+ * in the same source revision transaction.
+ */
+export const applyStarterThemeWorkspace = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    applyStarterThemeWorkspaceInputSchema.parse(data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data, context }) => {
+    try {
+      const files = await themeSourceStore.listFiles(
+        data.storefrontId,
+        data.themeId,
+      );
+      const sourceGeneration = await themeSourceStore.getSourceGeneration(
+        data.storefrontId,
+        data.themeId,
+      );
+      if (sourceGeneration === null) {
+        throw new Error("Theme not found or does not belong to storefront");
+      }
+      const plan = createStarterThemeWorkspaceBootstrapPlan(files);
+      if (plan.files.length === 0 && plan.deletions.length === 0) {
+        return ok("Starter theme is already up to date", {
+          files,
+          sourceGeneration,
+          changed: false,
+        });
+      }
+
+      const saved = await themeSourceStore.saveFilesBatch(
+        data.storefrontId,
+        data.themeId,
+        plan.files,
+        {
+          expectedSourceGeneration: data.expectedSourceGeneration,
+          deletions: plan.deletions,
+          createRevision: true,
+          revisionMessage: "Bootstrap TanStack Start theme workspace",
+          createdBy: context.user?.id,
+        },
+      );
+      const nextFiles = await themeSourceStore.listFiles(
+        data.storefrontId,
+        data.themeId,
+      );
+      return ok("Starter theme workspace bootstrapped", {
+        files: nextFiles,
+        sourceGeneration: saved.sourceGeneration ?? sourceGeneration + 1,
+        changed: true,
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+      ) {
+        const latestGen = await themeSourceStore.getSourceGeneration(
+          data.storefrontId,
+          data.themeId,
+        );
+        return fail(
+          `Remote source changes detected before starter setup (current generation: ${latestGen ?? "unknown"}). Refresh the workspace and try again.`,
+          { error: "SOURCE_GENERATION_CONFLICT" },
+        );
+      }
+      if (
+        error instanceof Error &&
+        error.message.includes("CONFLICT_VERSION_MISMATCH")
+      ) {
+        return fail(
+          "Version conflict detected: the starter workspace changed concurrently.",
+          { error: "FILE_VERSION_CONFLICT" },
+        );
+      }
+      return failure(
+        "Apply starter theme bootstrap error",
+        error,
+        "STARTER_BOOTSTRAP_FAILED",
+        "Failed to apply the starter theme files",
       );
     }
   });

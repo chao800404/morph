@@ -127,6 +127,7 @@ describe("EditorSectionsPanel visibility controls", () => {
 
   it("shows source-authored Theme pages and opens their route module", () => {
     const onOpenThemeRoute = vi.fn();
+    const onPrefetchThemeRoute = vi.fn();
     const route = {
       id: "/about",
       path: "/about",
@@ -137,11 +138,23 @@ describe("EditorSectionsPanel visibility controls", () => {
     };
     renderPanel(vi.fn(), vi.fn(), {
       themeRoutes: [route],
+      onPrefetchThemeRoute,
       onOpenThemeRoute,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "/about" }));
+    const pageButton = screen.getByRole("button", { name: "/about" });
+    fireEvent.mouseEnter(pageButton);
+    fireEvent.focus(pageButton);
+    fireEvent.click(pageButton);
+    expect(onPrefetchThemeRoute).toHaveBeenCalledWith(route);
     expect(onOpenThemeRoute).toHaveBeenCalledWith(route);
+  });
+
+  it("does not paint the previous template tree while the selected route loads", () => {
+    renderPanel(vi.fn(), vi.fn(), { routeStructurePending: true });
+
+    expect(screen.queryByRole("button", { name: "hero" })).toBeNull();
+    expect(screen.getByText("Loading route structure…")).toBeTruthy();
   });
 
   it("shows accessible hide/show labels and sends the exact section id and next state", () => {

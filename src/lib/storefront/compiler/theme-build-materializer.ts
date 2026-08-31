@@ -12,6 +12,7 @@ import {
   isPlatformOwnedThemeBuildPath,
   validateThemeStartPackageContract,
 } from "./theme-start-toolchain";
+import { normalizeThemeDependencyMap } from "./theme-dependency-policy";
 
 export type MaterializeThemeBuildInputParams = {
   build: StorefrontThemeBuildDTO;
@@ -251,7 +252,13 @@ export function materializeThemeBuildInput({
 
   // Compute deterministic SHA-256 hash
   const inputHash = computeThemeInputHash(
-    { files, entry },
+    {
+      files,
+      entry,
+      ...(build.dependencies
+        ? { dependencies: normalizeThemeDependencyMap(build.dependencies) }
+        : {}),
+    },
     { id: compilerId, version: compilerVersion },
   );
 
@@ -273,5 +280,8 @@ export function materializeThemeBuildInput({
     inputHash,
     compilerId,
     compilerVersion,
+    ...(build.dependencies
+      ? { dependencies: normalizeThemeDependencyMap(build.dependencies) }
+      : {}),
   };
 }

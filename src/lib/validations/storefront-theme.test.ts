@@ -52,6 +52,16 @@ describe("storefront theme editor search", () => {
       }).canvasWidth,
     ).toBeUndefined();
   });
+
+  it("keeps a source route selection in the editor URL", () => {
+    expect(
+      storefrontThemeEditorSearchSchema.parse({
+        template: "page",
+        routePath: "/about",
+        viewport: "desktop",
+      }).routePath,
+    ).toBe("/about");
+  });
 });
 
 describe("storefront theme preview search", () => {
@@ -106,6 +116,20 @@ describe("storefront theme preview search", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts an optional source route for page-specific previews", () => {
+    const templateId = crypto.randomUUID();
+    const previewSession = crypto.randomUUID();
+    expect(
+      storefrontThemePreviewSearchSchema.parse({
+        templateId,
+        routePath: "/about",
+        viewportHeight: 900,
+        editorOrigin: "https://editor.example.com",
+        previewSession,
+      }).routePath,
+    ).toBe("/about");
+  });
 });
 
 describe("publish storefront theme template input schema", () => {
@@ -121,7 +145,9 @@ describe("publish storefront theme template input schema", () => {
       expectedReleaseGeneration: 1,
     };
 
-    expect(publishStorefrontThemeTemplateInputSchema.parse(valid)).toEqual(valid);
+    expect(publishStorefrontThemeTemplateInputSchema.parse(valid)).toEqual(
+      valid,
+    );
 
     // Content-only publish may omit source/build IDs and reuse the active release.
     expect(
@@ -222,7 +248,9 @@ describe("reorder and update props schemas", () => {
       sectionIds: ["s1", "s2"],
       expectedDraftGeneration: 2,
     };
-    expect(reorderStorefrontThemeSectionsInputSchema.parse(validReorder)).toEqual(validReorder);
+    expect(
+      reorderStorefrontThemeSectionsInputSchema.parse(validReorder),
+    ).toEqual(validReorder);
 
     expect(() =>
       reorderStorefrontThemeSectionsInputSchema.parse({
@@ -241,7 +269,9 @@ describe("reorder and update props schemas", () => {
       props: { title: "Hello" },
       expectedDraftGeneration: 3,
     };
-    expect(updateStorefrontThemeSectionPropsInputSchema.parse(validProps)).toEqual(validProps);
+    expect(
+      updateStorefrontThemeSectionPropsInputSchema.parse(validProps),
+    ).toEqual(validProps);
 
     expect(() =>
       updateStorefrontThemeSectionPropsInputSchema.parse({
@@ -257,10 +287,7 @@ describe("reorder and update props schemas", () => {
       updateStorefrontThemeSectionPropsInputSchema.parse({
         ...validProps,
         props: Object.fromEntries(
-          Array.from({ length: 101 }, (_, index) => [
-            `field${index}`,
-            "value",
-          ]),
+          Array.from({ length: 101 }, (_, index) => [`field${index}`, "value"]),
         ),
       }),
     ).toThrow();

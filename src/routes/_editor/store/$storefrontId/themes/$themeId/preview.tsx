@@ -5,11 +5,23 @@ import {
 import { shouldDeferUndoShortcut } from "@/lib/storefront/editor/editor-history";
 import { StorefrontPreview } from "@/components/storefront/storefront-preview";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  deriveThemeRouteSections,
+  mergeDocumentWithRouteSections,
+} from "@/lib/storefront/compiler/theme-route-sections";
 import { storefrontThemePreviewSearchSchema } from "@/lib/validations/storefront-theme";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
 
 import { storefrontThemeFileQueries } from "../../../../-queries/storefront-theme-files.queries";
@@ -427,10 +439,25 @@ export const Route = createFileRoute(
   "/_editor/store/$storefrontId/themes/$themeId/preview",
 )({
   validateSearch: storefrontThemePreviewSearchSchema,
-  loader: ({ context, params }) =>
-    context.queryClient.ensureQueryData(
-      storefrontThemeQueries.detail(params.storefrontId, params.themeId),
-    ),
+  loader: async ({ context, params }) => {
+    const detailQuery = storefrontThemeQueries.detail(
+      params.storefrontId,
+      params.themeId,
+    );
+    const filesQuery = storefrontThemeFileQueries.tree(
+      params.storefrontId,
+      params.themeId,
+    );
+
+    // Hydrate the source workspace alongside the theme document. The preview
+    // needs both to render a route-authored page on its first paint; waiting
+    // for the file query in an effect briefly shows the template fallback.
+    const [detail] = await Promise.all([
+      context.queryClient.ensureQueryData(detailQuery),
+      context.queryClient.ensureQueryData(filesQuery).catch(() => undefined),
+    ]);
+    return detail;
+  },
   pendingComponent: PreviewPending,
   component: StorefrontThemePreviewRoute,
 });
@@ -459,24 +486,73 @@ function StorefrontThemePreviewRoute() {
     <ReadyStorefrontPreview
       context={query.data.data}
       templateId={search.templateId}
+      routePath={search.routePath}
       viewportHeight={viewportHeight}
     />
   );
 }
 
+function usePreviewNavigation(
+  initialTemplateId: string,
+  initialRoutePath?: string,
+) {
+  const resetPreviewScrollPosition = useCallback(() => {
+    // The editor keeps this document mounted between route changes. Although
+    // the editor normally owns scrolling, reset the iframe document as well so
+    // a browser-restored scroll offset can never leak into the next route.
+    if (typeof window.scrollTo === "function") {
+      window.scrollTo(0, 0);
+    }
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, []);
+  const [navigation, setNavigation] = useState({
+    templateId: initialTemplateId,
+    routePath: initialRoutePath,
+  });
+
+  useEffect(() => {
+    resetPreviewScrollPosition();
+    setNavigation({
+      templateId: initialTemplateId,
+      routePath: initialRoutePath,
+    });
+  }, [initialRoutePath, initialTemplateId, resetPreviewScrollPosition]);
+
+  useEffect(() => {
+    const handleNavigationMessage = (event: MessageEvent<unknown>) => {
+      const message = parseEditorToPreviewWindowEvent(event);
+      if (message?.type !== "morph:storefront-preview-set-route") return;
+      resetPreviewScrollPosition();
+      setNavigation({
+        templateId: message.templateId,
+        routePath: message.routePath ?? undefined,
+      });
+    };
+
+    window.addEventListener("message", handleNavigationMessage);
+    return () => window.removeEventListener("message", handleNavigationMessage);
+  }, [resetPreviewScrollPosition]);
+
+  return navigation;
+}
+
 function ReadyStorefrontPreview({
   context,
   templateId,
+  routePath,
   viewportHeight,
 }: {
   context: Parameters<typeof StorefrontPreview>[0]["context"];
   templateId: string;
+  routePath?: string;
   viewportHeight: number;
 }) {
+  const navigation = usePreviewNavigation(templateId, routePath);
   const template = context.templates.find(
-    (candidate) => candidate.id === templateId,
+    (candidate) => candidate.id === navigation.templateId,
   );
-  const previewDocument = usePreviewDocument(template?.document);
+  const activeRoutePath = navigation.routePath;
   const {
     themeFiles: previewThemeFiles,
     renderThemeFiles,
@@ -484,6 +560,30 @@ function ReadyStorefrontPreview({
     styleRevision,
     acknowledgeStyleRevision,
   } = usePreviewThemeFiles(context.storefront.id, context.theme.id);
+  const routeDocument = useMemo(() => {
+    if (!template?.document || !activeRoutePath) return template?.document;
+    const registry = buildThemeRouteRegistry(renderThemeFiles);
+    if (!registry.valid) return template.document;
+    const route = registry.routes.find(
+      (candidate) =>
+        candidate.kind === "route" && candidate.path === activeRoutePath,
+    );
+    if (!route) return template.document;
+    const derived = deriveThemeRouteSections(
+      renderThemeFiles,
+      route.sourcePath,
+    );
+    if (
+      derived.diagnostics.length > 0 ||
+      (derived.sections.length === 0 && !derived.hasContentImport)
+    ) {
+      return template.document;
+    }
+    return mergeDocumentWithRouteSections(template.document, derived.sections, {
+      routeOwnsStructure: derived.hasContentImport,
+    });
+  }, [activeRoutePath, renderThemeFiles, template?.document]);
+  const previewDocument = usePreviewDocument(routeDocument);
 
   // Source may render immediately because transient inline styles bridge the
   // compile window. The revision is acknowledged only after CSS is injected.
@@ -524,7 +624,8 @@ function ReadyStorefrontPreview({
       )}
       <StorefrontPreview
         context={context}
-        templateId={templateId}
+        templateId={navigation.templateId}
+        routePath={activeRoutePath}
         viewportHeight={viewportHeight}
         document={previewDocument}
         themeFiles={renderThemeFiles}
@@ -539,10 +640,10 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
   );
   const [themeFiles, setThemeFiles] = useState<
     Array<{ path: string; content: string }>
-  >([]);
+  >(() => fileQuery.data?.files ?? []);
   const [renderThemeFiles, setRenderThemeFiles] = useState<
     Array<{ path: string; content: string }>
-  >([]);
+  >(() => fileQuery.data?.files ?? []);
   const [sourceGeneration, setSourceGeneration] = useState<number | undefined>(
     undefined,
   );
@@ -629,7 +730,7 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
 function usePreviewDocument(document: StorefrontPageDocument | undefined) {
   const [previewDocument, setPreviewDocument] = useState(document);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setPreviewDocument(document);
   }, [document]);
 
@@ -1018,6 +1119,14 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     } | null = null;
     let suppressNextClick = false;
     let overlayPositionFrame = 0;
+    let wheelPostFrame = 0;
+    let pendingWheel: {
+      deltaY: number;
+      deltaMode: number;
+      ctrlKey: boolean;
+      clientX: number;
+      clientY: number;
+    } | null = null;
     let dragPreviewElement: HTMLElement | null = null;
     let reorderCandidateOverlays: Array<{
       element: HTMLElement;
@@ -2644,16 +2753,47 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       stopDragAutoScroll();
     };
 
-    const handleWheel = (event: WheelEvent) => {
-      event.preventDefault();
+    const publishPendingWheel = () => {
+      wheelPostFrame = 0;
+      const wheel = pendingWheel;
+      pendingWheel = null;
+      if (!wheel) return;
+
       postPreviewToEditorMessage({
         type: "morph:storefront-preview-wheel",
-        deltaY: event.deltaY,
+        ...wheel,
+      });
+    };
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+
+      // The editor moves the canvas with its own rAF-driven transform. Posting
+      // every native wheel event can be much noisier than the display rate
+      // (high-resolution trackpads commonly emit 100+ events per second), and
+      // each message is parsed by several editor bridges. Sum the deltas and
+      // forward one message per frame instead. Keep zoom gestures and scroll
+      // gestures separate so a modifier change cannot combine two operations.
+      if (
+        pendingWheel &&
+        (pendingWheel.ctrlKey !== event.ctrlKey ||
+          pendingWheel.deltaMode !== event.deltaMode)
+      ) {
+        publishPendingWheel();
+      }
+
+      pendingWheel = {
+        deltaY: (pendingWheel?.deltaY ?? 0) + event.deltaY,
         deltaMode: event.deltaMode,
         ctrlKey: event.ctrlKey,
+        // For zooming, the most recent pointer location is the intended
+        // anchor. For scrolling these values are ignored by the editor.
         clientX: event.clientX,
         clientY: event.clientY,
-      });
+      };
+      if (wheelPostFrame === 0) {
+        wheelPostFrame = requestAnimationFrame(publishPendingWheel);
+      }
     };
 
     const restoreSelectedSection = () => {
@@ -3066,6 +3206,9 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       document.removeEventListener("drop", handleDrop, true);
       document.removeEventListener("dragend", handleDragEnd, true);
       document.removeEventListener("wheel", handleWheel, true);
+      cancelAnimationFrame(wheelPostFrame);
+      wheelPostFrame = 0;
+      pendingWheel = null;
       window.removeEventListener("scroll", schedulePositionOverlays, true);
       window.removeEventListener("resize", schedulePositionOverlays);
       cancelAnimationFrame(overlayPositionFrame);
@@ -3140,6 +3283,59 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
     document.documentElement.style.overflow = "hidden";
     document.body.style.overflow = "hidden";
 
+    // The editor frame is sized from the rendered page. A page shell that
+    // uses `min-h-screen` creates a circular dependency here: the iframe
+    // height becomes the CSS viewport height, which becomes the shell's
+    // minimum height, which is then reported back as the iframe height. Keep
+    // the production theme untouched and replace viewport-relative sizing only
+    // inside the preview. Resolve it against the editor-provided viewport
+    // height instead of the iframe's own height: that preserves the page's
+    // intended minimum while preventing a route's `min-h-screen` from growing
+    // every time the iframe is measured. Apply this to descendants too because
+    // authored routes commonly put viewport sizing on their `<main>`.
+    const previewSizingStyle = document.createElement("style");
+    previewSizingStyle.dataset.storefrontPreviewSizing = "true";
+    previewSizingStyle.textContent = `
+      [data-storefront-preview-root] > [data-morph-source-file] {
+        min-height: 0 !important;
+      }
+      [data-storefront-preview-root] [class~="min-h-screen"],
+      [data-storefront-preview-root] [class~="min-h-svh"],
+      [data-storefront-preview-root] [class~="min-h-dvh"],
+      [data-storefront-preview-root] [class~="min-h-lvh"],
+      [data-storefront-preview-root] [class~="sm:min-h-screen"],
+      [data-storefront-preview-root] [class~="md:min-h-screen"],
+      [data-storefront-preview-root] [class~="lg:min-h-screen"],
+      [data-storefront-preview-root] [class~="xl:min-h-screen"],
+      [data-storefront-preview-root] [class~="2xl:min-h-screen"],
+      [data-storefront-preview-root] [class~="min-h-[100vh]"],
+      [data-storefront-preview-root] [class~="min-h-[100svh]"],
+      [data-storefront-preview-root] [class~="min-h-[100dvh]"],
+      [data-storefront-preview-root] [class~="min-h-[100lvh]"] {
+        min-height: var(--storefront-preview-viewport-height, 100vh) !important;
+      }
+      [data-storefront-preview-root] [data-morph-source-file][class*="h-screen"],
+      [data-storefront-preview-root] [data-morph-source-file][class*="h-svh"],
+      [data-storefront-preview-root] [data-morph-source-file][class*="h-dvh"],
+      [data-storefront-preview-root] [data-morph-source-file][class*="h-lvh"],
+      [data-storefront-preview-root] [class~="h-screen"],
+      [data-storefront-preview-root] [class~="h-svh"],
+      [data-storefront-preview-root] [class~="h-dvh"],
+      [data-storefront-preview-root] [class~="h-lvh"],
+      [data-storefront-preview-root] [class~="sm:h-screen"],
+      [data-storefront-preview-root] [class~="md:h-screen"],
+      [data-storefront-preview-root] [class~="lg:h-screen"],
+      [data-storefront-preview-root] [class~="xl:h-screen"],
+      [data-storefront-preview-root] [class~="2xl:h-screen"],
+      [data-storefront-preview-root] [class~="h-[100vh]"],
+      [data-storefront-preview-root] [class~="h-[100svh]"],
+      [data-storefront-preview-root] [class~="h-[100dvh]"],
+      [data-storefront-preview-root] [class~="h-[100lvh]"] {
+        height: var(--storefront-preview-viewport-height, 100vh) !important;
+      }
+    `;
+    document.head.appendChild(previewSizingStyle);
+
     let animationFrame = 0;
     let candidateHeight: number | null = null;
     let stableFrameCount = 0;
@@ -3151,8 +3347,15 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
       animationFrame = requestAnimationFrame(() => {
         if (isDisposed) return;
 
+        // `getBoundingClientRect()` captures the visible border box while
+        // `scrollHeight` captures content that extends beyond it. Reading
+        // both in the same animation frame keeps this a read-only geometry
+        // phase and avoids layout read/write thrashing.
         const nextHeight = Math.ceil(
-          previewRoot.getBoundingClientRect().height,
+          Math.max(
+            previewRoot.getBoundingClientRect().height,
+            previewRoot.scrollHeight,
+          ),
         );
         if (
           candidateHeight !== null &&
@@ -3213,6 +3416,7 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
       cancelAnimationFrame(animationFrame);
       observer.disconnect();
       window.removeEventListener("message", handleSizeRequest);
+      previewSizingStyle.remove();
       document.documentElement.style.overflow = previousDocumentOverflow;
       document.body.style.overflow = previousBodyOverflow;
     };

@@ -97,6 +97,35 @@ export default function HomePage() {
     }
   });
 
+  it("builds a Theme using tsconfig path aliases", async () => {
+    const runner = new LocalViteThemeBuildRunner();
+    const input = createInput([
+      {
+        path: "tsconfig.json",
+        content: JSON.stringify({
+          compilerOptions: { paths: { "@/*": ["src/*"] } },
+        }),
+      },
+      {
+        path: "src/styles/global.css",
+        content: '@import "tailwindcss";',
+      },
+      {
+        path: "src/components/Hero.tsx",
+        content: "export default function Hero() { return <h1>Alias works</h1>; }",
+      },
+      {
+        path: "src/pages/index.tsx",
+        content: 'import Hero from "@/components/Hero"; export default () => <Hero />;',
+        isEntry: true,
+      },
+    ]);
+
+    const result = await runner.run(input);
+
+    expect(result.success, result.success ? undefined : result.errorMessage).toBe(true);
+  });
+
   it("builds source-authored TanStack routes through the isolated client preview adapter", async () => {
     const runner = new LocalViteThemeBuildRunner();
     const input = createInput(

@@ -15,18 +15,12 @@ export type StorefrontThemeStatus = "draft" | "published" | "archived";
 /** Release lifecycle is independent from the production pointer. */
 export type StorefrontReleaseStatus = "available" | "invalidated";
 export type StorefrontContentPublicationItemType =
-  | "template"
-  | "page"
-  | "navigation";
+  "template" | "page" | "navigation";
 export type StorefrontPageStatus = "draft" | "published" | "archived";
 export type StorefrontDomainStatus = "pending" | "active" | "failed";
 export type StorefrontCommentThreadStatus = "open" | "resolved" | "archived";
 export type StorefrontTemplateType =
-  | "index"
-  | "product"
-  | "collection"
-  | "page"
-  | "blog";
+  "index" | "product" | "collection" | "page" | "blog";
 
 export type StorefrontPageDocument = {
   version: 1;
@@ -437,10 +431,10 @@ export const storefrontThemeRevisions = sqliteTable(
 );
 
 export type StorefrontThemeBuildStatus =
-  | "queued"
-  | "building"
-  | "succeeded"
-  | "failed";
+  "queued" | "building" | "succeeded" | "failed";
+
+export type StorefrontThemeDependencyStatus =
+  "requested" | "building" | "ready" | "failed" | "rejected";
 
 /** Build execution record permanently bound to an immutable source revision. */
 export const storefrontThemeBuilds = sqliteTable(
@@ -463,6 +457,9 @@ export const storefrontThemeBuilds = sqliteTable(
     inputHash: text("input_hash"),
     compilerId: text("compiler_id"),
     compilerVersion: text("compiler_version"),
+    dependenciesJson: text("dependencies_json", { mode: "json" }).$type<
+      Record<string, string>
+    >(),
     artifactPrefix: text("artifact_prefix"),
     manifestJson: text("manifest_json", { mode: "json" }),
     diagnosticsJson: text("diagnostics_json", { mode: "json" }),
@@ -483,6 +480,50 @@ export const storefrontThemeBuilds = sqliteTable(
     ),
     index("storefront_theme_builds_status_idx").on(
       table.status,
+      table.deletedAt,
+    ),
+  ],
+);
+
+/**
+ * Per-theme package enablement state.  The package/version itself is always
+ * checked against the platform allowlist from cms.config before this table is
+ * written; the table only records tenant intent and build lifecycle state.
+ */
+export const storefrontThemeDependencies = sqliteTable(
+  "storefront_theme_dependencies",
+  {
+    id: text("id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    packageName: text("package_name").notNull(),
+    packageVersion: text("package_version").notNull(),
+    status: text("status")
+      .$type<StorefrontThemeDependencyStatus>()
+      .notNull()
+      .default("requested"),
+    buildId: text("build_id").references(() => storefrontThemeBuilds.id, {
+      onDelete: "set null",
+    }),
+    requestedBy: text("requested_by"),
+    errorMessage: text("error_message"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_theme_dependencies_theme_package_unique")
+      .on(table.themeId, table.packageName)
+      .where(sql`${table.deletedAt} IS NULL`),
+    index("storefront_theme_dependencies_theme_status_idx").on(
+      table.themeId,
+      table.status,
+      table.deletedAt,
+    ),
+    index("storefront_theme_dependencies_build_idx").on(
+      table.buildId,
       table.deletedAt,
     ),
   ],
@@ -523,10 +564,7 @@ export const storefrontReleases = sqliteTable(
       table.status,
       table.deletedAt,
     ),
-    index("storefront_releases_theme_idx").on(
-      table.themeId,
-      table.deletedAt,
-    ),
+    index("storefront_releases_theme_idx").on(table.themeId, table.deletedAt),
     index("storefront_releases_source_revision_idx").on(
       table.sourceRevisionId,
       table.deletedAt,
@@ -568,7 +606,9 @@ export const storefrontContentPublicationItems = sqliteTable(
       .references(() => storefrontContentPublications.id, {
         onDelete: "cascade",
       }),
-    itemType: text("item_type").$type<StorefrontContentPublicationItemType>().notNull(),
+    itemType: text("item_type")
+      .$type<StorefrontContentPublicationItemType>()
+      .notNull(),
     contentId: text("content_id").notNull(),
     revisionId: text("revision_id").notNull(),
     metadata: metadata(),
@@ -586,6 +626,3 @@ export const storefrontContentPublicationItems = sqliteTable(
     ),
   ],
 );
-
-
-

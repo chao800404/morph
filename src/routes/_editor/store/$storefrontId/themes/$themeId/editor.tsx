@@ -8,16 +8,33 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { VisualEditorPending } from "../../../../-components/visual-editor-pending";
 import { VisualEditorShell } from "../../../../-components/visual-editor-shell";
+import { storefrontThemeFileQueries } from "../../../../-queries/storefront-theme-files.queries";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
 
 export const Route = createFileRoute(
   "/_editor/store/$storefrontId/themes/$themeId/editor",
 )({
   validateSearch: storefrontThemeEditorSearchSchema,
-  loader: ({ context, params }) =>
-    context.queryClient.ensureQueryData(
-      storefrontThemeQueries.detail(params.storefrontId, params.themeId),
-    ),
+  loader: async ({ context, params }) => {
+    const detailQuery = storefrontThemeQueries.detail(
+      params.storefrontId,
+      params.themeId,
+    );
+    const filesQuery = storefrontThemeFileQueries.tree(
+      params.storefrontId,
+      params.themeId,
+    );
+
+    // The editor cannot render the correct route tree until both the theme
+    // document and its source files are available. Start them together so
+    // the first editor paint does not fall back to the starter template while
+    // the source workspace is still loading.
+    const [detail] = await Promise.all([
+      context.queryClient.ensureQueryData(detailQuery),
+      context.queryClient.ensureQueryData(filesQuery).catch(() => undefined),
+    ]);
+    return detail;
+  },
   pendingMs: 0,
   pendingMinMs: 250,
   pendingComponent: VisualEditorPending,

@@ -94,7 +94,14 @@ import {
   Trash2,
   type LucideIcon,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import {
@@ -115,7 +122,17 @@ export type EditorSectionsPanelProps = {
   editableNodes?: readonly PreviewEditableNode[];
   activeSelection?: EditorSelectionDescriptor | null;
   onSelectEditableNode?: (target: PreviewSelectionRestoreTarget) => void;
+  /** Source route currently rendered by the Design preview. */
+  activeRoute?: ThemeRouteRecord | null;
+  /**
+   * The URL already points at a source route, but its file tree has not been
+   * loaded yet. Keep the previous template sections out of the first paint so
+   * the tree never briefly shows a different page.
+   */
+  routeStructurePending?: boolean;
   themeRoutes?: readonly ThemeRouteRecord[];
+  /** Warm a route before navigation commits. */
+  onPrefetchThemeRoute?: (route: ThemeRouteRecord) => void;
   onOpenThemeRoute?: (route: ThemeRouteRecord) => void;
   sectionOptions?: readonly ThemeRouteSectionOption[];
   onAddSection?: (option: ThemeRouteSectionOption) => Promise<unknown>;
@@ -129,6 +146,13 @@ export type EditorSectionsPanelProps = {
 
 export type EditorEditableNodeDeleteResult =
   { success: true } | { success: false; message: string };
+
+// Preview structure can arrive immediately before this panel commits. Apply
+// expansion state in a browser layout effect so the first painted tree already
+// has its expected open branches. Falling back to useEffect during SSR keeps
+// hydration safe and avoids a server-side useLayoutEffect warning.
+const useIsomorphicLayoutEffect =
+  typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 type EditorSection =
   StorefrontThemeEditorDTO["templates"][number]["document"]["sections"][number];
@@ -346,6 +370,53 @@ function SortableSectionRow({
   );
 }
 
+/**
+ * A direct route can own the preview DOM without declaring `content(...)`
+ * sections. Keep that source tree visible without pretending it is a stored
+ * section (which would incorrectly enable reorder, visibility, or delete).
+ */
+function RouteTreeRootRow({
+  label,
+  expanded,
+  hasChildren,
+  onToggleExpanded,
+  children,
+}: {
+  label: string;
+  expanded: boolean;
+  hasChildren: boolean;
+  onToggleExpanded: () => void;
+  children?: React.ReactNode;
+}) {
+  return (
+    <SidebarMenuItem>
+      <Collapsible open={expanded} onOpenChange={onToggleExpanded}>
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex h-8 w-full min-w-0 items-center rounded-md px-1.5 text-left text-sm text-sidebar-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            aria-label={`${expanded ? "Collapse" : "Expand"} route ${label}`}
+            aria-expanded={hasChildren ? expanded : undefined}
+            disabled={!hasChildren}
+          >
+            {expanded ? (
+              <ChevronDown className="mr-1.5 size-3.5 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="mr-1.5 size-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <FileCode2
+              className="mr-1.5 size-4 shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <span className="min-w-0 truncate">{label}</span>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>{children}</CollapsibleContent>
+      </Collapsible>
+    </SidebarMenuItem>
+  );
+}
+
 function selectionMatchesEditableNode(
   node: PreviewEditableNode,
   selection: EditorSelectionDescriptor | null | undefined,
@@ -529,7 +600,10 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   editableNodes = [],
   activeSelection,
   onSelectEditableNode,
+  activeRoute = null,
+  routeStructurePending = false,
   themeRoutes = [],
+  onPrefetchThemeRoute,
   onOpenThemeRoute,
   sectionOptions = [],
   onAddSection,
@@ -577,6 +651,19 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     }
     return result;
   }, [editableNodes]);
+  const routeNodeSectionIds = useMemo(() => {
+    if (sourceSections.length > 0 || !activeRoute) return [];
+    const sectionIds = new Set(
+      editableNodes
+        .map((node) => node.sectionId)
+        .filter((sectionId): sectionId is string => Boolean(sectionId)),
+    );
+    return [...sectionIds].sort((left, right) => {
+      if (left === activeRoute.sourcePath) return -1;
+      if (right === activeRoute.sourcePath) return 1;
+      return left.localeCompare(right);
+    });
+  }, [activeRoute, editableNodes, sourceSections.length]);
   const editableNodeById = useMemo(
     () => new Map(editableNodes.map((node) => [node.id, node])),
     [editableNodes],
@@ -688,7 +775,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     }
   };
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     sectionsRef.current = sourceSections;
     setSections(sourceSections);
   }, [sourceSections]);
@@ -737,7 +824,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     [],
   );
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     const sectionId = search.section;
     if (!sectionId) return;
     setExpandedSectionIds((current) => {
@@ -748,7 +835,21 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     });
   }, [search.section]);
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
+    if (routeNodeSectionIds.length === 0) return;
+    setExpandedSectionIds((current) => {
+      let changed = false;
+      const next = new Set(current);
+      for (const sectionId of routeNodeSectionIds) {
+        if (next.has(sectionId)) continue;
+        next.add(sectionId);
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [routeNodeSectionIds]);
+
+  useIsomorphicLayoutEffect(() => {
     if (!selectedEditableNode) return;
     setExpandedSectionIds((current) => {
       if (current.has(selectedEditableNode.sectionId)) return current;
@@ -865,6 +966,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                       type="button"
                       size="sm"
                       className="cursor-pointer"
+                      onMouseEnter={() => onPrefetchThemeRoute?.(route)}
+                      onFocus={() => onPrefetchThemeRoute?.(route)}
                       onClick={() => onOpenThemeRoute?.(route)}
                       title={`Open ${route.sourcePath}`}
                     >
@@ -902,7 +1005,15 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
 
           <SidebarContent className="min-h-0 w-full">
             <SidebarGroup className="border-0 p-2" aria-label="Theme structure">
-              {sections.length > 0 ? (
+              {routeStructurePending ? (
+                <div
+                  className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground"
+                  role="status"
+                  aria-live="polite"
+                >
+                  Loading route structure…
+                </div>
+              ) : sections.length > 0 ? (
                 <DragDropProvider
                   sensors={sensors}
                   onDragStart={() => {
@@ -1025,6 +1136,49 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                     })}
                   </SidebarMenu>
                 </DragDropProvider>
+              ) : routeNodeSectionIds.length > 0 ? (
+                <SidebarMenu>
+                  {routeNodeSectionIds.map((sectionId) => {
+                    const sectionNodes =
+                      nodesByParent.get(`${sectionId}\u0000`) ?? [];
+                    const expanded = expandedSectionIds.has(sectionId);
+                    const sourceName = sectionId.split("/").at(-1) ?? sectionId;
+                    const sourceStem = sourceName.replace(
+                      /\.[cm]?[jt]sx?$/,
+                      "",
+                    );
+                    const label =
+                      sectionId === activeRoute?.sourcePath
+                        ? activeRoute.path === "/"
+                          ? "Home"
+                          : activeRoute.path
+                        : sourceStem
+                            .replace(/[-_]+/g, " ")
+                            .replace(/\b\w/g, (character) =>
+                              character.toUpperCase(),
+                            );
+                    return (
+                      <RouteTreeRootRow
+                        key={sectionId}
+                        label={label}
+                        expanded={expanded}
+                        hasChildren={sectionNodes.length > 0}
+                        onToggleExpanded={() =>
+                          setExpandedSectionIds((current) => {
+                            const next = new Set(current);
+                            if (next.has(sectionId)) next.delete(sectionId);
+                            else next.add(sectionId);
+                            return next;
+                          })
+                        }
+                      >
+                        {sectionNodes.length > 0
+                          ? renderEditableNodes(sectionId, null)
+                          : null}
+                      </RouteTreeRootRow>
+                    );
+                  })}
+                </SidebarMenu>
               ) : (
                 <div className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground">
                   This template has no sections yet. New sections will appear

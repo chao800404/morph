@@ -23,6 +23,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
@@ -36,8 +44,9 @@ import type {
   StorefrontThemeFileTreeNode,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import {
+  applyStarterThemeWorkspace,
   deleteStorefrontThemeFile,
-  initStorefrontStarterTheme,
+  previewStarterThemeWorkspace,
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -73,6 +82,8 @@ import {
   FolderOpen,
   LoaderCircle,
   Paintbrush,
+  Package,
+  PackagePlus,
   Save,
   X,
 } from "lucide-react";
@@ -81,11 +92,16 @@ import { toast } from "sonner";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import {
   configureThemeTypeScript,
+  collectThemeImportProtectionEditorDiagnostics,
+  collectThemeRouteDiagnostics,
   disposeThemeWorkspaceModels,
   ensureThemeWorkspaceModels,
   getThemeModelUri,
+  GENERATED_ROUTE_TREE_PATH,
+  renderGeneratedRouteTreeSource,
   createJsxTagDecorations,
   registerTailwindCompletionProvider,
+  registerTanStackRouteCompletionProvider,
 } from "./editor-code-language-support";
 import { extractThemeDependencyNames } from "./editor-code-package-types";
 import { formatEditorCode } from "./editor-code-formatter";
@@ -108,6 +124,7 @@ import {
   EditorCodeStatusPanel,
   type EditorCodeDiagnostic,
 } from "./editor-code-status-panel";
+import { EditorThemeDependenciesDialog } from "./editor-theme-dependencies";
 
 type EditorCodeWorkspaceProps = {
   storefrontId: string;
@@ -132,6 +149,13 @@ type EditorCodeWorkspaceProps = {
   ) => Promise<StorefrontThemeFileDTO | null>;
   onBuildPreview?: () => void;
   externalDiagnostics?: unknown;
+  dependencySourceRevisionId?: string;
+};
+
+type StarterThemeBootstrapPlan = {
+  sourceGeneration: number;
+  files: Array<{ path: string; operation: "create" | "update" }>;
+  deletions: Array<{ path: string }>;
 };
 
 function getFileIcon(filename: string) {
@@ -156,6 +180,76 @@ function getLanguage(path: string): string {
   return "plaintext";
 }
 
+const GENERATED_ROUTE_TREE_NODE: StorefrontThemeFileTreeNode = {
+  name: "routeTree.gen.ts",
+  path: GENERATED_ROUTE_TREE_PATH,
+  isDirectory: false,
+  mimeType: "text/typescript",
+};
+
+function sortFileTreeNodes(
+  nodes: readonly StorefrontThemeFileTreeNode[],
+): StorefrontThemeFileTreeNode[] {
+  return [...nodes].sort((left, right) => {
+    if (left.isDirectory !== right.isDirectory) {
+      return left.isDirectory ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
+}
+
+/**
+ * Adds the platform-generated route tree to Explorer as a read-only view.
+ * `routeTree.gen.ts` is deliberately not part of the persisted file list; the
+ * fixed Theme build toolchain owns that artifact. Showing the virtual file in
+ * Explorer still gives route authors the same discoverability as VS Code.
+ */
+function withGeneratedRouteTree(
+  tree: readonly StorefrontThemeFileTreeNode[],
+  enabled: boolean,
+): StorefrontThemeFileTreeNode[] {
+  if (!enabled) return [...tree];
+
+  const addToDirectory = (
+    nodes: readonly StorefrontThemeFileTreeNode[],
+    directoryPath: string,
+  ): StorefrontThemeFileTreeNode[] => {
+    const directory = nodes.find(
+      (node) => node.isDirectory && node.path === directoryPath,
+    );
+    if (!directory) return [...nodes];
+    return sortFileTreeNodes(
+      nodes.map((node) =>
+        node === directory
+          ? {
+              ...node,
+              children: sortFileTreeNodes([
+                ...(node.children ?? []).filter(
+                  (child) => child.path !== GENERATED_ROUTE_TREE_PATH,
+                ),
+                GENERATED_ROUTE_TREE_NODE,
+              ]),
+            }
+          : node,
+      ),
+    );
+  };
+
+  const withSrc = addToDirectory(tree, "src");
+  if (withSrc.some((node) => node.path === "src" && node.isDirectory)) {
+    return withSrc;
+  }
+  return sortFileTreeNodes([
+    ...tree,
+    {
+      name: "src",
+      path: "src",
+      isDirectory: true,
+      children: [GENERATED_ROUTE_TREE_NODE],
+    },
+  ]);
+}
+
 export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   storefrontId,
   themeId,
@@ -170,11 +264,18 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   onSaveFile,
   onBuildPreview,
   externalDiagnostics,
+  dependencySourceRevisionId,
 }: EditorCodeWorkspaceProps) {
   const queryClient = useQueryClient();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
+  const routeCompletionProviderRef = useRef<{ dispose: () => void } | null>(
+    null,
+  );
+  const themeRouteFilesRef = useRef<Array<{ path: string; content: string }>>(
+    [],
+  );
   const jsxTagDecorationsRef = useRef<ReturnType<
     typeof createJsxTagDecorations
   > | null>(null);
@@ -249,6 +350,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [commandCenterMode, setCommandCenterMode] = useState<
     "closed" | "files" | "commands"
   >("closed");
+  const [dependenciesDialogOpen, setDependenciesDialogOpen] = useState(false);
   const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
   const [bottomPanelTab, setBottomPanelTab] = useState<"problems" | "output">(
     "problems",
@@ -261,7 +363,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [copiedPaths, setCopiedPaths] = useState<string[]>([]);
   const [searchRevision, setSearchRevision] = useState(0);
+  const [routeDiagnosticsRevision, setRouteDiagnosticsRevision] = useState(0);
   const searchRevisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const routeDiagnosticsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
   const [pendingConfirmation, setPendingConfirmation] = useState<
@@ -270,6 +376,10 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     | { kind: "delete-folder"; path: string; fileCount: number }
     | null
   >(null);
+  const [starterBootstrapPlan, setStarterBootstrapPlan] =
+    useState<StarterThemeBootstrapPlan | null>(null);
+  const [starterBootstrapDialogOpen, setStarterBootstrapDialogOpen] =
+    useState(false);
   const [dirtyPaths, setDirtyPaths] = useState<string[]>(() =>
     useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
   );
@@ -282,6 +392,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const renameJustStartedRef = useRef(false);
   const selectedPathsRef = useRef(selectedPaths);
   selectedPathsRef.current = selectedPaths;
+  themeRouteFilesRef.current = files.map((file) => ({
+    path: file.path,
+    content:
+      draftContentsRef.current[file.path] ??
+      useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+      file.content,
+  }));
 
   const appendOutput = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString([], {
@@ -297,7 +414,18 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleEditorWillMount = useCallback(
     (monaco: Monaco) => {
-      configureThemeTypeScript(monaco, extractThemeDependencyNames(files));
+      configureThemeTypeScript(
+        monaco,
+        extractThemeDependencyNames(files),
+        workspaceScope,
+        files.map((file) => ({
+          path: file.path,
+          content:
+            draftContentsRef.current[file.path] ??
+            useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+            file.content,
+        })),
+      );
       ensureThemeWorkspaceModels(
         monaco,
         workspaceScope,
@@ -312,6 +440,33 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     },
     [files, workspaceScope],
   );
+
+  // The real route tree is produced by the fixed Theme build toolchain. Keep
+  // the editor's virtual model in sync after a route is created, renamed, or
+  // removed so the generated file and path completions never lag behind the
+  // persisted workspace snapshot.
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco) return;
+    const workspaceModels = files.map((file) => ({
+      path: file.path,
+      content:
+        draftContentsRef.current[file.path] ??
+        useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+        file.content,
+    }));
+    configureThemeTypeScript(
+      monaco,
+      extractThemeDependencyNames(files),
+      workspaceScope,
+      workspaceModels,
+    );
+    ensureThemeWorkspaceModels(
+      monaco,
+      workspaceScope,
+      workspaceModels,
+    );
+  }, [files, routeDiagnosticsRevision, workspaceScope]);
 
   const refreshDiagnostics = useCallback(
     (monaco: Monaco) => {
@@ -346,6 +501,28 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           severity,
         });
       }
+      next.push(
+        ...collectThemeRouteDiagnostics(
+          files.map((file) => ({
+            path: file.path,
+            content:
+              draftContentsRef.current[file.path] ??
+              useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+              file.content,
+          })),
+        ),
+      );
+      next.push(
+        ...collectThemeImportProtectionEditorDiagnostics(
+          files.map((file) => ({
+            path: file.path,
+            content:
+              draftContentsRef.current[file.path] ??
+              useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+              file.content,
+          })),
+        ),
+      );
       next.sort((left, right) => {
         if (left.severity !== right.severity) {
           return left.severity === "error"
@@ -361,6 +538,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     [files, workspaceScope],
   );
 
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (monaco) refreshDiagnostics(monaco);
+  }, [refreshDiagnostics, routeDiagnosticsRevision]);
+
   const handleEditorDidMount = useCallback<OnMount>(
     (editor, monaco) => {
       editorRef.current = editor;
@@ -368,6 +550,12 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       completionProviderRef.current?.dispose();
       completionProviderRef.current =
         registerTailwindCompletionProvider(monaco);
+      routeCompletionProviderRef.current?.dispose();
+      routeCompletionProviderRef.current =
+        registerTanStackRouteCompletionProvider(
+          monaco,
+          () => themeRouteFilesRef.current,
+        );
       jsxTagDecorationsRef.current?.dispose();
       jsxTagDecorationsRef.current = createJsxTagDecorations(editor);
       editorDisposablesRef.current.forEach((disposable) =>
@@ -409,6 +597,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     () => () => {
       completionProviderRef.current?.dispose();
       completionProviderRef.current = null;
+      routeCompletionProviderRef.current?.dispose();
+      routeCompletionProviderRef.current = null;
       jsxTagDecorationsRef.current?.dispose();
       jsxTagDecorationsRef.current = null;
       editorDisposablesRef.current.forEach((disposable) =>
@@ -418,27 +608,15 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       if (searchRevisionTimerRef.current) {
         clearTimeout(searchRevisionTimerRef.current);
       }
+      if (routeDiagnosticsTimerRef.current) {
+        clearTimeout(routeDiagnosticsTimerRef.current);
+      }
       if (monacoRef.current) {
         disposeThemeWorkspaceModels(monacoRef.current, workspaceScope);
       }
     },
     [workspaceScope],
   );
-
-  useEffect(() => {
-    if (!monacoRef.current) return;
-    ensureThemeWorkspaceModels(
-      monacoRef.current,
-      workspaceScope,
-      files.map((file) => ({
-        path: file.path,
-        content:
-          draftContentsRef.current[file.path] ??
-          useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
-          file.content,
-      })),
-    );
-  }, [files, workspaceScope]);
 
   useEffect(() => {
     if (externalDiagnostics === null || externalDiagnostics === undefined)
@@ -489,11 +667,32 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   }, [jumpLocation]);
 
   // Auto-fallback if current activeFilePath does not exist in loaded workspace files
+  const generatedRouteTreeFile = useMemo(() => {
+    const hasThemeRoutes = files.some((file) =>
+      file.path.replace(/\\/g, "/").startsWith("src/routes/"),
+    );
+    if (!hasThemeRoutes) return null;
+    const sourceFiles = files.map((file) => ({
+      path: file.path,
+      content:
+        draftContentsRef.current[file.path] ??
+        useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+        file.content,
+    }));
+    return {
+      path: GENERATED_ROUTE_TREE_PATH,
+      content: renderGeneratedRouteTreeSource(sourceFiles),
+      mimeType: "text/typescript",
+      generated: true as const,
+    };
+  }, [files, routeDiagnosticsRevision]);
+
   useEffect(() => {
     if (
       openTabs.length > 0 &&
       files.length > 0 &&
-      !files.some((f) => f.path === activeFilePath)
+      !files.some((f) => f.path === activeFilePath) &&
+      !(activeFilePath === GENERATED_ROUTE_TREE_PATH && generatedRouteTreeFile)
     ) {
       const fallback = defaultFile?.path ?? files[0].path;
       setActiveFilePath(fallback);
@@ -501,11 +700,23 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         prev.includes(fallback) ? prev : [...prev, fallback],
       );
     }
-  }, [files, activeFilePath, defaultFile, openTabs.length]);
+  }, [
+    files,
+    activeFilePath,
+    defaultFile,
+    generatedRouteTreeFile,
+    openTabs.length,
+  ]);
 
   const activeFile = useMemo(() => {
-    return files.find((f) => f.path === activeFilePath);
-  }, [files, activeFilePath]);
+    return (
+      files.find((f) => f.path === activeFilePath) ??
+      (activeFilePath === GENERATED_ROUTE_TREE_PATH
+        ? generatedRouteTreeFile
+        : null)
+    );
+  }, [activeFilePath, files, generatedRouteTreeFile]);
+  const activeFileIsGenerated = activeFilePath === GENERATED_ROUTE_TREE_PATH;
 
   // Monaco can swap the model without remounting the React editor. Refresh the
   // semantic tag decorations after that transition so a hot reload or a tab
@@ -516,6 +727,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const getFileBaseline = useCallback(
     (path: string) => {
+      if (path === GENERATED_ROUTE_TREE_PATH) {
+        return generatedRouteTreeFile?.content ?? "";
+      }
       const workspaceFile = useThemeWorkspaceStore
         .getState()
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
@@ -527,11 +741,14 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         ""
       );
     },
-    [files],
+    [files, generatedRouteTreeFile],
   );
 
   const getInitialEditorContent = useCallback(
     (path: string) => {
+      if (path === GENERATED_ROUTE_TREE_PATH) {
+        return generatedRouteTreeFile?.content ?? "";
+      }
       if (draftContentsRef.current[path] !== undefined) {
         return draftContentsRef.current[path];
       }
@@ -542,7 +759,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         ""
       );
     },
-    [files],
+    [files, generatedRouteTreeFile],
   );
 
   const getCurrentEditorContent = useCallback(
@@ -739,34 +956,97 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     },
   });
 
-  const initMutation = useMutation({
+  const starterBootstrapPreviewMutation = useMutation({
     mutationFn: async () => {
-      const res = await initStorefrontStarterTheme({
+      const result = await previewStarterThemeWorkspace({
+        data: { storefrontId, themeId },
+      });
+      if (!result.success) throw new Error(result.message);
+      return result.data as StarterThemeBootstrapPlan;
+    },
+    onSuccess: (plan) => {
+      setStarterBootstrapPlan(plan);
+      setStarterBootstrapDialogOpen(true);
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to prepare the starter theme",
+      );
+    },
+  });
+
+  const starterBootstrapApplyMutation = useMutation({
+    mutationFn: async (expectedSourceGeneration: number) => {
+      const result = await applyStarterThemeWorkspace({
         data: {
           storefrontId,
           themeId,
+          expectedSourceGeneration,
         },
       });
-      if (!res.success) {
-        throw new Error(res.message);
-      }
-      return res.data;
+      if (!result.success) throw new Error(result.message);
+      return result.data;
     },
     onSuccess: async (data) => {
       useThemeWorkspaceStore
         .getState()
         .acceptRemoteGeneration(data.sourceGeneration, workspaceScope);
-      toast.success("Starter theme workspace initialized");
+      suppressModelChangeRef.current = true;
+      for (const saved of data.files) {
+        markWorkspaceSaved(saved, workspaceScope);
+        draftContentsRef.current[saved.path] = saved.content;
+        draftDirtyRef.current[saved.path] = false;
+        delete draftRevisionRef.current[saved.path];
+        for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
+          const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
+          if (
+            modelPath === saved.path ||
+            modelPath.endsWith("/" + saved.path)
+          ) {
+            model.setValue?.(saved.content);
+          }
+        }
+      }
+      suppressModelChangeRef.current = false;
+      syncCombinedDirtyPaths(
+        useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+      );
+      setStarterBootstrapDialogOpen(false);
+      setStarterBootstrapPlan(null);
       await queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
           .queryKey,
       });
+      appendOutput(
+        data.changed
+          ? "Applied TanStack Start starter template to the theme workspace."
+          : "TanStack Start starter template is already up to date.",
+      );
+      toast.success(
+        data.changed
+          ? "TanStack Start starter template applied"
+          : "Starter template is already up to date",
+      );
       onRefreshPreview?.();
     },
-    onError: (err: any) => {
-      toast.error(err.message || "Failed to initialize starter theme");
+    onError: (error) => {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to apply the starter theme",
+      );
     },
   });
+
+  const openStarterBootstrap = useCallback(() => {
+    if (dirtyPaths.length > 0) {
+      toast.error("Save or discard unsaved files before applying the starter template.");
+      return;
+    }
+    starterBootstrapPreviewMutation.mutate();
+  }, [dirtyPaths.length, starterBootstrapPreviewMutation]);
 
   const deleteMutation = useMutation({
     mutationFn: async ({
@@ -1353,6 +1633,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const handleContentChange = (value?: string) => {
     if (value === undefined) return;
     if (suppressModelChangeRef.current) return;
+    if (activeFileIsGenerated) return;
 
     const path = activeFilePath;
     draftContentsRef.current[path] = value;
@@ -1370,6 +1651,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
       );
     }
+    if (routeDiagnosticsTimerRef.current) {
+      clearTimeout(routeDiagnosticsTimerRef.current);
+    }
+    routeDiagnosticsTimerRef.current = setTimeout(
+      () => setRouteDiagnosticsRevision((current) => current + 1),
+      150,
+    );
     if (sideView === "search") {
       if (searchRevisionTimerRef.current) {
         clearTimeout(searchRevisionTimerRef.current);
@@ -1397,7 +1685,12 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const dirtyPathSet = useMemo(() => new Set(dirtyPaths), [dirtyPaths]);
 
   const handleSaveCurrentFile = useCallback(async () => {
-    if (!activeFilePath || saveMutation.isPending || saveInFlightRef.current)
+    if (
+      !activeFilePath ||
+      activeFileIsGenerated ||
+      saveMutation.isPending ||
+      saveInFlightRef.current
+    )
       return;
 
     saveInFlightRef.current = true;
@@ -1452,6 +1745,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       saveInFlightRef.current = false;
     }
   }, [
+    activeFileIsGenerated,
     activeFilePath,
     getCurrentEditorContent,
     saveMutation,
@@ -1523,6 +1817,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       }
       if (replacements.length > 0) {
         setSearchRevision((current) => current + 1);
+        setRouteDiagnosticsRevision((current) => current + 1);
         appendOutput(
           `Replaced ${replacements.reduce((total, item) => total + item.replacementCount, 0)} occurrence${replacements.length === 1 ? "" : "s"} in ${replacements.length} file${replacements.length === 1 ? "" : "s"}.`,
         );
@@ -1652,7 +1947,10 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const handleCopyPaths = useCallback(
     (paths: readonly string[]) => {
-      const next = [...new Set(paths)];
+      const next = [
+        ...new Set(paths.filter((path) => path !== GENERATED_ROUTE_TREE_PATH)),
+      ];
+      if (next.length === 0) return;
       setCopiedPaths(next);
       appendOutput(
         `Copied ${next.length} item${next.length === 1 ? "" : "s"} to the Explorer clipboard.`,
@@ -1720,11 +2018,17 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         },
       },
       {
+        id: "manage-dependencies",
+        label: "Theme: Manage Packages",
+        icon: Package,
+        run: () => setDependenciesDialogOpen(true),
+      },
+      {
         id: "format",
         label: "Format Document",
         shortcut: "Shift+Alt+F",
         icon: Braces,
-        disabled: !activeFilePath,
+        disabled: !activeFilePath || activeFileIsGenerated,
         run: () =>
           editorRef.current?.getAction?.("editor.action.formatDocument")?.run(),
       },
@@ -1732,7 +2036,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         id: "organize-imports",
         label: "Source Action: Organize Imports",
         icon: ListChecks,
-        disabled: !/\.[jt]sx?$/.test(activeFilePath),
+        disabled:
+          activeFileIsGenerated || !/\.[jt]sx?$/.test(activeFilePath),
         run: () =>
           editorRef.current
             ?.getAction?.("editor.action.organizeImports")
@@ -1758,11 +2063,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     ],
     [
       activeFilePath,
+      activeFileIsGenerated,
       dirtyPathSet,
       dirtyPaths.length,
       handleSaveAll,
       handleSaveCurrentFile,
       onBuildPreview,
+      setDependenciesDialogOpen,
       startCreatingFolder,
       startCreatingIn,
     ],
@@ -1921,8 +2228,12 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   // record after a file lands there means deleting that file does not remove
   // the folder the author created.
   const visibleTree = useMemo(
-    () => withPendingFolders(tree, pendingFolders),
-    [tree, pendingFolders],
+    () =>
+      withPendingFolders(
+        withGeneratedRouteTree(tree, generatedRouteTreeFile !== null),
+        pendingFolders,
+      ),
+    [generatedRouteTreeFile, pendingFolders, tree],
   );
   const visibleExplorerPaths = useMemo(() => {
     const result: string[] = [];
@@ -1954,24 +2265,26 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       return;
     }
     if (!current) return;
-    const isFile = files.some((file) => file.path === current);
+    const isGenerated = current === GENERATED_ROUTE_TREE_PATH;
+    const isFile = isGenerated || files.some((file) => file.path === current);
     if (event.key === "Enter") {
       event.preventDefault();
       if (isFile) handleOpenFile(current);
       else toggleFolder(current);
-    } else if (event.key === "F2" && isFile) {
+    } else if (event.key === "F2" && isFile && !isGenerated) {
       event.preventDefault();
       startRenamingFile(current);
     } else if (event.key === "Delete") {
       event.preventDefault();
-      if (isFile) handleDeleteFile(current);
+      if (isGenerated) return;
+      if (isFile && !isGenerated) handleDeleteFile(current);
       else handleDeleteFolder(current);
     } else if (
       (event.ctrlKey || event.metaKey) &&
       event.key.toLowerCase() === "c"
     ) {
       event.preventDefault();
-      handleCopyPaths(selectedPathsRef.current);
+      if (!isGenerated) handleCopyPaths(selectedPathsRef.current);
     } else if (
       (event.ctrlKey || event.metaKey) &&
       event.key.toLowerCase() === "v"
@@ -2190,7 +2503,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
 
     const isActive = activeFilePath === node.path;
-    const isDirty = dirtyPathSet.has(node.path);
+    const isGenerated = node.path === GENERATED_ROUTE_TREE_PATH;
+    const isDirty = !isGenerated && dirtyPathSet.has(node.path);
     const isRenaming = renamingPath === node.path;
 
     if (isRenaming) {
@@ -2206,7 +2520,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     }
 
     return (
-      <FileRow key={node.path} path={node.path}>
+      <FileRow key={node.path} path={node.path} disabled={isGenerated}>
         <ContextMenu>
           <ContextMenuTrigger asChild>
             <div
@@ -2225,6 +2539,11 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               <div className="flex items-center gap-1.5 min-w-0 flex-1">
                 {getFileIcon(node.name)}
                 <span className="truncate">{node.name}</span>
+                {isGenerated ? (
+                  <span className="shrink-0 text-[9px] text-muted-foreground/70">
+                    generated
+                  </span>
+                ) : null}
               </div>
               {isDirty ? (
                 <span className="size-1.5 rounded-full bg-primary shrink-0" />
@@ -2239,32 +2558,41 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               }
             }}
           >
-            <ContextMenuItem onClick={() => handleCopyPaths([node.path])}>
-              <Copy className="size-3.5" />
-              Copy
-            </ContextMenuItem>
-            <ContextMenuItem
-              disabled={createMutation.isPending}
-              onClick={() => handleDuplicateFile(node.path)}
-            >
-              <Copy className="size-3.5" />
-              Duplicate
-            </ContextMenuItem>
-            <ContextMenuItem
-              disabled={moveMutation.isPending}
-              onClick={() => startRenamingFile(node.path)}
-            >
-              <FileText className="size-3.5" />
-              Rename
-            </ContextMenuItem>
-            <ContextMenuItem
-              variant="destructive"
-              disabled={deleteMutation.isPending}
-              onClick={() => handleDeleteFile(node.path)}
-            >
-              <Trash2 className="size-3.5" />
-              Delete File
-            </ContextMenuItem>
+            {isGenerated ? (
+              <ContextMenuItem disabled>
+                <FileCode2 className="size-3.5" />
+                Generated by TanStack Router
+              </ContextMenuItem>
+            ) : (
+              <>
+                <ContextMenuItem onClick={() => handleCopyPaths([node.path])}>
+                  <Copy className="size-3.5" />
+                  Copy
+                </ContextMenuItem>
+                <ContextMenuItem
+                  disabled={createMutation.isPending}
+                  onClick={() => handleDuplicateFile(node.path)}
+                >
+                  <Copy className="size-3.5" />
+                  Duplicate
+                </ContextMenuItem>
+                <ContextMenuItem
+                  disabled={moveMutation.isPending}
+                  onClick={() => startRenamingFile(node.path)}
+                >
+                  <FileText className="size-3.5" />
+                  Rename
+                </ContextMenuItem>
+                <ContextMenuItem
+                  variant="destructive"
+                  disabled={deleteMutation.isPending}
+                  onClick={() => handleDeleteFile(node.path)}
+                >
+                  <Trash2 className="size-3.5" />
+                  Delete File
+                </ContextMenuItem>
+              </>
+            )}
           </ContextMenuContent>
         </ContextMenu>
       </FileRow>
@@ -2290,15 +2618,15 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           variant="default"
           size="sm"
           className="mt-5 gap-2 font-medium"
-          disabled={initMutation.isPending}
-          onClick={() => initMutation.mutate()}
+          disabled={starterBootstrapPreviewMutation.isPending}
+          onClick={openStarterBootstrap}
         >
-          {initMutation.isPending ? (
+          {starterBootstrapPreviewMutation.isPending ? (
             <LoaderCircle className="size-3.5 animate-spin" />
           ) : (
-            <FolderOpen className="size-3.5" />
+            <PackagePlus className="size-3.5" />
           )}
-          <span>Initialize Starter Theme</span>
+          <span>Set up Starter Theme</span>
         </Button>
       </div>
     );
@@ -2361,6 +2689,29 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
                 {files.length} files
               </span>
+              <button
+                type="button"
+                title="Set up Starter Theme"
+                aria-label="Set up Starter Theme"
+                disabled={
+                  starterBootstrapPreviewMutation.isPending ||
+                  starterBootstrapApplyMutation.isPending ||
+                  dirtyPaths.length > 0
+                }
+                onClick={openStarterBootstrap}
+                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              >
+                <PackagePlus className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                title="Theme packages"
+                aria-label="Theme packages"
+                onClick={() => setDependenciesDialogOpen(true)}
+                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <Package className="size-3.5" />
+              </button>
               <button
                 type="button"
                 title="New folder"
@@ -2567,6 +2918,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
               onMount={handleEditorDidMount}
               theme="vs-dark"
               options={{
+                readOnly: activeFileIsGenerated,
+                domReadOnly: activeFileIsGenerated,
                 fontSize: 13,
                 fontFamily:
                   "var(--font-mono, Menlo, Monaco, Consolas, monospace)",
@@ -2655,6 +3008,120 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         files={files}
         commands={editorCommands}
         onOpenFile={handleOpenFile}
+      />
+      <Dialog
+        open={starterBootstrapDialogOpen}
+        onOpenChange={setStarterBootstrapDialogOpen}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <PackagePlus className="size-4 text-primary" />
+              Set up TanStack Start
+            </DialogTitle>
+            <DialogDescription>
+              Add the managed Starter Theme files in one atomic change. Existing
+              authored files are kept; only missing files and safe starter
+              upgrades are included.
+            </DialogDescription>
+          </DialogHeader>
+          {starterBootstrapPlan ? (
+            <div className="mt-4 space-y-3 text-xs">
+              <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+                <span className="text-muted-foreground">Workspace changes</span>
+                <span className="font-medium">
+                  {starterBootstrapPlan.files.length +
+                    starterBootstrapPlan.deletions.length}
+                </span>
+              </div>
+              {starterBootstrapPlan.files.length > 0 ||
+              starterBootstrapPlan.deletions.length > 0 ? (
+                <div className="max-h-56 overflow-auto rounded-md border bg-card p-2 font-mono">
+                  {starterBootstrapPlan.files.map((file) => (
+                    <div
+                      key={`${file.operation}:${file.path}`}
+                      className="flex items-center gap-2 px-2 py-1"
+                    >
+                      <span
+                        className={cn(
+                          "w-12 shrink-0 text-[10px] uppercase",
+                          file.operation === "create"
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : "text-amber-600 dark:text-amber-400",
+                        )}
+                      >
+                        {file.operation}
+                      </span>
+                      <span className="truncate text-muted-foreground">
+                        {file.path}
+                      </span>
+                    </div>
+                  ))}
+                  {starterBootstrapPlan.deletions.map((file) => (
+                    <div
+                      key={`delete:${file.path}`}
+                      className="flex items-center gap-2 px-2 py-1"
+                    >
+                      <span className="w-12 shrink-0 text-[10px] uppercase text-red-600 dark:text-red-400">
+                        delete
+                      </span>
+                      <span className="truncate text-muted-foreground">
+                        {file.path}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed px-3 py-5 text-center text-muted-foreground">
+                  Starter files are already up to date.
+                </div>
+              )}
+              {starterBootstrapPlan.deletions.length > 0 ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Legacy files are removed only when their contents still match
+                  an untouched Morph starter copy.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          <DialogFooter className="mt-5">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setStarterBootstrapDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={
+                !starterBootstrapPlan ||
+                (starterBootstrapPlan.files.length === 0 &&
+                  starterBootstrapPlan.deletions.length === 0) ||
+                starterBootstrapApplyMutation.isPending ||
+                dirtyPaths.length > 0
+              }
+              onClick={() => {
+                if (!starterBootstrapPlan) return;
+                starterBootstrapApplyMutation.mutate(
+                  starterBootstrapPlan.sourceGeneration,
+                );
+              }}
+            >
+              {starterBootstrapApplyMutation.isPending ? (
+                <LoaderCircle className="size-3.5 animate-spin" />
+              ) : null}
+              Apply changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <EditorThemeDependenciesDialog
+        open={dependenciesDialogOpen}
+        onOpenChange={setDependenciesDialogOpen}
+        storefrontId={storefrontId}
+        themeId={themeId}
+        sourceRevisionId={dependencySourceRevisionId}
       />
       <AlertDialog
         open={pendingConfirmation !== null}

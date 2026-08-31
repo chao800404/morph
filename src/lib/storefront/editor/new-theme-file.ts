@@ -1,4 +1,9 @@
 import { isPlatformOwnedThemeBuildPath } from "@/lib/storefront/compiler/theme-start-toolchain";
+import {
+  parseThemeRouteSourcePath,
+  themeRouteIdFromSourcePath,
+  themeRoutePathFromSourcePath,
+} from "@/lib/storefront/compiler/theme-route-registry";
 import { THEME_CONTENT_MODULE_PATH } from "@/lib/storefront/theme-content-slots";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 
@@ -44,16 +49,95 @@ function componentNameFrom(path: string): string {
   return /^[A-Za-z]/.test(pascal) ? pascal : `Component${pascal}`;
 }
 
+function routeComponentNameFrom(path: string): string {
+  const base = path
+    .slice(path.lastIndexOf("/") + 1)
+    .replace(/\.[^.]+$/, "");
+  if (base === "__root") return "RootRoute";
+  if (base === "index") return "HomeRoute";
+  return `${componentNameFrom(path)}Route`;
+}
+
+function routeLabelFromPath(routePath: string): string {
+  const label = routePath
+    .split("/")
+    .filter(Boolean)
+    .at(-1)
+    ?.replace(/^\$/, "")
+    .replace(/[-_]+/g, " ")
+    .trim();
+  if (!label) return "Home";
+  return label.replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function scaffoldThemeRouteFile(
+  path: string,
+  routePath: string,
+  routeId: string,
+  routeType: string,
+): string {
+  if (routePath === "/" && path.endsWith("/__root.tsx")) {
+    return `import { Outlet, createRootRoute } from "@tanstack/react-router";
+
+export const Route = createRootRoute({
+  component: RootRoute,
+});
+
+function RootRoute() {
+  return <Outlet />;
+}
+`;
+  }
+
+  const componentName = routeComponentNameFrom(path);
+  const label = routeLabelFromPath(routePath);
+  const factory = routeType === "lazy" ? "createLazyFileRoute" : "createFileRoute";
+  if (path.endsWith(".ts") && !path.endsWith(".tsx")) {
+    return `import { ${factory} } from "@tanstack/react-router";
+
+export const Route = ${factory}(${JSON.stringify(routeId)})({});
+`;
+  }
+  return `import { ${factory} } from "@tanstack/react-router";
+
+export const Route = ${factory}(${JSON.stringify(routeId)})({
+  component: ${componentName},
+});
+
+function ${componentName}() {
+  return (
+    <main className="min-h-screen p-8">
+      <h1 className="text-2xl font-semibold">${label}</h1>
+    </main>
+  );
+}
+`;
+}
+
 /**
  * Seed content for a newly created file.
  *
- * A new component is scaffolded with its own `contentFields` declaration so it
- * is editable in the Inspector immediately, without registering it anywhere.
+ * Files under `src/routes/` are scaffolded as TanStack file routes. Other TSX
+ * files are scaffolded as standalone components with their own `contentFields`
+ * declaration so they are editable in the Inspector immediately, without
+ * registering them anywhere.
  */
 export function scaffoldThemeFile(path: string): string {
   const extension = extensionOf(path);
   if (extension === ".css") return "";
   if (extension === ".json") return "{}\n";
+
+  const routePath = themeRoutePathFromSourcePath(path);
+  const routeMetadata = parseThemeRouteSourcePath(path);
+  const routeId = themeRouteIdFromSourcePath(path);
+  if (routePath && routeMetadata && routeId) {
+    return scaffoldThemeRouteFile(
+      path,
+      routePath,
+      routeId,
+      routeMetadata.routeType,
+    );
+  }
   if (extension === ".ts") return "export {};\n";
 
   const name = componentNameFrom(path);

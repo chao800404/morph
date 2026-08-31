@@ -15,6 +15,10 @@ import type {
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
+import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
+import { themePackageRoot } from "./theme-dependency-policy";
+import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
+import { readThemePathAliases, renderThemeViteAliases } from "./theme-path-aliases";
 
 export type CloudflareSandboxExecResult = {
   exitCode?: number;
@@ -28,7 +32,11 @@ export type CloudflareSandboxReadFileOptions = {
 };
 
 export type CloudflareSandboxReadFileResult = {
-  content: string | Uint8Array | ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>;
+  content:
+    | string
+    | Uint8Array
+    | ReadableStream<Uint8Array>
+    | AsyncIterable<Uint8Array>;
 };
 
 /**
@@ -44,23 +52,33 @@ export interface CloudflareSandboxSession {
   ): Promise<CloudflareSandboxReadFileResult | string | Uint8Array>;
   exec(
     command: string,
-    options?: { timeout?: number; timeoutMs?: number; env?: Record<string, string> },
+    options?: {
+      timeout?: number;
+      timeoutMs?: number;
+      env?: Record<string, string>;
+    },
   ): Promise<CloudflareSandboxExecResult>;
   killProcess?(pid?: number): Promise<void>;
   destroy(): Promise<void>;
 }
 
 export interface CloudflareSandboxProvider {
-  getSandbox(binding: unknown, sandboxId: string): Promise<CloudflareSandboxSession>;
+  getSandbox(
+    binding: unknown,
+    sandboxId: string,
+  ): Promise<CloudflareSandboxSession>;
 }
 
-export type CloudflareSandboxViteRunnerOptions = SandboxViteThemeBuildRunnerOptions & {
-  sandboxBinding?: unknown;
-  sandboxProvider?: CloudflareSandboxProvider;
-};
+export type CloudflareSandboxViteRunnerOptions =
+  SandboxViteThemeBuildRunnerOptions & {
+    sandboxBinding?: unknown;
+    sandboxProvider?: CloudflareSandboxProvider;
+  };
 
 function getMimeType(filePath: string): string {
-  const ext = filePath.includes(".") ? filePath.slice(filePath.lastIndexOf(".")).toLowerCase() : "";
+  const ext = filePath.includes(".")
+    ? filePath.slice(filePath.lastIndexOf(".")).toLowerCase()
+    : "";
   switch (ext) {
     case ".html":
       return "text/html";
@@ -138,7 +156,9 @@ async function fileContentToUint8Array(content: unknown): Promise<Uint8Array> {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
-        chunks.push(value instanceof Uint8Array ? value : new Uint8Array(value));
+        chunks.push(
+          value instanceof Uint8Array ? value : new Uint8Array(value),
+        );
       }
     }
     return concatUint8Arrays(chunks);
@@ -147,24 +167,19 @@ async function fileContentToUint8Array(content: unknown): Promise<Uint8Array> {
 }
 
 /**
- * Pinned exact toolchain versions for deterministic sandbox builds.
+ * Pinned exact toolchain versions for deterministic sandbox builds. The
+ * generator derives this root-package map from cms.config.ts and the same
+ * manifest is copied into Dockerfile.sandbox at image-build time.
  */
-export const PINNED_SANDBOX_DEPENDENCIES: Record<string, string> = {
-  "react": "19.2.1",
-  "react-dom": "19.2.1",
-  "clsx": "2.1.1",
-  "tailwind-merge": "3.4.0",
-  "lucide-react": "0.544.0",
-  "class-variance-authority": "0.7.1",
-  "tailwindcss": "4.1.17",
-  "@tailwindcss/vite": "4.1.17",
-  "@vitejs/plugin-react": "5.2.0",
-  "vite": "7.2.7",
-  "@tanstack/react-router": "1.170.18",
-  "@tanstack/react-start": "1.168.32",
-  "@tanstack/router-plugin": "1.168.23",
-  "@cloudflare/vite-plugin": "1.50.0",
-};
+export const PINNED_SANDBOX_DEPENDENCIES: Readonly<Record<string, string>> =
+  GENERATED_SANDBOX_DEPENDENCY_VERSIONS;
+
+function packageRoot(specifier: string): string {
+  if (specifier.startsWith("@")) {
+    return specifier.split("/").slice(0, 2).join("/");
+  }
+  return specifier.split("/")[0] ?? specifier;
+}
 
 /**
  * Cloudflare Sandbox Vite Theme Build Runner.
@@ -209,10 +224,19 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     this.approvedDependencies = new Set(
       options.approvedDependencies ?? DEFAULT_APPROVED_DEPENDENCIES,
     );
+    const missingVersions = [...this.approvedDependencies].filter(
+      (specifier) =>
+        !PINNED_SANDBOX_DEPENDENCIES[specifier] &&
+        !PINNED_SANDBOX_DEPENDENCIES[packageRoot(specifier)],
+    );
+    if (missingVersions.length > 0) {
+      throw new Error(
+        `THEME_DEPENDENCY_VERSION_MISSING: ${missingVersions.join(", ")}`,
+      );
+    }
     this.sandboxBinding = options.sandboxBinding;
     this.sandboxProvider = options.sandboxProvider;
   }
-
 
   async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
     const startTime = Date.now();
@@ -228,7 +252,10 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       }
     };
 
-    addLog("info", `Starting Cloudflare Sandbox theme build for buildId: ${input.buildId}`);
+    addLog(
+      "info",
+      `Starting Cloudflare Sandbox theme build for buildId: ${input.buildId}`,
+    );
 
     // Guard 0: Verify Compiler Identity
     if (
@@ -290,7 +317,9 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     for (const file of input.files) {
       const normalized = file.path.replace(/\\/g, "/");
       const segments = normalized.split("/");
-      if (segments.some((segment) => segment.toLowerCase() === "node_modules")) {
+      if (
+        segments.some((segment) => segment.toLowerCase() === "node_modules")
+      ) {
         const msg = `RESERVED_THEME_PATH: Theme files cannot be created inside node_modules: "${file.path}"`;
         addLog("error", msg);
         return {
@@ -318,7 +347,11 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
           durationMs: Date.now() - startTime,
         };
       }
-      if (normalized.startsWith("../") || normalized.includes("/../") || normalized.startsWith("/")) {
+      if (
+        normalized.startsWith("../") ||
+        normalized.includes("/../") ||
+        normalized.startsWith("/")
+      ) {
         const msg = `WORKSPACE_PATH_ESCAPE: File path "${file.path}" escapes sandbox workspace root`;
         addLog("error", msg);
         return {
@@ -334,19 +367,28 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       }
     }
 
-
     let sandbox: CloudflareSandboxSession | null = null;
 
     try {
-      addLog("info", "Acquiring isolated Cloudflare Sandbox container session...");
+      addLog(
+        "info",
+        "Acquiring isolated Cloudflare Sandbox container session...",
+      );
 
       if (this.sandboxProvider) {
-        sandbox = await this.sandboxProvider.getSandbox(this.sandboxBinding, input.buildId);
+        sandbox = await this.sandboxProvider.getSandbox(
+          this.sandboxBinding,
+          input.buildId,
+        );
       } else if (this.sandboxBinding) {
         const { getSandbox } = await import("@cloudflare/sandbox");
-        sandbox = getSandbox(this.sandboxBinding as DurableObjectNamespace<Sandbox>, input.buildId) as any;
+        sandbox = getSandbox(
+          this.sandboxBinding as DurableObjectNamespace<Sandbox>,
+          input.buildId,
+        ) as any;
       } else {
-        const msg = "SANDBOX_UNAVAILABLE: Cloudflare Sandbox binding or provider is not configured in current environment";
+        const msg =
+          "SANDBOX_UNAVAILABLE: Cloudflare Sandbox binding or provider is not configured in current environment";
         addLog("error", msg);
         return {
           success: false,
@@ -396,6 +438,72 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         cssFiles,
       });
       routeRegistry = bootstrap.routeRegistry;
+
+      const pathAliasConfig = readThemePathAliases(input.files.map((file) => ({
+        path: file.path,
+        content: typeof file.content === "string" ? file.content : "",
+      })));
+      if (pathAliasConfig.diagnostics.length > 0) {
+        const errors: ThemeBuildDiagnostic[] = pathAliasConfig.diagnostics.map(
+          (diagnostic) => ({
+            severity: "error",
+            message: diagnostic.message,
+            file: diagnostic.filePath,
+            line: diagnostic.line,
+            column: diagnostic.column,
+            code: diagnostic.code,
+          }),
+        );
+        const firstError = errors[0]?.message ?? "Theme path alias configuration is invalid.";
+        addLog("error", firstError);
+        return {
+          success: false,
+          errorMessage: firstError,
+          diagnosticsJson: {
+            stage: "path-aliases",
+            errors,
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      const importProtectionDiagnostics =
+        collectThemeImportProtectionDiagnosticsForBuild(
+          input.files.map((file) => ({
+            path: file.path,
+            content:
+              typeof file.content === "string" ? file.content : "",
+          })),
+          {
+            entry: input.entry,
+            hasStartRuntime: Boolean(routeRegistry),
+          },
+        );
+      if (importProtectionDiagnostics.length > 0) {
+        const errors: ThemeBuildDiagnostic[] = importProtectionDiagnostics.map(
+          (diagnostic) => ({
+            severity: "error",
+            message: diagnostic.message,
+            file: diagnostic.filePath,
+            line: diagnostic.line,
+            column: diagnostic.column,
+            code: diagnostic.code,
+          }),
+        );
+        const firstError = errors[0]?.message ?? "Theme import protection failed.";
+        addLog("error", firstError);
+        return {
+          success: false,
+          errorMessage: firstError,
+          diagnosticsJson: {
+            stage: "import-protection",
+            errors,
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
       if (hasCustomIndexHtml && routeRegistry) {
         throw new Error(
           "CUSTOM_INDEX_HTML_UNSUPPORTED: TanStack Start Theme routes use the platform-owned preview document.",
@@ -454,9 +562,20 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       // Write controlled package.json with exact pinned dependencies (deterministic toolchain)
       const dependenciesObj: Record<string, string> = {};
       for (const dep of this.approvedDependencies) {
-        if (PINNED_SANDBOX_DEPENDENCIES[dep]) {
-          dependenciesObj[dep] = PINNED_SANDBOX_DEPENDENCIES[dep];
-        }
+        const root = packageRoot(dep);
+        const version =
+          PINNED_SANDBOX_DEPENDENCIES[dep] ?? PINNED_SANDBOX_DEPENDENCIES[root];
+        if (version) dependenciesObj[root] = version;
+      }
+      // The selected map is frozen into the build input by the server.  It is
+      // still checked against the platform allowlist before reaching here;
+      // keeping it explicit in package.json makes the artifact reproducible
+      // and lets a newly-approved package be used after the sandbox image is
+      // rebuilt from cms.config.
+      for (const [specifier, version] of Object.entries(
+        input.dependencies ?? {},
+      )) {
+        dependenciesObj[themePackageRoot(specifier)] = version;
       }
       const packageJson = JSON.stringify(
         {
@@ -471,9 +590,16 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       await sandbox.writeFile(`${workspaceRoot}/package.json`, packageJson);
 
       // Write controlled vite.config.ts with Morph dependency enforcer AND workspace path containment inside container
-      const approvedArrayJson = JSON.stringify(Array.from(this.approvedDependencies));
+      const approvedArrayJson = JSON.stringify(
+        Array.from(this.approvedDependencies),
+      );
+      const themeAliasDefinitionsJson = renderThemeViteAliases(
+        pathAliasConfig,
+        workspaceRoot,
+      );
       const viteConfigContent = `
 import path from "node:path";
+import fs from "node:fs";
 import { defineConfig } from "vite";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
@@ -481,6 +607,29 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 
 const approvedSet = new Set(${approvedArrayJson});
+const themeAliasDefinitions = ${themeAliasDefinitionsJson};
+const escapeAliasRegex = (value) => value.replace(/[\\^$.*+?()[\\]{}|]/g, "\\\\$&");
+const themeAliases = themeAliasDefinitions.map(({ key, target, wildcard }) => ({
+  find: wildcard ? key : new RegExp("^" + escapeAliasRegex(key) + "$"),
+  replacement: target,
+}));
+const themeBaseUrlRoot = path.resolve("/workspace", ${JSON.stringify(pathAliasConfig.baseUrl)});
+const themeBaseUrlPlugin = ${pathAliasConfig.baseUrl ? `{
+  name: "morph-theme-base-url",
+  enforce: "pre",
+  resolveId(source) {
+    if (source.startsWith(".") || source.startsWith("/")) return null;
+    const candidateRoot = path.resolve(themeBaseUrlRoot, source);
+    const relative = path.relative("/workspace", candidateRoot);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    const candidates = [
+      candidateRoot,
+      ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map((extension) => candidateRoot + extension),
+      ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map((extension) => candidateRoot + "/index" + extension),
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  },
+}` : `null`};
 const hasStartRuntime = ${routeRegistry ? "true" : "false"};
 const isStartRuntimeBuild =
   hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
@@ -556,6 +705,12 @@ const dependencyEnforcerPlugin = {
       }
     }
 
+    if (themeAliasDefinitions.some(({ key, wildcard }) =>
+      wildcard ? source === key || source.startsWith(key + "/") : source === key
+    )) {
+      return null;
+    }
+
     const basePkg = source.startsWith("@")
       ? source.split("/").slice(0, 2).join("/")
       : source.split("/")[0];
@@ -578,6 +733,7 @@ export default defineConfig({
         tailwindcss(),
         tanstackStart(),
         viteReact(),
+        ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
         dependencyEnforcerPlugin,
       ]
     : [
@@ -588,8 +744,12 @@ export default defineConfig({
         ${themePreviewServerStubPluginSource()},
         tailwindcss(),
         viteReact(),
+        ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
         dependencyEnforcerPlugin,
       ],
+  resolve: {
+    alias: themeAliases,
+  },
   build: {
     outDir: isStartRuntimeBuild
       ? "${workspaceRoot}/dist/runtime"
@@ -604,7 +764,10 @@ export default defineConfig({
 });
 
 `;
-      await sandbox.writeFile(`${workspaceRoot}/vite.config.ts`, viteConfigContent);
+      await sandbox.writeFile(
+        `${workspaceRoot}/vite.config.ts`,
+        viteConfigContent,
+      );
 
       if (routeRegistry) {
         addLog(
@@ -643,7 +806,10 @@ export default defineConfig({
         }
       }
 
-      addLog("info", "Executing Vite build inside Cloudflare Sandbox container...");
+      addLog(
+        "info",
+        "Executing Vite build inside Cloudflare Sandbox container...",
+      );
 
       // Execute build inside container with exact pinned Vite binary and timeout guard
       const execResult = await sandbox.exec(
@@ -665,7 +831,10 @@ export default defineConfig({
 
       const isSuccess = execResult.success ?? execResult.exitCode === 0;
       if (!isSuccess) {
-        const errorMsg = execResult.stderr || execResult.stdout || "Vite build exited with non-zero status code";
+        const errorMsg =
+          execResult.stderr ||
+          execResult.stdout ||
+          "Vite build exited with non-zero status code";
         addLog("error", errorMsg);
 
         const diagnostic: ThemeBuildDiagnostic = {
@@ -716,7 +885,6 @@ export default defineConfig({
       const rawListing = (findResult.stdout || "").trim();
       const distDir = `${workspaceRoot}/dist`;
 
-
       // Parse metadata (size + path) from listing
       const metadataList: Array<{
         fullPath: string;
@@ -756,7 +924,8 @@ export default defineConfig({
       }
 
       if (metadataList.length === 0) {
-        const msg = "DIST_NOT_FOUND: Vite build did not produce any output files in /workspace/dist";
+        const msg =
+          "DIST_NOT_FOUND: Vite build did not produce any output files in /workspace/dist";
         addLog("error", msg);
         return {
           success: false,
@@ -816,17 +985,28 @@ export default defineConfig({
         let sizeBytes = item.sizeBytes;
 
         if (item.isText) {
-          const readResult = await sandbox.readFile(item.fullPath, { encoding: "utf-8" });
+          const readResult = await sandbox.readFile(item.fullPath, {
+            encoding: "utf-8",
+          });
           const raw =
-            readResult && typeof readResult === "object" && "content" in readResult
+            readResult &&
+            typeof readResult === "object" &&
+            "content" in readResult
               ? readResult.content
               : readResult;
-          content = typeof raw === "string" ? raw : new TextDecoder().decode(await fileContentToUint8Array(raw));
+          content =
+            typeof raw === "string"
+              ? raw
+              : new TextDecoder().decode(await fileContentToUint8Array(raw));
           sizeBytes = Buffer.byteLength(content, "utf8");
         } else {
-          const readResult = await sandbox.readFile(item.fullPath, { encoding: "none" });
+          const readResult = await sandbox.readFile(item.fullPath, {
+            encoding: "none",
+          });
           const raw =
-            readResult && typeof readResult === "object" && "content" in readResult
+            readResult &&
+            typeof readResult === "object" &&
+            "content" in readResult
               ? readResult.content
               : readResult;
           content = await fileContentToUint8Array(raw);
@@ -883,7 +1063,6 @@ export default defineConfig({
         }
       }
 
-
       const cssChunks = artifacts
         .filter((a) => a.mimeType === "text/css")
         .map((a) => a.path);
@@ -916,7 +1095,10 @@ export default defineConfig({
           : undefined,
       };
 
-      addLog("info", `Cloudflare Sandbox build completed with ${artifacts.length} dist files.`);
+      addLog(
+        "info",
+        `Cloudflare Sandbox build completed with ${artifacts.length} dist files.`,
+      );
 
       return {
         success: true,

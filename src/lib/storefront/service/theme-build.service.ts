@@ -27,6 +27,10 @@ export type RequestPreviewBuildOptions = {
   reuseExisting?: boolean;
   runner?: ThemeBuildRunner;
   artifactStore?: ThemeBuildArtifactStore;
+  /** Keep the record queued for a Cloudflare Queue consumer. */
+  deferExecution?: boolean;
+  /** Exact package map selected for this immutable build. */
+  dependencies?: Readonly<Record<string, string>>;
 };
 
 export class ThemeBuildService {
@@ -66,6 +70,7 @@ export class ThemeBuildService {
           inputHash: null,
           compilerId: options.compilerIdentity?.compilerId ?? null,
           compilerVersion: options.compilerIdentity?.compilerVersion ?? null,
+          dependencies: options.dependencies ?? null,
           artifactPrefix: null,
           manifestJson: null,
           diagnosticsJson: null,
@@ -115,12 +120,13 @@ export class ThemeBuildService {
       {
         sourceRevisionId: options.sourceRevisionId,
         createdBy: options.createdBy,
+        dependencies: options.dependencies,
       },
     );
 
     // 3. Fallback to default runner.
     const runner = options.runner ?? this.defaultRunner;
-    if (!runner) {
+    if (!runner || options.deferExecution) {
       return build;
     }
 
@@ -132,6 +138,24 @@ export class ThemeBuildService {
       compilerIdentity: options.compilerIdentity,
       runner,
       artifactStore: options.artifactStore ?? this.defaultArtifactStore,
+    });
+  }
+
+  /** Execute a queued build using the server-composed runner and artifact store. */
+  async executeQueuedBuild(params: {
+    storefrontId: string;
+    themeId: string;
+    buildId: string;
+  }): Promise<StorefrontThemeBuildDTO> {
+    if (!this.defaultRunner) {
+      throw new Error(
+        "BUILD_RUNNER_UNAVAILABLE: Theme build queue consumer has no Sandbox runner configured.",
+      );
+    }
+    return this.executeBuildOrchestration({
+      ...params,
+      runner: this.defaultRunner,
+      artifactStore: this.defaultArtifactStore,
     });
   }
 

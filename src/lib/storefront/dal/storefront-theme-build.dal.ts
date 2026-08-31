@@ -8,7 +8,6 @@ import type { StorefrontThemeBuildDTO } from "@/lib/storefront/dto/storefront-th
 import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 
-
 function mapBuildRowToDTO(
   row: typeof storefrontThemeBuilds.$inferSelect,
 ): StorefrontThemeBuildDTO {
@@ -21,6 +20,7 @@ function mapBuildRowToDTO(
     inputHash: row.inputHash,
     compilerId: row.compilerId,
     compilerVersion: row.compilerVersion,
+    dependencies: row.dependenciesJson ?? null,
     artifactPrefix: row.artifactPrefix,
     manifestJson: row.manifestJson,
     diagnosticsJson: row.diagnosticsJson,
@@ -124,6 +124,7 @@ export const storefrontThemeBuildDal = {
     options: {
       sourceRevisionId: string;
       createdBy?: string;
+      dependencies?: Readonly<Record<string, string>>;
     },
   ): Promise<StorefrontThemeBuildDTO> {
     const isThemeOwner = await this.verifyThemeOwnership(storefrontId, themeId);
@@ -153,6 +154,9 @@ export const storefrontThemeBuildDal = {
         storefrontId,
         themeId,
         sourceRevisionId: options.sourceRevisionId,
+        dependenciesJson: options.dependencies
+          ? { ...options.dependencies }
+          : null,
         status: "queued",
         createdBy: options.createdBy ?? null,
         createdAt: now,
@@ -211,7 +215,6 @@ export const storefrontThemeBuildDal = {
 
     return row ? mapBuildRowToDTO(row) : null;
   },
-
 
   /**
    * Retrieves both Build and bound Source Revision records needed for materialization.
@@ -474,9 +477,6 @@ export const storefrontThemeBuildDal = {
       )
       .returning();
 
-
-
-
     if (!updated) {
       throw new Error(
         "CONFLICT_STATE_CONCURRENCY: Build status changed concurrently during success transition",
@@ -546,4 +546,3 @@ export const storefrontThemeBuildDal = {
 };
 
 export type StorefrontThemeBuildDAL = typeof storefrontThemeBuildDal;
-

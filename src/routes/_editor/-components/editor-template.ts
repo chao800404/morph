@@ -11,6 +11,19 @@ const templatePaths: Record<EditorTemplate["type"], string> = {
   blog: "/blogs/:handle",
 };
 
+/** Map a source-authored URL to the template document used for its content. */
+export function templateTypeForRoute(path: string): EditorTemplate["type"] {
+  if (path === "/") return "index";
+  if (path === "/products" || path.startsWith("/products/")) {
+    return "product";
+  }
+  if (path === "/collections" || path.startsWith("/collections/")) {
+    return "collection";
+  }
+  if (path === "/blogs" || path.startsWith("/blogs/")) return "blog";
+  return "page";
+}
+
 export function resolveEditorTemplate(
   context: StorefrontThemeEditorDTO,
   search: StorefrontThemeEditorSearch,
@@ -24,11 +37,28 @@ export function resolveEditorTemplate(
 
 export function toEditorTemplateSearch(
   template: EditorTemplate,
-): Pick<StorefrontThemeEditorSearch, "template" | "templateId" | "section"> {
+): Pick<
+  StorefrontThemeEditorSearch,
+  "template" | "templateId" | "section" | "routePath"
+> {
   return {
     template: template.type,
     templateId: template.id,
     section: undefined,
+    routePath: undefined,
+  };
+}
+
+export function toEditorRouteSearch(
+  template: EditorTemplate,
+  routePath: string,
+): Pick<
+  StorefrontThemeEditorSearch,
+  "template" | "templateId" | "section" | "routePath"
+> {
+  return {
+    ...toEditorTemplateSearch(template),
+    routePath,
   };
 }
 

@@ -81,6 +81,7 @@ export function buildLivePreviewUrl({
   storefrontId,
   themeId,
   templateId,
+  routePath,
   viewportHeight,
   editorOrigin,
   previewSession,
@@ -89,6 +90,7 @@ export function buildLivePreviewUrl({
   storefrontId: string;
   themeId: string;
   templateId: string;
+  routePath?: string;
   viewportHeight: number;
   editorOrigin: string;
   previewSession: string;
@@ -102,6 +104,7 @@ export function buildLivePreviewUrl({
     previewOrigin,
   );
   url.searchParams.set("templateId", templateId);
+  if (routePath) url.searchParams.set("routePath", routePath);
   url.searchParams.set("viewportHeight", String(viewportHeight));
   url.searchParams.set("editorOrigin", editorOrigin);
   url.searchParams.set("previewSession", previewSession);

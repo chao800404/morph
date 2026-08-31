@@ -79,6 +79,34 @@ export const cmsConfig = defineConfig({
   cloudflare: {
     plan: "paid",
   },
+  // Theme dependencies are declared here once. The exact versions are used to
+  // build the deterministic sandbox image, authorize Theme imports, and
+  // generate Monaco declarations. Add packages only after dependency and
+  // supply-chain review. A package must also exist in package.json so the
+  // generated Dockerfile image contains it; customer requests can only
+  // enable entries from this platform-owned list.
+  theme: {
+    dependencies: {
+      react: "19.2.1",
+      "react/jsx-runtime": "19.2.1",
+      "react/jsx-dev-runtime": "19.2.1",
+      "react-dom": "19.2.1",
+      "react-dom/client": "19.2.1",
+      clsx: "2.1.1",
+      "tailwind-merge": "3.4.0",
+      "lucide-react": "0.544.0",
+      "class-variance-authority": "0.7.1",
+      tailwindcss: "4.1.17",
+      "@tailwindcss/vite": "4.1.17",
+      "@vitejs/plugin-react": "5.2.0",
+      vite: "7.2.7",
+      "vite/modulepreload-polyfill": "7.2.7",
+      "@tanstack/react-router": "1.170.18",
+      "@tanstack/react-start": "1.168.32",
+      "@tanstack/router-plugin": "1.168.23",
+      "@cloudflare/vite-plugin": "1.50.0",
+    },
+  },
   trustedOrigins: cmsTrustedOrigins,
   email: {
     defaultFromAddress: "medusa@mail.cmsapp.org",

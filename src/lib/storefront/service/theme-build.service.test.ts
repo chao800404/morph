@@ -79,6 +79,7 @@ beforeEach(() => {
       input_hash text,
       compiler_id text,
       compiler_version text,
+      dependencies_json text,
       artifact_prefix text,
       manifest_json text,
       diagnostics_json text,
@@ -191,7 +192,10 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-queued", 1, [
-      { path: "src/index.tsx", content: "export default () => <h1>Queued</h1>;" },
+      {
+        path: "src/index.tsx",
+        content: "export default () => <h1>Queued</h1>;",
+      },
     ]);
 
     // Service called without runner (production pre-Sandbox behavior)
@@ -225,7 +229,11 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
         filesCount: 2,
         inputHash: "placeholder",
         bundleFiles: [
-          { path: "index.js", sizeBytes: 1024, mimeType: "application/javascript" },
+          {
+            path: "index.js",
+            sizeBytes: 1024,
+            mimeType: "application/javascript",
+          },
           { path: "global.css", sizeBytes: 512, mimeType: "text/css" },
         ],
       },
@@ -240,7 +248,9 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     });
 
     expect(build.status).toBe("succeeded");
-    expect(build.artifactPrefix).toBe(`storefronts/storefront-1/themes/theme-1/builds/${build.id}`);
+    expect(build.artifactPrefix).toBe(
+      `storefronts/storefront-1/themes/theme-1/builds/${build.id}`,
+    );
     expect(build.inputHash).toBeDefined();
     expect(build.inputHash?.length).toBe(64);
     expect(build.compilerId).toBe("tailwind-v4-build");
@@ -284,7 +294,9 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     ]);
 
     const fakeRunner = new FakeThemeBuildRunner({ shouldSucceed: true });
-    const failingStore = new FakeThemeBuildArtifactStore({ failAtManifest: true });
+    const failingStore = new FakeThemeBuildArtifactStore({
+      failAtManifest: true,
+    });
 
     const failedBuild = await service.requestPreviewBuild({
       storefrontId: "storefront-1",
@@ -297,8 +309,6 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(failedBuild.status).toBe("failed");
     expect(failedBuild.errorMessage).toContain("FAKE_MANIFEST_FAILURE");
   });
-
-
 
   it("transitions to failed when runner succeeds but no artifactStore is configured", async () => {
     seedStorefront("storefront-1");
@@ -447,7 +457,10 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
 
     // Revision 1 (success)
     seedRevision("storefront-1", "theme-1", "rev-success", 1, [
-      { path: "src/index.tsx", content: "export default () => <h1>Rev 1</h1>;" },
+      {
+        path: "src/index.tsx",
+        content: "export default () => <h1>Rev 1</h1>;",
+      },
     ]);
     const successBuild = await service.requestPreviewBuild({
       storefrontId: "storefront-1",
@@ -459,7 +472,10 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
 
     // Revision 2 (failure)
     seedRevision("storefront-1", "theme-1", "rev-failure", 2, [
-      { path: "src/index.tsx", content: "export default () => <h1>Rev 2</h1>;" },
+      {
+        path: "src/index.tsx",
+        content: "export default () => <h1>Rev 2</h1>;",
+      },
     ]);
     const failedBuild = await service.requestPreviewBuild({
       storefrontId: "storefront-1",
@@ -537,8 +553,6 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(buildA.inputHash).not.toBe(buildB.inputHash);
   });
 
-
-
   it("verifies runner receives pure immutable revision input and never working files", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
@@ -583,7 +597,10 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-reuse", 1, [
-      { path: "src/index.tsx", content: "export default () => <h1>Reused</h1>;" },
+      {
+        path: "src/index.tsx",
+        content: "export default () => <h1>Reused</h1>;",
+      },
     ]);
 
     let runnerRunCount = 0;
@@ -598,7 +615,10 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       storefrontId: "storefront-1",
       themeId: "theme-1",
       sourceRevisionId: "rev-reuse",
-      compilerIdentity: { compilerId: "tailwind-v4", compilerVersion: "4.1.17" },
+      compilerIdentity: {
+        compilerId: "tailwind-v4",
+        compilerVersion: "4.1.17",
+      },
       runner: countingRunner,
       reuseExisting: false,
     });
@@ -611,7 +631,10 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       storefrontId: "storefront-1",
       themeId: "theme-1",
       sourceRevisionId: "rev-reuse",
-      compilerIdentity: { compilerId: "tailwind-v4", compilerVersion: "4.1.17" },
+      compilerIdentity: {
+        compilerId: "tailwind-v4",
+        compilerVersion: "4.1.17",
+      },
       runner: countingRunner,
       reuseExisting: true,
     });
@@ -636,12 +659,14 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(runnerRunCount).toBe(2);
   });
 
-
   it("competing concurrent orchestrations: Start CAS loser with conflicting compiler version does NOT fail active winner build", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-concurrent", 1, [
-      { path: "src/index.tsx", content: "export default () => <h1>Concurrent</h1>;" },
+      {
+        path: "src/index.tsx",
+        content: "export default () => <h1>Concurrent</h1>;",
+      },
     ]);
 
     // Create single queued build
@@ -678,7 +703,10 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       storefrontId: "storefront-1",
       themeId: "theme-1",
       buildId: build.id,
-      compilerIdentity: { compilerId: "tailwind-v4", compilerVersion: "4.1.17" },
+      compilerIdentity: {
+        compilerId: "tailwind-v4",
+        compilerVersion: "4.1.17",
+      },
       runner: delayedWinnerRunner,
     });
 
@@ -705,11 +733,12 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(resultA.manifestJson.buildId).toBe(build.id);
     expect(resultA.manifestJson.storefrontId).toBe("storefront-1");
     expect(resultA.manifestJson.themeId).toBe("theme-1");
-    expect(resultA.artifactPrefix).toBe(`storefronts/storefront-1/themes/theme-1/builds/${build.id}`);
+    expect(resultA.artifactPrefix).toBe(
+      `storefronts/storefront-1/themes/theme-1/builds/${build.id}`,
+    );
 
     // Total runner invocations was exactly 1 (Worker B did not duplicate execution)
     expect(runnerRunCount).toBe(1);
-
 
     // Final state in DB is succeeded with Winner's version 4.1.17
     const finalInDb = await storefrontThemeBuildDal.getBuild(
@@ -722,4 +751,3 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(finalInDb?.errorMessage).toBeNull();
   });
 });
-

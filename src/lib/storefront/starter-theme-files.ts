@@ -407,6 +407,133 @@ export type StarterThemeWorkspaceUpgradePlan = {
   deletions: StarterThemeWorkspaceUpgradeDeletion[];
 };
 
+/**
+ * Builds the one-click bootstrap plan used by Code Mode.
+ *
+ * An empty workspace receives the complete Starter Theme. A partially
+ * populated workspace receives only files that are missing, plus the existing
+ * byte-for-byte-safe starter upgrades. Authored files are never replaced by a
+ * template copy. This is intentionally a plan (rather than a direct write) so
+ * the editor can show the user exactly what will be added before the OCC
+ * mutation is applied.
+ */
+export function createStarterThemeWorkspaceBootstrapPlan(
+  existingFiles: ExistingStarterThemeFile[],
+): StarterThemeWorkspaceUpgradePlan {
+  const existingByPath = new Map(
+    existingFiles.map((file) => [file.path, file]),
+  );
+  const upgradePlan = createStarterThemeWorkspaceUpgradePlan(existingFiles);
+  const plannedPaths = new Set(upgradePlan.files.map((file) => file.path));
+  const targetByPath = new Map(
+    STARTER_THEME_FILES.map((file) => [file.path, file]),
+  );
+
+  // `createStarterThemeWorkspaceUpgradePlan` already knows how to migrate
+  // legacy Morph starters without touching authored bytes. Keep those changes
+  // and add the complete template's missing files around them.
+  const files = [...upgradePlan.files];
+  for (const target of STARTER_THEME_FILES) {
+    if (existingByPath.has(target.path) || plannedPaths.has(target.path)) {
+      continue;
+    }
+    files.push({
+      path: target.path,
+      content: target.content,
+      mimeType: target.mimeType,
+      expectMissing: true,
+    });
+    plannedPaths.add(target.path);
+  }
+
+  // A customer may already have a package manifest. Merge the platform's
+  // pinned toolchain and Starter dependencies instead of replacing the file.
+  // This keeps custom packages/scripts while making the one-click bootstrap
+  // buildable by the managed Sandbox toolchain.
+  const existingPackage = existingByPath.get("package.json");
+  const targetPackage = targetByPath.get("package.json");
+  if (existingPackage && targetPackage && !plannedPaths.has("package.json")) {
+    try {
+      const parsedExisting: unknown = JSON.parse(existingPackage.content);
+      const parsedTarget: unknown = JSON.parse(targetPackage.content);
+      if (isRecord(parsedExisting) && isRecord(parsedTarget)) {
+        const existingDependencies = isRecord(parsedExisting.dependencies)
+          ? { ...parsedExisting.dependencies }
+          : {};
+        const existingDevDependencies = isRecord(
+          parsedExisting.devDependencies,
+        )
+          ? { ...parsedExisting.devDependencies }
+          : {};
+        const targetDependencies = isRecord(parsedTarget.dependencies)
+          ? parsedTarget.dependencies
+          : {};
+        const targetDevDependencies = isRecord(parsedTarget.devDependencies)
+          ? parsedTarget.devDependencies
+          : {};
+        const nextScripts = {
+          ...(isRecord(parsedTarget.scripts) ? parsedTarget.scripts : {}),
+          ...(isRecord(parsedExisting.scripts) ? parsedExisting.scripts : {}),
+        };
+        let packageChanged = false;
+
+        for (const [dependency, version] of Object.entries(
+          targetDependencies,
+        )) {
+          const isPlatformDependency =
+            dependency in THEME_START_RUNTIME_DEPENDENCIES;
+          const nextVersion = isPlatformDependency
+            ? THEME_START_RUNTIME_DEPENDENCIES[
+                dependency as keyof typeof THEME_START_RUNTIME_DEPENDENCIES
+              ]
+            : existingDependencies[dependency] ?? version;
+          if (existingDependencies[dependency] === nextVersion) continue;
+          existingDependencies[dependency] = nextVersion;
+          packageChanged = true;
+        }
+        for (const [dependency, version] of Object.entries(
+          targetDevDependencies,
+        )) {
+          const isPlatformDependency =
+            dependency in THEME_START_BUILD_DEPENDENCIES;
+          const nextVersion = isPlatformDependency
+            ? THEME_START_BUILD_DEPENDENCIES[
+                dependency as keyof typeof THEME_START_BUILD_DEPENDENCIES
+              ]
+            : existingDevDependencies[dependency] ?? version;
+          if (existingDevDependencies[dependency] === nextVersion) continue;
+          existingDevDependencies[dependency] = nextVersion;
+          packageChanged = true;
+        }
+        const nextManifest: Record<string, unknown> = {
+          ...parsedExisting,
+          type: parsedExisting.type ?? parsedTarget.type,
+          scripts: nextScripts,
+          dependencies: existingDependencies,
+          devDependencies: existingDevDependencies,
+        };
+        if (JSON.stringify(nextManifest) !== JSON.stringify(parsedExisting)) {
+          packageChanged = true;
+        }
+        if (packageChanged) {
+          files.push({
+            path: existingPackage.path,
+            content: `${JSON.stringify(nextManifest, null, 2)}\n`,
+            mimeType: "application/json",
+            expectedFileId: existingPackage.id,
+            expectedVersion: existingPackage.version,
+          });
+        }
+      }
+    } catch {
+      // Leave malformed authored manifests untouched. The normal build
+      // diagnostics remain the source of truth for that error.
+    }
+  }
+
+  return { files, deletions: upgradePlan.deletions };
+}
+
 const V3_COMPONENT_REFS = [
   "editorial-intro.default",
   "category-showcase.default",

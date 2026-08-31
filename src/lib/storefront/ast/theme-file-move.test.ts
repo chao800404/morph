@@ -177,6 +177,53 @@ describe("planThemeFileMove", () => {
 
     expect(result.ok && result.rewrites.length).toBeGreaterThan(0);
   });
+
+  it("rewrites a TanStack route literal when the route file moves", () => {
+    const routeFiles: ThemeSourceFile[] = [
+      {
+        path: "src/routes/about.tsx",
+        content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/about")({});`,
+      },
+      {
+        path: "src/routes/__root.tsx",
+        content: `export const Route = createRootRoute({});`,
+      },
+    ];
+    const result = planThemeFileMove(routeFiles, [
+      { from: "src/routes/about.tsx", to: "src/routes/company/about.tsx" },
+    ]);
+
+    expect(result.ok).toBe(true);
+    expect(contentAt(result, "src/routes/company/about.tsx")).toContain(
+      'createFileRoute("/company/about")',
+    );
+    expect(result.ok && result.rewrites).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: "/about", to: "/company/about" }),
+      ]),
+    );
+  });
+
+  it("moves flat-file dynamic routes and keeps their route id in sync", () => {
+    const routeFiles: ThemeSourceFile[] = [
+      {
+        path: "src/routes/posts.$postId.tsx",
+        content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/posts/$postId")({});`,
+      },
+    ];
+    const result = planThemeFileMove(routeFiles, [
+      {
+        from: "src/routes/posts.$postId.tsx",
+        to: "src/routes/archive/posts.$postId.tsx",
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    expect(contentAt(result, "src/routes/archive/posts.$postId.tsx")).toContain(
+      'createFileRoute("/archive/posts/$postId")',
+    );
+  });
 });
 
 describe("the manifest follows the files it names", () => {
@@ -258,5 +305,4 @@ describe("planDropMoves", () => {
     ]);
   });
 });
-
 

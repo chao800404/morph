@@ -53,4 +53,89 @@ describe("planThemeFileCopies", () => {
       reason: "A folder cannot be copied inside itself.",
     });
   });
+
+  it("rewrites a copied route's file-route literal to its new path", () => {
+    const route = {
+      path: "src/routes/about.tsx",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/about")({});`,
+      mimeType: "text/typescript",
+    };
+    const plan = planThemeFileCopies({
+      files: [route],
+      selectedPaths: [route.path],
+      destinationFolder: "src/routes/company",
+    });
+
+    expect(plan).toMatchObject({
+      ok: true,
+      files: [
+        {
+          path: "src/routes/company/about.tsx",
+          content: expect.stringContaining(
+            'createFileRoute("/company/about")',
+          ),
+        },
+      ],
+    });
+  });
+
+  it("rewrites every route in a copied folder tree", () => {
+    const files = [
+      {
+        path: "src/routes/blog/index.tsx",
+        content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/blog/")({});`,
+        mimeType: "text/typescript",
+      },
+      {
+        path: "src/routes/blog/post.tsx",
+        content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/blog/post")({});`,
+        mimeType: "text/typescript",
+      },
+    ];
+    const plan = planThemeFileCopies({
+      files,
+      selectedPaths: ["src/routes/blog"],
+      destinationFolder: "src/routes/archive",
+    });
+
+    expect(plan).toMatchObject({
+      ok: true,
+      files: [
+        {
+          path: "src/routes/archive/blog/index.tsx",
+          content: expect.stringContaining(
+            'createFileRoute("/archive/blog/")',
+          ),
+        },
+        {
+          path: "src/routes/archive/blog/post.tsx",
+          content: expect.stringContaining(
+            'createFileRoute("/archive/blog/post")',
+          ),
+        },
+      ],
+    });
+  });
+
+  it("does not allow a second root route", () => {
+    const plan = planThemeFileCopies({
+      files: [
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+          mimeType: "text/typescript",
+        },
+      ],
+      selectedPaths: ["src/routes/__root.tsx"],
+      destinationFolder: "src/routes",
+    });
+
+    expect(plan).toEqual({
+      ok: false,
+      reason: "The root route cannot be copied.",
+    });
+  });
 });

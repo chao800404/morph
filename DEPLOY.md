@@ -31,7 +31,29 @@ pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put RESEND_API_KEY
 ```
 
-`PUBLIC_URL` is a non-secret canonical URL and is currently configured in `wrangler.jsonc`.
+`PUBLIC_URL` is a non-secret canonical CMS URL. For a split-domain deployment, set it to
+the CMS hostname (for example `https://shop.example.com`), not the `workers.dev` fallback.
+If more than one CMS/staging hostname must stay on the Morph router, set
+`MORPH_PLATFORM_HOSTNAMES` to a comma-separated list. `MORPH_CMS_HOSTNAME` is a shortcut for
+one CMS hostname and accepts either a hostname or a full origin.
+
+Attach the CMS hostname to the Worker as a Cloudflare Custom Domain. In `wrangler.jsonc`, the
+shape is:
+
+```jsonc
+"routes": [
+  { "pattern": "shop.example.com", "custom_domain": true }
+],
+"vars": {
+  "PUBLIC_URL": "https://shop.example.com",
+  "MORPH_CMS_HOSTNAME": "shop.example.com"
+}
+```
+
+Replace `shop.example.com` with the customer's real CMS hostname. The storefront hostname is
+then connected from Dashboard → Settings → Domains; it is stored as an active storefront
+domain and routed by the same Worker. Do not register the CMS hostname in that storefront
+domain list.
 
 ## 3. Apply database migrations
 

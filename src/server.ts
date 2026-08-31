@@ -16,6 +16,9 @@ import type { RequestHandler } from "@tanstack/react-start/server";
  * itself does not need to be recreated for source updates.
  */
 type StartRequestHandler = RequestHandler<Register>;
+type WorkerQueueBatch = {
+  messages: Array<{ body: unknown; ack?: () => void }>;
+};
 
 type ServerHotData = {
   handler?: StartRequestHandler;
@@ -26,9 +29,8 @@ let handler = hotData?.handler;
 
 const getHandler = async (): Promise<StartRequestHandler> => {
   if (!handler) {
-    const { createStartHandler, defaultStreamHandler } = await import(
-      "@tanstack/react-start/server"
-    );
+    const { createStartHandler, defaultStreamHandler } =
+      await import("@tanstack/react-start/server");
     handler = createStartHandler(defaultStreamHandler);
   }
   return handler;
@@ -53,15 +55,16 @@ export { Sandbox } from "@cloudflare/sandbox";
  * shape that the Start handler comment above depends on.
  */
 async function handleStorefrontRequest(request: Request): Promise<Response> {
-  const [{ StorefrontProductionService }, routing, { env }] = await Promise.all([
-    import("@/lib/storefront/service/storefront-production.service"),
-    import("@/lib/storefront/service/storefront-request-routing"),
-    import("cloudflare:workers"),
-  ]);
-
-  const { storefrontContentPublicationDal } = await import(
-    "@/lib/storefront/dal/storefront-content-publication.dal"
+  const [{ StorefrontProductionService }, routing, { env }] = await Promise.all(
+    [
+      import("@/lib/storefront/service/storefront-production.service"),
+      import("@/lib/storefront/service/storefront-request-routing"),
+      import("cloudflare:workers"),
+    ],
   );
+
+  const { storefrontContentPublicationDal } =
+    await import("@/lib/storefront/dal/storefront-content-publication.dal");
 
   const service = new StorefrontProductionService({
     runtime: routing.createThemeRuntime(
@@ -79,9 +82,8 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
 }
 
 async function isStorefrontHost(request: Request): Promise<boolean> {
-  const { shouldRouteToStorefront } = await import(
-    "@/lib/storefront/service/storefront-request-routing"
-  );
+  const { shouldRouteToStorefront } =
+    await import("@/lib/storefront/service/storefront-request-routing");
   const { env } = await import("cloudflare:workers");
   return shouldRouteToStorefront(
     request,
@@ -90,14 +92,16 @@ async function isStorefrontHost(request: Request): Promise<boolean> {
 }
 
 export default {
-  async fetch(
-    ...args: Parameters<StartRequestHandler>
-  ): Promise<Response> {
+  async fetch(...args: Parameters<StartRequestHandler>): Promise<Response> {
     const request = args[0];
     if (await isStorefrontHost(request)) {
       return handleStorefrontRequest(request);
     }
     return (await getHandler())(...args);
   },
+  async queue(batch: WorkerQueueBatch): Promise<void> {
+    const { processThemeBuildQueue } =
+      await import("@/server/theme-build-queue");
+    await processThemeBuildQueue(batch);
+  },
 };
-

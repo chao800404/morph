@@ -73,6 +73,7 @@ beforeEach(() => {
       input_hash text,
       compiler_id text,
       compiler_version text,
+      dependencies_json text,
       artifact_prefix text,
       manifest_json text,
       diagnostics_json text,

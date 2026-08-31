@@ -1,3 +1,8 @@
+import {
+  rewriteThemeRouteFactoryPath,
+} from "@/lib/storefront/ast/theme-file-move";
+import { parseThemeRouteSourcePath } from "@/lib/storefront/compiler/theme-route-registry";
+
 type ThemeCopySource = Readonly<{
   path: string;
   content: string;
@@ -62,6 +67,45 @@ function removeNestedSelections(paths: readonly string[]): string[] {
 }
 
 /**
+ * A copied file is a new file-route, not a second file pointing at the old
+ * route. TanStack's generator rewrites the createFileRoute literal from the
+ * destination filename; keep that invariant before the batch reaches the
+ * server so Code Mode never creates duplicate route paths.
+ */
+function rewriteCopiedRoute(
+  sourcePath: string,
+  targetPath: string,
+  content: string,
+): { content: string } | { error: string } {
+  const sourceMetadata = parseThemeRouteSourcePath(sourcePath);
+  const targetMetadata = parseThemeRouteSourcePath(targetPath);
+  if (!sourceMetadata || !targetMetadata) return { content };
+  if (sourceMetadata.routeType === "root") {
+    return { error: "The root route cannot be copied." };
+  }
+  if (targetMetadata.routeType === "root") {
+    return { error: "A copied file cannot replace the root route." };
+  }
+  if (sourceMetadata.isRoutePiece || targetMetadata.isRoutePiece) {
+    return { content };
+  }
+
+  try {
+    const rewritten = rewriteThemeRouteFactoryPath(
+      content,
+      targetMetadata.routeId,
+    );
+    if ("error" in rewritten) return { error: rewritten.error };
+    return { content: rewritten.content };
+  } catch {
+    // Copying an in-progress file must remain possible. The normal editor save
+    // path owns syntax diagnostics; only return the original content here when
+    // Babel cannot parse it yet.
+    return { content };
+  }
+}
+
+/**
  * Plans Explorer copy/paste without touching the workspace.
  *
  * Every target is new and receives `expectMissing` at the server boundary. A
@@ -114,7 +158,13 @@ export function planThemeFileCopies(args: {
     );
     const targetRoot = joinPath(args.destinationFolder, targetName);
     if (sourceFile) {
-      const target = { ...sourceFile, path: targetRoot };
+      const rewritten = rewriteCopiedRoute(
+        sourceFile.path,
+        targetRoot,
+        sourceFile.content,
+      );
+      if ("error" in rewritten) return { ok: false, reason: rewritten.error };
+      const target = { ...sourceFile, path: targetRoot, content: rewritten.content };
       writes.push(target);
       occupied.add(target.path);
       continue;
@@ -126,7 +176,14 @@ export function planThemeFileCopies(args: {
       candidate.path.startsWith(`${sourcePath}/`),
     )) {
       const relative = file.path.slice(sourcePath.length + 1);
-      const target = { ...file, path: `${targetRoot}/${relative}` };
+      const targetPath = `${targetRoot}/${relative}`;
+      const rewritten = rewriteCopiedRoute(
+        file.path,
+        targetPath,
+        file.content,
+      );
+      if ("error" in rewritten) return { ok: false, reason: rewritten.error };
+      const target = { ...file, path: targetPath, content: rewritten.content };
       writes.push(target);
       occupied.add(target.path);
     }

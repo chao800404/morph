@@ -35,12 +35,11 @@ export function collectPlatformHostnames(
     typeof env?.MORPH_PLATFORM_HOSTNAMES === "string"
       ? env.MORPH_PLATFORM_HOSTNAMES
       : null;
-  if (extra) {
-    for (const entry of extra.split(",")) {
-      const normalized = entry.trim().toLowerCase();
-      if (normalized) hosts.add(normalized);
-    }
-  }
+  addConfiguredPlatformHostnames(hosts, extra);
+
+  // A single CMS hostname is convenient for the common split-domain setup;
+  // keep the plural variable above for deployments with staging/admin hosts.
+  addConfiguredPlatformHostnames(hosts, env?.MORPH_CMS_HOSTNAME);
 
   return hosts;
 }
@@ -50,12 +49,21 @@ export function isPlatformHostname(
   platformHostnames: ReadonlySet<string>,
 ): boolean {
   if (!rawHostname) return true;
-  const withoutPort = rawHostname.trim().toLowerCase().split(":")[0] ?? "";
-  if (!withoutPort) return true;
-  if (platformHostnames.has(withoutPort)) return true;
+
+  // Use the same canonicalizer for configured values and request headers. In
+  // particular, this handles a trailing dot and an explicit port consistently
+  // so `shop.example.com.` cannot bypass the platform-host check.
+  const normalized = normalizeStorefrontHostname(rawHostname);
+  if (!normalized) {
+    // Local development and malformed hosts are platform traffic. The latter
+    // must never be guessed into a storefront request.
+    return true;
+  }
+
+  if (platformHostnames.has(normalized)) return true;
   // Deploy previews and the default Workers domain are platform surface.
-  if (withoutPort.endsWith(".workers.dev")) return true;
-  return normalizeStorefrontHostname(withoutPort) === null;
+  if (normalized.endsWith(".workers.dev")) return true;
+  return false;
 }
 
 function safeUrlHostname(url: string): string | null {
@@ -63,6 +71,39 @@ function safeUrlHostname(url: string): string | null {
     return new URL(url).hostname;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Accept a platform hostname in either the form operators usually use in
+ * environment variables (`admin.example.com`) or a full origin
+ * (`https://admin.example.com`). Invalid entries are ignored so a typo cannot
+ * turn an arbitrary request host into platform traffic.
+ */
+function normalizeConfiguredPlatformHostname(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return normalizeStorefrontHostname(parsed.hostname);
+    }
+  } catch {
+    // Treat the entry as a hostname below. Invalid values are rejected there.
+  }
+
+  return normalizeStorefrontHostname(value);
+}
+
+function addConfiguredPlatformHostnames(
+  hosts: Set<string>,
+  raw: unknown,
+): void {
+  if (typeof raw !== "string") return;
+  for (const entry of raw.split(",")) {
+    const normalized = normalizeConfiguredPlatformHostname(entry);
+    if (normalized) hosts.add(normalized);
   }
 }
 

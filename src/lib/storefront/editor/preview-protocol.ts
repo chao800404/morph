@@ -153,6 +153,12 @@ export type EditorToPreviewMessage =
       mode: PreviewSpacingOverlayMode;
     }
   | { type: "morph:storefront-preview-set-viewport-height"; height: number }
+  | {
+      type: "morph:storefront-preview-set-route";
+      templateId: string;
+      /** null keeps the template renderer active when no source route is selected. */
+      routePath: string | null;
+    }
   | { type: "morph:storefront-preview-set-section"; sectionId: string | null }
   | {
       type: "morph:storefront-preview-set-selection-field-path";
@@ -628,6 +634,15 @@ export function parseEditorToPreviewMessage(
     case "morph:storefront-preview-set-viewport-height":
       return typeof value.height === "number" && Number.isFinite(value.height)
         ? { type: value.type, height: value.height }
+        : null;
+    case "morph:storefront-preview-set-route":
+      return isBoundedString(value.templateId, 100) &&
+        (value.routePath === null || isBoundedString(value.routePath, 500))
+        ? {
+            type: value.type,
+            templateId: value.templateId,
+            routePath: value.routePath,
+          }
         : null;
     case "morph:storefront-preview-set-section":
       return value.sectionId === null || isBoundedString(value.sectionId, 100)

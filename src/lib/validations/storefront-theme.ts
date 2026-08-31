@@ -50,11 +50,15 @@ export const storefrontThemeEditorSearchSchema = z.object({
     .optional()
     .catch(undefined),
   section: z.string().trim().max(100).optional().catch(undefined),
+  /** Public route selected from the source-derived Theme route registry. */
+  routePath: z.string().trim().max(200).optional().catch(undefined),
   locale: z.string().trim().max(20).optional().catch(undefined),
 });
 
 export const storefrontThemePreviewSearchSchema = z.object({
   templateId: z.uuid(),
+  /** Optional source route used when a Theme has more than one page route. */
+  routePath: z.string().trim().max(200).optional().catch(undefined),
   viewportHeight: z.coerce.number().int().min(320).max(2160),
   editorOrigin: z.url().refine((value) => {
     const url = new URL(value);

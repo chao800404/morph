@@ -9,7 +9,18 @@ import {
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 
 describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
-  const createMockSandbox = (overrides?: Partial<CloudflareSandboxSession>): {
+  it("rejects CMS-selected packages that are not in the pinned sandbox toolchain", () => {
+    expect(
+      () =>
+        new CloudflareSandboxViteThemeBuildRunner({
+          approvedDependencies: ["date-fns"],
+        }),
+    ).toThrow("THEME_DEPENDENCY_VERSION_MISSING: date-fns");
+  });
+
+  const createMockSandbox = (
+    overrides?: Partial<CloudflareSandboxSession>,
+  ): {
     session: CloudflareSandboxSession;
     writtenFiles: Map<string, string | Uint8Array>;
     destroyed: boolean;
@@ -20,40 +31,54 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     let processKilled = false;
 
     const session: CloudflareSandboxSession = {
-      writeFile: vi.fn(async (filePath: string, content: string | Uint8Array) => {
-        writtenFiles.set(filePath, content);
-      }),
+      writeFile: vi.fn(
+        async (filePath: string, content: string | Uint8Array) => {
+          writtenFiles.set(filePath, content);
+        },
+      ),
       mkdir: vi.fn(async () => {}),
-      readFile: vi.fn(async (filePath: string, options?: CloudflareSandboxReadFileOptions | "utf8" | "binary") => {
-        const encoding = typeof options === "object" ? options.encoding : options;
-        if (filePath.endsWith(".html")) {
-          return { content: "<!DOCTYPE html><html><body><div id='root'></div></body></html>" };
-        }
-        if (filePath.endsWith(".js")) {
-          return { content: 'console.log("compiled bundle");' };
-        }
-        if (filePath.endsWith(".css")) {
-          return { content: "/* compiled tailwind v4 */\n.grid { display: grid; }" };
-        }
-        if (filePath.endsWith(".png")) {
-          // Verify binary mode uses { encoding: "none" } and test stream return value
-          expect(encoding).toBe("none");
-          const stream = new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
-              controller.close();
-            },
-          });
-          return { content: stream };
-        }
-        return { content: "file content" };
-      }) as any,
+      readFile: vi.fn(
+        async (
+          filePath: string,
+          options?: CloudflareSandboxReadFileOptions | "utf8" | "binary",
+        ) => {
+          const encoding =
+            typeof options === "object" ? options.encoding : options;
+          if (filePath.endsWith(".html")) {
+            return {
+              content:
+                "<!DOCTYPE html><html><body><div id='root'></div></body></html>",
+            };
+          }
+          if (filePath.endsWith(".js")) {
+            return { content: 'console.log("compiled bundle");' };
+          }
+          if (filePath.endsWith(".css")) {
+            return {
+              content: "/* compiled tailwind v4 */\n.grid { display: grid; }",
+            };
+          }
+          if (filePath.endsWith(".png")) {
+            // Verify binary mode uses { encoding: "none" } and test stream return value
+            expect(encoding).toBe("none");
+            const stream = new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+                controller.close();
+              },
+            });
+            return { content: stream };
+          }
+          return { content: "file content" };
+        },
+      ) as any,
       exec: vi.fn(async (command: string) => {
         if (command.includes("find /workspace/dist")) {
           return {
             exitCode: 0,
             success: true,
-            stdout: "56 /workspace/dist/index.html\n1024 /workspace/dist/assets/index-A1b2.js\n512 /workspace/dist/assets/index-C3d4.css\n4 /workspace/dist/assets/logo.png\n",
+            stdout:
+              "56 /workspace/dist/index.html\n1024 /workspace/dist/assets/index-A1b2.js\n512 /workspace/dist/assets/index-C3d4.css\n4 /workspace/dist/assets/logo.png\n",
             stderr: "",
           };
         }
@@ -87,7 +112,11 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
   };
 
   const createInput = (
-    files: Array<{ path: string; content: string | Uint8Array; isEntry?: boolean }>,
+    files: Array<{
+      path: string;
+      content: string | Uint8Array;
+      isEntry?: boolean;
+    }>,
     overrides?: Partial<ThemeBuildRunnerInput>,
   ): ThemeBuildRunnerInput => ({
     buildId: "sandbox-build-123",
@@ -116,6 +145,12 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
 
     const input = createInput([
       {
+        path: "tsconfig.json",
+        content: JSON.stringify({
+          compilerOptions: { paths: { "@/*": ["src/*"] } },
+        }),
+      },
+      {
         path: "src/styles/global.css",
         content: '@import "tailwindcss";',
       },
@@ -129,10 +164,15 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     const result = await runner.run(input);
 
     expect(result.success).toBe(true);
-    expect(provider.getSandbox).toHaveBeenCalledWith({ name: "SANDBOX_DO" }, "sandbox-build-123");
+    expect(provider.getSandbox).toHaveBeenCalledWith(
+      { name: "SANDBOX_DO" },
+      "sandbox-build-123",
+    );
 
     // Verify container package.json has pinned exact toolchain dependencies
-    const writtenPkg = JSON.parse(String(mock.writtenFiles.get("/workspace/package.json")));
+    const writtenPkg = JSON.parse(
+      String(mock.writtenFiles.get("/workspace/package.json")),
+    );
     expect(writtenPkg.dependencies["react"]).toBe("19.2.1");
     expect(writtenPkg.dependencies["tailwindcss"]).toBe("4.1.17");
     expect(writtenPkg.dependencies["@tailwindcss/vite"]).toBe("4.1.17");
@@ -141,13 +181,18 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(writtenPkg.dependencies["@tanstack/react-router"]).toBe("1.170.18");
 
     // Verify container vite.config.ts has injected dependency enforcer AND path containment
-    const writtenViteConfig = String(mock.writtenFiles.get("/workspace/vite.config.ts"));
+    const writtenViteConfig = String(
+      mock.writtenFiles.get("/workspace/vite.config.ts"),
+    );
     expect(writtenViteConfig).toContain("morph-dependency-enforcer");
     expect(writtenViteConfig).toContain("UNAPPROVED_DEPENDENCY");
     expect(writtenViteConfig).toContain("UNAPPROVED_DEPENDENCY_PATH");
     expect(writtenViteConfig).toContain("WORKSPACE_PATH_ESCAPE");
-    expect(writtenViteConfig).toContain('!normalizedResolved.startsWith("/workspace")');
-
+    expect(writtenViteConfig).toContain(
+      '!normalizedResolved.startsWith("/workspace")',
+    );
+    expect(writtenViteConfig).toContain('"key":"@"');
+    expect(writtenViteConfig).toContain("themeAliases");
 
     // Verify exact pinned vite binary execution
     expect(mock.session.exec).toHaveBeenCalledWith(
@@ -219,7 +264,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
           {
             path: "src/router.tsx",
             content:
-              'export function getRouter() { return createRouter({ routeTree }); }',
+              "export function getRouter() { return createRouter({ routeTree }); }",
           },
           {
             path: "src/routes/__root.tsx",
@@ -335,7 +380,6 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     }
   });
 
-
   it("rejects compiler identity mismatch", async () => {
     const mock = createMockSandbox();
     const provider: CloudflareSandboxProvider = {
@@ -373,7 +417,8 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
         exitCode: 1,
         success: false,
         stdout: "",
-        stderr: "SyntaxError: Unexpected token in /workspace/src/pages/index.tsx (10:4)",
+        stderr:
+          "SyntaxError: Unexpected token in /workspace/src/pages/index.tsx (10:4)",
       })),
     });
 
@@ -462,7 +507,8 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
           return {
             exitCode: 0,
             success: true,
-            stdout: "100 /workspace/dist/1.js\n100 /workspace/dist/2.js\n100 /workspace/dist/3.js\n",
+            stdout:
+              "100 /workspace/dist/1.js\n100 /workspace/dist/2.js\n100 /workspace/dist/3.js\n",
             stderr: "",
           };
         }
@@ -480,7 +526,11 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     });
 
     const input = createInput([
-      { path: "src/pages/index.tsx", content: "export default () => 1;", isEntry: true },
+      {
+        path: "src/pages/index.tsx",
+        content: "export default () => 1;",
+        isEntry: true,
+      },
     ]);
 
     const result = await runner.run(input);
@@ -519,7 +569,11 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     });
 
     const input = createInput([
-      { path: "src/pages/index.tsx", content: "export default () => 1;", isEntry: true },
+      {
+        path: "src/pages/index.tsx",
+        content: "export default () => 1;",
+        isEntry: true,
+      },
     ]);
 
     const result = await runner.run(input);
@@ -527,7 +581,9 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.errorMessage).toContain("LIMIT_EXCEEDED");
-      expect(result.errorMessage).toContain("dist output (50000000 bytes) exceeds limit");
+      expect(result.errorMessage).toContain(
+        "dist output (50000000 bytes) exceeds limit",
+      );
     }
     // Preflight prevented reading file bodies
     expect(mock.session.readFile).not.toHaveBeenCalled();

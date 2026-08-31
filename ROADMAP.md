@@ -4,7 +4,7 @@
 
 它是方向與交付順序，不是日期承諾。
 
-工程 invariants 以 [`.agent/rules.md`](./.agent/rules.md) 為準。
+工程 invariants 以 [`AGENTS.md`](./AGENTS.md) 與 [`.agents/rules/`](./.agents/rules/) 為準。
 
 ---
 
@@ -174,6 +174,11 @@ Edge Runtime
 - style inspector foundations
 - Canvas / code mode foundations
 - editor comments / collaboration UI foundations
+- 隔離 Monaco file URI workspace，預載同一 Theme 的全部 source models，讓相對 import 可被 TypeScript worker 解析
+- 由 bounded route registry 推導的唯讀虛擬 `src/routeTree.gen.ts`，提供 TanStack route path/type 補全；正式 generated output 仍只在 Theme build 暫存 workspace 產生
+- Code Mode 的 route literal completion 由同一份 `src/routes/**` registry 推導，支援 `Link`／`navigate`／`createFileRoute` 的路徑輸入，不另維護手寫清單
+- `tsconfig.json`／`jsconfig.json` 的 workspace-local 相對 `extends`、`baseUrl` 與 `paths` 會同步到 Monaco、Vite 與 import protection；package／越界 extends 會 fail closed
+- Starter Theme bootstrap 的 preview/apply、版本閘門、source generation/OCC 保護與 additive upgrade
 
 ### Build Plane
 
@@ -189,6 +194,8 @@ Edge Runtime
 - local Vite runner
 - Cloudflare Sandbox Vite build runner
 - dependency allowlist
+- platform-owned dependency catalog、精確版本驗證與 queued → building → succeeded/failed build lifecycle
+- Code Mode customer-facing dependency catalog／request UI；只允許選取 `cms.config.ts` 的核准套件，並以最新成功 Build Preview 的 source revision 作為請求閘門
 - build resource limits
 - R2 artifact store
 - canonical build manifest
@@ -197,13 +204,16 @@ Edge Runtime
 - sandboxed iframe preview
 - source-authored `src/routes/` registry、fail-closed route diagnostics、真正 TanStack Start Cloudflare Worker build 與隔離的 TanStack Router client preview adapter
 
+依賴安裝不是瀏覽器直接執行 `npm install`：客戶只能從 `cms.config.ts` 的平台核准目錄提出請求，建置成功後才會進入可用狀態。
+
 ### Authoring Contract（2026-08 確立）
 
 已具備：
 
-- **內容契約完全由元件原始碼決定**：元件以 `export const contentFields` 宣告可編輯欄位，
-  不需要登記在 `morph.theme.json`。掃描涵蓋所有 `src/**/*.tsx`，以來源路徑為身分；
-  manifest 的 capability 已完全退役。
+- **內容契約以元件原始碼為優先**：元件可在同一檔案以 `export const contentFields`
+  宣告可編輯欄位，不需要先登記在 `morph.theme.json`。掃描涵蓋所有 `src/**/*.tsx`，以來源
+  路徑為身分；manifest 的 `contentFields` 只保留給尚未遷移的既有元件作相容 fallback，
+  不得成為新的唯一宣告來源。
 - 未宣告時，欄位由 JSX 自動推導，依據是元件簽章宣告的 prop 而非執行期收到的值——
   否則從未編輯過的元件永遠無法編輯。
 - 欄位型別：text／textarea／url／number／boolean／select／array。`array` 支援
@@ -215,6 +225,34 @@ Edge Runtime
   所以採用 slot 是每個路由各自的選擇。
 - 選取、樣式、結構樹與內容編輯都不再需要 `data-morph-*` 標記。instance 樣式需要跨編輯
   穩定的身分，平台會在首次寫入時自動補上，作者不必手寫。
+
+Code Mode 的 generated route tree 契約：
+
+- `src/routes/**` 是作者可編輯的 route source，也是頁面結構與 route path 的 SSOT。
+- `src/routeTree.gen.ts` 在 Code Mode 只以唯讀虛擬檔案呈現，供 Monaco 提供與 TanStack
+  Router 相同的 path/type 推導；它不屬於 persisted Theme Workspace，不能由使用者或 AI
+  直接儲存、修改或刪除。
+- 真正的 `routeTree.gen.ts` 只能由固定版本的 Theme build toolchain 在暫存 build workspace
+  產生。虛擬模型與正式 build 必須共用 bounded route registry；不合法路由要顯示診斷，
+  不得以 `any` 或空 route tree 掩蓋 build 錯誤。
+
+Code Mode 與 TanStack Start 的編譯邊界：
+
+- `.server.*`／`.client.*`、`server-only`／`client-only` marker 與 Start server/client
+  specifier 會在 Monaco Problems、Local Vite 與 Cloudflare Sandbox 三條路徑共用同一份
+  reachable-graph 檢查；只有 `createServerFn().handler`、`createMiddleware().server`、
+  `createIsomorphicFn().server/.client` 等 compiler boundary 可安全跨環境。
+- `tsconfig.json`／`jsconfig.json` 的 `baseUrl`、`paths` 會被同一份受限解析器提供給
+  Monaco、import protection 與 Vite；不安全或越界 alias 會 fail closed。這對齊 TanStack
+  Start 的路徑別名契約，但不執行客戶自訂的 Vite／Router plugin。
+
+Starter bootstrap 與 workspace upgrade 契約：
+
+- 新建或升級 Theme 前先產生檔案差異；只對未被作者修改的已知 starter bytes 套用安全升級。
+- 使用者確認後才透過 Theme Workspace、ownership、source generation 與 OCC 寫入；既有
+  authored files、customer dependencies 與不安全刪除一律保留並顯示衝突。
+- 套用後必須重新跑 route diagnostics、Live Preview 與 immutable build；bootstrap 成功不
+  代表已 Publish。
 
 寫入目標的分界：
 
@@ -244,9 +282,9 @@ Edge Runtime
 - **Theme artifact + Page Document 的 runtime 組合已閉環**：Morph Core 以 `/_morph/content` 提供 active release 的已發布內容，Theme 在 root route `beforeLoad` 以 server-only 分支取回並經 router context 序列化到 client。編輯器解釋器、Build Preview 與 production 三個平面共用同一份 root route source
 - Morph Core 以 `x-morph-content-origin` 明確告知回撥位址，Theme 不需從 hostname 猜測 scheme／port；該 header 為 set 而非 merge，外部無法偽造
 
-### 尚未完整閉環
+### 已完成但需持續回歸
 
-目前主要缺口：
+以下能力已完成並有驗證，但仍需隨新 Theme 與瀏覽器回歸：
 
 - release history UI：已閉環——編輯器工具列的 History 列出每次發布的 release，
   標出目前 live 的版本並可切換。啟用沿用同一個部署核心（CAS 搶指標後部署該 release
@@ -279,7 +317,15 @@ Edge Runtime
   才啟用，因為它會建立 release 並移動指標。互動延遲也已建立基準（畫布選取約 470ms、
   樹狀選取約 150ms、模式切換約 220ms），量測過程本身找出並修掉一處退化。
   原生拖放在 iframe 加縮放畫布的組合下仍驗證不了，拖曳行為只能手動實測。
+
+### 尚未完整閉環
+
+目前主要缺口：
+
 - custom domain 憑證與 DNS 生命週期
+- 獨立平台人工 approval workflow；Code Mode 已有 customer-facing dependency catalog／request UI，
+  只顯示 `cms.config.ts` 核准套件並顯示 queued／building／ready／failed。若採逐案人工審核，
+  還需要獨立 approval role、audit 與 state machine
 - AI Code Agent backend workflow
 - AI patch / diff / repair orchestration
 - production-grade observability / metering / tenant isolation
@@ -288,13 +334,17 @@ Edge Runtime
 
 # Phase 0 — Architecture Alignment
 
+## Status
+
+✅ 已完成。規則 authority 已收斂到 `AGENTS.md` 與 `.agents/rules/*.md`；本文件只保留產品階段、交付順序與未來缺口。
+
 ## Goal
 
 讓 repository 文件、AI coding rules 與實際 Code-backed implementation 完全一致。
 
 ## Deliverables
 
-- 重寫 `.agent/rules.md`
+- 對齊 `AGENTS.md` 與 `.agents/rules/*.md` 的規則 authority
 - 重寫 `ROADMAP.md`
 - 把 Presentation SSOT 明確改為 Theme React Source
 - 把 Page Document 明確降回 Content / Assembly responsibility
@@ -332,6 +382,8 @@ Monaco
 
 ### Theme Workspace
 
+目前狀態：核心 file lifecycle、tree UX、multi-file OCC、source-generation conflict 與 revision history／restore 已完成；dirty／saving／conflict 的回歸持續進行。
+
 - 完成 file create / rename / delete lifecycle
 - 完成 file tree UX
 - 強化 workspace dirty / saving / conflict state
@@ -349,9 +401,27 @@ Monaco
 - Monaco edit → Inspector reparse
 - unsupported dynamic expression 顯示 Code-only state
 
+### Code Mode route authoring
+
+- `src/routes/**` 由作者直接編輯，新增 `about.tsx` 等 route source 後由同一份 bounded route registry
+  解析 path、parent 與 diagnostics。
+- Explorer 顯示唯讀虛擬 `src/routeTree.gen.ts`，用來提供 TanStack Router 的 path/type 補全；
+  它不是 workspace source，也不會被保存或由 AI 直接修改。
+- 真正的 route tree 只在固定版本 Theme build toolchain 的暫存 workspace 產生；新增 route
+  只有在 route generation、Preview 與 build 成功後才算可執行。
+
+### Starter bootstrap / upgrade
+
+- 新建或升級 Starter Theme 前先產生可審閱的 create／update／delete plan。
+- 套用時沿用 ownership、source generation 與 OCC；作者修改過的檔案、客戶依賴與非安全刪除不會
+  被靜默覆蓋。
+- 套用後重新執行 route diagnostics、Live Preview 與 immutable build；bootstrap 不等同 Publish。
+
 ### Morph component metadata
 
-擴充 `morph.theme.json`：
+維持 `morph.theme.json` 作為 routing、component mapping 與舊元件相容 metadata；新的 code-authored
+內容 capability 以元件同檔案的 `export const contentFields` 為優先來源，manifest `contentFields`
+只作為尚未遷移元件的 fallback。
 
 - component id
 - source path
@@ -359,7 +429,7 @@ Monaco
 - display name
 - visual-editor capability
 - optional inspector metadata
-- bounded `contentFields` capability，讓 customer code-authored props 可安全接入 versioned Page／Template content draft
+- bounded `contentFields` capability parser 與 server-side allowlist，讓 customer code-authored props 可安全接入 versioned Page／Template content draft
 
 Manifest 是 mapping / metadata，不是 styling SSOT。
 
@@ -424,6 +494,18 @@ Monaco 改 Hero.tsx
 - file / source / output budgets
 - structured build logs
 - diagnostics mapping 到 Monaco / Inspector
+- customer dependency request 的 platform allowlist、精確版本與 queued → building → ready／failed 狀態
+
+### Theme dependency workflow
+
+- `cms.config.ts` 是平台擁有的核准套件目錄與精確版本來源；客戶端不可提交任意 npm 名稱或版本。
+- 已登入且具備 CMS 管理權限的請求只能啟用核准目錄中的套件，建立 dependency request 並綁定
+  immutable source revision。
+- Cloudflare Queue／local runner 執行 `queued → building → succeeded／failed`；只有 build 成功
+  後套件才進入 `ready`，失敗不得影響上一個可用 build。
+- 目前「平台核准」等同 `cms.config.ts` allowlist 加上 CMS admin server capability；若未來要
+  由平台人員逐案審核，必須另建 review role、approval state、audit 與 UI，不得把 `building`
+  當成審核完成。
 
 ### Artifact
 

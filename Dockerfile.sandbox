@@ -1,24 +1,11 @@
 FROM docker.io/cloudflare/sandbox:0.12.7
 
-# Pre-install pinned exact toolchain & approved dependencies
+# `pnpm generate:theme-types` writes this manifest from src/cms.config.ts.
+# Keep package installation in the image build: Theme source must never be
+# allowed to run npm install during a request.
 WORKDIR /opt/morph-toolchain
-RUN npm init -y && \
-    npm install --save-exact \
-      vite@7.2.7 \
-      tailwindcss@4.1.17 \
-      @tailwindcss/vite@4.1.17 \
-      @vitejs/plugin-react@5.2.0 \
-      @cloudflare/vite-plugin@1.50.0 \
-      @tanstack/react-router@1.170.18 \
-      @tanstack/react-start@1.168.32 \
-      @tanstack/router-plugin@1.168.23 \
-      react@19.2.1 \
-      react-dom@19.2.1 \
-      clsx@2.1.1 \
-      tailwind-merge@3.4.0 \
-      lucide-react@0.544.0 \
-      class-variance-authority@0.7.1 \
-      wrangler@4.118.0
+COPY sandbox-toolchain-package.json ./package.json
+RUN npm install --no-audit --no-fund
 
 # Symlink toolchain node_modules so /workspace can resolve locally without npm download
 RUN mkdir -p /workspace && ln -s /opt/morph-toolchain/node_modules /workspace/node_modules

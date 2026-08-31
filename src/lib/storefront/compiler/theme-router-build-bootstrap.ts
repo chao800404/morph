@@ -34,10 +34,74 @@ function routeImportName(route: ThemeRouteRecord, index: number): string {
   return route.kind === "root" ? "rootRouteImport" : `route${index}Import`;
 }
 
+function routePieceImportPath(path: string): string {
+  return `./${path.replace(/\\/g, "/").replace(/\.[cm]?[jt]sx?$/, "")}`;
+}
+
+function hasRootComponentPieces(route: ThemeRouteRecord): boolean {
+  return Boolean(
+    route.routePieces?.component ||
+    route.routePieces?.errorComponent ||
+    route.routePieces?.notFoundComponent ||
+    route.routePieces?.pendingComponent,
+  );
+}
+
+function routePieceUpdates(
+  route: ThemeRouteRecord,
+  options: { includeLoader?: boolean; includeLazy?: boolean } = {},
+): string {
+  const pieces = route.routePieces;
+  if (!pieces) return "";
+  const includeLoader = options.includeLoader ?? true;
+  const includeLazy = options.includeLazy ?? true;
+  const updates: string[] = [];
+  if (includeLoader && pieces.loader) {
+    updates.push(
+      `.updateLoader({ loader: lazyFn(() => import(${JSON.stringify(
+        routePieceImportPath(pieces.loader),
+      )}), "loader") })`,
+    );
+  }
+  const componentPieces = [
+    ["component", pieces.component],
+    ["errorComponent", pieces.errorComponent],
+    ["notFoundComponent", pieces.notFoundComponent],
+    ["pendingComponent", pieces.pendingComponent],
+  ] as const;
+  const componentUpdates = componentPieces
+    .map(([name, path]) =>
+      path
+        ? `${name}: lazyRouteComponent(() => import(${JSON.stringify(
+            routePieceImportPath(path),
+          )}), "${name}")`
+        : null,
+    )
+    .filter((value): value is string => value !== null);
+  if (componentUpdates.length > 0) {
+    updates.push(`.update({ ${componentUpdates.join(", ")} })`);
+  }
+  if (includeLazy && pieces.lazy) {
+    updates.push(
+      `.lazy(() => import(${JSON.stringify(
+        routePieceImportPath(pieces.lazy),
+      )}).then((module) => module.Route))`,
+    );
+  }
+  return updates.join("");
+}
+
 function routeParentIndex(
   route: ThemeRouteRecord,
   routes: readonly ThemeRouteRecord[],
 ): number | null {
+  if (route.parentSourcePath !== undefined) {
+    if (!route.parentSourcePath) return null;
+    const explicitIndex = routes.findIndex(
+      (candidate) => candidate.sourcePath === route.parentSourcePath,
+    );
+    return explicitIndex >= 0 ? explicitIndex : null;
+  }
   let bestIndex: number | null = null;
   let bestLength = -1;
   routes.forEach((candidate, index) => {
@@ -111,10 +175,31 @@ if (container) {
   }
   const childRoutes = registry.routes.filter((route) => route.kind === "route");
   const routeImports = registry.routes
+    .map((route, registryIndex) => ({ route, registryIndex }))
+    .filter(({ route }) => !route.isVirtual)
     .map(
-      (route, index) =>
-        `import { Route as ${routeImportName(route, index)} } from "./${route.sourcePath}";`,
+      ({ route, registryIndex }) =>
+        `import { Route as ${routeImportName(route, registryIndex)} } from "./${route.sourcePath}";`,
     )
+    .join("\n");
+  const hasVirtualRoute = childRoutes.some((route) => route.isVirtual);
+  const hasLoaderPieces = registry.routes.some(
+    (route) => route.routePieces?.loader,
+  );
+  const hasComponentPieces = registry.routes.some((route) =>
+    Boolean(
+      route.routePieces?.component ||
+      route.routePieces?.errorComponent ||
+      route.routePieces?.notFoundComponent ||
+      route.routePieces?.pendingComponent,
+    ),
+  );
+  const routeRuntimeImports = [
+    hasVirtualRoute ? "  createFileRoute," : "",
+    hasLoaderPieces ? "  lazyFn," : "",
+    hasComponentPieces ? "  lazyRouteComponent," : "",
+  ]
+    .filter(Boolean)
     .join("\n");
   const childRouteRegistryIndexes = childRoutes.map((route) =>
     registry.routes.indexOf(route),
@@ -122,6 +207,28 @@ if (container) {
   const parentIndexes = childRoutes.map((route) =>
     routeParentIndex(route, childRoutes),
   );
+  const relativeRouteId = (
+    route: ThemeRouteRecord,
+    parentIndex: number | null,
+  ): string => {
+    const routeId = route.routeId ?? route.path;
+    if (parentIndex === null) return routeId;
+    const parentId =
+      childRoutes[parentIndex].routeId ?? childRoutes[parentIndex].path;
+    if (
+      route.isIndex &&
+      route.path.replace(/\/$/, "") ===
+        childRoutes[parentIndex].path.replace(/\/$/, "")
+    ) {
+      return "/";
+    }
+    const normalizedParent = parentId.replace(/\/$/, "");
+    if (!normalizedParent || normalizedParent === "/") return routeId;
+    return routeId.startsWith(`${normalizedParent}/`)
+      ? routeId.slice(normalizedParent.length) || "/"
+      : routeId;
+  };
+  const rootHasComponentPieces = hasRootComponentPieces(root);
   const updatedRoutes = childRoutes
     .map((route, index) => {
       const registryIndex = childRouteRegistryIndexes[index];
@@ -133,11 +240,20 @@ if (container) {
       const relativePath = parentPath
         ? route.path.slice(parentPath.length) || "/"
         : route.path;
-      return `const route${index} = ${routeImportName(route, registryIndex)}.update({
-  id: ${JSON.stringify(relativePath)},
-  path: ${JSON.stringify(relativePath)},
-  getParentRoute: () => ${parentIndex === null ? "rootRouteImport" : `route${parentIndex}`},
-});`;
+      const relativeId = relativeRouteId(route, parentIndex);
+      const pathProperty = route.isPathless
+        ? ""
+        : `\n  path: ${JSON.stringify(relativePath)},`;
+      const routeExpression = route.isVirtual
+        ? `createFileRoute(${JSON.stringify(route.routeId ?? route.path)})({}).update({
+  id: ${JSON.stringify(relativeId)},${pathProperty}
+  getParentRoute: () => ${parentIndex === null ? (rootHasComponentPieces ? "rootRoute" : "rootRouteImport") : `route${parentIndex}`},
+})`
+        : `${routeImportName(route, registryIndex)}.update({
+  id: ${JSON.stringify(relativeId)},${pathProperty}
+  getParentRoute: () => ${parentIndex === null ? (rootHasComponentPieces ? "rootRoute" : "rootRouteImport") : `route${parentIndex}`},
+})`;
+      return `const route${index} = ${routeExpression}${routePieceUpdates(route)};`;
     })
     .join("\n");
   const childrenByParent = new Map<number | null, number[]>();
@@ -155,6 +271,15 @@ if (container) {
   const children = (childrenByParent.get(null) ?? [])
     .map(renderRouteTree)
     .join(", ");
+  const rootReference = hasRootComponentPieces(root)
+    ? "rootRoute"
+    : "rootRouteImport";
+  const rootRouteDeclaration = hasRootComponentPieces(root)
+    ? `const rootRoute = rootRouteImport${routePieceUpdates(root, {
+        includeLoader: false,
+        includeLazy: false,
+      })};`
+    : "";
 
   return {
     routeRegistry: registry,
@@ -165,12 +290,14 @@ import {
   RouterProvider,
   createMemoryHistory,
   createRouter,
+${routeRuntimeImports}
 } from "@tanstack/react-router";
 ${cssImports}
 ${routeImports}
 
+${rootRouteDeclaration}
 ${updatedRoutes}
-const routeTree = rootRouteImport.addChildren([${children}]);
+const routeTree = ${rootReference}.addChildren([${children}]);
 // The preview is served from a capability-scoped URL
 // (/preview-build/<buildId>/<token>/...), so browser history would ask the
 // router to match that path and every Theme route would miss. The token also

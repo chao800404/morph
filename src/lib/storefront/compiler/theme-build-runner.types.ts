@@ -80,8 +80,7 @@ export type ThemeBuildRunnerFailureResult = {
  * - Artifact Storage (Phase 4B-6) = Persist artifacts to R2 (produces immutable artifactPrefix)
  */
 export type ThemeBuildRunnerResult =
-  | ThemeBuildRunnerSuccessResult
-  | ThemeBuildRunnerFailureResult;
+  ThemeBuildRunnerSuccessResult | ThemeBuildRunnerFailureResult;
 
 /**
  * Immutable, deep readonly input passed to the runner.
@@ -97,6 +96,7 @@ export type ThemeBuildRunnerInput = Readonly<{
   inputHash: string;
   compilerId: string;
   compilerVersion: string;
+  dependencies?: Readonly<Record<string, string>>;
   files: ReadonlyArray<Readonly<StorefrontThemeBuildInput["files"][number]>>;
 }>;
 
@@ -115,4 +115,3 @@ export interface ThemeBuildRunner {
   readonly isolation: "local-in-process" | "sandbox-container" | "fake-mock";
   run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult>;
 }
-

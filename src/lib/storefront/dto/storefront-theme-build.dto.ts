@@ -1,5 +1,6 @@
 import type { StorefrontThemeBuildStatus } from "@/db/storefront.schema";
 import type { ThemeCompilerFile } from "@/lib/storefront/compiler/theme-compiler.types";
+import type { ThemeDependencyMap } from "@/lib/storefront/compiler/theme-dependency-policy";
 
 export type StorefrontThemeBuildDTO = {
   id: string;
@@ -10,6 +11,8 @@ export type StorefrontThemeBuildDTO = {
   inputHash: string | null;
   compilerId: string | null;
   compilerVersion: string | null;
+  /** Exact package versions frozen into this immutable build request. */
+  dependencies?: ThemeDependencyMap | null;
   artifactPrefix: string | null;
   manifestJson: any | null;
   diagnosticsJson: any | null;
@@ -25,8 +28,6 @@ export type StorefrontThemeBuildPreviewDTO = StorefrontThemeBuildDTO & {
   previewToken?: string | null;
 };
 
-
-
 export type StorefrontThemeBuildInput = {
   buildId: string;
   storefrontId: string;
@@ -38,4 +39,5 @@ export type StorefrontThemeBuildInput = {
   inputHash: string;
   compilerId: string;
   compilerVersion: string;
+  dependencies?: ThemeDependencyMap;
 };

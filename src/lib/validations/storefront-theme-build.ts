@@ -5,6 +5,7 @@ export const createStorefrontThemeBuildInputSchema = z.object({
   storefrontId: idSchema("storefront"),
   themeId: idSchema("storefront theme"),
   sourceRevisionId: z.string().uuid("Invalid source revision ID"),
+  dependencies: z.record(z.string(), z.string()).optional(),
 });
 
 export type CreateStorefrontThemeBuildInput = z.infer<
@@ -32,6 +33,34 @@ export type ListStorefrontThemeBuildsInput = z.infer<
   typeof listStorefrontThemeBuildsInputSchema
 >;
 
+export const listStorefrontThemeDependenciesInputSchema = z.object({
+  storefrontId: idSchema("storefront"),
+  themeId: idSchema("storefront theme"),
+});
+
+export type ListStorefrontThemeDependenciesInput = z.infer<
+  typeof listStorefrontThemeDependenciesInputSchema
+>;
+
+export const requestStorefrontThemeDependencyInputSchema = z.object({
+  storefrontId: idSchema("storefront"),
+  themeId: idSchema("storefront theme"),
+  sourceRevisionId: z.string().uuid("Invalid source revision ID"),
+  packageName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(214)
+    .regex(
+      /^(?:@[a-z0-9._~-]+\/[a-z0-9._~-]+|[a-z0-9._~-]+)(?:\/[a-z0-9._~-]+)*$/i,
+      "Invalid package name",
+    ),
+});
+
+export type RequestStorefrontThemeDependencyInput = z.infer<
+  typeof requestStorefrontThemeDependencyInputSchema
+>;
+
 export const markBuildStartedInputSchema = z.object({
   storefrontId: idSchema("storefront"),
   themeId: idSchema("storefront theme"),
@@ -54,7 +83,6 @@ export const markBuildSucceededInputSchema = z.object({
   manifestJson: z.any().optional(),
   diagnosticsJson: z.any().optional(),
 });
-
 
 export type MarkBuildSucceededInput = z.infer<
   typeof markBuildSucceededInputSchema

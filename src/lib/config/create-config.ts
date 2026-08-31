@@ -29,6 +29,54 @@ export interface CloudflareDeployment {
   plan?: CloudflarePlan;
 }
 
+export interface ThemeConfig {
+  /**
+   * Package specifiers enabled for Theme source. Versions must be exact so the
+   * same declaration can be installed into the isolated sandbox image.
+   */
+  dependencies?: Readonly<Record<string, string>>;
+}
+
+const THEME_PACKAGE_SPECIFIER_PATTERN =
+  /^(?:@[a-z0-9._~-]+\/[a-z0-9._~-]+|[a-z0-9._~-]+)(?:\/[a-z0-9._~-]+)*$/i;
+const EXACT_THEME_VERSION_PATTERN =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+function themePackageRoot(specifier: string): string {
+  if (specifier.startsWith("@")) {
+    return specifier.split("/").slice(0, 2).join("/");
+  }
+  return specifier.split("/")[0] ?? specifier;
+}
+
+export function validateThemeDependencies(
+  dependencies: Readonly<Record<string, string>> | undefined,
+): string[] {
+  if (dependencies === undefined) return [];
+  const errors: string[] = [];
+  const rootVersions = new Map<string, string>();
+  for (const [name, version] of Object.entries(dependencies)) {
+    if (!THEME_PACKAGE_SPECIFIER_PATTERN.test(name)) {
+      errors.push(`Theme dependency name "${name}" is invalid.`);
+    }
+    if (!EXACT_THEME_VERSION_PATTERN.test(version)) {
+      errors.push(
+        `Theme dependency ${name} must use an exact semver version (received "${version}").`,
+      );
+    }
+    const root = themePackageRoot(name);
+    const existingVersion = rootVersions.get(root);
+    if (existingVersion && existingVersion !== version) {
+      errors.push(
+        `Theme dependency root ${root} cannot use both ${existingVersion} and ${version}.`,
+      );
+    } else {
+      rootVersions.set(root, version);
+    }
+  }
+  return errors;
+}
+
 export interface ProductSkuConfig {
   /** Generate a SKU only when the client leaves it blank. Defaults to true. */
   autoGenerate?: boolean;
@@ -272,6 +320,7 @@ export interface CMSConfigInput {
   };
   email?: EmailAdapter;
   cloudflare?: CloudflareDeployment;
+  theme?: ThemeConfig;
   trustedOrigins: string[];
 }
 
@@ -294,6 +343,7 @@ export interface CMSUserConfig {
   auth: CMSConfigInput["auth"];
   features?: CMSConfigInput["features"];
   cloudflare?: CloudflareDeployment;
+  theme?: ThemeConfig;
   trustedOrigins: string[];
   email: {
     defaultFromAddress: string;
@@ -314,7 +364,15 @@ export interface CMSUserConfig {
  * Identity helper that gives `src/cms.config.ts` full autocomplete and
  * type-checking while preserving the literal types of what was authored.
  */
-export const defineConfig = <T extends CMSUserConfig>(config: T): T => config;
+export const defineConfig = <T extends CMSUserConfig>(config: T): T => {
+  const themeDependencyErrors = validateThemeDependencies(
+    config.theme?.dependencies,
+  );
+  if (themeDependencyErrors.length > 0) {
+    throw new Error(`CMS Config: ${themeDependencyErrors.join(" ")}`);
+  }
+  return config;
+};
 
 /**
  * Client-safe configuration (subset of full config)
@@ -322,6 +380,7 @@ export const defineConfig = <T extends CMSUserConfig>(config: T): T => config;
 export interface ClientSafeConfig {
   appName: string;
   localization: typeof localization;
+  theme?: ThemeConfig;
   products?: {
     sku?: ProductSkuConfig;
   };
@@ -383,6 +442,13 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
     throw new Error("CMS Config: localization is required");
   }
 
+  const themeDependencyErrors = validateThemeDependencies(
+    config.theme?.dependencies,
+  );
+  if (themeDependencyErrors.length > 0) {
+    throw new Error(`CMS Config: ${themeDependencyErrors.join(" ")}`);
+  }
+
   assertCollectionsAreAddressable(config.collections?.global ?? [], {
     namespace: "global",
     basePath: "/dashboard",
@@ -396,6 +462,7 @@ export function createCMSConfig<T extends CMSConfigInput>(config: T) {
   const clientSafeConfig: ClientSafeConfig = {
     appName: config.appName,
     localization: config.localization,
+    theme: config.theme,
     products: config.products,
     collections: config.collections || { global: [], settings: [] },
     upload: {

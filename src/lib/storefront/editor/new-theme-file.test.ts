@@ -26,6 +26,59 @@ describe("prepareNewThemeFile", () => {
     expect(result.content).not.toContain("data-morph-element");
   });
 
+  it("scaffolds TanStack file routes instead of generic components", () => {
+    const result = prepareNewThemeFile("src/routes/about.tsx", existing);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(
+      'import { createFileRoute } from "@tanstack/react-router";',
+    );
+    expect(result.content).toContain('createFileRoute("/about")');
+    expect(result.content).toContain("function AboutRoute");
+    expect(result.content).not.toContain("contentFields");
+  });
+
+  it("uses the file-route index convention for nested and root routes", () => {
+    const nested = prepareNewThemeFile("src/routes/blog/index.tsx", existing);
+    expect(nested.ok).toBe(true);
+    if (!nested.ok) return;
+    expect(nested.content).toContain('createFileRoute("/blog/")');
+
+    const root = prepareNewThemeFile("src/routes/__root.tsx", existing);
+    expect(root.ok).toBe(true);
+    if (!root.ok) return;
+    expect(root.content).toContain(
+      'import { Outlet, createRootRoute } from "@tanstack/react-router";',
+    );
+    expect(root.content).toContain("function RootRoute");
+  });
+
+  it("scaffolds TanStack flat-file and pathless routes with their derived ids", () => {
+    const dynamic = prepareNewThemeFile("src/routes/posts.$postId.tsx", existing);
+    expect(dynamic.ok).toBe(true);
+    if (!dynamic.ok) return;
+    expect(dynamic.content).toContain('createFileRoute("/posts/$postId")');
+
+    const pathless = prepareNewThemeFile("src/routes/_marketing.about.tsx", existing);
+    expect(pathless.ok).toBe(true);
+    if (!pathless.ok) return;
+    expect(pathless.content).toContain('createFileRoute("/_marketing/about")');
+
+    const lazy = prepareNewThemeFile("src/routes/about.lazy.tsx", existing);
+    expect(lazy.ok).toBe(true);
+    if (!lazy.ok) return;
+    expect(lazy.content).toContain("createLazyFileRoute");
+    expect(lazy.content).toContain('createLazyFileRoute("/about")');
+  });
+
+  it("creates a server-compatible .ts route seed without JSX", () => {
+    const result = prepareNewThemeFile("src/routes/api/health.ts", existing);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain('createFileRoute("/api/health")');
+    expect(result.content).not.toContain("<main");
+  });
+
   it("normalizes a leading slash and backslashes", () => {
     const result = prepareNewThemeFile("/src\\components\\Promo.tsx", existing);
     expect(result.ok).toBe(true);

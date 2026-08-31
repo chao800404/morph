@@ -71,7 +71,9 @@ cp .env.example .env.development
 | Variable                 | Purpose                                                        |
 | ------------------------ | -------------------------------------------------------------- |
 | `BETTER_AUTH_SECRET`     | Signs Better Auth tokens and cookies; required                 |
-| `PUBLIC_URL`             | Canonical application URL; use `http://localhost:3000` locally |
+| `PUBLIC_URL`             | Canonical CMS URL; use `http://localhost:3000` locally and the CMS custom domain in production |
+| `MORPH_PLATFORM_HOSTNAMES` | Optional comma-separated CMS/staging hostnames kept on the platform router |
+| `MORPH_CMS_HOSTNAME`     | Optional single CMS hostname shortcut (hostname or full origin) |
 | `RESEND_API_KEY`         | Sends password-reset and verification email                    |
 | `CLOUDFLARE_ACCOUNT_ID`  | Required by Drizzle Kit for remote D1 access                   |
 | `CLOUDFLARE_DATABASE_ID` | Selects the remote D1 database                                 |
@@ -189,7 +191,7 @@ See [DEPLOY.md](./DEPLOY.md) for the current manual deployment procedure.
 
 ## Development rules
 
-Repository architecture, security, state-management, and validation rules are documented in [.agent/rules.md](./.agent/rules.md). The staged product and Cloudflare platform direction is documented in [ROADMAP.md](./ROADMAP.md).
+Repository architecture, security, state-management, and validation rules are documented in [AGENTS.md](./AGENTS.md) and the detailed rule files under [.agents/rules](./.agents/rules/). The staged product and Cloudflare platform direction is documented in [ROADMAP.md](./ROADMAP.md).
 
 ## License
 

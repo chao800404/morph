@@ -131,4 +131,30 @@ export const Route = createFileRoute("/")({
       'data-storefront-section-id="starter-introduction"',
     );
   });
+
+  it("renders the selected authored route instead of always using the index path", () => {
+    const themeFiles = STARTER_THEME_FILES.filter(
+      (file) => file.path !== "src/routes/index.tsx",
+    ).concat({
+      path: "src/routes/about.tsx",
+      mimeType: "text/typescript",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/about")({
+  component: () => <main data-morph-node="authored-about-route">About</main>,
+});`,
+    });
+
+    const html = renderToStaticMarkup(
+      <StorefrontPreview
+        context={context}
+        templateId="template-a"
+        routePath="/about"
+        viewportHeight={900}
+        themeFiles={themeFiles}
+      />,
+    );
+
+    expect(html).toContain('data-morph-node="authored-about-route"');
+    expect(html).not.toContain("Theme route preview unavailable");
+  });
 });

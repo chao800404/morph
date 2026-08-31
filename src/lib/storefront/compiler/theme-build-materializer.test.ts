@@ -81,6 +81,7 @@ beforeEach(() => {
       input_hash text,
       compiler_id text,
       compiler_version text,
+      dependencies_json text,
       artifact_prefix text,
       manifest_json text,
       diagnostics_json text,
@@ -228,12 +229,11 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
     );
 
     // 4. Fetch source from DAL & materialize pure build input
-    const source =
-      await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-1",
-        "theme-1",
-        build.id,
-      );
+    const source = await storefrontThemeBuildDal.getBuildMaterializationSource(
+      "storefront-1",
+      "theme-1",
+      build.id,
+    );
 
     const buildInput = materializeThemeBuildInput({
       build: source.build,
@@ -277,12 +277,11 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-det" },
     );
 
-    const source =
-      await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-1",
-        "theme-1",
-        build.id,
-      );
+    const source = await storefrontThemeBuildDal.getBuildMaterializationSource(
+      "storefront-1",
+      "theme-1",
+      build.id,
+    );
 
     const input1 = materializeThemeBuildInput({
       build: source.build,
@@ -323,12 +322,11 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-immutable" },
     );
 
-    const source1 =
-      await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-1",
-        "theme-1",
-        build.id,
-      );
+    const source1 = await storefrontThemeBuildDal.getBuildMaterializationSource(
+      "storefront-1",
+      "theme-1",
+      build.id,
+    );
     const initialInput = materializeThemeBuildInput({
       build: source1.build,
       revision: source1.revision,
@@ -343,12 +341,11 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       "mutated",
     );
 
-    const source2 =
-      await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-1",
-        "theme-1",
-        build.id,
-      );
+    const source2 = await storefrontThemeBuildDal.getBuildMaterializationSource(
+      "storefront-1",
+      "theme-1",
+      build.id,
+    );
     const subsequentInput = materializeThemeBuildInput({
       build: source2.build,
       revision: source2.revision,
@@ -380,18 +377,16 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-B" },
     );
 
-    const sourceA =
-      await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-1",
-        "theme-1",
-        buildA.id,
-      );
-    const sourceB =
-      await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-1",
-        "theme-1",
-        buildB.id,
-      );
+    const sourceA = await storefrontThemeBuildDal.getBuildMaterializationSource(
+      "storefront-1",
+      "theme-1",
+      buildA.id,
+    );
+    const sourceB = await storefrontThemeBuildDal.getBuildMaterializationSource(
+      "storefront-1",
+      "theme-1",
+      buildB.id,
+    );
 
     const inputA = materializeThemeBuildInput({
       build: sourceA.build,
@@ -470,12 +465,11 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-empty" },
     );
 
-    const source =
-      await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-1",
-        "theme-1",
-        build.id,
-      );
+    const source = await storefrontThemeBuildDal.getBuildMaterializationSource(
+      "storefront-1",
+      "theme-1",
+      build.id,
+    );
 
     expect(() =>
       materializeThemeBuildInput({
@@ -631,7 +625,10 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-freeze", 1, [
-      { path: "src/index.tsx", content: "export default () => <h1>Frozen</h1>;" },
+      {
+        path: "src/index.tsx",
+        content: "export default () => <h1>Frozen</h1>;",
+      },
     ]);
 
     const build = await storefrontThemeBuildDal.createBuild(
@@ -640,18 +637,20 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       { sourceRevisionId: "rev-freeze" },
     );
 
-    const source =
-      await storefrontThemeBuildDal.getBuildMaterializationSource(
-        "storefront-1",
-        "theme-1",
-        build.id,
-      );
+    const source = await storefrontThemeBuildDal.getBuildMaterializationSource(
+      "storefront-1",
+      "theme-1",
+      build.id,
+    );
 
     // Initial materialization for queued build
     const input = materializeThemeBuildInput({
       build: source.build,
       revision: source.revision,
-      compilerIdentity: { compilerId: "tailwind-v4-build", compilerVersion: "4.1.17" },
+      compilerIdentity: {
+        compilerId: "tailwind-v4-build",
+        compilerVersion: "4.1.17",
+      },
     });
 
     // Mark build started (atomic identity freeze)

@@ -4,6 +4,7 @@ import { validateThemeStartPackageContract } from "./compiler/theme-start-toolch
 import {
   createStarterThemeWorkspaceUpgrade,
   createStarterThemeWorkspaceUpgradePlan,
+  createStarterThemeWorkspaceBootstrapPlan,
   STARTER_THEME_FILES,
 } from "./starter-theme-files";
 import {
@@ -21,6 +22,64 @@ import {
 } from "./starter-theme-v3-files";
 
 describe("starter Principles theme source", () => {
+  it("creates the complete template as an additive plan for an empty workspace", () => {
+    const plan = createStarterThemeWorkspaceBootstrapPlan([]);
+
+    expect(plan.deletions).toEqual([]);
+    expect(plan.files).toHaveLength(STARTER_THEME_FILES.length);
+    expect(plan.files.every((file) => file.expectMissing)).toBe(true);
+    expect(plan.files.map((file) => file.path).sort()).toEqual(
+      STARTER_THEME_FILES.map((file) => file.path).sort(),
+    );
+  });
+
+  it("fills a partial workspace without replacing authored files", () => {
+    const authored = {
+      id: "custom-hero",
+      path: "src/components/Hero.tsx",
+      content: "export default function Hero() { return null; }\n",
+      version: 4,
+    };
+    const packageFile = {
+      id: "package",
+      path: "package.json",
+      content: JSON.stringify({
+        name: "customer-theme",
+        dependencies: { "customer-package": "^1.0.0" },
+        scripts: { lint: "eslint ." },
+      }),
+      version: 2,
+    };
+
+    const plan = createStarterThemeWorkspaceBootstrapPlan([
+      authored,
+      packageFile,
+    ]);
+    const heroPlan = plan.files.find((file) => file.path === authored.path);
+    const packagePlan = plan.files.find((file) => file.path === "package.json");
+
+    expect(heroPlan).toBeUndefined();
+    expect(packagePlan).toMatchObject({
+      expectedFileId: packageFile.id,
+      expectedVersion: packageFile.version,
+    });
+    const mergedPackage = JSON.parse(packagePlan!.content) as {
+      dependencies: Record<string, string>;
+      scripts: Record<string, string>;
+    };
+    expect(mergedPackage.dependencies["customer-package"]).toBe("^1.0.0");
+    expect(mergedPackage.dependencies["@tanstack/react-start"]).toBe(
+      "1.168.32",
+    );
+    expect(mergedPackage.scripts.lint).toBe("eslint .");
+    expect(mergedPackage.scripts.build).toBe("vite build");
+    expect(
+      plan.files.some(
+        (file) => file.path === "src/routes/__root.tsx" && file.expectMissing,
+      ),
+    ).toBe(true);
+  });
+
   it("registers the principles component and exposes editable source locations", () => {
     const manifest = JSON.parse(
       STARTER_THEME_FILES.find((file) => file.path === "morph.theme.json")!

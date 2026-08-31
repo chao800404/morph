@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
@@ -21,6 +22,11 @@ import type {
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 import { createThemePreviewServerStubPlugin } from "./theme-preview-server-stub";
+import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
+import {
+  createThemeViteAliases,
+  readThemePathAliases,
+} from "./theme-path-aliases";
 
 function getMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
@@ -270,6 +276,72 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         cssFiles,
       });
       routeRegistry = bootstrap.routeRegistry;
+
+      const pathAliasConfig = readThemePathAliases(input.files.map((file) => ({
+        path: file.path,
+        content: typeof file.content === "string" ? file.content : "",
+      })));
+      if (pathAliasConfig.diagnostics.length > 0) {
+        const errors: ThemeBuildDiagnostic[] = pathAliasConfig.diagnostics.map(
+          (diagnostic) => ({
+            severity: "error",
+            message: diagnostic.message,
+            file: diagnostic.filePath,
+            line: diagnostic.line,
+            column: diagnostic.column,
+            code: diagnostic.code,
+          }),
+        );
+        const firstError = errors[0]?.message ?? "Theme path alias configuration is invalid.";
+        addLog("error", firstError);
+        return {
+          success: false,
+          errorMessage: firstError,
+          diagnosticsJson: {
+            stage: "path-aliases",
+            errors,
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      const importProtectionDiagnostics =
+        collectThemeImportProtectionDiagnosticsForBuild(
+          input.files.map((file) => ({
+            path: file.path,
+            content:
+              typeof file.content === "string" ? file.content : "",
+          })),
+          {
+            entry: input.entry,
+            hasStartRuntime: Boolean(routeRegistry),
+          },
+        );
+      if (importProtectionDiagnostics.length > 0) {
+        const errors: ThemeBuildDiagnostic[] = importProtectionDiagnostics.map(
+          (diagnostic) => ({
+            severity: "error",
+            message: diagnostic.message,
+            file: diagnostic.filePath,
+            line: diagnostic.line,
+            column: diagnostic.column,
+            code: diagnostic.code,
+          }),
+        );
+        const firstError = errors[0]?.message ?? "Theme import protection failed.";
+        addLog("error", firstError);
+        return {
+          success: false,
+          errorMessage: firstError,
+          diagnosticsJson: {
+            stage: "import-protection",
+            errors,
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
       if (hasCustomIndexHtml && routeRegistry) {
         throw new Error(
           "CUSTOM_INDEX_HTML_UNSUPPORTED: TanStack Start Theme routes use the platform-owned preview document.",
@@ -331,6 +403,35 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       // Rollup plugin to enforce path containment & approved dependency whitelist
       const approvedSet = this.approvedDependencies;
       const workspaceRoot = path.resolve(tempDir);
+      const themeAliases = createThemeViteAliases(pathAliasConfig, workspaceRoot);
+      const themeBaseUrlPlugin: Plugin | null = pathAliasConfig.baseUrl
+        ? {
+            name: "morph-theme-base-url",
+            enforce: "pre",
+            resolveId(source) {
+              if (source.startsWith(".") || source.startsWith("/")) return null;
+              const candidateRoot = path.resolve(workspaceRoot, pathAliasConfig.baseUrl, source);
+              const relative = path.relative(workspaceRoot, candidateRoot);
+              if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+              const candidates = [
+                candidateRoot,
+                ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map(
+                  (extension) => `${candidateRoot}${extension}`,
+                ),
+                ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map(
+                  (extension) => `${candidateRoot}/index${extension}`,
+                ),
+              ];
+              return candidates.find((candidate) => existsSync(candidate)) ?? null;
+            },
+          }
+        : null;
+      const isThemeAliasSource = (source: string): boolean =>
+        pathAliasConfig.aliases.some((alias) =>
+          alias.wildcard
+            ? source === alias.key || source.startsWith(`${alias.key}/`)
+            : source === alias.key,
+        );
 
       const securityPlugin: Plugin = {
         name: "morph-security-enforcer",
@@ -416,6 +517,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
           }
 
           // Check bare module against approved list
+          if (isThemeAliasSource(source)) {
+            return null;
+          }
           const basePkg = source.startsWith("@")
             ? source.split("/").slice(0, 2).join("/")
             : source.split("/")[0];
@@ -448,8 +552,12 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
               tailwindcss(),
               tanstackStart(),
               viteReact(),
+              ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
               securityPlugin,
             ],
+            resolve: {
+              alias: themeAliases,
+            },
             build: {
               outDir: startOutDir,
               emptyOutDir: true,
@@ -492,8 +600,12 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
           createThemePreviewServerStubPlugin(),
           tailwindcss(),
           viteReact(),
+          ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
           securityPlugin,
         ],
+        resolve: {
+          alias: themeAliases,
+        },
         build: {
           outDir: previewOutDir,
           emptyOutDir: true,

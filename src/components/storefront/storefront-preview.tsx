@@ -12,6 +12,7 @@ import { StorefrontDocumentRenderer } from "./storefront-document-renderer";
 type StorefrontPreviewProps = {
   context: StorefrontThemeEditorDTO;
   templateId: string;
+  routePath?: string;
   viewportHeight: number;
   document?: StorefrontPageDocument;
   themeFiles?: Array<{ path: string; content: string }>;
@@ -24,6 +25,7 @@ type StorefrontPreviewStyle = CSSProperties & {
 export const StorefrontPreview = memo(function StorefrontPreview({
   context,
   templateId,
+  routePath,
   viewportHeight,
   document,
   themeFiles,
@@ -43,6 +45,10 @@ export const StorefrontPreview = memo(function StorefrontPreview({
 
   const previewStyle: StorefrontPreviewStyle = {
     "--storefront-preview-viewport-height": `${viewportHeight}px`,
+    // Keep the preview at least as tall as the selected browser viewport
+    // (`h-lvh` semantics) while allowing longer page content to determine the
+    // final measured height.
+    minHeight: `${viewportHeight}px`,
   };
   const pageDocument = document ?? template.document;
   const storedDocument = (
@@ -53,7 +59,7 @@ export const StorefrontPreview = memo(function StorefrontPreview({
   );
   const storedRoute = renderStoredRoute({
     themeFiles,
-    pathname: "/",
+    pathname: routePath ?? "/",
     document: pageDocument,
     storeName: context.storefront.name,
   });

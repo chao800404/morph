@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { cmsConfig } from "@/cms.config";
 import { CloudflareR2ThemeBuildArtifactStore } from "@/lib/storefront/compiler/cloudflare-r2-theme-build-artifact-store";
 import { CloudflareSandboxViteThemeBuildRunner } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-theme-build-runner";
 import type { ThemeBuildArtifactStore } from "@/lib/storefront/compiler/theme-build-artifact-store.types";
@@ -30,8 +31,12 @@ export function createServerThemeBuildService(options?: {
     (env as any)?.Sandbox &&
     (env as any)?.R2_BUCKET
   ) {
+    const configuredDependencies = cmsConfig.theme?.dependencies;
     runner = new CloudflareSandboxViteThemeBuildRunner({
       sandboxBinding: (env as any).Sandbox,
+      approvedDependencies: configuredDependencies
+        ? Object.keys(configuredDependencies)
+        : undefined,
     });
     artifactStore = new CloudflareR2ThemeBuildArtifactStore({
       r2Bucket: (env as any).R2_BUCKET,

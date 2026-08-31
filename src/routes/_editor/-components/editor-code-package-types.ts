@@ -6,6 +6,7 @@
  * Theme toolchain instead of exposing arbitrary package names.
  */
 import {
+  GENERATED_THEME_APPROVED_DEPENDENCIES,
   GENERATED_THEME_PACKAGE_DECLARATIONS,
   GENERATED_THEME_PACKAGE_NAMES,
 } from "./editor-code-package-types.generated";
@@ -719,7 +720,7 @@ const RICH_TYPE_DECLARATIONS: Readonly<
     HeadContentProps:
       "export type HeadContentProps = { assetCrossOrigin?: string; };",
     NavigateOptions:
-      "export type NavigateOptions = { to?: string; from?: string; params?: Record<string, unknown>; search?: unknown; hash?: string; state?: unknown; replace?: boolean; resetScroll?: boolean; startTransition?: boolean; viewTransition?: boolean; reloadDocument?: boolean; };",
+      "export type NavigateOptions<TTo extends ThemeLinkTo = ThemeLinkTo> = LinkOptions<TTo> & { state?: unknown; };",
     RouterProps:
       "export type RouterProps = { router: unknown; context?: Record<string, unknown>; routeTree?: unknown; defaultPreload?: boolean | 'intent' | 'viewport' | 'render'; defaultPreloadDelay?: number; basepath?: string; };",
     Register:
@@ -820,15 +821,15 @@ const RICH_VALUE_TYPES: Readonly<
     createRootRouteWithContext:
       "<TContext extends Record<string, unknown> = Record<string, unknown>>() => <TOptions extends RouteAuthoringOptions<TContext> = RouteAuthoringOptions<TContext>>(options?: TOptions) => ThemeRoute<TContext & RouteContextFromOptions<TOptions>>",
     createFileRoute:
-      "<TPath extends string>(path?: TPath) => <TOptions extends RouteAuthoringOptions = RouteAuthoringOptions>(options?: TOptions) => ThemeRoute<RouteContextFromOptions<TOptions>>",
+      "<TPath extends ThemeRoutePath>(path: TPath) => <TOptions extends RouteAuthoringOptions = RouteAuthoringOptions>(options?: TOptions) => ThemeRoute<RouteContextFromOptions<TOptions>, TPath>",
     createRoute:
       "<TOptions extends RouteAuthoringOptions = RouteAuthoringOptions>(options?: TOptions) => ThemeRoute<RouteContextFromOptions<TOptions>>",
     createRouter:
       "<TOptions extends RouterOptions>(options: TOptions) => ThemeRouter<TOptions['routeTree']>",
-    linkOptions: "<T extends LinkOptions>(options: T) => T",
-    useLinkProps: "(options: LinkOptions, forwardedRef?: unknown) => LinkElementProps",
+    linkOptions: "<TTo extends ThemeLinkTo>(options: LinkOptions<TTo>) => LinkOptions<TTo>",
+    useLinkProps: "<TTo extends ThemeLinkTo>(options: LinkOptions<TTo>, forwardedRef?: unknown) => LinkElementProps",
     useNavigate:
-      "(defaultOptions?: { from?: string }) => (options: NavigateOptions) => unknown",
+      "<TFrom extends ThemeRoutePath = ThemeRoutePath>(defaultOptions?: { from?: TFrom }) => <TTo extends ThemeLinkTo>(options: NavigateOptions<TTo>) => unknown",
   },
   "@tanstack/react-start": {
     Hydrate: "(props: HydrateProps) => JSX.Element",
@@ -960,7 +961,13 @@ export const THEME_PACKAGE_TYPE_MANIFEST: Readonly<Record<string, ThemePackageTy
 
 export const DEFAULT_THEME_TYPE_PACKAGE_NAMES = Object.freeze(
   [...new Set([
-    ...Object.keys(THEME_PACKAGE_TYPE_MANIFEST),
+    ...Object.keys(THEME_PACKAGE_TYPE_MANIFEST).filter((moduleName) => {
+      const root = getThemePackageRoot(moduleName);
+      return (
+        GENERATED_THEME_APPROVED_DEPENDENCIES.includes(moduleName) ||
+        GENERATED_THEME_APPROVED_DEPENDENCIES.includes(root)
+      );
+    }),
     ...GENERATED_THEME_PACKAGE_NAMES,
   ])],
 ) as readonly string[];
@@ -969,6 +976,13 @@ type ThemePackageFile = {
   path: string;
   content: string;
 };
+
+/** Return the package root for a bare package or one of its subpath imports. */
+export function getThemePackageRoot(packageName: string): string {
+  return packageName.startsWith("@")
+    ? packageName.split("/").slice(0, 2).join("/")
+    : packageName.split("/")[0] ?? packageName;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1110,19 +1124,9 @@ export function getGeneratedThemePackageDeclarations(
   packageNames: readonly string[] = GENERATED_THEME_PACKAGE_NAMES,
 ): readonly { readonly path: string; readonly content: string }[] {
   if (GENERATED_THEME_PACKAGE_DECLARATIONS.length === 0) return [];
-  const requestedRoots = new Set(
-    packageNames.map((packageName) =>
-      packageName.startsWith("@")
-        ? packageName.split("/").slice(0, 2).join("/")
-        : packageName.split("/")[0],
-    ),
-  );
+  const requestedRoots = new Set(packageNames.map(getThemePackageRoot));
   const hasGeneratedPackage = GENERATED_THEME_PACKAGE_NAMES.some((name) =>
-    requestedRoots.has(
-      name.startsWith("@")
-        ? name.split("/").slice(0, 2).join("/")
-        : name.split("/")[0],
-    ),
+    requestedRoots.has(getThemePackageRoot(name)),
   );
   return hasGeneratedPackage ? GENERATED_THEME_PACKAGE_DECLARATIONS : [];
 }

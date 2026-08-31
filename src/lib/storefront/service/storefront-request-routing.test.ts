@@ -34,6 +34,18 @@ describe("collectPlatformHostnames", () => {
     expect(hosts.has("admin.morph.app")).toBe(true);
     expect(hosts.has("staging.morph.app")).toBe(true);
   });
+
+  it("accepts CMS origins and ignores malformed platform entries", () => {
+    const hosts = collectPlatformHostnames({
+      MORPH_PLATFORM_HOSTNAMES:
+        "https://staging.morph.app:443,not a host,javascript://unsafe.morph.app",
+      MORPH_CMS_HOSTNAME: "shop.morph.app:443",
+    });
+    expect(hosts.has("staging.morph.app")).toBe(true);
+    expect(hosts.has("shop.morph.app")).toBe(true);
+    expect(hosts.has("not a host")).toBe(false);
+    expect(hosts.has("unsafe.morph.app")).toBe(false);
+  });
 });
 
 describe("isPlatformHostname", () => {
@@ -56,6 +68,14 @@ describe("isPlatformHostname", () => {
     expect(isPlatformHostname("evil-morph.example.com", platform)).toBe(false);
     expect(isPlatformHostname("morph.example.com.evil.net", platform)).toBe(
       false,
+    );
+  });
+
+  it("normalizes ports and trailing dots before checking the platform set", () => {
+    expect(isPlatformHostname("morph.example.com:443", platform)).toBe(true);
+    expect(isPlatformHostname("morph.example.com.", platform)).toBe(true);
+    expect(isPlatformHostname("morph.yuho0298.workers.dev.", platform)).toBe(
+      true,
     );
   });
 

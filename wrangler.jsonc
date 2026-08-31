@@ -35,6 +35,22 @@
       "preview_bucket_name": "morph-r2-global",
     },
   ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "THEME_BUILD_QUEUE",
+        "queue": "morph-theme-builds",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "morph-theme-builds",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+      },
+    ],
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -74,7 +90,13 @@
    * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
    */
   "vars": {
+    // Keep the workers.dev URL as the safe default platform origin.
+    // For production split-domain deployments, replace it with the CMS
+    // Custom Domain (for example https://shop.example.com) and add the same
+    // hostname as MORPH_CMS_HOSTNAME. See DEPLOY.md for the route shape.
     "PUBLIC_URL": "https://morph.yuho0298.workers.dev",
+    // "MORPH_CMS_HOSTNAME": "shop.example.com",
+    // "MORPH_PLATFORM_HOSTNAMES": "staging.example.com,admin.example.com",
     "SANDBOX_TRANSPORT": "rpc",
   },
 

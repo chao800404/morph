@@ -1,3 +1,5 @@
+import { GENERATED_THEME_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
+
 export type SandboxViteThemeBuildRunnerOptions = {
   id?: string;
   version?: string;
@@ -17,26 +19,14 @@ export type SandboxViteThemeBuildRunnerOptions = {
   /** Custom directory prefix for temp build workspaces */
   workDirPrefix?: string;
   /** Whitelist of approved module names that themes are permitted to import */
-  approvedDependencies?: string[];
+  approvedDependencies?: readonly string[];
 };
 
-export const DEFAULT_APPROVED_DEPENDENCIES: string[] = [
-  "react",
-  "react/jsx-runtime",
-  "react/jsx-dev-runtime",
-  "react-dom",
-  "react-dom/client",
-  "clsx",
-  "tailwind-merge",
-  "lucide-react",
-  "class-variance-authority",
-  "tailwindcss",
-  "@tailwindcss/vite",
-  "@vitejs/plugin-react",
-  "vite",
-  "vite/modulepreload-polyfill",
-  "@tanstack/react-router",
-  "@tanstack/react-start",
-  "@tanstack/router-plugin",
-  "@cloudflare/vite-plugin",
-];
+/**
+ * Default allowlist for local builds and isolated runner callers. It is
+ * generated from cms.config.ts so tests and development use the same policy
+ * as the server-side Theme build factory.
+ */
+export const DEFAULT_APPROVED_DEPENDENCIES: readonly string[] = Object.freeze(
+  Object.keys(GENERATED_THEME_DEPENDENCY_VERSIONS),
+);

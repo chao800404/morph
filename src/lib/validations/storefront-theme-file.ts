@@ -23,8 +23,8 @@ export const safeThemeFilePathSchema = z
     "Theme file path cannot contain node_modules",
   )
   .refine(
-    (p) => /^[a-zA-Z0-9_\-./]+$/.test(p),
-    "File path contains invalid characters (allowed: alphanumeric, _, -, ., /)",
+    (p) => /^[a-zA-Z0-9_.$()\[\]\/-]+$/.test(p),
+    "File path contains invalid characters (allowed: alphanumeric, _, -, ., $, (), [], /)",
   );
 
 
@@ -138,6 +138,15 @@ export const deleteThemeFileInputSchema = z.object({
 export const initStarterThemeFilesInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
+});
+
+export const previewStarterThemeWorkspaceInputSchema =
+  initStarterThemeFilesInputSchema;
+
+export const applyStarterThemeWorkspaceInputSchema = z.object({
+  storefrontId: z.string().min(1),
+  themeId: z.string().min(1),
+  expectedSourceGeneration: z.number().int().min(1),
 });
 
 export const listThemeRevisionsInputSchema = z.object({

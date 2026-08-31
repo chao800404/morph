@@ -95,6 +95,24 @@ describe("preview protocol", () => {
     });
   });
 
+  it("accepts a bounded in-place route change", () => {
+    const message = {
+      type: "morph:storefront-preview-set-route",
+      templateId: "template-page",
+      routePath: "/about",
+    } as const;
+    expect(parseEditorToPreviewMessage(message)).toEqual(message);
+    expect(
+      parseEditorToPreviewMessage({
+        ...message,
+        routePath: "x".repeat(501),
+      }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({ ...message, routePath: null }),
+    ).toEqual({ ...message, routePath: null });
+  });
+
   it("accepts bounded selection restore targets and rejects malformed ones", () => {
     const message = {
       type: "morph:storefront-preview-set-selection-mode",

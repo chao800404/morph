@@ -275,37 +275,26 @@ function readContentSlots(
   return slots;
 }
 
-function routeMatchesPath(routePath: string, pathname: string): boolean {
+function routeMatchesPath(
+  routePath: string,
+  pathname: string,
+  options?: { splat?: boolean },
+): boolean {
   const routeSegments = routePath.split("/").filter(Boolean);
   const pathSegments = pathname.split("/").filter(Boolean);
-  if (routeSegments.length !== pathSegments.length) return false;
-  return routeSegments.every(
-    (segment, index) =>
-      segment.startsWith("$") || segment === pathSegments[index],
-  );
+  if (options?.splat) {
+    if (pathSegments.length < routeSegments.length - 1) return false;
+  } else if (routeSegments.length !== pathSegments.length) {
+    return false;
+  }
+  return routeSegments.every((segment, index) => {
+    if (segment === "$") return true;
+    return segment.startsWith("$") || segment === pathSegments[index];
+  });
 }
 
 function routeDepth(path: string): number {
   return path.split("/").filter(Boolean).length;
-}
-
-function parentRoutePath(
-  path: string,
-  candidates: readonly string[],
-): string | null {
-  const normalized = path.replace(/\/$/, "");
-  return (
-    candidates
-      .filter((candidate) => {
-        const candidatePath = candidate.replace(/\/$/, "");
-        return (
-          candidatePath !== normalized &&
-          candidatePath !== "" &&
-          normalized.startsWith(`${candidatePath}/`)
-        );
-      })
-      .sort((left, right) => right.length - left.length)[0] ?? null
-  );
 }
 
 function routeFailure(message: string): SafeThemeComponentRenderResult {
@@ -337,18 +326,23 @@ export function renderSafeThemeRoute(args: {
   const matched = registry.routes
     .filter(
       (route) =>
-        route.kind === "route" && routeMatchesPath(route.path, args.pathname),
+        route.kind === "route" &&
+        !route.isPathless &&
+        routeMatchesPath(route.path, args.pathname, { splat: route.isSplat }),
     )
-    .sort((left, right) => routeDepth(right.path) - routeDepth(left.path))[0];
+    .sort((left, right) => {
+      const depthDifference = routeDepth(right.path) - routeDepth(left.path);
+      if (depthDifference !== 0) return depthDifference;
+      if (left.isSplat !== right.isSplat) return left.isSplat ? 1 : -1;
+      if (left.dynamic !== right.dynamic) return left.dynamic ? 1 : -1;
+      return left.sourcePath.localeCompare(right.sourcePath);
+    })[0];
   if (!root || !matched) {
     return routeFailure(
       `No stored Theme route matches Design pathname "${args.pathname}".`,
     );
   }
 
-  const routePaths = registry.routes
-    .filter((route) => route.kind === "route")
-    .map((route) => route.path);
   const chain = [matched];
   const routeSections = deriveThemeRouteSections(
     args.files,
@@ -369,14 +363,17 @@ export function renderSafeThemeRoute(args: {
   const contentSlots = readContentSlots(routeDocument);
   const sectionTypeBySlot = readSectionTypesBySlot(routeDocument);
   const componentRefBySlot = readComponentRefsBySlot(routeDocument);
-  let parentPath = parentRoutePath(matched.path, routePaths);
-  while (parentPath) {
+  let parentSourcePath = matched.parentSourcePath ?? null;
+  while (parentSourcePath) {
     const parent = registry.routes.find(
-      (route) => route.kind === "route" && route.path === parentPath,
+      (route) => route.sourcePath === parentSourcePath,
     );
-    if (!parent) break;
+    // The root shell is rendered once after the route/layout chain below. Do
+    // not add it to the chain or the Design preview would duplicate the shell
+    // around every root-level page.
+    if (!parent || parent.kind === "root") break;
     chain.push(parent);
-    parentPath = parentRoutePath(parent.path, routePaths);
+    parentSourcePath = parent.parentSourcePath ?? null;
   }
 
   let outlet: ReactNode = null;

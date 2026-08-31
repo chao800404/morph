@@ -4,13 +4,13 @@
 
 ## 目前概況
 
-| 項目         | 內容                                                                                             |
-| ------------ | ------------------------------------------------------------------------------------------------ |
-| 最後更新     | 2026-08-28                                                                                       |
-| 目前狀態     | 開發中                                                                                           |
-| 整體完成度   | **99%**（加權，權重表見下）                                                                                  |
-| 目前重點     | 一致性檢查已能直接對照工作區裡真實的主題，每個新元件都是沒人設計來通過的 fixture                        |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（198 files / 1211 tests）、`E2E_BROWSERS=firefox,webkit pnpm test:e2e`（55 passed，Chromium + Firefox + WebKit；延遲量測限 Chromium）、`E2E_ALLOW_PUBLISH=1 pnpm test:e2e`（發布迴圈實測通過）、`pnpm build` 均通過；另有 production 內容路徑、Ctrl+Z、結構樹、畫布拖曳與 release history 的手動驗證 |
+| 項目         | 內容                                                                                                                                                                            |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 最後更新     | 2026-08-31                                                                                                                                                                      |
+| 目前狀態     | 開發中                                                                                                                                                                          |
+| 整體完成度   | **99%**（加權，權重表見下）                                                                                                                                                     |
+| 目前重點     | 對照真實工作區主題的 parity、Code Mode 的 TanStack route tree 補全、Visual Editor 路由與樹狀同步、無重載路由預取、Starter bootstrap 與受控 dependency build workflow            |
+| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，另 1 skipped）、`pnpm build` 均通過；client bundle check 通過；既有 Playwright 三引擎與 Publish 迴圈驗證仍保留在下方紀錄 |
 
 `██████████ 99%`
 
@@ -19,8 +19,8 @@
 >
 > **這個數字只衡量下表列出的階段。** 先前列在此處的產品缺口——「內容值通到 production」
 > 「排序改走 source」「純程式碼元件的 content slot」「content-only publish」「release history UI」
-> ——都已閉環，改由 ROADMAP 記錄為已具備。瀏覽器層 E2E 已經存在但只覆蓋三個場景，
-> 因此 88% 仍不代表 Visual Editor 接近可交付：今天有四個缺陷是使用者在瀏覽器裡回報、
+> ——都已閉環，改由 ROADMAP 記錄為已具備。瀏覽器層 E2E 已經存在但只覆蓋有限場景，
+> 因此 99% 仍不代表 Visual Editor 已完成所有第三方 Theme 風險：仍有外部主題邊界、
 > 而全套單元測試都攔不下來的，那類場景大部分還沒被寫成測試。
 
 ### 狀態標記
@@ -32,37 +32,39 @@
 
 ## 階段進度
 
-| 階段                              | 範圍                                                                                          | 狀態 | 完成度 | 下一個確認點                                 |
-| --------------------------------- | --------------------------------------------------------------------------------------------- | ---- | -----: | -------------------------------------------- |
-| 1. Inspector 資料一致性           | 數值回朔、舊回應覆蓋新值、選取切換競態                                                        | ✅   |   100% | 維持 stale-response 回歸測試                 |
-| 2. 即時預覽與提交語意             | 操作中只更新 Live View，完成輸入後才真正提交資料                                              | ✅   |   100% | 新控制項必須沿用同一套 draft/commit 規則     |
-| 3. Inspector 模組化與基本樣式     | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位 | ✅   |   100% | 新增控制項須一併納入面板邊界檢查             |
-| 4. Editor ↔ Preview 通訊          | typed protocol、runtime validation、selection/style 同步                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試    |
-| 5. 編輯器互動效能                 | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取 | ✅   |   100% | 延遲已有基準與上限；新互動須一併加入量測 |
-| 6. Code-authored 內容 round-trip  | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence、production runtime | ✅   |   100% | 純程式碼元件的 content slot 由 ROADMAP 追蹤     |
-| 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React 與真實 router 一致                                              | 🟢   |    90% | 元件層、路由層與 15 個常見 React 模式皆一致；外部作者的主題仍可能找到更多 |
-| 8. 最終品質與發布準備             | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                        | ✅   |   100% | 維持三引擎與發布迴圈的定期執行 |
+| 階段                               | 範圍                                                                                                                                 | 狀態 | 完成度 | 下一個確認點                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---- | -----: | ------------------------------------------------------------------------- |
+| 1. Inspector 資料一致性            | 數值回朔、舊回應覆蓋新值、選取切換競態                                                                                               | ✅   |   100% | 維持 stale-response 回歸測試                                              |
+| 2. 即時預覽與提交語意              | 操作中只更新 Live View，完成輸入後才真正提交資料                                                                                     | ✅   |   100% | 新控制項必須沿用同一套 draft/commit 規則                                  |
+| 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位                            | ✅   |   100% | 新增控制項須一併納入面板邊界檢查                                          |
+| 4. Editor ↔ Preview 通訊           | typed protocol、runtime validation、selection/style 同步、in-place route bridge                                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試                                 |
+| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | ✅   |   100% | 延遲已有基準與上限；新互動須一併加入量測                                  |
+| 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence、production runtime                                      | ✅   |   100% | 自訂 Promo capability vertical slice 由下方持續確認清單追蹤               |
+| 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React 與真實 router 一致                                                                                        | 🟢   |    90% | 元件層、路由層與 15 個常見 React 模式皆一致；外部作者的主題仍可能找到更多 |
+| 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                                                              | ✅   |   100% | 維持三引擎與發布迴圈的定期執行                                            |
 
 ## 權重與計算
 
-| 階段                              | 權重 | 完成度 | 貢獻 |
-| --------------------------------- | ---: | -----: | ---: |
-| 1. Inspector 資料一致性           |    5 |   100% | 5.00 |
-| 2. 即時預覽與提交語意             |    5 |   100% | 5.00 |
-| 3. Inspector 模組化與基本樣式     |   18 |   100% | 18.00 |
-| 4. Editor ↔ Preview 通訊          |   10 |   100% | 10.00 |
-| 5. 編輯器互動效能                 |   15 |   100% | 15.00 |
-| 6. Code-authored 內容 round-trip  |   15 |   100% | 15.00 |
-| 7. Live Runtime 與真實建置的一致性 |   12 |    90% | 10.80 |
-| 8. 最終品質與發布準備             |   20 |   100% | 20.00 |
-| **合計**                          | **100** |    | **98.8 → 99%** |
+| 階段                               |    權重 | 完成度 |           貢獻 |
+| ---------------------------------- | ------: | -----: | -------------: |
+| 1. Inspector 資料一致性            |       5 |   100% |           5.00 |
+| 2. 即時預覽與提交語意              |       5 |   100% |           5.00 |
+| 3. Inspector 模組化與基本樣式      |      18 |   100% |          18.00 |
+| 4. Editor ↔ Preview 通訊           |      10 |   100% |          10.00 |
+| 5. 編輯器互動效能                  |      15 |   100% |          15.00 |
+| 6. Code-authored 內容 round-trip   |      15 |   100% |          15.00 |
+| 7. Live Runtime 與真實建置的一致性 |      12 |    90% |          10.80 |
+| 8. 最終品質與發布準備              |      20 |   100% |          20.00 |
+| **合計**                           | **100** |        | **98.8 → 99%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
-- 階段 8 權重最高（20）：可交付性的最後一哩，且剩下的項目（無障礙、跨瀏覽器、
-  完整發布迴圈）都還沒有任何覆蓋。
-- 階段 3、6 各 15–18：面積大；階段 3 剩下的是真實瀏覽器的視覺與跨尺寸檢查。
-- 階段 5（15）：實際互動延遲仍未量測過，只有「不會明顯卡」的主觀判斷。
+- 階段 8 權重最高（20）：可交付性的最後一哩；無障礙、跨瀏覽器與發布迴圈已有基線，
+  但仍需持續回歸極端 viewport、完整 authoring-to-publish 路徑與第三方 Theme。
+- 階段 3、6 各 15–18：面積大；核心控制項與內容 round-trip 已完成，剩餘是自訂 capability
+  vertical slice 與真實 customer source 邊界。
+- 階段 5（15）：已有互動延遲 baseline，但大型 theme、深層 DOM 與大量 capability 的壓力
+  尚未完整量測。
 - 階段 7（12）：見下方重新配權說明。
 - 階段 1、2 各 5：已完成的一致性修正，範圍小。
 
@@ -86,8 +88,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 階段被重新定義為「補齊框架整合層的缺口，並用一致性測試防止回歸」——範圍小很多、
 而且有明確邊界。釋出的權重移到階段 3、5、8，因為那三者剩下的都是尚未量測、
 尚未覆蓋的真實風險。
-
-
 
 ### 本次調整的依據（2026-08-26 第二輪）
 
@@ -160,7 +160,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] 目前 12 個元件全部一致。變異驗證：讓解釋器改掉任一個 class → 5 個測試失敗。
 - [x] 順帶把三份重複的模組載入器收斂成 `src/lib/test-utils/theme-module-loader.ts`。
 
-
 ### 對抗性模式測試與五個解釋器缺口（2026-08-28）
 
 - [x] **不寫「解釋器跑得動的主題」**：那樣測出來的一致性是自我實現的。改為列出一個
@@ -179,7 +178,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
       測試失敗。
 - [ ] **fixture 的限制寫在測試檔開頭**：它只能找到有人想得到要探的缺口。
 
-
 ### Inspector 版面檢查與測試共用化（2026-08-28）
 
 - [x] **Inspector 控制項在 1600／1280／1024 都不會越出面板邊界**，面板本身也不會
@@ -194,7 +192,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] **延遲量測限定單一引擎**。同樣的樹狀互動在 Chromium 約 150ms、在這台主機的
       headless WebKit 約 1100ms，而編輯器做的事完全相同——在一個引擎上校準的上限，
       換一個引擎就是在量引擎。跨引擎比較值得做，但需要它自己的基準。
-
 
 ### 互動延遲基準（2026-08-28）
 
@@ -213,7 +210,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] 另有一個不依賴時間的單元測試：即使 `activeSelection` 指向別處，點下去該列
       立刻是 active。
 
-
 ### 發布迴圈實測（2026-08-28）
 
 - [x] **整條路徑實際跑通**：編譯 → 建置產物 → Publish → 建立 release → production
@@ -229,7 +225,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
       release 還沒進來（改為重新載入頁面後再讀）。
 - [x] 預設仍由 `E2E_ALLOW_PUBLISH=1` 才啟用——它會建立 release 並移動 production
       指標，在有 Cloudflare 憑證的環境還會真的上傳。
-
 
 ### 路由層一致性與三引擎覆蓋（2026-08-28）
 
@@ -248,7 +243,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
       行為差異。
 - [ ] **一致性的邊界**：覆蓋的是 starter 主題實際用到的 API。主題若用到別的
       React 或 router 功能，解釋器有沒有實作、實作得對不對，目前沒有測試會知道。
-
 
 ### 無障礙（2026-08-28）
 
@@ -280,14 +274,13 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
       欄位、沒有文字顏色控制項。測試改為找到「真的能改文字顏色的元素」為止。
 - [x] 其他引擎以 `E2E_BROWSERS` 開啟，預設關閉——因為瀏覽器沒裝而失敗的套件不會教
       任何人任何事，只會讓人開始忽略紅燈。
-- [ ] **WebKit 尚未安裝**：需要 GTK + GStreamer 約 80 個套件，設定已寫好。
+- [x] **WebKit 已安裝並通過跨瀏覽器驗證**；後續只需在 CI／交付環境維持相同的瀏覽器矩陣。
 
 ### Release history 分頁（2026-08-28）
 
 - [x] 改為 `useInfiniteQuery`，25 筆一頁、底部「Load older releases」。收到不足一頁
       即停止——那代表清單到底了。release 只增不減，固定第一頁會讓較舊的版本永遠
       無法到達，而那正是有人打開這個面板要找的東西。
-
 
 ### 解釋器與真實 React 的一致性測試（2026-08-28）
 
@@ -301,9 +294,9 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] **靈敏度經過驗證**：讓解釋器把某個 class 改掉 → 7 個測試失敗；把 `h1` 渲染成
       `h2` → 2 個測試失敗。另加一道防呆，斷言比對字串長度與含有 `class=`——正規化若
       把內容洗光，所有元件都會「相同」，整個套件就變成無效。
-- [ ] **框架整合層尚未涵蓋**：路由、`createIsomorphicFn`、`useRouteContext()` 這些
-      需要 router 環境，目前只比對到元件層。今天遇到的解釋器缺口全部在這一層。
-
+- [x] **框架整合層已納入比對**：路由、`createIsomorphicFn`、`useRouteContext()`、React
+      context 與 `Outlet` 都在真實 TanStack Router fixture 中執行並與解釋器輸出比對；尚未完成的
+      是外部主題可能使用的其他 React／router API 邊界，而不是 starter 路由整合本身。
 
 ### 瀏覽器層測試（2026-08-27）
 
@@ -335,7 +328,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
       在網路慢或 JS 載入失敗時會遇到同一件事。
 - [x] 測試端改為等 React 接管輸入框後才送出——用固定延遲只會讓這個競態變罕見，不會消失。
 
-
 ### Release history 與回滾介面（2026-08-27）
 
 - [x] **接上原本沒有介面的兩個 server function**。`listStorefrontReleaseHistory` 與
@@ -350,8 +342,8 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
       invalidate 清單——失敗通常正代表這份清單過期了。
 - [x] 12 個測試（純呈現邏輯 7、對話框 5），三種變異都會被攔下：讓 live 那列也可啟用、
       CAS 指標永遠送 null、把失敗的啟用當成成功。
-- [ ] **分頁未做**：固定取最新 25 筆，伺服器支援 `offset` 但沒有介面。超過 25 筆之後
-      較舊的版本在畫面上無法到達。
+- [x] **分頁已完成**：改為 `useInfiniteQuery`，25 筆一頁，底部可載入更早的版本；收到不足
+      一頁即停止。
 
 ### 復原歷史改為逐檔堆疊（2026-08-27）
 
@@ -382,7 +374,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
       section 清單，因此改為以既有的 `reorderThemeRouteSections` 改寫路由檔，
       不新增第二條寫入路徑。
 
-
 ### 結構樹（2026-08-27）
 
 - [x] **修正一個讓整棵樹停在舊資料的缺陷**：預覽送出的結構訊息在協定驗證被整包拒絕，
@@ -396,6 +387,47 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] 有穩定身分的節點在樹上以小圓點標示，並區分「作者命名」與「編輯器自動加入」。
       不用 id 取代標籤——平台寫入的 id 形如 `el-a3f9c2b4d1e0`，放在 `Heading` 的位置
       會讓整棵樹無法閱讀。判定 `isGeneratedElementName` 放在產生器旁邊，兩者不會分岔。
+
+### Code Mode Explorer 與 VS Code 式檔案操作（2026-08-31 補登）
+
+- [x] New File／New Folder 使用 Explorer 內嵌輸入框，建立時不再跳出 `alert`／`prompt`；輸入框只
+      顯示檔名或資料夾名稱，不把 `src/components/ui/` 等父路徑當成可編輯文字。
+- [x] Rename 改為獨立的 inline rename，與 Move 分離；檔案選單已移除 Move File、Move or Rename
+      與 New File Here，資料夾選單已移除 Move Folder，避免把不同操作混在一起。
+- [x] Duplicate 使用 VS Code 式 copy 命名並保留目前 Monaco 未儲存內容；Copy／Paste 支援檔案與
+      整個資料夾樹的原子計畫，保留空資料夾並拒絕自我複製。
+- [x] 刪除檔案不會因為剛好刪掉最後一個檔案而移除作者明確建立的空資料夾；資料夾刪除改為獨立
+      的明確確認與 batch operation，且唯讀 `src/routeTree.gen.ts` 不可刪除或修改。
+- [x] 檔案／資料夾拖放搬移會同步改寫相對 import、TanStack route literal 與 component reference，
+      並以 OCC／atomic batch 寫入；覆蓋、解析失敗、自我／子孫搬移會 fail closed。
+- [x] Explorer 鍵盤操作補上 Arrow、Enter、F2、Delete、Ctrl/Cmd+C/V；右鍵操作使用同一套確認與
+      錯誤回饋，不再依賴瀏覽器原生 alert。
+
+### 路由與左側樹狀同步（2026-08-31）
+
+- [x] **明確的 source route 現在是左側樹狀與畫布的共同來源**：從 Pages 選取 `/about`、`/product`
+      等路由時，編輯器會同步 route context、畫布內容與來源檔案，不再沿用上一個 Home template 的
+      sections。
+- [x] **直接路由即使沒有 `content(...)` 也不會顯示過期 sections**。當該路由沒有可持久化的 section
+      設定，但預覽仍有可編輯 DOM 時，面板會依 source section 分組顯示唯讀 route/DOM tree；這些
+      虛擬根節點不會被誤當成可排序、隱藏或刪除的真實 section。
+- [x] 路由來源檔案透過既有 template path mapping 導覽，並維持 TanStack route path 與目前頁面一致。
+- [x] 保留舊主題／非明確 route 的 document fallback，避免破壞既有相容路徑；只有使用者明確選取
+      source route 時才以該 route 的結構取代 fallback。
+
+### 路由預取與無重載切頁（2026-08-31）
+
+- [x] Editor 與 Live Preview loader 會並行 hydrate Theme 詳細資料與完整 source file tree，
+      避免首次渲染先顯示 starter template 再切換成目前頁面。
+- [x] 依 workspace source revision 建立 route structure cache；切換路由時直接讀取既有結構，
+      不再等待預覽回傳後才重建左側樹狀。
+- [x] Pages 面板與底部 route navigator 在滑鼠移入／鍵盤聚焦時預熱同一份 Query cache，
+      並保留現有 source route registry 作為唯一路由來源。
+- [x] iframe key 不再隨目前 route 改變；透過 typed `morph:storefront-preview-set-route` bridge
+      在同一個預覽文件內切換，避免黑屏、整頁 loading 與畫布重置。只有明確 Refresh／Build Preview
+      才會重新建立 iframe。
+- [x] route message 的 `routePath` 支援 `null`，模板模式不會被誤判成首頁 `/`；訊息仍受長度與
+      型別驗證保護。
 
 ### 復原／重做（2026-08-27）
 
@@ -444,7 +476,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 - [x] 元件以 `export const contentFields` 宣告自己的可編輯欄位；**不需要登記在
       `morph.theme.json`**。掃描涵蓋所有 `src/**/*.tsx`，以來源路徑為身分。
-- [x] `morph.theme.json` 的 capability 已完全退役——manifest 內不再有任何 `contentFields`。
+- [x] `morph.theme.json` 的 `contentFields` 不再是唯一來源；source-colocated declaration 優先，manifest 只保留給尚未遷移元件作 compatibility fallback。
 - [x] 沒有宣告時，欄位由 JSX 自動推導：`<h1>{heading}</h1>` 產生 `heading` 欄位。
       判定依據是**元件簽章宣告了哪些 prop**，不是這次渲染收到什麼——否則從未編輯過的
       元件會永遠無法編輯，因為它需要的綁定只在被編輯後才出現。
@@ -462,8 +494,9 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] `content("slot")` 呼叫決定頁面有哪些 section 與順序；Document 只存值。
 - [x] 同一元件可在同頁出現多次，各自由 slot id 區分身分與內容。
 - [x] 左側樹的排序與「Add section」直接改寫路由 JSX（含 import 與縮排）。
-- [x] 路由若尚未宣告任何 slot，沿用既存 Document——採用 slot 是每個路由各自的選擇，
-      既有主題不會被打斷。
+- [x] 舊主題或未明確選取 source route 時，若路由尚未宣告任何 slot，沿用既存 Document——採用
+      slot 是每個路由各自的選擇，既有主題不會被打斷；明確選取的 source route 則由上方的 route/tree
+      同步規則負責，避免把另一頁的 sections 帶進來。
 - [x] `descendantFields` 帶上所屬 section，選取父層時不會把兩個實例的同名欄位混在一起。
 
 ### 無標記元件（2026-08-26）
@@ -473,7 +506,6 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] instance 樣式需要跨編輯穩定的身分，因此平台會在**首次寫入時自動補上**
       `data-morph-node`——作者永遠不必手寫。
 - [x] row 抽成獨立元件後，身分改由元件自己的 `id` prop 提供，既有 instance 樣式不失效。
-
 
 ### Inspector 架構
 
@@ -534,13 +566,18 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] Code Mode 新增的合法 JSX 與穩定 `data-morph-node`／`data-morph-element` 可進入 Preview selection taxonomy 與左側結構樹。
 - [x] Preview protocol 傳遞選取文字的 `contentValue`，並以 bounded runtime schema 驗證 payload。
 - [x] Inspector 可讀取 code-authored primitive 文字節點的目前值，已知 component capability 可顯示並修改對應內容欄位。
-- [x] 已登記 component 的內容修改先同步 Live Preview，再以每個 section 的 debounce、draft generation 與 OCC/CAS 寫入 versioned Template Document。
+- [x] Code-authored component 的內容修改先同步 Live Preview，再以每個 section 的 debounce、draft generation 與 OCC/CAS 寫入 versioned Template Document。
 - [x] Safe Theme renderer 可將 primitive prop override 套用到單一 primitive child；Code 預設值在沒有 Document override 時仍是 fallback。
 - [x] `principles.default.label` 已完成 Code default → Design edit → D1 draft → reload 的既有 capability 接線。
-- [x] `morph.theme.json` 支援 bounded `contentFields`，第一版控制型別為 text、textarea、url、number、boolean 與有限 select。
-- [x] Inspector 從 Theme manifest 顯示自訂欄位、code default 與限制；typing 期間只送 Live Preview，blur／選擇確認時才提交。
+- [x] Source-colocated `export const contentFields` 支援 bounded schema，第一版控制型別為 text、textarea、url、number、boolean 與有限 select；`morph.theme.json` 保留 compatibility fallback。
+- [x] Inspector 透過共用 resolver 顯示 source declaration（無宣告時才讀 manifest fallback）的自訂欄位、code default 與限制；typing 期間只送 Live Preview，blur／選擇確認時才提交。
 - [x] DAL 從 D1 Theme Workspace 重新讀取 capability，並以 source generation guard、ownership、draft generation 與 OCC/CAS 保護寫入。
 - [x] Theme `contentFields` 只限制本次可寫欄位，不會因 partial edit 刪除既有非 editable runtime／reference props。
+- [x] `input`／`textarea`／`select` 的選取內容讀取改用控制項實際 value；有 default props 但沒有輸入
+      時不會錯把 `textContent` 的空字串存回去。空白文字保留作者原始值，同時以 editor-only marker
+      預留一行高度，避免空元件與下方內容重疊。
+- [x] Live Preview 支援雙擊後 inline text editing；提交仍沿用既有 bounded protocol、draft-first、
+      debounce 與 OCC/CAS，右側 Content Fields 會同步更新。
 
 ### Customer Theme TanStack Start authoring 與 build contract
 
@@ -553,14 +590,27 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] Build materializer 驗證 Start package/router 合約並拒絕 customer-authored `routeTree.gen.ts`、Vite／Wrangler 等平台 build 檔案。
 - [x] R2 canonical manifest 保存 Worker entry、client assets directory 與 Editor preview entry；缺少任何 runtime artifact 都會在上傳前 fail closed。
 - [x] Visual Editor 左側 Pages 可讀取目前 workspace 的 code-authored routes，點擊後開啟對應 Code source；Monaco 已提供受管理的 TanStack Router declaration。
+- [x] Code Mode Explorer 顯示唯讀虛擬 `src/routeTree.gen.ts`，由同一份 bounded route registry 產生 literal path/type 補全；不寫回 Theme Workspace。
+- [x] `Link to`、`createFileRoute` 與相關 route literal 會從目前 `src/routes/**` registry 提供路徑提示；
+      路由 tree projection 與真正 build 產物共用同一份 registry，不再依賴手寫路徑清單。
+- [x] 新增 route 後只有通過 route diagnostics、Preview 與 immutable build 才算可執行；editor projection 不會冒充正式 generated artifact。
+- [x] Code Mode、Local Vite 與 Cloudflare Sandbox 共用 TanStack Start import protection：檢查 reachable `.server`／`.client` graph、marker 與 Start server/client specifier，保留 compiler-recognized boundary 的安全例外。
+- [x] `tsconfig.json`／`jsconfig.json` 的 `baseUrl`、`paths` 由受限 resolver 同步給 Monaco、Vite 與 import graph；支援 JSONC、wildcard／exact alias 與 baseUrl bare import，越界設定會在建置前拒絕。
+- [x] Starter bootstrap 支援 preview/apply plan、版本閘門、source generation/OCC 與 authored file 保留；套用成功不等同 Publish。
+- [x] `cms.config.ts` 提供平台核准套件與精確版本，dependency request 經 CMS admin capability 後進入 queued／building／ready／failed 狀態。
+- [x] Code Mode 已提供 customer-facing dependency catalog／request UI；只顯示
+      `cms.config.ts` 的平台核准套件，並以最新成功 Build Preview 的 source revision
+      作為請求閘門。套件請求會顯示 queued／building／ready／failed 狀態，建置完成前
+      不會標示為可用。獨立平台人工 approval workflow 仍未完成；目前核准模型仍是
+      allowlist 加 CMS admin server capability。
 - [x] 既有無 router metadata 的 Theme 保留 legacy component build 相容路徑。
 
 ## 尚未完成／需持續確認
 
 ### 最高優先：Theme-level 內容欄位 capability
 
-- [x] 在 `morph.theme.json` 定義 bounded `contentFields` schema，包含欄位 key、type、label、限制與有限選項。
-- [x] 從已保存的 Theme Workspace 解析並驗證 component capability，不再要求 Morph Core 為每個 customer component 手動加入內容白名單。
+- [x] 元件可在同一 source file 以 `export const contentFields` 宣告 bounded schema，包含欄位 key、type、label、限制與有限選項。
+- [x] Resolver 會掃描所有 Theme source；source-colocated declaration 優先，`morph.theme.json` 的 `contentFields` 僅作為舊元件 compatibility fallback。
 - [x] 保留 server-side allowlist、型別／長度／安全 URL 驗證、ownership、source generation 與 OCC；未知 `componentRef` 或未宣告欄位 fail closed。
 - [x] 明確維持「程式碼 default 不會自動寫入 D1；使用者首次 Design 修改才建立 Document override」語意。
 - [ ] 補齊自訂 `Promo` vertical slice：source component → selection → Inspector → Live Preview → D1 draft → reload → Publish。
@@ -600,11 +650,11 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 最近一次完整驗證結果：
 
-| 檢查             | 結果    | 備註                                   |
-| ---------------- | ------- | -------------------------------------- |
-| `pnpm typecheck` | ✅ 通過 | TypeScript 型別檢查完成                |
-| `pnpm test`      | ✅ 通過 | 162 個測試檔、787 個測試通過           |
-| `pnpm build`     | ✅ 通過 | 正式建置與 server-only bundle 檢查通過 |
+| 檢查             | 結果    | 備註                                            |
+| ---------------- | ------- | ----------------------------------------------- |
+| `pnpm typecheck` | ✅ 通過 | TypeScript 型別檢查完成                         |
+| `pnpm test`      | ✅ 通過 | 215 個測試檔、1376 個測試通過，另 1 個 skipped  |
+| `pnpm build`     | ✅ 通過 | 正式建置、server-only 與 client bundle 檢查通過 |
 
 已知非阻擋警告：
 
@@ -615,8 +665,8 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 ### Stage A — Theme-level content capability contract
 
-- [x] 定義並驗證 `morph.theme.json` 的 `contentFields` schema。
-- [x] 讓 server-side content filtering 從可信 manifest capability 解析，並保留內建元件的相容 adapter。
+- [x] 定義並驗證 source-colocated `export const contentFields` 的 bounded schema。
+- [x] 讓 server-side content filtering 從 source declaration 解析，並保留 `morph.theme.json` 的 legacy compatibility fallback。
 - [x] 完成自訂文字欄位的 Preview、commit、D1 draft 與 reload focused tests。
 - [x] 驗證未知欄位、錯誤型別、超長內容、不安全 URL 與 select 值都會 fail closed，並以既有 ownership／OCC 加上 source-generation guard 保護寫入。
 - [ ] 補齊自訂內容欄位與 immutable source revision 綁定的 Publish E2E。
@@ -653,35 +703,39 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 ## 更新紀錄
 
-| 日期       | 階段／內容                                                                                                                                                                                                                                                                          | 驗證                                                                                          |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| 2026-08-28 | 新增 `pnpm test:parity`：直接對照工作區資料庫裡的真實主題跑解釋器與真實 React 的比對（快照讀取、預設略過）；並把重複的模組載入器收斂為共用測試工具 | `pnpm test`（198 files / 1211 tests，1 skipped）、`MORPH_THEME_PARITY=1` 下 12 個元件全部一致；變異驗證：改掉任一個 class 會使 5 個測試失敗 |
-| 2026-08-28 | 對抗性模式測試（15 個 starter 未用過的 React 模式），找出並修好五個解釋器缺口：`{...rest}` 轉發、JSX 文字空白、`%` 運算子靜默回傳 undefined、`filter`／字串方法被拒；未知運算子改為明確拋錯 | `pnpm test`（198 files / 1211 tests）、`pnpm test:e2e`（21 passed）通過；三個修正各自以變異驗證確認測試會失敗 |
-| 2026-08-28 | Inspector 面板邊界檢查（三個寬度）；抽出 `e2e/helpers.ts` 並修正各 spec 寫死的畫布重設座標在窄視窗會點到側邊欄；延遲量測限定 Chromium | `pnpm test`（197 files / 1196 tests）、`E2E_BROWSERS=firefox,webkit pnpm test:e2e` 通過 |
-| 2026-08-28 | 建立互動延遲基準（畫布選取、樹狀選取、模式切換），量測過程發現樹狀點擊需等畫布確認而慢一倍，改為樂觀顯示後 933ms → 151ms | `pnpm test`（197 files / 1196 tests）、`pnpm test:e2e`（18 passed）通過；上限經變異驗證校準（1000ms 擦邊通過，改為 600ms 後可攔下） |
-| 2026-08-28 | 發布迴圈實測通過（編譯 → 發布 → release → 指標移動），並修正測試三處：建置成功後的同名按鈕、Publish 在無變更時正確停用、History 面板的快取讀取 | `E2E_ALLOW_PUBLISH=1 pnpm test:e2e` 通過；資料庫前後對照確認 release 由 3 筆增為 7 筆、active 指向最新、路由 section 順序不變 |
-| 2026-08-28 | 路由層一致性：以真實 TanStack Router 渲染 starter 主題首頁並與解釋器逐字比對（含 `beforeLoad`、`createIsomorphicFn`、React context、`Outlet`）；WebKit 安裝後三個引擎全數通過 | `pnpm typecheck`、`pnpm test`（197 files / 1195 tests）、`E2E_BROWSERS=firefox,webkit pnpm test:e2e`（43 passed）通過；變異驗證：`Outlet` 渲染成空或多加一個屬性都會使一致性測試失敗 |
-| 2026-08-28 | 無障礙（axe 掃描 + 對話框狀態 + 鍵盤場景，修好四個缺陷含焦點未歸還）；響應式（修好 1024/1280 的 header 重疊，加上重疊比對測試）；跨瀏覽器（Firefox 全過，以 `E2E_BROWSERS` 開關）；release history 分頁 | `pnpm typecheck`、`pnpm test`（197 files / 1194 tests）、`E2E_BROWSERS=firefox pnpm test:e2e`（29 passed）通過；每項修正皆以變異驗證確認測試會失敗 |
-| 2026-08-28 | 新增解釋器與真實 React 的一致性測試（esbuild 記憶體編譯、依賴白名單照建置規則解析、九個案例逐字相同、靈敏度以兩次變異驗證）；據此重新配權：階段 7 由 25 降為 12 並重新定義為「補齊框架整合層缺口」，釋出的權重移到階段 3、5、8 | `pnpm typecheck`、`pnpm test`（197 files / 1192 tests）通過；變異驗證：改動解釋器輸出的 class 或標籤都會使一致性測試失敗 |
-| 2026-08-27 | 建立瀏覽器層測試（Playwright，與單元測試分離、憑證走未追蹤的環境檔、無憑證時自行 skip），三個場景皆經變異驗證，過程中修正兩次假通過；並修復認證表單在 hydration 前送出會以 GET 把密碼寫進網址的缺陷 | `pnpm typecheck`、`pnpm test`（196 files / 1183 tests）、`pnpm test:e2e`（4 passed）、`pnpm build` 通過；拿掉被守護的比對分支後 E2E 確實失敗 |
-| 2026-08-27 | 接上 release history 與回滾介面（原本兩個 server function 沒有任何呼叫端，回滾需改資料庫）；復原歷史改為逐檔堆疊並補上兩個未記錄的寫入旁路；修正 LivePreview 高度只增不減的量測回圈、原生拖曳期間無法捲動畫布、樹狀無法選取只有來源位置的元素；section 可在畫布上互換，改寫路由檔而不新增寫入路徑 | `pnpm typecheck`、`pnpm test`（196 files / 1183 tests）、`pnpm build` 通過；新增測試皆以變異驗證確認會攔下缺陷；畫布拖曳、預覽高度、樹狀選取由使用者在瀏覽器實測確認 |
-| 2026-08-26 | 打通零標記元件的完整編輯鏈路：解釋器輸出 source position、元件根部即 section 邊界、AST 以 `line:column` 定位、Inspector 鎖定判斷與即時樣式預覽統一改用共用的 `element-target` 解析；修復重繪後選取框消失與 padding 值閃跳（inline 預覽跨重繪存活）。建立 `content("slot")` 契約：解釋器支援、Document section id 即 slot id、starter 升級至版本 11 並植入平台 content 模組 | `pnpm typecheck`、`pnpm test`（1019 tests）、`pnpm build` 通過；並以真實 workspace 實測渲染與選取收集 |
-| 2026-08-26 | 完成 production runtime 與部署平面：hostname → active release → artifact 的 fail-closed 解析、preview／production 共用 serving core、`ThemeRuntime` 傳輸抽象（service binding／local／dispatch／unavailable）、Sandbox wrangler 部署與憑證隔離、CAS 先佔位後部署的啟用順序、Publish 與 rollback 共用部署核心；並完成零標記元素識別：解釋器產生 source position、元件根部即 section 邊界、收集／點擊／還原三段統一，Inspector 不再要求 Document section | `pnpm typecheck`、`pnpm test`（978 tests）、`pnpm build` 通過；並以真實 workspace 實測 Live 預覽渲染與選取收集 |
-| 2026-08-25 | 完成 Customer Theme TanStack Start build contract：加入固定 package/toolchain、Starter v5 OCC additive upgrade、真正 Cloudflare multi-environment Worker build、platform-owned generated/config path、Worker/client/preview artifact contract 與 R2 manifest fail-closed 驗證；production Worker dispatch 與 D1 Page Registry 組合仍明確列為後續 | `pnpm typecheck`、`pnpm test`（162 files / 793 tests）、`pnpm build`、`git diff --check` 通過 |
-| 2026-08-25 | 完成 Theme-level `contentFields` capability：共用 bounded manifest parser、Inspector 自訂欄位與 code default、server-authoritative D1 Workspace 驗證、safe URL／型別／長度／select 限制、source-generation + draft OCC guard、partial edit 資料保留及內建 manifest 相容 adapter | `pnpm typecheck`、`pnpm test`（159 files / 766 tests）、`pnpm build`、`git diff --check` 通過 |
-| 2026-08-25 | 完成 code-authored primitive 文字內容 round-trip：Preview protocol 傳遞 bounded `contentValue`、Inspector 顯示目前文字、已登記 component 可即時預覽並透過 debounce／OCC 寫入 D1 draft；確認下一個缺口為 Theme-level `contentFields` capability，而非自動把程式碼 default 寫入資料庫 | `pnpm typecheck`、`pnpm test`（158 files / 758 tests）、`pnpm build`、`git diff --check` 通過 |
-| 2026-08-23 | 修復 Code Mode 相對 import 與 clsx 的假錯誤：每個 Theme 使用隔離 URI workspace 並預載全部來源 model，加入受管理的 dependency declaration 與 scoped cleanup，保留真正 TypeScript 診斷                                                                                                | pnpm typecheck、pnpm test、pnpm build 通過                                                    |
-| 2026-08-23 | 將重複陣列樣式收斂為穩定 item id 與元件內 `morphInstanceClasses` 靜態 class map；首次確認樣式修改會補 id，Preview parser／renderer 可解析套用，排序後樣式仍跟隨原 item，舊 CSS／巨大 selector 僅作遷移輸入                                                                          | `pnpm typecheck`、`pnpm test`（148 files / 673 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 將重複陣列 instance 樣式改為直接寫回元件 TSX 的 `cn()` 靜態 Tailwind arbitrary variant；停止新增 global/獨立 CSS 規則，舊 CSS 在再次編輯時遷移並清除空 import，Code Mode 回到元件來源                                                                                               | `pnpm typecheck`、`pnpm test`（148 files / 669 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 將陣列 instance 樣式移至元件旁的 `.morph.css`，首次建立即納入 Live Preview 與 OCC 儲存；`global.css` 僅保留 import，Code Mode 可定位 marker，並支援舊規則逐筆遷移                                                                                                                   | `pnpm typecheck`、`pnpm test`（148 files / 667 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 加入 Live Preview 拖曳縮圖、完整合法交換位置提示與目前落點狀態；所有回饋沿用命令式 overlay，不在 dragover 熱路徑觸發 React render                                                                                                                                                   | `pnpm typecheck`、`pnpm test`（148 files / 665 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 將 Live Preview 排序入口收斂到 selection label 的專用 Grip；取消整張選取元件的 draggable 行為，並補齊 grab / grabbing 狀態與可排序時才顯示的規則                                                                                                                                    | `pnpm typecheck`、`pnpm test`（148 files / 665 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 修復 Principle Card 無法互換：Preview 以 `items.<index>` 識別重複 item，同陣列 drop 後只提交一次 Section props draft；加入安全路徑解析、immutable swap、typed protocol 與失敗選取回滾                                                                                               | `pnpm typecheck`、`pnpm test`（148 files / 665 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 修復重複陣列 item 樣式互相污染：以 Section id + 完整 field path 建立 instance-scoped Theme CSS，並修正 Preview 重綁、Live draft 與 Inspector identity 的 repeated-node 定位                                                                                                         | `pnpm typecheck`、`pnpm test`（147 files / 660 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 完成 Live Preview 畫布互動第二階段效能修復：wheel、抓取平移與縮放統一由 ref、單一 rAF 與 CSS variables 驅動，移除每幀 React state 更新，並加入 Canvas containment 與 idle 狀態提交                                                                                                  | `pnpm typecheck`、`pnpm test`（146 files / 654 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 修復 Live Preview 捲動低幀率：wheel 熱路徑脫離整棵 Editor React render、每幀合併 Canvas DOM transform、idle 後提交最終狀態，overlay scroll/resize 量測同步節流；同步補入效能規則                                                                                                    | `pnpm typecheck`、`pnpm test`（146 files / 654 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 新增 Live Preview 安全 sibling 拖放交換、AST source swap、typed protocol、一次性 draft 儲存、失敗回復與選取維持；同步補入 Visual Editor 規則                                                                                                                                        | `pnpm typecheck`、`pnpm test`（146 files / 654 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 修復 Code Workspace 合法 TSX 的錯誤診斷；新增限定於靜態 `className`／`class` 字串的 Tailwind CSS class 補全與 provider 清理                                                                                                                                                         | `pnpm typecheck`、`pnpm test`（146 files / 650 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 完成 Styles Inspector idle 預渲染、保留掛載與穩定 callback，降低第一次從 Agent 切換 Styles 的同步工作量                                                                                                                                                                             | `pnpm typecheck`、`pnpm test`（145 files / 644 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 完成 Live Preview 選取來源感知的 Code 模式導覽；支援 Section、同檔 DOM、獨立子元件來源與安全 fallback                                                                                                                                                                               | `pnpm typecheck`、`pnpm test`（144 files / 642 tests）、`pnpm build` 通過                     |
-| 2026-08-22 | 建立進度基準；整理 Inspector 架構、同步穩定性、控制項、Color Picker、Border/Radius、Preview protocol 與效能改善現況                                                                                                                                                                 | `pnpm typecheck`、`pnpm test`（143 files / 638 tests）、`pnpm build` 通過                     |
+| 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-08-31 | 完成路由預取與無重載切頁：Editor／Preview 並行 hydrate，source route structure cache，Pages／底部路徑選單 hover／focus 預熱；保留單一 iframe 並以 typed route bridge 切換，避免畫布 loading、黑屏與樹狀短暫顯示舊頁                                                                                                                                                                                                                                    | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，1 skipped）、`pnpm build`、client bundle check、`git diff --check` 通過                                                                                                                                                                                                 |
+| 2026-08-31 | 修正 Design 模式左側樹狀結構與目前 source-authored route 不同步：明確 route 不再退回 Home sections；無 `content(...)` 的直接路由顯示唯讀 route/DOM tree；Pages 選取同步畫布、route context 與來源檔案                                                                                                                                                                                                                                                  | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，1 skipped）、`pnpm build`、client bundle check、`git diff --check` 通過                                                                                                                                                                                                 |
+| 2026-08-31 | 補登此前已完成但原先只散落在測試與 ROADMAP 的 Code Mode Explorer 操作、空白／預設內容保留、Live Preview 雙擊編輯、DOM／section 刪除，以及 `Link to` 路徑提示；確認這些項目已納入目前的功能清單                                                                                                                                                                                                                                                         | `editor-code-workspace.test.tsx`、`theme-file-move.test.ts`、`theme-file-copy.test.ts`、`editor-sections-panel.test.tsx`、`selection-content-value.test.ts`、`preview-empty-text-layout.test.ts`、`inline-text-edit.test.ts`、`editor-code-language-support.test.ts` 均包含於 `pnpm test`（215 files / 1376 tests，1 skipped） |
+| 2026-08-30 | Code Mode 加入唯讀虛擬 `src/routeTree.gen.ts`，由 bounded route registry 提供 TanStack path/type 補全；同步確認正式 route tree 只由 build toolchain 產生，並整理 Starter bootstrap 與 platform-owned dependency queue contract                                                                                                                                                                                                                         | `editor-code-language-support.test.ts`（16 tests）、`pnpm typecheck`、`pnpm test`（212 files / 1322 tests，1 skipped）、`pnpm build` 通過                                                                                                                                                                                      |
+| 2026-08-28 | 新增 `pnpm test:parity`：直接對照工作區資料庫裡的真實主題跑解釋器與真實 React 的比對（快照讀取、預設略過）；並把重複的模組載入器收斂為共用測試工具                                                                                                                                                                                                                                                                                                     | `pnpm test`（198 files / 1211 tests，1 skipped）、`MORPH_THEME_PARITY=1` 下 12 個元件全部一致；變異驗證：改掉任一個 class 會使 5 個測試失敗                                                                                                                                                                                    |
+| 2026-08-28 | 對抗性模式測試（15 個 starter 未用過的 React 模式），找出並修好五個解釋器缺口：`{...rest}` 轉發、JSX 文字空白、`%` 運算子靜默回傳 undefined、`filter`／字串方法被拒；未知運算子改為明確拋錯                                                                                                                                                                                                                                                            | `pnpm test`（198 files / 1211 tests）、`pnpm test:e2e`（21 passed）通過；三個修正各自以變異驗證確認測試會失敗                                                                                                                                                                                                                  |
+| 2026-08-28 | Inspector 面板邊界檢查（三個寬度）；抽出 `e2e/helpers.ts` 並修正各 spec 寫死的畫布重設座標在窄視窗會點到側邊欄；延遲量測限定 Chromium                                                                                                                                                                                                                                                                                                                  | `pnpm test`（197 files / 1196 tests）、`E2E_BROWSERS=firefox,webkit pnpm test:e2e` 通過                                                                                                                                                                                                                                        |
+| 2026-08-28 | 建立互動延遲基準（畫布選取、樹狀選取、模式切換），量測過程發現樹狀點擊需等畫布確認而慢一倍，改為樂觀顯示後 933ms → 151ms                                                                                                                                                                                                                                                                                                                               | `pnpm test`（197 files / 1196 tests）、`pnpm test:e2e`（18 passed）通過；上限經變異驗證校準（1000ms 擦邊通過，改為 600ms 後可攔下）                                                                                                                                                                                            |
+| 2026-08-28 | 發布迴圈實測通過（編譯 → 發布 → release → 指標移動），並修正測試三處：建置成功後的同名按鈕、Publish 在無變更時正確停用、History 面板的快取讀取                                                                                                                                                                                                                                                                                                         | `E2E_ALLOW_PUBLISH=1 pnpm test:e2e` 通過；資料庫前後對照確認 release 由 3 筆增為 7 筆、active 指向最新、路由 section 順序不變                                                                                                                                                                                                  |
+| 2026-08-28 | 路由層一致性：以真實 TanStack Router 渲染 starter 主題首頁並與解釋器逐字比對（含 `beforeLoad`、`createIsomorphicFn`、React context、`Outlet`）；WebKit 安裝後三個引擎全數通過                                                                                                                                                                                                                                                                          | `pnpm typecheck`、`pnpm test`（197 files / 1195 tests）、`E2E_BROWSERS=firefox,webkit pnpm test:e2e`（43 passed）通過；變異驗證：`Outlet` 渲染成空或多加一個屬性都會使一致性測試失敗                                                                                                                                           |
+| 2026-08-28 | 無障礙（axe 掃描 + 對話框狀態 + 鍵盤場景，修好四個缺陷含焦點未歸還）；響應式（修好 1024/1280 的 header 重疊，加上重疊比對測試）；跨瀏覽器（Firefox 全過，以 `E2E_BROWSERS` 開關）；release history 分頁                                                                                                                                                                                                                                                | `pnpm typecheck`、`pnpm test`（197 files / 1194 tests）、`E2E_BROWSERS=firefox pnpm test:e2e`（29 passed）通過；每項修正皆以變異驗證確認測試會失敗                                                                                                                                                                             |
+| 2026-08-28 | 新增解釋器與真實 React 的一致性測試（esbuild 記憶體編譯、依賴白名單照建置規則解析、九個案例逐字相同、靈敏度以兩次變異驗證）；據此重新配權：階段 7 由 25 降為 12 並重新定義為「補齊框架整合層缺口」，釋出的權重移到階段 3、5、8                                                                                                                                                                                                                         | `pnpm typecheck`、`pnpm test`（197 files / 1192 tests）通過；變異驗證：改動解釋器輸出的 class 或標籤都會使一致性測試失敗                                                                                                                                                                                                       |
+| 2026-08-27 | 建立瀏覽器層測試（Playwright，與單元測試分離、憑證走未追蹤的環境檔、無憑證時自行 skip），三個場景皆經變異驗證，過程中修正兩次假通過；並修復認證表單在 hydration 前送出會以 GET 把密碼寫進網址的缺陷                                                                                                                                                                                                                                                    | `pnpm typecheck`、`pnpm test`（196 files / 1183 tests）、`pnpm test:e2e`（4 passed）、`pnpm build` 通過；拿掉被守護的比對分支後 E2E 確實失敗                                                                                                                                                                                   |
+| 2026-08-27 | 接上 release history 與回滾介面（原本兩個 server function 沒有任何呼叫端，回滾需改資料庫）；復原歷史改為逐檔堆疊並補上兩個未記錄的寫入旁路；修正 LivePreview 高度只增不減的量測回圈、原生拖曳期間無法捲動畫布、樹狀無法選取只有來源位置的元素；section 可在畫布上互換，改寫路由檔而不新增寫入路徑                                                                                                                                                      | `pnpm typecheck`、`pnpm test`（196 files / 1183 tests）、`pnpm build` 通過；新增測試皆以變異驗證確認會攔下缺陷；畫布拖曳、預覽高度、樹狀選取由使用者在瀏覽器實測確認                                                                                                                                                           |
+| 2026-08-26 | 打通零標記元件的完整編輯鏈路：解釋器輸出 source position、元件根部即 section 邊界、AST 以 `line:column` 定位、Inspector 鎖定判斷與即時樣式預覽統一改用共用的 `element-target` 解析；修復重繪後選取框消失與 padding 值閃跳（inline 預覽跨重繪存活）。建立 `content("slot")` 契約：解釋器支援、Document section id 即 slot id、starter 升級至版本 11 並植入平台 content 模組                                                                             | `pnpm typecheck`、`pnpm test`（1019 tests）、`pnpm build` 通過；並以真實 workspace 實測渲染與選取收集                                                                                                                                                                                                                          |
+| 2026-08-26 | 完成 production runtime 與部署平面：hostname → active release → artifact 的 fail-closed 解析、preview／production 共用 serving core、`ThemeRuntime` 傳輸抽象（service binding／local／dispatch／unavailable）、Sandbox wrangler 部署與憑證隔離、CAS 先佔位後部署的啟用順序、Publish 與 rollback 共用部署核心；並完成零標記元素識別：解釋器產生 source position、元件根部即 section 邊界、收集／點擊／還原三段統一，Inspector 不再要求 Document section | `pnpm typecheck`、`pnpm test`（978 tests）、`pnpm build` 通過；並以真實 workspace 實測 Live 預覽渲染與選取收集                                                                                                                                                                                                                 |
+| 2026-08-25 | 完成 Customer Theme TanStack Start build contract：加入固定 package/toolchain、Starter v5 OCC additive upgrade、真正 Cloudflare multi-environment Worker build、platform-owned generated/config path、Worker/client/preview artifact contract 與 R2 manifest fail-closed 驗證；production Worker dispatch 與 D1 Page Registry 組合仍明確列為後續                                                                                                       | `pnpm typecheck`、`pnpm test`（162 files / 793 tests）、`pnpm build`、`git diff --check` 通過                                                                                                                                                                                                                                  |
+| 2026-08-25 | 完成 Theme-level `contentFields` capability：共用 bounded manifest parser、Inspector 自訂欄位與 code default、server-authoritative D1 Workspace 驗證、safe URL／型別／長度／select 限制、source-generation + draft OCC guard、partial edit 資料保留及內建 manifest 相容 adapter                                                                                                                                                                        | `pnpm typecheck`、`pnpm test`（159 files / 766 tests）、`pnpm build`、`git diff --check` 通過                                                                                                                                                                                                                                  |
+| 2026-08-25 | 完成 code-authored primitive 文字內容 round-trip：Preview protocol 傳遞 bounded `contentValue`、Inspector 顯示目前文字、已登記 component 可即時預覽並透過 debounce／OCC 寫入 D1 draft；確認下一個缺口為 Theme-level `contentFields` capability，而非自動把程式碼 default 寫入資料庫                                                                                                                                                                    | `pnpm typecheck`、`pnpm test`（158 files / 758 tests）、`pnpm build`、`git diff --check` 通過                                                                                                                                                                                                                                  |
+| 2026-08-23 | 修復 Code Mode 相對 import 與 clsx 的假錯誤：每個 Theme 使用隔離 URI workspace 並預載全部來源 model，加入受管理的 dependency declaration 與 scoped cleanup，保留真正 TypeScript 診斷                                                                                                                                                                                                                                                                   | pnpm typecheck、pnpm test、pnpm build 通過                                                                                                                                                                                                                                                                                     |
+| 2026-08-23 | 將重複陣列樣式收斂為穩定 item id 與元件內 `morphInstanceClasses` 靜態 class map；首次確認樣式修改會補 id，Preview parser／renderer 可解析套用，排序後樣式仍跟隨原 item，舊 CSS／巨大 selector 僅作遷移輸入                                                                                                                                                                                                                                             | `pnpm typecheck`、`pnpm test`（148 files / 673 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 將重複陣列 instance 樣式改為直接寫回元件 TSX 的 `cn()` 靜態 Tailwind arbitrary variant；停止新增 global/獨立 CSS 規則，舊 CSS 在再次編輯時遷移並清除空 import，Code Mode 回到元件來源                                                                                                                                                                                                                                                                  | `pnpm typecheck`、`pnpm test`（148 files / 669 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 將陣列 instance 樣式移至元件旁的 `.morph.css`，首次建立即納入 Live Preview 與 OCC 儲存；`global.css` 僅保留 import，Code Mode 可定位 marker，並支援舊規則逐筆遷移                                                                                                                                                                                                                                                                                      | `pnpm typecheck`、`pnpm test`（148 files / 667 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 加入 Live Preview 拖曳縮圖、完整合法交換位置提示與目前落點狀態；所有回饋沿用命令式 overlay，不在 dragover 熱路徑觸發 React render                                                                                                                                                                                                                                                                                                                      | `pnpm typecheck`、`pnpm test`（148 files / 665 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 將 Live Preview 排序入口收斂到 selection label 的專用 Grip；取消整張選取元件的 draggable 行為，並補齊 grab / grabbing 狀態與可排序時才顯示的規則                                                                                                                                                                                                                                                                                                       | `pnpm typecheck`、`pnpm test`（148 files / 665 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 修復 Principle Card 無法互換：Preview 以 `items.<index>` 識別重複 item，同陣列 drop 後只提交一次 Section props draft；加入安全路徑解析、immutable swap、typed protocol 與失敗選取回滾                                                                                                                                                                                                                                                                  | `pnpm typecheck`、`pnpm test`（148 files / 665 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 修復重複陣列 item 樣式互相污染：以 Section id + 完整 field path 建立 instance-scoped Theme CSS，並修正 Preview 重綁、Live draft 與 Inspector identity 的 repeated-node 定位                                                                                                                                                                                                                                                                            | `pnpm typecheck`、`pnpm test`（147 files / 660 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 完成 Live Preview 畫布互動第二階段效能修復：wheel、抓取平移與縮放統一由 ref、單一 rAF 與 CSS variables 驅動，移除每幀 React state 更新，並加入 Canvas containment 與 idle 狀態提交                                                                                                                                                                                                                                                                     | `pnpm typecheck`、`pnpm test`（146 files / 654 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 修復 Live Preview 捲動低幀率：wheel 熱路徑脫離整棵 Editor React render、每幀合併 Canvas DOM transform、idle 後提交最終狀態，overlay scroll/resize 量測同步節流；同步補入效能規則                                                                                                                                                                                                                                                                       | `pnpm typecheck`、`pnpm test`（146 files / 654 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 新增 Live Preview 安全 sibling 拖放交換、AST source swap、typed protocol、一次性 draft 儲存、失敗回復與選取維持；同步補入 Visual Editor 規則                                                                                                                                                                                                                                                                                                           | `pnpm typecheck`、`pnpm test`（146 files / 654 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 修復 Code Workspace 合法 TSX 的錯誤診斷；新增限定於靜態 `className`／`class` 字串的 Tailwind CSS class 補全與 provider 清理                                                                                                                                                                                                                                                                                                                            | `pnpm typecheck`、`pnpm test`（146 files / 650 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 完成 Styles Inspector idle 預渲染、保留掛載與穩定 callback，降低第一次從 Agent 切換 Styles 的同步工作量                                                                                                                                                                                                                                                                                                                                                | `pnpm typecheck`、`pnpm test`（145 files / 644 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 完成 Live Preview 選取來源感知的 Code 模式導覽；支援 Section、同檔 DOM、獨立子元件來源與安全 fallback                                                                                                                                                                                                                                                                                                                                                  | `pnpm typecheck`、`pnpm test`（144 files / 642 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
+| 2026-08-22 | 建立進度基準；整理 Inspector 架構、同步穩定性、控制項、Color Picker、Border/Radius、Preview protocol 與效能改善現況                                                                                                                                                                                                                                                                                                                                    | `pnpm typecheck`、`pnpm test`（143 files / 638 tests）、`pnpm build` 通過                                                                                                                                                                                                                                                      |
