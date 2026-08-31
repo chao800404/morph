@@ -133,12 +133,37 @@ test.describe("editor responsiveness", () => {
   });
 
   test("switching between Design and Code stays immediate", async ({ page }) => {
+    const codeOnlyRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = request.url();
+      if (
+        /editor-code-(?:workspace|language-support|package-types)/.test(url) ||
+        /@monaco-editor|monaco-editor/.test(url)
+      ) {
+        codeOnlyRequests.push(url);
+      }
+    });
     await openEditor(page);
+
+    await page.waitForTimeout(500);
+    expect(codeOnlyRequests, "Design loaded Code Workspace assets").toEqual([]);
 
     const toCode = Date.now();
     await page.getByRole("button", { name: /^Code$/ }).click();
     await page.locator("text=EXPLORER").first().waitFor({ timeout: 30_000 });
     const codeMs = Date.now() - toCode;
+    expect(
+      codeOnlyRequests.some((url) => /editor-code-workspace/.test(url)),
+      "Code Workspace chunk was not requested after entering Code mode",
+    ).toBe(true);
+    expect(
+      codeOnlyRequests.some((url) => /editor-code-package-types/.test(url)),
+      "package declarations were not loaded with Code mode",
+    ).toBe(true);
+    expect(
+      codeOnlyRequests.some((url) => /@monaco-editor|monaco-editor/.test(url)),
+      "Monaco was not loaded with Code mode",
+    ).toBe(true);
 
     const toDesign = Date.now();
     await page.getByRole("button", { name: /^Design$/ }).click();

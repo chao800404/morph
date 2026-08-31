@@ -3,6 +3,7 @@ import {
   buildThemeRouteRegistry,
   isThemeRouteSourcePath,
   parseThemeRouteSourcePath,
+  themeRoutePathAfterFileMoves,
   themeRouteIdFromSourcePath,
   themeRoutePathFromSourcePath,
 } from "./theme-route-registry";
@@ -162,6 +163,25 @@ describe("Theme route registry", () => {
     );
     expect(
       themeRoutePathFromSourcePath("src/routes/-components/card.tsx"),
+    ).toBe(null);
+  });
+
+  it("maps the active pathname to a moved route after Code Mode renames it", () => {
+    expect(
+      themeRoutePathAfterFileMoves("/product", [
+        {
+          from: "src/routes/product.tsx",
+          to: "src/routes/catalog.tsx",
+        },
+      ]),
+    ).toBe("/catalog");
+    expect(
+      themeRoutePathAfterFileMoves("/product", [
+        {
+          from: "src/components/product.tsx",
+          to: "src/components/catalog.tsx",
+        },
+      ]),
     ).toBe(null);
   });
 

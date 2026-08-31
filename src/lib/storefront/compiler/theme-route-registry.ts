@@ -391,6 +391,29 @@ export function themeRoutePathFromSourcePath(path: string): string | null {
   return parseThemeRouteSourcePath(path)?.path ?? null;
 }
 
+/**
+ * Keeps the Design/Preview pathname aligned when a route source file is moved
+ * in Code Mode. The file move rewrites the TanStack route literal and the
+ * registry follows the new filename, but the editor URL state otherwise still
+ * points at the old public path for one render.
+ */
+export function themeRoutePathAfterFileMoves(
+  currentRoutePath: string | undefined,
+  moves: ReadonlyArray<{ from: string; to: string }>,
+): string | null {
+  if (!currentRoutePath) return null;
+
+  const movedRoute = moves.find(
+    (move) => themeRoutePathFromSourcePath(move.from) === currentRoutePath,
+  );
+  if (!movedRoute) return null;
+
+  const nextRoutePath = themeRoutePathFromSourcePath(movedRoute.to);
+  return nextRoutePath && nextRoutePath !== currentRoutePath
+    ? nextRoutePath
+    : null;
+}
+
 /** Internal route id used in a TanStack `createFileRoute` literal. */
 export function themeRouteIdFromSourcePath(path: string): string | null {
   return parseThemeRouteSourcePath(path)?.routeId ?? null;

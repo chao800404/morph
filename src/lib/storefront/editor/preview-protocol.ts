@@ -135,7 +135,11 @@ export type PreviewEditableNode = Readonly<{
 }>;
 
 export type EditorToPreviewMessage =
-  | { type: "morph:storefront-preview-request-size" }
+  | {
+      type: "morph:storefront-preview-request-size";
+      /** Monotonically increasing request identity used to reject stale layout. */
+      measurementRevision: number;
+    }
   | { type: "morph:storefront-preview-request-structure" }
   | {
       type: "morph:storefront-preview-request-selection-style";
@@ -248,7 +252,12 @@ export type PreviewToEditorMessage =
       type: "morph:storefront-preview-history-shortcut";
       direction: "undo" | "redo";
     }
-  | { type: "morph:storefront-preview-size"; height: number }
+  | {
+      type: "morph:storefront-preview-size";
+      height: number;
+      /** Echoes the request whose route/source layout was measured. */
+      measurementRevision: number;
+    }
   | {
       type: "morph:storefront-preview-structure";
       nodes: readonly PreviewEditableNode[];
@@ -599,6 +608,12 @@ export function parseEditorToPreviewMessage(
 
   switch (value.type) {
     case "morph:storefront-preview-request-size":
+      return isSafeRevision(value.measurementRevision)
+        ? {
+            type: value.type,
+            measurementRevision: value.measurementRevision,
+          }
+        : null;
     case "morph:storefront-preview-request-structure":
       return { type: value.type };
     case "morph:storefront-preview-request-selection-style":
@@ -743,8 +758,14 @@ export function parsePreviewToEditorMessage(
         ? { type: value.type, direction: value.direction }
         : null;
     case "morph:storefront-preview-size":
-      return typeof value.height === "number" && Number.isFinite(value.height)
-        ? { type: value.type, height: value.height }
+      return typeof value.height === "number" &&
+        Number.isFinite(value.height) &&
+        isSafeRevision(value.measurementRevision)
+        ? {
+            type: value.type,
+            height: value.height,
+            measurementRevision: value.measurementRevision,
+          }
         : null;
     case "morph:storefront-preview-structure": {
       const nodes = parsePreviewEditableNodes(value.nodes);

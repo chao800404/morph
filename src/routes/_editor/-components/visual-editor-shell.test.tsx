@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   createSelectionRestoreMessages,
+  EditorCodeModeSurface,
   EditorModeSurface,
 } from "./visual-editor-shell";
 
@@ -57,6 +58,35 @@ describe("EditorModeSurface", () => {
     expect(surfaces[1].hasAttribute("inert")).toBe(false);
     expect(surfaces[0].getAttribute("aria-hidden")).toBe("true");
     expect(surfaces[1].getAttribute("aria-hidden")).toBe("false");
+  });
+});
+
+describe("EditorCodeModeSurface", () => {
+  it("mounts on first activation and preserves the same subtree afterwards", () => {
+    const { rerender } = render(
+      <EditorCodeModeSurface active={false}>
+        <textarea data-testid="code-buffer" defaultValue="draft" />
+      </EditorCodeModeSurface>,
+    );
+
+    expect(screen.queryByTestId("code-buffer")).toBeNull();
+
+    rerender(
+      <EditorCodeModeSurface active>
+        <textarea data-testid="code-buffer" defaultValue="draft" />
+      </EditorCodeModeSurface>,
+    );
+    const buffer = screen.getByTestId("code-buffer") as HTMLTextAreaElement;
+    buffer.value = "dirty draft";
+
+    rerender(
+      <EditorCodeModeSurface active={false}>
+        <textarea data-testid="code-buffer" defaultValue="draft" />
+      </EditorCodeModeSurface>,
+    );
+
+    expect(screen.getByTestId("code-buffer")).toBe(buffer);
+    expect(buffer.value).toBe("dirty draft");
   });
 });
 

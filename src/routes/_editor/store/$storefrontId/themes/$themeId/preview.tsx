@@ -694,7 +694,6 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
     };
 
     window.addEventListener("message", handleThemeFileMessage);
-    postPreviewToEditorMessage({ type: "morph:storefront-preview-ready" });
     return () => window.removeEventListener("message", handleThemeFileMessage);
   }, []);
 
@@ -3136,6 +3135,11 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
     window.addEventListener("keydown", handleHistoryShortcut);
     window.addEventListener("message", handleEditorMessage);
+    // Announce readiness only after the selection listener exists. The Theme
+    // source bridge lives in a child tree, whose passive effect can run before
+    // this outer bridge; announcing there let the editor restore its active
+    // tool into a listener gap and left the toolbar and canvas out of sync.
+    postPreviewToEditorMessage({ type: "morph:storefront-preview-ready" });
     /**
      * Clears the drag-time inline styles one frame after the source styles land.
      *
@@ -3340,6 +3344,7 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
     let candidateHeight: number | null = null;
     let stableFrameCount = 0;
     let lastPublishedHeight: number | null = null;
+    let measurementRevision = 0;
     let isDisposed = false;
 
     const measureUntilStable = () => {
@@ -3383,6 +3388,7 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
         postPreviewToEditorMessage({
           type: "morph:storefront-preview-size",
           height: nextHeight,
+          measurementRevision,
         });
       });
     };
@@ -3395,6 +3401,7 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
     const handleSizeRequest = (event: MessageEvent<unknown>) => {
       const message = parseEditorToPreviewWindowEvent(event);
       if (message?.type === "morph:storefront-preview-request-size") {
+        measurementRevision = message.measurementRevision;
         // An explicit request means the editor does not know the height, so the
         // answer has to be sent even when it repeats the last one. Skipping it
         // as a duplicate is how a re-measure could leave the editor holding the

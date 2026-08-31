@@ -63,6 +63,14 @@ for (const size of SUPPORTED_WIDTHS) {
     }
 
     expect(overlaps, `at ${size.width}px`).toEqual([]);
+    await expect(
+      page.getByRole("button", { name: "Build Preview" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Release history" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Publish" })).toBeVisible();
+    await expect(page.locator("[data-editor-save-status]")).toBeVisible();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth - window.innerWidth,
@@ -133,4 +141,3 @@ test.describe("inspector panel", () => {
     });
   }
 });
-

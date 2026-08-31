@@ -66,7 +66,9 @@ test.describe("visual editor", () => {
           );
           const contentHeight = await previewFrame(page)
             .locator("[data-storefront-preview-root]")
-            .evaluate((el) => el.getBoundingClientRect().height);
+            .evaluate((el) =>
+              Math.max(el.getBoundingClientRect().height, el.scrollHeight),
+            );
           return Math.abs(frameHeight - contentHeight);
         },
         {
@@ -89,7 +91,11 @@ test.describe("visual editor", () => {
       );
       const contentHeight = await previewFrame(page)
         .locator("[data-storefront-preview-root]")
-        .evaluate((el) => Math.round(el.getBoundingClientRect().height));
+        .evaluate((el) =>
+          Math.round(
+            Math.max(el.getBoundingClientRect().height, el.scrollHeight),
+          ),
+        );
       return { frameHeight, contentHeight };
     };
 
@@ -113,6 +119,59 @@ test.describe("visual editor", () => {
       if (await show.count()) await show.click();
       await page.waitForTimeout(2_000);
     }
+  });
+
+  test("a stale preview measurement cannot resize the current route", async ({
+    page,
+  }) => {
+    await openEditor(page);
+
+    const frame = page.locator("iframe").first();
+    const currentHeight = await settleHeight(page, async () => {
+      const frameHeight = await frame.evaluate((element) =>
+        Math.round(element.getBoundingClientRect().height),
+      );
+      const contentHeight = await previewFrame(page)
+        .locator("[data-storefront-preview-root]")
+        .evaluate((element) =>
+          Math.round(
+            Math.max(
+              element.getBoundingClientRect().height,
+              element.scrollHeight,
+            ),
+          ),
+        );
+      return { frameHeight, contentHeight };
+    });
+
+    await previewFrame(page)
+      .locator("body")
+      .evaluate(() => {
+        const previewUrl = new URL(window.location.href);
+        const editorOrigin = previewUrl.searchParams.get("editorOrigin");
+        const previewSession = previewUrl.searchParams.get("previewSession");
+        if (!editorOrigin || !previewSession) {
+          throw new Error("Preview channel is missing from the iframe URL");
+        }
+        window.parent.postMessage(
+          {
+            type: "morph:storefront-preview-size",
+            height: 30_000,
+            measurementRevision: 0,
+            previewSession,
+          },
+          editorOrigin,
+        );
+      });
+
+    await page.waitForTimeout(250);
+    await expect
+      .poll(() =>
+        frame.evaluate((element) =>
+          Math.round(element.getBoundingClientRect().height),
+        ),
+      )
+      .toBe(currentHeight.frameHeight);
   });
 
   test("a style edit reaches the canvas and can be reversed", async ({

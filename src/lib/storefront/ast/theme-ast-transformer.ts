@@ -1,4 +1,10 @@
 import { parse } from "@babel/parser";
+import type {
+  JSXElement,
+  JSXFragment,
+  JSXOpeningElement,
+  Node,
+} from "@babel/types";
 import { resolveElementMeta } from "./element-target";
 
 /**
@@ -50,7 +56,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isMorphInstanceClassLookup(argument: any): boolean {
+function isMorphInstanceClassLookup(argument: Node): boolean {
   let node = argument;
   while (
     node?.type === "OptionalMemberExpression" ||
@@ -64,13 +70,13 @@ function isMorphInstanceClassLookup(argument: any): boolean {
   return false;
 }
 
-function readStaticCnClassName(expression: any): string | null {
+function readStaticCnClassName(expression: Node): string | null {
   if (
     expression?.type !== "CallExpression" ||
     expression.callee?.type !== "Identifier" ||
     expression.callee.name !== "cn" ||
     !expression.arguments.every(
-      (argument: any) =>
+      (argument) =>
         argument.type === "StringLiteral" ||
         isMorphInstanceClassLookup(argument),
     )
@@ -79,13 +85,13 @@ function readStaticCnClassName(expression: any): string | null {
   }
 
   return expression.arguments
-    .filter((argument: any) => argument.type === "StringLiteral")
-    .map((argument: any) => argument.value.trim())
+    .filter((argument) => argument.type === "StringLiteral")
+    .map((argument) => argument.value.trim())
     .filter(Boolean)
     .join(" ");
 }
 
-function readStaticClassNameExpression(expression: any): string | null {
+function readStaticClassNameExpression(expression: Node): string | null {
   const cnClassName = readStaticCnClassName(expression);
   if (cnClassName !== null) return cnClassName;
 
@@ -259,14 +265,17 @@ function parseAst(sourceCode: string) {
   });
 }
 
-function walk(node: any, visitor: (node: any) => void) {
-  if (!node || typeof node !== "object") return;
+function isAstNode(value: unknown): value is Node {
+  return isRecord(value) && typeof value.type === "string";
+}
+
+function walk(node: unknown, visitor: (node: Node) => void) {
+  if (!isAstNode(node)) return;
   visitor(node);
 
-  for (const key of Object.keys(node)) {
+  for (const [key, value] of Object.entries(node)) {
     if (key === "loc" || key === "comments" || key === "openingElement")
       continue;
-    const value = node[key];
     if (Array.isArray(value)) {
       for (const child of value) {
         walk(child, visitor);
@@ -350,7 +359,7 @@ export function parseComponentSource(
       }
 
       // 2. Extract JSX element with data-morph-element or data-morph-node
-      let openingElement: any = null;
+      let openingElement: JSXOpeningElement | null = null;
       let elementStart = 0;
       let elementEnd = 0;
       let openingStart = 0;
@@ -362,12 +371,6 @@ export function parseComponentSource(
         elementEnd = node.end ?? 0;
         openingStart = node.openingElement?.start ?? 0;
         openingEnd = node.openingElement?.end ?? 0;
-      } else if (node.type === "JSXSelfClosingElement") {
-        openingElement = node;
-        elementStart = node.start ?? 0;
-        elementEnd = node.end ?? 0;
-        openingStart = node.start ?? 0;
-        openingEnd = node.end ?? 0;
       }
 
       if (openingElement && openingElement.attributes) {
@@ -414,17 +417,17 @@ export function parseComponentSource(
               if (attr.value.type === "StringLiteral") {
                 className = attr.value.value;
                 classNameOffsets = {
-                  start: attr.value.start,
-                  end: attr.value.end,
+                  start: attr.value.start ?? 0,
+                  end: attr.value.end ?? 0,
                   isExpression: false,
                 };
               } else if (attr.value.type === "JSXExpressionContainer") {
                 className =
                   readStaticClassNameExpression(attr.value.expression) ??
-                  sourceCode.slice(attr.value.start, attr.value.end);
+                  sourceCode.slice(attr.value.start ?? 0, attr.value.end ?? 0);
                 classNameOffsets = {
-                  start: attr.value.start,
-                  end: attr.value.end,
+                  start: attr.value.start ?? 0,
+                  end: attr.value.end ?? 0,
                   isExpression: true,
                 };
               }
@@ -434,8 +437,7 @@ export function parseComponentSource(
 
         const isSelfClosing = Boolean(
           openingElement.selfClosing ||
-          node.selfClosing ||
-          node.type === "JSXSelfClosingElement",
+          (node.type === "JSXElement" && node.openingElement.selfClosing),
         );
 
         const primaryKey = morphNodeId || morphElementName;
@@ -541,7 +543,7 @@ export function patchComponentDefaultProp(
 ): string {
   try {
     const ast = parseAst(sourceCode);
-    let targetNode: any = null;
+    let targetNode: Node | null = null;
 
     walk(ast, (node) => {
       if (targetNode) return;
@@ -552,8 +554,12 @@ export function patchComponentDefaultProp(
           isMatchingComponent = node.id?.name === componentName;
         } else if (node.type === "ExportDefaultDeclaration") {
           const decl = node.declaration;
-          if (decl && typeof decl === "object" && "id" in decl && decl.id) {
-            isMatchingComponent = (decl.id as any).name === componentName;
+          if (
+            (decl.type === "FunctionDeclaration" ||
+              decl.type === "ClassDeclaration") &&
+            decl.id?.type === "Identifier"
+          ) {
+            isMatchingComponent = decl.id.name === componentName;
           } else {
             isMatchingComponent = componentName === "default" || !componentName;
           }
@@ -571,7 +577,12 @@ export function patchComponentDefaultProp(
       ) {
         const fn =
           node.type === "ExportDefaultDeclaration" ? node.declaration : node;
-        if (fn && Array.isArray(fn.params)) {
+        if (
+          (fn.type === "FunctionDeclaration" ||
+            fn.type === "ArrowFunctionExpression" ||
+            fn.type === "FunctionExpression") &&
+          Array.isArray(fn.params)
+        ) {
           for (const param of fn.params) {
             if (
               param.type === "ObjectPattern" &&
@@ -606,16 +617,17 @@ export function patchComponentDefaultProp(
       }
     });
 
+    const resolvedTargetNode = targetNode as Node | null;
     if (
-      targetNode &&
-      typeof targetNode.start === "number" &&
-      typeof targetNode.end === "number"
+      resolvedTargetNode &&
+      typeof resolvedTargetNode.start === "number" &&
+      typeof resolvedTargetNode.end === "number"
     ) {
       const replacement = JSON.stringify(newValue);
       return (
-        sourceCode.slice(0, targetNode.start) +
+        sourceCode.slice(0, resolvedTargetNode.start) +
         replacement +
-        sourceCode.slice(targetNode.end)
+        sourceCode.slice(resolvedTargetNode.end)
       );
     }
   } catch {}
@@ -647,11 +659,11 @@ export type RemoveJsxElementResult = {
  * Same convention `locationMap` and the Live preview's `data-morph-loc` use, so
  * an element the author never marked is still addressable.
  */
-function jsxElementLocationKey(node: any): string | null {
-  const opening = node?.openingElement;
+function jsxElementLocationKey(node: JSXElement): string | null {
+  const opening = node.openingElement;
   const line = opening?.loc?.start?.line;
   if (typeof line !== "number") return null;
-  return `${line}:${(opening.loc.start.column ?? 0) + 1}`;
+  return `${line}:${(opening.loc?.start.column ?? 0) + 1}`;
 }
 
 /**
@@ -661,24 +673,26 @@ function jsxElementLocationKey(node: any): string | null {
  * order: a marker survives edits above it, a position does not, so the marker
  * has to win wherever both exist.
  */
-function jsxElementMatchesTargetKey(node: any, targetKey: string): boolean {
+function jsxElementMatchesTargetKey(
+  node: JSXElement,
+  targetKey: string,
+): boolean {
   if (staticMorphNodeId(node) === targetKey) return true;
   return jsxElementLocationKey(node) === targetKey;
 }
 
 function walkWithParent(
-  node: any,
-  parent: any,
-  visitor: (node: any, parent: any) => void,
+  node: unknown,
+  parent: Node | null,
+  visitor: (node: Node, parent: Node | null) => void,
 ) {
-  if (!node || typeof node !== "object") return;
+  if (!isAstNode(node)) return;
   visitor(node, parent);
 
-  for (const key of Object.keys(node)) {
+  for (const [key, value] of Object.entries(node)) {
     if (key === "loc" || key === "comments" || key === "openingElement") {
       continue;
     }
-    const value = node[key];
     if (Array.isArray(value)) {
       for (const child of value) walkWithParent(child, node, visitor);
     } else if (value && typeof value === "object") {
@@ -687,15 +701,8 @@ function walkWithParent(
   }
 }
 
-function staticMorphNodeIdForDeletion(node: any): string | null {
-  const openingElement =
-    node?.type === "JSXElement" ? node.openingElement : node;
-  if (
-    !openingElement ||
-    (node.type !== "JSXElement" && node.type !== "JSXSelfClosingElement")
-  ) {
-    return null;
-  }
+function staticMorphNodeIdForDeletion(node: JSXElement): string | null {
+  const openingElement = node.openingElement;
 
   for (const attribute of openingElement.attributes ?? []) {
     if (
@@ -718,16 +725,15 @@ function staticMorphNodeIdForDeletion(node: any): string | null {
   return null;
 }
 
-function jsxElementMatchesDeletionTarget(node: any, targetKey: string) {
+function jsxElementMatchesDeletionTarget(node: JSXElement, targetKey: string) {
   return (
     staticMorphNodeIdForDeletion(node) === targetKey ||
     jsxElementLocationKey(node) === targetKey
   );
 }
 
-function staticMorphNodeId(node: any): string | null {
-  if (node?.type !== "JSXElement") return null;
-  for (const attribute of node.openingElement?.attributes ?? []) {
+function staticMorphNodeId(node: JSXElement): string | null {
+  for (const attribute of node.openingElement.attributes) {
     if (
       attribute.type !== "JSXAttribute" ||
       attribute.name?.type !== "JSXIdentifier" ||
@@ -770,13 +776,13 @@ export function swapSiblingMorphNodes(
     const ast = parseAst(sourceCode);
     let firstMatchCount = 0;
     let secondMatchCount = 0;
-    let siblingPair: { first: any; second: any } | null = null;
+    let siblingPair: { first: JSXElement; second: JSXElement } | null = null;
 
     walk(ast, (node) => {
       if (node.type !== "JSXElement" || !Array.isArray(node.children)) return;
 
-      let first: any = null;
-      let second: any = null;
+      let first: JSXElement | null = null;
+      let second: JSXElement | null = null;
       for (const child of node.children) {
         if (child?.type !== "JSXElement") continue;
         if (jsxElementMatchesTargetKey(child, firstNodeId)) {
@@ -795,8 +801,8 @@ export function swapSiblingMorphNodes(
       return { code: sourceCode, editable: false, reason: "not-found" };
     }
     const resolvedSiblingPair = siblingPair as {
-      first: any;
-      second: any;
+      first: JSXElement;
+      second: JSXElement;
     } | null;
     if (!resolvedSiblingPair) {
       return { code: sourceCode, editable: false, reason: "not-siblings" };
@@ -857,14 +863,23 @@ export function removeJsxElement(
 
   try {
     const ast = parseAst(sourceCode);
-    const matches: Array<{ node: any; parent: any }> = [];
+    const matches: Array<{
+      node: JSXElement;
+      parent: JSXElement | JSXFragment | null;
+    }> = [];
 
     walkWithParent(ast, null, (node, parent) => {
       if (
-        (node.type === "JSXElement" || node.type === "JSXSelfClosingElement") &&
+        node.type === "JSXElement" &&
         jsxElementMatchesDeletionTarget(node, targetKey)
       ) {
-        matches.push({ node, parent });
+        matches.push({
+          node,
+          parent:
+            parent?.type === "JSXElement" || parent?.type === "JSXFragment"
+              ? parent
+              : null,
+        });
       }
     });
 

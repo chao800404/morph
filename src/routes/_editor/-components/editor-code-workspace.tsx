@@ -142,6 +142,9 @@ type EditorCodeWorkspaceProps = {
     resolution: "reload" | "force_mine",
   ) => void;
   onRefreshPreview?: () => void;
+  onThemeFilesMoved?: (
+    moves: ReadonlyArray<{ from: string; to: string }>,
+  ) => void;
   onDirtyFilesChange?: (dirtyPaths: string[]) => void;
   onSaveFile?: (
     path: string,
@@ -260,6 +263,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   externalConflictFiles,
   onResolveConflict,
   onRefreshPreview,
+  onThemeFilesMoved,
   onDirtyFilesChange,
   onSaveFile,
   onBuildPreview,
@@ -1297,6 +1301,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       moves: ReadonlyArray<{ from: string; to: string }>;
       files: StorefrontThemeFileDTO[];
     }) => {
+      // Notify the shell at the transaction boundary, before local store or
+      // query updates can replace the route's old source path.
+      onThemeFilesMoved?.(moves);
       useThemeWorkspaceStore
         .getState()
         .acceptRemoteGeneration(sourceGeneration, workspaceScope);

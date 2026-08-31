@@ -83,6 +83,15 @@ export async function enableSelection(page: Page) {
   await expect(
     page.getByRole("button", { name: "Disable section selection" }),
   ).toBeVisible();
+  // The preview can restart its bridge while Theme source is being applied.
+  // Its ready handshake must restore the active tool before a canvas click is
+  // meaningful; waiting for the iframe state verifies that real protocol
+  // contract instead of relying on the parent toolbar's local state.
+  await expect(
+    previewFrame(page).locator(
+      "html[data-storefront-editor-selection-enabled]",
+    ),
+  ).toBeAttached();
 }
 
 /**

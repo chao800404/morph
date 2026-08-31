@@ -12,6 +12,7 @@ import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Separator } from "@/components/ui/separator";
 import {
   buildThemeRouteRegistry,
+  themeRoutePathAfterFileMoves,
   type ThemeRouteRecord,
 } from "@/lib/storefront/compiler/theme-route-registry";
 import {
@@ -71,6 +72,8 @@ import {
   Unlock,
 } from "lucide-react";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -153,7 +156,6 @@ import {
 } from "./editor-assistant-panel";
 import { EditorCanvasComments } from "./editor-canvas-comments";
 import { resolveCodeSelectionTarget } from "./editor-code-selection";
-import { EditorCodeWorkspace } from "./editor-code-workspace";
 import { EditorPathNavigator } from "./editor-path-navigator";
 import { EditorReleaseHistoryDialog } from "./editor-release-history";
 import {
@@ -181,6 +183,12 @@ import {
   useLivePreviewMessageBridge,
   useStableLivePreviewSession,
 } from "./use-live-preview-message-bridge";
+
+const EditorCodeWorkspace = lazy(() =>
+  import("./editor-code-workspace").then((module) => ({
+    default: module.EditorCodeWorkspace,
+  })),
+);
 
 export function EditorModeSurface({
   active,
@@ -213,6 +221,28 @@ export function EditorModeSurface({
     >
       {children}
     </div>
+  );
+}
+
+export function EditorCodeModeSurface({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  const [hasMounted, setHasMounted] = useState(active);
+
+  useEffect(() => {
+    if (active) setHasMounted(true);
+  }, [active]);
+
+  if (!active && !hasMounted) return null;
+
+  return (
+    <EditorModeSurface active={active} className="flex-1 overflow-hidden">
+      {children}
+    </EditorModeSurface>
   );
 }
 
@@ -270,8 +300,6 @@ const previewDefaultHeights = {
 } as const;
 
 const DEFAULT_PREVIEW_VIEWPORT_HEIGHT = previewDefaultHeights.desktop;
-/** Never measure from a frame shorter than this; matches the reported floor. */
-const MIN_PREVIEW_FRAME_HEIGHT = 320;
 /** Settling time before re-measuring, so a burst of edits measures once. */
 const PREVIEW_REMEASURE_DELAY_MS = 500;
 // The current Live Preview parses Theme Source into the compatibility renderer;
@@ -563,9 +591,22 @@ export function VisualEditorShell({
   const activeTemplate = resolveEditorTemplate(context, search);
   const queryClient = useQueryClient();
   const [pendingRoutePath, setPendingRoutePath] = useState<string | null>(null);
+  const currentSearchRoutePathRef = useRef(search.routePath);
+  currentSearchRoutePathRef.current = search.routePath;
   const handleRouteIntent = useCallback((routePath?: string) => {
     setPendingRoutePath(routePath ?? null);
   }, []);
+
+  const handleThemeFilesMoved = useCallback(
+    (moves: ReadonlyArray<{ from: string; to: string }>) => {
+      const nextRoutePath = themeRoutePathAfterFileMoves(
+        currentSearchRoutePathRef.current,
+        moves,
+      );
+      if (nextRoutePath) setPendingRoutePath(nextRoutePath);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (
@@ -1298,6 +1339,35 @@ export function VisualEditorShell({
         : null,
     [pendingRoutePath, themeRouteRegistry.routes],
   );
+
+  // A Code Mode route rename updates the source tree asynchronously. Wait for
+  // the new route to be present in the registry before changing the editor URL
+  // so the preview never receives a pathname that its current files cannot
+  // resolve.
+  useEffect(() => {
+    if (
+      !pendingRoutePath ||
+      pendingRoutePath === search.routePath ||
+      !pendingThemeRoute
+    ) {
+      return;
+    }
+    const routeTemplate =
+      context.templates.find(
+        (template) => template.type === templateTypeForRoute(pendingRoutePath),
+      ) ??
+      activeTemplate ??
+      context.templates[0];
+    if (!routeTemplate) return;
+    onSearchChange(toEditorRouteSearch(routeTemplate, pendingRoutePath));
+  }, [
+    activeTemplate,
+    context.templates,
+    onSearchChange,
+    pendingRoutePath,
+    pendingThemeRoute,
+    search.routePath,
+  ]);
   const routeStructurePending = Boolean(
     (pendingRoutePath !== null &&
       pendingRoutePath !== search.routePath &&
@@ -1421,6 +1491,20 @@ export function VisualEditorShell({
     parseMessage: parseLivePreviewMessage,
     postMessage: postEditorToPreviewMessage,
   } = useLivePreviewMessageBridge(livePreviewChannel, previewIframeRef);
+  const previewSizeMeasurementRevisionRef = useRef(0);
+  const beginPreviewSizeMeasurement = useCallback(() => {
+    previewSizeMeasurementRevisionRef.current += 1;
+    return previewSizeMeasurementRevisionRef.current;
+  }, []);
+  const requestPreviewSize = useCallback(
+    (measurementRevision = beginPreviewSizeMeasurement()) => {
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-request-size",
+        measurementRevision,
+      });
+    },
+    [beginPreviewSizeMeasurement, postEditorToPreviewMessage],
+  );
 
   // Code and Design intentionally keep their child trees mounted so switching
   // modes does not reset the editor cursor, preview scroll, or canvas state.
@@ -1523,12 +1607,7 @@ export function VisualEditorShell({
     [],
   );
   // Assigned below, where the canvas geometry it needs is in scope.
-  const schedulePreviewRemeasureRef = useRef<
-    (options?: {
-      shrinkToFloor?: boolean;
-      preserveCanvasPosition?: boolean;
-    }) => void
-  >(() => {});
+  const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
   const postPreviewThemeFiles = useCallback(
     (
       files: Array<{ path: string; content: string }>,
@@ -1547,13 +1626,7 @@ export function VisualEditorShell({
           ? {}
           : { renderDocument: options.renderDocument }),
       });
-      schedulePreviewRemeasureRef.current({
-        // Style-only updates keep the rendered tree mounted. Measuring them
-        // must not first collapse the frame to the viewport floor, otherwise
-        // the canvas shows a black gap until the iframe reports its new size.
-        shrinkToFloor: options?.renderDocument !== false,
-        preserveCanvasPosition: options?.preserveCanvasPosition,
-      });
+      schedulePreviewRemeasureRef.current();
       return styleRevision;
     },
     [],
@@ -2725,13 +2798,6 @@ export function VisualEditorShell({
   const previewRemeasureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  // Structural edits briefly measure the iframe from a viewport-sized floor.
-  // Keep that temporary height from clamping the user's current canvas
-  // position; the real iframe measurement still performs the final clamp.
-  const previewFloorMeasurementRef = useRef<{
-    key: string;
-    height: number;
-  } | null>(null);
   const previewKeyRef = useRef(previewKey);
   useEffect(() => {
     previewKeyRef.current = previewKey;
@@ -2835,60 +2901,35 @@ export function VisualEditorShell({
     [applyCanvasTransformToDom, scheduleCanvasTransformCommit],
   );
 
-  // The frame is sized to its content, but a theme's own `min-h-screen`
-  // resolves against the frame's height — so the content can never measure
-  // shorter than the frame already is, and an edit that removes content leaves
-  // the empty space behind forever. Measuring from a floor first is what makes
-  // the number the content's own height rather than a confirmation of the
-  // height it was given.
-  const schedulePreviewRemeasure = useCallback(
-    (options?: {
-      shrinkToFloor?: boolean;
-      preserveCanvasPosition?: boolean;
-    }) => {
-      if (!options?.preserveCanvasPosition) {
-        previewFloorMeasurementRef.current = null;
-      }
-      if (previewRemeasureTimerRef.current) {
-        clearTimeout(previewRemeasureTimerRef.current);
-      }
-      previewRemeasureTimerRef.current = setTimeout(() => {
-        previewRemeasureTimerRef.current = null;
-        const key = previewKeyRef.current;
-        const frameWindow = previewIframeRef.current?.contentWindow;
-        if (!key || !frameWindow) return;
-        const floor = Math.max(
-          MIN_PREVIEW_FRAME_HEIGHT,
-          Math.round(
-            canvasViewportHeightRef.current || DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
-          ),
-        );
-        if (options?.shrinkToFloor !== false) {
-          previewFloorMeasurementRef.current = options?.preserveCanvasPosition
-            ? { key, height: floor }
-            : null;
-          setPreviewContentSize((current) =>
-            current?.key === key && current.height <= floor
-              ? current
-              : { key, height: floor },
-          );
-        }
-        // Two frames give the iframe's layout and viewport-relative rules time
-        // to settle before the new content height is requested.
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() =>
-            postEditorToPreviewMessage(
-              previewIframeRef.current?.contentWindow,
-              {
-                type: "morph:storefront-preview-request-size",
-              },
-            ),
-          ),
-        );
-      }, PREVIEW_REMEASURE_DELAY_MS);
-    },
-    [],
-  );
+  // The iframe keeps its current dimensions while the preview settles. Theme
+  // viewport units resolve against the separate viewport-height token inside
+  // the preview, so changing the frame first would only create a visible jump
+  // and reintroduce a frame/content feedback loop.
+  const schedulePreviewRemeasure = useCallback(() => {
+    const measurementRevision = beginPreviewSizeMeasurement();
+    if (previewRemeasureTimerRef.current) {
+      clearTimeout(previewRemeasureTimerRef.current);
+    }
+    previewRemeasureTimerRef.current = setTimeout(() => {
+      previewRemeasureTimerRef.current = null;
+      const key = previewKeyRef.current;
+      const frameWindow = previewIframeRef.current?.contentWindow;
+      if (!key || !frameWindow) return;
+      // Two frames give route/source React updates and browser layout time to
+      // settle. The revision was advanced before the delay, so any response
+      // still in flight for the previous route/source is ignored.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (
+            measurementRevision !== previewSizeMeasurementRevisionRef.current
+          ) {
+            return;
+          }
+          requestPreviewSize(measurementRevision);
+        }),
+      );
+    }, PREVIEW_REMEASURE_DELAY_MS);
+  }, [beginPreviewSizeMeasurement, requestPreviewSize]);
 
   useEffect(() => {
     schedulePreviewRemeasureRef.current = schedulePreviewRemeasure;
@@ -2948,16 +2989,6 @@ export function VisualEditorShell({
 
   useEffect(() => {
     previewFrameHeightRef.current = previewFrameHeight;
-    const pendingFloorMeasurement = previewFloorMeasurementRef.current;
-    if (
-      pendingFloorMeasurement?.key === previewKey &&
-      pendingFloorMeasurement.height === previewFrameHeight
-    ) {
-      return;
-    }
-    if (pendingFloorMeasurement?.key === previewKey) {
-      previewFloorMeasurementRef.current = null;
-    }
     if (activeCommentThreadId) {
       const activeThread = commentThreads.find(
         (t) => t.id === activeCommentThreadId,
@@ -3065,11 +3096,14 @@ export function VisualEditorShell({
     const handlePreviewMessage = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (message?.type !== "morph:storefront-preview-size") return;
+      if (
+        message.measurementRevision !==
+        previewSizeMeasurementRevisionRef.current
+      ) {
+        return;
+      }
 
       const height = Math.min(30_000, Math.max(320, Math.ceil(message.height)));
-      // A size response after the floor write is the real measurement, even
-      // when the content happens to be exactly floor-sized.
-      previewFloorMeasurementRef.current = null;
       setPreviewContentSize((current) =>
         current?.key === previewKey && Math.abs(current.height - height) < 1
           ? current
@@ -3078,11 +3112,9 @@ export function VisualEditorShell({
     };
 
     window.addEventListener("message", handlePreviewMessage);
-    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-      type: "morph:storefront-preview-request-size",
-    });
+    requestPreviewSize();
     return () => window.removeEventListener("message", handlePreviewMessage);
-  }, [parseLivePreviewMessage, previewKey]);
+  }, [parseLivePreviewMessage, previewKey, requestPreviewSize]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -3298,6 +3330,7 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
 
+    const measurementRevision = beginPreviewSizeMeasurement();
     syncPreviewRoute();
     // Let the preview commit the route state before asking for its structure
     // and size. This avoids reading the previous page's DOM in the same task.
@@ -3305,15 +3338,15 @@ export function VisualEditorShell({
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-request-structure",
       });
-      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-        type: "morph:storefront-preview-request-size",
-      });
+      requestPreviewSize(measurementRevision);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [
     postEditorToPreviewMessage,
     previewFrameReady?.key,
     previewKey,
+    beginPreviewSizeMeasurement,
+    requestPreviewSize,
     syncPreviewRoute,
   ]);
 
@@ -4092,7 +4125,12 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey) return;
     syncPreviewSelectionMode();
-  }, [previewKey, syncPreviewSelectionMode]);
+  }, [
+    previewFrameReady?.key,
+    previewFrameReady?.sequence,
+    previewKey,
+    syncPreviewSelectionMode,
+  ]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -4988,6 +5026,7 @@ export function VisualEditorShell({
 
             return (
               <span
+                data-editor-save-status
                 className={cn(
                   // Below a wide viewport only the icon survives: the words
                   // cost about 140px, which is the difference between this
@@ -5005,7 +5044,7 @@ export function VisualEditorShell({
                 ) : (
                   <CircleCheck className="size-3.5" />
                 )}
-                <span className="hidden xl:inline">{statusLabel}</span>
+                <span className="hidden 2xl:inline">{statusLabel}</span>
               </span>
             );
           })()}
@@ -5039,6 +5078,11 @@ export function VisualEditorShell({
               variant={previewMode === "build" ? "toolbarActive" : "ghost"}
               size="xs"
               className="gap-1 px-2.5 text-xs font-medium max-sm:hidden"
+              aria-label={
+                previewMode === "build"
+                  ? "Switch to Live Preview"
+                  : "View compiled Build Preview"
+              }
               onClick={() =>
                 setPreviewMode((prev) => (prev === "build" ? "live" : "build"))
               }
@@ -5049,7 +5093,7 @@ export function VisualEditorShell({
               }
             >
               <Layers className="size-3.5" />
-              <span>
+              <span className="hidden 2xl:inline">
                 {previewMode === "build" ? "Build Preview" : "View Build"}
               </span>
             </Button>
@@ -5059,7 +5103,10 @@ export function VisualEditorShell({
             variant="outline"
             size="xs"
             disabled={isBuildPending || themeFiles.length === 0}
-            className="gap-1.5 max-sm:hidden"
+            className="gap-1.5 px-2 2xl:px-2.5 max-sm:hidden"
+            aria-label={
+              isBuildPending ? "Building theme preview" : "Build Preview"
+            }
             onClick={handleBuildPreview}
             title={
               themeFiles.length === 0
@@ -5072,7 +5119,9 @@ export function VisualEditorShell({
             ) : (
               <Play className="size-3.5" />
             )}
-            <span>{isBuildPending ? "Building…" : "Build Preview"}</span>
+            <span className="hidden 2xl:inline">
+              {isBuildPending ? "Building…" : "Build Preview"}
+            </span>
           </Button>
 
           <Button
@@ -5080,12 +5129,13 @@ export function VisualEditorShell({
             type="button"
             variant="outline"
             size="xs"
-            className="gap-1.5 max-sm:hidden"
+            className="gap-1.5 px-2 2xl:px-2.5 max-sm:hidden"
             onClick={() => setIsReleaseHistoryOpen(true)}
+            aria-label="Release history"
             title="Review published releases and switch production to one of them"
           >
             <History className="size-3.5" />
-            <span>History</span>
+            <span className="hidden 2xl:inline">History</span>
           </Button>
 
           <Button
@@ -5132,28 +5182,38 @@ export function VisualEditorShell({
         activeReleaseId={context.storefront.activeReleaseId}
       />
 
-      <EditorModeSurface
-        active={editorMode === "code"}
-        className="flex-1 overflow-hidden"
-      >
-        <EditorCodeWorkspace
-          storefrontId={context.storefront.id}
-          themeId={context.theme.id}
-          files={effectiveThemeFiles}
-          tree={themeTree}
-          initialActiveFilePath={activeCodeFilePath}
-          jumpLocation={jumpLocation}
-          onResolveConflict={handleResolveConflict}
-          onRefreshPreview={() =>
-            setPreviewRevision((revision) => revision + 1)
+      <EditorCodeModeSurface active={editorMode === "code"}>
+        <Suspense
+          fallback={
+            <div
+              className="flex flex-1 items-center justify-center gap-2 bg-background text-sm text-muted-foreground"
+              role="status"
+            >
+              <LoaderCircle className="size-4 animate-spin text-primary" />
+              Loading Code Workspace…
+            </div>
           }
-          onDirtyFilesChange={setMonacoDirtyFiles}
-          onSaveFile={handleUnifiedSaveFile}
-          onBuildPreview={handleBuildPreview}
-          externalDiagnostics={buildDiagnostics}
-          dependencySourceRevisionId={dependencySourceRevisionId}
-        />
-      </EditorModeSurface>
+        >
+          <EditorCodeWorkspace
+            storefrontId={context.storefront.id}
+            themeId={context.theme.id}
+            files={effectiveThemeFiles}
+            tree={themeTree}
+            initialActiveFilePath={activeCodeFilePath}
+            jumpLocation={jumpLocation}
+            onResolveConflict={handleResolveConflict}
+            onRefreshPreview={() =>
+              setPreviewRevision((revision) => revision + 1)
+            }
+            onThemeFilesMoved={handleThemeFilesMoved}
+            onDirtyFilesChange={setMonacoDirtyFiles}
+            onSaveFile={handleUnifiedSaveFile}
+            onBuildPreview={handleBuildPreview}
+            externalDiagnostics={buildDiagnostics}
+            dependencySourceRevisionId={dependencySourceRevisionId}
+          />
+        </Suspense>
+      </EditorCodeModeSurface>
 
       <EditorModeSurface
         active={editorMode === "design"}
@@ -5354,10 +5414,7 @@ export function VisualEditorShell({
                       syncPreviewSection();
                       syncPreviewSelectionMode();
                       syncPreviewSpacingOverlay();
-                      postEditorToPreviewMessage(
-                        previewIframeRef.current?.contentWindow,
-                        { type: "morph:storefront-preview-request-size" },
-                      );
+                      requestPreviewSize();
                     }}
                   />
                 ) : !livePreviewSecurity.enabled ? (

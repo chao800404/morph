@@ -494,10 +494,46 @@ describe("preview protocol", () => {
     ).toBeNull();
   });
 
+  it("requires a bounded revision on preview size requests and responses", () => {
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-request-size",
+        measurementRevision: 12,
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-request-size",
+      measurementRevision: 12,
+    });
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-request-size",
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-size",
+        height: 900,
+        measurementRevision: 12,
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-size",
+      height: 900,
+      measurementRevision: 12,
+    });
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-size",
+        height: 900,
+        measurementRevision: -1,
+      }),
+    ).toBeNull();
+  });
+
   it("requires the exact origin, source, and preview session", () => {
     const source = {} as Window;
     const data = {
       type: "morph:storefront-preview-request-size",
+      measurementRevision: 7,
       previewSession: "11111111-1111-4111-8111-111111111111",
     };
     const event = {
@@ -513,6 +549,7 @@ describe("preview protocol", () => {
 
     expect(parseEditorToPreviewEvent(event, security)).toEqual({
       type: "morph:storefront-preview-request-size",
+      measurementRevision: 7,
     });
     expect(
       parseEditorToPreviewEvent(event, {
@@ -557,7 +594,10 @@ describe("preview protocol", () => {
     const postMessage = vi.fn();
     postEditorToPreviewMessage(
       { postMessage } as unknown as Window,
-      { type: "morph:storefront-preview-request-size" },
+      {
+        type: "morph:storefront-preview-request-size",
+        measurementRevision: 3,
+      },
       {
         targetOrigin: "https://preview.example.net",
         previewSession: "11111111-1111-4111-8111-111111111111",
@@ -566,6 +606,7 @@ describe("preview protocol", () => {
     expect(postMessage).toHaveBeenCalledWith(
       {
         type: "morph:storefront-preview-request-size",
+        measurementRevision: 3,
         previewSession: "11111111-1111-4111-8111-111111111111",
       },
       "https://preview.example.net",
@@ -574,7 +615,10 @@ describe("preview protocol", () => {
     postMessage.mockClear();
     postEditorToPreviewMessage(
       { postMessage } as unknown as Window,
-      { type: "morph:storefront-preview-request-size" },
+      {
+        type: "morph:storefront-preview-request-size",
+        measurementRevision: 4,
+      },
       {
         targetOrigin: "*",
         previewSession: "11111111-1111-4111-8111-111111111111",
