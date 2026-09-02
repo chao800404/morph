@@ -6,6 +6,10 @@ import {
 } from "@/db/storefront.schema";
 import type { StorefrontThemeBuildDTO } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import {
+  isCancellableThemeBuildStatus,
+  isTerminalThemeBuildStatus,
+} from "@/lib/storefront/theme-build-status";
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 
 function mapBuildRowToDTO(
@@ -43,6 +47,7 @@ function mapRevisionRowToDTO(
     revisionNumber: row.revisionNumber,
     message: row.message,
     source: row.source as "manual" | "ai" | "publish" | "rollback",
+    sourceManifest: (row.sourceManifest ?? null) as StorefrontThemeRevisionDTO["sourceManifest"],
     snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
     createdBy: row.createdBy,
     createdAt: row.createdAt,
@@ -488,7 +493,8 @@ export const storefrontThemeBuildDal = {
 
   /**
    * State Transition: building -> failed OR queued -> failed (for pre-runner launch orchestration failure).
-   * Throws INVALID_STATE_TRANSITION if current status is already terminal ("succeeded" or "failed").
+   * Throws INVALID_STATE_TRANSITION if current status is already terminal
+   * ("succeeded", "failed" or "cancelled").
    */
   async markBuildFailed(
     storefrontId: string,
@@ -505,7 +511,10 @@ export const storefrontThemeBuildDal = {
       throw new Error(`Build ${buildId} not found`);
     }
 
-    if (existing.status === "succeeded" || existing.status === "failed") {
+    // A cancelled build is terminal and the cancel already won the row.
+    // Destroying its Sandbox is what makes the runner fail, so without this the
+    // runner would immediately relabel the cancellation as a failure.
+    if (isTerminalThemeBuildStatus(existing.status)) {
       throw new Error(
         `INVALID_STATE_TRANSITION: Cannot fail build from terminal status "${existing.status}".`,
       );
@@ -543,6 +552,59 @@ export const storefrontThemeBuildDal = {
 
     return mapBuildRowToDTO(updated);
   },
+
+  /**
+   * State Transition: queued | building -> cancelled.
+   *
+   * Claiming the row is what makes a cancel authoritative. Queues cannot revoke
+   * an in-flight message, so the caller destroys the build's Sandbox afterwards
+   * and relies on this row to stop the runner's own write from landing.
+   *
+   * Returns `null` when the build already reached a terminal state, which is a
+   * normal outcome — the build simply won the race — and not an error.
+   */
+  async markBuildCancelled(
+    storefrontId: string,
+    themeId: string,
+    buildId: string,
+    options: { reason?: string; completedAt?: string } = {},
+  ): Promise<StorefrontThemeBuildDTO | null> {
+    const existing = await this.getBuild(storefrontId, themeId, buildId);
+    if (!existing) {
+      throw new Error(`Build ${buildId} not found`);
+    }
+    if (!isCancellableThemeBuildStatus(existing.status)) {
+      return null;
+    }
+
+    const db = await getDb();
+    const now = new Date().toISOString();
+
+    const [updated] = await db
+      .update(storefrontThemeBuilds)
+      .set({
+        status: "cancelled",
+        errorMessage: options.reason ?? "Build cancelled.",
+        completedAt: options.completedAt ?? now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(storefrontThemeBuilds.id, buildId),
+          eq(storefrontThemeBuilds.storefrontId, storefrontId),
+          eq(storefrontThemeBuilds.themeId, themeId),
+          // Compare-and-set on the status observed above: a build that settled
+          // in between keeps its own result.
+          eq(storefrontThemeBuilds.status, existing.status),
+          isNull(storefrontThemeBuilds.deletedAt),
+        ),
+      )
+      .returning();
+
+    return updated ? mapBuildRowToDTO(updated) : null;
+  },
 };
+
+export { isTerminalThemeBuildStatus };
 
 export type StorefrontThemeBuildDAL = typeof storefrontThemeBuildDal;

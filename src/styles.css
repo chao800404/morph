@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Tests are not runtime entrypoints; keep fixture-only arbitrary values out of
+   the production utility scan (for example, /hero.png test fixtures). */
+@source not "./**/*.test.ts";
+@source not "./**/*.test.tsx";
+
 @custom-variant dark (&:is(.dark, [data-theme="dark"], .dark *, [data-theme="dark"] *));
 
 @theme inline {

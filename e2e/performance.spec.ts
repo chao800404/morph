@@ -134,24 +134,30 @@ test.describe("editor responsiveness", () => {
 
   test("switching between Design and Code stays immediate", async ({ page }) => {
     const codeOnlyRequests: string[] = [];
+    const codeOnlyResponses: string[] = [];
+    const isCodeOnlyAsset = (url: string) =>
+      /editor-code-(?:workspace|language-support|package-types)/.test(url) ||
+      /@monaco-editor|monaco-editor/.test(url);
     page.on("request", (request) => {
       const url = request.url();
-      if (
-        /editor-code-(?:workspace|language-support|package-types)/.test(url) ||
-        /@monaco-editor|monaco-editor/.test(url)
-      ) {
-        codeOnlyRequests.push(url);
-      }
+      if (isCodeOnlyAsset(url)) codeOnlyRequests.push(url);
+    });
+    page.on("response", (response) => {
+      const url = response.url();
+      if (response.ok() && isCodeOnlyAsset(url)) codeOnlyResponses.push(url);
     });
     await openEditor(page);
 
     await page.waitForTimeout(500);
     expect(codeOnlyRequests, "Design loaded Code Workspace assets").toEqual([]);
 
+    const codeButton = page.getByRole("button", { name: /^Code$/ });
+    // Do not hover/focus first: this is the real first-use path and includes
+    // the lazy workspace, Monaco, and declaration initialization cost.
     const toCode = Date.now();
-    await page.getByRole("button", { name: /^Code$/ }).click();
+    await codeButton.click();
     await page.locator("text=EXPLORER").first().waitFor({ timeout: 30_000 });
-    const codeMs = Date.now() - toCode;
+    const coldCodeMs = Date.now() - toCode;
     expect(
       codeOnlyRequests.some((url) => /editor-code-workspace/.test(url)),
       "Code Workspace chunk was not requested after entering Code mode",
@@ -167,13 +173,44 @@ test.describe("editor responsiveness", () => {
 
     const toDesign = Date.now();
     await page.getByRole("button", { name: /^Design$/ }).click();
-    await page.locator("iframe").first().waitFor({ state: "visible", timeout: 30_000 });
+    await page.locator("iframe").first().waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
     const designMs = Date.now() - toDesign;
 
-    console.log("[design -> code]", codeMs, "[code -> design]", designMs);
-    // Both surfaces stay mounted, so a switch is a visibility change. Anything
-    // near a second means something is being rebuilt that should not be.
-    expect(codeMs).toBeLessThan(2_000);
+    // The first Code render has now completed. Hovering is an explicit
+    // prewarm path for a subsequent switch, which should only pay the mode
+    // visibility/state transition cost rather than the lazy module cost.
+    await codeButton.hover();
+    const toPrewarmedCode = Date.now();
+    await codeButton.click();
+    await page.locator("text=EXPLORER").first().waitFor({ timeout: 30_000 });
+    const prewarmedCodeMs = Date.now() - toPrewarmedCode;
+
+    const toDesignAgain = Date.now();
+    await page.getByRole("button", { name: /^Design$/ }).click();
+    await page.locator("iframe").first().waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
+    const designAgainMs = Date.now() - toDesignAgain;
+
+    console.log(
+      "[cold design -> code]",
+      coldCodeMs,
+      "[code -> design]",
+      designMs,
+      "[prewarmed design -> code]",
+      prewarmedCodeMs,
+      "[code -> design]",
+      designAgainMs,
+    );
+    // Both cold first-use and subsequent switches must remain below the same
+    // product ceiling; the test intentionally does not hide cold startup.
+    expect(coldCodeMs).toBeLessThan(2_000);
+    expect(prewarmedCodeMs).toBeLessThan(2_000);
     expect(designMs).toBeLessThan(2_000);
+    expect(designAgainMs).toBeLessThan(2_000);
   });
 });

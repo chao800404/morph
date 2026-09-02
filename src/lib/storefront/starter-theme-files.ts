@@ -81,6 +81,7 @@ body {
   description?: string;
   actionLabel?: string;
   actionHref?: string;
+  actionTarget?: "_self" | "_blank";
   imageSrc?: string;
   imageAlt?: string;
 };
@@ -91,9 +92,13 @@ export default function Hero({
   description = "Quiet essentials, thoughtfully made for the spaces you call home.",
   actionLabel = "Explore the collection",
   actionHref = "/collections/new",
+  actionTarget = "_self",
   imageSrc = "/static/storefront/theme-preview-default.png",
   imageAlt = "A neutral collection of ceramic objects",
 }: HeroProps) {
+  // A new tab must not hand the opened page a window.opener handle back to the
+  // store, which it could use to redirect this tab to a spoofed page.
+  const actionRel = actionTarget === "_blank" ? "noopener noreferrer" : undefined;
   return (
     <section
       className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]"
@@ -118,6 +123,8 @@ export default function Hero({
           <div className="mt-8">
             <a
               href={actionHref}
+              target={actionTarget}
+              rel={actionRel}
               className="inline-flex items-center justify-center rounded-md bg-stone-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-stone-800"
             >
               {actionLabel}
@@ -262,6 +269,7 @@ export default function Principles({
                 maxLength: 100,
               },
               actionHref: { type: "url", label: "Action link" },
+              actionTarget: { type: "text", label: "Open in" },
               imageSrc: { type: "url", label: "Image" },
               imageAlt: {
                 type: "text",
@@ -302,6 +310,7 @@ export default function Principles({
                 maxLength: 100,
               },
               actionHref: { type: "url", label: "Action link" },
+              actionTarget: { type: "text", label: "Open in" },
               imageSrc: { type: "url", label: "Image" },
               imageAlt: {
                 type: "text",

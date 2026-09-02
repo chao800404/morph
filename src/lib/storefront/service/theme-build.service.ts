@@ -2,6 +2,8 @@ import type {
   ThemeBuildArtifactStore,
   ThemeBuildArtifactStoreResult,
 } from "@/lib/storefront/compiler/theme-build-artifact-store.types";
+import type { ThemeBuildTerminator } from "@/lib/storefront/compiler/theme-build-terminator.types";
+import { isTerminalThemeBuildStatus } from "@/lib/storefront/theme-build-status";
 import { materializeThemeBuildInput } from "@/lib/storefront/compiler/theme-build-materializer";
 import type {
   ThemeBuildRunner,
@@ -40,6 +42,8 @@ export class ThemeBuildService {
     private readonly materializer: typeof materializeThemeBuildInput = materializeThemeBuildInput,
     private readonly defaultArtifactStore?: ThemeBuildArtifactStore,
     private readonly revisionStore: ThemeRevisionStore = themeRevisionStore,
+    /** Ends the isolated session a running build occupies. */
+    private readonly terminator?: ThemeBuildTerminator,
   ) {}
 
   /**
@@ -157,6 +161,54 @@ export class ThemeBuildService {
       runner: this.defaultRunner,
       artifactStore: this.defaultArtifactStore,
     });
+  }
+
+  /**
+   * Cancels a build that has not finished.
+   *
+   * Order matters. The row is claimed first so the outcome is decided by a
+   * compare-and-set the runner also competes in; only then is the Sandbox
+   * destroyed. Destroying first would make the runner fail before anything
+   * recorded why, and the cancellation would surface as a build failure.
+   *
+   * A build that settled first simply wins: `cancelled: false` is returned
+   * with its own status, which is a normal outcome rather than an error.
+   */
+  async cancelBuild(params: {
+    storefrontId: string;
+    themeId: string;
+    buildId: string;
+    reason?: string;
+  }): Promise<{ cancelled: boolean; build: StorefrontThemeBuildDTO }> {
+    const claimed = await this.dal.markBuildCancelled(
+      params.storefrontId,
+      params.themeId,
+      params.buildId,
+      { reason: params.reason },
+    );
+
+    if (!claimed) {
+      const current = await this.dal.getBuild(
+        params.storefrontId,
+        params.themeId,
+        params.buildId,
+      );
+      if (!current) {
+        throw new Error(`Build ${params.buildId} not found`);
+      }
+      return { cancelled: false, build: current };
+    }
+
+    // Best effort: the build is already cancelled as far as every reader is
+    // concerned, so a session that cannot be reached must not turn a completed
+    // cancellation into an error. The runner is bounded by its own timeout.
+    try {
+      await this.terminator?.terminate(params.buildId);
+    } catch {
+      // Intentionally ignored; see above.
+    }
+
+    return { cancelled: true, build: claimed };
   }
 
   /**
@@ -306,11 +358,14 @@ export class ThemeBuildService {
         params.themeId,
         params.buildId,
       );
+      // Losing the start CAS is only an error when nothing explains it. A build
+      // that is already running, has settled, or was cancelled between creation
+      // and start has a legitimate owner, and reporting that as a start failure
+      // would replace a real outcome with a spurious one.
       if (
         current &&
         (current.status === "building" ||
-          current.status === "succeeded" ||
-          current.status === "failed")
+          isTerminalThemeBuildStatus(current.status))
       ) {
         return current;
       }

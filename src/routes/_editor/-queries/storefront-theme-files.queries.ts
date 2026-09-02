@@ -18,6 +18,11 @@ export const storefrontThemeFileQueries = {
         if (!result.success) throw new Error(result.message);
         return result.data;
       },
+      // A schema/configuration failure should reach the editor promptly instead
+      // of keeping the Live Preview spinner alive through the default backoff.
+      // One short retry still covers a transient local D1 cold start.
+      retry: 1,
+      retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 2_000),
     }),
 
   file: (storefrontId: string, themeId: string, path: string) =>

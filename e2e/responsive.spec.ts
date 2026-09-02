@@ -64,7 +64,7 @@ for (const size of SUPPORTED_WIDTHS) {
 
     expect(overlaps, `at ${size.width}px`).toEqual([]);
     await expect(
-      page.getByRole("button", { name: "Build Preview" }),
+      page.getByRole("button", { name: "Build the theme" }),
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Release history" }),

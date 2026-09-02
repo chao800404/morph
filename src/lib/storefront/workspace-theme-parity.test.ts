@@ -3,9 +3,17 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import {
+  Outlet,
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from "@tanstack/react-router";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { renderSafeThemeComponent } from "@/components/storefront/safe-theme-component-renderer";
 import {
@@ -80,6 +88,50 @@ const databasePath = ENABLED ? findLocalDatabase() : null;
 const files = databasePath ? readWorkspaceTheme(databasePath) : [];
 
 /**
+ * Drops the anchor attributes a live router derives from the current location.
+ *
+ * A `<Link>` with no `to` resolves against wherever it is rendered, so the real
+ * router marks it active and gives it that location's href. Here that location
+ * is this file's synthetic "/" route, not the page the component really sits
+ * on, which makes those attributes a property of the harness rather than of the
+ * author's markup this test compares. The href a `to` actually produces is
+ * asserted directly in safe-theme-route-renderer.test.tsx.
+ */
+function stripRouterLocationState(html: string): string {
+  return html
+    .replace(/ href="[^"]*"/g, "")
+    .replace(/ data-status="[^"]*"/g, "")
+    .replace(/ aria-current="[^"]*"/g, "")
+    .replace(/(class="[^"]*?) active"/g, '$1"');
+}
+
+/**
+ * Renders one element inside a real router.
+ *
+ * Theme authors reach for `<Link>` freely, and those components throw without
+ * router context. Both paths are wrapped in the same router so the surrounding
+ * markup is identical on each side and any difference is the component's own.
+ */
+async function renderInRouter(element: ReactElement): Promise<string> {
+  const rootRoute = createRootRoute({
+    component: () => createElement(Outlet),
+  });
+  const indexRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/",
+    component: () => element,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([indexRoute]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  } as never) as unknown as { load: () => Promise<void> };
+  await router.load();
+  return renderToStaticMarkup(
+    createElement(RouterProvider as never, { router } as never),
+  );
+}
+
+/**
  * Components that render on their own.
  *
  * A route needs a router and the content module needs a request, so those are
@@ -99,12 +151,19 @@ describe.skipIf(!ENABLED || components.length === 0)(
   () => {
     const loader = createThemeModuleLoader(files);
 
+    // Without this the loader would resolve the router through CommonJS while
+    // this file imports the ESM build, giving `<Link>` a different React
+    // context than the provider around it and no router to read.
+    beforeAll(async () => {
+      await loader.preloadPackages(["@tanstack/react-router"]);
+    });
+
     it("has components to compare", () => {
       expect(components.length).toBeGreaterThan(0);
     });
 
     for (const sourcePath of components) {
-      it(sourcePath.replace("src/components/", ""), () => {
+      it(sourcePath.replace("src/components/", ""), async () => {
         const module = loader.loadModule(sourcePath);
         const Component = module.default as React.ComponentType<
           Record<string, unknown>
@@ -114,8 +173,10 @@ describe.skipIf(!ENABLED || components.length === 0)(
           `${sourcePath} has no default export to render`,
         ).toBe("function");
 
-        const fromReact = normalizeThemeMarkup(
-          renderToStaticMarkup(createElement(Component, {})),
+        const fromReact = stripRouterLocationState(
+          normalizeThemeMarkup(
+            await renderInRouter(createElement(Component, {})),
+          ),
         );
         const result = renderSafeThemeComponent({
           files,
@@ -127,8 +188,10 @@ describe.skipIf(!ENABLED || components.length === 0)(
             `the interpreter refused this component: ${result.diagnostics.join("; ")}`,
           );
         }
-        const fromInterpreter = normalizeThemeMarkup(
-          renderToStaticMarkup(result.node as never),
+        const fromInterpreter = stripRouterLocationState(
+          normalizeThemeMarkup(
+            await renderInRouter(result.node as ReactElement),
+          ),
         );
 
         // Guards the comparison itself: normalisation that stripped everything

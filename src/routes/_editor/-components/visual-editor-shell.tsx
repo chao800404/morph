@@ -59,6 +59,7 @@ import {
   Layers,
   Layout,
   LoaderCircle,
+  Square,
   Lock,
   MessageCircle,
   Monitor,
@@ -93,6 +94,7 @@ import {
 import {
   createPreviewBuild,
   getPreviewBuildToken,
+  cancelThemeBuild,
   getThemeBuild,
 } from "@/server/storefront/storefront-theme-builds.serverFn";
 import {
@@ -112,6 +114,12 @@ import {
   removeJsxElement,
   swapSiblingMorphNodes,
 } from "@/lib/storefront/ast/theme-ast-transformer";
+import {
+  patchThemeLinkBinding,
+  patchThemeLinkElement,
+} from "@/lib/storefront/ast/theme-link-binding";
+import { waitForThemeBuild } from "@/lib/storefront/editor/theme-build-wait";
+import { resolvePublishBuildPlan } from "@/lib/storefront/editor/publish-build-plan";
 import { sourceLocationKey } from "@/lib/storefront/ast/element-target";
 import {
   hasInlineTextDocumentTarget,
@@ -184,11 +192,19 @@ import {
   useStableLivePreviewSession,
 } from "./use-live-preview-message-bridge";
 
-const EditorCodeWorkspace = lazy(() =>
+const loadEditorCodeWorkspace = () =>
   import("./editor-code-workspace").then((module) => ({
     default: module.EditorCodeWorkspace,
-  })),
-);
+  }));
+
+const EditorCodeWorkspace = lazy(loadEditorCodeWorkspace);
+
+function preloadEditorCodeWorkspace() {
+  // The browser deduplicates this import with React.lazy. Starting it from
+  // hover/focus keeps Design's initial bundle lean while moving Monaco and the
+  // managed declaration graph off the click-to-visible interaction path.
+  void loadEditorCodeWorkspace().catch(() => undefined);
+}
 
 export function EditorModeSurface({
   active,
@@ -226,16 +242,18 @@ export function EditorModeSurface({
 
 export function EditorCodeModeSurface({
   active,
+  preload,
   children,
 }: {
   active: boolean;
+  preload?: boolean;
   children: React.ReactNode;
 }) {
-  const [hasMounted, setHasMounted] = useState(active);
+  const [hasMounted, setHasMounted] = useState(active || preload);
 
   useEffect(() => {
-    if (active) setHasMounted(true);
-  }, [active]);
+    if (active || preload) setHasMounted(true);
+  }, [active, preload]);
 
   if (!active && !hasMounted) return null;
 
@@ -320,6 +338,19 @@ const CANVAS_TOP_INSET = 48;
 const CANVAS_BOTTOM_INSET = 80;
 const CANVAS_VERTICAL_OVERSCROLL = 200;
 const CANVAS_SCROLL_COMMIT_DELAY_MS = 120;
+
+/**
+ * Result of one build attempt.
+ *
+ * The build is reported back rather than only written to state: a caller that
+ * builds in order to do something next — publishing — continues in the same
+ * tick and would otherwise read the previous render's value.
+ */
+type BuildAttempt = {
+  ok: boolean;
+  build?: StorefrontThemeBuildDTO;
+  sourceGeneration?: number;
+};
 
 type CanvasTransform = {
   x: number;
@@ -531,6 +562,12 @@ export function VisualEditorShell({
   const [previewFrameReady, setPreviewFrameReady] = useState<{
     key: string;
     sequence: number;
+  } | null>(null);
+  const initialPreviewSyncRef = useRef<{
+    key: string;
+    readySequence: number;
+    styleRevision: number;
+    filesFingerprint: string;
   } | null>(null);
   const [previewContentSize, setPreviewContentSize] = useState<{
     key: string;
@@ -981,7 +1018,17 @@ export function VisualEditorShell({
     previewLoadFailure?.key ?? null,
   );
   useEffect(() => {
-    if (!previewKey || loadedPreviewKey === previewKey) return;
+    // Do not start the confirmation timeout while the frame or source query
+    // is still booting. The old timer started at iframe creation, so a slow
+    // first query could report a false Live Preview failure before any source
+    // update had been sent.
+    if (
+      !previewKey ||
+      loadedPreviewKey === previewKey ||
+      previewFrameReady?.key !== previewKey
+    ) {
+      return;
+    }
 
     const timeout = window.setTimeout(() => {
       setPreviewLoadFailure((current) =>
@@ -996,7 +1043,7 @@ export function VisualEditorShell({
     }, 15_000);
 
     return () => window.clearTimeout(timeout);
-  }, [loadedPreviewKey, previewKey]);
+  }, [loadedPreviewKey, previewFrameReady?.key, previewKey]);
   const previewFrameHeight =
     previewContentSize?.key === previewKey
       ? previewContentSize.height
@@ -1006,6 +1053,8 @@ export function VisualEditorShell({
     Monitor;
 
   const [editorMode, setEditorMode] = useState<"design" | "code">("design");
+  const [shouldPreloadCodeWorkspace, setShouldPreloadCodeWorkspace] =
+    useState(false);
   const [previewMode, setPreviewMode] = useState<"live" | "build">("live");
   const isImmutableBuildPreview = previewMode === "build";
   const [activeBuildPreview, setActiveBuildPreview] =
@@ -1016,6 +1065,47 @@ export function VisualEditorShell({
     null,
   );
   const [isBuildPending, setIsBuildPending] = useState(false);
+  /**
+   * Stops waiting on a build, and on an explicit cancel also stops the build.
+   *
+   * Unmounting only abandons the wait: leaving the editor is not a decision
+   * about the build. A cancel additionally asks the server to claim the build
+   * and destroy its Sandbox, so the work actually ends instead of running on
+   * and competing with the next build.
+   */
+  const buildWaitAbortRef = useRef<AbortController | null>(null);
+  const buildIdRef = useRef<string | null>(null);
+  const abortBuildWait = useCallback((reason: "user" | "unmount") => {
+    const controller = buildWaitAbortRef.current;
+    if (!controller || controller.signal.aborted) return;
+    controller.abort(reason);
+  }, []);
+
+  useEffect(() => () => abortBuildWait("unmount"), [abortBuildWait]);
+
+  const handleCancelBuild = useCallback(async () => {
+    const buildId = buildIdRef.current;
+    abortBuildWait("user");
+    if (!buildId) return;
+    try {
+      const result = await cancelThemeBuild({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          buildId,
+        },
+      });
+      if (!result.success) {
+        toast.error(result.message || "Failed to cancel the build.");
+        return;
+      }
+      toast.success(result.message ?? "Theme build cancelled");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to cancel the build.",
+      );
+    }
+  }, [abortBuildWait, context.storefront.id, context.theme.id]);
   const [isReleaseHistoryOpen, setIsReleaseHistoryOpen] = useState(false);
   const releaseHistoryTriggerRef = useRef<HTMLButtonElement>(null);
   const [buildDiagnostics, setBuildDiagnostics] = useState<any | null>(null);
@@ -1133,6 +1223,19 @@ export function VisualEditorShell({
     themeFiles.length,
     themeFilesQuery.isSuccess,
   ]);
+
+  useEffect(() => {
+    if (!previewKey || !themeFilesQuery.isError) return;
+    setPreviewLoadFailure((current) =>
+      current?.key === previewKey
+        ? current
+        : {
+            key: previewKey,
+            message:
+              "Live Preview could not load the Theme source. Apply the latest database migration, then retry Preview.",
+          },
+    );
+  }, [previewKey, themeFilesQuery.isError]);
 
   const workspaceFiles = useThemeWorkspaceStore((state) => state.files);
   const activeWorkspaceKey = useThemeWorkspaceStore(
@@ -1476,12 +1579,23 @@ export function VisualEditorShell({
     handleJumpToCode,
     search.section,
   ]);
+  const handlePreloadCodeWorkspace = useCallback(() => {
+    preloadEditorCodeWorkspace();
+    setShouldPreloadCodeWorkspace(true);
+  }, []);
   const workspaceKey = toWorkspaceKey(context.storefront.id, context.theme.id);
-  const isWorkspaceReadyForPreview =
-    themeFilesQuery.isSuccess &&
-    themeFiles.length > 0 &&
-    activeWorkspaceKey === workspaceKey &&
-    themeFiles.every((file) => workspaceFiles[file.path] !== undefined);
+  // On first paint the server tree can be used before the Zustand workspace
+  // has hydrated. Once the active workspace is ready, the same path overlays
+  // unsaved local content without recreating the iframe.
+  const previewThemeFiles =
+    activeWorkspaceKey === workspaceKey ? effectiveThemeFiles : themeFiles;
+  const previewFilesFingerprint = useMemo(
+    () =>
+      previewThemeFiles
+        .map((file) => `${file.path}\u0000${file.content}`)
+        .join("\u0001"),
+    [previewThemeFiles],
+  );
 
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
@@ -1631,27 +1745,21 @@ export function VisualEditorShell({
     },
     [],
   );
-  const initialPreviewSyncRef = useRef<{
-    key: string;
-    readySequence: number;
-    styleRevision: number;
-  } | null>(null);
-
   useEffect(() => {
     if (
       !previewKey ||
       previewFrameReady?.key !== previewKey ||
-      !isWorkspaceReadyForPreview ||
-      effectiveThemeFiles.length === 0 ||
+      previewThemeFiles.length === 0 ||
       (initialPreviewSyncRef.current?.key === previewKey &&
         initialPreviewSyncRef.current.readySequence ===
-          previewFrameReady.sequence)
+          previewFrameReady.sequence &&
+        initialPreviewSyncRef.current.filesFingerprint === previewFilesFingerprint)
     ) {
       return;
     }
 
     const styleRevision = postPreviewThemeFiles(
-      effectiveThemeFiles.map((file) => ({
+      previewThemeFiles.map((file) => ({
         path: file.path,
         content: file.content,
       })),
@@ -1660,13 +1768,14 @@ export function VisualEditorShell({
       key: previewKey,
       readySequence: previewFrameReady.sequence,
       styleRevision,
+      filesFingerprint: previewFilesFingerprint,
     };
   }, [
-    effectiveThemeFiles,
-    isWorkspaceReadyForPreview,
     postPreviewThemeFiles,
+    previewFilesFingerprint,
     previewFrameReady,
     previewKey,
+    previewThemeFiles,
   ]);
 
   const getScopedOpKey = useCallback(
@@ -1939,6 +2048,16 @@ export function VisualEditorShell({
    * The entry outlives the render that created it, so capturing the callback
    * directly would pin a stale closure over `themeFiles`.
    */
+  /**
+   * Lets publishing run a build even though the build handler is declared
+   * after it. Following the same indirection this file already uses for
+   * `handleUnifiedSaveFile`: naming the callback directly in a dependency
+   * array would read it during render, before it exists.
+   */
+  const handleBuildPreviewRef = useRef<(() => Promise<BuildAttempt>) | null>(
+    null,
+  );
+
   const handleUnifiedSaveFileRef = useRef<
     | ((
         filePath: string,
@@ -2049,6 +2168,101 @@ export function VisualEditorShell({
   );
 
   handleUnifiedSaveFileRef.current = handleUnifiedSaveFile;
+
+  const handleRepairThemeLinkBinding = useCallback(
+    async (filePath: string, fieldKey: string): Promise<boolean> => {
+      const source =
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath]?.localContent ??
+        themeFiles.find((file) => file.path === filePath)?.content;
+      if (!source) {
+        toast.error(`Cannot repair link: source file ${filePath} is unavailable.`);
+        return false;
+      }
+
+      const result = patchThemeLinkBinding(source, fieldKey);
+      if (!result.editable) {
+        toast.warning(
+          result.reason === "ambiguous"
+            ? "This component has multiple hard-coded Links. Connect the intended one in Code mode."
+            : "This link cannot be connected safely. Edit the binding in Code mode.",
+        );
+        return false;
+      }
+
+      try {
+        const saved = await handleUnifiedSaveFile(filePath, result.code, {
+          preserveCanvasPosition: true,
+        });
+        if (!saved) return false;
+        toast.success("Link connected. The Page selector is now available.");
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [handleUnifiedSaveFile, themeFiles, workspaceScope],
+  );
+
+  /**
+   * Switches a link between the router's `<Link>` and a plain `<a>`.
+   *
+   * Which element renders the link is what decides where it may point, so
+   * choosing "this store" or "external" has to rewrite the source rather than
+   * only change the stored value. Anything the rewrite cannot do unambiguously
+   * is reported instead of guessed at.
+   */
+  const handleSwitchThemeLinkElement = useCallback(
+    async (
+      filePath: string,
+      fieldKey: string,
+      target: "router" | "anchor",
+    ): Promise<boolean> => {
+      const source =
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath]?.localContent ??
+        themeFiles.find((file) => file.path === filePath)?.content;
+      if (!source) {
+        toast.error(`Cannot switch link: source file ${filePath} is unavailable.`);
+        return false;
+      }
+
+      const result = patchThemeLinkElement(source, fieldKey, target);
+      if (!result.editable) {
+        toast.warning(
+          result.reason === "ambiguous"
+            ? "This component has several links bound to the same field. Switch the intended one in Code mode."
+            : "This link cannot be switched safely. Edit it in Code mode.",
+        );
+        return false;
+      }
+      if (result.code === source) return true;
+
+      try {
+        const saved = await handleUnifiedSaveFile(filePath, result.code, {
+          preserveCanvasPosition: true,
+        });
+        if (!saved) return false;
+        toast.success(
+          target === "router"
+            ? "Switched to an in-store link."
+            : "Switched to an external link.",
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [handleUnifiedSaveFile, themeFiles, workspaceScope],
+  );
 
   const handleSwapThemeFileSiblings = useCallback(
     async (filePath: string, draggedNodeId: string, targetNodeId: string) => {
@@ -2306,26 +2520,31 @@ export function VisualEditorShell({
       return;
     }
 
-    if (
-      activeBuildPreview &&
-      activeBuildSourceGeneration !== currentGeneration
-    ) {
-      toast.error(
-        "Cannot publish: source changed after the last build. Build Preview again before publishing.",
-      );
-      return;
-    }
+    // Publishing needs an artifact that matches the source being published.
+    // Building is a step of publishing, not a thing to remember to do first:
+    // every comparable platform either builds as part of publishing or has
+    // already built automatically, and none makes the person trigger it.
+    const plan = resolvePublishBuildPlan({
+      hasBuild: Boolean(activeBuildPreview),
+      buildSourceGeneration: activeBuildSourceGeneration,
+      currentSourceGeneration: currentGeneration,
+      hasActiveRelease: Boolean(context.theme.activeRelease),
+    });
 
-    if (!activeBuildPreview && !context.theme.activeRelease) {
-      toast.error(
-        "Cannot publish: create a successful Build Preview before the first release.",
-      );
-      return;
+    let publishBuild = activeBuildPreview;
+    if (plan.action === "build") {
+      const attempt = await handleBuildPreviewRef.current?.();
+      if (!attempt?.ok || !attempt.build) {
+        // The build reported why it failed. Saying "publish failed" on top of
+        // that would name the wrong step.
+        return;
+      }
+      publishBuild = attempt.build;
     }
 
     await publishMutation.mutateAsync({
-      sourceRevisionId: activeBuildPreview?.sourceRevisionId,
-      themeBuildId: activeBuildPreview?.id,
+      sourceRevisionId: publishBuild?.sourceRevisionId,
+      themeBuildId: publishBuild?.id,
       expectedDraftRevisionId: publishDraftRevisionId,
       expectedDraftGeneration: publishDraftGeneration,
       expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
@@ -2344,14 +2563,15 @@ export function VisualEditorShell({
     workspaceScope,
   ]);
 
-  const handleBuildPreview = useCallback(async () => {
-    if (isBuildPending) return;
+  const handleBuildPreview = useCallback(
+    async (): Promise<BuildAttempt> => {
+    if (isBuildPending) return { ok: false };
 
     if (themeFiles.length === 0) {
       toast.error(
         "Cannot build preview: initialize starter theme files in Code Workspace first.",
       );
-      return;
+      return { ok: false };
     }
 
     if (
@@ -2361,7 +2581,7 @@ export function VisualEditorShell({
       toast.error(
         `Cannot build preview: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
       );
-      return;
+      return { ok: false };
     }
 
     if (
@@ -2372,7 +2592,7 @@ export function VisualEditorShell({
       toast.error(
         "Cannot build preview: resolve source conflicts/save errors first.",
       );
-      return;
+      return { ok: false };
     }
 
     setIsBuildPending(true);
@@ -2399,7 +2619,7 @@ export function VisualEditorShell({
           freezeResult.message || "Failed to snapshot source files for build",
         );
         setIsBuildPending(false);
-        return;
+        return { ok: false };
       }
 
       // 2. Request compilation & immutable R2 artifact persistence
@@ -2415,33 +2635,40 @@ export function VisualEditorShell({
         toast.error(buildResult.message || "Theme build failed");
         setBuildDiagnostics({ error: buildResult.message });
         setIsBuildPending(false);
-        return;
+        return { ok: false };
       }
 
       let build: StorefrontThemeBuildDTO = buildResult.data;
+      buildIdRef.current = build.id;
 
-      // Poll getThemeBuild if build was queued or building
+      const abortController = new AbortController();
+      buildWaitAbortRef.current = abortController;
 
-      let attempts = 0;
-      while (
-        (build.status === "queued" || build.status === "building") &&
-        attempts < 30
-      ) {
-        attempts++;
-        await new Promise((r) => setTimeout(r, 1000));
-        const pollResult = await getThemeBuild({
-          data: {
-            storefrontId: context.storefront.id,
-            themeId: context.theme.id,
-            buildId: build.id,
-          },
-        });
-        if (pollResult.success && pollResult.data) {
-          build = pollResult.data;
-          if (build.status === "succeeded" || build.status === "failed") {
-            break;
-          }
+      const waitResult = await waitForThemeBuild({
+        build,
+        signal: abortController.signal,
+        poll: async (buildId) => {
+          const pollResult = await getThemeBuild({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              buildId,
+            },
+          });
+          return pollResult.success && pollResult.data ? pollResult.data : null;
+        },
+      });
+      build = waitResult.build;
+
+      // Abandoning the wait says nothing about the build, so nothing is
+      // reported about it. Unmounting must not raise UI at all.
+      if (waitResult.outcome === "aborted") {
+        if (waitResult.reason !== "unmount") {
+          toast.info(
+            `Stopped waiting. Build ${build.id.slice(0, 8)} is still running — reopen Build Preview to pick up the result.`,
+          );
         }
+        return { ok: false };
       }
 
       if (build.status === "succeeded") {
@@ -2468,7 +2695,7 @@ export function VisualEditorShell({
           });
           setActiveBuildPreview(build);
           setActivePreviewToken(null);
-          return;
+          return { ok: false };
         }
 
         setActiveBuildPreview(build);
@@ -2478,6 +2705,13 @@ export function VisualEditorShell({
         toast.success(
           `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
         );
+        return { ok: true, build, sourceGeneration: currentGeneration };
+      } else if (waitResult.outcome === "timeout") {
+        // Running out of polls is not a build failure. Saying "failed" here
+        // both misreports the build and hides that its result is still coming.
+        toast.info(
+          `Build ${build.id.slice(0, 8)} is taking longer than expected and is still running — reopen Build Preview to pick up the result.`,
+        );
       } else {
         toast.error(build.errorMessage || `Build status: ${build.status}`);
         setBuildDiagnostics(build.diagnosticsJson);
@@ -2485,17 +2719,27 @@ export function VisualEditorShell({
     } catch (err: any) {
       toast.error(err?.message || "Failed to create preview build");
       setBuildDiagnostics({ error: err?.message || String(err) });
+      return { ok: false };
     } finally {
+      buildWaitAbortRef.current = null;
+      buildIdRef.current = null;
       setIsBuildPending(false);
     }
-  }, [
-    context.storefront.id,
-    context.theme.id,
-    isBuildPending,
-    monacoDirtyFiles,
-    themeFiles,
-    workspaceScope,
-  ]);
+    // Reached when the build failed or was still running when the wait ended.
+    // Neither produced an artifact, so neither is a usable build.
+    return { ok: false };
+    },
+    [
+      context.storefront.id,
+      context.theme.id,
+      isBuildPending,
+      monacoDirtyFiles,
+      themeFiles,
+      workspaceScope,
+    ],
+  );
+
+  handleBuildPreviewRef.current = handleBuildPreview;
 
   const handleUpdateThemeFileStyle = useCallback(
     (
@@ -4992,6 +5236,8 @@ export function VisualEditorShell({
               variant={editorMode === "code" ? "toolbarActive" : "ghost"}
               size="sm"
               className="h-7 gap-1.5 px-3 text-xs font-medium"
+              onPointerEnter={handlePreloadCodeWorkspace}
+              onFocus={handlePreloadCodeWorkspace}
               onClick={handleOpenSelectedCode}
             >
               <Code2 className="size-3.5" />
@@ -5072,55 +5318,80 @@ export function VisualEditorShell({
           >
             <Redo2 />
           </Button>
+          {/*
+            A toggle between the interpreted preview and the compiled artifact.
+            The label names what it shows and stays put; whether it is on is
+            carried by the pressed state and the active styling, which is what
+            a toggle is read as.
+          */}
           {activeBuildPreview && (
             <Button
               type="button"
               variant={previewMode === "build" ? "toolbarActive" : "ghost"}
               size="xs"
               className="gap-1 px-2.5 text-xs font-medium max-sm:hidden"
-              aria-label={
-                previewMode === "build"
-                  ? "Switch to Live Preview"
-                  : "View compiled Build Preview"
-              }
+              aria-pressed={previewMode === "build"}
+              aria-label="Show the compiled build instead of the live preview"
               onClick={() =>
                 setPreviewMode((prev) => (prev === "build" ? "live" : "build"))
               }
               title={
                 previewMode === "build"
-                  ? "Switch to Live Preview"
-                  : "View compiled Build Preview"
+                  ? "Showing the compiled build. Switch back to Live Preview."
+                  : "Show the compiled build instead of the live preview."
               }
             >
               <Layers className="size-3.5" />
-              <span className="hidden 2xl:inline">
-                {previewMode === "build" ? "Build Preview" : "View Build"}
-              </span>
+              <span className="hidden 2xl:inline">Built</span>
             </Button>
           )}
+          {/*
+            One control for a single running thing: while a build is in flight
+            the only useful action on it is to stop it, so the button becomes
+            that action instead of going dead and growing a second button.
+            The spinner still reports the state; the label states the action.
+          */}
           <Button
             type="button"
             variant="outline"
             size="xs"
-            disabled={isBuildPending || themeFiles.length === 0}
-            className="gap-1.5 px-2 2xl:px-2.5 max-sm:hidden"
+            disabled={themeFiles.length === 0}
+            // Stable across both states, so a test can address the control
+            // without depending on the label or title that change with it.
+            data-editor-build-action
+            data-build-pending={isBuildPending ? "true" : "false"}
+            className="group gap-1.5 px-2 2xl:px-2.5 max-sm:hidden"
             aria-label={
-              isBuildPending ? "Building theme preview" : "Build Preview"
+              isBuildPending ? "Cancel the running build" : "Build the theme"
             }
-            onClick={handleBuildPreview}
+            onClick={
+              isBuildPending
+                ? () => void handleCancelBuild()
+                : handleBuildPreview
+            }
             title={
               themeFiles.length === 0
                 ? "Initialize starter theme files in Code Workspace before building"
-                : "Compile and bundle theme into immutable R2 preview build"
+                : isBuildPending
+                  ? "Cancel this build. A build that already finished keeps its result."
+                  : "Compile and bundle theme into immutable R2 preview build"
             }
           >
             {isBuildPending ? (
-              <LoaderCircle className="size-3.5 animate-spin text-primary" />
+              <>
+                {/* Focus reveals the stop marker as well as hover: the icon is
+                    the only thing saying what activating the button now does,
+                    and a keyboard reaches it without ever hovering. */}
+                <LoaderCircle className="size-3.5 animate-spin text-primary group-hover:hidden group-focus-visible:hidden" />
+                {/* Filled square, the stop marker a media transport uses, so it
+                    pairs with the play marker the idle state shows. */}
+                <Square className="hidden size-3.5 fill-current group-hover:block group-focus-visible:block" />
+              </>
             ) : (
               <Play className="size-3.5" />
             )}
             <span className="hidden 2xl:inline">
-              {isBuildPending ? "Building…" : "Build Preview"}
+              {isBuildPending ? "Cancel" : "Build"}
             </span>
           </Button>
 
@@ -5138,9 +5409,22 @@ export function VisualEditorShell({
             <span className="hidden 2xl:inline">History</span>
           </Button>
 
+          {/*
+            Publishing is disabled while it runs, and it is disabled for half a
+            dozen other reasons too. Without a state of its own the button just
+            greys out, which reads as "not allowed" rather than "working" — so
+            the run says so itself. `aria-busy` carries the same fact to a
+            screen reader, and the accessible name follows the visible label so
+            the two never disagree.
+          */}
           <Button
             type="button"
             size="xs"
+            className="gap-1.5"
+            aria-busy={publishMutation.isPending || isBuildPending}
+            data-publish-pending={
+              publishMutation.isPending || isBuildPending ? "true" : "false"
+            }
             disabled={
               !hasUnpublishedChanges ||
               draftSaveState !== "idle" ||
@@ -5153,11 +5437,22 @@ export function VisualEditorShell({
               useThemeWorkspaceStore
                 .getState()
                 .hasActiveConflictsOrErrors(workspaceScope) ||
-              publishMutation.isPending
+              publishMutation.isPending ||
+              isBuildPending
             }
             onClick={handlePublish}
           >
-            Publish
+            {publishMutation.isPending || isBuildPending ? (
+              <>
+                <LoaderCircle className="size-3.5 animate-spin" />
+                {/* Publishing builds first when nothing usable exists, so the
+                    label names the step actually running rather than implying
+                    the release is already being written. */}
+                {isBuildPending ? "Building…" : "Publishing…"}
+              </>
+            ) : (
+              "Publish"
+            )}
           </Button>
         </div>
       </header>
@@ -5182,7 +5477,10 @@ export function VisualEditorShell({
         activeReleaseId={context.storefront.activeReleaseId}
       />
 
-      <EditorCodeModeSurface active={editorMode === "code"}>
+      <EditorCodeModeSurface
+        active={editorMode === "code"}
+        preload={shouldPreloadCodeWorkspace}
+      >
         <Suspense
           fallback={
             <div
@@ -5609,6 +5907,7 @@ export function VisualEditorShell({
                     className="mt-2"
                     onClick={() => {
                       setPreviewLoadFailure(null);
+                      void themeFilesQuery.refetch();
                       setPreviewRevision((revision) => revision + 1);
                     }}
                   >
@@ -5716,6 +6015,8 @@ export function VisualEditorShell({
           onUpdateThemeFileStyle={handleUpdateThemeFileStyle}
           onPreviewSelectionStyle={previewSelectionStyle}
           onPreviewSelectionField={previewSelectionField}
+          onRepairThemeLinkBinding={handleRepairThemeLinkBinding}
+          onSwitchThemeLinkElement={handleSwitchThemeLinkElement}
           onSectionPropsChange={handleSectionPropsChange}
           onJumpToCode={handleJumpToCode}
           onTabChange={setAssistantPanelTab}
@@ -5861,6 +6162,10 @@ function EditorControls({
       <EditorToolbar
         aria-label="Storefront canvas controls"
         className="pointer-events-auto"
+        // The toolbar lives inside the canvas pan surface. Stop its pointer
+        // events from reaching the canvas handler, which otherwise captures
+        // the pointer for panning and prevents the button click from firing.
+        onPointerDown={(event) => event.stopPropagation()}
       >
         <Button
           variant={isSelectionMode ? "toolbarActive" : "ghost"}

@@ -59,6 +59,7 @@ beforeEach(() => {
       message text,
       source text,
       snapshot text NOT NULL,
+      source_manifest text,
       created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -586,5 +587,179 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
           dbBuild?.inputHash === "2".repeat(64),
       ).toBe(true);
     });
+  });
+});
+
+describe("Build cancellation (CAS ownership of the terminal state)", () => {
+  const seedStorefront = (storefrontId = "storefront-a") => {
+    sqlite
+      .prepare(
+        "INSERT INTO storefronts (id, sales_channel_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(storefrontId, "sc-1", "Store", "active", "2026-01-01", "2026-01-01");
+  };
+  const seedTheme = (storefrontId = "storefront-a", themeId = "theme-a") => {
+    sqlite
+      .prepare(
+        "INSERT INTO storefront_themes (id, storefront_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(themeId, storefrontId, "Theme", "draft", "2026-01-01", "2026-01-01");
+  };
+  const seedRevision = (
+    storefrontId = "storefront-a",
+    themeId = "theme-a",
+    revisionId = "rev-100",
+    revisionNumber = 1,
+  ) => {
+    sqlite
+      .prepare(
+        "INSERT INTO storefront_theme_revisions (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        revisionId,
+        storefrontId,
+        themeId,
+        revisionNumber,
+        "Snapshot",
+        "manual",
+        JSON.stringify([]),
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
+  };
+
+  const newBuild = async () => {
+    seedStorefront("storefront-a");
+    seedTheme("storefront-a", "theme-a");
+    seedRevision("storefront-a", "theme-a", "rev-100", 1);
+    return storefrontThemeBuildDal.createBuild("storefront-a", "theme-a", {
+      sourceRevisionId: "rev-100",
+    });
+  };
+
+  const startBuild = (buildId: string) =>
+    storefrontThemeBuildDal.markBuildStarted("storefront-a", "theme-a", buildId, {
+      inputHash: "a".repeat(64),
+      compilerId: "tailwind-v4",
+      compilerVersion: "4.1.17",
+    });
+
+  it("cancels a build that has not been picked up yet", async () => {
+    const build = await newBuild();
+
+    const cancelled = await storefrontThemeBuildDal.markBuildCancelled(
+      "storefront-a",
+      "theme-a",
+      build.id,
+    );
+
+    expect(cancelled?.status).toBe("cancelled");
+    expect(cancelled?.completedAt).toBeTruthy();
+  });
+
+  it("cancels a build that is already running", async () => {
+    const build = await newBuild();
+    await startBuild(build.id);
+
+    const cancelled = await storefrontThemeBuildDal.markBuildCancelled(
+      "storefront-a",
+      "theme-a",
+      build.id,
+    );
+
+    expect(cancelled?.status).toBe("cancelled");
+  });
+
+  it("reports no cancellation when the build already succeeded", async () => {
+    // The build won the race. Reporting this as an error would make a normal
+    // outcome look like a fault.
+    const build = await newBuild();
+    await startBuild(build.id);
+    await storefrontThemeBuildDal.markBuildSucceeded(
+      "storefront-a",
+      "theme-a",
+      build.id,
+      {
+        artifactPrefix: "r2://artifacts/build-1",
+        manifestJson: { entry: "src/index.tsx", filesCount: 1 },
+      },
+    );
+
+    expect(
+      await storefrontThemeBuildDal.markBuildCancelled(
+        "storefront-a",
+        "theme-a",
+        build.id,
+      ),
+    ).toBeNull();
+
+    const after = await storefrontThemeBuildDal.getBuild(
+      "storefront-a",
+      "theme-a",
+      build.id,
+    );
+    expect(after?.status).toBe("succeeded");
+  });
+
+  it("refuses to relabel a cancelled build as failed", async () => {
+    // Destroying the Sandbox is what makes the runner fail, so without this
+    // guard every cancellation would immediately be overwritten as a failure.
+    const build = await newBuild();
+    await startBuild(build.id);
+    await storefrontThemeBuildDal.markBuildCancelled(
+      "storefront-a",
+      "theme-a",
+      build.id,
+    );
+
+    await expect(
+      storefrontThemeBuildDal.markBuildFailed(
+        "storefront-a",
+        "theme-a",
+        build.id,
+        { errorMessage: "sandbox destroyed" },
+      ),
+    ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
+
+    const after = await storefrontThemeBuildDal.getBuild(
+      "storefront-a",
+      "theme-a",
+      build.id,
+    );
+    expect(after?.status).toBe("cancelled");
+  });
+
+  it("refuses to mark a cancelled build succeeded", async () => {
+    const build = await newBuild();
+    await startBuild(build.id);
+    await storefrontThemeBuildDal.markBuildCancelled(
+      "storefront-a",
+      "theme-a",
+      build.id,
+    );
+
+    await expect(
+      storefrontThemeBuildDal.markBuildSucceeded(
+        "storefront-a",
+        "theme-a",
+        build.id,
+        {
+        artifactPrefix: "r2://artifacts/build-1",
+        manifestJson: { entry: "src/index.tsx", filesCount: 1 },
+      },
+      ),
+    ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
+  });
+
+  it("does not cancel a build belonging to another storefront", async () => {
+    const build = await newBuild();
+
+    await expect(
+      storefrontThemeBuildDal.markBuildCancelled(
+        "storefront-b",
+        "theme-a",
+        build.id,
+      ),
+    ).rejects.toThrow(/not found/);
   });
 });

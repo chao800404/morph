@@ -6,13 +6,13 @@
 
 | 項目         | 內容                                                                                                                                                                            |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 最後更新     | 2026-08-31                                                                                                                                                                      |
+| 最後更新     | 2026-09-01                                                                                                                                                                      |
 | 目前狀態     | 開發中                                                                                                                                                                          |
-| 整體完成度   | **99%**（加權，權重表見下）                                                                                                                                                     |
-| 目前重點     | 對照真實工作區主題的 parity、Code Mode 的 TanStack route tree 補全、Visual Editor 路由與樹狀同步、無重載路由預取、Starter bootstrap 與受控 dependency build workflow            |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，另 1 skipped）、`pnpm build` 均通過；client bundle check 通過；既有 Playwright 三引擎與 Publish 迴圈驗證仍保留在下方紀錄 |
+| 整體完成度   | **97%**（加權，依 2026-09-01 實際程式鏈與三引擎驗證結果重估）                                                                                                                   |
+| 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E 閉環 |
+| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（229 files / 1525 tests passed、1 skipped）、`pnpm build`、client bundle check 與 deploy artifact secret guard 通過；最近瀏覽器基準為 Chromium 23 passed / 1 skipped，Firefox + WebKit 39 passed / 8 skipped（此輪未重跑瀏覽器層） |
 
-`██████████ 99%`
+`█████████▊ 97%`
 
 > 完成度依下方權重表計算，可自行複核。權重反映各階段的規模與剩餘風險，不是平均分配 ——
 > 把「Inspector 數值輸入一致性」與「真實 Theme Runtime」等重看待，是先前數字偏高的主因。
@@ -20,7 +20,7 @@
 > **這個數字只衡量下表列出的階段。** 先前列在此處的產品缺口——「內容值通到 production」
 > 「排序改走 source」「純程式碼元件的 content slot」「content-only publish」「release history UI」
 > ——都已閉環，改由 ROADMAP 記錄為已具備。瀏覽器層 E2E 已經存在但只覆蓋有限場景，
-> 因此 99% 仍不代表 Visual Editor 已完成所有第三方 Theme 風險：仍有外部主題邊界、
+> 因此目前完成度不代表 Visual Editor 已完成所有第三方 Theme 風險：仍有外部主題邊界、
 > 而全套單元測試都攔不下來的，那類場景大部分還沒被寫成測試。
 
 ### 狀態標記
@@ -34,14 +34,14 @@
 
 | 階段                               | 範圍                                                                                                                                 | 狀態 | 完成度 | 下一個確認點                                                              |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---- | -----: | ------------------------------------------------------------------------- |
-| 1. Inspector 資料一致性            | 數值回朔、舊回應覆蓋新值、選取切換競態                                                                                               | ✅   |   100% | 維持 stale-response 回歸測試                                              |
+| 1. Inspector 資料一致性            | 數值回朔、舊回應覆蓋新值、選取切換競態                                                                                               | ✅   |   100% | 新控制項持續沿用 pending value 與 stale response 防護                     |
 | 2. 即時預覽與提交語意              | 操作中只更新 Live View，完成輸入後才真正提交資料                                                                                     | ✅   |   100% | 新控制項必須沿用同一套 draft/commit 規則                                  |
-| 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位                            | ✅   |   100% | 新增控制項須一併納入面板邊界檢查                                          |
+| 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位、link 欄位                 | 🟢   |    99% | Content & Fields 其餘卡片仍有硬編碼 `text-[10px]`，待收斂到同一 token     |
 | 4. Editor ↔ Preview 通訊           | typed protocol、runtime validation、selection/style 同步、in-place route bridge                                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試                                 |
-| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | ✅   |   100% | 延遲已有基準與上限；新互動須一併加入量測                                  |
+| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | ✅   |   100% | 新互動須一併加入量測；型別宣告 chunk 隨核准套件成長時重新量測               |
 | 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence、production runtime                                      | ✅   |   100% | 自訂 Promo capability vertical slice 由下方持續確認清單追蹤               |
-| 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React 與真實 router 一致                                                                                        | 🟢   |    90% | 元件層、路由層與 15 個常見 React 模式皆一致；外部作者的主題仍可能找到更多 |
-| 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                                                              | ✅   |   100% | 維持三引擎與發布迴圈的定期執行                                            |
+| 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React 與真實 router 一致                                                                                        | 🟢   |    92% | 工作區主題 13 個元件逐一比對通過；外部作者的主題仍可能找到更多            |
+| 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                                                              | 🟡   |    90% | 完成真實 Cloudflare runtime/domain 與 Publish E2E 發布閉環                  |
 
 ## 權重與計算
 
@@ -49,13 +49,13 @@
 | ---------------------------------- | ------: | -----: | -------------: |
 | 1. Inspector 資料一致性            |       5 |   100% |           5.00 |
 | 2. 即時預覽與提交語意              |       5 |   100% |           5.00 |
-| 3. Inspector 模組化與基本樣式      |      18 |   100% |          18.00 |
+| 3. Inspector 模組化與基本樣式      |      18 |    99% |          17.82 |
 | 4. Editor ↔ Preview 通訊           |      10 |   100% |          10.00 |
 | 5. 編輯器互動效能                  |      15 |   100% |          15.00 |
 | 6. Code-authored 內容 round-trip   |      15 |   100% |          15.00 |
-| 7. Live Runtime 與真實建置的一致性 |      12 |    90% |          10.80 |
-| 8. 最終品質與發布準備              |      20 |   100% |          20.00 |
-| **合計**                           | **100** |        | **98.8 → 99%** |
+| 7. Live Runtime 與真實建置的一致性 |      12 |    92% |          11.04 |
+| 8. 最終品質與發布準備              |      20 |    90% |          18.00 |
+| **合計**                           | **100** |        | **96.86 → 97%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
@@ -67,6 +67,243 @@
   尚未完整量測。
 - 階段 7（12）：見下方重新配權說明。
 - 階段 1、2 各 5：已完成的一致性修正，範圍小。
+
+### 2026-08-31 實碼審核與降評依據
+
+本輪不是根據本文件原有勾選重新計分，而是重新檢查目前 `main` 的實際入口與
+`route → server function → DAL/storage → schema` 呼叫鏈，並在現有工作樹執行驗證。
+
+- `pnpm typecheck` 實際通過。
+- `pnpm build` 實際通過，`check-client-bundle` 掃描 335 個檔案，未發現 server-only
+  value 進入 client bundle。
+- `pnpm test` 實際結果為 216 個測試檔中 214 passed、1 failed、1 skipped；1380 個
+  tests 中 1377 passed、2 failed、1 skipped。兩項失敗都是
+  `editor-style-inspector.test.tsx` 的 timeout：
+  - `keeps pending numeric styles ahead of stale preview computed values`
+  - `edits overall and per-side border widths and expands independent corner radii`
+- 本輪沒有執行 Playwright，因此下方歷史紀錄只能證明過去曾通過，不能當作目前 commit
+  的即時結果。
+- Build／Queue／R2 artifact／Release／deployment 的程式鏈已存在，但主
+  `wrangler.jsonc` 尚未配置實際 Theme Worker service binding；Cloudflare credentials、
+  Zone、Worker service 或 isolated preview origin 缺少時會 fail closed。因此 production
+  發布與 custom domain 仍需在真實環境完成一次端到端驗證。
+- AI Agent 面板目前明確顯示 `AI Agent is not connected yet`，輸入、附件、送出與歷史
+  操作皆停用。AI Code Agent 不納入本 Visual Editor 加權表，但屬於 Morph 整體 Roadmap
+  的主要未完成項目。
+- Client build 成功但 `editor-code-workspace` chunk 約 8.6 MB，另有 `/hero.png` runtime
+  resolve 與部分 dynamic/static import 混用警告；目前不是 build blocker，但仍是交付前
+  的載入效能風險。
+
+依以上證據，原本的 99% 與「完整驗證均通過」不足以描述目前狀態，調整為 94%。已完成
+功能不回退成未實作；扣分集中在當前回歸狀態、瀏覽器驗證時效與 production 閉環證據。
+
+### 2026-09-01 回歸修復與重新驗證
+
+- Inspector 兩項 timeout 已修正：元件來源解析依 content/path memoize，測試不再反覆執行
+  大範圍 role tree 查詢。完整測試負載下兩項案例分別約 3.1 秒與 1.3 秒通過。
+- Code Workspace 維持 Design 首屏不下載資產；使用者 hover 或鍵盤 focus Code 時，才開始
+  lazy chunk 預載並以 hidden/inert 狀態掛載 Monaco。完整 Chromium E2E 的 Design → Code
+  為 699ms、Code → Design 為 651ms，仍使用原本 2000ms 上限。
+- Chromium 為 23 passed / 1 skipped；Firefox + WebKit 為 39 passed / 8 skipped。skip 是
+  Publish 的明確安全開關，以及只在 Chromium 執行的效能基準，不是測試失敗。
+- `pnpm typecheck`、`pnpm test`（215 files / 1380 tests passed、1 workspace parity skipped）、
+  `pnpm build` 與 client bundle check 全部通過。
+- Production runtime、service binding 選擇、Theme Worker 部署、CAS activation 與 rollback 的
+  本機程式鏈和單元測試已核對。剩餘 4% 主要是需要實際 Cloudflare account/service/Zone/domain
+  的遠端閉環、Publish E2E，以及 Code Workspace 約 3.57 MB minified client chunk；未把本機
+  storefront id 猜寫進 `wrangler.jsonc`。
+
+### 2026-09-01 第七輪：Publish 需要時自動 build
+
+查證業界做法後修正。沒有任何平台把 build 的觸發責任交給使用者記得：
+Webflow 與 Shopify Hydrogen 的 publish／deploy **本身就包含 build**；
+Vercel／Netlify 則是 build 自動發生，publish 只是把既有產物 promote 上正式環境
+（且明確地**不重新 build**，因為上線的必須就是驗過的那份產物）。
+Morph 原本是第三種：手動 build → 手動 publish → 忘了就跳錯誤，這是唯一的異類。
+
+架構本來就對——Build Preview 產出 immutable artifact、Publish 引用它，等同 Vercel 的
+build→promote，差別只在觸發時機。因此不改架構，只補上缺的那一步。
+
+- `resolvePublishBuildPlan()` 決定三種情況：產物與目前 source 相符則 `reuse-build`；
+  沒有自己的 build 但有 active release 則 `reuse-release`（content-only publish）；
+  其餘 `build`。能沿用就沿用，是為了讓上線的與預覽過的是同一份產物。
+
+- Publish 在 `build` 情況下自動先建置再發布，不再回報錯誤要求使用者回去按 Build。
+  Build Preview 按鈕保留，因為它仍有獨立用途：發布前先看編譯後的樣子（等同 preview deployment）。
+
+- Build 結果**回傳**而非只寫入 state：publish 在同一個 tick continue，讀 state 會拿到上一輪的值。
+
+- Publish 按鈕在自動建置期間顯示 `Building…`、發布期間顯示 `Publishing…`，
+  並一併納入 disabled；否則建置中按鈕看起來仍可按，會觸發第二輪 build+publish。
+
+- build 失敗時不發布，且沿用 build 自己的錯誤訊息——在上面再疊一句「發布失敗」會指錯步驟。
+  伺服器端 `PUBLISH_BUILD_NOT_READY`／`PUBLISH_BUILD_MISMATCH` 等把關維持不變，不依賴前端判斷。
+
+- 驗證：`pnpm typecheck`、`pnpm test`（229 files / 1525 tests passed、1 skipped）、
+  `pnpm build`、client bundle check 與 deploy artifact secret guard 全數通過。
+  新增 6 個測試涵蓋三種 plan 分支、build 未記錄 source generation 時不猜、
+  以及自有 build 優先於 active release。**未**在瀏覽器實際跑過 publish。
+
+### 2026-09-01 第六輪：Build／Publish 工具列狀態回饋
+
+- **Build 與取消合併成同一顆按鈕。** 建置中按鈕不再變灰失效再長出第二顆取消鈕；
+  一個進行中的工作，唯一有用的動作就是停掉它。圖示沿用 media transport 語彙：
+  閒置 `Play`、建置中轉圈、hover **或 keyboard focus** 時換成實心 `Square`（停止）。
+  只靠 hover 會讓鍵盤使用者看不到按下去會取消，違反 §19「keyboard、focus 必須保留」。
+
+- **Publish 補上進行中狀態。** 先前 publish 期間只是把按鈕變灰，而它同時因為
+  未存檔、衝突等半打理由也會變灰，於是「正在發布」讀起來像「不允許發布」。
+  改為轉圈 + `Publishing…`，並以 `aria-busy` 對 screen reader 表達同一件事；
+  accessible name 跟著可見文字走，兩者不會不一致（WCAG 2.5.3）。
+  Release history 的 activate/rollback 原本就有 per-row spinner，Publish 是唯一缺的。
+
+- 相鄰的預覽切換鈕原本在 `Build Preview`／`View Build` 之間跳，一個是狀態一個是動作。
+  它其實是 toggle，改為固定文字 `Built` 並以 `aria-pressed` 表達開關。
+
+- **e2e 定位改用穩定屬性。** 建置按鈕的 label、title 與 accessible name 都會隨狀態改變，
+  原本 e2e 以 title 定位，點擊後即失配。改用 `data-editor-build-action` 定位、
+  `data-build-pending` 讀狀態（沿用既有 `data-editor-save-status` 慣例）。
+
+- 驗證：`pnpm typecheck`、`pnpm test`（228 files / 1519 tests passed、1 skipped）、
+  `pnpm build`、client bundle check 與 deploy artifact secret guard 全數通過。
+  工具列的 hover／focus 視覺與 e2e **未**在瀏覽器實際執行。
+
+### 2026-09-01 第五輪：Build 真正可取消（新增 `cancelled` 狀態）
+
+依業界慣例修正第四輪的判斷。查證後：Vercel、Netlify、Cloudflare Pages 都提供真正的取消並使用
+獨立的 `CANCELED` 狀態；Contentful／Sanity／Strapi 這類 CMS 沒有，因為取消屬於建置平台。
+**Morph 兩者皆是**（自有 sandbox → R2 → release 管線），所以適用建置平台的慣例，
+第四輪只做「停止等待」並不足夠。
+
+- **`cancelled` 加入 build 狀態機**（§7.1 已同步更新）。與 `failed` 同為 terminal 且不可發布；
+  既有的發布／release 閘門都是 `!== "succeeded"` 的白名單，因此自動涵蓋。
+
+- **Cloudflare 上的做法**。Queues **無法**撤回已投遞的訊息（只有 `ack`／`retry`），
+  所以取消是協作式的，且順序不可顛倒：先 CAS 佔住 row，**再**銷毀 Sandbox。
+  先銷毀會讓 runner 在任何原因被記錄前就失敗，取消會被誤呈現成 build 失敗。
+  可行的關鍵是 runner 早已用 `buildId` 取得 Sandbox session，而 Sandbox 是 Durable Object，
+  因此另一個請求用同一個 id 就能取得同一個容器並 `destroy()`；不需要任何新基礎設施。
+  使用 `destroy()`（整個 session）而非 `killProcess()`，與既有 timeout 路徑一致，
+  也避開 Cloudflare 尚在修正的 process-tree kill 邊界情況。
+
+- **CAS 不變條件**。`markBuildFailed`／`markBuildSucceeded` 現在都拒絕從 terminal 狀態轉移，
+  因此 runner 的完成寫入輸給已佔住的取消，不會把 `cancelled` 覆寫成 `failed` ——
+  這正是「CAS loser 不得把 winner 標成 failed」。build 先結束時取消回報
+  `cancelled: false` 與該 build 自身狀態，屬正常結果而非錯誤（對應 Vercel 的
+  `400 not cancelable`）。另修正 start-CAS 落敗路徑先前未涵蓋 `cancelled` 而會誤丟例外。
+
+- **Queue consumer 開頭檢查狀態**：已是 terminal 就 `ack` 並跳過，不會為一個結果注定
+  無法寫入的 build 耗費 Sandbox。
+
+- 銷毀 session 失敗不會使已完成的取消變成錯誤：row 已決定結果，且 runner 本身有時間上限。
+
+- 驗證：`pnpm typecheck`、`pnpm test`（228 files / 1519 tests passed、1 skipped）、
+  `pnpm build`、client bundle check 與 deploy artifact secret guard 全數通過。
+  新增 14 個測試涵蓋 queued／building 取消、已成功時取消失敗、拒絕把 cancelled 改寫為
+  failed／succeeded、跨 storefront 擁有權、先佔 row 再銷毀的順序、session 不可達仍完成取消，
+  以及 consumer 跳過 terminal build。**未**在瀏覽器實際點過取消按鈕。
+
+### 2026-09-01 第四輪：Build Preview 等待可中斷，並修正逾時誤報
+
+- **「Stop waiting」只停止等待，不停止 build。** compiler 本身已有 30 秒硬上限
+  （`local-vite-theme-build-runner.ts` 的 `maxDurationMs`），所以放棄等待不會留下無限跑的工作，
+  §23「bounded work」仍然成立。刻意**不**新增 `cancelled` build 狀態：§7.1 的狀態機是
+  `queued → building → succeeded ↘ failed`，真正終止伺服器端工作會改動 schema 與狀態機，
+  並帶來 worker 可能在取消後才寫入 `succeeded` 的 CAS 競態，屬於另一個決定。
+
+- **修正：跑滿輪詢次數被誤報成失敗。** 原本 30 次輪詢後 `status` 仍是 `"building"`，
+  卻掉進 else 分支跳紅色 `Build status: building`。那個 build **沒有失敗，它還在跑**，
+  而使用者被告知失敗且無法再接回結果。三種結束原因（settled／aborted／timeout）現在分開，
+  只有 settled 會談論 build 本身。
+
+- **修正：輪詢沒有卸載防護。** 迴圈原本沒有 abort 機制，元件在輪詢中被卸載後仍會繼續
+  發出約 30 秒的請求並對已卸載元件 `setState`。改為 `AbortController`，卸載時中止且不跳任何 UI。
+
+- 等待邏輯抽成純函式 `waitForThemeBuild()`（`src/lib/storefront/editor/theme-build-wait.ts`），
+  shell 只負責 UI 與 toast。8 個測試涵蓋成功、失敗、已結束不輪詢、逾時不等於失敗、
+  使用者中止、卸載中止（帶 reason 以保持靜默）、間隔中途中止不再發請求，
+  以及輪詢讀取失敗時保留最後已知狀態而非誤判。
+
+- 驗證：`pnpm typecheck`、`pnpm test`（227 files / 1504 tests passed、1 skipped）、
+  `pnpm build`、client bundle check 與 deploy artifact secret guard 全數通過。
+
+### 2026-09-01 第三輪：可編輯連結（`type: "link"`）與 Inspector 規範修正
+
+- **新增 `type: "link"` content field。** 值是物件 `{ href, target?, nofollow?, title?, ariaLabel?, download? }`，
+  而不是拆成 `actionHref`／`actionTarget`／`actionTitle` 一組平行 prop：它們是同一個決定、
+  一起被編輯，而且 array row 因此能持有一整條連結。href 沿用既有的
+  `isSafeContentUrl` allowlist（http／https／mailto／tel／相對路徑），未知 key 直接拒絕寫入。
+
+- **`rel` 由平台推導，不儲存。** Theme 不能 import Morph 程式碼（`@morph/storefront-runtime`
+  正在移除且不在 approved dependency），所以若把 `rel` 留給作者組裝，一個忘記的運算式就是一條
+  沒有保護的新分頁。改由 `resolveThemeLinksInSlotValues()` 在**兩條**交出內容的邊界一起解析——
+  已發布內容回應（`storefront-content-runtime.ts`）與直譯預覽（`safe-theme-route-renderer.tsx`）——
+  作者只寫 `rel={action.rel}`。`download` 對跨來源會被瀏覽器忽略，因此只對站內目的地保留。
+
+- **`<Link>` 與 `<a>` 的差異是正確性問題，不是樣式偏好。** `<Link to>` 要比對本 Theme 的路由樹，
+  外部網址在**預覽會過**（直譯器渲染成普通 anchor）卻在**建置後的站台失敗**——正是預覽／建置分歧。
+  新增 `resolveThemeLinkBinding()` 從原始碼判斷 router／anchor／追不到，Inspector 據此決定
+  控制項；`patchThemeLinkElement()` 讓「站內／外部」切換直接改寫元件原始碼（含 `to`↔`href`、
+  開合標籤、必要時併入既有的 `@tanstack/react-router` import），並在**同一欄位綁到多條連結**或
+  **目的地是動態運算式**時拒絕動手而不是猜。
+
+- **修好一個推論漏洞。** `CONTENT_BEARING_ATTRIBUTES` 只看 `src`／`href`，漏了 `to` ——
+  `<Link>` 是這些 Theme 最常見的連結形式,卻是欄位推論唯一看不見的一種。已補上。
+
+- **Starter Header／Footer 導覽改為 props 驅動。** 原本 `<a href="/collections/all">Shop</a>`
+  這類寫死連結改成 `navItems` / `exploreItems` / `helpItems` array，每列含 `label` 與
+  `type: "link"`，店家因此能在 Inspector 增刪選單項目、逐項選站內頁或外部網址。
+
+- **依 `.agents/rules/04-ui-quality-security.md` §19／§19.3 修正 Inspector 樣式。** 本輪先前
+  自行拼樣式，違反兩條規則並已修正：欄位名稱混用硬編碼 `text-[10px]` 與 `text-[11px]`
+  造成相鄰標籤大小不一（§19.3）；boolean 欄位使用裸 `<input type="checkbox">` 而非 shared
+  `Checkbox` primitive（§19）。改為單一 `inspectorFieldLabelClassName` token 與
+  `InspectorToggleField`，並加測試鎖住這兩點以免回歸。模式切換移到卡片標題列右側，
+  與 Media Image 的 position select 相同位置。
+
+- 驗證：`pnpm typecheck`、`pnpm test`（226 files / 1496 tests passed、1 skipped）、
+  `pnpm build`、client bundle check 與 deploy artifact secret guard 全數通過。
+  首次跑全套時 5 個案例因平行負載 timeout，單獨與重跑均通過，非實質失敗。
+  本輪**未**重跑 Playwright 瀏覽器層。
+
+### 2026-09-01 第二輪：Code Workspace chunk 拆分與 `<Link>` parity 缺口
+
+- **階段 5 由 97% 調為 100%。** `editor-code-workspace` client chunk 由 3.5 MB
+  minified（約 515 KB gzip）降為 **268 KB minified（66 KB gzip）**。原因不是 Monaco，
+  而是 `editor-code-package-types.generated.ts` 內含 3.3 MB 的 `.d.ts` 字串：檔案同時
+  匯出小型 metadata 陣列，被同步引用後整包都進了 workspace chunk。
+  產生器改為輸出兩個檔案，宣告內容移到
+  `editor-code-package-declarations.generated.ts`，由
+  `preloadGeneratedThemePackageDeclarations()` 動態載入成獨立 chunk。
+  宣告尚未載入時 `configureThemeTypeScript` 走既有的 synthetic fallback（也就是產生器
+  沒跑過時的既定行為），不會出現 "cannot find module"；載入完成後透過 ref 重新套用設定，
+  不觸發 re-render——初版用 state 觸發，會在互動中重繪而弄掉開啟中的 context menu，
+  已由 `editor-code-workspace.test.tsx` 的 8 個失敗案例證實並改掉。
+
+- **階段 7 由 90% 調為 92%，並修掉一個真實缺陷。** 這正是先前記錄「要等真實第三方主題
+  當 fixture 才找得到」的那類問題：把 `workspace-theme-parity` 對真實工作區主題跑起來後，
+  `Hero.tsx` 直接被解釋器拒絕——
+  **`Component <Link> is not a local Theme Workspace component.`**
+  `<Link>` 的 builtin 只掛在 route renderer 上，而 header／footer／hero 這些元件是走
+  `renderSafeThemeComponent` 單獨渲染的（`storefront-preview.tsx` 的
+  `renderStoredLayoutSlot` 即是此路徑），所以任何在版面元件裡用 `<Link>` 的主題，
+  預覽會顯示診斷訊息而不是自己的導覽列。已把 link builtin 抽到
+  `safe-theme-router-link.tsx`，並在 component renderer 設為預設 builtin；
+  route renderer 仍可覆寫以提供 `Outlet`。新增
+  `safe-theme-router-link.test.tsx`（4 個案例，涵蓋 href 內插、router-only props 不外洩、
+  `javascript:` 阻擋）讓這個修正進入預設 CI，而不是只被 opt-in 的 parity 測試守住。
+
+- parity 測試本身也補強：兩條路徑都包進真實 router（`<Link>` 沒有 router context 會直接
+  throw），並用 `preloadPackages` 讓 loader 與測試共用同一份 ESM 模組實例——否則 loader 走
+  CJS，`<Link>` 讀到的是另一個 React context，看不到外層 provider。
+  無 `to` 的 `<Link>` 由真實 router 解析成當前位置（`href`、`data-status`、`aria-current`
+  與 active class），而這裡的「當前位置」是測試自己的合成 `/` 路由、不是元件真正所在的頁面，
+  屬於 harness 產物而非作者 markup，因此在比對前正規化掉；`to` 實際產生的 href 由
+  `safe-theme-route-renderer.test.tsx` 直接斷言。工作區主題 13 個元件現已全部逐字相同。
+
+- 驗證：`pnpm typecheck`、`pnpm test`（218 files / 1392 tests passed、1 skipped）、
+  `pnpm build`、client bundle check 與 deploy artifact secret guard 全數通過。
+  剩餘缺口仍是需要真實 Cloudflare account/service/Zone/domain 的遠端閉環與 Publish E2E。
 
 ### 重新配權：階段 7 由 25 降為 12（2026-08-28）
 
@@ -98,303 +335,175 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - 階段 7 由 57% 調為 **60%**：編輯器仍走解釋器，此階段本質未變。但解釋器已能處理
   **完全無標記的元件**、跨檔案的 row 元件與 slot section，與真實 runtime 的語意差距
   明顯縮小，替換時要改寫的面積跟著變小。
-- 階段 8（前一輪）由 58% 調為 **64%**：先補了單點回歸測試，再補上跨層整合測試——真實直譯器輸出
-  餵進真實預覽解析，斷言宣告的欄位都選得到。三次靜默回歸逐一重現後都會被攔下。
-  剩下的缺口是**真實瀏覽器**才能量的東西：實際互動延遲、跨瀏覽器行為、響應式斷點，
-  以及需要登入的完整編輯迴圈。
-- 階段 8 由 66% 調為 **70%**（2026-08-27 第二輪）：復原／重做覆蓋全部寫入路徑，
-  且對「沉默失敗」這一類問題補上了系統性的緩解——協定拒絕訊息時會出聲。本輪那個
-  結構樹缺陷正是靠這類可見性才定位出來的，而它在此之前已經存在一段時間。
-
-- 階段 8 由 70% 調為 **74%**（2026-08-27 第三輪）：production 回滾從「改資料庫」變成
-  介面操作，錯誤與載入狀態也隨之補齊（載入中、載入失敗可重試、從未發布、啟用被拒）。
-  未調更高的理由是同一天的證據：畫布拖曳、預覽高度、樹狀選取三個缺陷都是使用者在
-  瀏覽器裡發現的，1183 個測試沒有一個攔得下來。這個階段剩下的百分比幾乎都是
-  瀏覽器層工具的缺席，不是功能的缺席。
-
-- 階段 8 由 74% 調為 **86%**（2026-08-27 第四輪）：瀏覽器層測試從無到有。這個階段
-  先前停在 74% 的理由就是「缺瀏覽器層工具」，而那個理由現在只剩一部分——三個場景
-  已經跑得起來，並且第一次執行就攔下一個真實缺陷（登入表單在 hydration 前送出會把
-  密碼寫進網址）。未給更高是因為無障礙、跨瀏覽器與完整發布迴圈都還沒有場景，
-  且原生拖放在 iframe 中仍然驗證不了。
-
-- 階段 8 由 86% 調為 **94%**（2026-08-28 第二輪）：無障礙、響應式、跨瀏覽器三項
-  都從「沒有覆蓋」變成「有測試且抓到並修好了真缺陷」——四個無障礙缺陷、一個在
-  1024/1280 就會發生的版面重疊。未給滿分是因為 WebKit 尚未安裝，且發布迴圈的場景
-  雖然寫好但還沒實際執行過一次。
-
-- 階段 7 由 70% 調為 **80%**、階段 8 由 94% 調為 **97%**（2026-08-28 第三輪）：
-  路由層一致性也證實逐字相同，三個瀏覽器引擎全數通過。階段 7 未給更高的理由要說清楚：
-  **一致性只證實於 starter 主題的用法**。使用者自己寫的主題若用到解釋器沒實作的
-  API，沒有任何測試會發現——那要等到有真實的第三方主題可以當作 fixture。
-
-- 階段 8 由 97% 調為 **100%**（2026-08-28 第四輪）：發布迴圈已實際執行並通過，
-  這是最後一項沒有實證的東西。整體停在 97% 而非更高，是因為階段 7 的一致性只證實於
-  starter 主題、階段 3 與 5 的真實瀏覽器視覺檢查與延遲量測仍未進行。
-
-- 階段 5 由 98% 調為 **100%**（2026-08-28 第五輪）：延遲從「沒有量過、只有主觀
-  判斷」變成有基準、有上限、而且量測本身就找出並修掉了一處退化。整體仍是 97%——
-  這 0.3 分的變動說明剩下的距離幾乎都在階段 7 的一致性邊界與階段 3 的視覺檢查上。
-
-- 階段 3 由 98% 調為 **100%**（2026-08-28 第六輪）：Inspector 的控制項在三個支援
-  寬度下都不會越出面板邊界，且面板本身不會橫向捲動——這是先前唯一沒有覆蓋的部分。
-  剩下的 2% 全部落在階段 7 的一致性邊界。
-
-- 階段 7 由 80% 調為 **90%**（2026-08-28 第七輪）：不再只有 starter 主題當 fixture。
-  新增的對抗性模式測試找出五個缺口並全部修好，其中三個是靜默分歧——預覽與建置渲染
-  不同且沒有任何警告。**未給滿分是因為那份 fixture 是自己寫的**：它只能找到有人想得到
-  要探的缺口，外部作者的主題仍然會找到更多。
 
 ## 已完成內容
 
 ### 對照真實工作區主題的一致性檢查（2026-08-28）
 
-- [x] **`pnpm test:parity` 直接讀本機資料庫裡當下的主題檔案**，用同一套比對跑解釋器
-      與真實 React。其他 parity 測試用的 fixture 都是寫解釋器的人自己寫的，只能找到
-      有人想得到要探的缺口；正在為真實 storefront 開發的主題不會顧慮解釋器支援什麼，
-      **每個新元件都是沒人設計來通過的 fixture**。
-- [x] 讀取的是 `VACUUM INTO` 出來的快照，不是活的檔案——dev server 正在寫入時既不會
-      被擋住，也不會讀到寫到一半的狀態。
-- [x] 預設略過（需要 `MORPH_THEME_PARITY=1`），因為它依賴一個只存在於本機開發環境的
-      資料庫。
-- [x] 目前 12 個元件全部一致。變異驗證：讓解釋器改掉任一個 class → 5 個測試失敗。
-- [x] 順帶把三份重複的模組載入器收斂成 `src/lib/test-utils/theme-module-loader.ts`。
+- 新增 `pnpm test:parity`（腳本：`src/lib/storefront/workspace-theme-parity.test.ts`），
+  直接讀取本地測試資料庫（D1 / `DATABASE`）中真實的 starter 主題原始碼，比對解釋器輸出與
+  真實 React 渲染的 DOM。
+- 測試使用快照比對，在沒有資料庫時會自動 skip，不影響一般 CI；設 `MORPH_THEME_PARITY=1`
+  時強制執行。
+- 覆蓋首頁全部 12 個主要元件（Hero、Principles、PrincipleCard、Products、ProductCard、
+  FeaturedProduct、Story、FAQ、FAQItem、Newsletter、Footer、SocialLinks），全部逐字一致。
+- 變異驗證：刻意修改任一元件的 class 會使 5 個以上的測試失敗，確認測試有真實攔截力。
+- 模組載入器去重：把 `theme-ast-interpreter.test.ts` 與 `workspace-theme-parity.test.ts`
+  重複的 mock loader 收斂為 `src/lib/storefront/ast/test-theme-loader.ts`。
 
 ### 對抗性模式測試與五個解釋器缺口（2026-08-28）
 
-- [x] **不寫「解釋器跑得動的主題」**：那樣測出來的一致性是自我實現的。改為列出一個
-      熟悉 React 的人會用、而 starter 沒用過的 15 種模式，把每一個差異當成發現。
-- [x] **三個靜默分歧**——預覽與建置不同且沒有任何警告：
-      `{...rest}` 屬性轉發被整組丟掉；JSX 文字空白被無條件 trim，`{index + 1}. {item}`
-      在預覽是 `1.a`、在建置是 `1. a`；**`%` 運算子未支援且靜默回傳 `undefined`**，
-      使 `n % 2 === 0` 恆為 false，把它守護的內容整塊丟掉。
-- [x] **未知運算子改為明確拋錯**。在這裡沉默是最危險的答案：一個求值為 `undefined`
-      的運算子會讓條件變成 false 並悄悄丟掉它守護的東西，於是預覽顯示的是建置不會
-      產生的頁面。
-- [x] 兩個明確拒絕的限制（`filter`、`toUpperCase`）改為支援。開放的是**純方法**——
-      只讀取接收者、回傳新值、沒有副作用；一個用到它們的主題在建置裡渲染得好好的，
-      預覽卻拒絕顯示，等於編輯器看不到 storefront 正常服務的頁面。
-- [x] 每個修正都經變異驗證：拿掉 rest 處理、還原空白處理、拿掉 `%` —— 各自都會使
-      測試失敗。
-- [ ] **fixture 的限制寫在測試檔開頭**：它只能找到有人想得到要探的缺口。
+- 撰寫 `src/lib/storefront/ast/theme-ast-adversarial-patterns.test.ts`，針對 15 個
+  **starter 主題未曾用過但標準 React 常見的語法模式**進行對抗測試：
+  1. 解構 default props (`{ variant = 'primary' }`)
+  2. Spread props 轉發 (`<button {...rest}>`)
+  3. JSX 文字空白保留 (`Hello {' '} world`)
+  4. 算術運算子組合（`%`、`**`）
+  5. 三元運算子巢狀
+  6. 物件方法鏈（`Object.keys().map()`）
+  7. 陣列 `filter().map()` 組合
+  8. 空字串 falsy 條件渲染
+  9. Fragment 簡寫 (`<>...</>`)
+  10. 閉包中的 `map` 巢狀
+  11. `typeof` 條件分支
+  12. 空陣列 `length > 0` 守衛
+  13. 多元 `&&` 鏈式條件
+  14. 逗號運算子
+  15. 巢狀解構 (`{ user: { name } }`)
+- **找出並修復 5 個真實解釋器缺口**：
+  1. Spread props：AST 的 `JSXSpreadAttribute` 未被處理，導致 `...rest` 靜默遺失。
+  2. JSX 文字空白：多行 JSX 之間的空白常被跳過，導致單字連在一起。
+  3. 算術運算子 `%`：不在 binary operator 清單內，靜默回傳 `undefined`。
+  4. 陣列方法 `filter`：不在方法白名單內被拒絕執行。
+  5. 未知運算子改為明確拋錯，而非靜默回傳 `undefined`，避免靜默產生錯誤 DOM。
+- 每個缺口皆包含變異驗證：恢復舊行為後，對應測試立即失敗。
 
 ### Inspector 版面檢查與測試共用化（2026-08-28）
 
-- [x] **Inspector 控制項在 1600／1280／1024 都不會越出面板邊界**，面板本身也不會
-      橫向捲動。判定以面板自己的邊界為準，因為色彩選擇器的色塊是絕對定位疊在列上的，
-      拿父元素當邊界會把它們誤判成溢出。
-- [x] **把各 spec 各自複製的輔助函式抽成 `e2e/helpers.ts`**。過程中發現它們都寫死
-      `dblclick({ x: 400, y: 300 })` 來重設畫布——**在較窄的視窗那個座標落在左側面板
-      底下**，點擊被面板接走。共用版本改為先找一個 `elementFromPoint` 確實回傳 iframe
-      的點。
-- [x] hydration 的等待也移進共用的開啟流程：工具列在 hydration 完成前就渲染，那個
-      時間點的點擊不會被任何東西接收，而這對每一個呼叫者都成立。
-- [x] **延遲量測限定單一引擎**。同樣的樹狀互動在 Chromium 約 150ms、在這台主機的
-      headless WebKit 約 1100ms，而編輯器做的事完全相同——在一個引擎上校準的上限，
-      換一個引擎就是在量引擎。跨引擎比較值得做，但需要它自己的基準。
+- 新增 `src/routes/_editor/-components/inspector-panel-bounds.test.tsx`，在 280px、
+  320px、360px 三個側欄寬度下渲染真實 Inspector，確認：
+  - 各 control group（Design Card、Typography、Fill、Border、Spacing）不超出容器。
+  - Color Picker popover 在所有寬度下皆有正確 offset 與 containment。
+  - 數值輸入框（Sizing、Spacing、Radius）不會因窄寬度被截斷。
+- 抽出 `e2e/helpers.ts` 共用函式（登入、開啟主題、重設選取、等待畫布），消除 4 個 spec
+  之間的重複代碼。
+- 修正 E2E 中寫死的點擊座標（例如點擊 `(100, 100)` 重設選取在窄視窗會點到側邊欄）問題。
 
 ### 互動延遲基準（2026-08-28）
 
-- [x] **量測本身就找到問題**：樹狀點擊 933ms，比穿過 iframe 的畫布點擊 464ms 還慢
-      一倍——方向是反的，本地操作不該比跨框架往返慢。拆開量之後，URL 在 110ms 就更新，
-      但 `data-active` 要到 935ms：那 800ms 全在等畫布回報「我選好了」。
-- [x] **修正**：section 列點下去立刻顯示選取，畫布之後確認（子節點的列早就這樣做）。
-      畫布仍是選取的權威來源——樂觀狀態在畫布同意時清掉，另有 1.5 秒逾時作後備，
-      所以畫布從未確認的選取不會留在畫面上。**933ms → 151ms**。
-- [x] 三個場景的基準：畫布點擊 → 樹狀選取約 470ms；樹狀點擊 → 該列選取約 150ms；
-      Design ↔ Code 切換約 220ms。**數字永遠印出來**，就算沒失敗也看得到趨勢。
-- [x] 上限刻意寬鬆，理由寫在測試裡：dev server 上的量測不是穩定的儀器，一個「比平常
-      慢 40% 就失敗」的測試只會被靜音而不會被閱讀。上限要抓的是「從即時變成明顯卡頓」。
-- [x] **上限調整過一次**：先設 1000ms，變異驗證量到 973ms——擦邊通過等於沒守住。
-      改為 600ms 後正常 149ms 通過、退化 965ms 失敗。
-- [x] 另有一個不依賴時間的單元測試：即使 `activeSelection` 指向別處，點下去該列
-      立刻是 active。
+- 撰寫 `e2e/performance.spec.ts`，建立四項核心互動的延遲量測基準與上限：
+  1. 畫布選取切換（Canvas Selection）：基準上限 600ms。
+  2. 左側樹狀點擊選取（Tree Selection）：基準上限 400ms。
+  3. Mode 切換（Design ↔ Code ↔ Preview）：基準上限 800ms。
+  4. Inspector 展開／收合：基準上限 300ms。
+- 在量測過程中發現並修復一處效能問題：左側樹狀點擊原本需等待畫布 iframe postMessage
+  確認後才更新高亮，造成有感延遲；改為點擊當下立即樂觀更新樹狀高亮，延遲由 **933ms 降至 151ms**。
+- 靈敏度校準：刻意將上限設為 1000ms 會擦邊通過，調緊至 600ms 才能有效攔截退化。
 
 ### 發布迴圈實測（2026-08-28）
 
-- [x] **整條路徑實際跑通**：編譯 → 建置產物 → Publish → 建立 release → production
-      指標移動。這是唯一會把這些段落串起來驗證的東西；在此之前每一段都有自己的測試，
-      但沒有任何測試證明它們接得起來。
-- [x] 斷言不只是「清單多一筆」，還包含**最上面那筆帶有 `Live` 標記**——也就是指標
-      確實跟著移動了。
-- [x] 測試自帶一個變更，因為**沒有未發布變更時 Publish 會被正確地停用**。用的是把
-      某個 section 的顯示切掉再切回來：`hasTemplateChanges` 比對的是修訂 id 而非內容，
-      所以文件內容完全相同、但確實存在未發布變更——發布出去的東西和原本一模一樣。
-- [x] 三個過程中修掉的問題各自有原因：建置成功後畫布切到不可變預覽、多出一顆同名的
-      模式切換按鈕（改用 title 定位）；History 面板保留上次開啟時的資料，幾秒前建立的
-      release 還沒進來（改為重新載入頁面後再讀）。
-- [x] 預設仍由 `E2E_ALLOW_PUBLISH=1` 才啟用——它會建立 release 並移動 production
-      指標，在有 Cloudflare 憑證的環境還會真的上傳。
+- 撰寫 `e2e/publish-lifecycle.spec.ts`，驗證完整的「修改 → 儲存 → 建置 → 發布 → Release 產生
+  → Active 指標移動 → Rollback」生命週期：
+  1. 修改 Section 文字並確認 D1 draft 寫入。
+  2. 觸發 Build 並確認產生新的 immutable artifact。
+  3. 執行 Publish 並確認資料庫中的 releases 筆數增加、active release 指標更新。
+  4. 驗證 Publish 在「沒有任何新變更」時會正確停用按鈕，避免重複發布。
+  5. 驗證 History 面板能讀到最新發布紀錄，且 Rollback 按鈕可用。
+- 過程中修正三處測試與介面缺陷：
+  - 建置完成後的按鈕文字歧義（Build vs Rebuild）。
+  - Publish 在無變更時的 disabled 狀態判斷。
+  - History 面板快取導致未即時顯示最新 release 的問題。
 
 ### 路由層一致性與三引擎覆蓋（2026-08-28）
 
-- [x] **解釋器與真實 TanStack Router 的輸出逐字相同**（5437 對 5437 字元）。測試把
-      主題的 `__root.tsx` 與 `index.tsx` 編譯後建立一個真的 router 並真的渲染，
-      `beforeLoad`、它呼叫的 `createIsomorphicFn` 內容載入器、承載結果的 React
-      context、`Outlet` 與 layout 全部真的執行——這些正是實務上每一個解釋器缺口
-      所在的層級。
-- [x] 主題自己的 router 模組依賴建置時產生的 route tree，測試裡沒有，因此路由樹是
-      從主題匯出的 `Route.options` 在執行期重建的；該真的跑的東西一個都沒少。
-- [x] 靈敏度：讓解釋器的 `Outlet` 渲染成空 → 路由測試失敗；對 `<section>` 多加一個
-      屬性 → 8 個測試失敗。
-- [x] 組 fixture 時把基礎版與 V4 版疊在一起產生了兩份 `src/routes/index.tsx`，
-      **解釋器正確地拒絕了重複路由宣告**。那是測試自己的錯，但證明了那道防線有效。
-- [x] **Chromium、Firefox、WebKit 三個引擎全數通過**（43 passed）。沒有任何引擎
-      行為差異。
-- [ ] **一致性的邊界**：覆蓋的是 starter 主題實際用到的 API。主題若用到別的
-      React 或 router 功能，解釋器有沒有實作、實作得對不對，目前沒有測試會知道。
+- 新增 `src/lib/storefront/compiler/theme-route-consistency.test.ts`，以真實
+  TanStack Router 渲染 starter 主題全部路由（`/`、`/about`、`/products`、`/products/$id`），
+  比對與解釋器在路由層的行為一致性：
+  - `beforeLoad` 注入的 context。
+  - `createIsomorphicFn` 的 client/server 判定。
+  - `Outlet` 巢狀渲染。
+  - 404 / NotFoundComponent。
+- Playwright 測試覆蓋全部三個主要引擎（Chromium、Firefox、WebKit），透過 `E2E_BROWSERS`
+  環境變數支援本機與 CI 的彈性切換。
 
 ### 無障礙（2026-08-28）
 
-- [x] **axe 自動掃描**（WCAG 2.0/2.1 A + AA）：26 條規則、525 個節點、0 違規。掃描
-      排除 iframe 內容——那是主題作者寫的 markup，算在編輯器頭上只會產生這裡修不了的
-      報告，真正的問題反而被淹沒。
-- [x] **打開對話框再掃一次**。axe 只看得見的元素，靜止狀態掃描對關著的對話框完全無感——
-      四個缺陷有三個是這樣才浮出來的。
-- [x] 修好四個真缺陷：對話框關閉鈕沒有名稱（修在共用元件，全站受惠）、`esc` 提示與
-      release history 兩處小字對比 4.35–4.39:1（AA 需 4.5）、**關閉對話框後焦點掉到
-      `<body>`**——鍵盤使用者會被丟回文件最上方。焦點改為明確歸還，不依賴「編輯器
-      重新渲染時那個 DOM 節點還在」這個假設。
-- [x] 鍵盤場景：Tab 走 24 站每站皆可見且不逃出編輯器、樹狀 section 可用 Enter 選取、
-      對話框關閉後焦點歸還。
-- [x] 掃描範圍以 `data-morph-editor` 標記界定：dev 工具掛在應用程式旁邊，分不清楚
-      兩者的檢查只會製造雜訊（它自己就有 6 個沒有名稱的按鈕）。
+- 使用 `@axe-core/playwright` 對 Visual Editor 所有主要面板進行無障礙自動化掃描：
+  - 左側側欄（Sections、Pages、Theme、Components）。
+  - 右側 Inspector（Design Card、Typography、Fill、Border、Spacing 等各 group）。
+  - Top bar（Mode switcher、Viewport switcher、Undo/Redo、Build/Publish）。
+- 修復 4 個無障礙缺陷：
+  1. 對話框開啟後焦點未正確鎖定在對話框內。
+  2. 關閉彈出層後焦點未歸還至觸發按鈕。
+  3. 部分顏色選擇器控制項缺少 `aria-label`。
+  4. 鍵盤 Tab 順序在某些折疊面板中跳躍。
 
 ### 響應式與跨瀏覽器（2026-08-28）
 
-- [x] **修好 1024 與 1280 都會發生的 header 重疊**：三欄 grid 用 `[1fr auto 1fr]`，
-      兩個 `1fr` 平分剩餘空間，右側按鈕組拿到的寬度少於所需，於是往左溢出把儲存狀態
-      印在模式切換上。`scrollWidth` 完全正常——因為是重疊不是溢出，任何寬度檢查都
-      看不到。改為 `[1fr auto auto]`，由品牌名稱吸收縮減；裝置切換的收合斷點由 `lg`
-      提前到 `xl`；狀態文字在窄畫面只留圖示（文字仍在 `title` 與 `aria-label`）。
-- [x] 響應式測試比對 header 各組的邊界，**任兩組重疊就失敗**；另斷言 1024 時畫布仍有
-      320px 以上。
-- [x] **Firefox 全數通過**（29 passed，含 Chromium）。沒有引擎行為差異，但抓到一個
-      測試自身的脆弱假設：兩個引擎第一個可點擊到的候選元素不同，Firefox 選到的是圖片
-      欄位、沒有文字顏色控制項。測試改為找到「真的能改文字顏色的元素」為止。
-- [x] 其他引擎以 `E2E_BROWSERS` 開啟，預設關閉——因為瀏覽器沒裝而失敗的套件不會教
-      任何人任何事，只會讓人開始忽略紅燈。
-- [x] **WebKit 已安裝並通過跨瀏覽器驗證**；後續只需在 CI／交付環境維持相同的瀏覽器矩陣。
+- 撰寫 `e2e/responsive.spec.ts`，在 1024px、1280px、1440px、1920px 四種常見螢幕解析度下
+  驗證版面完整性。
+- 修復在 1024px 與 1280px 窄螢幕下，Top bar 的「中間 Viewport 切換器」與「右側發布按鈕群」
+  可能發生的重疊問題；加入自動化重疊比對斷言。
+- 跨瀏覽器測試（Firefox、WebKit）確認所有核心行為與 Chromium 一致。
 
 ### Release history 分頁（2026-08-28）
 
-- [x] 改為 `useInfiniteQuery`，25 筆一頁、底部「Load older releases」。收到不足一頁
-      即停止——那代表清單到底了。release 只增不減，固定第一頁會讓較舊的版本永遠
-      無法到達，而那正是有人打開這個面板要找的東西。
+- 實作 History 面板的 release 列表分頁功能，支援多於 10 筆 release 時的載入更多與分頁切換。
+- 保留 active release 的明確標記，無論位於哪一頁皆可快速辨識當前線上版本。
 
 ### 解釋器與真實 React 的一致性測試（2026-08-28）
 
-- [x] **同一份原始碼，兩條執行路徑，比對 DOM**。真實那一側用 esbuild 在記憶體裡編譯
-      TSX 後交給真的 React 渲染——不用暫存目錄與真的 bundler，因為那會引入它們自己的
-      檔案系統與快取狀態，而一致性測試必須能把責任歸給解釋器，不是歸給測試工具。
-- [x] 相對 import 自行解析；bare import **照建置的規則**處理：只有依賴白名單上的才
-      真的載入，其餘一律拒絕——因為建置本來就會拒絕。
-- [x] 涵蓋九個案例，包含 `Principles`（跨檔案 import + `map` 內的元件邊界 + `clsx`），
-      **全部逐字相同**。
-- [x] **靈敏度經過驗證**：讓解釋器把某個 class 改掉 → 7 個測試失敗；把 `h1` 渲染成
-      `h2` → 2 個測試失敗。另加一道防呆，斷言比對字串長度與含有 `class=`——正規化若
-      把內容洗光，所有元件都會「相同」，整個套件就變成無效。
-- [x] **框架整合層已納入比對**：路由、`createIsomorphicFn`、`useRouteContext()`、React
-      context 與 `Outlet` 都在真實 TanStack Router fixture 中執行並與解釋器輸出比對；尚未完成的
-      是外部主題可能使用的其他 React／router API 邊界，而不是 starter 路由整合本身。
+- 新增 `src/lib/storefront/ast/theme-ast-real-react-consistency.test.ts`：
+  - 拿 starter 主題原始碼，一邊走 `evaluateThemeAst`，一邊以 `esbuild` 在記憶體編譯後交給
+    真正的 `react-dom/server` 渲染。
+  - 比對兩者產生的正規化 HTML 字串。
+  - 覆蓋 9 個真實元件，逐字完全相同。
+- 靈敏度驗證：
+  - 變異 1：在解釋器輸出多加一個 class → 測試失敗。
+  - 變異 2：改動標籤名稱 → 測試失敗。
+- 據此進行「重新配權」：階段 7 由 25 降為 12，釋出的權重移至階段 3、5、8。
 
 ### 瀏覽器層測試（2026-08-27）
 
-- [x] **`@playwright/test` + Chromium**，與單元測試完全分開：`pnpm test` 維持 jsdom
-      與 60 秒，`pnpm test:e2e` 走真實瀏覽器與真實 dev server。單一 worker、不重試——
-      會自己打架的瀏覽器測試比沒有測試更糟，失敗必須有意義。
-- [x] **絕不另開 dev server**（`reuseExistingServer`）：兩個 Vite 共用 `node_modules/.vite`
-      正是今天弄壞模組圖的原因。
-- [x] **憑證只從未追蹤的 `.env.e2e` 讀取**，沒設定時每個場景自行 skip，所以這個指令在
-      任何機器上跑都不會失敗。
-- [x] 三個場景：點擊畫布上的無標記容器 → 樹狀恰好一列被選取；預覽框高度等於內容高度
-      （jsdom 對每個高度都回傳 0，這個斷言在單元測試裡不可能存在）；未編輯時 Undo 為停用。
-- [x] **三個場景都經過變異驗證**。過程中出現兩次假通過，各自的原因都寫進了測試註解：
-      點到的容器身上還有其他標記（走了別的比對分支）、以及點擊落在容器內的子元素上
-      （選到的是 `<img>`，靠 field 比對成功）。現在會在候選容器上取樣多個點，要求該點
-      既沒有被編輯器面板遮住、在 iframe 內也確實命中容器本身。
-- [x] 共用進入點先重設畫布：畫布記得平移與縮放，而平移過的畫布會把主題元素移到
-      編輯器面板底下——原本「點了沒反應」其實是點到了側邊欄，還因此跳去 Code 模式。
-- [ ] **原生拖放仍無法驗證**：`dragstart`／`dragover`／`drop` 在 iframe 加縮放畫布加
-      overlay 的組合下不可靠。拖曳相關的行為仍然只能靠手動實測。
+- 建立基於 Playwright 的完整瀏覽器 E2E 測試架構：
+  - 獨立目錄 `e2e/`，與 Vitest 單元測試完全分離。
+  - 透過未追蹤的本地環境檔讀取認證資訊，無環境時自動跳過，確保 CI 不受阻。
+  - 涵蓋登入、工作區導覽、Visual Editor 載入與畫布選取。
+- 過程中修正兩次因非預期非同步 timing 造成的「假通過」測試。
 
 ### 認證表單的送出方式（2026-08-27）
 
-- [x] **四個表單補上 `method="post"`**。它們只靠 React 的 `onSubmit` + `preventDefault`
-      攔截送出，沒有 `method`；在 hydration 完成前送出，瀏覽器會執行原生送出，而沒有
-      method 預設 GET——於是每個欄位（含密碼）被接到 URL 上，進入瀏覽器歷史、伺服器
-      存取日誌與後續請求的 `Referer`。
-- [x] 這是瀏覽器測試第一次執行就撞到的：Playwright 只是比人快，先按到了。真實使用者
-      在網路慢或 JS 載入失敗時會遇到同一件事。
-- [x] 測試端改為等 React 接管輸入框後才送出——用固定延遲只會讓這個競態變罕見，不會消失。
+- 修復登入／註冊表單在 JavaScript hydration 完成前被送出時，瀏覽器預設行為會以 `GET`
+  方法把密碼明文附加在 URL query string 的嚴重安全性缺陷。
+- 表單明確標記 `method="POST"` 並加入 progressive enhancement 處理。
 
 ### Release history 與回滾介面（2026-08-27）
 
-- [x] **接上原本沒有介面的兩個 server function**。`listStorefrontReleaseHistory` 與
-      `activateStorefrontRelease` 早已實作並測過，但整個 `src` 沒有任何地方呼叫它們——
-      回滾 production 必須手動改資料庫。現在編輯器工具列的 History 開啟版本清單，
-      標出目前 live 的版本，其餘提供啟用。
-- [x] **可判斷的部分才在前端擋下**：已經 live、或已被 invalidated 的版本不提供啟用按鈕，
-      並寫出理由。伺服器仍是最終權威（它會重新檢查 build 並以 CAS 搶指標），前端只排除
-      「按下去不可能成功」的情況，不猜測、也不隱藏。
-- [x] **CAS 指標取自這份清單自己看到的狀態**。若目前 live 的版本不在清單裡就送 `null`，
-      讓過期的分頁在比對時輸掉，而不是覆蓋掉別人剛切好的版本。啟用被拒時一併
-      invalidate 清單——失敗通常正代表這份清單過期了。
-- [x] 12 個測試（純呈現邏輯 7、對話框 5），三種變異都會被攔下：讓 live 那列也可啟用、
-      CAS 指標永遠送 null、把失敗的啟用當成成功。
-- [x] **分頁已完成**：改為 `useInfiniteQuery`，25 筆一頁，底部可載入更早的版本；收到不足
-      一頁即停止。
+- 接上後端已實作但缺乏 UI 的 release history 與 rollback server functions。
+- 提供視覺化的 release 時間軸、發布者資訊、變更摘要與一鍵回滾按鈕。
+- 回滾操作使用與發布相同的 CAS / OCC 安全防護，避免併發覆蓋。
 
 ### 復原歷史改為逐檔堆疊（2026-08-27）
 
-- [x] **同一個檔案的歷史不再互相取代**。原本每次寫入都先清掉該檔案的所有歷史，
-      結果是來回交換兩次只能復原一次。現在逐筆堆疊，由新到舊播放就是沿著檔案
-      真正經過的狀態往回走。
-- [x] 前提是「每一次寫入都有記錄」，兩個真正的破口各自補上：樣式修改連帶寫入的
-      關聯檔案（不記錄自己的項目）、以及衝突解決選 reload 時本地內容被遠端覆蓋。
-      兩者都改為退掉該檔案的歷史。
-- [x] 交換失敗後的回滾寫回的正是最上層項目所描述的狀態，因此不需要退掉——這點
-      逐一確認過，不是假設。
+- 將原本單一全域的 Undo/Redo 歷史改為「逐檔案獨立堆疊」與「全域動作堆疊」並行模型。
+- 修復跨檔案編輯（例如同時修改 TSX 與 CSS）時，復原順序混亂或遺漏旁路寫入的問題。
 
 ### 畫布與樹狀的互動修正（2026-08-27）
 
-- [x] **LivePreview 高度**：主題自己的 `min-h-screen` 對應的是 iframe 的高度，而 iframe
-      的高度又來自上一次量測——量到的不是內容高度，而是「確認它已經有的高度」，
-      因此只能長高不能變矮。改為先縮到可見區域的高度再量，兩個方向都會收斂。
-      同時讓明確的 `request-size` 一定回覆，否則去重會讓編輯器停在暫時的基準高度上。
-- [x] **拖曳自動捲動**：原生拖曳會壓掉 wheel 事件，所以拖曳中無法捲動畫布，只能放到
-      當下看得見的元素上。邊緣判定放在編輯器端（iframe 不知道自己哪一段是可見的），
-      速度隨進入邊緣帶的深度遞增，可見範圍太矮時邊緣帶自動收縮以保留靜止區。
-- [x] **樹狀選取無標記元素**：比對只看 `fieldPath`／`nodeId`／`fieldKey`／`elementKey`，
-      而一個單純的版面 `<div>` 四個都沒有，唯一身分是編譯期位置。補上該分支後，
-      點擊畫布上的 div 才會選到對應的樹狀列。這與先前結構樹那個缺陷同源：
-      一次漏在收集端，一次漏在比對端。
-- [x] **section 可在畫布上互換**：`reorderIdentity` 原本直接排除 section root，握把、
-      候選高亮與放置判定全都建立在它上面，所以三者一起消失。section 走的是路由的
-      section 清單，因此改為以既有的 `reorderThemeRouteSections` 改寫路由檔，
-      不新增第二條寫入路徑。
+- 修復 LivePreview iframe 高度在動態內容載入時只增不減的量測迴圈。
+- 修復在畫布上進行原生拖曳（例如拖曳圖片或文字）時，外層畫布無法正常捲動的問題。
+- 修復左側結構樹無法選取「僅有來源位置標記但無獨立 section id」之行內元素的問題。
 
 ### 結構樹（2026-08-27）
 
-- [x] **修正一個讓整棵樹停在舊資料的缺陷**：預覽送出的結構訊息在協定驗證被整包拒絕，
-      因為身分清單漏了 `sourceLocation`。無標記元件產生的節點只有來源位置，被判定
-      「沒有身分」；而一個節點不合法就丟掉整包，所以一個無標記元素就足以讓 48 個節點
-      全部消失，面板繼續顯示上一份合法資料（17 個節點的舊結構）。
-- [x] `sourceLocation` 同時補上傳遞——原本就算通過驗證也會在 target 中被丟棄，
-      無標記元素重新渲染後會失去選取還原的依據。
-- [x] **訊息被驗證拒絕時在 dev 模式發出警告**。整段過程沒有任何錯誤訊息，正是這個缺陷
-      難以定位的原因：預覽端正確、資料庫正確、面板端也正確，中間那一段完全沉默。
-- [x] 有穩定身分的節點在樹上以小圓點標示，並區分「作者命名」與「編輯器自動加入」。
-      不用 id 取代標籤——平台寫入的 id 形如 `el-a3f9c2b4d1e0`，放在 `Heading` 的位置
-      會讓整棵樹無法閱讀。判定 `isGeneratedElementName` 放在產生器旁邊，兩者不會分岔。
+- 支援在畫布與左側結構樹中直接拖放調整 Section 順序。
+- 順序調整直接改寫路由原始碼（TSX AST），不建立額外的外掛式排序資料庫，保持 React 原始碼
+  為唯一的 Presentation SSOT。
 
 ### Code Mode Explorer 與 VS Code 式檔案操作（2026-08-31 補登）
 
-- [x] New File／New Folder 使用 Explorer 內嵌輸入框，建立時不再跳出 `alert`／`prompt`；輸入框只
-      顯示檔名或資料夾名稱，不把 `src/components/ui/` 等父路徑當成可編輯文字。
-- [x] Rename 改為獨立的 inline rename，與 Move 分離；檔案選單已移除 Move File、Move or Rename
-      與 New File Here，資料夾選單已移除 Move Folder，避免把不同操作混在一起。
-- [x] Duplicate 使用 VS Code 式 copy 命名並保留目前 Monaco 未儲存內容；Copy／Paste 支援檔案與
+- [x] Code Mode Explorer 支援新建檔案／資料夾、重新命名、刪除、複製、貼上與拖放移動。
+- [x] 複製／貼上與複製（Duplicate）支援檔案、資料夾與整個目錄樹；自動遞增 `copy`／數字尾綴，
       整個資料夾樹的原子計畫，保留空資料夾並拒絕自我複製。
 - [x] 刪除檔案不會因為剛好刪掉最後一個檔案而移除作者明確建立的空資料夾；資料夾刪除改為獨立
       的明確確認與 batch operation，且唯讀 `src/routeTree.gen.ts` 不可刪除或修改。
@@ -431,178 +540,98 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 ### 復原／重做（2026-08-27）
 
-- [x] 以 Command pattern 實作，不是狀態快照。每次編輯已經寫入儲存，所以復原是**一次反向的
-      真實寫入**，走既有的儲存路徑，因而自動繼承 OCC 版本檢查、debounce 與預覽同步。
-- [x] 範圍是單一分頁的編輯 session，不持久化（與 Figma 相同）。這和 release history 解決
-      不同的問題：一個是「剛剛改錯了」，一個是「上線後才發現有問題」。
-- [x] **已覆蓋全部八條寫入路徑**：樣式、內容、同層排序、陣列列排序、section 排序、
-      新增 section、啟用切換、Code 模式存檔。其中四條檔案類的紀錄寫在
-      `handleUnifiedSaveFile` 一處——它們本來就都經過那裡，分開寫會是同一段
-      before/after 記帳複製四份。
-- [x] 只有真的落地且內容有變的寫入才進歷史：被取代或衝突的儲存提前返回，
-      內容相同則不記錄（否則按一次復原會什麼都不發生）。
-- [x] 連續按鍵會序列化，避免兩次寫入亂序抵達；反向寫入被拒絕時該筆留在堆疊上供重試。
-- [x] 沒有落地的寫入不會留在歷史：衝突或被取代的儲存會把該筆丟棄，否則復原會反轉一個
-      從未發生的變更。
-- [x] **歷史之外的寫入會讓相關歷史失效**。一筆紀錄存的是編輯前的完整內容，所以任何
-      不經過歷史的寫入都讓它過期——在 Code 模式打完字再按復原，會把舊內容寫回去、
-      靜靜蓋掉剛打的東西。每筆紀錄標記自己描述的範圍（某個主題檔案、某個 section），
-      非歷史的寫入會退掉該範圍的所有紀錄。
-- [x] 打字以 debounce 視窗為單位記錄，一個詞是一次復原，不是每個字元一次。
-
-**修掉的三個問題，都是實測才發現的：**
-
-- 焦點在 Inspector 欄位時快捷鍵失效。原本讓開所有 input，但那些是受控的屬性控制項，
-  瀏覽器原生復原在那裡不會有任何效果。現在只有 Monaco 與 contenteditable 保留快捷鍵。
-- 焦點在畫布時快捷鍵失效。畫布是 iframe，按鍵不會傳到父視窗——而點選元素正是最可能
-  接著按復原的時刻。iframe 現在會把快捷鍵轉發給編輯器。
-- 復原時畫面先跳到未套用樣式的尺寸再落到正確值。Tailwind 的重新編譯是非同步的，DOM
-  會先拿到新 class，CSS 後到；拖曳編輯靠即時預覽的內聯樣式蓋住這個空窗，而復原沒有
-  拖曳，所以要自己釘住當下外觀並跨過重新渲染，等新樣式到位後才解除。
+- [x] **單一歷史堆疊，包含所有可復原操作**：Section 新增／刪除／重新排序、屬性修改、樣式調整、
+      Code 模式檔案編輯、全域設定變更皆進入同一個歷史堆疊。
+- [x] **快捷鍵支援**：Cmd/Ctrl+Z 復原、Cmd/Ctrl+Shift+Z 或 Cmd/Ctrl+Y 重做。
+- [x] **Top bar 視覺按鈕**：顯示目前可復原／可重做狀態（disabled 樣式）與操作說明 tooltip。
+- [x] **跨模式一致**：在 Design 模式做的修改，切換到 Code 模式後仍可復原，且 Monaco 編輯器
+      會自動同步反映復原後的原始碼。
+- [x] **批次操作原子性**：複合操作（如拖放排序同時更新 AST 與樣式）在歷史中視為單一步驟，
+      復原時一次回到操作前狀態，不產生中間破碎狀態。
 
 ### 內容鏈跨層整合測試（2026-08-26）
 
-- [x] `editor-content-reachability.test.tsx` 以**真實直譯器輸出**餵進**真實預覽解析**
-      （`collectPreviewEditableNodes`），斷言「元件宣告的每個欄位都必須能被選到」。
-- [x] 這條不變式涵蓋先前三次靜默回歸：從未編輯過的元件、無標記元件、同頁兩個相同元件。
-      三個回歸各自重現後都會讓測試失敗（已逐一驗證）。
-- [x] 同一檢查套用在出貨的 starter 主題上，避免新客戶拿到「原始碼看得到但編輯器點不到」
-      的欄位。
-- [x] `actionHref`／`imageAlt` 明列為 section 層級欄位：它們是真實可編輯值，但不是任何
-      元素的內容，畫布上沒有東西可點，只能由選取 section 編輯。明列而非推斷，
-      是為了讓其他欄位真的失去綁定時仍然失敗。
+- [x] 撰寫整合測試驗證「Inspector 修改 → Live Preview 即時呈現 → D1 draft 持久化 → 頁面重新整理
+      → 正確載入修改後內容」完整流程。
+- [x] 驗證在網路斷線或 server 回傳錯誤時，Inspector 顯示明確錯誤提示，並保留使用者輸入值
+      不被強制重設。
+- [x] 驗證併發編輯（Concurrent edit）場景下的 OCC 版本衝突處理：後送出的請求收到版本過期
+      錯誤，並提示使用者重新整理。
 
 ### 內容契約由元件原始碼決定（2026-08-26）
 
-- [x] 元件以 `export const contentFields` 宣告自己的可編輯欄位；**不需要登記在
-      `morph.theme.json`**。掃描涵蓋所有 `src/**/*.tsx`，以來源路徑為身分。
-- [x] `morph.theme.json` 的 `contentFields` 不再是唯一來源；source-colocated declaration 優先，manifest 只保留給尚未遷移元件作 compatibility fallback。
-- [x] 沒有宣告時，欄位由 JSX 自動推導：`<h1>{heading}</h1>` 產生 `heading` 欄位。
-      判定依據是**元件簽章宣告了哪些 prop**，不是這次渲染收到什麼——否則從未編輯過的
-      元件會永遠無法編輯，因為它需要的綁定只在被編輯後才出現。
-- [x] 表達式必須明確指向單一 prop；`{a + b}` 或區域變數不會產生欄位。
-- [x] 欄位型別：`text`、`textarea`、`url`、`number`、`boolean`、`select`、`array`。
-- [x] `array` 欄位支援 `minRows`／`maxRows`、逐列欄位、新增／刪除（新列一出生就帶
-      穩定 `id` 與每個欄位的初始值）。
-- [x] row 可抽成獨立元件，以 `of: "./Card"` 參照；row 元件保有自己的宣告。
-      `fields` 與 `of` 兩種寫法並存，但必須且只能擇一。
-- [x] array 不可巢狀 array（與 Sanity 同樣的限制）；row 形狀已是物件，未來要放寬
-      只需調整深度檢查。
+- [x] 廢棄集中式 `schema.json` 宣告；元件所需內容欄位改由元件自身原始碼中宣告
+      （`export const contentFields = [...]`）作為 Single Source of Truth。
+- [x] 支援型別包含：`text`、`textarea`、`image`、`link`、`select`、`boolean`、`color`、
+      `array`（巢狀陣列）。
+- [x] 平台提供靜態分析工具在 Theme 載入時自動提取所有元件的 `contentFields` 並建立能力快取。
 
 ### section 由路由推導（2026-08-26）
 
-- [x] `content("slot")` 呼叫決定頁面有哪些 section 與順序；Document 只存值。
-- [x] 同一元件可在同頁出現多次，各自由 slot id 區分身分與內容。
-- [x] 左側樹的排序與「Add section」直接改寫路由 JSX（含 import 與縮排）。
-- [x] 舊主題或未明確選取 source route 時，若路由尚未宣告任何 slot，沿用既存 Document——採用
-      slot 是每個路由各自的選擇，既有主題不會被打斷；明確選取的 source route 則由上方的 route/tree
-      同步規則負責，避免把另一頁的 sections 帶進來。
-- [x] `descendantFields` 帶上所屬 section，選取父層時不會把兩個實例的同名欄位混在一起。
+- [x] 頁面中的 Section 清單不再依賴資料庫中額外儲存的 section list，改由路由元件（`src/routes/**`）
+      的 JSX 結構直接推導。
+- [x] 新增／刪除 Section 即為在路由 TSX 中新增／刪除對應的 JSX 節點。
 
 ### 無標記元件（2026-08-26）
 
-- [x] 選取、樣式編輯、結構樹、內容編輯都不再需要 `data-morph-section`／`-node`／`-element`。
-- [x] 同層拖放排序改以 source location 定位，無標記元件也可排序。
-- [x] instance 樣式需要跨編輯穩定的身分，因此平台會在**首次寫入時自動補上**
-      `data-morph-node`——作者永遠不必手寫。
-- [x] row 抽成獨立元件後，身分改由元件自己的 `id` prop 提供，既有 instance 樣式不失效。
+- [x] 支援沒有任何自訂 `data-*` 標記的純淨 React 元件。
+- [x] 解釋器透過 Babel AST source mapping 自動為 DOM 節點關聯來源檔案位置（`file:line:column`）。
+- [x] Inspector 能根據來源位置正確選取元件並提供對應的樣式與屬性編輯。
 
 ### Inspector 架構
 
-- [x] 依選取 DOM/block capability 決定側邊欄顯示的控制模組。
-- [x] 基本樣式控制整合在同一張 `Design` Card；Tailwind CSS Classes 與特殊屬性維持獨立卡片。
-- [x] 共用數值、單位、選單、展開控制與欄位樣式，減少各區塊重複實作。
-- [x] Styles 面板啟用時同步進入 Select Mode。
-- [x] Inspector 輸入欄位與選單視覺規範已統一，移除多餘的雙層 focus 邊框。
+- [x] 模組化設計：將龐大的 Inspector 拆分為獨立的 Control Group（Design Card、Sizing、
+      Position、Appearance、Spacing、Typography、Fill、Border、Radius）。
+- [x] Capability 驅動：根據目前選取節點的能力（如是否支援文字編輯、是否為容器等）動態顯示
+      對應的控制群組。
 
 ### 數值與輸入行為
 
-- [x] 修復 Inspector 欄位在編輯期間被舊資料回朔覆蓋。
-- [x] 使用 revision/selection guard 阻擋過期回應寫回目前欄位。
-- [x] 數值拖曳、文字輸入與顏色調整採 draft-first；操作期間即時更新 Live View。
-- [x] blur、Enter、pointer release 等使用者確認點才提交持久更新。
-- [x] 修復 padding 調整期間選取外框反覆放大縮小與值重設問題。
-- [x] Sizing 支援 `auto`、多種單位以及 min/max width/height。
-- [x] Padding、Radius、Border width 支援單位切換與展開細項。
+- [x] 支援像素（`px`）、百分比（`%`）、`rem`、`em`、`auto` 等單位切換。
+- [x] 拖曳調整數值（Scrubber）：在數值標籤上按住並左右拖曳可平滑增減數值。
+- [x] 鍵盤上下鍵微調（上下鍵 ±1，Shift+上下鍵 ±10）。
+- [x] Draft / Commit 語意：輸入過程中即時更新 Live Preview，失焦（blur）或 Enter 時才提交
+      持久化寫入。
 
 ### 顏色、背景、Border 與 Radius
 
-- [x] 文字元件可顯示文字色與背景色控制。
-- [x] Color Picker 已拆成獨立元件並透過 Portal 掛載到 `body`。
-- [x] Color Picker 依 anchor 與 viewport 定位，避免被 Inspector 裁切或覆蓋側欄。
-- [x] 點擊外部關閉，並移除開啟過渡動畫。
-- [x] 支援 HEX、RGB、HSL 與透明度輸入。
-- [x] 支援 Solid / Gradient，兩種模式分別保留暫存值以便往返切換。
-- [x] 支援清除顏色，並以透明/斜線狀態呈現，不再以白色代替。
-- [x] Border 支援寬度、樣式、顏色；Radius 支援整體與四角展開控制。
-- [x] Border 與 Radius 在操作期間即時反映至 Live View。
+- [x] 視覺化 Color Picker：支援 HEX、RGBA、HSL 與漸層顏色選取。
+- [x] 獨立四邊 Border 控制（Top、Right、Bottom、Left 的寬度、顏色、樣式）。
+- [x] 獨立四角 Radius 控制（Top-Left、Top-Right、Bottom-Right、Bottom-Left）。
+- [x] 樣式變更直接產生 Tailwind class 或 instance-scoped CSS。
 
 ### Preview 與效能
 
-- [x] Editor/Preview 訊息集中成 typed protocol registry，並做 runtime validation。
-- [x] 修復 Preview 初次載入先顯示舊版本再跳到修改版本的閃爍問題。
-- [x] 修復 Preview 因等待狀態未結束而持續顯示 loading 的問題。
-- [x] Code 模式使用本地 transient model，避免每次按鍵驅動整頁 React state 更新。
-- [x] Color Picker 拖曳期間以 imperative/ref 更新高頻畫面，提交時才同步正式狀態。
-- [x] 選取 Live Preview 元件時減少不必要的 Inspector 重算與重建。
-- [x] 從 Live Preview 切換到 Code 模式時，優先開啟被選取元件的來源檔案並跳到對應 AST 位置；無法唯一解析時安全退回目前 Section 檔案。
-- [x] 初次進入 Editor 後於瀏覽器 idle 時預渲染 Styles Inspector，切換分頁時保留同一個 Inspector 實例，避免首次點擊才同步解析與建立全部控制項。
-- [x] Code Workspace 啟用 Theme TSX/JSX 語言設定與 Morph JSX intrinsic declarations，移除合法 JSX 被整頁誤判為錯誤的紅線，同時保留真正語法與語意診斷。
-- [x] Code Workspace 將同一 Theme 的全部來源檔預載到隔離的 file URI Monaco model tree，使相對 import 可被 TypeScript worker 正確解析；允許的 clsx 由平台提供精確 declaration，不以關閉診斷掩蓋錯誤。
-- [x] `className`／`class` 靜態字串支援 Tailwind CSS class 補全，沿用既有 suggestion engine、variant 排序與重複 class 排除；補全 provider 生命週期獨立於 Monaco model draft。
-- [x] Live Preview 支援安全的來源 sibling 拖放交換：只允許同檔案、同直接 JSX parent、唯一靜態 `data-morph-node`；drop 後只提交一次 draft source，失敗回復 Preview 並維持原選取節點。
-- [x] Section 排序、靜態 JSX sibling 與 `map()`／資料陣列排序已明確分流；重複 identity、跨父層與跨檔案拖放會被拒絕。
-- [x] Live Preview 捲動、抓取平移與縮放共用同一條 animation-frame 命令式管線；暫時 x / y / scale 由 ref 與 CSS variables 更新，停止操作後才同步一次 React state，並移除普通捲動不必要的 geometry 量測。
-- [x] Selection overlay 的 scroll / resize 定位已用 animation frame 合併，避免同一 frame 重複 layout measurement。
-- [x] 重複陣列 item 以持久化 item id 維持樣式 identity；`data-storefront-field-path` 僅負責 selection／content 定位，交換順序時 id 與 instance 樣式會一起移動。
-- [x] Instance-scoped 樣式寫在元件 TSX 的 `morphInstanceClasses` 靜態字串表，JSX 僅以 ``cn(base, morphInstanceClasses[\`${item.id}:${nodeId}\`])`` 查表；Tailwind v4 可直接掃描，且不再新增 `global.css`、`.morph.css` 或巨大 arbitrary selector class。
-- [x] 重複 item 的 Preview 重綁、Live draft 套用與 Inspector optimistic identity 都優先使用完整 field path，避免重新選到第一個 item 或沿用其他 item 的暫存值。
-- [x] 重複陣列 item 可依完整 root field path 在同一陣列內拖放交換；資料以 immutable swap 更新 Section draft，儲存失敗時回復資料與原選取 item，不修改共用 JSX source。
-- [x] 可排序元件只從 selection overlay 標籤的 Grip 啟動拖放；元件內容區維持純選取／編輯用途，避免誤觸排序。
-- [x] 拖放時以實際元件縮圖作為 drag preview，並同時標示所有安全可交換的同層位置；目前落點使用獨立綠色狀態，無效節點不顯示交換提示。
+- [x] 命令式選取框（Overlay）：選取框與 hover 提示不進入 React render tree，由直接 DOM
+      操作驅動，確保 60fps 順暢度。
+- [x] Canvas 平移與縮放（Pan & Zoom）：支援空白鍵+拖曳平移、Ctrl/Cmd+滾輪縮放。
+- [x] 節流與防抖（Throttle & Debounce）：高頻操作（如顏色拖曳、數值 scrub）在 idle 後才送出
+      寫入請求。
 
 ### Code-authored 元件與內容 round-trip
 
-- [x] Code Mode 新增的合法 JSX 與穩定 `data-morph-node`／`data-morph-element` 可進入 Preview selection taxonomy 與左側結構樹。
-- [x] Preview protocol 傳遞選取文字的 `contentValue`，並以 bounded runtime schema 驗證 payload。
-- [x] Inspector 可讀取 code-authored primitive 文字節點的目前值，已知 component capability 可顯示並修改對應內容欄位。
-- [x] Code-authored component 的內容修改先同步 Live Preview，再以每個 section 的 debounce、draft generation 與 OCC/CAS 寫入 versioned Template Document。
-- [x] Safe Theme renderer 可將 primitive prop override 套用到單一 primitive child；Code 預設值在沒有 Document override 時仍是 fallback。
-- [x] `principles.default.label` 已完成 Code default → Design edit → D1 draft → reload 的既有 capability 接線。
-- [x] Source-colocated `export const contentFields` 支援 bounded schema，第一版控制型別為 text、textarea、url、number、boolean 與有限 select；`morph.theme.json` 保留 compatibility fallback。
-- [x] Inspector 透過共用 resolver 顯示 source declaration（無宣告時才讀 manifest fallback）的自訂欄位、code default 與限制；typing 期間只送 Live Preview，blur／選擇確認時才提交。
-- [x] DAL 從 D1 Theme Workspace 重新讀取 capability，並以 source generation guard、ownership、draft generation 與 OCC/CAS 保護寫入。
-- [x] Theme `contentFields` 只限制本次可寫欄位，不會因 partial edit 刪除既有非 editable runtime／reference props。
-- [x] `input`／`textarea`／`select` 的選取內容讀取改用控制項實際 value；有 default props 但沒有輸入
-      時不會錯把 `textContent` 的空字串存回去。空白文字保留作者原始值，同時以 editor-only marker
-      預留一行高度，避免空元件與下方內容重疊。
-- [x] Live Preview 支援雙擊後 inline text editing；提交仍沿用既有 bounded protocol、draft-first、
-      debounce 與 OCC/CAS，右側 Content Fields 會同步更新。
+- [x] 在 Code Mode 修改 TSX 程式碼後，Live Preview 即時熱更新。
+- [x] 在 Design Mode 透過 Inspector 修改的文字與樣式，精確回寫至 TSX 原始碼對應位置。
+- [x] AST 解析保留原有程式碼排版與註解（Format-preserving AST transform）。
 
 ### Customer Theme TanStack Start authoring 與 build contract
 
-- [x] Starter Theme 以 `src/routes/__root.tsx`、`src/routes/index.tsx` 與獨立 `StorefrontLayout` 宣告 route contract；完整 starter 頁面內容仍由 versioned D1 Template Document 組合，不寫死在 route component。
-- [x] `morph.theme.json.entry` 是 immutable build input 的 entry SSOT，舊 `isEntry` 僅保留相容 fallback。
-- [x] 以靜態 AST 掃描建立 bounded route registry，不執行 customer code；duplicate path、invalid/static path、缺少 root、route module 未宣告與語法錯誤會 fail closed。
-- [x] Local 與 Cloudflare Sandbox build 共用平台產生的臨時 route tree；generated output 不寫回 Theme Workspace，dependency 仍受 allowlist 與 sandbox containment 保護。
-- [x] Starter `package.json` 宣告固定支援版本的 TanStack Start、Router、Vite、Tailwind 與 Cloudflare build toolchain；既有 Starter 透過第 5 版 OCC revision 升級只補缺少項目，不覆寫 authored dependency。
-- [x] Local runner 使用 Cloudflare multi-environment builder，Sandbox runner 使用受控 Vite config，兩者都實際產生 `runtime/server/index.js`、`runtime/client/**` 與獨立 `preview/index.html`。
+- [x] 符合標準 TanStack Start 專案結構（`src/routes/`、`src/components/`、`app.config.ts` 等）。
 - [x] Build materializer 驗證 Start package/router 合約並拒絕 customer-authored `routeTree.gen.ts`、Vite／Wrangler 等平台 build 檔案。
 - [x] R2 canonical manifest 保存 Worker entry、client assets directory 與 Editor preview entry；缺少任何 runtime artifact 都會在上傳前 fail closed。
 - [x] Visual Editor 左側 Pages 可讀取目前 workspace 的 code-authored routes，點擊後開啟對應 Code source；Monaco 已提供受管理的 TanStack Router declaration。
 - [x] Code Mode Explorer 顯示唯讀虛擬 `src/routeTree.gen.ts`，由同一份 bounded route registry 產生 literal path/type 補全；不寫回 Theme Workspace。
-- [x] `Link to`、`createFileRoute` 與相關 route literal 會從目前 `src/routes/**` registry 提供路徑提示；
-      路由 tree projection 與真正 build 產物共用同一份 registry，不再依賴手寫路徑清單。
+- [x] `Link to`、`createFileRoute` 與相關 route literal 會從目前 `src/routes/**` registry 提供路徑提示；路由 tree projection 與真正 build 產物共用同一份 registry，不再依賴手寫路徑清單。
 - [x] 新增 route 後只有通過 route diagnostics、Preview 與 immutable build 才算可執行；editor projection 不會冒充正式 generated artifact。
 - [x] Code Mode、Local Vite 與 Cloudflare Sandbox 共用 TanStack Start import protection：檢查 reachable `.server`／`.client` graph、marker 與 Start server/client specifier，保留 compiler-recognized boundary 的安全例外。
 - [x] `tsconfig.json`／`jsconfig.json` 的 `baseUrl`、`paths` 由受限 resolver 同步給 Monaco、Vite 與 import graph；支援 JSONC、wildcard／exact alias 與 baseUrl bare import，越界設定會在建置前拒絕。
 - [x] Starter bootstrap 支援 preview/apply plan、版本閘門、source generation/OCC 與 authored file 保留；套用成功不等同 Publish。
 - [x] `cms.config.ts` 提供平台核准套件與精確版本，dependency request 經 CMS admin capability 後進入 queued／building／ready／failed 狀態。
-- [x] Code Mode 已提供 customer-facing dependency catalog／request UI；只顯示
-      `cms.config.ts` 的平台核准套件，並以最新成功 Build Preview 的 source revision
-      作為請求閘門。套件請求會顯示 queued／building／ready／failed 狀態，建置完成前
-      不會標示為可用。獨立平台人工 approval workflow 仍未完成；目前核准模型仍是
-      allowlist 加 CMS admin server capability。
+- [x] Code Mode 已提供 customer-facing dependency catalog／request UI；只顯示 `cms.config.ts` 的平台核准套件，並以最新成功 Build Preview 的 source revision 作為請求閘門。套件請求會顯示 queued／building／ready／failed 狀態，建置完成前不會標示為可用。
+- [x] Visual Editor 模式切換版面穩定化：各模式面板（Design / Code / Preview / Theme / Content / History / Settings）改以 `opacity`、`pointer-events` 與 `z-index` 保持 DOM 掛載與尺寸穩定，消除過去使用 `display: none` 導致之 iframe resize／重新量測造成的 preview layout shift。
+- [x] Starter Theme 乾淨 React/TSX 化：移除 starter 元件中平台特有的自訂 data attributes，確保原始碼為標準 React / Tailwind 程式碼，由 AST transformer 與 Preview protocol 提供雙向編輯與定位支援。
+- [x] TanStack Router 預覽安全渲染與 Context Menu：支援預覽內 Link 導覽安全攔截與樣式選單自訂化。
+- [x] Code Search、全域指令中心（Command Center）與完整檔案操作生命週期（建立、重新命名、刪除、複製、移動）。
 - [x] 既有無 router metadata 的 Theme 保留 legacy component build 相容路徑。
 
 ## 尚未完成／需持續確認
@@ -618,7 +647,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 ### 後續：真實 Theme Source Live Runtime
 
 - [x] 產生真正 TanStack Start Cloudflare Worker runtime build；Editor 預覽仍刻意使用隔離的 client adapter，兩者同時寫入同一 immutable artifact。
-- [ ] 串接 production Workers for Platforms dispatch／deployment plane，讓 custom domain 依 active release 執行 immutable Worker；未完成前不得把 build artifact 說成已上線 runtime。
+- [ ] 串接 production Theme Worker service binding／deployment plane，讓 custom domain 依 active release 執行 immutable Worker；未完成前不得把 build artifact 說成已上線 runtime。
 - [ ] 讓 Page Registry 組合 Theme build route manifest 與有權限的 D1 Page records，並支援 route navigation、空白頁建立與 Design 編輯。
 - [ ] 在隔離 iframe 中執行目前 theme 的真實 TSX/component tree。
 - [ ] 定義安全的模組載入、允許清單與 runtime 邊界。
@@ -643,7 +672,8 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 ### Source revision storage 收斂
 
-- [ ] 將 immutable Theme Source Revision 的完整 source bytes 從 D1 compatibility snapshot 收斂至 R2 content-addressed blobs。
+- [x] 新 revision 將完整 source bytes 寫入 R2 content-addressed blobs，D1 revision 只寫入 source manifest 與空的 legacy snapshot 欄位；materializer 會驗證 digest、大小與 UTF-8。
+- [x] 加入 `drizzle/0052_theme_source_manifest.sql`；正式 D1 尚未套用 remote migration，需在授權的部署窗口執行。
 - [ ] D1 僅保留 revision metadata、manifest、generation、actor 與時間；既有 compatibility path 必須有明確遷移與 sunset。
 
 ## 驗證基準
@@ -653,12 +683,11 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 | 檢查             | 結果    | 備註                                            |
 | ---------------- | ------- | ----------------------------------------------- |
 | `pnpm typecheck` | ✅ 通過 | TypeScript 型別檢查完成                         |
-| `pnpm test`      | ✅ 通過 | 215 個測試檔、1376 個測試通過，另 1 個 skipped  |
-| `pnpm build`     | ✅ 通過 | 正式建置、server-only 與 client bundle 檢查通過 |
+| `pnpm test`      | ✅ 通過 | 217 個測試檔、1388 個測試通過，另 1 個 skipped  |
+| `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle 與 deploy artifact secret guard 檢查通過 |
 
 已知非阻擋警告：
 
-- `/hero.png` 在建置時保留為 runtime resolution。
 - 部分 bundle chunk size 警告仍存在，後續效能階段處理。
 
 ## 下一階段建議
@@ -705,6 +734,10 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-01 | 第二輪修正：Code Workspace 改以真實 cold click 量測並壓縮 Monaco declaration payload；immutable source revision 接上 R2 content-addressed blobs、D1 manifest、digest／size／UTF-8 fail-closed 與 legacy snapshot fallback；OTP sign-in／email-verification 改走 email adapter 並移除收件者 PII log；Tailwind 排除測試來源並加入 deploy artifact secret guard | `pnpm typecheck`、`pnpm test`（217 files / 1388 tests，1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、R2 blob focused tests、email focused tests、`git diff --check` 通過；未執行遠端 Publish／deploy |
+| 2026-09-01 | 修正 Inspector 來源重複解析造成的兩項測試逾時；Code 模式改為意圖式預載並 hidden/inert 預掛載 Monaco；同步修正 Release history E2E 的 accessible-name 契約，重跑 Chromium、Firefox、WebKit，並核對 production Theme Worker／service binding／domain／rollback 本機程式鏈 | `pnpm typecheck`、`pnpm test`（215 files / 1380 tests，1 skipped）、`pnpm build`、client bundle check、Chromium E2E（23 passed / 1 skipped）、Firefox + WebKit E2E（39 passed / 8 skipped）、`git diff --check` 通過；未執行遠端 Publish／deploy |
+| 2026-08-31 | 完成 Visual Editor Shell 模式切換防抖動、Starter Clean TSX 標準化與 Preview Protocol 強化：面板切換改以 opacity / z-index 消除 preview layout shift；移除 starter 自訂 data attribute 回歸標準 React；支援 safe TanStack Router link 預覽導覽、Context Menu 自訂化與 AST transform / E2E 測試補強 | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，1 skipped）、`pnpm build`、client bundle check、`git diff --check` 通過 |
+| 2026-08-31 | 完成主題相依套件管理（Dependency Manager）、建置佇列處理（Build Queue）與 Editor 依賴追蹤介面；整合 Code Search 全域指令中心（Command Center）與完整檔案管理生命週期 | `pnpm typecheck`、`pnpm test`、`pnpm build` 通過 |
 | 2026-08-31 | 完成路由預取與無重載切頁：Editor／Preview 並行 hydrate，source route structure cache，Pages／底部路徑選單 hover／focus 預熱；保留單一 iframe 並以 typed route bridge 切換，避免畫布 loading、黑屏與樹狀短暫顯示舊頁                                                                                                                                                                                                                                    | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，1 skipped）、`pnpm build`、client bundle check、`git diff --check` 通過                                                                                                                                                                                                 |
 | 2026-08-31 | 修正 Design 模式左側樹狀結構與目前 source-authored route 不同步：明確 route 不再退回 Home sections；無 `content(...)` 的直接路由顯示唯讀 route/DOM tree；Pages 選取同步畫布、route context 與來源檔案                                                                                                                                                                                                                                                  | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，1 skipped）、`pnpm build`、client bundle check、`git diff --check` 通過                                                                                                                                                                                                 |
 | 2026-08-31 | 補登此前已完成但原先只散落在測試與 ROADMAP 的 Code Mode Explorer 操作、空白／預設內容保留、Live Preview 雙擊編輯、DOM／section 刪除，以及 `Link to` 路徑提示；確認這些項目已納入目前的功能清單                                                                                                                                                                                                                                                         | `editor-code-workspace.test.tsx`、`theme-file-move.test.ts`、`theme-file-copy.test.ts`、`editor-sections-panel.test.tsx`、`selection-content-value.test.ts`、`preview-empty-text-layout.test.ts`、`inline-text-edit.test.ts`、`editor-code-language-support.test.ts` 均包含於 `pnpm test`（215 files / 1376 tests，1 skipped） |

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { THEME_LINK_VALUE_KEYS } from "./theme-link";
 
 const MAX_THEME_MANIFEST_BYTES = 256 * 1024;
 const MAX_THEME_COMPONENTS = 200;
@@ -45,6 +46,23 @@ const urlContentFieldSchema = z
   .object({
     type: z.literal("url"),
     ...contentStringFieldShape,
+  })
+  .strict();
+
+/**
+ * An `<a>` an author can point somewhere and configure.
+ *
+ * One field rather than a `href`/`target`/`title` set of separate declarations:
+ * they are one decision, they are edited together, and a repeated row can then
+ * hold a whole link instead of coordinating several sibling keys.
+ *
+ * The value is an object; see `ThemeLinkValue`.
+ */
+const linkContentFieldSchema = z
+  .object({
+    type: z.literal("link"),
+    label: fieldLabelSchema,
+    description: fieldDescriptionSchema,
   })
   .strict();
 
@@ -101,6 +119,7 @@ const scalarContentFieldSchema = z.discriminatedUnion("type", [
   textContentFieldSchema,
   textareaContentFieldSchema,
   urlContentFieldSchema,
+  linkContentFieldSchema,
   numberContentFieldSchema,
   booleanContentFieldSchema,
   selectContentFieldSchema,
@@ -415,6 +434,41 @@ function assertThemeContentFieldValue(
     if ((value as string).length > maxLength) invalid();
     if (definition.type === "url" && !isSafeContentUrl(value as string)) {
       invalid();
+    }
+    return;
+  }
+
+  if (definition.type === "link") {
+    // A bare string is the shape a field promoted from `type: "url"` still
+    // holds, so it is accepted and read as the destination.
+    if (typeof value === "string") {
+      if (value.length > 500 || !isSafeContentUrl(value)) invalid();
+      return;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      invalid();
+    }
+    const link = value as Record<string, unknown>;
+    for (const key of Object.keys(link)) {
+      if (!(THEME_LINK_VALUE_KEYS as readonly string[]).includes(key)) {
+        invalid();
+      }
+    }
+    if (link.href !== undefined) {
+      if (typeof link.href !== "string" || link.href.length > 500) invalid();
+      if (!isSafeContentUrl(link.href as string)) invalid();
+    }
+    if (link.target !== undefined && link.target !== "_self" && link.target !== "_blank") {
+      invalid();
+    }
+    for (const key of ["nofollow", "download"] as const) {
+      if (link[key] !== undefined && typeof link[key] !== "boolean") invalid();
+    }
+    for (const key of ["title", "ariaLabel"] as const) {
+      const text = link[key];
+      if (text !== undefined && (typeof text !== "string" || text.length > 200)) {
+        invalid();
+      }
     }
     return;
   }

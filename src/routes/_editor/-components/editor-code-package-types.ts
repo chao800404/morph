@@ -7,8 +7,8 @@
  */
 import {
   GENERATED_THEME_APPROVED_DEPENDENCIES,
-  GENERATED_THEME_PACKAGE_DECLARATIONS,
   GENERATED_THEME_PACKAGE_NAMES,
+  type GeneratedThemePackageDeclaration,
 } from "./editor-code-package-types.generated";
 
 export type ThemePackageTypeManifest = {
@@ -1115,18 +1115,64 @@ export function renderThemePackageTypeDeclarations(
 }
 
 /**
+ * The generated `.d.ts` payload is several megabytes, so it is code-split into
+ * its own chunk and resolved on demand rather than bundled with the Code
+ * Workspace.
+ *
+ * Until it resolves, `getGeneratedThemePackageDeclarations()` reports no
+ * generated roots and `configureThemeTypeScript` falls back to the compact
+ * synthetic declarations. That path is already the supported behaviour when the
+ * generator has not run, so early configuration degrades to less precise types
+ * rather than "cannot find module" diagnostics. Callers should re-run
+ * configuration once this resolves to upgrade to the real declarations.
+ */
+let loadedThemePackageDeclarations: readonly GeneratedThemePackageDeclaration[] =
+  [];
+let themePackageDeclarationsPromise: Promise<
+  readonly GeneratedThemePackageDeclaration[]
+> | null = null;
+
+/**
  * Returns the declaration files generated from the installed, approved Theme
  * toolchain. The files are kept separate so Monaco can resolve relative
  * imports inside a package's real `.d.ts` graph instead of reducing it to an
  * unsafe `any` declaration.
+ *
+ * Returns an empty list until
+ * {@link preloadGeneratedThemePackageDeclarations} has resolved.
  */
 export function getGeneratedThemePackageDeclarations(
   packageNames: readonly string[] = GENERATED_THEME_PACKAGE_NAMES,
 ): readonly { readonly path: string; readonly content: string }[] {
-  if (GENERATED_THEME_PACKAGE_DECLARATIONS.length === 0) return [];
+  if (loadedThemePackageDeclarations.length === 0) return [];
   const requestedRoots = new Set(packageNames.map(getThemePackageRoot));
   const hasGeneratedPackage = GENERATED_THEME_PACKAGE_NAMES.some((name) =>
     requestedRoots.has(getThemePackageRoot(name)),
   );
-  return hasGeneratedPackage ? GENERATED_THEME_PACKAGE_DECLARATIONS : [];
+  return hasGeneratedPackage ? loadedThemePackageDeclarations : [];
+}
+
+/** Loads and caches the code-split declaration payload. */
+export function preloadGeneratedThemePackageDeclarations(): Promise<
+  readonly GeneratedThemePackageDeclaration[]
+> {
+  themePackageDeclarationsPromise ??= import(
+    "./editor-code-package-declarations.generated"
+  )
+    .then((module) => {
+      loadedThemePackageDeclarations = module.GENERATED_THEME_PACKAGE_DECLARATIONS;
+      return loadedThemePackageDeclarations;
+    })
+    .catch((error) => {
+      // Allow a later retry instead of caching the failure permanently.
+      themePackageDeclarationsPromise = null;
+      throw error;
+    });
+  return themePackageDeclarationsPromise;
+}
+
+/** Test seam: reset the module-level declaration cache. */
+export function resetGeneratedThemePackageDeclarationsForTests(): void {
+  loadedThemePackageDeclarations = [];
+  themePackageDeclarationsPromise = null;
 }

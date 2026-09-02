@@ -342,6 +342,43 @@ export const getThemeBuild = createServerFn({ method: "POST" })
     }
   });
 
+/**
+ * Cancels a build that has not finished.
+ *
+ * Ownership is enforced by the same storefront/theme scoping every other build
+ * function uses: a build id alone never authorises the action, so a build
+ * belonging to another storefront reads as not found rather than being
+ * cancellable by id.
+ */
+export const cancelThemeBuild = createServerFn({ method: "POST" })
+  .validator((data: unknown) => getStorefrontThemeBuildInputSchema.parse(data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data }) => {
+    try {
+      const service = createServerThemeBuildService();
+      const result = await service.cancelBuild({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        buildId: data.buildId,
+      });
+      // A build that finished first is not an error: the caller asked to stop
+      // work that turned out to be already done.
+      return ok(
+        result.cancelled
+          ? "Theme build cancelled"
+          : `Theme build already ${result.build.status}`,
+        result,
+      );
+    } catch (error) {
+      return failure(
+        "Cancel theme build error",
+        error,
+        "BUILD_CANCEL_FAILED",
+        "Failed to cancel theme build",
+      );
+    }
+  });
+
 export const listThemeBuilds = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
     listStorefrontThemeBuildsInputSchema.parse(data),

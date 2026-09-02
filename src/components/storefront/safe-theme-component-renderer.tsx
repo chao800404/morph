@@ -8,6 +8,10 @@ import {
   type ReactNode,
 } from "react";
 import { SAFE_THEME_INLINE_ROUTE_COMPONENT } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  TANSTACK_ROUTER_MODULE,
+  renderThemeRouterLink,
+} from "./safe-theme-router-link";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
   THEME_CONTENT_CONTEXT_KEY,
@@ -925,8 +929,15 @@ function inferBoundPropName(
   }
 }
 
-/** Attributes whose bound prop identifies the element's editable content. */
-const CONTENT_BEARING_ATTRIBUTES = ["src", "href"];
+/**
+ * Attributes whose bound prop identifies the element's editable content.
+ *
+ * `to` is here because the router's `<Link>` names its destination that way.
+ * Without it an internal link — the form these Themes use for most navigation —
+ * would be the one destination the editor could not find the prop for, while
+ * the same link written as a plain `<a href>` would work.
+ */
+const CONTENT_BEARING_ATTRIBUTES = ["src", "href", "to"];
 
 /**
  * Field key for an element the author never marked.
@@ -1618,7 +1629,18 @@ export function renderSafeThemeComponent({
   const normalizedSourcePath = normalizePath(sourcePath);
   const context: RuntimeContext = {
     files: fileMap,
-    builtinComponents,
+    // `<Link>` is not route-specific: authors use it in ordinary components
+    // such as headers, footers and hero sections, which render through this
+    // entry point on their own. Provide it by default so those components are
+    // interpreted instead of refused, while callers (the route renderer) can
+    // still override the module's builtins to add `Outlet`.
+    builtinComponents: {
+      ...builtinComponents,
+      [TANSTACK_ROUTER_MODULE]: {
+        Link: renderThemeRouterLink,
+        ...builtinComponents[TANSTACK_ROUTER_MODULE],
+      },
+    },
     injectedProps,
     resolveComponent,
     contentSlots,

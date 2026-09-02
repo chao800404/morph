@@ -103,7 +103,10 @@ import {
   registerTailwindCompletionProvider,
   registerTanStackRouteCompletionProvider,
 } from "./editor-code-language-support";
-import { extractThemeDependencyNames } from "./editor-code-package-types";
+import {
+  extractThemeDependencyNames,
+  preloadGeneratedThemePackageDeclarations,
+} from "./editor-code-package-types";
 import { formatEditorCode } from "./editor-code-formatter";
 import { prepareDuplicateThemeFile } from "@/lib/storefront/editor/duplicate-theme-file";
 import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
@@ -368,6 +371,10 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [copiedPaths, setCopiedPaths] = useState<string[]>([]);
   const [searchRevision, setSearchRevision] = useState(0);
   const [routeDiagnosticsRevision, setRouteDiagnosticsRevision] = useState(0);
+  // Reconfigures TypeScript with the latest files/scope. Held in a ref so the
+  // code-split declaration payload can re-apply it on arrival without a state
+  // update, which would re-render the tree mid-interaction.
+  const reconfigureTypeScriptRef = useRef<() => void>(() => {});
   const searchRevisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -449,7 +456,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   // the editor's virtual model in sync after a route is created, renamed, or
   // removed so the generated file and path completions never lag behind the
   // persisted workspace snapshot.
-  useEffect(() => {
+  const syncWorkspaceTypeScript = useCallback(() => {
     const monaco = monacoRef.current;
     if (!monaco) return;
     const workspaceModels = files.map((file) => ({
@@ -470,7 +477,31 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       workspaceScope,
       workspaceModels,
     );
-  }, [files, routeDiagnosticsRevision, workspaceScope]);
+  }, [files, workspaceScope]);
+
+  reconfigureTypeScriptRef.current = syncWorkspaceTypeScript;
+
+  useEffect(() => {
+    syncWorkspaceTypeScript();
+  }, [syncWorkspaceTypeScript, routeDiagnosticsRevision]);
+
+  // The generated package declarations are a multi-megabyte chunk fetched
+  // separately from the workspace bundle. Monaco mounts immediately using the
+  // synthetic fallback types, then this re-applies the configuration through a
+  // ref so the real declarations take effect without re-rendering the tree.
+  useEffect(() => {
+    let cancelled = false;
+    preloadGeneratedThemePackageDeclarations()
+      .then(() => {
+        if (!cancelled) reconfigureTypeScriptRef.current();
+      })
+      .catch(() => {
+        // Keep the synthetic fallback types; completions stay usable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refreshDiagnostics = useCallback(
     (monaco: Monaco) => {

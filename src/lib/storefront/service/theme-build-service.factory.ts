@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { cmsConfig } from "@/cms.config";
 import { CloudflareR2ThemeBuildArtifactStore } from "@/lib/storefront/compiler/cloudflare-r2-theme-build-artifact-store";
+import { CloudflareSandboxThemeBuildTerminator } from "@/lib/storefront/compiler/cloudflare-sandbox-theme-build-terminator";
 import { CloudflareSandboxViteThemeBuildRunner } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-theme-build-runner";
 import type { ThemeBuildArtifactStore } from "@/lib/storefront/compiler/theme-build-artifact-store.types";
 import { materializeThemeBuildInput } from "@/lib/storefront/compiler/theme-build-materializer";
@@ -49,5 +50,10 @@ export function createServerThemeBuildService(options?: {
     materializeThemeBuildInput,
     artifactStore,
     options?.revisionStore ?? themeRevisionStore,
+    // Addressed by build id, the same way the runner acquires its session, so a
+    // cancel from another request reaches the container that is building.
+    (env as any)?.Sandbox
+      ? new CloudflareSandboxThemeBuildTerminator((env as any).Sandbox)
+      : undefined,
   );
 }

@@ -58,6 +58,48 @@ describe("content field inference", () => {
     expect(fieldsIn(html)).toEqual(["imageSrc"]);
   });
 
+  it("binds an anchor to the prop supplying its href", () => {
+    const html = render(
+      `export default function Widget({ actionHref = "/a" }) {
+  return <a href={actionHref}>Go</a>;
+}`,
+      { actionHref: "/b" },
+    );
+
+    expect(fieldsIn(html)).toEqual(["actionHref"]);
+  });
+
+  it("binds a router Link to the prop supplying its destination", () => {
+    // `<Link to={...}>` is how these Themes write internal navigation. Reading
+    // only `href` would leave the most common link in a Theme with no field.
+    const html = render(
+      `import { Link } from "@tanstack/react-router";
+
+export default function Widget({ actionHref = "/a" }) {
+  return <Link to={actionHref}>Go</Link>;
+}`,
+      { actionHref: "/b" },
+    );
+
+    expect(fieldsIn(html)).toEqual(["actionHref"]);
+    expect(html).toContain('href="/b"');
+  });
+
+  it("infers nothing when the destination is written as a literal", () => {
+    // Nothing to infer: no prop reaches the link, so the editor has no value to
+    // offer. The prop exists but the component ignores it.
+    const html = render(
+      `import { Link } from "@tanstack/react-router";
+
+export default function Widget({ actionHref = "/a" }) {
+  return <Link to="/aboutus">Go</Link>;
+}`,
+      { actionHref: "/b" },
+    );
+
+    expect(fieldsIn(html)).toEqual([]);
+  });
+
   it("binds a component that has never been given any values", () => {
     // A section whose values have never been stored is rendered with `{}`.
     // Validating only against the runtime props would leave it permanently

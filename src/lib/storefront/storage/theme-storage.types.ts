@@ -1,7 +1,20 @@
 import type {
   StorefrontThemeFileDTO,
+  ThemeSourceRevisionManifest,
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
+
+export type ThemeSourceBlob = {
+  digest: string;
+  content: string | Uint8Array;
+  mimeType: string;
+};
+
+/** Backend-neutral storage contract for immutable content-addressed source bytes. */
+export interface ThemeSourceBlobStore {
+  putImmutable(blob: ThemeSourceBlob): Promise<void>;
+  getImmutable(digest: string): Promise<Uint8Array | null>;
+}
 
 export type SaveThemeSourceFileOptions = {
   expectedSourceGeneration: number;
@@ -11,6 +24,8 @@ export type SaveThemeSourceFileOptions = {
   createRevision?: boolean;
   revisionMessage?: string;
   createdBy?: string;
+  /** Internal R2 manifest prepared before an OCC-protected atomic batch. */
+  sourceManifest?: ThemeSourceRevisionManifest;
 };
 
 export type SaveThemeSourceFilesBatchItem = {
@@ -39,6 +54,8 @@ export type SaveThemeSourceFilesBatchOptions = {
   createRevision?: boolean;
   revisionMessage?: string;
   createdBy?: string;
+  /** Internal R2 manifest prepared before an OCC-protected atomic batch. */
+  sourceManifest?: ThemeSourceRevisionManifest;
 };
 
 export type CreateThemeRevisionOptions = {
@@ -46,11 +63,13 @@ export type CreateThemeRevisionOptions = {
   message?: string;
   source?: "manual" | "ai" | "publish" | "rollback";
   createdBy?: string;
+  sourceManifest?: ThemeSourceRevisionManifest;
 };
 
 export type RollbackThemeRevisionOptions = {
   expectedSourceGeneration: number;
   createdBy?: string;
+  sourceManifest?: ThemeSourceRevisionManifest;
 };
 
 /**

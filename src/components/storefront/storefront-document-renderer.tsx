@@ -3,6 +3,10 @@ import {
   getComponentFilePath,
   parseComponentSource,
 } from "@/lib/storefront/ast/theme-ast-transformer";
+import {
+  sanitizeThemeLinkHref,
+  themeLinkAnchorProps,
+} from "@/lib/storefront/theme-link";
 import { cn } from "@/lib/utils";
 import { z } from "zod";
 import { renderSafeThemeComponent } from "./safe-theme-component-renderer";
@@ -77,6 +81,7 @@ function resolveSectionStyle(props: Record<string, any>): React.CSSProperties {
 const linkSchema = z.object({
   actionLabel: z.string().max(100).nullish().default("Explore"),
   actionHref: z.string().max(500).nullish().default("/collections/all"),
+  actionTarget: z.enum(["_self", "_blank"]).nullish().default("_self"),
 });
 
 const imageSchema = z.object({
@@ -349,6 +354,7 @@ function StorefrontHero({
   description,
   actionLabel,
   actionHref,
+  actionTarget,
   imageSrc,
   imageAlt,
 }: {
@@ -361,6 +367,7 @@ function StorefrontHero({
   description?: string | null;
   actionLabel?: string | null;
   actionHref?: string | null;
+  actionTarget?: string | null;
   imageSrc?: string | null;
   imageAlt?: string | null;
 }) {
@@ -418,8 +425,13 @@ function StorefrontHero({
     actionLabel ??
     heroAst?.defaultProps.actionLabel ??
     "Explore the collection";
-  const displayActionHref =
-    actionHref ?? heroAst?.defaultProps.actionHref ?? "/collections/new";
+  const displayActionHref = sanitizeThemeLinkHref(
+    actionHref ?? heroAst?.defaultProps.actionHref ?? "/collections/new",
+  );
+  const actionAnchorProps = themeLinkAnchorProps(
+    displayActionHref,
+    actionTarget ?? heroAst?.defaultProps.actionTarget,
+  );
   const displayImageSrc =
     imageSrc ||
     heroAst?.defaultProps.imageSrc ||
@@ -476,6 +488,7 @@ function StorefrontHero({
           <div className="mt-8">
             <a
               href={displayActionHref}
+              {...actionAnchorProps}
               data-storefront-component="button"
               data-storefront-field="actionLabel"
               data-morph-node={heroAst?.elements["action"]?.nodeId}
@@ -674,6 +687,7 @@ function ImageWithText({
   body,
   actionLabel,
   actionHref,
+  actionTarget,
   imageSrc,
   imageAlt,
   imagePosition,
@@ -685,6 +699,7 @@ function ImageWithText({
   body?: string | null;
   actionLabel?: string | null;
   actionHref?: string | null;
+  actionTarget?: string | null;
   imageSrc?: string | null;
   imageAlt?: string | null;
   imagePosition?: string | null;
@@ -736,7 +751,11 @@ function ImageWithText({
           >
             {body ?? ""}
           </p>
-          <StorefrontLink href={actionHref} field="actionLabel">
+          <StorefrontLink
+            href={actionHref}
+            target={actionTarget}
+            field="actionLabel"
+          >
             {actionLabel ?? "Explore"}
           </StorefrontLink>
         </div>
@@ -970,17 +989,21 @@ function Newsletter({
 
 function StorefrontLink({
   href,
+  target,
   children,
   field = "actionLabel",
 }: {
   href?: string | null;
+  target?: unknown;
   children?: React.ReactNode;
   field?: string;
 }) {
   if (!children) return null;
+  const safeHref = sanitizeThemeLinkHref(href);
   return (
     <a
-      href={href || "#"}
+      href={safeHref || "#"}
+      {...themeLinkAnchorProps(safeHref, target)}
       data-storefront-component="button"
       data-storefront-field={field}
       className="mt-9 inline-flex border-b border-current pb-1 text-sm font-medium"

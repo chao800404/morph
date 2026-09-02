@@ -83,7 +83,7 @@ test.describe("editor accessibility", () => {
     // Axe only reports what is rendered and visible, so anything behind a
     // closed dialog is invisible to it. Scanning only the resting page is how
     // an unnamed close button and three contrast failures went unnoticed.
-    await page.getByRole("button", { name: /History/ }).click();
+    await page.getByRole("button", { name: "Release history" }).click();
     await expect(page.getByRole("dialog").first()).toBeVisible();
 
     const results = await scanEditorChrome(page).analyze();
@@ -113,7 +113,7 @@ test.describe("editor accessibility", () => {
     page,
   }) => {
     await openEditor(page);
-    const history = page.getByRole("button", { name: /History/ });
+    const history = page.getByRole("button", { name: "Release history" });
 
     await history.focus();
     await page.keyboard.press("Enter");

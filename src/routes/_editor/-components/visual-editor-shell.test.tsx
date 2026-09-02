@@ -62,6 +62,19 @@ describe("EditorModeSurface", () => {
 });
 
 describe("EditorCodeModeSurface", () => {
+  it("can mount inertly before its first activation", () => {
+    render(
+      <EditorCodeModeSurface active={false} preload>
+        <textarea data-testid="preloaded-code-buffer" defaultValue="draft" />
+      </EditorCodeModeSurface>,
+    );
+
+    const buffer = screen.getByTestId("preloaded-code-buffer");
+    const surface = buffer.closest("[data-editor-mode-surface]");
+    expect(surface?.getAttribute("aria-hidden")).toBe("true");
+    expect(surface?.hasAttribute("inert")).toBe(true);
+  });
+
   it("mounts on first activation and preserves the same subtree afterwards", () => {
     const { rerender } = render(
       <EditorCodeModeSurface active={false}>

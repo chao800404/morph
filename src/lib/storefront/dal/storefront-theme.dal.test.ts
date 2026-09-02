@@ -102,6 +102,7 @@ beforeEach(() => {
       message text,
       source text,
       snapshot text,
+      source_manifest text,
       created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,

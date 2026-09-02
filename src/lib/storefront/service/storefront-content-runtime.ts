@@ -4,6 +4,7 @@ import {
   isValidThemeContentSlotId,
   type ThemeContentSlotValues,
 } from "../theme-content-slots";
+import { resolveThemeLinksInSlotValues } from "../theme-link";
 
 /**
  * Template a request path resolves to.
@@ -83,7 +84,9 @@ export async function resolveStorefrontContent(args: {
     if (section.enabled === false) continue;
     const props = section.props;
     slots[section.id] =
-      props && typeof props === "object" && !Array.isArray(props) ? props : {};
+      props && typeof props === "object" && !Array.isArray(props)
+        ? resolveThemeLinksInSlotValues(props as Record<string, unknown>)
+        : {};
     count += 1;
   }
 

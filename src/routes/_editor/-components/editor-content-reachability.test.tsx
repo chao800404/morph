@@ -106,7 +106,13 @@ function declaredFields(files: File[], routePath: string) {
  * here rather than inferred, so that a field silently losing its element
  * binding still fails instead of being explained away.
  */
-const SECTION_LEVEL_ONLY_FIELDS = new Set(["actionHref", "imageAlt"]);
+const SECTION_LEVEL_ONLY_FIELDS = new Set([
+  "actionHref",
+  // Whether the link opens a new tab is behaviour, not content: it changes no
+  // rendered text, so it is edited alongside the URL in the section panel.
+  "actionTarget",
+  "imageAlt",
+]);
 
 function expectEveryDeclaredFieldReachable(files: File[], document_: unknown) {
   const declared = declaredFields(files, "src/routes/index.tsx");

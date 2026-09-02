@@ -101,6 +101,7 @@ beforeEach(() => {
       message text,
       source text,
       snapshot text,
+      source_manifest text,
       created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -284,6 +285,45 @@ describe("storefront theme file DAL", () => {
         message: "Stale checkpoint",
       }),
     ).rejects.toThrow("CONFLICT_SOURCE_GENERATION_MISMATCH");
+  });
+
+  it("stores R2-backed revisions with a manifest and no duplicated D1 source payload", async () => {
+    await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/pages/index.tsx",
+          content: "export default function() { return <div>Home</div>; }",
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+
+    const rev = await storefrontThemeFileDal.createRevision(
+      "storefront-a",
+      "theme-a",
+      {
+        expectedSourceGeneration: 2,
+        sourceManifest: {
+          version: 1,
+          algorithm: "sha256",
+          files: [
+            {
+              path: "src/pages/index.tsx",
+              digest: "a".repeat(64),
+              sizeBytes: 53,
+              mimeType: "text/typescript",
+              isEntry: true,
+            },
+          ],
+        },
+      },
+    );
+
+    expect(rev.sourceManifest?.version).toBe(1);
+    expect(rev.snapshot).toEqual([]);
   });
 
   it("rejects saveFilesBatch with CONFLICT_SOURCE_GENERATION_MISMATCH when expectedSourceGeneration does not match server", async () => {

@@ -340,10 +340,29 @@ Build state：
 
 ```text
 queued → building → succeeded
-                  ↘ failed
+       ↘          ↘ failed
+        ↘ cancelled ↙
 ```
 
-不可把 failed build 標記成 publishable。
+不可把 failed 或 cancelled build 標記成 publishable。
+
+`succeeded`、`failed`、`cancelled` 都是 terminal。
+
+### 7.1.1 Cancel
+
+Cloudflare Queues 無法撤回已投遞的訊息，因此 cancel 是協作式的，順序不可顛倒：
+
+1. 先以 CAS 佔住該 row（條件：目前仍是 `queued` 或 `building`）。
+2. 再銷毀該 build 的 Sandbox session（以 buildId 定址，等同 runner 取得 session 的方式）。
+
+先銷毀會讓 runner 在任何原因被記錄前就失敗，cancel 會被誤呈現成 build 失敗。
+
+由此衍生的不變條件：
+
+- runner 的完成寫入必須輸給已佔住的 cancel；**不得**把 `cancelled` 覆寫成 `failed` 或 `succeeded`。
+- build 先結束時 cancel 失敗屬正常結果，不是錯誤；回報「已無法取消」而非丟出例外。
+- Queue consumer 取得訊息後必須先確認狀態；已是 terminal 就 `ack` 並跳過，不得建置。
+- 銷毀 session 失敗不得使已完成的 cancel 變成錯誤；row 已經決定結果，且 runner 本身有時間上限。
 
 ### 7.2 Build source
 

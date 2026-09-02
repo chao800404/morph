@@ -64,6 +64,7 @@ beforeEach(() => {
       message text,
       source text DEFAULT 'manual' NOT NULL,
       snapshot text NOT NULL,
+      source_manifest text,
       created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -749,5 +750,179 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(finalInDb?.status).toBe("succeeded");
     expect(finalInDb?.compilerVersion).toBe("4.1.17");
     expect(finalInDb?.errorMessage).toBeNull();
+  });
+});
+
+describe("ThemeBuildService cancellation", () => {
+  const seedStorefront = (storefrontId = "storefront-1") => {
+    sqlite
+      .prepare(
+        "INSERT INTO storefronts (id, sales_channel_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        storefrontId,
+        `channel-${storefrontId}`,
+        "Store",
+        "draft",
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
+  };
+  const seedTheme = (storefrontId = "storefront-1", themeId = "theme-1") => {
+    sqlite
+      .prepare(
+        "INSERT INTO storefront_themes (id, storefront_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        themeId,
+        storefrontId,
+        "Main Theme",
+        "draft",
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
+  };
+  const seedRevision = (revisionId = "rev-1") => {
+    sqlite
+      .prepare(
+        "INSERT INTO storefront_theme_revisions (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        revisionId,
+        "storefront-1",
+        "theme-1",
+        1,
+        "Checkpoint",
+        "manual",
+        JSON.stringify([]),
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
+  };
+
+  const setup = async (terminator?: { terminate: (id: string) => Promise<void> }) => {
+    seedStorefront();
+    seedTheme();
+    seedRevision();
+    const cancelService = new ThemeBuildService(
+      storefrontThemeBuildDal,
+      undefined,
+      undefined,
+      new FakeThemeBuildArtifactStore(),
+      undefined,
+      terminator,
+    );
+    const build = await storefrontThemeBuildDal.createBuild(
+      "storefront-1",
+      "theme-1",
+      { sourceRevisionId: "rev-1" },
+    );
+    return { cancelService, build };
+  };
+
+  it("claims a queued build and ends its session", async () => {
+    const terminate = vi.fn().mockResolvedValue(undefined);
+    const { cancelService, build } = await setup({ terminate });
+
+    const result = await cancelService.cancelBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      buildId: build.id,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(result.build.status).toBe("cancelled");
+    expect(terminate).toHaveBeenCalledWith(build.id);
+  });
+
+  it("claims the row before ending the session", async () => {
+    // Destroying first would make the runner fail before anything recorded
+    // why, and the cancellation would surface as a build failure.
+    let statusWhenTerminated: string | undefined;
+    const { cancelService, build } = await setup({
+      terminate: async (id) => {
+        const row = await storefrontThemeBuildDal.getBuild(
+          "storefront-1",
+          "theme-1",
+          id,
+        );
+        statusWhenTerminated = row?.status;
+      },
+    });
+
+    await cancelService.cancelBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      buildId: build.id,
+    });
+
+    expect(statusWhenTerminated).toBe("cancelled");
+  });
+
+  it("still reports a completed cancellation when the session cannot be reached", async () => {
+    // The row is already claimed, so every reader sees a cancelled build. An
+    // unreachable container must not turn that into an error.
+    const { cancelService, build } = await setup({
+      terminate: async () => {
+        throw new Error("container gone");
+      },
+    });
+
+    const result = await cancelService.cancelBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      buildId: build.id,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(result.build.status).toBe("cancelled");
+  });
+
+  it("lets a build that already succeeded keep its result", async () => {
+    const terminate = vi.fn().mockResolvedValue(undefined);
+    const { cancelService, build } = await setup({ terminate });
+    await storefrontThemeBuildDal.markBuildStarted(
+      "storefront-1",
+      "theme-1",
+      build.id,
+      {
+        inputHash: "a".repeat(64),
+        compilerId: "tailwind-v4",
+        compilerVersion: "4.1.17",
+      },
+    );
+    await storefrontThemeBuildDal.markBuildSucceeded(
+      "storefront-1",
+      "theme-1",
+      build.id,
+      {
+        artifactPrefix: "r2://artifacts/build-1",
+        manifestJson: { entry: "src/index.tsx", filesCount: 1 },
+      },
+    );
+
+    const result = await cancelService.cancelBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      buildId: build.id,
+    });
+
+    expect(result.cancelled).toBe(false);
+    expect(result.build.status).toBe("succeeded");
+    // Nothing to end, and ending a finished build's session would be pointless
+    // work against a container that already released itself.
+    expect(terminate).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel a build owned by another storefront", async () => {
+    const { cancelService, build } = await setup();
+
+    await expect(
+      cancelService.cancelBuild({
+        storefrontId: "storefront-other",
+        themeId: "theme-1",
+        buildId: build.id,
+      }),
+    ).rejects.toThrow(/not found/);
   });
 });

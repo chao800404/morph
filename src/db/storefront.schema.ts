@@ -415,6 +415,22 @@ export const storefrontThemeRevisions = sqliteTable(
         }>
       >()
       .notNull(),
+    /**
+     * Content-addressed R2 source blob manifest. Nullable for existing
+     * revisions while the legacy D1 snapshot compatibility path is migrated.
+     */
+    sourceManifest: text("source_manifest", { mode: "json" })
+      .$type<{
+        version: 1;
+        algorithm: "sha256";
+        files: Array<{
+          path: string;
+          digest: string;
+          sizeBytes: number;
+          mimeType: string;
+          isEntry: boolean;
+        }>;
+      }>(),
     createdBy: text("created_by"),
     ...timestamps,
   },
@@ -430,8 +446,20 @@ export const storefrontThemeRevisions = sqliteTable(
   ],
 );
 
+/**
+ * `cancelled` is terminal and, like `failed`, is never publishable.
+ *
+ * Cancellation is cooperative: Queues cannot revoke an in-flight message, so a
+ * cancel wins by claiming the row first and then destroying the build's Sandbox
+ * session. The runner's own failure write must therefore lose to it rather than
+ * relabel a cancelled build as failed.
+ */
 export type StorefrontThemeBuildStatus =
-  "queued" | "building" | "succeeded" | "failed";
+  | "queued"
+  | "building"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
 
 export type StorefrontThemeDependencyStatus =
   "requested" | "building" | "ready" | "failed" | "rejected";

@@ -53,14 +53,17 @@ test.describe("publish loop", () => {
     // Publish refuses without a succeeded build bound to the current source
     // revision, so the build is part of the loop rather than a precondition
     // someone is expected to have arranged.
-    // Addressed by its title: a successful build switches the canvas to the
-    // immutable preview, which adds a mode toggle with the same visible label.
-    const build = page.locator(
-      'button[title="Compile and bundle theme into immutable R2 preview build"]',
-    );
+    // Addressed by a stable attribute: the same control becomes the build's
+    // cancel action while it runs, so its label, title and accessible name all
+    // change underneath a locator that matched any of them.
+    const build = page.locator("button[data-editor-build-action]");
     await build.click();
-    await expect(build).toHaveText(/Building/, { timeout: 30_000 });
-    await expect(build).toHaveText(/Build Preview/, { timeout: 9 * 60_000 });
+    await expect(build).toHaveAttribute("data-build-pending", "true", {
+      timeout: 30_000,
+    });
+    await expect(build).toHaveAttribute("data-build-pending", "false", {
+      timeout: 9 * 60_000,
+    });
 
     const publish = page.getByRole("button", { name: /^Publish$/ });
     await expect(publish).toBeEnabled({ timeout: 30_000 });
@@ -91,7 +94,7 @@ test.describe("publish loop", () => {
       "the newest release is not at the top of the list",
     ).not.toBe(releasesBefore[0]);
     // The pointer moved with it: the release just created is the live one.
-    await page.getByRole("button", { name: /History/ }).click();
+    await page.getByRole("button", { name: "Release history" }).click();
     await expect(
       page.getByRole("dialog").first().locator("li").first(),
     ).toContainText("Live");
@@ -103,7 +106,7 @@ test.describe("publish loop", () => {
 
 /** Release ids as the history panel lists them, newest first. */
 async function listReleaseLabels(page: import("@playwright/test").Page) {
-  await page.getByRole("button", { name: /History/ }).click();
+  await page.getByRole("button", { name: "Release history" }).click();
   const dialog = page.getByRole("dialog").first();
   await expect(dialog).toBeVisible();
   await expect(

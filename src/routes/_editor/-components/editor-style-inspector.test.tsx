@@ -964,7 +964,7 @@ describe("EditorStyleInspector selection content", () => {
     const { rerender } = render(renderInspector());
 
     for (const name of ["Font family", "Font weight"]) {
-      const control = screen.getByRole("combobox", { name });
+      const control = screen.getByLabelText(name);
       expect(control.getAttribute("data-size")).toBe("sm");
       expect(
         control.closest('[data-slot="inspector-control-row"]')?.className,
@@ -976,30 +976,25 @@ describe("EditorStyleInspector selection content", () => {
     }
 
     const changeNumber = (name: string, value: string) => {
-      const input = screen.getByRole("spinbutton", { name });
+      const input = screen.getByLabelText(name);
       fireEvent.focus(input);
       fireEvent.change(input, { target: { value } });
       fireEvent.blur(input);
     };
 
-    const marginInput = screen.getByRole("spinbutton", {
-      name: "Section margin",
-    });
+    const marginInput = screen.getByLabelText("Section margin");
     expect((marginInput as HTMLInputElement).value).toBe("12");
-    const paddingInput = screen.getByRole("spinbutton", {
-      name: "Section padding",
-    });
+    const paddingInput = screen.getByLabelText("Section padding");
     expect(
-      screen.getByRole("combobox", { name: "Heading font size unit" })
-        .textContent,
+      screen.getByLabelText("Heading font size unit").textContent,
     ).toBe("px");
     expect(
       screen
-        .getByRole("spinbutton", { name: "Line height multiplier" })
+        .getByLabelText("Line height multiplier")
         .closest("form")?.textContent,
     ).toContain("×");
     const displayRow = screen
-      .getByRole("combobox", { name: "Element display" })
+      .getByLabelText("Element display")
       .closest('[data-slot="inspector-control-row"]');
     const paddingRow = paddingInput.closest(
       '[data-slot="inspector-control-row"]',
@@ -1018,9 +1013,7 @@ describe("EditorStyleInspector selection content", () => {
       expect(row?.className).not.toMatch(/\bpl-(?:2|4)\b/);
     }
     expect(alignmentRow?.className.split(" ")).toContain("pr-0");
-    const alignmentControl = screen.getByRole("button", {
-      name: "Align left",
-    }).parentElement;
+    const alignmentControl = screen.getByLabelText("Align left").parentElement;
     expect(alignmentControl?.className.split(" ")).not.toEqual(
       expect.arrayContaining(["rounded-lg", "border", "bg-muted/30"]),
     );
@@ -1035,7 +1028,7 @@ describe("EditorStyleInspector selection content", () => {
     expect(expandPaddingButton.parentElement).toBe(paddingRow?.parentElement);
     expect(expandPaddingButton.parentElement).not.toBe(paddingRow);
     expect(
-      screen.queryByRole("spinbutton", { name: "Top padding" }),
+      screen.queryByLabelText("Top padding"),
     ).toBeNull();
 
     fireEvent.click(expandPaddingButton);
@@ -1048,20 +1041,18 @@ describe("EditorStyleInspector selection content", () => {
         .getAttribute("aria-expanded"),
     ).toBe("true");
     expect(
-      screen.getByRole("spinbutton", { name: "Top padding" }),
+      screen.getByLabelText("Top padding"),
     ).not.toBeNull();
     for (const side of ["Top", "Bottom", "Left", "Right"]) {
       expect(
-        screen.getByRole("spinbutton", { name: `${side} padding` }),
+        screen.getByLabelText(`${side} padding`),
       ).not.toBeNull();
     }
     expect(paddingRow?.parentElement?.className).not.toMatch(
       /\b(?:border|bg-background|dark:bg-input\/30)\b/,
     );
     expect(
-      screen.getByRole("spinbutton", {
-        name: "Section padding",
-      }),
+      screen.getByLabelText("Section padding"),
     ).toBe(paddingInput);
     changeNumber("Top padding", "20");
     changeNumber("Bottom padding", "24");
@@ -1074,7 +1065,7 @@ describe("EditorStyleInspector selection content", () => {
     );
     for (const side of ["Top", "Bottom", "Left", "Right"]) {
       expect(
-        screen.getByRole("spinbutton", { name: `${side} margin` }),
+        screen.getByLabelText(`${side} margin`),
       ).not.toBeNull();
     }
     changeNumber("Top margin", "-20");
@@ -1086,15 +1077,13 @@ describe("EditorStyleInspector selection content", () => {
     changeNumber("Section padding", "64");
     changeNumber("Heading font size", "60");
     changeNumber("Line height multiplier", "1.4");
-    const radiusInput = screen.getByRole("spinbutton", {
-      name: "Corner radius",
-    });
+    const radiusInput = screen.getByLabelText("Corner radius");
     expect(
       radiusInput.closest('[data-slot="inspector-control-row"]')?.className,
     ).toContain("rounded-md");
     expect(
       screen
-        .getByRole("spinbutton", { name: "Heading font size" })
+        .getByLabelText("Heading font size")
         .closest('[data-slot="inspector-control-row"]')?.className,
     ).toContain("dark:bg-input/30");
     expect(
@@ -1106,30 +1095,22 @@ describe("EditorStyleInspector selection content", () => {
 
     expect(
       (
-        screen.getByRole("spinbutton", {
-          name: "Section padding",
-        }) as HTMLInputElement
+        screen.getByLabelText("Section padding") as HTMLInputElement
       ).value,
     ).toBe("64");
     expect(
       (
-        screen.getByRole("spinbutton", {
-          name: "Heading font size",
-        }) as HTMLInputElement
+        screen.getByLabelText("Heading font size") as HTMLInputElement
       ).value,
     ).toBe("60");
     expect(
       (
-        screen.getByRole("spinbutton", {
-          name: "Line height multiplier",
-        }) as HTMLInputElement
+        screen.getByLabelText("Line height multiplier") as HTMLInputElement
       ).value,
     ).toBe("1.4");
     expect(
       (
-        screen.getByRole("spinbutton", {
-          name: "Corner radius",
-        }) as HTMLInputElement
+        screen.getByLabelText("Corner radius") as HTMLInputElement
       ).value,
     ).toBe("12");
     expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(13);
@@ -1623,16 +1604,16 @@ describe("EditorStyleInspector selection content", () => {
 
     expect(screen.getByText("Border & Radius").closest("button")).toBeNull();
 
-    const borderWidth = screen.getByRole("spinbutton", {
-      name: "Border width",
-    }) as HTMLInputElement;
+    const borderWidth = screen.getByLabelText(
+      "Border width",
+    ) as HTMLInputElement;
     expect(borderWidth.value).toBe("2");
     expect(
-      screen.getByRole("combobox", { name: "Border style" }).textContent,
+      screen.getByLabelText("Border style").textContent,
     ).toContain("dashed");
-    const borderColor = screen.getByRole("textbox", {
-      name: "Color color value",
-    }) as HTMLInputElement;
+    const borderColor = screen.getByLabelText(
+      "Color color value",
+    ) as HTMLInputElement;
     expect(borderColor.value).toBe("#d8d0c3");
 
     fireEvent.click(
@@ -1640,29 +1621,23 @@ describe("EditorStyleInspector selection content", () => {
         name: "Expand individual border sides",
       }),
     );
-    const topBorderWidth = screen.getByRole("spinbutton", {
-      name: "Top border width",
-    }) as HTMLInputElement;
+    const topBorderWidth = screen.getByLabelText(
+      "Top border width",
+    ) as HTMLInputElement;
     expect(topBorderWidth.value).toBe("1");
     expect(
       (
-        screen.getByRole("spinbutton", {
-          name: "Bottom border width",
-        }) as HTMLInputElement
+        screen.getByLabelText("Bottom border width") as HTMLInputElement
       ).value,
     ).toBe("2");
     expect(
       (
-        screen.getByRole("spinbutton", {
-          name: "Left border width",
-        }) as HTMLInputElement
+        screen.getByLabelText("Left border width") as HTMLInputElement
       ).value,
     ).toBe("2");
     expect(
       (
-        screen.getByRole("spinbutton", {
-          name: "Right border width",
-        }) as HTMLInputElement
+        screen.getByLabelText("Right border width") as HTMLInputElement
       ).value,
     ).toBe("2");
 
@@ -1711,18 +1686,18 @@ describe("EditorStyleInspector selection content", () => {
         name: "Expand individual corner radii",
       }),
     );
-    const topLeft = screen.getByRole("spinbutton", {
-      name: "Top left corner radius",
-    }) as HTMLInputElement;
+    const topLeft = screen.getByLabelText(
+      "Top left corner radius",
+    ) as HTMLInputElement;
     expect(topLeft.value).toBe("4");
     expect(
-      screen.getByRole("spinbutton", { name: "Top right corner radius" }),
+      screen.getByLabelText("Top right corner radius"),
     ).toBeTruthy();
     expect(
-      screen.getByRole("spinbutton", { name: "Bottom left corner radius" }),
+      screen.getByLabelText("Bottom left corner radius"),
     ).toBeTruthy();
     expect(
-      screen.getByRole("spinbutton", { name: "Bottom right corner radius" }),
+      screen.getByLabelText("Bottom right corner radius"),
     ).toBeTruthy();
 
     fireEvent.focus(topLeft);

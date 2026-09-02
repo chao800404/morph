@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { posix } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import * as ts from "typescript";
-import { GENERATED_THEME_PACKAGE_DECLARATIONS } from "./editor-code-package-types.generated";
+import { GENERATED_THEME_PACKAGE_DECLARATIONS } from "./editor-code-package-declarations.generated";
+import { preloadGeneratedThemePackageDeclarations } from "./editor-code-package-types";
 import type { Monaco } from "@monaco-editor/react";
 import {
   collectJsxTagSemanticTokens,
@@ -18,6 +19,12 @@ import {
   resolveThemeRouteCompletionContext,
   resolveTailwindCompletionContext,
 } from "./editor-code-language-support";
+
+// The generated declarations are code-split and loaded on demand in the app.
+// Resolve them once here so configuration assertions see the real payload.
+beforeAll(async () => {
+  await preloadGeneratedThemePackageDeclarations();
+});
 
 describe("collectJsxTagSemanticTokens", () => {
   it("colors matching tags alike and cycles nested depths", () => {

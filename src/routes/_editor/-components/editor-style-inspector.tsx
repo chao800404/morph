@@ -38,6 +38,18 @@ import {
   tokenizeTailwindClasses,
   type PatchTailwindOptions,
 } from "@/lib/storefront/ast/tailwind-token-engine";
+import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  patchThemeLinkBinding,
+  resolveThemeLinkBinding,
+  type ThemeLinkBinding,
+} from "@/lib/storefront/ast/theme-link-binding";
+import {
+  isExternalThemeLink,
+  normalizeThemeLinkTarget,
+  normalizeThemeLinkValue,
+  type ThemeLinkValue,
+} from "@/lib/storefront/theme-link";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
@@ -55,7 +67,16 @@ import {
   Sliders,
   Type,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { RxPadding } from "react-icons/rx";
 import { InspectorColorField } from "./style-inspector/inspector-color-field";
 import {
@@ -80,6 +101,7 @@ import {
 } from "./style-inspector/inspector-select-control";
 import { InspectorDisclosureField } from "./style-inspector/inspector-disclosure-field";
 import { InspectorControlRow } from "./style-inspector/inspector-control-row";
+import { inspectorControlSurface } from "./style-inspector/inspector-control-surface";
 import { InspectorBreakpointIndicator } from "./style-inspector/inspector-breakpoint-indicator";
 import {
   InspectorLengthControl,
@@ -149,6 +171,16 @@ type EditorStyleInspectorProps = {
     fieldPath: string | null,
     value: string,
   ) => void;
+  onRepairThemeLinkBinding?: (
+    filePath: string,
+    fieldKey: string,
+  ) => Promise<boolean> | boolean;
+  /** Rewrites the source between the router's `<Link>` and a plain `<a>`. */
+  onSwitchThemeLinkElement?: (
+    filePath: string,
+    fieldKey: string,
+    target: "router" | "anchor",
+  ) => Promise<boolean> | boolean;
   onPropsChange: (
     next: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
@@ -350,6 +382,68 @@ function computedColorToHex(value?: string | null): string | null {
  * was not resolved. A resolved node is authoritative, including an empty
  * className; only unresolved nodes may fall back to section/document props.
  */
+export type InternalLinkPage = { path: string; label: string };
+
+/**
+ * Pages of this store, offered as destinations for an action link.
+ *
+ * Read from the same source route registry the Pages panel uses, so the list
+ * cannot drift from the routes the Theme actually builds. Dynamic and splat
+ * routes are left out: `/products/$id` needs params this panel has no way to
+ * supply, so linking to the literal path would only produce a dead link.
+ */
+export function resolveInternalLinkPages(
+  themeFiles: readonly { path: string; content: string }[] | undefined,
+): InternalLinkPage[] {
+  if (!themeFiles?.length) return [];
+  const { routes } = buildThemeRouteRegistry(
+    themeFiles.map((file) => ({ path: file.path, content: file.content })),
+  );
+  const seen = new Set<string>();
+  return routes
+    .filter(
+      (route) =>
+        route.kind === "route" &&
+        !route.dynamic &&
+        !route.isSplat &&
+        !route.isPathless &&
+        typeof route.path === "string" &&
+        route.path.startsWith("/"),
+    )
+    .filter((route) => {
+      if (seen.has(route.path)) return false;
+      seen.add(route.path);
+      return true;
+    })
+    .map((route) => ({
+      path: route.path,
+      label: route.path === "/" ? "Home" : route.path,
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/**
+ * Resolve the destination binding used by the legacy, flattened action props.
+ *
+ * Older components expose `actionHref` directly, while newer components often
+ * keep the destination under an `action` object. Try the direct field first so
+ * both source shapes share the same binding diagnostics.
+ */
+function resolveLegacyActionLinkBinding(
+  sourceCode: string | null | undefined,
+): ThemeLinkBinding {
+  const direct = resolveThemeLinkBinding(sourceCode, "actionHref");
+  if (direct !== "unknown") return direct;
+  return resolveThemeLinkBinding(sourceCode, "action");
+}
+
+function canRepairLegacyActionLinkBinding(
+  sourceCode: string | null | undefined,
+): boolean {
+  if (typeof sourceCode !== "string") return false;
+  return patchThemeLinkBinding(sourceCode, "actionHref").editable;
+}
+
 export function resolveStyleInspectorClassName(
   targetMeta: ComponentElementMeta | undefined,
   sectionClassName: string,
@@ -376,6 +470,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onUpdateThemeFileStyle,
   onPreviewSelectionStyle,
   onPreviewSelectionField,
+  onRepairThemeLinkBinding,
+  onSwitchThemeLinkElement,
   onPropsChange,
   onJumpToCode,
   disabled = false,
@@ -531,16 +627,34 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   };
 
   const componentFile = themeFiles?.find((f) => f.path === componentPath);
-  const parsedMeta = componentFile?.content
-    ? parseComponentSource(componentFile.content, componentFile.path)
-    : null;
+  const legacyActionLinkBinding = useMemo(
+    () => resolveLegacyActionLinkBinding(componentFile?.content),
+    [componentFile?.content],
+  );
+  const canRepairLegacyActionLink = useMemo(
+    () => canRepairLegacyActionLinkBinding(componentFile?.content),
+    [componentFile?.content],
+  );
+  const parsedMeta = useMemo(
+    () =>
+      componentFile?.content
+        ? parseComponentSource(componentFile.content, componentFile.path)
+        : null,
+    [componentFile?.content, componentFile?.path],
+  );
+  const internalLinkPages = useMemo(
+    () => resolveInternalLinkPages(themeFiles),
+    [themeFiles],
+  );
+
   const themeContentCapability = useMemo(() => {
     // Resolved from the workspace rather than the manifest alone so a component
     // that declares its own `contentFields` is editable without being
     // registered anywhere. Server validation resolves the same way, so the form
     // and what the server accepts cannot diverge.
     if (!themeFiles) return null;
-    const { capabilities } = resolveThemeContentCapabilitiesFromFiles(themeFiles);
+    const { capabilities } =
+      resolveThemeContentCapabilitiesFromFiles(themeFiles);
     // Falls back to the component's own source path so a component that was
     // never registered anywhere — the case co-located declaration exists to
     // support — still resolves what it declares.
@@ -1310,11 +1424,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 
   const handleFieldChange = useCallback(
-    (
-      field: string,
-      value: unknown,
-      options?: InspectorPropsChangeOptions,
-    ) => {
+    (field: string, value: unknown, options?: InspectorPropsChangeOptions) => {
       const currentProps = localPropsRef.current;
       const descendantPath = selection?.descendantFields?.find(
         (binding) =>
@@ -1607,58 +1717,92 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                               Remove
                             </button>
                           </div>
-                          {rowFields.map(([rowKey, rowDefinition]) => (
-                            <InspectorField
-                              key={rowKey}
-                              label={
-                                rowDefinition.label ??
-                                rowKey.replace(/[-_]/g, " ")
-                              }
-                            >
-                              {rowDefinition.type === "textarea" ? (
-                                <Textarea
-                                  key={contentFieldInputKey(rowKey)}
-                                  defaultValue={String(row?.[rowKey] ?? "")}
-                                  maxLength={rowDefinition.maxLength}
-                                  onInput={(event) =>
-                                    handleNestedFieldChange(
-                                      `${fieldKey}.${index}.${rowKey}`,
-                                      event.currentTarget.value,
-                                    )
-                                  }
-                                  disabled={disabled}
-                                  className="min-h-16 text-xs"
-                                />
-                              ) : (
-                                <Input
-                                  type={
-                                    rowDefinition.type === "url"
-                                      ? "url"
-                                      : rowDefinition.type === "number"
-                                        ? "number"
-                                        : "text"
-                                  }
-                                  defaultValue={String(row?.[rowKey] ?? "")}
-                                  maxLength={
-                                    rowDefinition.type === "text" ||
-                                    rowDefinition.type === "url"
-                                      ? rowDefinition.maxLength
+                          {rowFields.map(([rowKey, rowDefinition]) => {
+                            const rowLabel =
+                              rowDefinition.label ??
+                              rowKey.replace(/[-_]/g, " ");
+                            // Brings its own header and several controls, so it
+                            // replaces the single-control row rather than
+                            // sitting inside it.
+                            if (rowDefinition.type === "link") {
+                              return (
+                                <InspectorLinkField
+                                  key={rowKey}
+                                  label={rowLabel}
+                                  description={rowDefinition.description}
+                                  value={normalizeThemeLinkValue(row?.[rowKey])}
+                                  pages={internalLinkPages}
+                                  binding={resolveThemeLinkBinding(
+                                    componentFile?.content,
+                                    rowKey,
+                                  )}
+                                  onSwitchBinding={
+                                    componentPath && onSwitchThemeLinkElement
+                                      ? (target) =>
+                                          void onSwitchThemeLinkElement(
+                                            componentPath,
+                                            rowKey,
+                                            target,
+                                          )
                                       : undefined
                                   }
-                                  onInput={(event) =>
+                                  disabled={disabled}
+                                  onChange={(next) =>
                                     handleNestedFieldChange(
                                       `${fieldKey}.${index}.${rowKey}`,
-                                      rowDefinition.type === "number"
-                                        ? Number(event.currentTarget.value)
-                                        : event.currentTarget.value,
+                                      next,
                                     )
                                   }
-                                  disabled={disabled}
-                                  className="h-8 text-xs"
                                 />
-                              )}
-                            </InspectorField>
-                          ))}
+                              );
+                            }
+                            return (
+                              <InspectorField key={rowKey} label={rowLabel}>
+                                {rowDefinition.type === "textarea" ? (
+                                  <Textarea
+                                    key={contentFieldInputKey(rowKey)}
+                                    defaultValue={String(row?.[rowKey] ?? "")}
+                                    maxLength={rowDefinition.maxLength}
+                                    onInput={(event) =>
+                                      handleNestedFieldChange(
+                                        `${fieldKey}.${index}.${rowKey}`,
+                                        event.currentTarget.value,
+                                      )
+                                    }
+                                    disabled={disabled}
+                                    className="min-h-16 text-xs"
+                                  />
+                                ) : (
+                                  <Input
+                                    type={
+                                      rowDefinition.type === "url"
+                                        ? "url"
+                                        : rowDefinition.type === "number"
+                                          ? "number"
+                                          : "text"
+                                    }
+                                    defaultValue={String(row?.[rowKey] ?? "")}
+                                    maxLength={
+                                      rowDefinition.type === "text" ||
+                                      rowDefinition.type === "url"
+                                        ? rowDefinition.maxLength
+                                        : undefined
+                                    }
+                                    onInput={(event) =>
+                                      handleNestedFieldChange(
+                                        `${fieldKey}.${index}.${rowKey}`,
+                                        rowDefinition.type === "number"
+                                          ? Number(event.currentTarget.value)
+                                          : event.currentTarget.value,
+                                      )
+                                    }
+                                    disabled={disabled}
+                                    className="h-8 text-xs"
+                                  />
+                                )}
+                              </InspectorField>
+                            );
+                          })}
                         </div>
                       ))}
                       <button
@@ -1666,9 +1810,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         disabled={disabled || rows.length >= maxRows}
                         onClick={() =>
                           mutateArrayRows((current) =>
-                            addArrayRowAtFieldPath(current, fieldKey, definition, {
-                              createId: createMorphItemId,
-                            }),
+                            addArrayRowAtFieldPath(
+                              current,
+                              fieldKey,
+                              definition,
+                              {
+                                createId: createMorphItemId,
+                              },
+                            ),
                           )
                         }
                         className="w-full rounded-lg border border-dashed py-1.5 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-40"
@@ -1704,6 +1853,35 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         option === "true" ? "True" : "False"
                       }
                       disabled={disabled}
+                    />
+                  );
+                }
+
+                if (definition.type === "link") {
+                  return (
+                    <InspectorLinkField
+                      key={fieldKey}
+                      label={label}
+                      description={definition.description}
+                      value={normalizeThemeLinkValue(value)}
+                      pages={internalLinkPages}
+                      binding={resolveThemeLinkBinding(
+                        componentFile?.content,
+                        fieldKey,
+                      )}
+                      disabled={disabled}
+                      isFocused={activeFieldKey === fieldKey}
+                      onChange={(next) => handleFieldChange(fieldKey, next)}
+                      onSwitchBinding={
+                        componentPath && onSwitchThemeLinkElement
+                          ? (target) =>
+                              void onSwitchThemeLinkElement(
+                                componentPath,
+                                fieldKey,
+                                target,
+                              )
+                          : undefined
+                      }
                     />
                   );
                 }
@@ -2104,13 +2282,32 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       : "bg-muted/20",
                   )}
                 >
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                    <Link className="size-3 text-muted-foreground" />
-                    <span>Action Button</span>
+                  {/* Header carries the destination switch the way Media Image
+                      carries its position select: the card's one mode control
+                      sits beside the title, not inside the field grid. */}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                      <Link className="size-3 text-muted-foreground" />
+                      <span>Action Button</span>
+                    </span>
+                    {legacyActionLinkBinding !== "unknown" ? (
+                      <LinkDestinationKindSwitch
+                        binding={legacyActionLinkBinding}
+                        disabled={disabled || !componentPath}
+                        onSwitch={(target) => {
+                          if (!componentPath) return;
+                          void onSwitchThemeLinkElement?.(
+                            componentPath,
+                            "actionHref",
+                            target,
+                          );
+                        }}
+                      />
+                    ) : null}
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-2">
                     <div>
-                      <label className="text-[10px] text-muted-foreground">
+                      <label className={cn(inspectorFieldLabelClassName, "text-muted-foreground")}>
                         Label
                       </label>
                       <Input
@@ -2137,28 +2334,155 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         className="h-7 text-xs"
                       />
                     </div>
-                    <div>
-                      <label className="text-[10px] text-muted-foreground">
-                        Link URL
-                      </label>
-                      <Input
-                        key={contentFieldInputKey("actionHref")}
-                        defaultValue={String(
-                          selectedFieldValue("actionHref") ?? "",
-                        )}
-                        onBlur={(e) =>
-                          handleTextFieldBlur(
-                            "actionHref",
-                            selectedFieldValue("actionHref"),
-                            e.currentTarget.value,
-                          )
-                        }
-                        disabled={disabled}
-                        placeholder="/collections/all"
-                        className="h-7 text-xs font-mono"
-                      />
-                    </div>
+                    {legacyActionLinkBinding === "unknown" ? (
+                      <div className="rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 p-2 text-[10px] leading-relaxed text-muted-foreground">
+                        <p className="font-medium text-foreground">
+                          Link destination is not connected to the editable
+                          field.
+                        </p>
+                        <p className="mt-1">
+                          This component has a hardcoded or unsupported link.
+                          Bind it to{" "}
+                          <code className="rounded bg-muted px-1 font-mono text-[10px]">
+                            to={'{'}actionHref{'}'}
+                          </code>{" "}
+                          (or{" "}
+                          <code className="rounded bg-muted px-1 font-mono text-[10px]">
+                            href={'{'}actionHref{'}'}
+                          </code>{" "}
+                          ) to enable the correct control here.
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {componentPath &&
+                          canRepairLegacyActionLink &&
+                          onRepairThemeLinkBinding ? (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="xs"
+                              className="h-6 px-1.5 text-[10px]"
+                              onClick={() =>
+                                void onRepairThemeLinkBinding(
+                                  componentPath,
+                                  "actionHref",
+                                )
+                              }
+                            >
+                              <Link className="mr-1 size-3" />
+                              Connect actionHref
+                            </Button>
+                          ) : null}
+                          {componentPath && onJumpToCode ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="xs"
+                              className="h-6 px-1.5 text-[10px]"
+                              onClick={() => onJumpToCode(componentPath)}
+                            >
+                              <Code2 className="mr-1 size-3" />
+                              Edit in Code
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : legacyActionLinkBinding === "router" ? (
+                      <div>
+                        <label className={cn(inspectorFieldLabelClassName, "text-muted-foreground")}>
+                          Page
+                        </label>
+                        <Select
+                          value={
+                            internalLinkPages.some(
+                              (page) =>
+                                page.path ===
+                                String(selectedFieldValue("actionHref") ?? ""),
+                            )
+                              ? String(selectedFieldValue("actionHref"))
+                              : ""
+                          }
+                          onValueChange={(value) =>
+                            handleFieldChange("actionHref", value)
+                          }
+                          disabled={disabled || internalLinkPages.length === 0}
+                        >
+                          <InspectorSelectTrigger className="h-7 w-full">
+                            <SelectValue
+                              placeholder={
+                                internalLinkPages.length === 0
+                                  ? "No pages yet"
+                                  : "Choose a page"
+                              }
+                            />
+                          </InspectorSelectTrigger>
+                          <InspectorSelectContent>
+                            {internalLinkPages.map((page) => (
+                              <InspectorSelectItem
+                                key={page.path}
+                                value={page.path}
+                              >
+                                {page.label}
+                              </InspectorSelectItem>
+                            ))}
+                          </InspectorSelectContent>
+                        </Select>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className={cn(inspectorFieldLabelClassName, "text-muted-foreground")}>
+                          Link path / URL
+                        </label>
+                        <Input
+                          key={contentFieldInputKey("actionHref")}
+                          defaultValue={String(
+                            selectedFieldValue("actionHref") ?? "",
+                          )}
+                          onBlur={(e) =>
+                            handleTextFieldBlur(
+                              "actionHref",
+                              selectedFieldValue("actionHref"),
+                              e.currentTarget.value,
+                            )
+                          }
+                          disabled={disabled}
+                          placeholder="/about or https://example.com"
+                          className="h-7 text-xs font-mono"
+                          aria-label="Action Button path or URL"
+                        />
+                      </div>
+                    )}
                   </div>
+
+                  {legacyActionLinkBinding !== "unknown" ? (
+                    <div>
+                      <div>
+                        <label className={cn(inspectorFieldLabelClassName, "text-muted-foreground")}>
+                          Open in
+                        </label>
+                        <Select
+                          value={normalizeThemeLinkTarget(
+                            selectedFieldValue("actionTarget"),
+                          )}
+                          onValueChange={(value) =>
+                            handleFieldChange("actionTarget", value)
+                          }
+                          disabled={disabled}
+                        >
+                          <InspectorSelectTrigger className="h-7 w-full">
+                            <SelectValue placeholder="Same tab" />
+                          </InspectorSelectTrigger>
+                          <InspectorSelectContent>
+                            <InspectorSelectItem value="_self">
+                              Same tab
+                            </InspectorSelectItem>
+                            <InspectorSelectItem value="_blank">
+                              New tab
+                            </InspectorSelectItem>
+                          </InspectorSelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               )}
 
@@ -3373,6 +3697,317 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 });
 
+/**
+ * One typography token for every field label in the Content & Fields module.
+ *
+ * Rule 19.3: a module's field names must share a token. Hand-writing a size per
+ * control is what produced neighbouring labels at different sizes, so the size
+ * lives here and `InspectorField` renders from the same value.
+ */
+const inspectorFieldLabelClassName = "text-[11px] font-medium block";
+
+/** Secondary copy under a field: descriptions, hints and explanations. */
+const inspectorFieldHintClassName = "text-[11px] text-muted-foreground";
+
+/**
+ * A boolean field, rendered with the shared Checkbox rather than a bare input.
+ *
+ * Rule 19: field controls take their visuals from the shared primitives, so
+ * focus ring, disabled state and dark-mode treatment match every other control
+ * instead of being re-invented per module.
+ */
+function InspectorToggleField({
+  label,
+  checked,
+  disabled,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  disabled?: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="flex items-center gap-2">
+      <Checkbox
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(next) => onCheckedChange(next === true)}
+      />
+      <label
+        htmlFor={id}
+        className={cn(inspectorFieldHintClassName, "cursor-pointer")}
+      >
+        {label}
+      </label>
+    </div>
+  );
+}
+
+/**
+ * Chooses whether a link points inside the store or out of it.
+ *
+ * The choice is the element, not the value: `<Link>` resolves against this
+ * Theme's routes and cannot leave the store, while `<a>` addresses anything.
+ * Selecting a side therefore rewrites the component source, which is why this
+ * is a pair of buttons rather than a field the author types into.
+ */
+function LinkDestinationKindSwitch({
+  binding,
+  disabled,
+  onSwitch,
+}: {
+  binding: ThemeLinkBinding;
+  disabled?: boolean;
+  onSwitch: (target: "router" | "anchor") => void;
+}) {
+  const options = [
+    { id: "router" as const, label: "In store" },
+    { id: "anchor" as const, label: "External" },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="Link destination kind"
+      className={cn(
+        inspectorControlSurface,
+        "flex h-7 shrink-0 items-center gap-0.5 p-0.5",
+      )}
+    >
+      {options.map((option) => (
+        <Button
+          key={option.id}
+          type="button"
+          size="xs"
+          variant="ghost"
+          className={cn(
+            "h-6 rounded-sm px-2 text-[10px] font-medium",
+            binding === option.id
+              ? "bg-background text-foreground shadow-sm hover:bg-background"
+              : "text-muted-foreground",
+          )}
+          disabled={disabled || binding === option.id}
+          onClick={() => onSwitch(option.id)}
+          title={
+            option.id === "router"
+              ? "Render with the router's <Link> and choose a page"
+              : "Render with a plain <a> and enter any address"
+          }
+        >
+          {option.label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Editor for one `type: "link"` content field.
+ *
+ * The source element decides which destination control is valid: a plain
+ * `<a href>` gets a free-form path/URL input, while TanStack `<Link to>` gets a
+ * picker backed by this Theme's static route registry. When source analysis is
+ * unavailable, retain the legacy value-driven toggle for compatibility.
+ */
+function InspectorLinkField({
+  label,
+  description,
+  value,
+  pages,
+  binding = "unknown",
+  disabled,
+  isFocused,
+  onChange,
+  onSwitchBinding,
+}: {
+  label: string;
+  description?: string;
+  value: ThemeLinkValue;
+  pages: readonly InternalLinkPage[];
+  /** How the component sends this destination to the page. */
+  binding?: ThemeLinkBinding;
+  disabled?: boolean;
+  isFocused?: boolean;
+  onChange: (next: ThemeLinkValue) => void;
+  /** Rewrites the element between `<Link>` and `<a>`. */
+  onSwitchBinding?: (target: "router" | "anchor") => void;
+}) {
+  const isExternal = isExternalThemeLink(value.href);
+  const inferredMode: "internal" | "external" = isExternal
+    ? "external"
+    : "internal";
+  // `unknown` is possible while a source file is missing or has syntax the
+  // lightweight AST scanner cannot parse. Keep the previous control in that
+  // case instead of silently changing a user's editor workflow.
+  const [fallbackMode, setFallbackMode] = useState<"internal" | "external">(
+    inferredMode,
+  );
+  const mode =
+    binding === "router"
+      ? "internal"
+      : binding === "anchor"
+        ? "external"
+        : fallbackMode;
+  const showModeToggle = binding === "unknown";
+  const patch = (changes: Partial<ThemeLinkValue>) =>
+    onChange({ ...value, ...changes });
+
+  return (
+    <div
+      className={cn(
+        "space-y-2 rounded-lg border p-2.5 transition-all",
+        isFocused
+          ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
+          : "bg-muted/20",
+      )}
+    >
+      <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+        <Link className="size-3 text-muted-foreground" />
+        <span>{label}</span>
+      </div>
+
+      {showModeToggle ? (
+        <div className="flex gap-1">
+          {(["internal", "external"] as const).map((option) => (
+            <Button
+              key={option}
+              type="button"
+              size="xs"
+              variant={mode === option ? "secondary" : "ghost"}
+              className="h-6 flex-1 text-[10px]"
+              disabled={disabled}
+              onClick={() => setFallbackMode(option)}
+            >
+              {option === "internal" ? "This store" : "External URL"}
+            </Button>
+          ))}
+        </div>
+      ) : onSwitchBinding ? (
+        // The element decides where the link may point, so switching sides
+        // rewrites the source rather than only the stored value.
+        <LinkDestinationKindSwitch
+          binding={binding}
+          disabled={disabled}
+          onSwitch={onSwitchBinding}
+        />
+      ) : binding === "router" ? (
+        <p className="text-[10px] leading-relaxed text-muted-foreground">
+          This link is rendered by the router, so it can only point at a page of
+          this store.
+        </p>
+      ) : null}
+
+      {mode === "internal" ? (
+        <Select
+          value={
+            pages.some((page) => page.path === value.href) ? value.href : ""
+          }
+          onValueChange={(next) => patch({ href: next })}
+          disabled={disabled || pages.length === 0}
+        >
+          <InspectorSelectTrigger className="h-7 w-full">
+            <SelectValue
+              placeholder={
+                pages.length === 0 ? "No pages yet" : "Choose a page"
+              }
+            />
+          </InspectorSelectTrigger>
+          <InspectorSelectContent>
+            {pages.map((page) => (
+              <InspectorSelectItem key={page.path} value={page.path}>
+                {page.label}
+              </InspectorSelectItem>
+            ))}
+          </InspectorSelectContent>
+        </Select>
+      ) : (
+        <Input
+          defaultValue={value.href}
+          onBlur={(event) => patch({ href: event.currentTarget.value })}
+          disabled={disabled}
+          placeholder="/about or https://example.com"
+          className="h-7 text-xs font-mono"
+          aria-label={`${label} path or URL`}
+        />
+      )}
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className={cn(inspectorFieldLabelClassName, "text-muted-foreground")}>Open in</label>
+          <Select
+            value={normalizeThemeLinkTarget(value.target)}
+            onValueChange={(next) =>
+              patch({ target: next === "_blank" ? "_blank" : "_self" })
+            }
+            disabled={disabled}
+          >
+            <InspectorSelectTrigger className="h-7 w-full">
+              <SelectValue placeholder="Same tab" />
+            </InspectorSelectTrigger>
+            <InspectorSelectContent>
+              <InspectorSelectItem value="_self">Same tab</InspectorSelectItem>
+              <InspectorSelectItem value="_blank">New tab</InspectorSelectItem>
+            </InspectorSelectContent>
+          </Select>
+        </div>
+        <div>
+          <label className={cn(inspectorFieldLabelClassName, "text-muted-foreground")}>Tooltip</label>
+          <Input
+            defaultValue={value.title ?? ""}
+            onBlur={(event) => patch({ title: event.currentTarget.value })}
+            disabled={disabled}
+            placeholder="title"
+            className="h-7 text-xs"
+            aria-label={`${label} tooltip`}
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className={cn(inspectorFieldLabelClassName, "text-muted-foreground")}>
+          Accessible name
+        </label>
+        <Input
+          defaultValue={value.ariaLabel ?? ""}
+          onBlur={(event) => patch({ ariaLabel: event.currentTarget.value })}
+          disabled={disabled}
+          placeholder="Describes the link when its text does not"
+          className="h-7 text-xs"
+          aria-label={`${label} accessible name`}
+        />
+      </div>
+
+      {/* rel="noopener noreferrer" is added automatically for a new tab, so
+          nofollow is the only part of rel an author decides. */}
+      <InspectorToggleField
+        label="Tell search engines not to follow (nofollow)"
+        checked={value.nofollow === true}
+        disabled={disabled}
+        onCheckedChange={(next) => patch({ nofollow: next })}
+      />
+
+      {/* Browsers ignore download across origins, so it is only offered for a
+          destination inside this store. */}
+      {!isExternal ? (
+        <InspectorToggleField
+          label="Download instead of opening"
+          checked={value.download === true}
+          disabled={disabled}
+          onCheckedChange={(next) => patch({ download: next })}
+        />
+      ) : null}
+
+      {description ? (
+        <p className={cn(inspectorFieldHintClassName, "leading-relaxed")}>
+          {description}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function InspectorField({
   label,
   isFocused = false,
@@ -3391,7 +4026,8 @@ function InspectorField({
     >
       <label
         className={cn(
-          "text-[11px] font-medium transition-colors block",
+          inspectorFieldLabelClassName,
+          "transition-colors",
           isFocused ? "text-primary font-semibold" : "text-muted-foreground",
         )}
       >

@@ -46,11 +46,7 @@ function createAuth(env?: CloudflareBindings) {
     secret: env?.BETTER_AUTH_SECRET || process.env.BETTER_AUTH_SECRET,
     baseURL,
     trustedOrigins: Array.from(
-      new Set([
-        ...cmsTrustedOrigins,
-        baseURL,
-        "http://localhost:3000",
-      ]),
+      new Set([...cmsTrustedOrigins, baseURL, "http://localhost:3000"]),
     ),
     emailAndPassword: {
       enabled: true,
@@ -146,16 +142,17 @@ function createAuth(env?: CloudflareBindings) {
       emailOTP({
         overrideDefaultEmailVerification: true,
         async sendVerificationOTP({ email, otp, type }) {
-          if (type === "sign-in") {
-            console.log(`Sign-in OTP requested for ${email}`);
-          } else if (type === "email-verification") {
-            console.log(`Email verification OTP requested for ${email}`);
+          if (type === "sign-in" || type === "email-verification") {
+            const { sendAuthVerificationEmail } = await import("../lib/email");
+            await sendAuthVerificationEmail({ email, otp, type });
           } else if (type === "forget-password") {
             // Email configuration reads the full CMS config. Load it only when
             // an email is sent so auth middleware initialization cannot cycle
             // through collections -> queries -> server functions -> auth.
             const { sendPasswordResetEmail } = await import("../lib/email");
             await sendPasswordResetEmail({ email, otp });
+          } else {
+            throw new Error("Unsupported authentication OTP type.");
           }
         },
       }),

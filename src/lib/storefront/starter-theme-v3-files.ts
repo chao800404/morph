@@ -20,11 +20,47 @@ export const LEGACY_STARTER_THEME_HEADER_SOURCE = `export default function Heade
 }
 `;
 
-export const STARTER_THEME_HEADER_SOURCE = `export type HeaderProps = {
-  storeName?: string;
+export const STARTER_THEME_HEADER_SOURCE = `export type HeaderLink = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
 };
 
-export default function Header({ storeName = "Online Store" }: HeaderProps) {
+export type HeaderNavItem = {
+  label?: string;
+  link?: HeaderLink;
+};
+
+export type HeaderProps = {
+  storeName?: string;
+  navItems?: HeaderNavItem[];
+  cartLabel?: string;
+  cartLink?: HeaderLink;
+};
+
+export const contentFields = {
+  navItems: {
+    type: "array",
+    label: "Navigation",
+    fields: {
+      label: { type: "text", label: "Label", maxLength: 40 },
+      link: { type: "link", label: "Destination" },
+    },
+  },
+  cartLabel: { type: "text", label: "Cart label", maxLength: 40 },
+  cartLink: { type: "link", label: "Cart link" },
+} as const;
+
+export default function Header({
+  storeName = "Online Store",
+  navItems = [
+    { label: "Shop", link: { href: "/collections/all" } },
+    { label: "About", link: { href: "/pages/about" } },
+    { label: "Journal", link: { href: "/blogs/journal" } },
+  ],
+  cartLabel = "Cart (0)",
+  cartLink = { href: "/cart" },
+}: HeaderProps) {
   return (
     <header
       className="flex h-16 items-center justify-between border-b border-neutral-200 bg-stone-50 px-5 sm:px-8"
@@ -38,15 +74,25 @@ export default function Header({ storeName = "Online Store" }: HeaderProps) {
         className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
         aria-label="Storefront navigation"
       >
-        <a href="/collections/all" className="hover:text-neutral-950">Shop</a>
-        <a href="/pages/about" className="hover:text-neutral-950">About</a>
-        <a href="/blogs/journal" className="hover:text-neutral-950">Journal</a>
+        {navItems.map((item) => (
+          <a
+            key={item.label}
+            href={item.link.href}
+            target={item.link.target}
+            rel={item.link.rel}
+            className="hover:text-neutral-950"
+          >
+            {item.label}
+          </a>
+        ))}
       </nav>
       <a
-        href="/cart"
+        href={cartLink.href}
+        target={cartLink.target}
+        rel={cartLink.rel}
         className="text-xs text-neutral-600 hover:text-neutral-950"
       >
-        Cart (0)
+        {cartLabel}
       </a>
     </header>
   );
@@ -79,14 +125,65 @@ export const LEGACY_STARTER_THEME_FOOTER_SOURCE = `export default function Foote
 }
 `;
 
-export const STARTER_THEME_FOOTER_SOURCE = `export type FooterProps = {
+export const STARTER_THEME_FOOTER_SOURCE = `export type FooterLink = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+export type FooterNavItem = {
+  label?: string;
+  link?: FooterLink;
+};
+
+export type FooterProps = {
   storeName?: string;
   copyrightText?: string;
+  tagline?: string;
+  exploreHeading?: string;
+  exploreItems?: FooterNavItem[];
+  helpHeading?: string;
+  helpItems?: FooterNavItem[];
 };
+
+export const contentFields = {
+  tagline: { type: "textarea", label: "Tagline", maxLength: 200 },
+  exploreHeading: { type: "text", label: "Explore heading", maxLength: 40 },
+  exploreItems: {
+    type: "array",
+    label: "Explore links",
+    fields: {
+      label: { type: "text", label: "Label", maxLength: 40 },
+      link: { type: "link", label: "Destination" },
+    },
+  },
+  helpHeading: { type: "text", label: "Help heading", maxLength: 40 },
+  helpItems: {
+    type: "array",
+    label: "Help links",
+    fields: {
+      label: { type: "text", label: "Label", maxLength: 40 },
+      link: { type: "link", label: "Destination" },
+    },
+  },
+} as const;
 
 export default function Footer({
   storeName = "Online Store",
   copyrightText = "© Online Store",
+  tagline = "Objects with lasting character for thoughtful, everyday living.",
+  exploreHeading = "Explore",
+  exploreItems = [
+    { label: "Shop all", link: { href: "/collections/all" } },
+    { label: "Our story", link: { href: "/pages/about" } },
+    { label: "Journal", link: { href: "/blogs/journal" } },
+  ],
+  helpHeading = "Help",
+  helpItems = [
+    { label: "Contact", link: { href: "/pages/contact" } },
+    { label: "Shipping", link: { href: "/pages/shipping" } },
+    { label: "Returns", link: { href: "/pages/returns" } },
+  ],
 }: FooterProps) {
   return (
     <footer
@@ -95,24 +192,40 @@ export default function Footer({
       <div>
         <p className="font-serif text-3xl text-stone-100">{storeName}</p>
         <p className="mt-4 max-w-xs text-sm leading-6 text-stone-500">
-          Objects with lasting character for thoughtful, everyday living.
+          {tagline}
         </p>
       </div>
       <div
         className="text-sm leading-8"
       >
-        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Explore</p>
-        <a className="block hover:text-white" href="/collections/all">Shop all</a>
-        <a className="block hover:text-white" href="/pages/about">Our story</a>
-        <a className="block hover:text-white" href="/blogs/journal">Journal</a>
+        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">{exploreHeading}</p>
+        {exploreItems.map((item) => (
+          <a
+            key={item.label}
+            className="block hover:text-white"
+            href={item.link.href}
+            target={item.link.target}
+            rel={item.link.rel}
+          >
+            {item.label}
+          </a>
+        ))}
       </div>
       <div
         className="text-sm leading-8"
       >
-        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Help</p>
-        <a className="block hover:text-white" href="/pages/contact">Contact</a>
-        <a className="block hover:text-white" href="/pages/shipping">Shipping</a>
-        <a className="block hover:text-white" href="/pages/returns">Returns</a>
+        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">{helpHeading}</p>
+        {helpItems.map((item) => (
+          <a
+            key={item.label}
+            className="block hover:text-white"
+            href={item.link.href}
+            target={item.link.target}
+            rel={item.link.rel}
+          >
+            {item.label}
+          </a>
+        ))}
       </div>
       <div
         className="border-t border-stone-800 pt-6 text-xs text-stone-600 sm:col-span-2 lg:col-span-3"
@@ -640,6 +753,7 @@ export default function CategoryShowcase({
   body?: string;
   actionLabel?: string;
   actionHref?: string;
+  actionTarget?: "_self" | "_blank";
   imageSrc?: string;
   imageAlt?: string;
   imagePosition?: string;
@@ -651,10 +765,14 @@ export default function ImageWithText({
   body = "",
   actionLabel = "Explore",
   actionHref = "#",
+  actionTarget = "_self",
   imageSrc = "/static/storefront/theme-preview-default.png",
   imageAlt = "Image with text",
   imagePosition = "center",
 }: ImageWithTextProps) {
+  // A new tab must not hand the opened page a window.opener handle back to the
+  // store, which it could use to redirect this tab to a spoofed page.
+  const actionRel = actionTarget === "_blank" ? "noopener noreferrer" : undefined;
   return (
     <section
       className="grid bg-[#d8d0c3] lg:grid-cols-2"
@@ -691,6 +809,8 @@ export default function ImageWithText({
           </p>
           <a
             href={actionHref}
+            target={actionTarget}
+            rel={actionRel}
             data-storefront-field="actionLabel"
             className="mt-9 inline-flex border-b border-current pb-1 text-sm font-medium"
           >

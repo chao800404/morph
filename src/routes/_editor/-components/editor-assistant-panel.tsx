@@ -54,6 +54,15 @@ type EditorAssistantPanelProps = {
     fieldPath: string | null,
     value: string,
   ) => void;
+  onRepairThemeLinkBinding?: (
+    filePath: string,
+    fieldKey: string,
+  ) => Promise<boolean> | boolean;
+  onSwitchThemeLinkElement?: (
+    filePath: string,
+    fieldKey: string,
+    target: "router" | "anchor",
+  ) => Promise<boolean> | boolean;
   commentFilter?: "open" | "resolved";
   onCommentFilterChange?: (filter: "open" | "resolved") => void;
   commentGroups?: StorefrontCommentGroupDTO[];
@@ -98,6 +107,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onUpdateThemeFileStyle,
   onPreviewSelectionStyle,
   onPreviewSelectionField,
+  onRepairThemeLinkBinding,
+  onSwitchThemeLinkElement,
   onSectionPropsChange,
   onJumpToCode,
   onTabChange,
@@ -312,6 +323,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onUpdateThemeFileStyle={onUpdateThemeFileStyle}
               onPreviewSelectionStyle={onPreviewSelectionStyle}
               onPreviewSelectionField={onPreviewSelectionField}
+              onRepairThemeLinkBinding={onRepairThemeLinkBinding}
+              onSwitchThemeLinkElement={onSwitchThemeLinkElement}
               onPropsChange={handleInspectorPropsChange}
               onJumpToCode={onJumpToCode}
             />

@@ -31,6 +31,13 @@ const outputPath = path.join(
   root,
   "src/routes/_editor/-components/editor-code-package-types.generated.ts",
 );
+// The declaration payload is multiple megabytes. It lives in its own module so
+// it can be code-split into a lazily imported chunk instead of being pulled
+// into the Code Workspace bundle by the small metadata arrays above it.
+const declarationsOutputPath = path.join(
+  root,
+  "src/routes/_editor/-components/editor-code-package-declarations.generated.ts",
+);
 const sandboxDependenciesJsonPath = path.join(
   root,
   "sandbox-toolchain-dependencies.json",
@@ -251,6 +258,102 @@ const moduleTargets = new Map();
 const packageRoots = new Map();
 const visiting = new Set();
 
+function isDeclarationWordCharacter(value) {
+  return value !== undefined && /[A-Za-z0-9_$]/.test(value);
+}
+
+/**
+ * Declarations are transported as JavaScript string literals to the browser.
+ * Keep their tokens and string/template contents intact, but remove comments
+ * and formatting whitespace from the generated payload. This reduces the
+ * parse/transfer cost of the Monaco declaration graph without changing any
+ * virtual file path or relative import.
+ *
+ * Triple-slash reference directives are the one comment form with compiler
+ * semantics, so they are retained verbatim. In particular, dropping these
+ * would silently change the ambient types that a package declaration sees.
+ */
+function compactDeclarationSource(content) {
+  let output = "";
+  let pendingSpace = false;
+  let pendingLineBreak = false;
+  let quote = null;
+
+  const append = (value) => {
+    if (pendingSpace) {
+      const previous = output.at(-1);
+      if (pendingLineBreak) {
+        output += "\n";
+      } else if (
+        isDeclarationWordCharacter(previous) &&
+        isDeclarationWordCharacter(value)
+      ) {
+        output += " ";
+      }
+      pendingSpace = false;
+      pendingLineBreak = false;
+    }
+    output += value;
+  };
+
+  for (let index = 0; index < content.length; index += 1) {
+    const current = content[index];
+    const next = content[index + 1];
+
+    if (quote) {
+      output += current;
+      if (current === "\\") {
+        if (index + 1 < content.length) output += content[++index];
+      } else if (current === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (current === '"' || current === "'" || current === "`") {
+      append(current);
+      quote = current;
+      continue;
+    }
+
+    if (current === "/" && next === "/") {
+      const lineEnd = content.indexOf("\n", index + 2);
+      const end = lineEnd < 0 ? content.length : lineEnd;
+      const comment = content.slice(index, end);
+      if (comment.startsWith("/// <reference")) {
+        append(comment);
+      } else {
+        pendingSpace = true;
+        pendingLineBreak = lineEnd < content.length;
+      }
+      index = end - 1;
+      continue;
+    }
+
+    if (current === "/" && next === "*") {
+      const commentEnd = content.indexOf("*/", index + 2);
+      if (commentEnd < 0) {
+        pendingSpace = true;
+        break;
+      }
+      pendingSpace = true;
+      pendingLineBreak = content.slice(index, commentEnd + 2).includes("\n");
+      index = commentEnd + 1;
+      continue;
+    }
+
+    if (/\s/.test(current)) {
+      pendingSpace = true;
+      pendingLineBreak ||= current === "\n" || current === "\r";
+      continue;
+    }
+
+    append(current);
+  }
+
+  return output.trim();
+}
+
 function isDeclarationFile(filePath) {
   return [...declarationExtensions].some((extension) =>
     filePath.endsWith(extension),
@@ -418,7 +521,23 @@ function addFile(filePath) {
   if (packageRoot && usesCompactDeclarations(packageRoot)) return;
 
   visiting.add(normalizedFilePath);
-  const content = fs.readFileSync(normalizedFilePath, "utf8");
+  const content = compactDeclarationSource(
+    fs.readFileSync(normalizedFilePath, "utf8"),
+  );
+  const parsed = ts.createSourceFile(
+    uriPath,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  if (parsed.parseDiagnostics.length > 0) {
+    const message = ts.flattenDiagnosticMessageText(
+      parsed.parseDiagnostics[0].messageText,
+      " ",
+    );
+    throw new Error(`Compacted declaration ${uriPath} is invalid: ${message}`);
+  }
   files.set(uriPath, content);
 
   const preprocessed = ts.preProcessFile(content, true, true);
@@ -579,6 +698,15 @@ export type GeneratedThemePackageDeclaration = {
 export const GENERATED_THEME_PACKAGE_NAMES: readonly string[] = ${JSON.stringify(entries)};
 // prettier-ignore
 export const GENERATED_THEME_APPROVED_DEPENDENCIES: readonly string[] = ${JSON.stringify(sortedApprovedDependencies)};
+`;
+
+// Keep the multi-megabyte declaration payload in a separate module. Nothing may
+// import this statically: it is loaded on demand by
+// preloadGeneratedThemePackageDeclarations() so it lands in its own chunk.
+const generatedDeclarationsSource = `/* eslint-disable */
+// Generated by scripts/generate-theme-package-types.mjs. Do not edit by hand.
+import type { GeneratedThemePackageDeclaration } from "./editor-code-package-types.generated";
+
 // prettier-ignore
 export const GENERATED_THEME_PACKAGE_DECLARATIONS: readonly GeneratedThemePackageDeclaration[] = [
 ${serializedFiles}
@@ -587,6 +715,8 @@ ${serializedFiles}
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 fs.writeFileSync(outputPath, generatedSource);
+fs.mkdirSync(path.dirname(declarationsOutputPath), { recursive: true });
+fs.writeFileSync(declarationsOutputPath, generatedDeclarationsSource);
 
 const sortedRootDependencies = Object.fromEntries(
   Object.entries(configuredRootDependencies).sort(([left], [right]) =>

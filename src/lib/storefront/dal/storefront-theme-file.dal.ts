@@ -8,6 +8,7 @@ import {
 import type {
   StorefrontThemeFileDTO,
   StorefrontThemeFileTreeNode,
+  ThemeSourceRevisionManifest,
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
@@ -73,9 +74,29 @@ function prepareRevisionInsert(args: {
   createdBy?: string | null;
   now: string;
   sourceGeneration?: number;
+  sourceManifest?: ThemeSourceRevisionManifest;
 }) {
-  return env.DATABASE.prepare(
-    `
+  const sourceManifestJson = args.sourceManifest
+    ? JSON.stringify(args.sourceManifest)
+    : null;
+  const statement = args.sourceManifest
+    ? `
+    INSERT INTO storefront_theme_revisions (
+      id, storefront_id, theme_id, revision_number, message, source,
+      snapshot, source_generation, source_manifest, created_by, created_at, updated_at
+    )
+    SELECT
+      ?1, ?2, ?3,
+      COALESCE((
+        SELECT MAX(revision_number) + 1
+        FROM storefront_theme_revisions
+        WHERE theme_id = ?3 AND deleted_at IS NULL
+      ), 1),
+      ?4, ?5,
+      json('[]'),
+      ?6, ?7, ?8, ?9, ?9
+  `
+    : `
     INSERT INTO storefront_theme_revisions (
       id, storefront_id, theme_id, revision_number, message, source,
       snapshot, source_generation, created_by, created_at, updated_at
@@ -105,7 +126,10 @@ function prepareRevisionInsert(args: {
         )
       ), json('[]')),
       ?6, ?7, ?8, ?8
-  `,
+  `;
+
+  return env.DATABASE.prepare(
+    statement,
   ).bind(
     args.revisionId,
     args.storefrontId,
@@ -113,6 +137,7 @@ function prepareRevisionInsert(args: {
     args.message,
     args.source,
     args.sourceGeneration ?? null,
+    ...(args.sourceManifest ? [sourceManifestJson] : []),
     args.createdBy ?? null,
     args.now,
   );
@@ -371,6 +396,7 @@ export const storefrontThemeFileDal = {
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
+      sourceManifest?: ThemeSourceRevisionManifest;
     },
   ): Promise<StorefrontThemeFileDTO & { sourceGeneration?: number }> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
@@ -396,6 +422,7 @@ export const storefrontThemeFileDal = {
         createRevision: options.createRevision,
         revisionMessage: options.revisionMessage,
         createdBy: options.createdBy,
+        sourceManifest: options.sourceManifest,
       },
     );
     const first = saved[0];
@@ -424,6 +451,7 @@ export const storefrontThemeFileDal = {
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
+      sourceManifest?: ThemeSourceRevisionManifest;
     },
   ): Promise<StorefrontThemeFileDTO[] & { sourceGeneration?: number }> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
@@ -616,6 +644,7 @@ export const storefrontThemeFileDal = {
           source: "manual",
           createdBy: options.createdBy,
           now,
+          sourceManifest: options.sourceManifest,
         }),
       );
     }
@@ -807,6 +836,7 @@ export const storefrontThemeFileDal = {
       message?: string;
       source?: "manual" | "ai" | "publish" | "rollback";
       createdBy?: string;
+      sourceManifest?: ThemeSourceRevisionManifest;
     },
   ): Promise<StorefrontThemeRevisionDTO> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
@@ -839,6 +869,7 @@ export const storefrontThemeFileDal = {
         createdBy: options.createdBy,
         now,
         sourceGeneration: options.expectedSourceGeneration,
+        sourceManifest: options.sourceManifest,
       }),
     ];
 
@@ -878,6 +909,7 @@ export const storefrontThemeFileDal = {
       sourceGeneration: created.sourceGeneration,
       message: created.message,
       source: created.source as "manual" | "ai" | "publish" | "rollback",
+      sourceManifest: (created.sourceManifest ?? null) as StorefrontThemeRevisionDTO["sourceManifest"],
       snapshot: (created.snapshot ?? []) as Array<{
         path: string;
         content: string;
@@ -940,6 +972,7 @@ export const storefrontThemeFileDal = {
       sourceGeneration: row.sourceGeneration,
       message: row.message,
       source: row.source as "manual" | "ai" | "publish" | "rollback",
+      sourceManifest: (row.sourceManifest ?? null) as StorefrontThemeRevisionDTO["sourceManifest"],
       snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
       createdBy: row.createdBy,
       createdAt: row.createdAt,
@@ -956,6 +989,8 @@ export const storefrontThemeFileDal = {
     options: {
       expectedSourceGeneration: number;
       createdBy?: string;
+      sourceManifest?: ThemeSourceRevisionManifest;
+      sourceSnapshot?: StorefrontThemeRevisionDTO["snapshot"];
     },
   ): Promise<StorefrontThemeFileDTO[]> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
@@ -978,8 +1013,9 @@ export const storefrontThemeFileDal = {
       .limit(1);
     if (!rev) throw new Error(`Revision #${revisionNumber} not found`);
 
-    const snapshot = (rev.snapshot ??
-      []) as StorefrontThemeRevisionDTO["snapshot"];
+    const snapshot =
+      options.sourceSnapshot ??
+      ((rev.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"]);
     const now = new Date().toISOString();
     const statements = [
       prepareThemeOwnershipGuard(
@@ -1028,6 +1064,7 @@ export const storefrontThemeFileDal = {
         source: "rollback",
         createdBy: options?.createdBy,
         now,
+        sourceManifest: options?.sourceManifest,
       }),
     );
 
@@ -1096,6 +1133,7 @@ export const storefrontThemeFileDal = {
       sourceGeneration: revision.sourceGeneration,
       message: revision.message,
       source: revision.source as "manual" | "ai" | "publish" | "rollback",
+      sourceManifest: (revision.sourceManifest ?? null) as StorefrontThemeRevisionDTO["sourceManifest"],
       snapshot: (revision.snapshot ??
         []) as StorefrontThemeRevisionDTO["snapshot"],
       createdBy: revision.createdBy,
