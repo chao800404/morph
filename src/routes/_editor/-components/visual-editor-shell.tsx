@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { RouteFullscreenSurface } from "@/components/dialog/route-fullscreen-surface";
+import { useCloseOnEscape } from "@/components/dialog/route-modal-close";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1056,6 +1058,19 @@ export function VisualEditorShell({
   const [shouldPreloadCodeWorkspace, setShouldPreloadCodeWorkspace] =
     useState(false);
   const [previewMode, setPreviewMode] = useState<"live" | "build">("live");
+
+  /**
+   * Leaves the compiled build and returns to the editor.
+   *
+   * Stable so the shared Escape hook does not rebind on every render.
+   */
+  const returnToLivePreview = useCallback(() => {
+    setPreviewMode((mode) => (mode === "build" ? "live" : mode));
+  }, []);
+
+  // Esc closes the full-screen build the same way it closes every other
+  // full-screen surface in the app.
+  useCloseOnEscape(returnToLivePreview);
   const isImmutableBuildPreview = previewMode === "build";
   const [activeBuildPreview, setActiveBuildPreview] =
     useState<StorefrontThemeBuildDTO | null>(null);
@@ -1065,6 +1080,13 @@ export function VisualEditorShell({
     null,
   );
   const [isBuildPending, setIsBuildPending] = useState(false);
+  /**
+   * True only for a build that publishing started for itself.
+   *
+   * Separate from `isBuildPending` because the Publish button must report the
+   * publish it was asked for, not any build that happens to be running.
+   */
+  const [isPublishBuilding, setIsPublishBuilding] = useState(false);
   /**
    * Stops waiting on a build, and on an explicit cancel also stops the build.
    *
@@ -2533,13 +2555,22 @@ export function VisualEditorShell({
 
     let publishBuild = activeBuildPreview;
     if (plan.action === "build") {
-      const attempt = await handleBuildPreviewRef.current?.();
-      if (!attempt?.ok || !attempt.build) {
-        // The build reported why it failed. Saying "publish failed" on top of
-        // that would name the wrong step.
-        return;
+      // Marked as publishing's own build so only this path reports progress on
+      // the Publish button. A build the person started themselves is not a
+      // publish in progress, and saying so would claim their store is about to
+      // go live when nothing of the sort was asked for.
+      setIsPublishBuilding(true);
+      try {
+        const attempt = await handleBuildPreviewRef.current?.();
+        if (!attempt?.ok || !attempt.build) {
+          // The build reported why it failed. Saying "publish failed" on top of
+          // that would name the wrong step.
+          return;
+        }
+        publishBuild = attempt.build;
+      } finally {
+        setIsPublishBuilding(false);
       }
-      publishBuild = attempt.build;
     }
 
     await publishMutation.mutateAsync({
@@ -5345,22 +5376,39 @@ export function VisualEditorShell({
               <span className="hidden 2xl:inline">Built</span>
             </Button>
           )}
+          <Button
+            ref={releaseHistoryTriggerRef}
+            type="button"
+            variant="outline"
+            size="icon"
+            className="max-sm:hidden"
+            onClick={() => setIsReleaseHistoryOpen(true)}
+            aria-label="Release history"
+            title="Review published releases and switch production to one of them"
+          >
+            <History className="size-3.5" />
+          </Button>
+
           {/*
             One control for a single running thing: while a build is in flight
             the only useful action on it is to stop it, so the button becomes
             that action instead of going dead and growing a second button.
-            The spinner still reports the state; the label states the action.
+            Icon-only, so the icon carries the state and the accessible name
+            carries the action — which is why both change together.
+
+            Placed beside Publish because publishing builds when it needs to;
+            this is the same step, run on its own to look at the result first.
           */}
           <Button
             type="button"
             variant="outline"
-            size="xs"
+            size="icon"
             disabled={themeFiles.length === 0}
             // Stable across both states, so a test can address the control
-            // without depending on the label or title that change with it.
+            // without depending on the title that changes with it.
             data-editor-build-action
             data-build-pending={isBuildPending ? "true" : "false"}
-            className="group gap-1.5 px-2 2xl:px-2.5 max-sm:hidden"
+            className="group max-sm:hidden"
             aria-label={
               isBuildPending ? "Cancel the running build" : "Build the theme"
             }
@@ -5390,23 +5438,6 @@ export function VisualEditorShell({
             ) : (
               <Play className="size-3.5" />
             )}
-            <span className="hidden 2xl:inline">
-              {isBuildPending ? "Cancel" : "Build"}
-            </span>
-          </Button>
-
-          <Button
-            ref={releaseHistoryTriggerRef}
-            type="button"
-            variant="outline"
-            size="xs"
-            className="gap-1.5 px-2 2xl:px-2.5 max-sm:hidden"
-            onClick={() => setIsReleaseHistoryOpen(true)}
-            aria-label="Release history"
-            title="Review published releases and switch production to one of them"
-          >
-            <History className="size-3.5" />
-            <span className="hidden 2xl:inline">History</span>
           </Button>
 
           {/*
@@ -5421,9 +5452,9 @@ export function VisualEditorShell({
             type="button"
             size="xs"
             className="gap-1.5"
-            aria-busy={publishMutation.isPending || isBuildPending}
+            aria-busy={publishMutation.isPending || isPublishBuilding}
             data-publish-pending={
-              publishMutation.isPending || isBuildPending ? "true" : "false"
+              publishMutation.isPending || isPublishBuilding ? "true" : "false"
             }
             disabled={
               !hasUnpublishedChanges ||
@@ -5442,13 +5473,13 @@ export function VisualEditorShell({
             }
             onClick={handlePublish}
           >
-            {publishMutation.isPending || isBuildPending ? (
+            {publishMutation.isPending || isPublishBuilding ? (
               <>
                 <LoaderCircle className="size-3.5 animate-spin" />
                 {/* Publishing builds first when nothing usable exists, so the
                     label names the step actually running rather than implying
                     the release is already being written. */}
-                {isBuildPending ? "Building…" : "Publishing…"}
+                {isPublishBuilding ? "Building…" : "Publishing…"}
               </>
             ) : (
               "Publish"
@@ -5456,6 +5487,65 @@ export function VisualEditorShell({
           </Button>
         </div>
       </header>
+
+      {/*
+        A build is the compiled artifact, not something the editor can act
+        on: none of the section tree, inspector or canvas controls apply to
+        it. Shown full-screen so it is read as the store itself rather than
+        as one more panel inside the editor, and so the artifact is seen at
+        the size a visitor gets instead of inside a scaled canvas.
+      */}
+      {previewMode === "build" && activeBuildPreview ? (
+        <RouteFullscreenSurface
+          onClose={returnToLivePreview}
+          bodyClassName="flex min-h-0 flex-col p-0"
+          headerLeading={
+            <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 className="size-3" />
+                Immutable Build
+              </span>
+              <span className="font-mono text-[11px]">
+                {activeBuildPreview.id.slice(0, 8)}
+              </span>
+              <span>·</span>
+              <span className="truncate">
+                {activeBuildPreview.compilerId} v
+                {activeBuildPreview.compilerVersion}
+              </span>
+            </div>
+          }
+        >
+          {buildDiagnostics && (
+            <div className="border-b bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+              <span className="font-semibold">Diagnostic: </span>
+              {typeof buildDiagnostics === "object"
+                ? buildDiagnostics.error ||
+                  buildDiagnostics.message ||
+                  JSON.stringify(buildDiagnostics)
+                : String(buildDiagnostics)}
+            </div>
+          )}
+          {activePreviewToken ? (
+            <iframe
+              key={`build-preview-${activeBuildPreview.id}`}
+              src={`/preview-build/${encodeURIComponent(activeBuildPreview.id)}/${encodeURIComponent(activePreviewToken)}/`}
+              title={`${context.theme.name} compiled build preview`}
+              sandbox="allow-scripts"
+              referrerPolicy="no-referrer"
+              className="block size-full flex-1 border-0 bg-stone-50"
+            />
+          ) : (
+            <div className="flex size-full flex-1 flex-col items-center justify-center bg-stone-50 p-8 text-center text-stone-700">
+              <p className="text-sm font-medium">Preview Token Required</p>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                Theme build succeeded, but preview capability token is missing.
+                Please ensure THEME_PREVIEW_SECRET is configured.
+              </p>
+            </div>
+          )}
+        </RouteFullscreenSurface>
+      ) : null}
 
       <EditorReleaseHistoryDialog
         open={isReleaseHistoryOpen}
@@ -5634,66 +5724,7 @@ export function VisualEditorShell({
                   height: previewFrameHeight,
                 }}
               >
-                {previewMode === "build" && activeBuildPreview ? (
-                  <div className="flex size-full flex-col">
-                    <div className="flex items-center justify-between border-b bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
-                      <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-                          <CheckCircle2 className="size-3" />
-                          Immutable Build
-                        </span>
-                        <span className="font-mono text-[11px]">
-                          {activeBuildPreview.id.slice(0, 8)}
-                        </span>
-                        <span>·</span>
-                        <span>
-                          {activeBuildPreview.compilerId} v
-                          {activeBuildPreview.compilerVersion}
-                        </span>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="xs"
-                        className="h-6 text-[11px]"
-                        onClick={() => setPreviewMode("live")}
-                      >
-                        Back to Live
-                      </Button>
-                    </div>
-                    {buildDiagnostics && (
-                      <div className="border-b bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
-                        <span className="font-semibold">Diagnostic: </span>
-                        {typeof buildDiagnostics === "object"
-                          ? buildDiagnostics.error ||
-                            buildDiagnostics.message ||
-                            JSON.stringify(buildDiagnostics)
-                          : String(buildDiagnostics)}
-                      </div>
-                    )}
-                    {activePreviewToken ? (
-                      <iframe
-                        key={`build-preview-${activeBuildPreview.id}`}
-                        src={`/preview-build/${encodeURIComponent(activeBuildPreview.id)}/${encodeURIComponent(activePreviewToken)}/`}
-                        title={`${context.theme.name} compiled build preview`}
-                        sandbox="allow-scripts"
-                        referrerPolicy="no-referrer"
-                        className="block size-full flex-1 border-0 bg-stone-50"
-                      />
-                    ) : (
-                      <div className="flex size-full flex-1 flex-col items-center justify-center p-8 text-center bg-stone-50 text-stone-700">
-                        <p className="font-medium text-sm">
-                          Preview Token Required
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-                          Theme build succeeded, but preview capability token is
-                          missing. Please ensure THEME_PREVIEW_SECRET is
-                          configured.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ) : previewUrl ? (
+                {previewUrl ? (
                   <iframe
                     ref={previewIframeRef}
                     key={previewKey}

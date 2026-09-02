@@ -6,22 +6,21 @@
 
 | 項目         | 內容                                                                                                                                                                            |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 最後更新     | 2026-09-01                                                                                                                                                                      |
-| 目前狀態     | 開發中                                                                                                                                                                          |
-| 整體完成度   | **97%**（加權，依 2026-09-01 實際程式鏈與三引擎驗證結果重估）                                                                                                                   |
-| 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E 閉環 |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（229 files / 1525 tests passed、1 skipped）、`pnpm build`、client bundle check 與 deploy artifact secret guard 通過；最近瀏覽器基準為 Chromium 23 passed / 1 skipped，Firefox + WebKit 39 passed / 8 skipped（此輪未重跑瀏覽器層） |
+| 最後更新     | 2026-09-02                                                                                                                                                                      |
+| 目前狀態     | 核心 Editor／Build／Release 已完成主要鏈路；Production Runtime、Domain 與遠端 Publish 尚未閉環                                                                                  |
+| 整體完成度   | **90%**（重新按目前實作與交付閉環證據加權；未將未驗證的 Cloudflare production 路徑視為已完成）                                                                                   |
+| 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration |
+| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（229 files / 1525 tests passed、1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard 與 `git diff --check` 通過；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
 
-`█████████▊ 97%`
+`█████████ 90%`
 
 > 完成度依下方權重表計算，可自行複核。權重反映各階段的規模與剩餘風險，不是平均分配 ——
 > 把「Inspector 數值輸入一致性」與「真實 Theme Runtime」等重看待，是先前數字偏高的主因。
 >
-> **這個數字只衡量下表列出的階段。** 先前列在此處的產品缺口——「內容值通到 production」
-> 「排序改走 source」「純程式碼元件的 content slot」「content-only publish」「release history UI」
-> ——都已閉環，改由 ROADMAP 記錄為已具備。瀏覽器層 E2E 已經存在但只覆蓋有限場景，
-> 因此目前完成度不代表 Visual Editor 已完成所有第三方 Theme 風險：仍有外部主題邊界、
-> 而全套單元測試都攔不下來的，那類場景大部分還沒被寫成測試。
+> **這個數字只衡量下表列出的階段，不等於 production readiness。** 已完成的 Editor、Build、
+> Release、OCC 與本機 fail-closed 程式鏈不回退；但真實 Cloudflare Theme Worker、custom domain、
+> remote migration、Publish E2E、Page Registry，以及隔離 iframe 中的真實 TSX runtime 尚未完成，
+> 因此不能把目前的 Build artifact 說成已上線 storefront。
 
 ### 狀態標記
 
@@ -38,10 +37,10 @@
 | 2. 即時預覽與提交語意              | 操作中只更新 Live View，完成輸入後才真正提交資料                                                                                     | ✅   |   100% | 新控制項必須沿用同一套 draft/commit 規則                                  |
 | 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位、link 欄位                 | 🟢   |    99% | Content & Fields 其餘卡片仍有硬編碼 `text-[10px]`，待收斂到同一 token     |
 | 4. Editor ↔ Preview 通訊           | typed protocol、runtime validation、selection/style 同步、in-place route bridge                                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試                                 |
-| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | ✅   |   100% | 新互動須一併加入量測；型別宣告 chunk 隨核准套件成長時重新量測               |
-| 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence、production runtime                                      | ✅   |   100% | 自訂 Promo capability vertical slice 由下方持續確認清單追蹤               |
-| 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React 與真實 router 一致                                                                                        | 🟢   |    92% | 工作區主題 13 個元件逐一比對通過；外部作者的主題仍可能找到更多            |
-| 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                                                              | 🟡   |    90% | 完成真實 Cloudflare runtime/domain 與 Publish E2E 發布閉環                  |
+| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | 🟢   |    95% | 補完 Performance trace，重新量測大型 theme、深層 DOM 與大量 capability      |
+| 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence 與 production 交付鏈                                   | 🟢   |    85% | 補齊 Promo vertical slice，並以真實 production runtime 完成 Publish E2E    |
+| 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React、真實 router 與隔離的 TSX runtime 一致                                                                  | 🟡   |    75% | 完成真實 TSX/component iframe、模組邊界、Inspector 套用與 runtime fallback  |
+| 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                                                              | 🟡   |    80% | 完成 Cloudflare runtime/domain、remote migration 與 Publish E2E 發布閉環     |
 
 ## 權重與計算
 
@@ -51,21 +50,24 @@
 | 2. 即時預覽與提交語意              |       5 |   100% |           5.00 |
 | 3. Inspector 模組化與基本樣式      |      18 |    99% |          17.82 |
 | 4. Editor ↔ Preview 通訊           |      10 |   100% |          10.00 |
-| 5. 編輯器互動效能                  |      15 |   100% |          15.00 |
-| 6. Code-authored 內容 round-trip   |      15 |   100% |          15.00 |
-| 7. Live Runtime 與真實建置的一致性 |      12 |    92% |          11.04 |
-| 8. 最終品質與發布準備              |      20 |    90% |          18.00 |
-| **合計**                           | **100** |        | **96.86 → 97%** |
+| 5. 編輯器互動效能                  |      15 |    95% |          14.25 |
+| 6. Code-authored 內容 round-trip   |      15 |    85% |          12.75 |
+| 7. Live Runtime 與真實建置的一致性 |      12 |    75% |           9.00 |
+| 8. 最終品質與發布準備              |      20 |    80% |          16.00 |
+| **合計**                           | **100** |        | **89.82 → 90%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
-- 階段 8 權重最高（20）：可交付性的最後一哩；無障礙、跨瀏覽器與發布迴圈已有基線，
-  但仍需持續回歸極端 viewport、完整 authoring-to-publish 路徑與第三方 Theme。
+- 階段 8 權重最高（20）：可交付性的最後一哩；無障礙、跨瀏覽器與本機發布程式鏈已有基線，
+  但仍需真實 Cloudflare runtime、remote migration、完整 authoring-to-publish 路徑與第三方 Theme。
 - 階段 3、6 各 15–18：面積大；核心控制項與內容 round-trip 已完成，剩餘是自訂 capability
   vertical slice 與真實 customer source 邊界。
 - 階段 5（15）：已有互動延遲 baseline，但大型 theme、深層 DOM 與大量 capability 的壓力
-  尚未完整量測。
-- 階段 7（12）：見下方重新配權說明。
+  尚未完整量測，因此保留 5% 待驗證。
+- 階段 6（15）：D1 draft／OCC round-trip 已完成，但 production runtime 與 Publish E2E
+  仍未閉環，因此不再標示 100%。
+- 階段 7（12）：目前 editor Live Preview 仍使用 compatibility renderer，真實 TSX/component
+  iframe 與安全模組邊界尚未完成，因此下修為 75%。
 - 階段 1、2 各 5：已完成的一致性修正，範圍小。
 
 ### 2026-08-31 實碼審核與降評依據
@@ -678,17 +680,19 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 ## 驗證基準
 
-最近一次完整驗證結果：
+最近一次完整驗證結果（2026-09-02，於 WSL checkout 實際執行）：
 
 | 檢查             | 結果    | 備註                                            |
 | ---------------- | ------- | ----------------------------------------------- |
-| `pnpm typecheck` | ✅ 通過 | TypeScript 型別檢查完成                         |
-| `pnpm test`      | ✅ 通過 | 217 個測試檔、1388 個測試通過，另 1 個 skipped  |
+| `pnpm typecheck` | ✅ 通過 | TypeScript 型別檢查完成                                  |
+| `pnpm test`      | ✅ 通過 | 229 個測試檔通過、1 個 skipped；1525 個 tests 通過、1 個 skipped |
 | `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle 與 deploy artifact secret guard 檢查通過 |
+| `git diff --check` | ✅ 通過 | 工作樹差異沒有 whitespace error                         |
 
 已知非阻擋警告：
 
 - 部分 bundle chunk size 警告仍存在，後續效能階段處理。
+- 本次未重跑 Playwright；未執行遠端 D1 migration、Cloudflare production deploy 或 Publish。
 
 ## 下一階段建議
 
@@ -734,6 +738,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-02 | 依目前 repository 實作重新盤點並校正進度：核對 Theme Workspace → R2 source manifest → Build Queue／Sandbox → immutable artifact → Release／activeRelease CAS → hostname／Theme Runtime；保留已完成的 Editor、Build、Release 與 OCC 功能，不再把尚未接通的 production Theme Worker、custom domain、Page Registry、真實 TSX iframe、remote migration 與 Publish E2E 計入已完成；整體完成度由 97% 調整為 90% | `pnpm typecheck`、`pnpm test`（229 files passed / 1 skipped；1525 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration；保留既有未提交的 `visual-editor-shell.tsx` 修改 |
 | 2026-09-01 | 第二輪修正：Code Workspace 改以真實 cold click 量測並壓縮 Monaco declaration payload；immutable source revision 接上 R2 content-addressed blobs、D1 manifest、digest／size／UTF-8 fail-closed 與 legacy snapshot fallback；OTP sign-in／email-verification 改走 email adapter 並移除收件者 PII log；Tailwind 排除測試來源並加入 deploy artifact secret guard | `pnpm typecheck`、`pnpm test`（217 files / 1388 tests，1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、R2 blob focused tests、email focused tests、`git diff --check` 通過；未執行遠端 Publish／deploy |
 | 2026-09-01 | 修正 Inspector 來源重複解析造成的兩項測試逾時；Code 模式改為意圖式預載並 hidden/inert 預掛載 Monaco；同步修正 Release history E2E 的 accessible-name 契約，重跑 Chromium、Firefox、WebKit，並核對 production Theme Worker／service binding／domain／rollback 本機程式鏈 | `pnpm typecheck`、`pnpm test`（215 files / 1380 tests，1 skipped）、`pnpm build`、client bundle check、Chromium E2E（23 passed / 1 skipped）、Firefox + WebKit E2E（39 passed / 8 skipped）、`git diff --check` 通過；未執行遠端 Publish／deploy |
 | 2026-08-31 | 完成 Visual Editor Shell 模式切換防抖動、Starter Clean TSX 標準化與 Preview Protocol 強化：面板切換改以 opacity / z-index 消除 preview layout shift；移除 starter 自訂 data attribute 回歸標準 React；支援 safe TanStack Router link 預覽導覽、Context Menu 自訂化與 AST transform / E2E 測試補強 | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，1 skipped）、`pnpm build`、client bundle check、`git diff --check` 通過 |
