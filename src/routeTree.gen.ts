@@ -21,6 +21,7 @@ import { Route as BackendAuthSignInRouteImport } from './routes/_backend/_auth/s
 import { Route as BackendAssetsSplatRouteImport } from './routes/_backend/assets/$'
 import { Route as BackendDashboardIndexRouteImport } from './routes/_backend/dashboard/index'
 import { Route as BackendDashboardSlugRouteImport } from './routes/_backend/dashboard/$slug'
+import { Route as ReleasePreviewReleaseIdViewportRouteImport } from './routes/release-preview/$releaseId/$viewport'
 import { Route as BackendAuthResetPasswordIndexRouteImport } from './routes/_backend/_auth/reset-password.index'
 import { Route as BackendAuthResetPasswordVerifyRouteImport } from './routes/_backend/_auth/reset-password.verify'
 import { Route as BackendApiAssetDownloadRouteImport } from './routes/_backend/api/asset/download'
@@ -104,6 +105,12 @@ const BackendDashboardSlugRoute = BackendDashboardSlugRouteImport.update({
   path: '/$slug',
   getParentRoute: () => BackendDashboardRoute,
 } as any)
+const ReleasePreviewReleaseIdViewportRoute =
+  ReleasePreviewReleaseIdViewportRouteImport.update({
+    id: '/release-preview/$releaseId/$viewport',
+    path: '/release-preview/$releaseId/$viewport',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const BackendAuthResetPasswordIndexRoute =
   BackendAuthResetPasswordIndexRouteImport.update({
     id: '/',
@@ -248,6 +255,7 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof BackendAuthSignInRoute
   '/assets/$': typeof BackendAssetsSplatRoute
   '/dashboard/$slug': typeof BackendDashboardSlugRouteWithChildren
+  '/release-preview/$releaseId/$viewport': typeof ReleasePreviewReleaseIdViewportRoute
   '/dashboard/': typeof BackendDashboardIndexRoute
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
@@ -280,6 +288,7 @@ export interface FileRoutesByTo {
   '/sign-in': typeof BackendAuthSignInRoute
   '/assets/$': typeof BackendAssetsSplatRoute
   '/dashboard/$slug': typeof BackendDashboardSlugRouteWithChildren
+  '/release-preview/$releaseId/$viewport': typeof ReleasePreviewReleaseIdViewportRoute
   '/dashboard': typeof BackendDashboardIndexRoute
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
@@ -318,6 +327,7 @@ export interface FileRoutesById {
   '/_backend/_auth/sign-in': typeof BackendAuthSignInRoute
   '/_backend/assets/$': typeof BackendAssetsSplatRoute
   '/_backend/dashboard/$slug': typeof BackendDashboardSlugRouteWithChildren
+  '/release-preview/$releaseId/$viewport': typeof ReleasePreviewReleaseIdViewportRoute
   '/_backend/dashboard/': typeof BackendDashboardIndexRoute
   '/_backend/_auth/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/_backend/api/asset/download': typeof BackendApiAssetDownloadRoute
@@ -354,6 +364,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/assets/$'
     | '/dashboard/$slug'
+    | '/release-preview/$releaseId/$viewport'
     | '/dashboard/'
     | '/reset-password/verify'
     | '/api/asset/download'
@@ -386,6 +397,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/assets/$'
     | '/dashboard/$slug'
+    | '/release-preview/$releaseId/$viewport'
     | '/dashboard'
     | '/reset-password/verify'
     | '/api/asset/download'
@@ -423,6 +435,7 @@ export interface FileRouteTypes {
     | '/_backend/_auth/sign-in'
     | '/_backend/assets/$'
     | '/_backend/dashboard/$slug'
+    | '/release-preview/$releaseId/$viewport'
     | '/_backend/dashboard/'
     | '/_backend/_auth/reset-password/verify'
     | '/_backend/api/asset/download'
@@ -453,6 +466,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BackendRoute: typeof BackendRouteWithChildren
   EditorRoute: typeof EditorRouteWithChildren
+  ReleasePreviewReleaseIdViewportRoute: typeof ReleasePreviewReleaseIdViewportRoute
   PreviewBuildBuildIdTokenSplatRoute: typeof PreviewBuildBuildIdTokenSplatRoute
   PreviewBuildBuildIdTokenIndexRoute: typeof PreviewBuildBuildIdTokenIndexRoute
 }
@@ -542,6 +556,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/dashboard/$slug'
       preLoaderRoute: typeof BackendDashboardSlugRouteImport
       parentRoute: typeof BackendDashboardRoute
+    }
+    '/release-preview/$releaseId/$viewport': {
+      id: '/release-preview/$releaseId/$viewport'
+      path: '/release-preview/$releaseId/$viewport'
+      fullPath: '/release-preview/$releaseId/$viewport'
+      preLoaderRoute: typeof ReleasePreviewReleaseIdViewportRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_backend/_auth/reset-password/': {
       id: '/_backend/_auth/reset-password/'
@@ -900,6 +921,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BackendRoute: BackendRouteWithChildren,
   EditorRoute: EditorRouteWithChildren,
+  ReleasePreviewReleaseIdViewportRoute: ReleasePreviewReleaseIdViewportRoute,
   PreviewBuildBuildIdTokenSplatRoute: PreviewBuildBuildIdTokenSplatRoute,
   PreviewBuildBuildIdTokenIndexRoute: PreviewBuildBuildIdTokenIndexRoute,
 }
