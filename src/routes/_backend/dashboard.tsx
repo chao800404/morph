@@ -1,4 +1,5 @@
 import { DashboardHeader } from "@/components/header/dashboard-header";
+import { sanitizeReturnPath } from "@/lib/auth/return-path";
 import { AppSidebar } from "@/components/nav/app-sidebar";
 import { RegisterPathnameHistory } from "@/components/pathname-history/pathname-history";
 import { IdleTimerProvider } from "@/components/provider/idle-timer-provider";
@@ -40,11 +41,17 @@ const AssetPostProcessDialog = lazy(() =>
   ),
 );
 export const Route = createFileRoute("/_backend/dashboard")({
-  beforeLoad: async () => {
+  beforeLoad: async ({ location }) => {
     const session = await getSession();
 
     if (!session?.user) {
-      throw redirect({ to: "/sign-in" });
+      // An expired session is the common way out of the app: the guard fires on
+      // the next navigation or reload. Carrying the interrupted path means
+      // signing back in returns here instead of dumping the user on /dashboard.
+      throw redirect({
+        to: "/sign-in",
+        search: { callbackURL: sanitizeReturnPath(location.href) ?? undefined },
+      });
     }
     return { session };
   },

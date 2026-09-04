@@ -2,6 +2,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { type ForwardedRef, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AUTHENTICATED_USER_ACTIVITY_EVENT } from "@/lib/auth/idle-activity";
+import { readStoredReturnPath } from "@/lib/auth/return-path";
 import {
   AUTH_IDLE_TIMER_CHANNEL,
   AUTH_IDLE_TIMER_SYNC_INTERVAL_MS,
@@ -50,6 +51,8 @@ describe("IdleTimerProvider cross-tab activity", () => {
     mocks.navigate.mockClear();
     mocks.reset.mockClear();
     mocks.signOut.mockClear();
+    window.sessionStorage.clear();
+    window.history.replaceState({}, "", "/");
   });
 
   it("shares one timer channel and resets it for authenticated editor activity", () => {
@@ -90,6 +93,52 @@ describe("IdleTimerProvider cross-tab activity", () => {
     expect(mocks.navigate).toHaveBeenCalledWith({
       to: "/sign-in",
       search: { callbackURL: window.location.pathname },
+    });
+  });
+
+  // An idle timeout is usually discovered long after it happened, often after
+  // the tab was closed. The search param alone would not survive that, so the
+  // path is persisted as well.
+  it("persists the interrupted path so it outlives the tab", async () => {
+    window.history.replaceState({}, "", "/dashboard/products?page=2");
+    render(
+      <IdleTimerProvider publicURL="https://editor.example.com">
+        <div>Protected content</div>
+      </IdleTimerProvider>,
+    );
+    const onIdle = mocks.providerProps?.onIdle as
+      | ((event?: Event, timer?: { isLeader(): boolean }) => void)
+      | undefined;
+
+    onIdle?.(undefined, { isLeader: () => true });
+    await waitFor(() => expect(mocks.signOut).toHaveBeenCalled());
+
+    expect(readStoredReturnPath()).toBe("/dashboard/products?page=2");
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/sign-in",
+      search: { callbackURL: "/dashboard/products?page=2" },
+    });
+  });
+
+  it("stores nothing when the timeout fires on an auth page", async () => {
+    window.history.replaceState({}, "", "/sign-in");
+    render(
+      <IdleTimerProvider publicURL="https://editor.example.com">
+        <div>Protected content</div>
+      </IdleTimerProvider>,
+    );
+    const onIdle = mocks.providerProps?.onIdle as
+      | ((event?: Event, timer?: { isLeader(): boolean }) => void)
+      | undefined;
+
+    onIdle?.(undefined, { isLeader: () => true });
+    await waitFor(() => expect(mocks.signOut).toHaveBeenCalled());
+
+    // Returning here after signing in would bounce the user straight back out.
+    expect(readStoredReturnPath()).toBeNull();
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/sign-in",
+      search: { callbackURL: undefined },
     });
   });
 });

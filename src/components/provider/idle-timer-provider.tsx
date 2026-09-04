@@ -1,5 +1,6 @@
 import authClient from "@/auth/authClient";
 import { AUTHENTICATED_USER_ACTIVITY_EVENT } from "@/lib/auth/idle-activity";
+import { currentReturnPath, storeReturnPath } from "@/lib/auth/return-path";
 import { useNavigate } from "@tanstack/react-router";
 import { createAuthClient } from "better-auth/react";
 import { useEffect, useRef, useState } from "react";
@@ -72,8 +73,12 @@ export const IdleTimerProvider = ({
 
   const handleLogout = async () => {
     if (!publicURL || publicURL.length <= 0) return;
-    // Save current path before logout
-    const currentPath = window.location.pathname + window.location.search;
+    // Capture where the user was before signing out, both in the URL and in
+    // storage. The search param drives the immediate redirect; the stored copy
+    // is what survives closing the tab and coming back later, which is the
+    // normal way an idle timeout is discovered.
+    const currentPath = currentReturnPath();
+    storeReturnPath(currentPath);
 
     // Sign out user
     await authClient(publicURL).signOut();
@@ -81,7 +86,7 @@ export const IdleTimerProvider = ({
     // Redirect to sign-in with callback URL
     navigate({
       to: "/sign-in",
-      search: { callbackURL: currentPath },
+      search: { callbackURL: currentPath ?? undefined },
     });
   };
 

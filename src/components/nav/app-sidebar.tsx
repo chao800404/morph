@@ -1,4 +1,5 @@
 import { ArrowBigLeftDash, SettingsIcon } from "lucide-react";
+import { clearStoredReturnPath } from "@/lib/auth/return-path";
 import * as React from "react";
 
 import client from "@/auth/authClient";
@@ -102,6 +103,10 @@ function AppSidebarComponent({
           <NavUser
             user={user}
             signout={async () => {
+              // Signing out deliberately is not an interrupted session, so the
+              // next sign-in should land on the dashboard rather than resume a
+              // path the user chose to leave.
+              clearStoredReturnPath();
               await client(publicURL).signOut();
               router.invalidate();
             }}

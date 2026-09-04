@@ -3,6 +3,10 @@ import { LogoF } from "@/components/logo/logo";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FieldDescription, FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  clearStoredReturnPath,
+  resolveReturnPath,
+} from "@/lib/auth/return-path";
 import { loginSchema } from "@/lib/validations/auth";
 import { useForm } from "@tanstack/react-form";
 import { Link } from "@tanstack/react-router";
@@ -23,7 +27,7 @@ export function LoginForm({
   appName,
   defaultEmail = "",
   publicURL,
-  callbackURL = "/dashboard",
+  callbackURL,
 }: LoginFormProps) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,15 +42,24 @@ export function LoginForm({
       try {
         if (!publicURL) throw new Error("Public URL is not provided");
 
+        // Resolved here rather than during render: the fallback reads
+        // sessionStorage, which does not exist while server-rendering and would
+        // otherwise make the first client render disagree with the HTML.
+        const returnPath = resolveReturnPath(callbackURL);
+
         const result = await authClient(publicURL).signIn.email({
           email: value.email,
           password: value.password,
-          callbackURL: callbackURL,
+          callbackURL: returnPath,
         });
 
         if (result.error) {
           throw new Error(result.error.message);
         }
+
+        // Consumed. Leaving it behind would send the *next* sign-in in this tab
+        // back to a path from an older session.
+        clearStoredReturnPath();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Login failed");
       } finally {

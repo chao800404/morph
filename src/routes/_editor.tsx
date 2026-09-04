@@ -1,4 +1,5 @@
 import { TopLoader } from "@/components/top-loader/top-loader";
+import { sanitizeReturnPath } from "@/lib/auth/return-path";
 import { IdleTimerProvider } from "@/components/provider/idle-timer-provider";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
@@ -14,9 +15,16 @@ import {
 import { ThemeProvider } from "tanstack-theme-kit";
 
 export const Route = createFileRoute("/_editor")({
-  beforeLoad: async () => {
+  beforeLoad: async ({ location }) => {
     const session = await getSession();
-    if (!session?.user) throw redirect({ to: "/sign-in" });
+    if (!session?.user) {
+      // See the dashboard guard: the editor path is the one worth restoring,
+      // since getting back to a specific theme/template is several clicks.
+      throw redirect({
+        to: "/sign-in",
+        search: { callbackURL: sanitizeReturnPath(location.href) ?? undefined },
+      });
+    }
     return { session };
   },
   component: EditorLayout,

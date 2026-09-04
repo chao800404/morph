@@ -1,12 +1,20 @@
 import { getConfig } from "@/server/get-config";
 import { checkHasAdminServerFn } from "@/server/auth/check-has-admin.serverFn";
+import { sanitizeReturnPath } from "@/lib/auth/return-path";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { z } from "zod";
 import { LoginForm } from "./-components/login-form";
 
 const SearchSchema = z.object({
   email: z.string().email().optional(),
-  callbackURL: z.string().optional(),
+  // Narrowed to a same-origin path at the edge of the app. Better Auth feeds
+  // this straight to `window.location.href` after the credentials are accepted
+  // and only screens the URL *scheme*, so an absolute URL here would be an open
+  // redirect against a user who has just authenticated.
+  callbackURL: z.preprocess(
+    (value) => sanitizeReturnPath(value) ?? undefined,
+    z.string().optional(),
+  ),
 });
 
 export const Route = createFileRoute("/_backend/_auth/sign-in")({
