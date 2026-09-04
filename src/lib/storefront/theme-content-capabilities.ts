@@ -414,13 +414,57 @@ function isSafeContentUrl(value: string): boolean {
   }
 }
 
+/** Prefix of the error thrown when a value fails its field declaration. */
+export const INVALID_CONTENT_FIELD_ERROR = "INVALID_THEME_CONTENT_FIELD_VALUE";
+
+/**
+ * Reads back the field a rejected value belongs to, or `null`.
+ *
+ * The thrown message carries the field — `items.0.title` for a row — and it is
+ * the only thing that tells an editor which of a dozen controls to look at, so
+ * the boundary that reports the failure has to be able to recover it.
+ */
+export function rejectedContentFieldKey(message: string): string | null {
+  return parseRejectedContentField(message)?.fieldKey ?? null;
+}
+
+/**
+ * Splits a rejection into the field it names and why it was refused.
+ *
+ * The thrown message is `PREFIX:<fieldKey>[:<reason>]`. A field key can itself
+ * contain dots (`items.1.title`) but never a colon, so the first two segments
+ * are the prefix and the key and anything after is the reason.
+ */
+export function parseRejectedContentField(
+  message: string,
+): { fieldKey: string; reason: string | null } | null {
+  const marker = `${INVALID_CONTENT_FIELD_ERROR}:`;
+  const at = message.indexOf(marker);
+  if (at === -1) return null;
+
+  const rest = message.slice(at + marker.length).trim();
+  if (rest.length === 0) return null;
+
+  const [fieldKey, ...reasonParts] = rest.split(":");
+  if (!fieldKey) return null;
+  const reason = reasonParts.join(":").trim();
+  return { fieldKey, reason: reason.length > 0 ? reason : null };
+}
+
 function assertThemeContentFieldValue(
   fieldKey: string,
   definition: ThemeContentFieldDefinition,
   value: unknown,
 ): void {
-  const invalid = (): never => {
-    throw new Error(`INVALID_THEME_CONTENT_FIELD_VALUE:${fieldKey}`);
+  // The reason is carried alongside the field so a rejection can say what was
+  // wrong with the value, not merely that something was. Without it every
+  // failure in this function is indistinguishable at the boundary that reports
+  // it, and an author has to guess between a bad row shape, a row limit and a
+  // value of the wrong type.
+  const invalid = (reason?: string): never => {
+    throw new Error(
+      `${INVALID_CONTENT_FIELD_ERROR}:${fieldKey}${reason ? `:${reason}` : ""}`,
+    );
   };
 
   if (
@@ -488,30 +532,31 @@ function assertThemeContentFieldValue(
   }
 
   if (definition.type === "array") {
-    if (!Array.isArray(value)) invalid();
+    if (!Array.isArray(value)) invalid("not-a-list");
     const rows = value as unknown[];
-    if (rows.length > MAX_ARRAY_CONTENT_FIELD_ROWS) invalid();
+    if (rows.length > MAX_ARRAY_CONTENT_FIELD_ROWS) invalid("too-many-rows");
     if (definition.minRows !== undefined && rows.length < definition.minRows) {
-      invalid();
+      invalid(`needs-at-least-${definition.minRows}-rows`);
     }
     if (definition.maxRows !== undefined && rows.length > definition.maxRows) {
-      invalid();
+      invalid(`allows-at-most-${definition.maxRows}-rows`);
     }
     const rowFields = arrayRowFields(definition);
     // A list whose row shape never resolved cannot be validated, so nothing may
     // be written to it. Accepting the value unchecked would be the one path
     // that reaches storage without a schema behind it.
-    if (!rowFields) invalid();
+    if (!rowFields) invalid("row-shape-not-declared");
     for (const [index, row] of rows.entries()) {
       if (typeof row !== "object" || row === null || Array.isArray(row)) {
-        invalid();
+        invalid(`row-${index}-is-not-an-object`);
       }
       const entries = Object.entries(row as Record<string, unknown>);
       for (const [rowKey, rowValue] of entries) {
         // Platform-managed: the row's identity is what instance styles and
         // reordering are keyed by, so it is carried rather than declared.
         if (rowKey === ROW_IDENTITY_KEY) {
-          if (typeof rowValue !== "string" || rowValue.length > 200) invalid();
+          if (typeof rowValue !== "string" || rowValue.length > 200)
+            invalid(`row-${index}-has-a-bad-id`);
           continue;
         }
         const rowDefinition = rowFields![rowKey];

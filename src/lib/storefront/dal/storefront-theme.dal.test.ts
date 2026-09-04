@@ -1307,6 +1307,63 @@ describe("co-located content field declarations", () => {
     );
   });
 
+  // A declaration can change after content was written under an older one. If
+  // the stored value is re-validated on every save, the section becomes
+  // permanently uneditable — including the field that needs correcting.
+  it("lets an edit through when other stored content predates the declaration", async () => {
+    seedThemeFiles(
+      `export const contentFields = {
+         headline: { type: "text", label: "Headline" },
+         subtitle: { type: "text", maxLength: 5 },
+       } as const;
+       export default function Promo() { return <section />; }`,
+      MANIFEST_WITHOUT_FIELDS,
+    );
+    // `subtitle` was stored before the 5-character limit existed.
+    seedSection('{"headline":"Original","subtitle":"far too long for the limit"}');
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-p",
+      sectionId: "promo-1",
+      props: { headline: "Edited despite the stale neighbour" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result?.document.sections[0].props.headline).toBe(
+      "Edited despite the stale neighbour",
+    );
+    // The offending value is preserved, not silently erased or corrected.
+    expect(result?.document.sections[0].props.subtitle).toBe(
+      "far too long for the limit",
+    );
+  });
+
+  it("still rejects the incoming value when it breaks the declaration", async () => {
+    seedThemeFiles(
+      `export const contentFields = {
+         headline: { type: "text", maxLength: 5 },
+       } as const;
+       export default function Promo() { return <section />; }`,
+      MANIFEST_WITHOUT_FIELDS,
+    );
+    seedSection('{"headline":"ok"}');
+
+    await expect(
+      storefrontThemeDal.updateSectionProps({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-p",
+        sectionId: "promo-1",
+        props: { headline: "way past the declared limit" },
+        expectedDraftGeneration: 1,
+        createdBy: "user-1",
+      }),
+    ).rejects.toThrow("INVALID_THEME_CONTENT_FIELD_VALUE:headline");
+  });
+
   it("still rejects a prop the component never declared", async () => {
     seedThemeFiles(
       `export const contentFields = { headline: { type: "text" } } as const;

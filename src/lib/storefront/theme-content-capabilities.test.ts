@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   filterThemeContentProps,
+  parseRejectedContentField,
+  rejectedContentFieldKey,
   getThemeComponentContentCapability,
   parseThemeContentCapabilities,
 } from "./theme-content-capabilities";
@@ -218,5 +220,122 @@ describe("array content fields", () => {
     // same way any other invalid field is handled.
     expect(result.capabilities["x.default"]?.fields).toEqual({});
     expect(result.diagnostics.join(" ")).toContain("items");
+  });
+});
+
+describe("rejectedContentFieldKey", () => {
+  // The field name is the only thing that tells the editor which of a dozen
+  // controls to look at, so it has to survive the trip back to the client.
+  it("recovers the field a rejected value belongs to", () => {
+    let thrown = "";
+    try {
+      filterThemeContentProps(
+        { heading: 42 },
+        { fields: { heading: { type: "text", label: "Heading" } } },
+      );
+    } catch (error) {
+      thrown = error instanceof Error ? error.message : "";
+    }
+
+    expect(rejectedContentFieldKey(thrown)).toBe("heading");
+  });
+
+  it("keeps the row path when the failure is inside an array", () => {
+    let thrown = "";
+    try {
+      filterThemeContentProps(
+        { items: [{ title: "ok" }, { title: 7 }] },
+        {
+          fields: {
+            items: {
+              type: "array",
+              label: "Items",
+              fields: { title: { type: "text", label: "Title" } },
+            },
+          },
+        },
+      );
+    } catch (error) {
+      thrown = error instanceof Error ? error.message : "";
+    }
+
+    // Not just "items": the editor can point at the offending row.
+    expect(rejectedContentFieldKey(thrown)).toBe("items.1.title");
+  });
+
+  it("returns null for an unrelated error", () => {
+    expect(rejectedContentFieldKey("CONFLICT_SOURCE_GENERATION_MISMATCH")).toBeNull();
+    expect(rejectedContentFieldKey("")).toBeNull();
+    expect(
+      rejectedContentFieldKey("INVALID_THEME_CONTENT_FIELD_VALUE:"),
+    ).toBeNull();
+  });
+});
+
+describe("parseRejectedContentField", () => {
+  const reasonFor = (fields: unknown, value: unknown) => {
+    try {
+      filterThemeContentProps(
+        { items: value },
+        { fields: { items: fields } } as never,
+      );
+    } catch (error) {
+      return parseRejectedContentField(
+        error instanceof Error ? error.message : "",
+      );
+    }
+    return null;
+  };
+
+  const listOf = (extra: Record<string, unknown> = {}) => ({
+    type: "array",
+    label: "Items",
+    fields: { title: { type: "text", label: "Title" } },
+    ...extra,
+  });
+
+  // Every one of these used to surface as the bare word "items", which told an
+  // author nothing about what to change.
+  it("says a list was not a list", () => {
+    expect(reasonFor(listOf(), "not a list")).toEqual({
+      fieldKey: "items",
+      reason: "not-a-list",
+    });
+  });
+
+  it("says the row shape was never declared", () => {
+    expect(
+      reasonFor({ type: "array", label: "Items" }, [{ title: "a" }]),
+    ).toEqual({ fieldKey: "items", reason: "row-shape-not-declared" });
+  });
+
+  it("says which row is not an object, and which one", () => {
+    expect(reasonFor(listOf(), [{ title: "ok" }, "oops"])).toEqual({
+      fieldKey: "items",
+      reason: "row-1-is-not-an-object",
+    });
+  });
+
+  it("says the row count broke a declared bound", () => {
+    expect(reasonFor(listOf({ maxRows: 1 }), [{}, {}])).toEqual({
+      fieldKey: "items",
+      reason: "allows-at-most-1-rows",
+    });
+    expect(reasonFor(listOf({ minRows: 2 }), [{}])).toEqual({
+      fieldKey: "items",
+      reason: "needs-at-least-2-rows",
+    });
+  });
+
+  // A row-level failure keeps its path and needs no separate reason.
+  it("keeps a dotted row path intact", () => {
+    expect(reasonFor(listOf(), [{ title: 7 }])).toEqual({
+      fieldKey: "items.0.title",
+      reason: null,
+    });
+  });
+
+  it("returns null for an unrelated error", () => {
+    expect(parseRejectedContentField("SOMETHING_ELSE")).toBeNull();
   });
 });

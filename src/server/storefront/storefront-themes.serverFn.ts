@@ -1,4 +1,5 @@
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
+import { parseRejectedContentField } from "@/lib/storefront/theme-content-capabilities";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import {
   createReleasePreviewQueueMessage,
@@ -153,11 +154,24 @@ export const updateStorefrontThemeSectionProps = createServerFn({
           });
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
-      if (message.includes("INVALID_THEME_CONTENT_FIELD_VALUE")) {
+      const rejected = parseRejectedContentField(message);
+      if (rejected) {
+        // The thrown error names the field — down to `items.0.title` for a row
+        // — and why it was refused. Dropping either left the editor saying only
+        // that something did not match, with no way to tell which of a dozen
+        // controls to look at, let alone what to change about it.
+        const detail = rejected.reason
+          ? ` (${rejected.reason.replace(/-/g, " ")})`
+          : "";
         return fail(
-          "The content value does not match the Theme field declaration.",
+          `"${rejected.fieldKey}" does not match the Theme field declaration${detail}.`,
           {
             error: "INVALID_CONTENT_FIELD",
+            errors: {
+              [rejected.fieldKey]: [
+                rejected.reason ?? "Does not match the declared field.",
+              ],
+            },
           },
         );
       }

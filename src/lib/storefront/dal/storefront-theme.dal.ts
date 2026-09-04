@@ -22,7 +22,6 @@ import {
   mergeDocumentWithRouteSections,
 } from "@/lib/storefront/compiler/theme-route-sections";
 import { filterSectionContentProps } from "@/lib/storefront/content/section-content-manifest";
-import { filterThemeContentProps } from "@/lib/storefront/theme-content-capabilities";
 import { and, asc, desc, eq, isNotNull, isNull, max } from "drizzle-orm";
 
 const revisionIdPattern =
@@ -540,13 +539,16 @@ export const storefrontThemeDal = {
     const themeCapability = resolvedComponentRef
       ? themeCapabilities[resolvedComponentRef]
       : null;
-    if (themeCapability) {
-      // Validate declared values against the current capability, but preserve
-      // existing non-editable props. contentFields is an authoring allowlist,
-      // not the complete runtime prop schema, so a partial content edit must
-      // not erase references or other persisted component data.
-      filterThemeContentProps(existingProps, themeCapability);
-    }
+    // Existing props are carried through unvalidated and unfiltered.
+    //
+    // `contentFields` is an authoring allowlist, not the complete runtime prop
+    // schema, so a partial content edit must not erase references or other
+    // persisted component data. It must also not *reject* the edit: this used
+    // to assert the stored props against the current declaration, which meant
+    // that changing a declaration — a new maxLength, a changed type — made
+    // every section still holding older content permanently uneditable,
+    // including the very field that needed correcting. Only the incoming value
+    // is validated, by `filterSectionContentProps` above.
     const cleanExistingProps = themeCapability
       ? existingProps
       : filterSectionContentProps(
