@@ -4,7 +4,9 @@ import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 
-describe("LocalViteThemeBuildRunner (Phase 4B-5)", { timeout: 20_000 }, () => {
+// Real Vite builds. These reach ~8s under a loaded parallel run, and 20s was
+// not enough headroom above that; the sibling describe below already uses 60s.
+describe("LocalViteThemeBuildRunner (Phase 4B-5)", { timeout: 60_000 }, () => {
   const createInput = (
     files: Array<{ path: string; content: string | Uint8Array; isEntry?: boolean }>,
     overrides?: Partial<ThemeBuildRunnerInput>,
