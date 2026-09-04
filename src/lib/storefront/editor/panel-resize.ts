@@ -38,3 +38,52 @@ export function resolvePanelResizeWidth({
   const delta = edge === "left" ? clientX - startX : startX - clientX;
   return Math.min(max, Math.max(min, Math.round(startWidth + delta)));
 }
+
+/** How far one arrow key press moves a panel edge, in pixels. */
+export const PANEL_RESIZE_STEP = 16;
+/** The same with a modifier held, for crossing a panel quickly. */
+export const PANEL_RESIZE_LARGE_STEP = 64;
+
+/**
+ * The panel width a key press asks for, or `null` if the key is not ours.
+ *
+ * A separator that can be focused but not operated is worse than one that
+ * cannot be focused at all: it takes a tab stop and gives nothing back. The
+ * arrows follow the same sense as the drag — the key that moves the edge
+ * outward widens the panel — so the left panel grows with ArrowRight and the
+ * right panel grows with ArrowLeft.
+ *
+ * `Home` and `End` go to the bounds, which is what the separator role's
+ * keyboard contract expects of them.
+ */
+export function resolvePanelResizeKey({
+  key,
+  shiftKey = false,
+  width,
+  edge,
+  min,
+  max,
+}: {
+  key: string;
+  shiftKey?: boolean;
+  width: number;
+  edge: PanelEdge;
+  min: number;
+  max: number;
+}): number | null {
+  const clamp = (value: number) => Math.min(max, Math.max(min, value));
+
+  if (key === "Home") return clamp(min);
+  if (key === "End") return clamp(max);
+
+  if (key !== "ArrowLeft" && key !== "ArrowRight") return null;
+
+  const magnitude = shiftKey ? PANEL_RESIZE_LARGE_STEP : PANEL_RESIZE_STEP;
+  const towardsWider = edge === "left" ? "ArrowRight" : "ArrowLeft";
+  const delta = key === towardsWider ? magnitude : -magnitude;
+
+  const next = clamp(width + delta);
+  // Already against the bound: report no change rather than a width equal to
+  // the current one, so the caller can leave the event alone.
+  return next === width ? null : next;
+}

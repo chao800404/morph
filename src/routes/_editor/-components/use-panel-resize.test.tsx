@@ -175,3 +175,61 @@ describe("usePanelResize", () => {
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe("260");
   });
 });
+
+describe("usePanelResize keyboard", () => {
+  it("resizes with the arrow keys and commits immediately", () => {
+    const { getByTestId } = render(<Harness />);
+    const handle = getByTestId("handle");
+    const surface = getByTestId("surface");
+
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+
+    expect(surface.style.getPropertyValue(CSS_VARIABLE)).toBe("316px");
+    // A key press is one discrete change, so it is committed at once rather
+    // than waiting for a release that never comes.
+    expect(getByTestId("committed").textContent).toBe("316");
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe("316");
+  });
+
+  it("jumps to the bounds with Home and End", () => {
+    const { getByTestId } = render(<Harness />);
+    const handle = getByTestId("handle");
+
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(getByTestId("committed").textContent).toBe("460");
+
+    fireEvent.keyDown(handle, { key: "Home" });
+    expect(getByTestId("committed").textContent).toBe("220");
+  });
+
+  it("leaves keys it does not handle to the browser", () => {
+    const { getByTestId } = render(<Harness />);
+    const handle = getByTestId("handle");
+
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    handle.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(getByTestId("committed").textContent).toBe("300");
+  });
+
+  it("does not swallow the key once the panel is against its bound", () => {
+    const { getByTestId } = render(<Harness />);
+    const handle = getByTestId("handle");
+
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(getByTestId("committed").textContent).toBe("460");
+
+    const event = new KeyboardEvent("keydown", {
+      key: "ArrowRight",
+      bubbles: true,
+      cancelable: true,
+    });
+    handle.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  });
+});

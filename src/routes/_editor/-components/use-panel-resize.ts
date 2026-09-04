@@ -1,4 +1,5 @@
 import {
+  resolvePanelResizeKey,
   resolvePanelResizeWidth,
   type PanelEdge,
 } from "@/lib/storefront/editor/panel-resize";
@@ -45,6 +46,7 @@ export interface PanelResizeHandlers {
   onPointerUp: (event: React.PointerEvent<HTMLElement>) => void;
   onPointerCancel: (event: React.PointerEvent<HTMLElement>) => void;
   onDoubleClick: () => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
 }
 
 export interface PanelResize {
@@ -172,6 +174,34 @@ export function usePanelResize({
     [cancelFrame, storageKey, writeWidth],
   );
 
+  /**
+   * Keyboard resizing, so the separator's tab stop leads somewhere.
+   *
+   * Committed immediately rather than coalesced: a key press is one discrete
+   * change, and there is no stream of events here to keep out of React.
+   */
+  const onKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>) => {
+      const next = resolvePanelResizeKey({
+        key: event.key,
+        shiftKey: event.shiftKey,
+        width,
+        edge,
+        min: minWidth,
+        max: maxWidth,
+      });
+      // An unhandled key, or one that would not move the edge, is left to the
+      // browser rather than swallowed.
+      if (next === null) return;
+
+      event.preventDefault();
+      writeWidth(next);
+      setWidth(next);
+      persistWidth(storageKey, next);
+    },
+    [edge, maxWidth, minWidth, storageKey, width, writeWidth],
+  );
+
   const onDoubleClick = useCallback(() => {
     writeWidth(defaultWidth);
     setWidth(defaultWidth);
@@ -186,6 +216,7 @@ export function usePanelResize({
       onPointerUp: finish,
       onPointerCancel: finish,
       onDoubleClick,
+      onKeyDown,
     },
   };
 }
