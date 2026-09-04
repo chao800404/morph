@@ -156,6 +156,67 @@ function mergeCapabilities(
 }
 
 /**
+ * Fills in row shapes declared by reference.
+ *
+ * Run after every declaration is known, so a referenced row component may
+ * itself be declared later in the scan. Both entry points share this: when only
+ * one of them expanded `of`, the editor rendered row controls the server then
+ * refused to write, reporting the list as having no declared row shape.
+ */
+function expandRowReferences({
+  declared,
+  colocated,
+  diagnostics,
+  componentRefForPath,
+}: {
+  declared: Map<string, Record<string, ThemeContentFieldDefinition>>;
+  colocated: Map<string, ThemeComponentContentCapability>;
+  diagnostics: string[];
+  componentRefForPath: (path: string) => string | null;
+}): void {
+  for (const [path, fields] of declared) {
+    const resolvedFields: Record<string, ThemeContentFieldDefinition> = {};
+    for (const [fieldKey, definition] of Object.entries(fields)) {
+      if (!isArrayContentField(definition) || definition.fields) {
+        resolvedFields[fieldKey] = definition;
+        continue;
+      }
+      const specifier = definition.of;
+      const rowFields = specifier
+        ? resolveRowFields(path, specifier, declared)
+        : null;
+      if (!rowFields) {
+        // Dropped rather than left shapeless: an editor offering a list whose
+        // rows have no fields cannot do anything useful with it, and silence
+        // here is how a mistyped path would go unnoticed.
+        diagnostics.push(
+          `${path}: content field "${fieldKey}" references "${specifier ?? ""}", which declares no content fields.`,
+        );
+        continue;
+      }
+      resolvedFields[fieldKey] = { ...definition, fields: rowFields };
+    }
+    if (Object.keys(resolvedFields).length === 0) continue;
+    const capability = { fields: resolvedFields };
+    // Keyed by source path so an unregistered component resolves, and by its
+    // manifest ref as well so existing Document sections keep resolving.
+    colocated.set(path, capability);
+    const componentRef = componentRefForPath(path);
+    if (componentRef) colocated.set(componentRef, capability);
+  }
+}
+
+/** Candidate paths a row component reference may resolve to. */
+export function rowComponentCandidatePaths(
+  declaringPath: string,
+  specifier: string,
+): string[] {
+  const base = resolveRowComponentPath(declaringPath, specifier);
+  if (!base) return [];
+  return ROW_COMPONENT_EXTENSIONS.map((extension) => `${base}${extension}`);
+}
+
+/**
  * Resolves what each component exposes for content editing.
  *
  * A component's own `contentFields` export wins over the manifest: the
@@ -206,39 +267,12 @@ export function resolveThemeContentCapabilitiesFromFiles(
     declared.set(path, parsed.fields);
   }
 
-  // Second pass: a row shape declared by reference is filled in from the
-  // component that renders one row. Done after every declaration is known so
-  // the referenced component may itself be declared later in the scan.
-  for (const [path, fields] of declared) {
-    const resolvedFields: Record<string, ThemeContentFieldDefinition> = {};
-    for (const [fieldKey, definition] of Object.entries(fields)) {
-      if (!isArrayContentField(definition) || definition.fields) {
-        resolvedFields[fieldKey] = definition;
-        continue;
-      }
-      const specifier = definition.of;
-      const rowFields = specifier
-        ? resolveRowFields(path, specifier, declared)
-        : null;
-      if (!rowFields) {
-        // Dropped rather than left shapeless: an editor offering a list whose
-        // rows have no fields cannot do anything useful with it, and silence
-        // here is how a mistyped path would go unnoticed.
-        diagnostics.push(
-          `${path}: content field "${fieldKey}" references "${specifier ?? ""}", which declares no content fields.`,
-        );
-        continue;
-      }
-      resolvedFields[fieldKey] = { ...definition, fields: rowFields };
-    }
-    if (Object.keys(resolvedFields).length === 0) continue;
-    const capability = { fields: resolvedFields };
-    // Keyed by source path so an unregistered component resolves, and by its
-    // manifest ref as well so existing Document sections keep resolving.
-    colocated.set(path, capability);
-    const componentRef = manifestRefsBySource.get(path);
-    if (componentRef) colocated.set(componentRef, capability);
-  }
+  expandRowReferences({
+    declared,
+    colocated,
+    diagnostics,
+    componentRefForPath: (path) => manifestRefsBySource.get(path) ?? null,
+  });
 
   return mergeCapabilities(
     manifestContent,
@@ -269,6 +303,11 @@ export async function resolveThemeContentCapabilities(args: {
       sources.set(normalized, normalized);
     }
   }
+  const declared = new Map<
+    string,
+    Record<string, ThemeContentFieldDefinition>
+  >();
+  const refForPath = new Map<string, string>();
   for (const [componentRef, sourcePath] of sources) {
     const source = await args.readSource(sourcePath);
     if (typeof source !== "string") continue;
@@ -276,16 +315,44 @@ export async function resolveThemeContentCapabilities(args: {
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${sourcePath}: ${diagnostic}`);
     }
-    if (parsed.fields) {
-      const capability = { fields: parsed.fields };
-      colocated.set(componentRef, capability);
-      // A route is allowed to be the only registration for a component. In
-      // that case its source path becomes the persisted component identity,
-      // and server validation must resolve the same co-located declaration the
-      // editor used.
-      colocated.set(sourcePath, capability);
+    if (!parsed.fields) continue;
+    declared.set(sourcePath, parsed.fields);
+    // A route is allowed to be the only registration for a component. In that
+    // case its source path becomes the persisted component identity, and
+    // server validation must resolve the same co-located declaration the
+    // editor used.
+    if (componentRef !== sourcePath) refForPath.set(sourcePath, componentRef);
+  }
+
+  // A row shape declared by reference lives in a file the manifest never names,
+  // so it has to be fetched before the shape can be resolved. Only paths a
+  // declaration actually points at are read; the client cannot choose them.
+  for (const [path, fields] of [...declared]) {
+    for (const definition of Object.values(fields)) {
+      if (!isArrayContentField(definition) || definition.fields) continue;
+      if (!definition.of) continue;
+      for (const candidate of rowComponentCandidatePaths(path, definition.of)) {
+        if (declared.has(candidate)) break;
+        const rowSource = await args.readSource(candidate);
+        if (typeof rowSource !== "string") continue;
+        const parsedRow = parseColocatedContentFields(rowSource);
+        for (const diagnostic of parsedRow.diagnostics) {
+          diagnostics.push(`${candidate}: ${diagnostic}`);
+        }
+        if (parsedRow.fields) {
+          declared.set(candidate, parsedRow.fields);
+          break;
+        }
+      }
     }
   }
+
+  expandRowReferences({
+    declared,
+    colocated,
+    diagnostics,
+    componentRefForPath: (path) => refForPath.get(path) ?? null,
+  });
 
   return mergeCapabilities(
     args.manifestContent,

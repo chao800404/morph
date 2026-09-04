@@ -134,3 +134,82 @@ describe("resolveThemeContentCapabilities", () => {
     );
   });
 });
+
+describe("row shapes declared by reference resolve the same on both paths", () => {
+  // The editor renders the row controls from one resolver and the server
+  // validates the write with the other. When only the file-scanning one
+  // expanded `of`, the panel offered controls the server then rejected with
+  // "row shape not declared", and no content in that list could be saved.
+  const MANIFEST = JSON.stringify({
+    components: {
+      "principles.default": {
+        name: "Principles",
+        source: "src/components/Principles.tsx",
+        sectionType: "principles",
+      },
+    },
+  });
+  const PRINCIPLES = `export const contentFields = {
+    label: { type: "text", label: "Section label" },
+    items: { type: "array", label: "Principles", of: "./PrincipleCard" },
+  } as const;
+  export default function Principles() { return <section />; }`;
+  const CARD = `export const contentFields = {
+    number: { type: "text", label: "Number" },
+    title: { type: "text", label: "Title" },
+  } as const;
+  export default function PrincipleCard() { return <article />; }`;
+
+  const files = [
+    { path: "morph.theme.json", content: MANIFEST },
+    { path: "src/components/Principles.tsx", content: PRINCIPLES },
+    { path: "src/components/PrincipleCard.tsx", content: CARD },
+  ];
+
+  const expectedRowFields = {
+    number: { type: "text", label: "Number" },
+    title: { type: "text", label: "Title" },
+  };
+
+  it("expands the reference when scanning the workspace", () => {
+    const result = resolveThemeContentCapabilitiesFromFiles(files);
+    const items = result.capabilities["principles.default"]?.fields?.items;
+    expect(items).toMatchObject({ type: "array", fields: expectedRowFields });
+  });
+
+  it("expands the reference when reading sources on demand", async () => {
+    const result = await resolveThemeContentCapabilities({
+      manifestContent: MANIFEST,
+      additionalSourcePaths: [],
+      readSource: async (path) =>
+        files.find((file) => file.path === path)?.content ?? null,
+    });
+    const items = result.capabilities["principles.default"]?.fields?.items;
+    // The row component is named by the declaration, not the manifest, so this
+    // only works if the on-demand path follows the reference.
+    expect(items).toMatchObject({ type: "array", fields: expectedRowFields });
+  });
+
+  it("reports a reference that resolves to nothing, on both paths", async () => {
+    const broken = [
+      { path: "morph.theme.json", content: MANIFEST },
+      {
+        path: "src/components/Principles.tsx",
+        content: PRINCIPLES.replace("./PrincipleCard", "./Missing"),
+      },
+    ];
+
+    const scanned = resolveThemeContentCapabilitiesFromFiles(broken);
+    const onDemand = await resolveThemeContentCapabilities({
+      manifestContent: MANIFEST,
+      additionalSourcePaths: [],
+      readSource: async (path) =>
+        broken.find((file) => file.path === path)?.content ?? null,
+    });
+
+    for (const result of [scanned, onDemand]) {
+      expect(result.capabilities["principles.default"]?.fields?.items).toBeUndefined();
+      expect(result.diagnostics.join(" ")).toContain("./Missing");
+    }
+  });
+});
