@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { usePanelResize } from "./use-panel-resize";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -238,13 +239,23 @@ export function EditorModeSurface({
   active,
   className,
   children,
+  style,
+  surfaceRef,
 }: {
   active: boolean;
   className?: string;
   children: React.ReactNode;
+  style?: React.CSSProperties;
+  /**
+   * Lets a caller write to this element directly. The panel resize handles use
+   * it to update a CSS custom property per frame without re-rendering.
+   */
+  surfaceRef?: React.Ref<HTMLDivElement>;
 }) {
   return (
     <div
+      ref={surfaceRef}
+      style={style}
       aria-hidden={!active}
       inert={!active}
       className={cn(
@@ -568,6 +579,21 @@ const DEFAULT_RIGHT_PANEL_WIDTH = 380;
 const MIN_RIGHT_PANEL_WIDTH = 280;
 const MAX_RIGHT_PANEL_WIDTH = 640;
 
+const LEFT_PANEL_WIDTH_VARIABLE = "--editor-left-panel-width";
+const RIGHT_PANEL_WIDTH_VARIABLE = "--editor-right-panel-width";
+
+/**
+ * Module constants, not inline literals: both panels are `memo`-wrapped, and a
+ * fresh style object on every render would defeat that — which is exactly what
+ * used to happen on each frame of a resize drag.
+ */
+const LEFT_PANEL_STYLE: React.CSSProperties = {
+  width: `var(${LEFT_PANEL_WIDTH_VARIABLE})`,
+};
+const RIGHT_PANEL_STYLE: React.CSSProperties = {
+  width: `var(${RIGHT_PANEL_WIDTH_VARIABLE})`,
+};
+
 const viewportOptions = [
   { value: "desktop", label: "Desktop", icon: Monitor },
   { value: "tablet", label: "Tablet", icon: Tablet },
@@ -580,107 +606,35 @@ export function VisualEditorShell({
   onSearchChange,
   currentUser,
 }: EditorShellProps) {
-  const [leftPanelWidth, setLeftPanelWidth] = useState(
-    () => context.panelWidths?.left ?? DEFAULT_LEFT_PANEL_WIDTH,
-  );
+  // The design surface owns the panel widths as CSS custom properties so a
+  // resize drag can repaint without re-rendering this component. See
+  // `usePanelResize` for why that matters here specifically.
+  const designSurfaceRef = useRef<HTMLDivElement>(null);
 
-  const [rightPanelWidth, setRightPanelWidth] = useState(
-    () => context.panelWidths?.right ?? DEFAULT_RIGHT_PANEL_WIDTH,
-  );
+  const leftPanelResize = usePanelResize({
+    initialWidth: context.panelWidths?.left ?? DEFAULT_LEFT_PANEL_WIDTH,
+    defaultWidth: DEFAULT_LEFT_PANEL_WIDTH,
+    minWidth: MIN_LEFT_PANEL_WIDTH,
+    maxWidth: MAX_LEFT_PANEL_WIDTH,
+    edge: "left",
+    cssVariable: LEFT_PANEL_WIDTH_VARIABLE,
+    surfaceRef: designSurfaceRef,
+    storageKey: "morph:editor-left-panel-width",
+  });
 
-  const leftResizeStateRef = useRef<{
-    startX: number;
-    startWidth: number;
-  } | null>(null);
+  const rightPanelResize = usePanelResize({
+    initialWidth: context.panelWidths?.right ?? DEFAULT_RIGHT_PANEL_WIDTH,
+    defaultWidth: DEFAULT_RIGHT_PANEL_WIDTH,
+    minWidth: MIN_RIGHT_PANEL_WIDTH,
+    maxWidth: MAX_RIGHT_PANEL_WIDTH,
+    edge: "right",
+    cssVariable: RIGHT_PANEL_WIDTH_VARIABLE,
+    surfaceRef: designSurfaceRef,
+    storageKey: "morph:editor-right-panel-width",
+  });
 
-  const rightResizeStateRef = useRef<{
-    startX: number;
-    startWidth: number;
-  } | null>(null);
-
-  const handleLeftPanelResizePointerDown = (
-    event: React.PointerEvent<HTMLDivElement>,
-  ) => {
-    if (event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    leftResizeStateRef.current = {
-      startX: event.clientX,
-      startWidth: leftPanelWidth,
-    };
-  };
-
-  const handleLeftPanelResizePointerMove = (
-    event: React.PointerEvent<HTMLDivElement>,
-  ) => {
-    if (!leftResizeStateRef.current) return;
-    const delta = event.clientX - leftResizeStateRef.current.startX;
-    const nextWidth = Math.min(
-      MAX_LEFT_PANEL_WIDTH,
-      Math.max(
-        MIN_LEFT_PANEL_WIDTH,
-        Math.round(leftResizeStateRef.current.startWidth + delta),
-      ),
-    );
-    setLeftPanelWidth(nextWidth);
-  };
-
-  const finishLeftPanelResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!leftResizeStateRef.current) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    leftResizeStateRef.current = null;
-    try {
-      document.cookie = `morph:editor-left-panel-width=${leftPanelWidth}; path=/; max-age=31536000; SameSite=Lax`;
-      localStorage.setItem(
-        "morph:editor-left-panel-width",
-        String(leftPanelWidth),
-      );
-    } catch {}
-  };
-
-  const handleRightPanelResizePointerDown = (
-    event: React.PointerEvent<HTMLDivElement>,
-  ) => {
-    if (event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    rightResizeStateRef.current = {
-      startX: event.clientX,
-      startWidth: rightPanelWidth,
-    };
-  };
-
-  const handleRightPanelResizePointerMove = (
-    event: React.PointerEvent<HTMLDivElement>,
-  ) => {
-    if (!rightResizeStateRef.current) return;
-    const delta = rightResizeStateRef.current.startX - event.clientX;
-    const nextWidth = Math.min(
-      MAX_RIGHT_PANEL_WIDTH,
-      Math.max(
-        MIN_RIGHT_PANEL_WIDTH,
-        Math.round(rightResizeStateRef.current.startWidth + delta),
-      ),
-    );
-    setRightPanelWidth(nextWidth);
-  };
-
-  const finishRightPanelResize = (
-    event: React.PointerEvent<HTMLDivElement>,
-  ) => {
-    if (!rightResizeStateRef.current) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    rightResizeStateRef.current = null;
-    try {
-      document.cookie = `morph:editor-right-panel-width=${rightPanelWidth}; path=/; max-age=31536000; SameSite=Lax`;
-      localStorage.setItem(
-        "morph:editor-right-panel-width",
-        String(rightPanelWidth),
-      );
-    } catch {}
-  };
+  const leftPanelWidth = leftPanelResize.width;
+  const rightPanelWidth = rightPanelResize.width;
 
   const [previewRevision, setPreviewRevision] = useState(0);
   const [loadedPreviewKey, setLoadedPreviewKey] = useState<string | null>(null);
@@ -6003,9 +5957,16 @@ export function VisualEditorShell({
       <EditorModeSurface
         active={editorMode === "design"}
         className="flex-1 overflow-hidden bg-muted/40 max-md:flex-col"
+        surfaceRef={designSurfaceRef}
+        style={
+          {
+            [LEFT_PANEL_WIDTH_VARIABLE]: `${leftPanelWidth}px`,
+            [RIGHT_PANEL_WIDTH_VARIABLE]: `${rightPanelWidth}px`,
+          } as React.CSSProperties
+        }
       >
         <EditorSectionsPanel
-          style={{ width: `${leftPanelWidth}px` }}
+          style={LEFT_PANEL_STYLE}
           context={routeBackedContext}
           search={search}
           onSearchChange={handleSectionsSearchChange}
@@ -6048,20 +6009,7 @@ export function VisualEditorShell({
           aria-valuemax={MAX_LEFT_PANEL_WIDTH}
           aria-valuenow={leftPanelWidth}
           tabIndex={0}
-          onPointerDown={handleLeftPanelResizePointerDown}
-          onPointerMove={handleLeftPanelResizePointerMove}
-          onPointerUp={finishLeftPanelResize}
-          onPointerCancel={finishLeftPanelResize}
-          onDoubleClick={() => {
-            setLeftPanelWidth(DEFAULT_LEFT_PANEL_WIDTH);
-            try {
-              document.cookie = `morph:editor-left-panel-width=${DEFAULT_LEFT_PANEL_WIDTH}; path=/; max-age=31536000; SameSite=Lax`;
-              localStorage.setItem(
-                "morph:editor-left-panel-width",
-                String(DEFAULT_LEFT_PANEL_WIDTH),
-              );
-            } catch {}
-          }}
+          {...leftPanelResize.handlers}
           className="group relative z-30 flex w-2 -ml-1 cursor-col-resize touch-none select-none items-center justify-center outline-none transition-colors hover:bg-primary/10 active:bg-primary/20 max-md:hidden"
           title="Drag to resize sections panel (Double-click to reset)"
         >
@@ -6401,20 +6349,7 @@ export function VisualEditorShell({
           aria-valuemax={MAX_RIGHT_PANEL_WIDTH}
           aria-valuenow={rightPanelWidth}
           tabIndex={0}
-          onPointerDown={handleRightPanelResizePointerDown}
-          onPointerMove={handleRightPanelResizePointerMove}
-          onPointerUp={finishRightPanelResize}
-          onPointerCancel={finishRightPanelResize}
-          onDoubleClick={() => {
-            setRightPanelWidth(DEFAULT_RIGHT_PANEL_WIDTH);
-            try {
-              document.cookie = `morph:editor-right-panel-width=${DEFAULT_RIGHT_PANEL_WIDTH}; path=/; max-age=31536000; SameSite=Lax`;
-              localStorage.setItem(
-                "morph:editor-right-panel-width",
-                String(DEFAULT_RIGHT_PANEL_WIDTH),
-              );
-            } catch {}
-          }}
+          {...rightPanelResize.handlers}
           className="group relative z-30 flex w-2 -mr-1 cursor-col-resize touch-none select-none items-center justify-center outline-none transition-colors hover:bg-primary/10 active:bg-primary/20 max-md:hidden"
           title="Drag to resize assistant panel (Double-click to reset)"
         >
@@ -6422,7 +6357,7 @@ export function VisualEditorShell({
         </div>
 
         <EditorAssistantPanel
-          style={{ width: `${rightPanelWidth}px` }}
+          style={RIGHT_PANEL_STYLE}
           context={routeBackedContext}
           search={search}
           isCommentMode={isCommentMode}
