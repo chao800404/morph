@@ -1,0 +1,22 @@
+{
+  // Enforces Rule 14.1 (`.agents/rules/03-backend-data.md`) where it matters.
+  //
+  // `noUncheckedIndexedAccess` is what makes `const [row] = await db.select()`
+  // an error instead of a lie: without it TypeScript types the destructured
+  // element as present, so a lookup that finds nothing is inferred as always
+  // finding something and the guard the rule asks for is unenforceable.
+  //
+  // It is not enabled in the root tsconfig because it is the wrong tool for
+  // dense numeric arrays and fixture-driven tests — the SHA-256 word array in
+  // `theme-compiler-hasher.ts` alone would need 44 non-null assertions for no
+  // safety gain. `npm run typecheck:data` therefore compiles the whole program
+  // with the flag on but only *reports* the data-access layer, which is where
+  // an absent row is a real failure mode.
+  //
+  // Widen the filter in `scripts/typecheck-data-layer.mjs` as other areas are
+  // brought up to it.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true
+  }
+}

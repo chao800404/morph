@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { currencyDal } from "@/lib/currency/dal/currency.dal";
 import {
   addStoreCurrenciesInputSchema,
@@ -14,13 +15,21 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listAvailableCurrencies = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listCurrenciesInputSchema.parse(data ?? {}))
+  .validator((data: unknown) =>
+    parseInput(listCurrenciesInputSchema, data ?? {}),
+  )
   .middleware([productReadMiddleware])
-  .handler(async ({ data }) => ({
-    success: true,
-    message: "Currencies fetched successfully",
-    data: await currencyDal.listAvailable(data.query),
-  }));
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    return {
+      success: true as const,
+      message: "Currencies fetched successfully",
+      data: await currencyDal.listAvailable(input.data.query),
+    };
+  });
 
 export const getStoreCurrencySettings = createServerFn({ method: "GET" })
   .middleware([productReadMiddleware])
@@ -31,9 +40,15 @@ export const getStoreCurrencySettings = createServerFn({ method: "GET" })
   }));
 
 export const addStoreCurrencies = createServerFn({ method: "POST" })
-  .validator((data: unknown) => addStoreCurrenciesInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(addStoreCurrenciesInputSchema, data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await currencyDal.addSupported(
         [...new Set(data.codes)],
@@ -53,9 +68,15 @@ export const addStoreCurrencies = createServerFn({ method: "POST" })
   });
 
 export const removeStoreCurrency = createServerFn({ method: "POST" })
-  .validator((data: unknown) => storeCurrencyCodeInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(storeCurrencyCodeInputSchema, data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await currencyDal.removeSupported(data.code);
       return { success: true, message: "Currency removed" };
@@ -80,11 +101,15 @@ const parseCurrencyCodesFormData = (data: unknown) => {
 };
 
 export const removeStoreCurrencies = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    removeStoreCurrenciesInputSchema.parse(parseCurrencyCodesFormData(data)),
-  )
+  .validator((data: unknown) => parseInput(removeStoreCurrenciesInputSchema, parseCurrencyCodesFormData(data)))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await currencyDal.removeSupportedMany(data.codes);
       return {
@@ -103,9 +128,15 @@ export const removeStoreCurrencies = createServerFn({ method: "POST" })
   });
 
 export const setDefaultStoreCurrency = createServerFn({ method: "POST" })
-  .validator((data: unknown) => storeCurrencyCodeInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(storeCurrencyCodeInputSchema, data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await currencyDal.setDefault(data.code);
       return { success: true, message: "Default currency updated" };
@@ -121,9 +152,15 @@ export const setDefaultStoreCurrency = createServerFn({ method: "POST" })
   });
 
 export const updateStoreCurrency = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateStoreCurrencyInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateStoreCurrencyInputSchema, data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await currencyDal.setTaxInclusive(data.code, data.isTaxInclusive);
       return { success: true, message: "Currency settings updated" };
@@ -148,11 +185,15 @@ const parseStoreGeneralFormData = (data: unknown) => {
 };
 
 export const updateStoreGeneral = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    updateStoreGeneralInputSchema.parse(parseStoreGeneralFormData(data)),
-  )
+  .validator((data: unknown) => parseInput(updateStoreGeneralInputSchema, parseStoreGeneralFormData(data)))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await currencyDal.updateStoreGeneral(
         data.name,

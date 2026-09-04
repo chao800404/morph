@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { assetFolderDal } from "@/lib/asset/dal/asset-folder.dal";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { orderDal } from "@/lib/order/dal/order.dal";
@@ -37,9 +38,15 @@ const enabled = (selected: SearchableArea, area: GlobalSearchArea) =>
   selected === "all" || selected === area;
 
 export const globalSearch = createServerFn({ method: "POST" })
-  .validator((data: unknown) => inputSchema.parse(data))
+  .validator((data: unknown) => parseInput(inputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     const { query, area, limit } = data;
     const tasks: SearchTask[] = [];
 

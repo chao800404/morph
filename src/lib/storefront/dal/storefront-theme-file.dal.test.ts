@@ -230,7 +230,10 @@ describe("storefront theme file DAL", () => {
 
     await expect(
       storefrontThemeFileDal.listRevisions("storefront-a", "theme-a"),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({
+      revisions: [],
+      pagination: { total: 0 },
+    });
   });
 
   it("freezes source revision without incrementing source_generation and guards with OCC", async () => {
@@ -285,6 +288,101 @@ describe("storefront theme file DAL", () => {
         message: "Stale checkpoint",
       }),
     ).rejects.toThrow("CONFLICT_SOURCE_GENERATION_MISMATCH");
+  });
+
+  it("pages revision history and reports the total the pager needs", async () => {
+    await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [{ path: "src/pages/index.tsx", content: "v1", expectMissing: true }],
+      { expectedSourceGeneration: 1 },
+    );
+
+    for (let i = 0; i < 3; i += 1) {
+      await storefrontThemeFileDal.createRevision("storefront-a", "theme-a", {
+        expectedSourceGeneration: 2,
+        message: `checkpoint ${i + 1}`,
+      });
+    }
+
+    const firstPage = await storefrontThemeFileDal.listRevisions(
+      "storefront-a",
+      "theme-a",
+      { limit: 2, offset: 0 },
+    );
+    expect(firstPage.revisions).toHaveLength(2);
+    // The total must come from a count, not the row count: a full page is
+    // otherwise indistinguishable from the last page.
+    expect(firstPage.pagination).toMatchObject({
+      page: 1,
+      limit: 2,
+      total: 3,
+      totalPages: 2,
+    });
+
+    const secondPage = await storefrontThemeFileDal.listRevisions(
+      "storefront-a",
+      "theme-a",
+      { limit: 2, offset: 2 },
+    );
+    expect(secondPage.revisions).toHaveLength(1);
+    expect(secondPage.pagination.page).toBe(2);
+
+    // Newest first, and the pages must not overlap.
+    const numbers = [...firstPage.revisions, ...secondPage.revisions].map(
+      (revision) => revision.revisionNumber,
+    );
+    expect(numbers).toEqual([...numbers].sort((a, b) => b - a));
+    expect(new Set(numbers).size).toBe(3);
+  });
+
+  it("clamps an out-of-range page size instead of trusting the caller", async () => {
+    const page = await storefrontThemeFileDal.listRevisions(
+      "storefront-a",
+      "theme-a",
+      { limit: 5000, offset: -10 },
+    );
+    expect(page.pagination.limit).toBe(100);
+    expect(page.pagination.page).toBe(1);
+  });
+
+  it("finds a revision by number without reading the whole history", async () => {
+    await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [{ path: "src/pages/index.tsx", content: "v1", expectMissing: true }],
+      { expectedSourceGeneration: 1 },
+    );
+    const created = await storefrontThemeFileDal.createRevision(
+      "storefront-a",
+      "theme-a",
+      { expectedSourceGeneration: 2, message: "target" },
+    );
+
+    const found = await storefrontThemeFileDal.findRevisionByNumber(
+      "storefront-a",
+      "theme-a",
+      created.revisionNumber,
+    );
+    expect(found?.id).toBe(created.id);
+    expect(found?.message).toBe("target");
+
+    expect(
+      await storefrontThemeFileDal.findRevisionByNumber(
+        "storefront-a",
+        "theme-a",
+        9999,
+      ),
+    ).toBeNull();
+
+    // Another tenant must not reach this revision by number.
+    expect(
+      await storefrontThemeFileDal.findRevisionByNumber(
+        "storefront-b",
+        "theme-a",
+        created.revisionNumber,
+      ),
+    ).toBeNull();
   });
 
   it("stores R2-backed revisions with a manifest and no duplicated D1 source payload", async () => {

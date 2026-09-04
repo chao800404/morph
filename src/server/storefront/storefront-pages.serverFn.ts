@@ -1,4 +1,4 @@
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import {
   createStorefrontPageInputSchema,
@@ -17,11 +17,15 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listStorefrontPages = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listStorefrontPagesInputSchema.parse(data ?? {}),
-  )
+  .validator((data: unknown) => parseInput(listStorefrontPagesInputSchema, data ?? {}))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await storefrontPageDal.listPage(data);
       return ok("Pages fetched", {
@@ -39,9 +43,15 @@ export const listStorefrontPages = createServerFn({ method: "POST" })
   });
 
 export const getStorefrontPage = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getStorefrontPageInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getStorefrontPageInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const storefront = await storefrontPageDal.activeStorefront();
       if (!storefront)
@@ -61,9 +71,15 @@ export const getStorefrontPage = createServerFn({ method: "POST" })
   });
 
 export const createStorefrontPage = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createStorefrontPageInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createStorefrontPageInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const storefront = await storefrontPageDal.activeStorefront();
       if (!storefront)
@@ -104,9 +120,15 @@ export const createStorefrontPage = createServerFn({ method: "POST" })
   });
 
 export const updateStorefrontPage = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateStorefrontPageInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateStorefrontPageInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const storefront = await storefrontPageDal.activeStorefront();
       if (!storefront)
@@ -147,11 +169,15 @@ export const updateStorefrontPage = createServerFn({ method: "POST" })
   });
 
 export const updateStorefrontPageMetadata = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    updateStorefrontPageMetadataInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(updateStorefrontPageMetadataInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const storefront = await storefrontPageDal.activeStorefront();
       if (!storefront)
@@ -175,11 +201,15 @@ export const updateStorefrontPageMetadata = createServerFn({ method: "POST" })
   });
 
 export const listStorefrontPageRevisions = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listStorefrontPageRevisionsInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(listStorefrontPageRevisionsInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const storefront = await storefrontPageDal.activeStorefront();
       if (!storefront)
@@ -206,11 +236,15 @@ export const listStorefrontPageRevisions = createServerFn({ method: "POST" })
   });
 
 export const restoreStorefrontPageRevision = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    restoreStorefrontPageRevisionInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(restoreStorefrontPageRevisionInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const storefront = await storefrontPageDal.activeStorefront();
       if (!storefront)

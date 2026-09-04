@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
@@ -7,13 +8,21 @@ import { sessionDal } from "@/lib/user/dal/session.dal";
 import { canRevokeSession } from "@/lib/user/session-authorization";
 
 export const revokeSession = createServerFn({ method: "POST" })
-  .validator(
-    z.object({
-      id: z.string(),
-    }),
+  .validator((data: unknown) =>
+    parseInput(
+      z.object({
+        id: z.string(),
+      }),
+      data,
+    ),
   )
   .middleware([authMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     const request = getRequest();
     const auth = context.auth;
 

@@ -52,9 +52,15 @@ function parseEditorPanelWidths(cookieHeader: string | null | undefined) {
 }
 
 export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
-  .validator((data: unknown) => storefrontThemeEditorInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(storefrontThemeEditorInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context: authContext }) => {
+  .handler(async ({ data: input, context: authContext }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const request = getRequest();
       const cookieHeader = request?.headers?.get("cookie");

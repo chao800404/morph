@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { firstOrNull, mapFirstOrNull } from "@/lib/db/single-row";
 import {
   productCategories,
   productTags,
@@ -132,7 +133,8 @@ export const productTypeDal = {
         and(eq(productTypes.value, trimmed), isNull(productTypes.deletedAt)),
       )
       .limit(1);
-    if (existing.length > 0) return existing[0].id;
+    const existingRow = firstOrNull(existing);
+    if (existingRow) return existingRow.id;
 
     const id = crypto.randomUUID();
     await db.insert(productTypes).values({
@@ -300,7 +302,7 @@ export const productCategoryDal = {
         and(eq(productCategories.id, id), isNull(productCategories.deletedAt)),
       )
       .limit(1);
-    return rows.length > 0 ? toProductCategoryDTO(rows[0]) : null;
+    return mapFirstOrNull(rows, toProductCategoryDTO);
   },
 
   async findByHandle(handle: string): Promise<ProductCategoryDTO | null> {
@@ -315,7 +317,7 @@ export const productCategoryDal = {
         ),
       )
       .limit(1);
-    return rows.length > 0 ? toProductCategoryDTO(rows[0]) : null;
+    return mapFirstOrNull(rows, toProductCategoryDTO);
   },
 
   /**
@@ -344,7 +346,9 @@ export const productCategoryDal = {
         .limit(DETAIL_CHILD_LIMIT),
     ]);
 
-    return { ...withPath[0], children: childRows };
+    const detail = firstOrNull(withPath);
+    if (!detail) return null;
+    return { ...detail, children: childRows };
   },
 
   /**

@@ -12,7 +12,31 @@ import type {
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { paginationOf, type Pagination } from "@/lib/db/server-result";
+import { firstOrNull } from "@/lib/db/single-row";
+import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
+
+type StorefrontThemeRevisionRow =
+  typeof storefrontThemeRevisions.$inferSelect;
+
+function mapRevisionRowToDTO(
+  row: StorefrontThemeRevisionRow,
+): StorefrontThemeRevisionDTO {
+  return {
+    id: row.id,
+    storefrontId: row.storefrontId,
+    themeId: row.themeId,
+    revisionNumber: row.revisionNumber,
+    sourceGeneration: row.sourceGeneration,
+    message: row.message,
+    source: row.source as "manual" | "ai" | "publish" | "rollback",
+    sourceManifest: (row.sourceManifest ??
+      null) as StorefrontThemeRevisionDTO["sourceManifest"],
+    snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
+  };
+}
 
 function detectThemeMimeType(path: string, mimeType?: string | null) {
   if (mimeType) return mimeType;
@@ -154,22 +178,22 @@ export function buildFileTree(
 
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
+      // `"a//b".split("/")` yields an empty segment, which would create an
+      // unnamed tree node that no path can address.
+      if (!part) continue;
       const isFile = i === parts.length - 1;
       const currentPath = parts.slice(0, i + 1).join("/");
 
-      let existing = currentLevel.find((node) => node.name === part);
-
-      if (!existing) {
-        existing = {
-          name: part,
-          path: currentPath,
-          isDirectory: !isFile,
-          mimeType: isFile ? file.mimeType : undefined,
-          size: isFile ? file.content.length : undefined,
-          children: isFile ? undefined : [],
-        };
-        currentLevel.push(existing);
-      }
+      const found = currentLevel.find((node) => node.name === part);
+      const existing: StorefrontThemeFileTreeNode = found ?? {
+        name: part,
+        path: currentPath,
+        isDirectory: !isFile,
+        mimeType: isFile ? file.mimeType : undefined,
+        size: isFile ? file.content.length : undefined,
+        children: isFile ? undefined : [],
+      };
+      if (!found) currentLevel.push(existing);
 
       if (!isFile && existing.children) {
         currentLevel = existing.children;
@@ -942,41 +966,96 @@ export const storefrontThemeFileDal = {
   },
 
   /**
-   * List historical revisions for a theme.
+   * One page of a theme's revision history, with the count the pager needs.
+   *
+   * Revisions grow without an upper bound — every save, AI edit, publish and
+   * rollback appends one — and each row carries a full source snapshot, so an
+   * unbounded read grows with both the number of revisions and the size of the
+   * theme. The total is read alongside the page rather than inferred from the
+   * row count, because a full page is otherwise indistinguishable from the last
+   * one.
    */
   async listRevisions(
     storefrontId: string,
     themeId: string,
-  ): Promise<StorefrontThemeRevisionDTO[]> {
+    options: { limit?: number; offset?: number } = {},
+  ): Promise<{
+    revisions: StorefrontThemeRevisionDTO[];
+    pagination: Pagination;
+  }> {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+    const offset = Math.max(options.offset ?? 0, 0);
+    const emptyPage = {
+      revisions: [],
+      pagination: paginationOf(0, Math.floor(offset / limit) + 1, limit),
+    };
+
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
-    if (!isOwner) return [];
+    if (!isOwner) return emptyPage;
 
     const db = await getDb();
-    const rows = await db
-      .select()
-      .from(storefrontThemeRevisions)
-      .where(
-        and(
-          eq(storefrontThemeRevisions.storefrontId, storefrontId),
-          eq(storefrontThemeRevisions.themeId, themeId),
-          isNull(storefrontThemeRevisions.deletedAt),
-        ),
-      )
-      .orderBy(desc(storefrontThemeRevisions.revisionNumber));
+    const scope = and(
+      eq(storefrontThemeRevisions.storefrontId, storefrontId),
+      eq(storefrontThemeRevisions.themeId, themeId),
+      isNull(storefrontThemeRevisions.deletedAt),
+    );
 
-    return rows.map((row) => ({
-      id: row.id,
-      storefrontId: row.storefrontId,
-      themeId: row.themeId,
-      revisionNumber: row.revisionNumber,
-      sourceGeneration: row.sourceGeneration,
-      message: row.message,
-      source: row.source as "manual" | "ai" | "publish" | "rollback",
-      sourceManifest: (row.sourceManifest ?? null) as StorefrontThemeRevisionDTO["sourceManifest"],
-      snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
-      createdBy: row.createdBy,
-      createdAt: row.createdAt,
-    }));
+    const [rows, counted] = await Promise.all([
+      db
+        .select()
+        .from(storefrontThemeRevisions)
+        .where(scope)
+        .orderBy(desc(storefrontThemeRevisions.revisionNumber))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ total: count() })
+        .from(storefrontThemeRevisions)
+        .where(scope),
+    ]);
+
+    return {
+      revisions: rows.map(mapRevisionRowToDTO),
+      pagination: paginationOf(
+        firstOrNull(counted)?.total ?? 0,
+        Math.floor(offset / limit) + 1,
+        limit,
+      ),
+    };
+  },
+
+  /**
+   * Looks up a single revision by its number.
+   *
+   * Rollback needs exactly one revision. Scanning `listRevisions` for it would
+   * pull every revision's full source snapshot into memory to discard all but
+   * one, so this narrows the read in SQL instead.
+   */
+  async findRevisionByNumber(
+    storefrontId: string,
+    themeId: string,
+    revisionNumber: number,
+  ): Promise<StorefrontThemeRevisionDTO | null> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return null;
+
+    const db = await getDb();
+    const row = firstOrNull(
+      await db
+        .select()
+        .from(storefrontThemeRevisions)
+        .where(
+          and(
+            eq(storefrontThemeRevisions.storefrontId, storefrontId),
+            eq(storefrontThemeRevisions.themeId, themeId),
+            eq(storefrontThemeRevisions.revisionNumber, revisionNumber),
+            isNull(storefrontThemeRevisions.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
+
+    return row ? mapRevisionRowToDTO(row) : null;
   },
 
   /**

@@ -1,4 +1,4 @@
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { sendUserInviteEmail } from "@/lib/email";
 import { inviteDal } from "@/lib/invite/dal/invite.dal";
 import { createInviteToken, hashInviteToken } from "@/lib/invite/token";
@@ -24,11 +24,15 @@ const inviteState = async (token: string) => {
 };
 
 export const listDashboardInvites = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listDashboardInvitesInputSchema.parse(data ?? {}),
-  )
+  .validator((data: unknown) => parseInput(listDashboardInvitesInputSchema, data ?? {}))
   .middleware([userAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await inviteDal.listPage({
         ...data,
@@ -51,9 +55,15 @@ export const listDashboardInvites = createServerFn({ method: "POST" })
   });
 
 export const deleteDashboardInvites = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteDashboardInviteInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteDashboardInviteInputSchema, data))
   .middleware([userAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await inviteDal.softDelete(data.ids);
       return ok(
@@ -71,9 +81,15 @@ export const deleteDashboardInvites = createServerFn({ method: "POST" })
   });
 
 export const createDashboardInvite = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createInviteInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createInviteInputSchema, data))
   .middleware([userAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       if (await dashboardUserDal.existsByEmail(data.email)) {
         return fail("A user with this email already exists", {
@@ -115,8 +131,14 @@ export const createDashboardInvite = createServerFn({ method: "POST" })
   });
 
 export const getDashboardInvite = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getInviteInputSchema.parse(data))
-  .handler(async ({ data }) => {
+  .validator((data: unknown) => parseInput(getInviteInputSchema, data))
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const invite = await inviteState(data.token);
       if (!invite) return fail("This invitation is invalid or has expired");
@@ -132,8 +154,14 @@ export const getDashboardInvite = createServerFn({ method: "POST" })
   });
 
 export const acceptDashboardInvite = createServerFn({ method: "POST" })
-  .validator((data: unknown) => acceptInviteInputSchema.parse(data))
-  .handler(async ({ data }) => {
+  .validator((data: unknown) => parseInput(acceptInviteInputSchema, data))
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const invite = await inviteState(data.token);
       if (!invite) return fail("This invitation is invalid or has expired");

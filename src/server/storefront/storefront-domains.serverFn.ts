@@ -1,4 +1,4 @@
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { cloudflareDomainProvider } from "@/lib/storefront/cloudflare-domain.server";
 import { storefrontDomainDal } from "@/lib/storefront/dal/storefront-domain.dal";
 import {
@@ -20,11 +20,15 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listStorefrontDomains = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listStorefrontDomainsInputSchema.parse(data ?? {}),
-  )
+  .validator((data: unknown) => parseInput(listStorefrontDomainsInputSchema, data ?? {}))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await storefrontDomainDal.listPage(data);
       return ok("Domains fetched", {
@@ -42,9 +46,15 @@ export const listStorefrontDomains = createServerFn({ method: "POST" })
   });
 
 export const createStorefrontDomain = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createStorefrontDomainInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createStorefrontDomainInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const storefront = await storefrontDomainDal.activeStorefront();
       if (!storefront)
@@ -124,11 +134,15 @@ export const createStorefrontDomain = createServerFn({ method: "POST" })
   });
 
 export const setPrimaryStorefrontDomain = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    setPrimaryStorefrontDomainInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(setPrimaryStorefrontDomainInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const domain = await storefrontDomainDal.findById(data.id);
       if (!domain) return fail("Domain not found", { error: "NOT_FOUND" });
@@ -155,9 +169,15 @@ export const setPrimaryStorefrontDomain = createServerFn({ method: "POST" })
   });
 
 export const deleteStorefrontDomains = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteStorefrontDomainsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteStorefrontDomainsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const lookup = pLimit(DB_FANOUT_CONCURRENCY);
       const domains = (

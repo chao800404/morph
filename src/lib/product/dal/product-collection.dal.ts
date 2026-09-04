@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { mapFirstOrNull } from "@/lib/db/single-row";
 import { productCollections } from "@/db/product.schema";
 import { and, asc, count, desc, eq, inArray, isNull, like, or, SQL } from "drizzle-orm";
 import type {
@@ -13,7 +14,7 @@ import {
 } from "../mappers/product-collection.mapper";
 
 const mapFirst = (rows: ProductCollectionRow[]): ProductCollectionDTO | null =>
-  rows.length > 0 ? toProductCollectionDTO(rows[0]) : null;
+  mapFirstOrNull(rows, toProductCollectionDTO);
 
 export const productCollectionDal = {
   async findById(id: string): Promise<ProductCollectionDTO | null> {

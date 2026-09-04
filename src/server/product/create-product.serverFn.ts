@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { currencyDal } from "@/lib/currency/dal/currency.dal";
 import { productDal } from "@/lib/product/dal/product.dal";
 import {
@@ -40,13 +41,17 @@ const buildCombinations = (
   );
 
 export const createProduct = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    createProductInputSchema(
+  .validator((data: unknown) => parseInput(createProductInputSchema(
       getConfig().server.upload.maxAssetsPerRecord,
-    ).parse(data),
-  )
+    ), data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     const actorId = context.user.id;
 
     try {
@@ -56,7 +61,7 @@ export const createProduct = createServerFn({ method: "POST" })
           success: false,
           message: "Could not derive a valid handle from the title",
           data: null,
-          errors: { handle: [handleResult.error.issues[0].message] },
+          errors: { handle: [handleResult.error.issues[0]?.message ?? "Invalid input"] },
         };
       }
       const handle = handleResult.data;
@@ -235,7 +240,8 @@ export const createProduct = createServerFn({ method: "POST" })
               variantTitle: variant.title,
               optionValues:
                 data.variants?.[index]?.optionValues ??
-                variants[index].title.split(" / "),
+                variants[index]?.title.split(" / ") ??
+                [],
               index,
               reserved: reservedSkus,
             }),

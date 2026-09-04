@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { assetFolderDal } from "@/lib/asset/dal/asset-folder.dal";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { createServerFn } from "@tanstack/react-start";
@@ -33,9 +34,15 @@ const listItemsInputSchema = z.object({
 });
 
 export const listItemsServerFn = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listItemsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => parseInput(listItemsInputSchema, data ?? {}))
   .middleware([assetReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const parentId =
         data.folderId && data.folderId !== "root" ? data.folderId : null;
@@ -101,18 +108,21 @@ export const listItemsServerFn = createServerFn({ method: "POST" })
   });
 
 export const listFolderOptions = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    z
+  .validator((data: unknown) => parseInput(z
       .object({
         query: z.string().max(200).optional(),
         page: z.number().int().min(1),
         limit: z.number().int().min(1).max(50),
         selectedIds: z.array(z.uuid()).max(100).optional(),
-      })
-      .parse(data),
-  )
+      }), data))
   .middleware([assetReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await assetFolderDal.listOptionsPage(data);
       return {

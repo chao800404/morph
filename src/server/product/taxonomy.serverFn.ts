@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import {
   productCategoryDal,
   productTagDal,
@@ -14,19 +15,22 @@ import { z } from "zod";
  * and each round trip costs a Workers subrequest.
  */
 export const listProductTaxonomyOptions = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    z
+  .validator((data: unknown) => parseInput(z
       .object({
         kind: z.enum(["type", "tag", "category"]),
         query: z.string().max(200).optional(),
         page: z.number().int().min(1),
         limit: z.number().int().min(1).max(50),
         selectedIds: z.array(z.uuid()).max(100).optional(),
-      })
-      .parse(data),
-  )
+      }), data))
   .middleware([productReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page =
         data.kind === "type"

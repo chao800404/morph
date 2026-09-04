@@ -20,6 +20,7 @@
     "pretest": "pnpm generate:theme-types",
     "typecheck": "tsc --noEmit",
     "pretypecheck": "pnpm generate:theme-types",
+    "typecheck:data": "node scripts/typecheck-data-layer.mjs",
     "deploy": "pnpm run build && wrangler deploy",
     "preview": "pnpm run build && vite preview",
     "theme:pull": "node scripts/theme-artifact-pull.mjs",

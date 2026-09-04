@@ -1,4 +1,4 @@
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { taxDal } from "@/lib/tax/dal/tax.dal";
 import {
   createTaxProvinceInputSchema,
@@ -22,9 +22,15 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listTaxRegions = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listTaxRegionsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => parseInput(listTaxRegionsInputSchema, data ?? {}))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await taxDal.listPage(data);
       return ok("Tax regions fetched successfully", {
@@ -42,9 +48,15 @@ export const listTaxRegions = createServerFn({ method: "POST" })
   });
 
 export const listTaxProvinces = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listTaxProvincesInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(listTaxProvincesInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await taxDal.listProvincePage(data);
       return ok("Tax sub-regions fetched successfully", {
@@ -62,9 +74,15 @@ export const listTaxProvinces = createServerFn({ method: "POST" })
   });
 
 export const listTaxRates = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listTaxRatesInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(listTaxRatesInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await taxDal.listRatePage(data);
       return ok("Tax rates fetched successfully", {
@@ -82,9 +100,15 @@ export const listTaxRates = createServerFn({ method: "POST" })
   });
 
 export const listTaxRuleTargets = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listTaxRuleTargetsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(listTaxRuleTargetsInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await taxDal.listRuleTargetPage(data);
       return ok("Tax rule targets fetched successfully", {
@@ -102,9 +126,15 @@ export const listTaxRuleTargets = createServerFn({ method: "POST" })
   });
 
 export const getTaxRegion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getTaxRegionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getTaxRegionInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const region = await taxDal.findDetail(data.id);
       return region
@@ -121,9 +151,15 @@ export const getTaxRegion = createServerFn({ method: "POST" })
   });
 
 export const getTaxRate = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getTaxRateInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getTaxRateInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const rate = await taxDal.findRate(data.id);
       return rate
@@ -159,9 +195,15 @@ export const listTaxRegionOptions = createServerFn({ method: "GET" })
   });
 
 export const createTaxRegion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createTaxRegionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createTaxRegionInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await taxDal.ensureSystemProvider();
       const available = new Set(
@@ -198,9 +240,15 @@ export const createTaxRegion = createServerFn({ method: "POST" })
   });
 
 export const createTaxProvince = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createTaxProvinceInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createTaxProvinceInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const parent = await taxDal.findRegion(data.parentId);
       if (!parent || parent.parentId)
@@ -231,9 +279,15 @@ export const createTaxProvince = createServerFn({ method: "POST" })
   });
 
 export const updateTaxRegion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateTaxRegionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateTaxRegionInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const region = await taxDal.findRegion(data.id);
       if (!region) return fail("Tax region not found", { error: "NOT_FOUND" });
@@ -268,9 +322,15 @@ export const updateTaxRegion = createServerFn({ method: "POST" })
   });
 
 export const deleteTaxRegions = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteTaxRegionsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteTaxRegionsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await taxDal.softDeleteRegions(data.ids);
       return ok(
@@ -288,9 +348,15 @@ export const deleteTaxRegions = createServerFn({ method: "POST" })
   });
 
 export const createTaxRate = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createTaxRateInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createTaxRateInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       if (!(await taxDal.findRegion(data.taxRegionId)))
         return fail("Tax region not found", { error: "NOT_FOUND" });
@@ -312,9 +378,15 @@ export const createTaxRate = createServerFn({ method: "POST" })
   });
 
 export const updateTaxRate = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateTaxRateInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateTaxRateInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const existing = await taxDal.findRate(data.id);
       if (!existing || existing.taxRegionId !== data.taxRegionId)
@@ -346,9 +418,15 @@ export const updateTaxRate = createServerFn({ method: "POST" })
   });
 
 export const deleteTaxRates = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteTaxRatesInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteTaxRatesInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await taxDal.softDeleteRates(data.ids);
       return ok(

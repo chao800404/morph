@@ -161,7 +161,7 @@ export const deleteItems = createServerFn({ method: "POST" })
               if (object) {
                 const dateStr = new Date()
                   .toISOString()
-                  .split("T")[0]
+                  .slice(0, "YYYY-MM-DD".length)
                   .replace(/-/g, "");
                 const filename = r2Key.split("/").pop() || "unknown";
                 const deleteKey = `delete/${dateStr}-${asset.id}-${filename}`;

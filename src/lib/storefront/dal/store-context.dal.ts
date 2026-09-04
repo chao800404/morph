@@ -1,3 +1,4 @@
+import { firstOrNull } from "@/lib/db/single-row";
 import { getDb } from "@/db";
 import { apiKeys } from "@/db/api-key.schema";
 import { stores, storeLocales } from "@/db/currency.schema";
@@ -92,7 +93,8 @@ export const storeContextDal = {
     if (channelIds.size === 0 && store.defaultSalesChannelId)
       channelIds.add(store.defaultSalesChannelId);
     if (channelIds.size !== 1) return null;
-    const salesChannelId = [...channelIds][0];
+    const salesChannelId = firstOrNull([...channelIds]);
+    if (!salesChannelId) return null;
     const [channel] = await db
       .select({ id: salesChannels.id })
       .from(salesChannels)

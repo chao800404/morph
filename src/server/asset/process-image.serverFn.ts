@@ -5,14 +5,20 @@ import { env } from "cloudflare:workers";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
 
 export const processImage = createServerFn({ method: "POST" })
-  .validator((data: unknown) => {
-    if (!isFormDataLike(data)) {
-      throw new Error("Invalid form data");
-    }
-    return data;
-  })
+  // Mirrors the other asset validators: a malformed body is reported as a
+  // rejected request, not thrown. A throw here escapes before the handler and
+  // reaches the browser as an opaque 500.
+  .validator((data: unknown) =>
+    isFormDataLike(data)
+      ? { formError: null, formData: data }
+      : { formError: "Invalid form data", formData: null },
+  )
   .middleware([assetAdminMiddleware])
-  .handler(async ({ data: formData, context }) => {
+  .handler(async ({ data: input, context }) => {
+    if (input.formError !== null) {
+      return { success: false, message: input.formError };
+    }
+    const formData = input.formData;
     const assetId = formData.get("assetId") as string;
     const croppedFile = formData.get("croppedImage") as File | null;
     const filename = (formData.get("filename") as string) || "edited_image";

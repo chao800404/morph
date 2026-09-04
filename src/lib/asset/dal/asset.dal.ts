@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { mapFirstOrNull } from "@/lib/db/single-row";
 import { assets } from "@/db/asset.schema";
 import { users } from "@/db/auth.schema";
 import {
@@ -23,7 +24,7 @@ import { containsPattern } from "@/lib/db/like-pattern";
 import type { AssetMetadata, AssetType } from "@/db/asset.schema";
 
 const mapFirst = (rows: AssetRow[]): AssetDTO | null =>
-  rows.length > 0 ? toAssetDTO(rows[0]) : null;
+  mapFirstOrNull(rows, toAssetDTO);
 
 export const assetDal = {
   async findById(id: string): Promise<AssetDTO | null> {

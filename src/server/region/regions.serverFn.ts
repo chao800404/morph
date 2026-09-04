@@ -1,4 +1,4 @@
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { regionDal } from "@/lib/region/dal/region.dal";
 import {
   createRegionInputSchema,
@@ -15,9 +15,15 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listRegions = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listRegionsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => parseInput(listRegionsInputSchema, data ?? {}))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await regionDal.listPage(data);
       return ok("Regions fetched successfully", {
@@ -35,9 +41,15 @@ export const listRegions = createServerFn({ method: "POST" })
   });
 
 export const getRegion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getRegionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getRegionInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const region = await regionDal.findDetail(data.id);
       if (!region) return fail("Region not found", { error: "NOT_FOUND" });
@@ -60,11 +72,15 @@ export const getRegion = createServerFn({ method: "POST" })
  * place that needs it — see `regionDal.ensureCountryCatalog`.
  */
 export const listAssignableCountries = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listAssignableCountriesInputSchema.parse(data ?? {}),
-  )
+  .validator((data: unknown) => parseInput(listAssignableCountriesInputSchema, data ?? {}))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await regionDal.ensureCountryCatalog();
       const countries = await regionDal.listAssignableCountries(
@@ -98,9 +114,15 @@ export const listRegionPaymentProviders = createServerFn({ method: "GET" })
   });
 
 export const createRegion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createRegionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createRegionInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await regionDal.ensureCountryCatalog();
 
@@ -157,9 +179,15 @@ export const createRegion = createServerFn({ method: "POST" })
   });
 
 export const updateRegion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateRegionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateRegionInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const existing = await regionDal.findById(data.id);
       if (!existing) return fail("Region not found", { error: "NOT_FOUND" });
@@ -217,9 +245,14 @@ export const updateRegion = createServerFn({ method: "POST" })
   });
 
 export const deleteRegions = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteRegionsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteRegionsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const existing = await regionDal.findByIds(data.ids);
       if (existing.length === 0) {

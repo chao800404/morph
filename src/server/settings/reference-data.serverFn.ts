@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import {
   referenceDataDal,
   REFERENCE_DATA_KINDS,
@@ -66,9 +67,15 @@ const findDuplicate = async (data: {
 };
 
 export const listReferenceData = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listSchema.parse(data))
+  .validator((data: unknown) => parseInput(listSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       return {
         success: true as const,
@@ -90,9 +97,15 @@ export const listReferenceData = createServerFn({ method: "POST" })
   });
 
 export const getReferenceData = createServerFn({ method: "POST" })
-  .validator((data: unknown) => idSchema.parse(data))
+  .validator((data: unknown) => parseInput(idSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const item = await referenceDataDal.find(data.kind, data.id);
       return item
@@ -122,11 +135,15 @@ export const getReferenceData = createServerFn({ method: "POST" })
   });
 
 export const createReferenceData = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    writeSchema.extend({ name: z.string().trim().min(1).max(120) }).parse(data),
-  )
+  .validator((data: unknown) => parseInput(writeSchema.extend({ name: z.string().trim().min(1).max(120) }), data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       if (
         (data.kind === "return-reasons" || data.kind === "refund-reasons") &&
@@ -180,11 +197,15 @@ export const createReferenceData = createServerFn({ method: "POST" })
   });
 
 export const updateReferenceData = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    writeSchema.extend({ id: z.uuid() }).parse(data),
-  )
+  .validator((data: unknown) => parseInput(writeSchema.extend({ id: z.uuid() }), data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const existing = await referenceDataDal.find(data.kind, data.id);
       if (!existing)
@@ -243,9 +264,15 @@ export const updateReferenceData = createServerFn({ method: "POST" })
   });
 
 export const deleteReferenceData = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const lookup = pLimit(DB_FANOUT_CONCURRENCY);
       const records = await Promise.all(

@@ -1,4 +1,4 @@
-import { fail, failure, ok } from "@/lib/db/server-result";
+import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import { storefrontCommentDal } from "@/lib/storefront/dal/storefront-comment.dal";
 import {
   createStorefrontCommentGroupInputSchema,
@@ -17,11 +17,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
 export const createStorefrontCommentGroup = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    createStorefrontCommentGroupInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(createStorefrontCommentGroupInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result = await storefrontCommentDal.createGroup({
         ...data,
@@ -43,11 +47,15 @@ export const createStorefrontCommentGroup = createServerFn({ method: "POST" })
   });
 
 export const updateStorefrontCommentGroup = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    updateStorefrontCommentGroupInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(updateStorefrontCommentGroupInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result = await storefrontCommentDal.updateGroup(data);
       return result
@@ -66,11 +74,15 @@ export const updateStorefrontCommentGroup = createServerFn({ method: "POST" })
   });
 
 export const deleteStorefrontCommentGroup = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    deleteStorefrontCommentGroupInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(deleteStorefrontCommentGroupInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const success = await storefrontCommentDal.deleteGroup(data);
       return success
@@ -91,11 +103,15 @@ export const deleteStorefrontCommentGroup = createServerFn({ method: "POST" })
 export const clearStorefrontCommentGroupResolved = createServerFn({
   method: "POST",
 })
-  .validator((data: unknown) =>
-    deleteStorefrontCommentGroupInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(deleteStorefrontCommentGroupInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const success = await storefrontCommentDal.clearGroupResolvedThreads(data);
       return success
@@ -114,11 +130,15 @@ export const clearStorefrontCommentGroupResolved = createServerFn({
   });
 
 export const listStorefrontCommentGroups = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listStorefrontCommentGroupsInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(listStorefrontCommentGroupsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result = await storefrontCommentDal.listGroups(data);
       return ok("Comment groups fetched", result);
@@ -135,11 +155,15 @@ export const listStorefrontCommentGroups = createServerFn({ method: "POST" })
 export const updateStorefrontCommentThreadPosition = createServerFn({
   method: "POST",
 })
-  .validator((data: unknown) =>
-    updateStorefrontCommentThreadPositionInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(updateStorefrontCommentThreadPositionInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result =
         await storefrontCommentDal.updateThreadPosition(data);
@@ -159,11 +183,15 @@ export const updateStorefrontCommentThreadPosition = createServerFn({
   });
 
 export const createStorefrontCommentThread = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    createStorefrontCommentThreadInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(createStorefrontCommentThreadInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result = await storefrontCommentDal.createThread({
         ...data,
@@ -185,11 +213,15 @@ export const createStorefrontCommentThread = createServerFn({ method: "POST" })
   });
 
 export const replyStorefrontComment = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    replyStorefrontCommentInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(replyStorefrontCommentInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result = await storefrontCommentDal.replyComment({
         ...data,
@@ -211,11 +243,15 @@ export const replyStorefrontComment = createServerFn({ method: "POST" })
   });
 
 export const resolveStorefrontCommentThread = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    resolveStorefrontCommentThreadInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(resolveStorefrontCommentThreadInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result = await storefrontCommentDal.resolveThread({
         ...data,
@@ -242,11 +278,15 @@ export const resolveStorefrontCommentThread = createServerFn({ method: "POST" })
   });
 
 export const deleteStorefrontCommentThread = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    deleteStorefrontCommentThreadInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(deleteStorefrontCommentThreadInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const success = await storefrontCommentDal.deleteThread(data);
       return success
@@ -265,11 +305,15 @@ export const deleteStorefrontCommentThread = createServerFn({ method: "POST" })
   });
 
 export const deleteStorefrontComment = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    deleteStorefrontCommentInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(deleteStorefrontCommentInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const success = await storefrontCommentDal.deleteComment({
         ...data,
@@ -291,11 +335,15 @@ export const deleteStorefrontComment = createServerFn({ method: "POST" })
   });
 
 export const listStorefrontCommentThreads = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listStorefrontCommentThreadsInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(listStorefrontCommentThreadsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result = await storefrontCommentDal.listThreads(data);
       return ok("Comment threads fetched", result);

@@ -22,9 +22,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
 export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listThemeFilesInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(listThemeFilesInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const [treeFiles, sourceGeneration, latestPublishedRevision] =
         await Promise.all([
@@ -53,9 +59,15 @@ export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
   });
 
 export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
-  .validator((data: unknown) => initStarterThemeFilesInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(initStarterThemeFilesInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const files = await themeSourceStore.initStarterTheme(
         data.storefrontId,
@@ -88,11 +100,15 @@ export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
  * which template files or package versions are written.
  */
 export const previewStarterThemeWorkspace = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    previewStarterThemeWorkspaceInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(previewStarterThemeWorkspaceInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const [files, sourceGeneration] = await Promise.all([
         themeSourceStore.listFiles(data.storefrontId, data.themeId),
@@ -212,9 +228,15 @@ export const applyStarterThemeWorkspace = createServerFn({ method: "POST" })
   });
 
 export const getStorefrontThemeFile = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getThemeFileInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getThemeFileInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const file = await themeSourceStore.getFileByPath(
         data.storefrontId,
@@ -421,13 +443,19 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
   });
 
 export const listStorefrontThemeRevisions = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listThemeRevisionsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(listThemeRevisionsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already renders.
+    // Letting the ZodError escape the validator instead would reach the
+    // browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const revisions = await themeRevisionStore.listRevisions(
         data.storefrontId,
         data.themeId,
+        { limit: data.limit, offset: data.offset },
       );
       return ok("Theme revisions listed", revisions);
     } catch (error) {

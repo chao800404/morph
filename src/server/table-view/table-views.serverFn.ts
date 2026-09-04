@@ -1,4 +1,4 @@
-import { failure, ok } from "@/lib/db/server-result";
+import { failure, ok, parseInput } from "@/lib/db/server-result";
 import { tableViewDal } from "@/lib/table-view/dal/table-view.dal";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
@@ -11,9 +11,15 @@ const configurationSchema = z.object({
 });
 
 export const getTableViewConfiguration = createServerFn({ method: "POST" })
-  .validator((data: unknown) => z.object({ tableKey: tableKeySchema }).parse(data))
+  .validator((data: unknown) => parseInput(z.object({ tableKey: tableKeySchema }), data))
   .middleware([authMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       return ok(
         "Table view configuration fetched successfully",
@@ -25,11 +31,15 @@ export const getTableViewConfiguration = createServerFn({ method: "POST" })
   });
 
 export const saveTableViewConfiguration = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    z.object({ tableKey: tableKeySchema, configuration: configurationSchema }).parse(data),
-  )
+  .validator((data: unknown) => parseInput(z.object({ tableKey: tableKeySchema, configuration: configurationSchema }), data))
   .middleware([authMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       return ok(
         "Table view configuration saved successfully",

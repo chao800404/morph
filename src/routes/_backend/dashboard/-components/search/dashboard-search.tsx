@@ -194,7 +194,7 @@ export const DashboardSearch = () => {
       .filter((group) => group.items.length > 0);
   }, [area, input, navigationGroups]);
   const dynamicGroups = canSearch
-    ? (data?.data.groups ?? []).filter(
+    ? (data?.data?.groups ?? []).filter(
         (group) => area === "all" || group.area === area,
       )
     : [];

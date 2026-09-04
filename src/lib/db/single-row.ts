@@ -20,3 +20,22 @@
 export function firstOrNull<T>(rows: readonly T[]): T | null {
   return rows.length > 0 ? (rows[0] as T) : null;
 }
+
+/**
+ * Maps the single row of a `.limit(1)` query to a DTO, or `null` if absent.
+ *
+ * `rows.length > 0 ? toDTO(rows[0]) : null` reads as guarded but is not: the
+ * length check does not narrow `rows[0]`, so the mapper is still handed a
+ * possibly-absent row. This keeps the "not found" branch explicit:
+ *
+ * ```ts
+ * const mapFirst = (rows: AssetRow[]) => mapFirstOrNull(rows, toAssetDTO);
+ * ```
+ */
+export function mapFirstOrNull<T, R>(
+  rows: readonly T[],
+  map: (row: T) => R,
+): R | null {
+  const row = firstOrNull(rows);
+  return row === null ? null : map(row);
+}

@@ -3,6 +3,7 @@ import type {
   ThemeSourceRevisionManifest,
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import type { Pagination } from "@/lib/db/server-result";
 
 export type ThemeSourceBlob = {
   digest: string;
@@ -162,7 +163,11 @@ export interface ThemeRevisionStore {
   listRevisions(
     storefrontId: string,
     themeId: string,
-  ): Promise<StorefrontThemeRevisionDTO[]>;
+    options?: { limit?: number; offset?: number },
+  ): Promise<{
+    revisions: StorefrontThemeRevisionDTO[];
+    pagination: Pagination;
+  }>;
 
   rollbackToRevision(
     storefrontId: string,

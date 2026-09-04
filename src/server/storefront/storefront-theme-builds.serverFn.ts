@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { failure, ok } from "@/lib/db/server-result";
+import { failure, ok, parseInput } from "@/lib/db/server-result";
 import {
   generatePreviewCapabilityToken,
   resolveThemePreviewSecret,
@@ -28,11 +28,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
 export const createPreviewBuild = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    createStorefrontThemeBuildInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(createStorefrontThemeBuildInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const { cmsConfig } = await import("@/cms.config");
       const service = createServerThemeBuildService();
@@ -113,11 +117,15 @@ export const createPreviewBuild = createServerFn({ method: "POST" })
  * submit an arbitrary npm version.
  */
 export const listThemeDependencies = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listStorefrontThemeDependenciesInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(listStorefrontThemeDependenciesInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const { cmsConfig } = await import("@/cms.config");
       const dependencies = await storefrontThemeDependencyDal.list(
@@ -140,11 +148,15 @@ export const listThemeDependencies = createServerFn({ method: "POST" })
 
 /** Enable one approved package and queue a build that proves it is usable. */
 export const requestThemeDependency = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    requestStorefrontThemeDependencyInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(requestStorefrontThemeDependencyInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const { cmsConfig } = await import("@/cms.config");
       const approved = cmsConfig.theme?.dependencies ?? {};
@@ -273,9 +285,15 @@ export const requestThemeDependency = createServerFn({ method: "POST" })
   });
 
 export const getPreviewBuildToken = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getStorefrontThemeBuildInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getStorefrontThemeBuildInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const service = createServerThemeBuildService();
       const build = await service.getThemeBuild({
@@ -313,9 +331,15 @@ export const getPreviewBuildToken = createServerFn({ method: "POST" })
   });
 
 export const getThemeBuild = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getStorefrontThemeBuildInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getStorefrontThemeBuildInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const service = createServerThemeBuildService();
       const build = await service.getThemeBuild({
@@ -351,9 +375,15 @@ export const getThemeBuild = createServerFn({ method: "POST" })
  * cancellable by id.
  */
 export const cancelThemeBuild = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getStorefrontThemeBuildInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getStorefrontThemeBuildInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const service = createServerThemeBuildService();
       const result = await service.cancelBuild({
@@ -380,11 +410,15 @@ export const cancelThemeBuild = createServerFn({ method: "POST" })
   });
 
 export const listThemeBuilds = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listStorefrontThemeBuildsInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(listStorefrontThemeBuildsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const service = createServerThemeBuildService();
       const builds = await service.listThemeBuilds({

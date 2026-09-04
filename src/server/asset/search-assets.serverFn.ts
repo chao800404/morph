@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
@@ -16,9 +17,15 @@ const searchAssetsInputSchema = z.object({
 });
 
 export const searchAssets = createServerFn({ method: "POST" })
-  .validator((data: unknown) => searchAssetsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => parseInput(searchAssetsInputSchema, data ?? {}))
   .middleware([assetReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const result = await assetDal.searchPage({
         query: data.q,

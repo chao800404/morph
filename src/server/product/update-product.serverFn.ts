@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { productDal } from "@/lib/product/dal/product.dal";
 import {
   productCategoryDal,
@@ -14,13 +15,17 @@ import { getConfig } from "../get-config";
 import { productAdminMiddleware } from "../middleware/auth.middleware";
 
 export const updateProduct = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    updateProductInputSchema(
+  .validator((data: unknown) => parseInput(updateProductInputSchema(
       getConfig().server.upload.maxAssetsPerRecord,
-    ).parse(data),
-  )
+    ), data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     const actorId = context.user.id;
 
     try {
@@ -44,7 +49,7 @@ export const updateProduct = createServerFn({ method: "POST" })
             success: false,
             message: "Could not derive a valid handle",
             data: null,
-            errors: { handle: [result.error.issues[0].message] },
+            errors: { handle: [result.error.issues[0]?.message ?? "Invalid input"] },
           };
         }
         handle = result.data;
@@ -123,9 +128,15 @@ export const updateProduct = createServerFn({ method: "POST" })
   });
 
 export const deleteProducts = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteProductsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteProductsInputSchema, data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     const actorId = context.user.id;
 
     try {

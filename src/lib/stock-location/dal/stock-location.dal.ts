@@ -1,3 +1,4 @@
+import { mapFirstOrNull } from "@/lib/db/single-row";
 import { getDb } from "@/db";
 import { salesChannelStockLocations } from "@/db/link.schema";
 import {
@@ -57,9 +58,9 @@ export const stockLocationDal = {
     const rows = await withAddress(db)
       .where(and(eq(stockLocations.id, id), isNull(stockLocations.deletedAt)))
       .limit(1);
-    return rows.length > 0
-      ? toStockLocationDTO(rows[0].location, rows[0].address)
-      : null;
+    return mapFirstOrNull(rows, (row) =>
+      toStockLocationDTO(row.location, row.address),
+    );
   },
 
   async findByIds(ids: string[]): Promise<StockLocationDTO[]> {
@@ -78,9 +79,9 @@ export const stockLocationDal = {
         and(eq(stockLocations.name, name), isNull(stockLocations.deletedAt)),
       )
       .limit(1);
-    return rows.length > 0
-      ? toStockLocationDTO(rows[0].location, rows[0].address)
-      : null;
+    return mapFirstOrNull(rows, (row) =>
+      toStockLocationDTO(row.location, row.address),
+    );
   },
 
   async listPage(options: {

@@ -1,4 +1,4 @@
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { dashboardUserDal } from "@/lib/user/dal/dashboard-user.dal";
 import {
   getDashboardUserInputSchema,
@@ -11,9 +11,15 @@ import { getRequest } from "@tanstack/react-start/server";
 import { userAdminMiddleware } from "../middleware/auth.middleware";
 
 export const listDashboardUsers = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listDashboardUsersInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => parseInput(listDashboardUsersInputSchema, data ?? {}))
   .middleware([userAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await dashboardUserDal.listPage({
         ...data,
@@ -34,9 +40,15 @@ export const listDashboardUsers = createServerFn({ method: "POST" })
   });
 
 export const updateDashboardUser = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateDashboardUserInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateDashboardUserInputSchema, data))
   .middleware([userAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const name = [data.firstName, data.lastName].filter(Boolean).join(" ");
       const user = await context.auth.api.adminUpdateUser({
@@ -59,9 +71,15 @@ export const updateDashboardUser = createServerFn({ method: "POST" })
   });
 
 export const getDashboardUser = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getDashboardUserInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getDashboardUserInputSchema, data))
   .middleware([userAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const user = await dashboardUserDal.findStaffById(data.id);
       if (!user) return fail("User not found", { error: "NOT_FOUND" });
@@ -77,11 +95,15 @@ export const getDashboardUser = createServerFn({ method: "POST" })
   });
 
 export const updateDashboardUserMetadata = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    updateDashboardUserMetadataInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(updateDashboardUserMetadataInputSchema, data))
   .middleware([userAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const user = await dashboardUserDal.findStaffById(data.id);
       if (!user) return fail("User not found", { error: "NOT_FOUND" });

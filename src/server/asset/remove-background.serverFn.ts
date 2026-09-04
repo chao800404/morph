@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { cmsConfig } from "@/cms.config";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { isRemoveBackgroundEnabled } from "@/lib/config/create-config";
@@ -12,9 +13,16 @@ const inputSchema = z.object({
 });
 
 export const removeBackground = createServerFn({ method: "POST" })
-  .validator((data: unknown) => inputSchema.parse(data))
+  .validator((data: unknown) => parseInput(inputSchema, data))
   .middleware([assetAdminMiddleware])
-  .handler(async ({ data: parsedInput }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) {
+      return { success: false, message: input.message };
+    }
+    const parsedInput = input.data;
     if (!isRemoveBackgroundEnabled(cmsConfig)) {
       return {
         success: false,

@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import {
   assetEditSelectionItemSchema,
   type AssetEditSelectionItem,
@@ -13,9 +14,15 @@ const getAssetItemsInputSchema = z.object({
 });
 
 export const getAssetItems = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getAssetItemsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getAssetItemsInputSchema, data))
   .middleware([assetReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const assetIds = data.items
         .filter((item) => item.itemType === "asset")

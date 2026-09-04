@@ -1,4 +1,4 @@
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { salesChannelDal } from "@/lib/sales-channel/dal/sales-channel.dal";
 import { stockLocationDal } from "@/lib/stock-location/dal/stock-location.dal";
 import {
@@ -16,11 +16,15 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listStockLocations = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listStockLocationsInputSchema.parse(data ?? {}),
-  )
+  .validator((data: unknown) => parseInput(listStockLocationsInputSchema, data ?? {}))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await stockLocationDal.listPage(data);
       return ok("Stock locations fetched successfully", {
@@ -38,9 +42,15 @@ export const listStockLocations = createServerFn({ method: "POST" })
   });
 
 export const getStockLocation = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getStockLocationInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getStockLocationInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const location = await stockLocationDal.findById(data.id);
       if (!location) {
@@ -67,9 +77,15 @@ export const getStockLocation = createServerFn({ method: "POST" })
   });
 
 export const createStockLocation = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createStockLocationInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createStockLocationInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       if (await stockLocationDal.findByName(data.name)) {
         return fail(`A stock location named "${data.name}" already exists`, {
@@ -96,9 +112,15 @@ export const createStockLocation = createServerFn({ method: "POST" })
   });
 
 export const updateStockLocation = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateStockLocationInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateStockLocationInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const existing = await stockLocationDal.findById(data.id);
       if (!existing) {
@@ -132,9 +154,15 @@ export const updateStockLocation = createServerFn({ method: "POST" })
   });
 
 export const deleteStockLocations = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteStockLocationsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteStockLocationsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const existing = await stockLocationDal.findByIds(data.ids);
       if (existing.length === 0) {
@@ -166,11 +194,15 @@ export const deleteStockLocations = createServerFn({ method: "POST" })
   });
 
 export const setLocationSalesChannels = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    setLocationSalesChannelsInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(setLocationSalesChannelsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const location = await stockLocationDal.findById(data.stockLocationId);
       if (!location) {

@@ -1,6 +1,6 @@
 import { apiKeyDal } from "@/lib/api-key/dal/api-key.dal";
 import { createPublishableKey } from "@/lib/api-key/publishable-key";
-import { fail, failure, ok } from "@/lib/db/server-result";
+import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import {
   createPublishableApiKeyInputSchema,
   revokePublishableApiKeyInputSchema,
@@ -26,9 +26,15 @@ export const listPublishableApiKeys = createServerFn({ method: "GET" })
   });
 
 export const createPublishableApiKey = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createPublishableApiKeyInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createPublishableApiKeyInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const channelIds = await apiKeyDal.activeSalesChannelIds(
         data.salesChannelIds,
@@ -63,9 +69,15 @@ export const createPublishableApiKey = createServerFn({ method: "POST" })
   });
 
 export const revokePublishableApiKey = createServerFn({ method: "POST" })
-  .validator((data: unknown) => revokePublishableApiKeyInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(revokePublishableApiKeyInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       return (await apiKeyDal.revoke(data.id, context.user.id))
         ? ok("Publishable API key revoked", { id: data.id })

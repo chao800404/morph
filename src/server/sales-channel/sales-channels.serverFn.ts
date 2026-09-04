@@ -2,7 +2,7 @@ import { salesChannelDal } from "@/lib/sales-channel/dal/sales-channel.dal";
 import { currencyDal } from "@/lib/currency/dal/currency.dal";
 import { productDal } from "@/lib/product/dal/product.dal";
 import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import {
   createSalesChannelInputSchema,
   deleteSalesChannelsInputSchema,
@@ -19,9 +19,15 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listSalesChannels = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listSalesChannelsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => parseInput(listSalesChannelsInputSchema, data ?? {}))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const [page, defaultSalesChannelId] = await Promise.all([
         salesChannelDal.listPage(data),
@@ -45,9 +51,15 @@ export const listSalesChannels = createServerFn({ method: "POST" })
   });
 
 export const getSalesChannel = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getSalesChannelInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getSalesChannelInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const channel = await salesChannelDal.findById(data.id);
       if (!channel) {
@@ -74,9 +86,15 @@ export const getSalesChannel = createServerFn({ method: "POST" })
   });
 
 export const createSalesChannel = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createSalesChannelInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createSalesChannelInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       // Checked before inserting so the author gets the error on the field
       // rather than a unique-index failure wrapped in `Failed query:`.
@@ -115,9 +133,15 @@ export const createSalesChannel = createServerFn({ method: "POST" })
   });
 
 export const updateSalesChannel = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateSalesChannelInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateSalesChannelInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const existing = await salesChannelDal.findById(data.id);
       if (!existing) {
@@ -152,9 +176,15 @@ export const updateSalesChannel = createServerFn({ method: "POST" })
   });
 
 export const deleteSalesChannels = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteSalesChannelsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteSalesChannelsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const existing = await salesChannelDal.findByIds(data.ids);
       if (existing.length === 0) {
@@ -191,11 +221,15 @@ export const deleteSalesChannels = createServerFn({ method: "POST" })
   });
 
 export const getProductSalesChannels = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    setProductSalesChannelsInputSchema.pick({ productId: true }).parse(data),
-  )
+  .validator((data: unknown) => parseInput(setProductSalesChannelsInputSchema.pick({ productId: true }), data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const ids = await salesChannelDal.listChannelIdsForProduct(
         data.productId,
@@ -215,9 +249,15 @@ export const getProductSalesChannels = createServerFn({ method: "POST" })
   });
 
 export const setProductSalesChannels = createServerFn({ method: "POST" })
-  .validator((data: unknown) => setProductSalesChannelsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(setProductSalesChannelsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       // Nothing enforces that these channels exist, so check before writing —
       // a link to a deleted channel would silently unlist the product.
@@ -245,11 +285,15 @@ export const setProductSalesChannels = createServerFn({ method: "POST" })
   });
 
 export const addProductsToSalesChannel = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    updateSalesChannelProductsInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(updateSalesChannelProductsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const channel = await salesChannelDal.findById(data.salesChannelId);
       if (!channel) {
@@ -280,11 +324,15 @@ export const addProductsToSalesChannel = createServerFn({ method: "POST" })
   });
 
 export const removeProductsFromSalesChannel = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    updateSalesChannelProductsInputSchema.parse(data),
-  )
+  .validator((data: unknown) => parseInput(updateSalesChannelProductsInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const channel = await salesChannelDal.findById(data.salesChannelId);
       if (!channel) {

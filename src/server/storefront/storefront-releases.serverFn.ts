@@ -13,9 +13,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
 export const listStorefrontReleaseHistory = createServerFn({ method: "POST" })
-  .validator((data: unknown) => storefrontReleaseHistoryInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(storefrontReleaseHistoryInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       // A page is what the pager speaks; an offset is what the query needs.
       // Translated here so neither side has to know about the other's shape.
@@ -45,9 +51,16 @@ export const listStorefrontReleaseHistory = createServerFn({ method: "POST" })
  * publication, so this must never become a second way to alter what is served.
  */
 export const renameStorefrontRelease = createServerFn({ method: "POST" })
-  .validator((data: unknown) => renameStorefrontReleaseInputSchema.parse(data))
+  .validator((data: unknown) =>
+    parseInput(renameStorefrontReleaseInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       return ok(
         "Release renamed",

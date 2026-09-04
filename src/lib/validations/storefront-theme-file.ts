@@ -152,6 +152,8 @@ export const applyStarterThemeWorkspaceInputSchema = z.object({
 export const listThemeRevisionsInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
+  limit: z.number().int().min(1).max(100).optional(),
+  offset: z.number().int().min(0).optional(),
 });
 
 export const createThemeRevisionInputSchema = z.object({

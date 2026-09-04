@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { createFirstAdminSchema } from "@/lib/validations/auth";
 import { createServerFn } from "@tanstack/react-start";
 import { ensureNoAdmin } from "../middleware/ensureNoAdmin.middleware";
@@ -7,8 +8,14 @@ export const createFirstAdminServerFn = createServerFn({
   method: "POST",
 })
   .middleware([ensureNoAdmin])
-  .validator(createFirstAdminSchema)
-  .handler(async ({ data }) => {
+  .validator((data: unknown) => parseInput(createFirstAdminSchema, data))
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     const auth = getAuthWithAdmin();
 
     // The admin plugin endpoint resolves to a `Response`-shaped object. Only

@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { mapFirstOrNull } from "@/lib/db/single-row";
 import { regionCountries, regions } from "@/db/region.schema";
 import { regionPaymentProviders } from "@/db/link.schema";
 import { paymentProviders } from "@/db/payment.schema";
@@ -35,7 +36,7 @@ import {
 const DELETE_CHUNK = 50;
 
 const mapFirst = (rows: RegionRow[]): RegionDTO | null =>
-  rows.length > 0 ? toRegionDTO(rows[0]) : null;
+  mapFirstOrNull(rows, toRegionDTO);
 
 export const regionDal = {
   async findById(id: string): Promise<RegionDTO | null> {

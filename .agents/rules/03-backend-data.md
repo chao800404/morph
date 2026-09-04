@@ -112,9 +112,9 @@ DAL 負責：
 
 **單列查詢必須誠實表達「查不到」。**
 
-專案未開啟 `noUncheckedIndexedAccess`，所以 `const [row] = await db.select()...`
-會把解構出的元素推導成必定存在。`row ?? null` 之後型別又縮回非 null，於是呼叫端
-**看不到查無資料這個情況**，失敗會延後成無法解釋的 `undefined`。
+`const [row] = await db.select()...` 會把解構出的元素推導成必定存在。
+`row ?? null` 之後型別又縮回非 null，於是呼叫端**看不到查無資料這個情況**，
+失敗會延後成無法解釋的 `undefined`。
 
 單列讀取一律使用 `firstOrNull()`（`@/lib/db/single-row`）：
 
@@ -123,8 +123,17 @@ const row = firstOrNull(await db.select().from(t).where(...).limit(1));
 if (!row) return null;
 ```
 
-新增 DAL 讀取時，若對外型別可能為 null，必須實際驗證推導結果，不能只看程式碼有寫
-`?? null` 就認定型別正確。
+映射成 DTO 時用 `mapFirstOrNull()`。`rows.length > 0 ? toDTO(rows[0]) : null`
+看起來有防護但沒有：length 檢查不會 narrow `rows[0]`。
+
+**這條規則由 `pnpm typecheck:data` 強制執行。** 根 `tsconfig.json` 沒有開
+`noUncheckedIndexedAccess`（對 dense numeric array 與 fixture 測試是雜訊，
+`theme-compiler-hasher.ts` 的 SHA-256 word array 一個檔就要 44 個 non-null
+assertion 而毫無安全收益）。`tsconfig.strict.json` 會用該 flag 編譯整個程式，
+但只**回報** DAL / storage / serverFn 這幾層 —— 查無資料在那裡才是真實的失敗模式。
+
+其他區域整理好之後，擴大 `scripts/typecheck-data-layer.mjs` 的
+`ENFORCED_PATHS` 即可漸進納管。
 
 ### 14.2 Service
 

@@ -1,3 +1,4 @@
+import { firstOrNull } from "@/lib/db/single-row";
 import { getDb } from "@/db";
 import {
   storefrontCommentGroups,
@@ -493,8 +494,9 @@ export const storefrontCommentDal = {
         templateId: input.templateId,
       });
 
-      if (existingGroups.length > 0) {
-        targetGroupId = existingGroups[0].id;
+      const existingGroup = firstOrNull(existingGroups);
+      if (existingGroup) {
+        targetGroupId = existingGroup.id;
       } else {
         const newGroup = await this.createGroup({
           storefrontId: input.storefrontId,

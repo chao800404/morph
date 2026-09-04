@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { productDal } from "@/lib/product/dal/product.dal";
 import {
   getProductInputSchema,
@@ -7,9 +8,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { productReadMiddleware } from "../middleware/auth.middleware";
 
 export const listProducts = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listProductsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => parseInput(listProductsInputSchema, data ?? {}))
   .middleware([productReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await productDal.listPage({
         query: data.query,
@@ -54,9 +61,15 @@ export const listProducts = createServerFn({ method: "POST" })
 
 /** Product with its options, variants and gallery, for the detail view. */
 export const getProduct = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getProductInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getProductInputSchema, data))
   .middleware([productReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const product = await productDal.findDetail(data.id);
 

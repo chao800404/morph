@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { mapFirstOrNull } from "@/lib/db/single-row";
 import { assets } from "@/db/asset.schema";
 import {
   productAssets,
@@ -59,7 +60,7 @@ const PRODUCT_ASSET_COLUMNS = 3;
 const PRODUCT_LINK_COLUMNS = 2;
 
 const mapFirst = (rows: ProductRow[]): ProductDTO | null =>
-  rows.length > 0 ? toProductDTO(rows[0]) : null;
+  mapFirstOrNull(rows, toProductDTO);
 
 /** The gallery's lead image, which is what the thumbnail always is. */
 export const thumbnailOf = (assetIds: string[]): string | null =>

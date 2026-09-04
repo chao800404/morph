@@ -1,5 +1,5 @@
 import { promotionDal } from "@/lib/promotion/dal/promotion.dal";
-import { fail, failure, ok, paginationOf } from "@/lib/db/server-result";
+import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import {
   createPromotionInputSchema,
   getMarketingRecordInputSchema,
@@ -15,18 +15,21 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listPromotionCampaigns = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    z
+  .validator((data: unknown) => parseInput(z
       .object({
         query: z.string().max(200).optional(),
         page: z.number().int().min(1),
         limit: z.number().int().min(1).max(50),
         selectedIds: z.array(z.uuid()).max(20).optional(),
-      })
-      .parse(data),
-  )
+      }), data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await promotionDal.listCampaignPage(data);
       return ok("Campaigns fetched successfully", {
@@ -51,9 +54,15 @@ export const listPromotionCampaigns = createServerFn({ method: "POST" })
   });
 
 export const listPromotions = createServerFn({ method: "POST" })
-  .validator((data: unknown) => listPromotionsInputSchema.parse(data ?? {}))
+  .validator((data: unknown) => parseInput(listPromotionsInputSchema, data ?? {}))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await promotionDal.listPage(data);
       return ok("Promotions fetched successfully", {
@@ -71,9 +80,15 @@ export const listPromotions = createServerFn({ method: "POST" })
   });
 
 export const getPromotion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getMarketingRecordInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getMarketingRecordInputSchema, data))
   .middleware([commerceReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const promotion = await promotionDal.findById(data.id);
       return promotion
@@ -90,9 +105,15 @@ export const getPromotion = createServerFn({ method: "POST" })
   });
 
 export const createPromotion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createPromotionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createPromotionInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       if (await promotionDal.findByCode(data.code))
         return fail("A promotion with this code already exists", {
@@ -112,9 +133,15 @@ export const createPromotion = createServerFn({ method: "POST" })
   });
 
 export const updatePromotion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updatePromotionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updatePromotionInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const clash = await promotionDal.findByCode(data.code);
       if (clash && clash.id !== data.id)
@@ -135,9 +162,15 @@ export const updatePromotion = createServerFn({ method: "POST" })
   });
 
 export const updatePromotionMetadata = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateMarketingMetadataInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateMarketingMetadataInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await promotionDal.updateMetadata(data.id, data.metadata);
       return ok("Promotion metadata updated successfully", { id: data.id });
@@ -152,9 +185,15 @@ export const updatePromotionMetadata = createServerFn({ method: "POST" })
   });
 
 export const deletePromotion = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getMarketingRecordInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getMarketingRecordInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       await promotionDal.softDelete(data.id);
       return ok("Promotion deleted", { id: data.id });

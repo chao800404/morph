@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import {
   clearResetAccessCookieHeader,
   readResetAccessCookie,
@@ -20,8 +21,15 @@ const requestSecurity = () => {
 export const requestPasswordResetAccessServerFn = createServerFn({
   method: "POST",
 })
-  .validator((data: unknown) => forgotPasswordSchema.shape.email.parse(data))
-  .handler(async ({ data: email }) => {
+  .validator((data: unknown) =>
+    parseInput(forgotPasswordSchema.shape.email, data),
+  )
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const email = input.data;
     const { request, secure } = requestSecurity();
     await getAuthWithAdmin().api.sendVerificationOTP({
       body: { email, type: "forget-password" },

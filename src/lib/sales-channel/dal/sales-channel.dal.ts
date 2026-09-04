@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { mapFirstOrNull } from "@/lib/db/single-row";
 import { productSalesChannels } from "@/db/link.schema";
 import { salesChannels } from "@/db/sales-channel.schema";
 import { chunkForInsert } from "@/lib/product/dal/d1-batch";
@@ -30,7 +31,7 @@ import {
 const DELETE_CHUNK = 50;
 
 const mapFirst = (rows: SalesChannelRow[]): SalesChannelDTO | null =>
-  rows.length > 0 ? toSalesChannelDTO(rows[0]) : null;
+  mapFirstOrNull(rows, toSalesChannelDTO);
 
 export const salesChannelDal = {
   async findById(id: string): Promise<SalesChannelDTO | null> {

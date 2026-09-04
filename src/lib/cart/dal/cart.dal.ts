@@ -220,56 +220,69 @@ export const cartDal = {
               )
           : [],
       ]);
-    const itemAmounts = items.map((item) => ({
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      isTaxInclusive: item.isTaxInclusive,
-      adjustments: itemAdjustments
-        .filter((adjustment) => adjustment.itemId === item.id)
-        .map((adjustment) => adjustment.amount),
-      taxes: itemTaxes
-        .filter((tax) => tax.itemId === item.id)
-        .map((tax) => ({ rate: tax.rate })),
+    // The amounts stay attached to the row they were derived from rather than
+    // being looked up by a parallel-array index, so the pairing cannot drift
+    // and no index can miss.
+    const itemsWithAmounts = items.map((item) => ({
+      item,
+      amounts: {
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        isTaxInclusive: item.isTaxInclusive,
+        adjustments: itemAdjustments
+          .filter((adjustment) => adjustment.itemId === item.id)
+          .map((adjustment) => adjustment.amount),
+        taxes: itemTaxes
+          .filter((tax) => tax.itemId === item.id)
+          .map((tax) => ({ rate: tax.rate })),
+      },
     }));
-    const shippingAmounts = shipping.map((method) => ({
-      quantity: 1,
-      unitPrice: method.amount,
-      isTaxInclusive: method.isTaxInclusive,
-      adjustments: shippingAdjustments
-        .filter((adjustment) => adjustment.shippingMethodId === method.id)
-        .map((adjustment) => adjustment.amount),
-      taxes: shippingTaxes
-        .filter((tax) => tax.shippingMethodId === method.id)
-        .map((tax) => ({ rate: tax.rate })),
+    const shippingWithAmounts = shipping.map((method) => ({
+      method,
+      amounts: {
+        quantity: 1,
+        unitPrice: method.amount,
+        isTaxInclusive: method.isTaxInclusive,
+        adjustments: shippingAdjustments
+          .filter((adjustment) => adjustment.shippingMethodId === method.id)
+          .map((adjustment) => adjustment.amount),
+        taxes: shippingTaxes
+          .filter((tax) => tax.shippingMethodId === method.id)
+          .map((tax) => ({ rate: tax.rate })),
+      },
     }));
     const totals = sumCartTotals({
-      items: itemAmounts,
-      shipping: shippingAmounts,
+      items: itemsWithAmounts.map((entry) => entry.amounts),
+      shipping: shippingWithAmounts.map((entry) => entry.amounts),
       credits: credits.map((credit) => credit.amount),
     });
-    const itemDtos: CartLineItemDTO[] = items.map((item, index) => ({
-      id: item.id,
-      variantId: item.variantId,
-      productId: item.productId,
-      title: item.title,
-      variantTitle: item.variantTitle,
-      productHandle: item.productHandle,
-      thumbnail: item.thumbnail,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      ...calculateAmountLine(itemAmounts[index]),
-    }));
-    const shippingDtos: CartShippingMethodDTO[] = shipping.map(
-      (method, index) => ({
-        id: method.id,
-        shippingOptionId: method.shippingOptionId,
-        name: method.name,
-        amount: method.amount,
-        discountTotal: calculateAmountLine(shippingAmounts[index])
-          .discountTotal,
-        taxTotal: calculateAmountLine(shippingAmounts[index]).taxTotal,
-        total: calculateAmountLine(shippingAmounts[index]).total,
+    const itemDtos: CartLineItemDTO[] = itemsWithAmounts.map(
+      ({ item, amounts }) => ({
+        id: item.id,
+        variantId: item.variantId,
+        productId: item.productId,
+        title: item.title,
+        variantTitle: item.variantTitle,
+        productHandle: item.productHandle,
+        thumbnail: item.thumbnail,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        ...calculateAmountLine(amounts),
       }),
+    );
+    const shippingDtos: CartShippingMethodDTO[] = shippingWithAmounts.map(
+      ({ method, amounts }) => {
+        const line = calculateAmountLine(amounts);
+        return {
+          id: method.id,
+          shippingOptionId: method.shippingOptionId,
+          name: method.name,
+          amount: method.amount,
+          discountTotal: line.discountTotal,
+          taxTotal: line.taxTotal,
+          total: line.total,
+        };
+      },
     );
     return {
       id: cart.id,

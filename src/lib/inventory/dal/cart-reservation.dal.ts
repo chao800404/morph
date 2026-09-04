@@ -214,6 +214,9 @@ export const cartReservationDal = {
     for (const key of keys) {
       const target = desired.get(key);
       const [inventoryItemId, locationId] = key.split(":");
+      // The key is built as `${inventoryItemId}:${locationId}`; a key without
+      // both halves is a corrupted map entry, not a row to reserve against.
+      if (inventoryItemId === undefined || locationId === undefined) continue;
       const delta = (target?.quantity ?? 0) - (existingByKey.get(key) ?? 0);
       if (delta > 0) positive.push({ inventoryItemId, locationId, delta });
       if (delta < 0)

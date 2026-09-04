@@ -1,3 +1,4 @@
+import { parseInput } from "@/lib/db/server-result";
 import { productCollectionDal } from "@/lib/product/dal/product-collection.dal";
 import {
   createCollectionInputSchema,
@@ -14,11 +15,15 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listCollections = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    listCollectionsInputSchema.parse(data ?? {}),
-  )
+  .validator((data: unknown) => parseInput(listCollectionsInputSchema, data ?? {}))
   .middleware([productReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const page = await productCollectionDal.listPage({
         query: data.query,
@@ -56,9 +61,15 @@ export const listCollections = createServerFn({ method: "POST" })
   });
 
 export const getCollection = createServerFn({ method: "POST" })
-  .validator((data: unknown) => getProductInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(getProductInputSchema, data))
   .middleware([productReadMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     try {
       const collection = await productCollectionDal.findById(data.id);
       if (!collection) {
@@ -87,9 +98,15 @@ export const getCollection = createServerFn({ method: "POST" })
   });
 
 export const createCollection = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createCollectionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(createCollectionInputSchema, data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     const actorId = context.user.id;
 
     try {
@@ -99,7 +116,7 @@ export const createCollection = createServerFn({ method: "POST" })
           success: false,
           message: "Could not derive a valid handle from the title",
           data: null,
-          errors: { handle: [handleResult.error.issues[0].message] },
+          errors: { handle: [handleResult.error.issues[0]?.message ?? "Invalid input"] },
         };
       }
       const handle = handleResult.data;
@@ -143,9 +160,15 @@ export const createCollection = createServerFn({ method: "POST" })
   });
 
 export const updateCollection = createServerFn({ method: "POST" })
-  .validator((data: unknown) => updateCollectionInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(updateCollectionInputSchema, data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     const actorId = context.user.id;
 
     try {
@@ -169,7 +192,7 @@ export const updateCollection = createServerFn({ method: "POST" })
             success: false,
             message: "Could not derive a valid handle",
             data: null,
-            errors: { handle: [result.error.issues[0].message] },
+            errors: { handle: [result.error.issues[0]?.message ?? "Invalid input"] },
           };
         }
         handle = result.data;
@@ -215,9 +238,15 @@ export const updateCollection = createServerFn({ method: "POST" })
   });
 
 export const deleteCollections = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteCollectionsInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteCollectionsInputSchema, data))
   .middleware([productAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+
     const actorId = context.user.id;
 
     try {

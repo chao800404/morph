@@ -298,12 +298,10 @@ export function createD1ThemeRevisionStore(
       revisionNumber,
       rollbackOptions,
     ) {
-      const revisions = await storefrontThemeFileDal.listRevisions(
+      const target = await storefrontThemeFileDal.findRevisionByNumber(
         storefrontId,
         themeId,
-      );
-      const target = revisions.find(
-        (revision) => revision.revisionNumber === revisionNumber,
+        revisionNumber,
       );
       if (!target) {
         throw new Error(`Revision #${revisionNumber} not found`);

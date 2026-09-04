@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { mapFirstOrNull } from "@/lib/db/single-row";
 import { assetFolders } from "@/db/asset.schema";
 import { users } from "@/db/auth.schema";
 import {
@@ -25,7 +26,7 @@ import {
 } from "../mappers/asset-folder.mapper";
 
 const mapFirst = (rows: AssetFolderRow[]): AssetFolderDTO | null =>
-  rows.length > 0 ? toAssetFolderDTO(rows[0]) : null;
+  mapFirstOrNull(rows, toAssetFolderDTO);
 
 /**
  * Prefix match over a subtree, without LIKE.

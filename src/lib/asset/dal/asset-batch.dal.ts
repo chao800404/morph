@@ -214,13 +214,13 @@ export async function findAssetUsageInD1(
       ).bind(...ids, ...ids),
     ]);
 
-    for (const row of productResult.results as Array<{
+    for (const row of (productResult?.results ?? []) as Array<{
       id: string;
       title: string;
     }>) {
       products.set(row.id, row.title);
     }
-    for (const row of variantResult.results as Array<{
+    for (const row of (variantResult?.results ?? []) as Array<{
       id: string;
       product_title: string;
       variant_title: string;

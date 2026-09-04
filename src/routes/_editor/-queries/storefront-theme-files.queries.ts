@@ -37,12 +37,31 @@ export const storefrontThemeFileQueries = {
       },
     }),
 
-  revisions: (storefrontId: string, themeId: string) =>
+  revisions: (
+    storefrontId: string,
+    themeId: string,
+    page = 1,
+    limit = 50,
+  ) =>
     queryOptions({
-      queryKey: ["storefront-theme-files", storefrontId, themeId, "revisions"] as const,
+      // Page is part of the key so each page caches separately rather than
+      // overwriting the previous one.
+      queryKey: [
+        "storefront-theme-files",
+        storefrontId,
+        themeId,
+        "revisions",
+        page,
+        limit,
+      ] as const,
       queryFn: async () => {
         const result = await listStorefrontThemeRevisions({
-          data: { storefrontId, themeId },
+          data: {
+            storefrontId,
+            themeId,
+            limit,
+            offset: (page - 1) * limit,
+          },
         });
         if (!result.success) throw new Error(result.message);
         return result.data;
