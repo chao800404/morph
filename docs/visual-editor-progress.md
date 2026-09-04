@@ -10,7 +10,7 @@
 | 目前狀態     | 核心 Editor／Build／Release 已完成主要鏈路；Production Runtime、Domain 與遠端 Publish 尚未閉環                                                                                  |
 | 整體完成度   | **90%**（重新按目前實作與交付閉環證據加權；未將未驗證的 Cloudflare production 路徑視為已完成）                                                                                   |
 | 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration；待決：是否連同 theme runtime 版本一起升級 TanStack（見第十輪） |
-| 最近完整驗證 | 2026-09-04 於 `9d88bd5` 實跑：`pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（244 files / 1682 tests passed、各 1 skipped）、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 與 `git diff --check` 通過；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
+| 最近完整驗證 | 2026-09-04 於 `764756d` 實跑：`pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 通過。`pnpm test` 共 1713 個 tests，最佳情況為 1712 passed／1 skipped —— **但完整平行執行下會間歇出現 1～3 個 timeout 失敗，每次失敗的案例都不同，且全部單獨執行皆通過**（見驗證基準的已知問題）；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
 
 `█████████ 90%`
 
@@ -114,6 +114,83 @@
   本機程式鏈和單元測試已核對。剩餘 4% 主要是需要實際 Cloudflare account/service/Zone/domain
   的遠端閉環、Publish E2E，以及 Code Workspace 約 3.57 MB minified client chunk；未把本機
   storefront id 猜寫進 `wrangler.jsonc`。
+
+### 2026-09-04 第十二輪：內容存不進去的根因，與兩個 resolver 的漂移
+
+回報是「修改內容出現 `The content value does not match the Theme field
+declaration.`」。**這一輪最值得記下來的不是修法，而是查法**：訊息本身把定位
+所需的資訊全部丟掉了，我因此查了三輪才到根因。
+
+#### 診斷是分三層剝開的
+
+1. **第一層：連哪個欄位都不知道。** serverFn 用固定文案回應，但拋出的錯誤
+   `INVALID_THEME_CONTENT_FIELD_VALUE:${fieldKey}` **本來就帶著欄位**，而且陣列
+   內的失敗會遞迴出 `items.0.title` 這種精確路徑。把它透出來後，得到 `items`。
+2. **第二層：知道是 `items`，但不知道為什麼。** 陣列分支有 6 個各自獨立的拒絕
+   點，全部丟出一模一樣的訊息。替每個拒絕點加上原因碼後，得到
+   `row-shape-not-declared`。
+3. **第三層：才看得到真正的矛盾。** 面板明明畫得出 Number／Title／Body 三個 row
+   控制項，伺服器卻說 row 結構沒有宣告——兩邊對同一份宣告的解讀不同。
+
+**如果一開始就有原因碼，這是一輪就能結束的事。** 這條經驗值得推廣到其他把
+domain error 壓成固定文案的地方。
+
+#### 根因：兩個 resolver 不對稱
+
+專案有兩個解析入口，`of:`（row 元件參照）的展開只存在於其中一個：
+
+| 入口 | 使用者 | 展開 `of:` |
+| --- | --- | --- |
+| `resolveThemeContentCapabilitiesFromFiles`（掃描整個工作區） | 編輯器前端 | ✅ 有第二遍掃描 |
+| `resolveThemeContentCapabilities`（按需讀檔） | 伺服器寫入驗證 | ❌ 完全沒有 |
+
+同一份輸入的實測輸出：
+
+```text
+client: { type: "array", of: "./PrincipleCard", fields: { number, title } }
+server: { type: "array", of: "./PrincipleCard" }
+```
+
+`arrayRowFields()` 只讀 `definition.fields`、從不看 `of`，所以伺服器端拿到 null
+就判定「沒有宣告 row 結構」，**該清單的任何內容都寫不進去**。編輯器照著展開後的
+結果渲染，於是形成「畫得出來但存不進去」——這種缺陷在使用者真的去存檔之前完全
+不可見。
+
+修法是把第二遍掃描抽成 `expandRowReferences()` 給兩邊共用，並讓按需讀檔的路徑
+額外抓取被 `of` 指向的 row 元件（只讀宣告真正指向的路徑，client 仍無法左右載入
+哪些檔案）。**新增的對稱性測試才是這次的重點**：同一份輸入餵給兩個 resolver、
+斷言得出相同的 row `fields`。先前沒有任何測試檢查這件事，這正是它們會漂移的原因。
+
+#### 順帶修掉的第二個阻斷
+
+`updateSectionProps` 過去會在每次存檔時，拿**已存在資料庫裡的 props** 去驗證目前
+的宣告。只要宣告改過（換型別、加 `maxLength`），舊內容就不再符合，該 section 便
+**永久無法編輯**——包括要去修正那個欄位本身。而且失敗的欄位和使用者正在改的欄位
+可以毫無關係。
+
+現在只驗證這次傳入的值；既有 props 仍原樣帶過、不過濾，維持原註解在意的「不可以
+抹掉既有 references 或其他持久化資料」。移除後 `tsc` 立即回報
+`filterThemeContentProps` 未使用，證明那個被丟棄回傳值的呼叫是它在該檔的唯一用途。
+
+#### Content 欄位順序與 tab 寬度
+
+- Content 分頁的欄位順序原本不是從任何結構推導的，而是兩個寫死的區塊（先全部
+  declared 欄位、再全部 specialized 欄位），所以 section label 永遠不可能排在它所
+  引導的陣列前面。改為：**有宣告 `contentFields` 就照宣告順序**（作者的意圖優先，
+  搬一行即可調整；宣告順序經實測可完整通過 resolver 的 Zod parse），**沒宣告就照
+  preview 回報的 DOM 順序**，兩者都不知道的欄位維持原位。
+- 沒有使用 CSS `order`：這些都是表單欄位，那會讓視覺順序與 Tab／螢幕閱讀器順序
+  分家，用製造無障礙缺陷的方式去修「不符合 DOM」的問題。
+- 右側面板 tab 因為容器與每個 tab 都有 `flex-1`，三個短單字被拉滿整個 header；改為
+  依標籤內容決定寬度，並讓右側動作區 `shrink-0`。
+
+#### 本輪發現的測試套件問題（尚未處理）
+
+完整平行執行時會間歇失敗 1～3 個案例，**每次失敗的都不一樣**（曾出現
+`local-vite-theme-build-runner`、`editor-sections-panel`、`editor-style-inspector`、
+`asset-select-field`），而**全部單獨執行皆通過**。`vitest.config.ts` 沒有設定
+`testTimeout`，因此 React 元件測試吃的是 5 秒預設值，在平行負載下過緊。這不是本輪
+造成的迴歸，但代表「全綠」目前取決於機器負載，需要另外處理。
 
 ### 2026-09-04 第十一輪：資料層規則對齊、登入回跳與面板拖曳效能
 
@@ -929,7 +1006,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 | ---------------- | ------- | ----------------------------------------------- |
 | `pnpm typecheck` | ✅ 通過 | 0 個 TypeScript 錯誤                                     |
 | `pnpm typecheck:data` | ✅ 通過 | 資料層在 `noUncheckedIndexedAccess` 下無違規；閘門已以注入違規驗證確實會擋 |
-| `pnpm test`      | ✅ 通過 | 244 個測試檔通過、1 個 skipped；1682 個 tests 通過、1 個 skipped |
+| `pnpm test`      | 🟡 見備註 | 共 1713 個 tests；最佳情況 1712 通過、1 skipped。完整平行執行下會間歇有 1～3 個 timeout 失敗，案例每次不同且單獨執行皆通過 |
 | `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle（331 檔）與 deploy artifact secret guard 檢查通過 |
 | `git diff --check` | ✅ 通過 | 工作樹差異沒有 whitespace error                         |
 
@@ -937,6 +1014,10 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 - 部分 bundle chunk size 警告仍存在，後續效能階段處理。
 - 本次未重跑 Playwright；未執行遠端 D1 migration、Cloudflare production deploy 或 Publish。
+- **測試套件在平行負載下不穩定。** 完整執行會間歇失敗 1～3 個案例，每次不同，
+  單獨執行全部通過。`vitest.config.ts` 未設定 `testTimeout`，React 元件測試因此
+  使用 5 秒預設值，在負載下過緊；build runner 的 `describe` 另設 20 秒仍會超時。
+  尚未處理——在修好之前，「全綠」取決於機器負載，不能作為門檻。
 
 ## 下一階段建議
 
@@ -982,6 +1063,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-04 | 內容存不進去的根因與兩個 resolver 的漂移（第十二輪）：`of:` row 元件參照只在掃描整個工作區的 resolver 展開，按需讀檔的伺服器端沒有，導致清單「畫得出來但存不進去」；第二遍掃描抽出共用並補上對稱性測試。`updateSectionProps` 不再以既有 props 驗證當前宣告（舊內容曾使 section 永久無法編輯）。內容錯誤現在會回報欄位與原因碼（陣列 6 個拒絕點各自具名）。Content 分頁欄位改為「有宣告照宣告、無宣告照 DOM」順序；右側面板 tab 不再被 `flex-1` 撐滿 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 通過；`pnpm test` 最佳 1712 passed／1 skipped，但**平行執行下間歇有 1～3 個 timeout 失敗（案例每次不同、單獨執行皆通過）**，已列為待處理；「舊資料不擋編輯」與 resolver 對稱性皆有測試把關；**未執行**瀏覽器 E2E、遠端 Publish／deploy／migration。內容可正常儲存已由使用者實機確認 |
 | 2026-09-04 | 資料層規則對齊、登入回跳與面板拖曳效能（第十一輪）：168 個會拋錯的 serverFn validator 全面改用 `parseInput`（推翻 2026-09-03「其餘 137 個維持原狀」的取捨）；theme revision 加分頁並新增 `findRevisionByNumber`，讓 rollback 不再為找一筆而載入全部 snapshot；新增 `mapFirstOrNull`；429 行內容政策搬離 theme DAL；新增 `pnpm typecheck:data` 以範圍化方式強制 §14.1；登入後回到中斷路徑並修補 `callbackURL` 的 open redirect；面板拖曳改以 CSS 變數 + rAF，拖曳期間 re-render 由每幀一次降為 0；Content 獨立成分頁 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（244 files / 1682 tests passed、各 1 skipped）、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard、`git diff --check` 通過；open redirect 防護與「拖曳不 re-render」皆以 mutation test 驗證；**未執行**瀏覽器 E2E、遠端 Publish／deploy／migration，登入流程與拖曳手感需人工確認 |
 | 2026-09-02 | Code → Design 切換加入未儲存 Code 變更提示：可選擇儲存並切換、保留 draft 後切換或取消；Save & switch 透過 Code Workspace imperative handle 實際保存全部 dirty files，失敗／conflict 時 fail closed；新增 Monaco draft Save All 測試 | `pnpm typecheck`、`pnpm test`（230 files / 1544 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration |
 | 2026-09-02 | 依目前 repository 實作重新盤點並校正進度：核對 Theme Workspace → R2 source manifest → Build Queue／Sandbox → immutable artifact → Release／activeRelease CAS → hostname／Theme Runtime；保留已完成的 Editor、Build、Release 與 OCC 功能，不再把尚未接通的 production Theme Worker、custom domain、Page Registry、真實 TSX iframe、remote migration 與 Publish E2E 計入已完成；整體完成度由 97% 調整為 90% | `pnpm typecheck`、`pnpm test`（230 files passed / 1 skipped；1543 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration；保留既有未提交的 `visual-editor-shell.tsx` 修改 |
