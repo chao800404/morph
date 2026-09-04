@@ -1,6 +1,11 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import type {
+  PreviewEditableNode,
+  PreviewSelectionRestoreTarget,
+} from "@/lib/storefront/editor/preview-protocol";
 import {
+  createEditorSelectionDescriptor,
   createSelectionRestoreMessages,
   EditorCodeModeSurface,
   EditorModeSurface,
@@ -104,6 +109,37 @@ describe("EditorCodeModeSurface", () => {
 });
 
 describe("Code to Design selection restore", () => {
+  it("builds the immediate inspector selection from the tree target", () => {
+    const target = {
+      sectionId: "hero",
+      nodeId: "hero-heading",
+      fieldPath: "heading",
+      fieldKey: "heading",
+      isSection: false,
+    } satisfies PreviewSelectionRestoreTarget;
+    const node = {
+      id: "hero:node:heading",
+      parentId: null,
+      sectionId: "hero",
+      label: "Heading",
+      kind: "heading",
+      tagName: "h1",
+      target,
+    } satisfies PreviewEditableNode;
+
+    expect(createEditorSelectionDescriptor(target, node, "hero")).toMatchObject(
+      {
+        sectionId: "hero",
+        kind: "heading",
+        componentType: "hero",
+        tagName: "h1",
+        fieldKey: "heading",
+        fieldPath: "heading",
+        isSection: false,
+      },
+    );
+  });
+
   it("posts selection mode restore followed by style refresh without remounting the preview", () => {
     const target = {
       sectionId: "hero",

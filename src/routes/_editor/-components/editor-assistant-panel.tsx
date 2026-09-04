@@ -130,10 +130,7 @@ export function persistEditorAssistantPanelTab(tab: EditorAssistantPanelTab) {
   }
 
   try {
-    window.localStorage.setItem(
-      EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY,
-      tab,
-    );
+    window.localStorage.setItem(EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY, tab);
   } catch {
     // Storage can be unavailable in privacy-restricted browser contexts.
   }
@@ -176,6 +173,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   const documentSection = sections.find(
     (section) => section.id === search.section,
   );
+  const selectionSection = sections.find(
+    (section) => section.id === selection?.sectionId,
+  );
   /**
    * Section the inspector renders for.
    *
@@ -187,6 +187,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
    * Document slot to write values into yet.
    */
   const selectedSection: typeof documentSection =
+    selectionSection ??
     documentSection ??
     (selection?.sectionId
       ? ({

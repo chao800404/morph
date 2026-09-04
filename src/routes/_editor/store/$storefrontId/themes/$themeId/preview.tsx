@@ -435,6 +435,17 @@ export function collectEditableDescendantFields(
   return result;
 }
 
+/**
+ * Field annotations are the most precise identity available for a content
+ * control. Keep this small helper public so selection behavior can be tested
+ * without mounting the whole preview route.
+ */
+export function closestPreviewFieldElement(
+  element: HTMLElement,
+): HTMLElement | null {
+  return element.closest<HTMLElement>("[data-storefront-field]");
+}
+
 export const Route = createFileRoute(
   "/_editor/store/$storefrontId/themes/$themeId/preview",
 )({
@@ -1422,7 +1433,44 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     ): SelectableInfo | null => {
       if (!(target instanceof HTMLElement)) return null;
 
-      // 0. Prefer the nearest AST-backed Morph identity annotation.
+      // 0. A content field is more precise than an ancestor AST marker. Some
+      // rendered fields (notably action labels) intentionally have no source
+      // location of their own, so resolving the ancestor first would make the
+      // inspector show the container instead of the actual field.
+      const fieldEl = closestPreviewFieldElement(target);
+      if (fieldEl) {
+        const sectionEl = closestPreviewSectionRoot(fieldEl);
+        const descendantFields = collectEditableDescendantFields(fieldEl);
+        const fieldKey =
+          descendantFields.length > 0
+            ? null
+            : (fieldEl.dataset.storefrontField ?? null);
+        const fieldPath = fieldEl.dataset.storefrontFieldPath ?? fieldKey;
+        const elementKey = fieldEl.dataset.morphElement ?? null;
+        const selectableType =
+          fieldEl.dataset.storefrontComponent ??
+          elementKey ??
+          fieldEl.tagName.toLowerCase();
+
+        return {
+          element: fieldEl,
+          section: sectionEl,
+          sourceLocation: fieldEl.dataset.morphLoc ?? null,
+          sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
+          type: selectableType,
+          label: getComponentDisplayName(selectableType),
+          elementKey,
+          fieldKey,
+          field: fieldKey,
+          fieldPath,
+          descendantFields,
+          tagName: fieldEl.tagName.toLowerCase(),
+          role: fieldEl.getAttribute("role"),
+          inputType: fieldEl instanceof HTMLInputElement ? fieldEl.type : null,
+        };
+      }
+
+      // 1. Prefer the nearest AST-backed Morph identity annotation.
       const morphEl = target.closest<HTMLElement>(
         // Compile-time source positions make an element identifiable even when
         // the author wrote no markers, so they select like any other element.
@@ -1466,7 +1514,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         };
       }
 
-      // 1. Prioritize explicit component/field annotation
+      // 2. Prioritize explicit component annotation
       const componentEl = target.closest<HTMLElement>(
         "[data-storefront-component]",
       );
@@ -1506,7 +1554,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         };
       }
 
-      // 2. Standard interactive & typography sub-elements
+      // 3. Standard interactive & typography sub-elements
       const elementEl = target.closest<HTMLElement>(
         "h1, h2, h3, h4, h5, h6, p, blockquote, code, pre, img, picture, svg, video, audio, canvas, iframe, embed, map, a, button, nav, details, summary, form, fieldset, input, textarea, select, option, ul, ol, li, table, thead, tbody, tfoot, tr, td, th, hr, article",
       );
@@ -1607,7 +1655,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         };
       }
 
-      // 3. Fallback to outer Section
+      // 4. Fallback to outer Section
       const section = target.closest<HTMLElement>(
         "[data-storefront-section-id]",
       );
@@ -3089,8 +3137,22 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
+      if (message.selectionRevision !== undefined) {
+        selectionRevision = Math.max(
+          selectionRevision,
+          message.selectionRevision,
+        );
+      }
+      // A section-only command intentionally selects the section. A route
+      // sync that needs to preserve a descendant must carry that target
+      // explicitly; never infer it from a stale iframe-local selection.
+      lastRestoreTarget = message.restoreTarget ?? null;
       selectedSectionId = message.sectionId;
-      restoreSelectedSection();
+      if (selectionEnabled && message.restoreTarget) {
+        restoreSelectedTarget(message.restoreTarget);
+      } else {
+        restoreSelectedSection();
+      }
     };
 
     document.addEventListener("pointerdown", handlePointerDown, true);

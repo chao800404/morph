@@ -139,6 +139,27 @@ describe("preview protocol", () => {
         restoreTarget: { sectionId: "hero" },
       }),
     ).toBeNull();
+
+    const sectionSync = {
+      type: "morph:storefront-preview-set-section",
+      sectionId: "newsletter",
+      restoreTarget: {
+        sectionId: "newsletter",
+        nodeId: "newsletter-title",
+        fieldPath: "title",
+        elementKey: "title",
+        fieldKey: "title",
+        isSection: false,
+      },
+      selectionRevision: 6,
+    } as const;
+    expect(parseEditorToPreviewMessage(sectionSync)).toEqual(sectionSync);
+    expect(
+      parseEditorToPreviewMessage({
+        ...sectionSync,
+        selectionRevision: -1,
+      }),
+    ).toBeNull();
   });
 
   it("accepts a bounded editable structure and rejects ambiguous parent links", () => {

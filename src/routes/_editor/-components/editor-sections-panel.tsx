@@ -166,8 +166,6 @@ type EditableNodeIcon = Readonly<{
   name: string;
 }>;
 
-const OPTIMISTIC_SELECTION_TIMEOUT_MS = 1_500;
-
 const HEADING_ICONS: Readonly<Record<string, EditableNodeIcon>> = {
   h1: { component: Heading1, name: "h1" },
   h2: { component: Heading2, name: "h2" },
@@ -444,25 +442,6 @@ function selectionMatchesEditableNode(
   );
 }
 
-function selectionIdentity(
-  selection: EditorSelectionDescriptor | null | undefined,
-): string | null {
-  if (!selection) return null;
-  return [
-    selection.sectionId,
-    selection.fieldPath,
-    selection.nodeId,
-    selection.fieldKey,
-    selection.elementKey,
-    // Without this, two different marker-free elements in one section produce
-    // the same identity and the optimistic selection never clears.
-    selection.sourceLocation,
-    selection.isSection ? "section" : "node",
-  ]
-    .map((value) => value ?? "")
-    .join("\u0000");
-}
-
 function EditableNodeRow({
   node,
   selected,
@@ -621,26 +600,9 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [optimisticSelection, setOptimisticSelection] = useState<{
-    nodeId: string;
-    baselineSelectionIdentity: string | null;
-  } | null>(null);
-  // Clicking a section row updates the URL in about a tenth of a second, but
-  // the row only counted as selected once the canvas reported back — roughly a
-  // second later. The row shows the choice immediately and lets the canvas
-  // confirm, which is what the node rows already do.
-  const [optimisticSectionId, setOptimisticSectionId] = useState<string | null>(
-    null,
-  );
   const [deleteCandidate, setDeleteCandidate] =
     useState<EditorDeleteCandidate | null>(null);
   const [isDeletePending, setIsDeletePending] = useState(false);
-  const optimisticSectionTimerRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
-  const optimisticSelectionTimerRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
   const nodesByParent = useMemo(() => {
     const result = new Map<string, PreviewEditableNode[]>();
     for (const node of editableNodes) {
@@ -668,26 +630,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     () => new Map(editableNodes.map((node) => [node.id, node])),
     [editableNodes],
   );
-  const activeSelectionIdentity = selectionIdentity(activeSelection);
-  const optimisticSelectedEditableNode =
-    optimisticSelection?.baselineSelectionIdentity === activeSelectionIdentity
-      ? (editableNodeById.get(optimisticSelection.nodeId) ?? null)
-      : null;
   const selectedEditableNode = useMemo(
     () =>
-      optimisticSelectedEditableNode ??
       editableNodes.find(
         (node) =>
           node.sectionId === (activeSelection?.sectionId ?? search.section) &&
           selectionMatchesEditableNode(node, activeSelection),
-      ) ??
-      null,
-    [
-      activeSelection,
-      editableNodes,
-      optimisticSelectedEditableNode,
-      search.section,
-    ],
+      ) ?? null,
+    [activeSelection, editableNodes, search.section],
   );
   const updateSections = (next: EditorSection[]) => {
     sectionsRef.current = next;
@@ -780,50 +730,6 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     setSections(sourceSections);
   }, [sourceSections]);
 
-  useEffect(() => {
-    return () => {
-      if (optimisticSelectionTimerRef.current) {
-        clearTimeout(optimisticSelectionTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!optimisticSelection) return;
-    if (
-      optimisticSelection.baselineSelectionIdentity !==
-        activeSelectionIdentity ||
-      !editableNodeById.has(optimisticSelection.nodeId)
-    ) {
-      setOptimisticSelection(null);
-      if (optimisticSelectionTimerRef.current) {
-        clearTimeout(optimisticSelectionTimerRef.current);
-        optimisticSelectionTimerRef.current = null;
-      }
-    }
-  }, [activeSelectionIdentity, editableNodeById, optimisticSelection]);
-
-  useEffect(() => {
-    if (!optimisticSectionId) return;
-    // Cleared as soon as the canvas agrees; the timer is the backstop for a
-    // selection the canvas never confirms, so a stale row cannot outlive it.
-    if (
-      activeSelection?.isSection &&
-      activeSelection.sectionId === optimisticSectionId
-    ) {
-      setOptimisticSectionId(null);
-    }
-  }, [activeSelection, optimisticSectionId]);
-
-  useEffect(
-    () => () => {
-      if (optimisticSectionTimerRef.current) {
-        clearTimeout(optimisticSectionTimerRef.current);
-      }
-    },
-    [],
-  );
-
   useIsomorphicLayoutEffect(() => {
     const sectionId = search.section;
     if (!sectionId) return;
@@ -893,20 +799,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
               selected={selectedEditableNode?.id === node.id}
               expanded={expanded}
               hasChildren={hasChildren}
-              onSelect={() => {
-                if (optimisticSelectionTimerRef.current) {
-                  clearTimeout(optimisticSelectionTimerRef.current);
-                }
-                setOptimisticSelection({
-                  nodeId: node.id,
-                  baselineSelectionIdentity: activeSelectionIdentity,
-                });
-                optimisticSelectionTimerRef.current = setTimeout(() => {
-                  setOptimisticSelection(null);
-                  optimisticSelectionTimerRef.current = null;
-                }, OPTIMISTIC_SELECTION_TIMEOUT_MS);
-                onSelectEditableNode?.(node.target);
-              }}
+              onSelect={() => onSelectEditableNode?.(node.target)}
               onToggleExpanded={() =>
                 setExpandedNodeIds((current) => {
                   const next = new Set(current);
@@ -1072,35 +965,16 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                           section={section}
                           index={index}
                           selected={
-                            optimisticSectionId
-                              ? optimisticSectionId === section.id
-                              : !optimisticSelectedEditableNode &&
-                                (activeSelection?.sectionId ??
-                                  search.section) === section.id &&
-                                (!activeSelection || activeSelection.isSection)
+                            (activeSelection?.sectionId ?? search.section) ===
+                              section.id &&
+                            (!activeSelection || activeSelection.isSection)
                           }
                           disabled={reorderMutation.isPending}
                           expanded={expanded}
                           hasChildren={sectionNodes.length > 0}
-                          onSelect={() => {
-                            setOptimisticSelection(null);
-                            if (optimisticSelectionTimerRef.current) {
-                              clearTimeout(optimisticSelectionTimerRef.current);
-                              optimisticSelectionTimerRef.current = null;
-                            }
-                            setOptimisticSectionId(section.id);
-                            if (optimisticSectionTimerRef.current) {
-                              clearTimeout(optimisticSectionTimerRef.current);
-                            }
-                            optimisticSectionTimerRef.current = setTimeout(
-                              () => {
-                                setOptimisticSectionId(null);
-                                optimisticSectionTimerRef.current = null;
-                              },
-                              OPTIMISTIC_SELECTION_TIMEOUT_MS,
-                            );
-                            onSearchChange({ section: section.id });
-                          }}
+                          onSelect={() =>
+                            onSearchChange({ section: section.id })
+                          }
                           onToggleExpanded={() =>
                             setExpandedSectionIds((current) => {
                               const next = new Set(current);

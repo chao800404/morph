@@ -163,7 +163,14 @@ export type EditorToPreviewMessage =
       /** null keeps the template renderer active when no source route is selected. */
       routePath: string | null;
     }
-  | { type: "morph:storefront-preview-set-section"; sectionId: string | null }
+  | {
+      type: "morph:storefront-preview-set-section";
+      sectionId: string | null;
+      /** Preserve the editor's current selection while the route context changes. */
+      restoreTarget?: PreviewSelectionRestoreTarget;
+      /** Monotonically increasing selection intent used to reject stale replies. */
+      selectionRevision?: number;
+    }
   | {
       type: "morph:storefront-preview-set-selection-field-path";
       sectionId: string;
@@ -660,9 +667,29 @@ export function parseEditorToPreviewMessage(
           }
         : null;
     case "morph:storefront-preview-set-section":
-      return value.sectionId === null || isBoundedString(value.sectionId, 100)
-        ? { type: value.type, sectionId: value.sectionId }
-        : null;
+      if (value.sectionId !== null && !isBoundedString(value.sectionId, 100)) {
+        return null;
+      }
+      {
+        const restoreTarget = parsePreviewSelectionRestoreTarget(
+          value.restoreTarget,
+        );
+        if (
+          restoreTarget === null ||
+          (value.selectionRevision !== undefined &&
+            !isSafeRevision(value.selectionRevision))
+        ) {
+          return null;
+        }
+        return {
+          type: value.type,
+          sectionId: value.sectionId,
+          ...(restoreTarget === undefined ? {} : { restoreTarget }),
+          ...(value.selectionRevision === undefined
+            ? {}
+            : { selectionRevision: value.selectionRevision }),
+        };
+      }
     case "morph:storefront-preview-set-selection-field-path":
       return isBoundedString(value.sectionId, 100) &&
         isBoundedString(value.fieldPath, 500)

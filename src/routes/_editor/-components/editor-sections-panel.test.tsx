@@ -387,7 +387,7 @@ describe("EditorSectionsPanel editable node tree", () => {
   it("expands nested nodes and selects a target without selecting the section row", () => {
     const onSearchChange = vi.fn();
     const onSelectEditableNode = vi.fn();
-    renderPanel(vi.fn(), onSearchChange, {
+    const rendered = renderPanel(vi.fn(), onSearchChange, {
       editableNodes,
       onSelectEditableNode,
     });
@@ -402,17 +402,112 @@ describe("EditorSectionsPanel editable node tree", () => {
       screen
         .getByRole("button", { name: "Heading" })
         .getAttribute("aria-current"),
-    ).toBe("true");
+    ).toBeNull();
     expect(
       screen.getByRole("button", { name: "hero" }).getAttribute("data-active"),
-    ).not.toBe("true");
+    ).toBe("true");
     expect(onSelectEditableNode).toHaveBeenCalledWith(editableNodes[1].target);
     expect(onSearchChange).not.toHaveBeenCalled();
+
+    // Selection is controlled by the shell. Re-rendering with a cleared
+    // selection must clear the row rather than leaving a panel-local timeout.
+    const rerenderClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    rendered.rerender(
+      <QueryClientProvider client={rerenderClient}>
+        <EditorSectionsPanel
+          context={context}
+          search={search}
+          onSearchChange={onSearchChange}
+          onSectionOrderChange={vi.fn()}
+          onSaveStateChange={vi.fn()}
+          onToggleSectionEnabled={vi.fn()}
+          editableNodes={editableNodes}
+          activeSelection={null}
+          onSelectEditableNode={onSelectEditableNode}
+        />
+      </QueryClientProvider>,
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "Heading" })
+        .getAttribute("aria-current"),
+    ).toBeNull();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Collapse section hero" }),
     );
     expect(onSearchChange).not.toHaveBeenCalled();
+  });
+
+  it("follows the shell-controlled selection when the preview clears stale selection", () => {
+    const activeSelection = {
+      sectionId: "section-2",
+      isSection: false,
+      nodeId: "newsletter-title",
+      fieldPath: null,
+      fieldKey: null,
+      elementKey: null,
+    } as EditorSelectionDescriptor;
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    let currentSelection: EditorSelectionDescriptor | null = activeSelection;
+    const onSelectEditableNode = vi.fn(() => {
+      currentSelection = null;
+    });
+
+    const rendered = render(
+      <QueryClientProvider client={client}>
+        <EditorSectionsPanel
+          context={context}
+          search={search}
+          onSearchChange={vi.fn()}
+          onSectionOrderChange={vi.fn()}
+          onSaveStateChange={vi.fn()}
+          onToggleSectionEnabled={vi.fn()}
+          editableNodes={editableNodes}
+          activeSelection={currentSelection}
+          onSelectEditableNode={onSelectEditableNode}
+        />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Content" }));
+    fireEvent.click(screen.getByRole("button", { name: "Heading" }));
+    expect(onSelectEditableNode).toHaveBeenCalledWith(editableNodes[1].target);
+
+    rendered.rerender(
+      <QueryClientProvider client={client}>
+        <EditorSectionsPanel
+          context={context}
+          search={search}
+          onSearchChange={vi.fn()}
+          onSectionOrderChange={vi.fn()}
+          onSaveStateChange={vi.fn()}
+          onToggleSectionEnabled={vi.fn()}
+          editableNodes={editableNodes}
+          activeSelection={currentSelection}
+          onSelectEditableNode={onSelectEditableNode}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(
+      screen
+        .getByRole("button", { name: "Heading" })
+        .getAttribute("aria-current"),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "hero" }).getAttribute("data-active"),
+    ).toBe("true");
   });
 
   it("reveals the selected canvas node and highlights only that tree row", () => {
@@ -501,10 +596,7 @@ describe("EditorSectionsPanel editable node tree", () => {
     ).not.toBe("true");
   });
 
-  it("marks a section row selected without waiting for the canvas", async () => {
-    // The canvas is the source of truth for selection, but confirming a click
-    // takes a round trip through the preview frame. Waiting for it left the row
-    // looking unselected for about a second after it was pressed.
+  it("renders a section selection supplied by the shell without a round trip", () => {
     const activeSelection = {
       sectionId: "section-2",
       isSection: false,
@@ -514,14 +606,38 @@ describe("EditorSectionsPanel editable node tree", () => {
       elementKey: null,
     } as EditorSelectionDescriptor;
 
-    renderPanel(vi.fn(), vi.fn(), { editableNodes, activeSelection });
+    const rendered = renderPanel(vi.fn(), vi.fn(), {
+      editableNodes,
+      activeSelection,
+    });
 
     const heroRow = screen.getByRole("button", { name: "hero" });
     expect(heroRow.getAttribute("data-active")).not.toBe("true");
 
     fireEvent.click(heroRow);
 
-    expect(heroRow.getAttribute("data-active")).toBe("true");
+    rendered.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <EditorSectionsPanel
+          context={context}
+          search={search}
+          onSearchChange={vi.fn()}
+          onSectionOrderChange={vi.fn()}
+          onSaveStateChange={vi.fn()}
+          onToggleSectionEnabled={vi.fn()}
+          editableNodes={editableNodes}
+          activeSelection={
+            {
+              sectionId: "section-1",
+              isSection: true,
+            } as EditorSelectionDescriptor
+          }
+        />
+      </QueryClientProvider>,
+    );
+    expect(
+      screen.getByRole("button", { name: "hero" }).getAttribute("data-active"),
+    ).toBe("true");
   });
 
   it("offers a VS Code-style delete action for DOM nodes and confirms it in a dialog", async () => {

@@ -164,6 +164,7 @@ import {
 import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
 import {
   setFieldPathValue,
+  type EditableDescendantField,
   type EditorSelectionDescriptor,
 } from "@/lib/storefront/editor/selection-taxonomy";
 import { isPreviewSpacingOverlayMode } from "@/lib/storefront/editor/spacing-overlay";
@@ -318,6 +319,107 @@ export function createSelectionRestoreMessages(
     });
   }
   return messages;
+}
+
+function collectEditableNodeDescendantFields(
+  selectedNode: PreviewEditableNode | null,
+  nodes: readonly PreviewEditableNode[],
+): readonly EditableDescendantField[] {
+  if (!selectedNode) return [];
+
+  const childrenByParent = new Map<string, PreviewEditableNode[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    const children = childrenByParent.get(node.parentId) ?? [];
+    children.push(node);
+    childrenByParent.set(node.parentId, children);
+  }
+
+  const result: EditableDescendantField[] = [];
+  const identities = new Set<string>();
+  const visit = (parentId: string) => {
+    for (const node of childrenByParent.get(parentId) ?? []) {
+      const children = childrenByParent.get(node.id) ?? [];
+      if (children.length > 0) {
+        visit(node.id);
+        continue;
+      }
+      const fieldKey = node.target.fieldKey;
+      if (!fieldKey) continue;
+      const fieldPath = node.target.fieldPath ?? fieldKey;
+      const identity = `${node.target.sectionId}\u0000${fieldKey}\u0000${fieldPath}`;
+      if (identities.has(identity)) continue;
+      identities.add(identity);
+      result.push({
+        fieldKey,
+        fieldPath,
+        sectionId: node.target.sectionId,
+      });
+    }
+  };
+
+  visit(selectedNode.id);
+  return result;
+}
+
+function previewSelectionTargetMatches(
+  left: PreviewSelectionRestoreTarget,
+  right: PreviewSelectionRestoreTarget,
+): boolean {
+  if (
+    left.sectionId !== right.sectionId ||
+    Boolean(left.isSection) !== Boolean(right.isSection)
+  ) {
+    return false;
+  }
+  if (left.isSection) return true;
+
+  // Preview responses can enrich a target with a source location or a DOM
+  // marker that was not present in the tree payload. Compare the strongest
+  // shared identity instead of requiring every optional field to be equal.
+  const identityKeys = [
+    "fieldPath",
+    "nodeId",
+    "elementKey",
+    "fieldKey",
+    "sourceLocation",
+  ] as const;
+  return identityKeys.some(
+    (key) =>
+      left[key] !== undefined &&
+      right[key] !== undefined &&
+      left[key] === right[key],
+  );
+}
+
+export function createEditorSelectionDescriptor(
+  target: PreviewSelectionRestoreTarget,
+  node: PreviewEditableNode | null,
+  componentType: string,
+  descendantFields: readonly EditableDescendantField[] = [],
+): EditorSelectionDescriptor {
+  return {
+    sectionId: target.sectionId,
+    kind: node?.kind ?? "custom",
+    componentType,
+    tagName: node?.tagName ?? null,
+    role: null,
+    inputType: null,
+    nodeId: target.nodeId ?? null,
+    sourceFilePath: null,
+    sourceLocation: target.sourceLocation ?? null,
+    elementKey: target.elementKey ?? null,
+    fieldKey: target.fieldKey ?? null,
+    fieldPath: target.fieldPath ?? target.fieldKey ?? null,
+    contentValue: null,
+    descendantFields,
+    className: "",
+    isSection: target.isSection === true,
+    computed: null,
+    parentComputed: null,
+    sectionComputed: null,
+    inspectorOverride: null,
+  };
 }
 
 type EditorShellProps = {
@@ -1196,6 +1298,11 @@ export function VisualEditorShell({
    */
   const [activeSelection, setActiveSelection] =
     useState<EditorSelectionDescriptor | null>(null);
+  /**
+   * The shell owns selection identity for both side panels. The iframe only
+   * confirms the same target with computed-style data; it is never allowed to
+   * replace a newer sidebar intent with an older section-level response.
+   */
   const editableSelection = isImmutableBuildPreview ? null : activeSelection;
   const previewSelectionRevisionRef = useRef(0);
   const nextPreviewSelectionRevision = useCallback(() => {
@@ -1218,7 +1325,10 @@ export function VisualEditorShell({
   } | null>(null);
   const previousTemplateIdRef = useRef(search.templateId);
   const previousRoutePathRef = useRef(search.routePath);
-  const previewSelectionSectionSyncRef = useRef<string | null>(null);
+  const pendingPreviewSelectionRef = useRef<{
+    target: PreviewSelectionRestoreTarget;
+    revision: number;
+  } | null>(null);
   const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
     useState(0);
   const latestStyleRevisionRef = useRef(0);
@@ -1690,6 +1800,7 @@ export function VisualEditorShell({
     previousEditorModeRef.current = editorMode;
     if (previousMode === editorMode || editorMode !== "code") return;
 
+    pendingPreviewSelectionRef.current = null;
     setActiveSelection(null);
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-selection-mode",
@@ -3350,6 +3461,7 @@ export function VisualEditorShell({
       previousTemplateIdRef.current !== search.templateId
     ) {
       lastPreviewSelectionRef.current = null;
+      pendingPreviewSelectionRef.current = null;
       setActiveSelection(null);
       resetCanvasScrollPosition();
     }
@@ -3359,6 +3471,7 @@ export function VisualEditorShell({
   useEffect(() => {
     if (previousRoutePathRef.current !== search.routePath) {
       lastPreviewSelectionRef.current = null;
+      pendingPreviewSelectionRef.current = null;
       setActiveSelection(null);
       resetCanvasScrollPosition();
     }
@@ -3560,6 +3673,32 @@ export function VisualEditorShell({
       if (responseSelectionRevision < previewSelectionRevisionRef.current) {
         return;
       }
+      const incomingTarget: PreviewSelectionRestoreTarget = {
+        sectionId: message.sectionId,
+        sourceLocation: message.sourceLocation ?? undefined,
+        nodeId: message.nodeId ?? undefined,
+        fieldPath: message.fieldPath ?? undefined,
+        elementKey: message.elementKey ?? undefined,
+        fieldKey: message.fieldKey ?? message.field ?? undefined,
+        isSection: message.isSection,
+      };
+      const pendingSelection = pendingPreviewSelectionRef.current;
+      // A route/context sync can make the iframe briefly report its section
+      // element after the sidebar has already requested a descendant. Keep
+      // that older response out of both inspectors. A newer canvas click is
+      // allowed through because its iframe revision is greater.
+      if (
+        pendingSelection &&
+        responseSelectionRevision <= pendingSelection.revision &&
+        !previewSelectionTargetMatches(pendingSelection.target, incomingTarget)
+      ) {
+        return;
+      }
+      previewSelectionRevisionRef.current = Math.max(
+        previewSelectionRevisionRef.current,
+        responseSelectionRevision,
+      );
+      pendingPreviewSelectionRef.current = null;
       const sectionId = message.sectionId;
       const nodeId = message.nodeId ?? null;
       const sourceFilePath = message.sourceFilePath;
@@ -3578,15 +3717,7 @@ export function VisualEditorShell({
       const parentComputedStyle = message.parentComputedStyle;
       const sectionComputedStyle = message.sectionComputedStyle;
       const inspectorOverride = message.inspectorOverride;
-      lastPreviewSelectionRef.current = {
-        sectionId,
-        sourceLocation: message.sourceLocation ?? undefined,
-        nodeId: nodeId ?? undefined,
-        fieldPath: message.fieldPath ?? undefined,
-        elementKey: elementKey ?? undefined,
-        fieldKey: fieldKey ?? undefined,
-        isSection: selectionIsSection,
-      };
+      lastPreviewSelectionRef.current = incomingTarget;
       const componentType =
         activeRouteSections.find((section) => section.slotId === sectionId)
           ?.sectionType ??
@@ -3620,7 +3751,6 @@ export function VisualEditorShell({
       setActiveComputedStyleRevision(responseStyleRevision);
 
       if (sectionId !== search.section) {
-        previewSelectionSectionSyncRef.current = sectionId;
         onSearchChange({ section: sectionId });
       }
     };
@@ -3630,7 +3760,6 @@ export function VisualEditorShell({
   }, [
     activeTemplate,
     activeRouteSections,
-    activeSelection,
     handleSwapThemeFileSiblings,
     handleUpdateThemeFileStyle,
     isSelectionMode,
@@ -3673,40 +3802,118 @@ export function VisualEditorShell({
   ]);
 
   const syncPreviewSection = useCallback(() => {
+    const restoreTarget =
+      isSelectionMode &&
+      lastPreviewSelectionRef.current?.sectionId === (search.section ?? null)
+        ? lastPreviewSelectionRef.current
+        : undefined;
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-section",
       sectionId: search.section ?? null,
+      ...(restoreTarget
+        ? {
+            restoreTarget,
+            selectionRevision: previewSelectionRevisionRef.current,
+          }
+        : {}),
     });
-  }, [search.section]);
+  }, [isSelectionMode, search.section]);
 
   const handleSectionsSearchChange = useCallback(
     (next: Partial<StorefrontThemeEditorSearch>) => {
       if (next.section !== undefined) {
-        previewSelectionSectionSyncRef.current = null;
-        setActiveSelection(null);
-        lastPreviewSelectionRef.current = null;
-        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-          type: "morph:storefront-preview-set-section",
-          sectionId: next.section ?? null,
-        });
+        const sectionId = next.section ?? null;
+        if (!sectionId) {
+          pendingPreviewSelectionRef.current = null;
+          lastPreviewSelectionRef.current = null;
+          setActiveSelection(null);
+          setActiveComputedStyleRevision(0);
+        } else {
+          const target = {
+            sectionId,
+            isSection: true,
+          } satisfies PreviewSelectionRestoreTarget;
+          const componentType =
+            activeRouteSections.find((section) => section.slotId === sectionId)
+              ?.sectionType ??
+            activeTemplate?.document.sections.find(
+              (section) => section.id === sectionId,
+            )?.type ??
+            "custom";
+          lastPreviewSelectionRef.current = target;
+          setActiveSelection(
+            createEditorSelectionDescriptor(target, null, componentType),
+          );
+          setActiveComputedStyleRevision(0);
+          if (isSelectionMode) {
+            const selectionRevision = nextPreviewSelectionRevision();
+            pendingPreviewSelectionRef.current = {
+              target,
+              revision: selectionRevision,
+            };
+            for (const message of createSelectionRestoreMessages(
+              true,
+              target,
+              selectionRevision,
+            )) {
+              postEditorToPreviewMessage(
+                previewIframeRef.current?.contentWindow,
+                {
+                  ...message,
+                },
+              );
+            }
+          } else {
+            pendingPreviewSelectionRef.current = null;
+          }
+        }
       }
       onSearchChange(next);
     },
-    [onSearchChange],
+    [
+      activeRouteSections,
+      activeTemplate,
+      isSelectionMode,
+      nextPreviewSelectionRevision,
+      onSearchChange,
+    ],
   );
 
   const handleEditableNodeSelect = useCallback(
     (target: PreviewSelectionRestoreTarget) => {
       reportAuthenticatedUserActivity();
-      setActiveSelection(null);
+      const previewNodes =
+        previewStructure?.key === previewKey ? previewStructure.nodes : [];
+      const selectedNode =
+        previewNodes.find((node) =>
+          previewSelectionTargetMatches(node.target, target),
+        ) ?? null;
+      const componentType =
+        activeRouteSections.find(
+          (section) => section.slotId === target.sectionId,
+        )?.sectionType ??
+        activeTemplate?.document.sections.find(
+          (section) => section.id === target.sectionId,
+        )?.type ??
+        "custom";
+      const nextSelection = createEditorSelectionDescriptor(
+        target,
+        selectedNode,
+        componentType,
+        collectEditableNodeDescendantFields(selectedNode, previewNodes),
+      );
+      const selectionRevision = nextPreviewSelectionRevision();
+      pendingPreviewSelectionRef.current = {
+        target,
+        revision: selectionRevision,
+      };
+      setActiveSelection(nextSelection);
       setActiveComputedStyleRevision(0);
       lastPreviewSelectionRef.current = target;
       if (target.sectionId !== search.section) {
-        previewSelectionSectionSyncRef.current = target.sectionId;
         onSearchChange({ section: target.sectionId });
       }
       setIsSelectionMode(true);
-      const selectionRevision = nextPreviewSelectionRevision();
       for (const message of createSelectionRestoreMessages(
         true,
         target,
@@ -3717,7 +3924,15 @@ export function VisualEditorShell({
         });
       }
     },
-    [nextPreviewSelectionRevision, onSearchChange, search.section],
+    [
+      activeRouteSections,
+      activeTemplate,
+      nextPreviewSelectionRevision,
+      onSearchChange,
+      previewKey,
+      previewStructure,
+      search.section,
+    ],
   );
 
   const handleDeleteEditableNode = useCallback(
@@ -3809,6 +4024,7 @@ export function VisualEditorShell({
       }
 
       lastPreviewSelectionRef.current = null;
+      pendingPreviewSelectionRef.current = null;
       setActiveSelection(null);
       setActiveComputedStyleRevision(0);
       return { success: true };
@@ -3884,6 +4100,7 @@ export function VisualEditorShell({
         onSearchChange({ section: nextSectionId ?? "" });
       }
       lastPreviewSelectionRef.current = null;
+      pendingPreviewSelectionRef.current = null;
       setActiveSelection(null);
       setActiveComputedStyleRevision(0);
       return { success: true };
@@ -4396,10 +4613,6 @@ export function VisualEditorShell({
 
   useEffect(() => {
     if (!previewKey) return;
-    if (previewSelectionSectionSyncRef.current === search.section) {
-      previewSelectionSectionSyncRef.current = null;
-      return;
-    }
     syncPreviewSection();
   }, [previewKey, search.section, syncPreviewSection]);
 

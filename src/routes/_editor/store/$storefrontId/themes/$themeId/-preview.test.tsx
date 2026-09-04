@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   collectEditableDescendantFields,
   collectPreviewEditableNodes,
+  closestPreviewFieldElement,
   closestPreviewSectionRoot,
   previewSectionIdOf,
   previewSectionSelector,
@@ -171,6 +172,24 @@ describe("preview parent field discovery", () => {
   });
 });
 
+describe("preview field selection", () => {
+  it("prefers the exact field over an ancestor source marker", () => {
+    const root = document.createElement("section");
+    root.innerHTML = `
+      <div data-morph-loc="src/components/Hero.tsx:20:5">
+        <a data-storefront-field="actionLabel">Explore</a>
+      </div>
+    `;
+
+    const field = root.querySelector<HTMLElement>(
+      '[data-storefront-field="actionLabel"]',
+    )!;
+
+    expect(closestPreviewFieldElement(field)).toBe(field);
+    expect(closestPreviewFieldElement(field.parentElement!)).toBeNull();
+  });
+});
+
 describe("preview editable structure", () => {
   it("collects stable hierarchy, excludes ambiguous fields, and keeps repeater item ids stable", () => {
     const root = document.createElement("main");
@@ -220,7 +239,9 @@ describe("source-authored section roots", () => {
     `;
 
     const nodes = collectPreviewEditableNodes(root);
-    const heading = nodes.find((node) => node.target.nodeId === "promo-heading");
+    const heading = nodes.find(
+      (node) => node.target.nodeId === "promo-heading",
+    );
 
     expect(nodes.length).toBeGreaterThan(0);
     expect(heading).toBeTruthy();
@@ -309,9 +330,9 @@ describe("component-root sections", () => {
     `;
 
     const nodes = collectPreviewEditableNodes(root);
-    expect(nodes.find((node) => node.target.nodeId === "hero-heading")?.sectionId).toBe(
-      "hero",
-    );
+    expect(
+      nodes.find((node) => node.target.nodeId === "hero-heading")?.sectionId,
+    ).toBe("hero");
   });
 
   it("skips a duplicated source position rather than guessing which one", () => {
