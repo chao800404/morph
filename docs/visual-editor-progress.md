@@ -10,7 +10,7 @@
 | 目前狀態     | 核心 Editor／Build／Release 已完成主要鏈路；Production Runtime、Domain 與遠端 Publish 尚未閉環                                                                                  |
 | 整體完成度   | **90%**（重新按目前實作與交付閉環證據加權；未將未驗證的 Cloudflare production 路徑視為已完成）                                                                                   |
 | 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration；待決：是否連同 theme runtime 版本一起升級 TanStack（見第十輪） |
-| 最近完整驗證 | 2026-09-04 於 `764756d` 實跑：`pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 通過。`pnpm test` 共 1713 個 tests，最佳情況為 1712 passed／1 skipped —— **但完整平行執行下會間歇出現 1～3 個 timeout 失敗，每次失敗的案例都不同，且全部單獨執行皆通過**（見驗證基準的已知問題）；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
+| 最近完整驗證 | 2026-09-04 於 `cba9e2a` 實跑：`pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（245 files / 1722 tests passed、各 1 skipped）、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 通過。**先前記錄的測試間歇失敗已於第十三輪解決**，連續多次完整執行皆全綠；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
 
 `█████████ 90%`
 
@@ -115,6 +115,55 @@
   的遠端閉環、Publish E2E，以及 Code Workspace 約 3.57 MB minified client chunk；未把本機
   storefront id 猜寫進 `wrangler.jsonc`。
 
+### 2026-09-04 第十三輪：讓測試重新具有證據力，並補上把手的鍵盤操作
+
+#### 測試套件不穩定——量過才改
+
+上一輪記下「完整執行會間歇紅 1～3 個、每次案例不同、單獨執行都過」。這一輪先量，
+沒有直接猜一個數字。滿載平行執行下最慢的**通過**案例是：
+
+```text
+8132ms  7942ms  5234ms  4866ms  4782ms  3351ms ...
+```
+
+4.8／4.9／5.2 秒這幾個正好貼著 Vitest 的 **5 秒預設值**——它們不是斷言失敗，是輸在
+機器競爭。`vitest.config.ts` 從未設定 `testTimeout`，所以全部 React 元件測試都吃
+這個預設值。
+
+`testTimeout` 與 `hookTimeout` 設為 20 秒；build runner 的 `describe` 從 20 秒提到
+60 秒（那些跑真實 Vite build，滿載下到 8 秒，而同檔案另一個 describe 早就用 60 秒，
+是專案自己的先例）。
+
+**這是餘裕，不是對卡死的容忍**：通過的測試不會因此變慢，只有真的卡住的多等一會兒
+才失敗。會隨機變紅的套件不再是任何事情的證據，那個代價比一次慢一點的失敗高得多。
+
+驗證方式是**連續三次完整執行全綠**，而改動前是四次有三次紅。
+
+#### 拖曳把手：可聚焦、但看不見也做不了事
+
+兩個 separator 都帶著 `tabIndex={0}`，卻同時有 `outline-none`、沒有替代的 focus
+樣式、也沒有任何 `onKeyDown`。它們佔用一個 Tab 停留點，到了沒有任何提示，到了也
+做不了事——**比不可聚焦更糟**。
+
+- 方向鍵調整寬度，方向與拖曳一致：把邊緣往外推的鍵讓面板變寬，因此左面板用
+  ArrowRight 變寬、右面板用 ArrowLeft 變寬。
+- Shift 大步長；Home／End 到上下限，符合 separator role 的鍵盤約定。
+- 補上 focus ring，tooltip 一併說明操作方式。
+- **不吞掉不處理的鍵**：未處理的鍵，以及已經頂到邊界時的方向鍵，都原樣交還瀏覽器。
+  一個會吃掉 Tab 的 separator，等於在原本就壞掉的那個停留點把焦點鎖死。
+- 按鍵**立即提交**，不像指標路徑那樣以 rAF 合併：指標會產生連續事件流，按鍵是單一
+  離散變更，沒有需要擋在 React 之外的東西。
+
+步進邏輯抽成純函式獨立測試，涵蓋左右兩側方向相反、Shift 大步長、邊界夾制，以及
+「頂到邊界時回報無變化」讓呼叫端不要 `preventDefault`。
+
+#### 拖曳把手的 hover 灰帶
+
+把手容器上的 `hover:bg-primary/10` 會在 hover 時畫出一條滿高的 `w-2` 色帶，在深色
+介面上讀起來像一條灰線而不是回饋，已移除（連同 `active:` 版本與失去作用的
+`transition-colors`）。中間的抓握圓條是常駐的、並非 hover 才出現，予以保留，它在
+hover 與拖曳時仍會由 `bg-border` 轉為 `bg-primary`。
+
 ### 2026-09-04 第十二輪：內容存不進去的根因，與兩個 resolver 的漂移
 
 回報是「修改內容出現 `The content value does not match the Theme field
@@ -184,7 +233,7 @@ server: { type: "array", of: "./PrincipleCard" }
 - 右側面板 tab 因為容器與每個 tab 都有 `flex-1`，三個短單字被拉滿整個 header；改為
   依標籤內容決定寬度，並讓右側動作區 `shrink-0`。
 
-#### 本輪發現的測試套件問題（尚未處理）
+#### 本輪發現的測試套件問題（已於第十三輪處理）
 
 完整平行執行時會間歇失敗 1～3 個案例，**每次失敗的都不一樣**（曾出現
 `local-vite-theme-build-runner`、`editor-sections-panel`、`editor-style-inspector`、
@@ -1006,7 +1055,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 | ---------------- | ------- | ----------------------------------------------- |
 | `pnpm typecheck` | ✅ 通過 | 0 個 TypeScript 錯誤                                     |
 | `pnpm typecheck:data` | ✅ 通過 | 資料層在 `noUncheckedIndexedAccess` 下無違規；閘門已以注入違規驗證確實會擋 |
-| `pnpm test`      | 🟡 見備註 | 共 1713 個 tests；最佳情況 1712 通過、1 skipped。完整平行執行下會間歇有 1～3 個 timeout 失敗，案例每次不同且單獨執行皆通過 |
+| `pnpm test`      | ✅ 通過 | 245 個測試檔通過、1 個 skipped；1722 個 tests 通過、1 個 skipped。連續多次完整執行皆全綠（timeout 餘裕已於第十三輪修正） |
 | `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle（331 檔）與 deploy artifact secret guard 檢查通過 |
 | `git diff --check` | ✅ 通過 | 工作樹差異沒有 whitespace error                         |
 
@@ -1014,10 +1063,10 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 - 部分 bundle chunk size 警告仍存在，後續效能階段處理。
 - 本次未重跑 Playwright；未執行遠端 D1 migration、Cloudflare production deploy 或 Publish。
-- **測試套件在平行負載下不穩定。** 完整執行會間歇失敗 1～3 個案例，每次不同，
-  單獨執行全部通過。`vitest.config.ts` 未設定 `testTimeout`，React 元件測試因此
-  使用 5 秒預設值，在負載下過緊；build runner 的 `describe` 另設 20 秒仍會超時。
-  尚未處理——在修好之前，「全綠」取決於機器負載，不能作為門檻。
+- ~~測試套件在平行負載下不穩定~~ **已於第十三輪解決**：實測滿載下最慢的通過案例
+  落在 4.8～5.2 秒，正好卡在 Vitest 的 5 秒預設值上。`testTimeout` 與 `hookTimeout`
+  設為 20 秒，build runner 的 `describe` 提到 60 秒。連續三次完整執行全綠（先前
+  四次有三次紅）。
 
 ## 下一階段建議
 
@@ -1063,6 +1112,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-04 | 讓測試重新具有證據力，並補上把手的鍵盤操作（第十三輪）：實測滿載下最慢的通過案例落在 4.8～5.2 秒、正好卡在 Vitest 5 秒預設值，`testTimeout`／`hookTimeout` 設為 20 秒、build runner describe 提到 60 秒；拖曳把手補上方向鍵調整、Shift 大步長、Home／End 到上下限與 focus ring，並且不吞掉未處理的鍵；移除把手 hover 時的滿高灰色色帶 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（245 files / 1722 tests passed、各 1 skipped）、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 通過；**測試穩定性以連續三次完整執行全綠驗證**（改動前四次有三次紅）；步進邏輯為純函式並獨立測試；**未執行**瀏覽器 E2E、遠端 Publish／deploy／migration |
 | 2026-09-04 | 內容存不進去的根因與兩個 resolver 的漂移（第十二輪）：`of:` row 元件參照只在掃描整個工作區的 resolver 展開，按需讀檔的伺服器端沒有，導致清單「畫得出來但存不進去」；第二遍掃描抽出共用並補上對稱性測試。`updateSectionProps` 不再以既有 props 驗證當前宣告（舊內容曾使 section 永久無法編輯）。內容錯誤現在會回報欄位與原因碼（陣列 6 個拒絕點各自具名）。Content 分頁欄位改為「有宣告照宣告、無宣告照 DOM」順序；右側面板 tab 不再被 `flex-1` 撐滿 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 通過；`pnpm test` 最佳 1712 passed／1 skipped，但**平行執行下間歇有 1～3 個 timeout 失敗（案例每次不同、單獨執行皆通過）**，已列為待處理；「舊資料不擋編輯」與 resolver 對稱性皆有測試把關；**未執行**瀏覽器 E2E、遠端 Publish／deploy／migration。內容可正常儲存已由使用者實機確認 |
 | 2026-09-04 | 資料層規則對齊、登入回跳與面板拖曳效能（第十一輪）：168 個會拋錯的 serverFn validator 全面改用 `parseInput`（推翻 2026-09-03「其餘 137 個維持原狀」的取捨）；theme revision 加分頁並新增 `findRevisionByNumber`，讓 rollback 不再為找一筆而載入全部 snapshot；新增 `mapFirstOrNull`；429 行內容政策搬離 theme DAL；新增 `pnpm typecheck:data` 以範圍化方式強制 §14.1；登入後回到中斷路徑並修補 `callbackURL` 的 open redirect；面板拖曳改以 CSS 變數 + rAF，拖曳期間 re-render 由每幀一次降為 0；Content 獨立成分頁 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（244 files / 1682 tests passed、各 1 skipped）、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard、`git diff --check` 通過；open redirect 防護與「拖曳不 re-render」皆以 mutation test 驗證；**未執行**瀏覽器 E2E、遠端 Publish／deploy／migration，登入流程與拖曳手感需人工確認 |
 | 2026-09-02 | Code → Design 切換加入未儲存 Code 變更提示：可選擇儲存並切換、保留 draft 後切換或取消；Save & switch 透過 Code Workspace imperative handle 實際保存全部 dirty files，失敗／conflict 時 fail closed；新增 Monaco draft Save All 測試 | `pnpm typecheck`、`pnpm test`（230 files / 1544 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration |
