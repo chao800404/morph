@@ -6358,6 +6358,13 @@ export function VisualEditorShell({
 
         <EditorAssistantPanel
           style={RIGHT_PANEL_STYLE}
+          // Same nodes the sections tree uses, so the Content tab can fall back
+          // to document order when a component declares no `contentFields`.
+          editableNodes={
+            previewStructure?.key === previewKey
+              ? previewStructure.nodes
+              : undefined
+          }
           context={routeBackedContext}
           search={search}
           isCommentMode={isCommentMode}

@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import type { ContentFieldOrderNode } from "@/lib/storefront/editor/content-field-order";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import type {
@@ -37,6 +38,8 @@ type EditorAssistantPanelProps = {
   isCommentMode?: boolean;
   themeFiles?: StorefrontThemeFileDTO[];
   selection?: EditorSelectionDescriptor | null;
+  /** Preview nodes in document order; orders the Content tab's fields. */
+  editableNodes?: readonly ContentFieldOrderNode[];
   activeComputedStyleRevision?: number;
   activeViewport?: StorefrontThemeEditorSearch["viewport"];
   onUpdateThemeFileStyle?: (
@@ -154,6 +157,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   previewWidth,
   themeFiles,
   selection,
+  editableNodes,
   activeComputedStyleRevision,
   activeViewport,
   onUpdateThemeFileStyle,
@@ -292,7 +296,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
             </>
           )}
         </div>
-        <div className="flex items-center gap-0.5">
+        {/* Never squeezed by the tab row: the actions keep their size and the
+            tabs, which are sized to their labels, take whatever is left. */}
+        <div className="flex shrink-0 items-center gap-0.5">
           <Button
             variant="ghost"
             size="icon"
@@ -380,6 +386,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               section={selectedSection}
               themeFiles={themeFiles}
               selection={selection}
+              editableNodes={editableNodes}
               activeComputedStyleRevision={activeComputedStyleRevision}
               activeViewport={activeViewport ?? search.viewport}
               onUpdateThemeFileStyle={onUpdateThemeFileStyle}
@@ -459,7 +466,10 @@ function PanelTab({
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "h-7 min-w-0 flex-1 px-2.5 text-xs font-medium transition-colors",
+        // Sized to its label, not stretched: `flex-1` made three short words
+        // span the whole panel header, so each tab was several times wider
+        // than its text and the row stopped reading as a set of tabs.
+        "h-7 min-w-0 px-2 text-xs font-medium transition-colors",
         active
           ? "cursor-default"
           : "text-muted-foreground hover:text-foreground",

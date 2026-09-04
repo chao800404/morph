@@ -3,6 +3,12 @@ import {
   resolveElementMeta,
   resolveElementTargetKey,
 } from "@/lib/storefront/ast/element-target";
+import {
+  buildContentFieldOrder,
+  orderContentBlocks,
+  resolveContentFieldOrder,
+  type ContentFieldOrderNode,
+} from "@/lib/storefront/editor/content-field-order";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
@@ -68,6 +74,7 @@ import {
   Type,
 } from "lucide-react";
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -154,6 +161,12 @@ type EditorStyleInspectorProps = {
   section: EditorSection;
   themeFiles?: StorefrontThemeFileDTO[];
   selection?: EditorSelectionDescriptor | null;
+  /**
+   * The preview's editable nodes, in document order. Used only to order the
+   * Content fields when the component declares none of its own — see
+   * `resolveContentFieldOrder`.
+   */
+  editableNodes?: readonly ContentFieldOrderNode[];
   activeComputedStyleRevision?: number;
   activeViewport?: "desktop" | "tablet" | "mobile";
   onUpdateThemeFileStyle?: (
@@ -521,6 +534,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   themeFiles,
   selection,
+  editableNodes,
   activeComputedStyleRevision = 0,
   activeViewport = "mobile",
   onUpdateThemeFileStyle,
@@ -730,6 +744,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const declaredContentFields = Object.entries(
     themeContentCapability?.fields ?? {},
   );
+  /**
+   * Where each content control belongs in the panel.
+   *
+   * A component that declares `contentFields` has stated the order it wants, so
+   * that wins; otherwise the preview's document order decides. With neither,
+   * the map is empty and the panel keeps the order the JSX below is written in.
+   */
+  const contentFieldOrder = useMemo(
+    () =>
+      resolveContentFieldOrder({
+        declaredKeys: Object.keys(themeContentCapability?.fields ?? {}),
+        documentOrder: buildContentFieldOrder(editableNodes, section.id),
+      }),
+    [themeContentCapability, editableNodes, section.id],
+  );
+  /**
+   * A control can stand for several field keys (an action is a label plus an
+   * href). It sorts by whichever of them the order actually knows about.
+   */
+  const contentOrderKey = (...keys: string[]) =>
+    keys.find((key) => contentFieldOrder.has(key)) ?? keys[0] ?? "";
   const isDeclaredContentField = (fieldKey: string) =>
     Boolean(themeContentCapability?.fields[fieldKey]);
   const declaredContentFieldLabel = (fieldKey: string, fallback: string) =>
@@ -1734,13 +1769,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             onToggle={() => toggleSection("content")}
           >
             <div className="w-full min-w-0 space-y-3">
-              {declaredContentFields
-                .filter(
-                  ([fieldKey]) =>
-                    !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
-                    (!isSelectedNode || selectedField === fieldKey),
-                )
-                .map(([fieldKey, definition]) => {
+              {orderContentBlocks(
+                [
+                  ...declaredContentFields
+                  .filter(
+                    ([fieldKey]) =>
+                      !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
+                      (!isSelectedNode || selectedField === fieldKey),
+                  )
+                    .map(([fieldKey, definition]) => ({
+                      key: fieldKey,
+                      node: ((): React.ReactNode => {
                   const value = contentFieldDisplayValue(fieldKey);
                   const label =
                     definition.label ?? fieldKey.replace(/[-_]/g, " ");
@@ -2118,118 +2157,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       ) : null}
                     </InspectorField>
                   );
-                })}
-              {isSelectedNode &&
-                descendantFields.length === 0 &&
-                activeFieldPath &&
-                selectedField &&
-                !isDeclaredContentField(selectedField) &&
-                !SPECIALIZED_CONTENT_FIELD_KEYS.has(selectedField) &&
-                (typeof fieldValue(selectedField) === "object" &&
-                fieldValue(selectedField) !== null ? (
-                  Object.entries(
-                    fieldValue(selectedField) as Record<string, unknown>,
-                  )
-                    .filter(
-                      ([, value]) =>
-                        value === null ||
-                        ["string", "number", "boolean"].includes(typeof value),
-                    )
-                    .map(([key, value]) => (
-                      <InspectorField
-                        key={key}
-                        label={key.replace(/[-_]/g, " ")}
-                      >
-                        <Input
-                          defaultValue={String(value ?? "")}
-                          onInput={(e) =>
-                            onPreviewSelectionField?.(
-                              key,
-                              activeFieldPath + "." + key,
-                              e.currentTarget.value,
-                            )
-                          }
-                          onBlur={(e) =>
-                            handleNestedFieldChange(
-                              activeFieldPath + "." + key,
-                              e.currentTarget.value,
-                            )
-                          }
-                          disabled={disabled}
-                          className="h-8 text-xs"
-                        />
-                      </InspectorField>
-                    ))
-                ) : (
-                  <InspectorField label={selectedField.replace(/[-_]/g, " ")}>
-                    <Textarea
-                      rows={3}
-                      defaultValue={String(fieldValue(selectedField) ?? "")}
-                      onInput={(e) =>
-                        onPreviewSelectionField?.(
-                          selectedField,
-                          activeFieldPath,
-                          e.currentTarget.value,
-                        )
-                      }
-                      onBlur={(e) =>
-                        handleFieldChange(selectedField, e.currentTarget.value)
-                      }
-                      disabled={disabled}
-                      className="min-h-16 resize-none text-xs"
-                    />
-                  </InspectorField>
-                ))}
-              {isSelectedNode &&
-                descendantFields
-                  .filter(
-                    (binding) =>
-                      !SPECIALIZED_CONTENT_FIELD_KEYS.has(binding.fieldKey),
-                  )
-                  .map((binding) => {
-                    const value = binding.fieldPath
-                      ? getFieldPathValue(props, binding.fieldPath)
-                      : props[binding.fieldKey];
-                    if (
-                      value !== null &&
-                      !["string", "number", "boolean"].includes(typeof value)
-                    ) {
-                      return null;
-                    }
-                    return (
-                      <InspectorField
-                        key={`${binding.fieldKey}:${binding.fieldPath ?? ""}`}
-                        label={binding.fieldKey.replace(/[-_]/g, " ")}
-                      >
-                        <Textarea
-                          key={contentFieldInputKey(binding.fieldKey)}
-                          rows={2}
-                          defaultValue={String(value ?? "")}
-                          onInput={(event) =>
-                            onPreviewSelectionField?.(
-                              binding.fieldKey,
-                              binding.fieldPath,
-                              event.currentTarget.value,
-                            )
-                          }
-                          onBlur={(event) =>
-                            binding.fieldPath
-                              ? handleNestedFieldChange(
-                                  binding.fieldPath,
-                                  event.currentTarget.value,
-                                )
-                              : handleFieldChange(
-                                  binding.fieldKey,
-                                  event.currentTarget.value,
-                                )
-                          }
-                          disabled={disabled}
-                          className="min-h-16 resize-none text-xs"
-                        />
-                      </InspectorField>
-                    );
-                  })}
-              {showField("eyebrow") &&
+                      })(),
+                    })),
+              { key: contentOrderKey("eyebrow"), node: showField("eyebrow") &&
                 ("eyebrow" in props ||
                   descendantFieldKeys.has("eyebrow") ||
                   isDeclaredContentField("eyebrow")) && (
@@ -2265,9 +2195,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       className="h-8 text-xs"
                     />
                   </InspectorField>
-                )}
-
-              {showField("label") &&
+                ) },
+              { key: contentOrderKey("label"), node: showField("label") &&
                 ("label" in props ||
                   descendantFieldKeys.has("label") ||
                   isDeclaredContentField("label") ||
@@ -2301,9 +2230,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       className="h-8 text-xs"
                     />
                   </InspectorField>
-                )}
-
-              {showField("heading") &&
+                ) },
+              { key: contentOrderKey("heading"), node: showField("heading") &&
                 ("heading" in props ||
                   descendantFieldKeys.has("heading") ||
                   isDeclaredContentField("heading")) && (
@@ -2337,9 +2265,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       className="min-h-16 text-xs resize-none"
                     />
                   </InspectorField>
-                )}
-
-              {showField("description", "body") &&
+                ) },
+              { key: contentOrderKey("description", "body"), node: showField("description", "body") &&
                 ("description" in props ||
                   descendantFieldKeys.has("description") ||
                   isDeclaredContentField("description")) && (
@@ -2376,9 +2303,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       className="min-h-20 text-xs resize-none"
                     />
                   </InspectorField>
-                )}
-
-              {showField("body", "description") &&
+                ) },
+              { key: contentOrderKey("body", "description"), node: showField("body", "description") &&
                 ("body" in props ||
                   hasActiveRepeatedBody ||
                   descendantFieldKeys.has("body") ||
@@ -2415,9 +2341,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       className="min-h-20 text-xs resize-none"
                     />
                   </InspectorField>
-                )}
-
-              {showField("actionLabel", "actionHref", "action") &&
+                ) },
+              { key: contentOrderKey("actionLabel", "actionHref", "action"), node: showField("actionLabel", "actionHref", "action") &&
                 ("actionLabel" in props ||
                   descendantFieldKeys.has("actionLabel")) && (
                   <div
@@ -2656,9 +2581,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       </div>
                     ) : null}
                   </div>
-                )}
-
-              {showField("imageSrc", "imageAlt", "image") &&
+                ) },
+              { key: contentOrderKey("imageSrc", "imageAlt", "image"), node: showField("imageSrc", "imageAlt", "image") &&
                 selectedFieldValue("imageSrc") !== undefined && (
                   <div
                     className={cn(
@@ -2723,7 +2647,122 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       />
                     )}
                   </div>
-                )}
+                ) },
+                ],
+                contentFieldOrder,
+              ).map(({ key, node }) =>
+                node ? <Fragment key={key}>{node}</Fragment> : null,
+              )}
+              {isSelectedNode &&
+                descendantFields.length === 0 &&
+                activeFieldPath &&
+                selectedField &&
+                !isDeclaredContentField(selectedField) &&
+                !SPECIALIZED_CONTENT_FIELD_KEYS.has(selectedField) &&
+                (typeof fieldValue(selectedField) === "object" &&
+                fieldValue(selectedField) !== null ? (
+                  Object.entries(
+                    fieldValue(selectedField) as Record<string, unknown>,
+                  )
+                    .filter(
+                      ([, value]) =>
+                        value === null ||
+                        ["string", "number", "boolean"].includes(typeof value),
+                    )
+                    .map(([key, value]) => (
+                      <InspectorField
+                        key={key}
+                        label={key.replace(/[-_]/g, " ")}
+                      >
+                        <Input
+                          defaultValue={String(value ?? "")}
+                          onInput={(e) =>
+                            onPreviewSelectionField?.(
+                              key,
+                              activeFieldPath + "." + key,
+                              e.currentTarget.value,
+                            )
+                          }
+                          onBlur={(e) =>
+                            handleNestedFieldChange(
+                              activeFieldPath + "." + key,
+                              e.currentTarget.value,
+                            )
+                          }
+                          disabled={disabled}
+                          className="h-8 text-xs"
+                        />
+                      </InspectorField>
+                    ))
+                ) : (
+                  <InspectorField label={selectedField.replace(/[-_]/g, " ")}>
+                    <Textarea
+                      rows={3}
+                      defaultValue={String(fieldValue(selectedField) ?? "")}
+                      onInput={(e) =>
+                        onPreviewSelectionField?.(
+                          selectedField,
+                          activeFieldPath,
+                          e.currentTarget.value,
+                        )
+                      }
+                      onBlur={(e) =>
+                        handleFieldChange(selectedField, e.currentTarget.value)
+                      }
+                      disabled={disabled}
+                      className="min-h-16 resize-none text-xs"
+                    />
+                  </InspectorField>
+                ))}
+              {isSelectedNode &&
+                descendantFields
+                  .filter(
+                    (binding) =>
+                      !SPECIALIZED_CONTENT_FIELD_KEYS.has(binding.fieldKey),
+                  )
+                  .map((binding) => {
+                    const value = binding.fieldPath
+                      ? getFieldPathValue(props, binding.fieldPath)
+                      : props[binding.fieldKey];
+                    if (
+                      value !== null &&
+                      !["string", "number", "boolean"].includes(typeof value)
+                    ) {
+                      return null;
+                    }
+                    return (
+                      <InspectorField
+                        key={`${binding.fieldKey}:${binding.fieldPath ?? ""}`}
+                        label={binding.fieldKey.replace(/[-_]/g, " ")}
+                      >
+                        <Textarea
+                          key={contentFieldInputKey(binding.fieldKey)}
+                          rows={2}
+                          defaultValue={String(value ?? "")}
+                          onInput={(event) =>
+                            onPreviewSelectionField?.(
+                              binding.fieldKey,
+                              binding.fieldPath,
+                              event.currentTarget.value,
+                            )
+                          }
+                          onBlur={(event) =>
+                            binding.fieldPath
+                              ? handleNestedFieldChange(
+                                  binding.fieldPath,
+                                  event.currentTarget.value,
+                                )
+                              : handleFieldChange(
+                                  binding.fieldKey,
+                                  event.currentTarget.value,
+                                )
+                          }
+                          disabled={disabled}
+                          className="min-h-16 resize-none text-xs"
+                        />
+                      </InspectorField>
+                    );
+                  })}
             </div>
           </InspectorGroup>
         )}
