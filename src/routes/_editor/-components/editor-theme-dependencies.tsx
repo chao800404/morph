@@ -10,6 +10,15 @@ import {
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -190,62 +199,78 @@ export function EditorThemeDependenciesDialog({
             No packages have been approved for this Theme toolchain yet.
           </p>
         ) : (
-          <ul className="mt-3 max-h-[26rem] space-y-1.5 overflow-y-auto">
-            {rows.map((item) => {
-              const state = states.get(item.root);
-              const status = state?.status;
-              const isReady = status === "ready";
-              const isBusy = status === "requested" || status === "building";
-              const actionLabel = isReady
-                ? "Enabled"
-                : isBusy
-                  ? statusLabel(status)
-                  : status === "failed"
-                    ? "Retry"
-                    : "Enable";
-              return (
-                <li
-                  key={item.root}
-                  className="flex items-center gap-3 rounded-md border px-3 py-2.5"
-                  data-package-status={status ?? "available"}
-                >
-                  <StatusIcon status={status} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <code className="truncate text-sm font-medium">
-                        {item.name}
-                      </code>
-                      {status ? (
-                        <Badge variant={isReady ? "default" : "outline"}>
-                          {statusLabel(status)}
-                        </Badge>
-                      ) : null}
-                    </div>
-                    <p className="mt-0.5 text-xs text-foreground/70">
-                      v{item.version}
-                    </p>
-                    {state?.errorMessage ? (
-                      <p className="mt-1 text-xs text-destructive">
-                        {state.errorMessage}
-                      </p>
-                    ) : null}
-                  </div>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant={isReady ? "ghost" : "outline"}
-                    disabled={!canRequest || isReady || isBusy}
-                    onClick={() => request.mutate(item.root)}
-                  >
-                    {request.isPending && request.variables === item.root ? (
-                      <LoaderCircle className="size-3.5 animate-spin" />
-                    ) : null}
-                    {actionLabel}
-                  </Button>
-                </li>
-              );
-            })}
-          </ul>
+          <ScrollArea className="mt-3 max-h-[26rem]">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Package</TableHead>
+                  <TableHead className="w-[7rem]">Version</TableHead>
+                  <TableHead className="w-[9rem] text-right">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((item) => {
+                  const state = states.get(item.root);
+                  const status = state?.status;
+                  const isReady = status === "ready";
+                  const isBusy =
+                    status === "requested" || status === "building";
+                  const actionLabel = isReady
+                    ? "Enabled"
+                    : isBusy
+                      ? statusLabel(status)
+                      : status === "failed"
+                        ? "Retry"
+                        : "Enable";
+                  return (
+                    <TableRow
+                      key={item.root}
+                      data-package-status={status ?? "available"}
+                    >
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <StatusIcon status={status} />
+                          <code className="truncate text-sm font-medium">
+                            {item.name}
+                          </code>
+                          {status ? (
+                            <Badge variant={isReady ? "default" : "outline"}>
+                              {statusLabel(status)}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        {state?.errorMessage ? (
+                          <p className="mt-1 text-xs text-destructive">
+                            {state.errorMessage}
+                          </p>
+                        ) : null}
+                      </TableCell>
+
+                      <TableCell className="text-xs text-foreground/70">
+                        v{item.version}
+                      </TableCell>
+
+                      <TableCell className="text-right">
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant={isReady ? "ghost" : "outline"}
+                          disabled={!canRequest || isReady || isBusy}
+                          onClick={() => request.mutate(item.root)}
+                        >
+                          {request.isPending &&
+                          request.variables === item.root ? (
+                            <LoaderCircle className="size-3.5 animate-spin" />
+                          ) : null}
+                          {actionLabel}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </ScrollArea>
         )}
       </DialogContent>
     </Dialog>

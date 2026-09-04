@@ -103,6 +103,7 @@ function renderInspector(action: unknown, componentSource = heroSource) {
   ) as never;
   render(
     <EditorStyleInspector
+      view="content"
       section={
         {
           id: "section-1",

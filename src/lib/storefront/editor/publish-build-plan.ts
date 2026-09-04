@@ -20,8 +20,16 @@ export type PublishBuildPlanInput = {
   buildSourceGeneration: number | null;
   /** Source generation being published. */
   currentSourceGeneration: number;
-  /** Whether this storefront theme has already been released once. */
-  hasActiveRelease: boolean;
+  /**
+   * Source generation the active release's artifact was built from, or null
+   * when this theme has never been released.
+   *
+   * Needed rather than a plain "has a release" flag because publishing refuses
+   * to reuse a release whose artifact was built from older source, and a plan
+   * that chooses a path the server will reject is worse than no plan: the
+   * person is told to go and build, which is the step this was meant to remove.
+   */
+  activeReleaseSourceGeneration: number | null;
 };
 
 /**
@@ -35,7 +43,7 @@ export function resolvePublishBuildPlan({
   hasBuild,
   buildSourceGeneration,
   currentSourceGeneration,
-  hasActiveRelease,
+  activeReleaseSourceGeneration,
 }: PublishBuildPlanInput): PublishBuildPlan {
   if (hasBuild) {
     // A build made from different source describes a store that no longer
@@ -47,5 +55,10 @@ export function resolvePublishBuildPlan({
 
   // Republishing an existing release without touching the Theme is a content
   // change: the released artifact still matches the source it was built from.
-  return hasActiveRelease ? { action: "reuse-release" } : { action: "build" };
+  // The generations have to agree for that to be true — editing the Theme and
+  // pressing Publish without building leaves a release whose artifact predates
+  // the edit, and publishing it would ship the old store under the new source.
+  return activeReleaseSourceGeneration === currentSourceGeneration
+    ? { action: "reuse-release" }
+    : { action: "build" };
 }

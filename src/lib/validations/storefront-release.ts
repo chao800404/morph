@@ -5,6 +5,8 @@ export const storefrontReleaseHistoryInputSchema = z.object({
   storefrontId: idSchema("storefront"),
   limit: z.number().int().min(1).max(100).optional(),
   offset: z.number().int().min(0).optional(),
+  /** 1-based, the way the shared pager addresses pages. */
+  page: z.number().int().min(1).optional(),
 });
 
 export const activateStorefrontReleaseInputSchema = z.object({

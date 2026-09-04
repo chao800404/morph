@@ -50,6 +50,20 @@ export const StorefrontPreview = memo(function StorefrontPreview({
     // final measured height.
     minHeight: `${viewportHeight}px`,
   };
+
+  // The editor must not make a CMS document look like a configured Theme.
+  // Until the workspace has an actual source module, keep the live preview's
+  // canvas present for sizing but leave its content empty.
+  if (!hasThemeSourceCode(themeFiles)) {
+    return (
+      <div
+        data-storefront-preview-root
+        className="bg-stone-50 text-neutral-950"
+        style={previewStyle}
+      />
+    );
+  }
+
   const pageDocument = document ?? template.document;
   const storedDocument = (
     <StorefrontDocumentRenderer
@@ -101,6 +115,27 @@ export const StorefrontPreview = memo(function StorefrontPreview({
     </div>
   );
 });
+
+function hasThemeSourceCode(
+  themeFiles?: Array<{ path: string; content: string }>,
+) {
+  return Boolean(
+    themeFiles?.some((file) => {
+      const path = file.path.toLowerCase();
+      if (path.startsWith("node_modules/")) return false;
+      return [
+        ".cjs",
+        ".cts",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".mts",
+        ".ts",
+        ".tsx",
+      ].some((extension) => path.endsWith(extension));
+    }),
+  );
+}
 
 function usesThemeRouteRuntime(
   themeFiles?: Array<{ path: string; content: string }>,

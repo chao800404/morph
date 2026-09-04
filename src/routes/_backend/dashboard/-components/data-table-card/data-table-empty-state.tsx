@@ -1,3 +1,4 @@
+import type { DataTableScope } from "./data-table-card";
 import { cn } from "@/lib/utils";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { useSearch } from "@tanstack/react-router";
@@ -35,7 +36,7 @@ export const DataTableEmptyState = ({
 }: {
   title: string;
   description: string;
-  scope?: "taxRate" | "orderItem" | "orderFulfillment";
+  scope?: DataTableScope;
 }) => {
   const search = useSearch({ strict: false }) as DashboardSearch;
   const hasQuery = Boolean(

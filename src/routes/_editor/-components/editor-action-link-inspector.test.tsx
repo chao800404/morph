@@ -113,17 +113,18 @@ function renderInspector(
 ) {
   const onPropsChange = vi.fn();
   const themeFiles = componentSource
-    ? [
+    ? ([
         ...routeFiles,
         {
           path: "src/components/Hero.tsx",
           content: componentSource,
           mimeType: "text/typescript",
         },
-      ] as never
+      ] as never)
     : routeFiles;
   render(
     <EditorStyleInspector
+      view="content"
       section={heroSection(props as TestSection["props"])}
       themeFiles={themeFiles}
       selection={actionSelection()}
@@ -154,6 +155,19 @@ describe("resolveInternalLinkPages", () => {
 });
 
 describe("Action Button link controls", () => {
+  it("uses the shared label-to-control spacing for every action field", () => {
+    renderInspector(
+      { actionLabel: "Go", actionHref: "/collections/all" },
+      routerHeroSource,
+    );
+
+    for (const label of ["Label", "Page", "Open in"]) {
+      const labelElement = screen.getByText(label);
+      expect(labelElement.tagName).toBe("LABEL");
+      expect(labelElement.parentElement?.className).toContain("space-y-1");
+    }
+  });
+
   it("accepts an external URL in the link field", () => {
     const { onPropsChange } = renderInspector(
       {
@@ -305,6 +319,7 @@ describe("switching a link between in-store and external", () => {
     const onSwitchThemeLinkElement = vi.fn();
     render(
       <EditorStyleInspector
+        view="content"
         section={heroSection({
           actionLabel: "Go",
           actionHref: "/about",

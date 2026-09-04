@@ -37,7 +37,10 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
+import {
+  themeFileWritePrecondition,
+  useThemeWorkspaceStore,
+} from "@/lib/storefront/store/theme-workspace-store";
 import { cn } from "@/lib/utils";
 import type {
   StorefrontThemeFileDTO,
@@ -87,7 +90,16 @@ import {
   Save,
   X,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import {
@@ -156,6 +168,10 @@ type EditorCodeWorkspaceProps = {
   onBuildPreview?: () => void;
   externalDiagnostics?: unknown;
   dependencySourceRevisionId?: string;
+};
+
+export type EditorCodeWorkspaceHandle = {
+  saveAll: () => Promise<boolean>;
 };
 
 type StarterThemeBootstrapPlan = {
@@ -256,23 +272,29 @@ function withGeneratedRouteTree(
   ]);
 }
 
-export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
-  storefrontId,
-  themeId,
-  files,
-  tree,
-  initialActiveFilePath,
-  jumpLocation,
-  externalConflictFiles,
-  onResolveConflict,
-  onRefreshPreview,
-  onThemeFilesMoved,
-  onDirtyFilesChange,
-  onSaveFile,
-  onBuildPreview,
-  externalDiagnostics,
-  dependencySourceRevisionId,
-}: EditorCodeWorkspaceProps) {
+const EditorCodeWorkspaceContent = forwardRef<
+  EditorCodeWorkspaceHandle,
+  EditorCodeWorkspaceProps
+>(function EditorCodeWorkspace(
+  {
+    storefrontId,
+    themeId,
+    files,
+    tree,
+    initialActiveFilePath,
+    jumpLocation,
+    externalConflictFiles,
+    onResolveConflict,
+    onRefreshPreview,
+    onThemeFilesMoved,
+    onDirtyFilesChange,
+    onSaveFile,
+    onBuildPreview,
+    externalDiagnostics,
+    dependencySourceRevisionId,
+  }: EditorCodeWorkspaceProps,
+  ref,
+) {
   const queryClient = useQueryClient();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
@@ -366,7 +388,10 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
   const [outputLines, setOutputLines] = useState<string[]>([
     "Theme workspace ready.",
   ]);
-  const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  const [cursorPosition, setCursorPosition] = useState({
+    line: 1,
+    column: 1,
+  });
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [copiedPaths, setCopiedPaths] = useState<string[]>([]);
   const [searchRevision, setSearchRevision] = useState(0);
@@ -472,11 +497,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       workspaceScope,
       workspaceModels,
     );
-    ensureThemeWorkspaceModels(
-      monaco,
-      workspaceScope,
-      workspaceModels,
-    );
+    ensureThemeWorkspaceModels(monaco, workspaceScope, workspaceModels);
   }, [files, workspaceScope]);
 
   reconfigureTypeScriptRef.current = syncWorkspaceTypeScript;
@@ -542,7 +563,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             path: file.path,
             content:
               draftContentsRef.current[file.path] ??
-              useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+              useThemeWorkspaceStore.getState().files[file.path]
+                ?.localContent ??
               file.content,
           })),
         ),
@@ -553,7 +575,8 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
             path: file.path,
             content:
               draftContentsRef.current[file.path] ??
-              useThemeWorkspaceStore.getState().files[file.path]?.localContent ??
+              useThemeWorkspaceStore.getState().files[file.path]
+                ?.localContent ??
               file.content,
           })),
         ),
@@ -914,13 +937,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
           themeId,
           path,
           content,
-          expectedFileId: state?.serverExists
-            ? (state.serverFileId ?? undefined)
-            : undefined,
-          expectedVersion: state?.serverExists
-            ? (state.serverVersion ?? undefined)
-            : undefined,
-          expectMissing: state ? !state.serverExists : true,
+          ...themeFileWritePrecondition(state),
           expectedSourceGeneration: useThemeWorkspaceStore
             .getState()
             .getAcceptedSourceGeneration(workspaceScope),
@@ -1077,7 +1094,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
 
   const openStarterBootstrap = useCallback(() => {
     if (dirtyPaths.length > 0) {
-      toast.error("Save or discard unsaved files before applying the starter template.");
+      toast.error(
+        "Save or discard unsaved files before applying the starter template.",
+      );
       return;
     }
     starterBootstrapPreviewMutation.mutate();
@@ -1791,12 +1810,13 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     workspaceScope,
   ]);
 
-  const handleSaveAll = useCallback(async () => {
-    if (saveInFlightRef.current || saveMutation.isPending) return;
+  const handleSaveAll = useCallback(async (): Promise<boolean> => {
+    if (saveInFlightRef.current || saveMutation.isPending) return false;
+    const dirtyPaths = combinedDirtyPathsRef.current;
     const paths = combinedDirtyPathsRef.current.filter(
       (path) => !externalConflictFiles?.[path],
     );
-    if (paths.length === 0) return;
+    if (paths.length === 0) return dirtyPaths.length === 0;
 
     saveInFlightRef.current = true;
     appendOutput(
@@ -1812,6 +1832,9 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
       appendOutput(
         `Saved ${paths.length} file${paths.length === 1 ? "" : "s"}.`,
       );
+      return combinedDirtyPathsRef.current.length === 0;
+    } catch {
+      return false;
     } finally {
       saveInFlightRef.current = false;
     }
@@ -1823,6 +1846,14 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     updateWorkspaceLocal,
     workspaceScope,
   ]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      saveAll: handleSaveAll,
+    }),
+    [handleSaveAll],
+  );
 
   const handleOpenLocation = useCallback(
     (path: string, line = 1, column = 1) => {
@@ -2074,8 +2105,7 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
         id: "organize-imports",
         label: "Source Action: Organize Imports",
         icon: ListChecks,
-        disabled:
-          activeFileIsGenerated || !/\.[jt]sx?$/.test(activeFilePath),
+        disabled: activeFileIsGenerated || !/\.[jt]sx?$/.test(activeFilePath),
         run: () =>
           editorRef.current
             ?.getAction?.("editor.action.organizeImports")
@@ -3212,3 +3242,5 @@ export const EditorCodeWorkspace = memo(function EditorCodeWorkspace({
     </div>
   );
 });
+
+export const EditorCodeWorkspace = memo(EditorCodeWorkspaceContent);

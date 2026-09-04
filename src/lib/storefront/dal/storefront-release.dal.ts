@@ -1,5 +1,7 @@
 import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
+import { paginationOf, type Pagination } from "@/lib/db/server-result";
+import { withReleaseNote } from "@/lib/storefront/release-note";
 import { withDeployedThemeBuildId } from "../service/theme-worker-deployment-state";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import {
@@ -7,8 +9,9 @@ import {
   storefrontThemeBuilds,
   storefronts,
 } from "@/db/storefront.schema";
+import type { Metadata } from "@/db/json";
 import type { StorefrontReleaseDTO } from "@/lib/storefront/dto/storefront-release.dto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, count, desc, eq, isNull } from "drizzle-orm";
 
 function mapReleaseRowToDTO(
   row: typeof storefrontReleases.$inferSelect,
@@ -55,10 +58,7 @@ export const storefrontReleaseDal = {
       .select({ activeReleaseId: storefronts.activeReleaseId })
       .from(storefronts)
       .where(
-        and(
-          eq(storefronts.id, storefrontId),
-          isNull(storefronts.deletedAt),
-        ),
+        and(eq(storefronts.id, storefrontId), isNull(storefronts.deletedAt)),
       )
       .limit(1);
 
@@ -130,24 +130,44 @@ export const storefrontReleaseDal = {
     return true;
   },
 
+  /**
+   * One page of release history, with the count the pager needs.
+   *
+   * The total is read alongside the page rather than inferred from the row
+   * count: a full page is indistinguishable from the last page without it, so
+   * the pager cannot say whether a next page exists.
+   */
   async listHistory(
     storefrontId: string,
     options: { limit?: number; offset?: number } = {},
-  ): Promise<StorefrontReleaseDTO[]> {
+  ): Promise<{
+    releases: StorefrontReleaseDTO[];
+    pagination: Pagination;
+  }> {
     const db = await getDb();
-    const rows = await db
-      .select()
-      .from(storefrontReleases)
-      .where(
-        and(
-          eq(storefrontReleases.storefrontId, storefrontId),
-          isNull(storefrontReleases.deletedAt),
-        ),
-      )
-      .orderBy(desc(storefrontReleases.createdAt))
-      .limit(Math.min(Math.max(options.limit ?? 50, 1), 100))
-      .offset(Math.max(options.offset ?? 0, 0));
-    return rows.map(mapReleaseRowToDTO);
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+    const offset = Math.max(options.offset ?? 0, 0);
+    const scope = and(
+      eq(storefrontReleases.storefrontId, storefrontId),
+      isNull(storefrontReleases.deletedAt),
+    );
+
+    const [rows, [counted]] = await Promise.all([
+      db
+        .select()
+        .from(storefrontReleases)
+        .where(scope)
+        .orderBy(desc(storefrontReleases.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db.select({ total: count() }).from(storefrontReleases).where(scope),
+    ]);
+
+    const total = counted?.total ?? 0;
+    return {
+      releases: rows.map(mapReleaseRowToDTO),
+      pagination: paginationOf(total, Math.floor(offset / limit) + 1, limit),
+    };
   },
 
   /** Atomically switches the production pointer to an existing release. */
@@ -207,7 +227,8 @@ export const storefrontReleaseDal = {
     const expected = data.expectedActiveReleaseId ?? "";
     const now = new Date().toISOString();
     try {
-      const result = await env.DATABASE.prepare(`
+      const result = await env.DATABASE.prepare(
+        `
         UPDATE storefronts SET active_release_id = ?1, updated_at = ?2
         WHERE id = ?3 AND deleted_at IS NULL
           AND (active_release_id = ?4 OR (active_release_id IS NULL AND ?4 = ''))
@@ -241,21 +262,104 @@ export const storefrontReleaseDal = {
                 )
               )
           )
-      `).bind(data.releaseId, now, data.storefrontId, expected, data.releaseId).run();
-      const changes = (result as { meta?: { changes?: number } }).meta?.changes ?? 0;
-      if (changes !== 1) throw new Error("RELEASE_ACTIVATION_CONFLICT: Active release changed concurrently or target release is no longer activatable.");
+      `,
+      )
+        .bind(data.releaseId, now, data.storefrontId, expected, data.releaseId)
+        .run();
+      const changes =
+        (result as { meta?: { changes?: number } }).meta?.changes ?? 0;
+      if (changes !== 1)
+        throw new Error(
+          "RELEASE_ACTIVATION_CONFLICT: Active release changed concurrently or target release is no longer activatable.",
+        );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("malformed JSON") || message.includes("constraint")) {
-        throw new Error("RELEASE_ACTIVATION_CONFLICT: Active release changed concurrently or target release is no longer activatable.");
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
+        throw new Error(
+          "RELEASE_ACTIVATION_CONFLICT: Active release changed concurrently or target release is no longer activatable.",
+        );
       }
       throw error;
     }
 
     const activated = await this.getById(data.storefrontId, data.releaseId);
     if (!activated) {
-      throw new Error("RELEASE_ACTIVATION_FAILED: Activated release was not found after the atomic switch.");
+      throw new Error(
+        "RELEASE_ACTIVATION_FAILED: Activated release was not found after the atomic switch.",
+      );
     }
     return activated;
+  },
+
+  /**
+   * Rewrites what a release says it was for.
+   *
+   * Only the note changes: a release points at an immutable build and content
+   * publication, and renaming must not become a way to alter what is served.
+   * Scoped by storefront so a release id alone never authorises the write.
+   */
+  /**
+   * Replaces a release's metadata wholesale.
+   *
+   * Separate from `renameRelease` because the caller here is the queue, which
+   * has already merged what it is changing into the metadata it read. Still
+   * scoped by storefront, and still touches nothing but `metadata`: a release
+   * points at an immutable build, and no write here may alter what is served.
+   */
+  async setReleaseMetadata(data: {
+    storefrontId: string;
+    releaseId: string;
+    metadata: Metadata | null;
+  }): Promise<void> {
+    const db = await getDb();
+    await db
+      .update(storefrontReleases)
+      .set({ metadata: data.metadata, updatedAt: new Date().toISOString() })
+      .where(
+        and(
+          eq(storefrontReleases.id, data.releaseId),
+          eq(storefrontReleases.storefrontId, data.storefrontId),
+          isNull(storefrontReleases.deletedAt),
+        ),
+      );
+  },
+
+  async renameRelease(data: {
+    storefrontId: string;
+    releaseId: string;
+    note: string;
+  }): Promise<StorefrontReleaseDTO> {
+    const existing = await this.getById(data.storefrontId, data.releaseId);
+    if (!existing) {
+      throw new Error(
+        `RELEASE_NOT_FOUND: Release "${data.releaseId}" was not found for this storefront.`,
+      );
+    }
+
+    const db = await getDb();
+    const [updated] = await db
+      .update(storefrontReleases)
+      .set({
+        metadata: withReleaseNote(existing.metadata, data.note),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(
+        and(
+          eq(storefrontReleases.id, data.releaseId),
+          eq(storefrontReleases.storefrontId, data.storefrontId),
+          isNull(storefrontReleases.deletedAt),
+        ),
+      )
+      .returning();
+
+    if (!updated) {
+      throw new Error(
+        `RELEASE_NOT_FOUND: Release "${data.releaseId}" was not found for this storefront.`,
+      );
+    }
+    return mapReleaseRowToDTO(updated);
   },
 };

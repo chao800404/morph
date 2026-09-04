@@ -1,9 +1,17 @@
 import type { StorefrontReleaseDTO } from "@/lib/storefront/dto/storefront-release.dto";
+import { readReleaseNote } from "@/lib/storefront/release-note";
 
 export type ReleaseHistoryRow = Readonly<{
   id: string;
   /** Short, stable handle a person can match against a build or a log line. */
   label: string;
+  /**
+   * What the publisher said this release was for, when they said anything.
+   *
+   * The id fragment and timestamp identify a release but describe nothing, so
+   * this is the only part of a row that makes one recognisable months later.
+   */
+  note: string | null;
   createdAt: string;
   isActive: boolean;
   /** Whether this row offers activation at all. */
@@ -37,6 +45,7 @@ export function describeReleaseHistory(
     return {
       id: release.id,
       label: release.id.slice(0, 8),
+      note: readReleaseNote(release.metadata) ?? null,
       createdAt: release.createdAt,
       isActive,
       canActivate: !isActive && !isInvalidated,

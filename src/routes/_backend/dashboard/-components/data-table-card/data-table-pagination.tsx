@@ -1,3 +1,4 @@
+import type { DataTableScope } from "./data-table-card";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import { useNavigate } from "@tanstack/react-router";
 import { CardPagination } from "@/components/dashboard/card-pagination";
@@ -15,7 +16,7 @@ export const DataTablePagination = ({
   scope,
 }: {
   pagination?: DataTablePaginationInfo;
-  scope?: "taxRate" | "orderItem" | "orderFulfillment";
+  scope?: DataTableScope;
 }) => {
   const navigate = useNavigate();
 
@@ -40,6 +41,7 @@ export const DataTablePagination = ({
         if (scope === "orderFulfillment") {
           return { ...prev, orderFulfillmentPage: nextPage };
         }
+        if (scope === "release") return { ...prev, releasePage: nextPage };
         return { ...prev, page: nextPage };
       },
       replace: true,

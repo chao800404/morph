@@ -1,5 +1,9 @@
 import { Button } from "@/components/ui/button";
 import {
+  ThemePreviewPlaceholderDesktop,
+  ThemePreviewPlaceholderMobile,
+} from "@/components/storefront/theme-preview-placeholder";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -28,7 +32,7 @@ import {
   ShoppingBag,
   Store,
 } from "lucide-react";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import OnlineStorePendingView from "./online-store-pending";
 
 const PreviewHeader = ({ compact = false }: { compact?: boolean }) => (
@@ -52,55 +56,80 @@ const PreviewHeader = ({ compact = false }: { compact?: boolean }) => (
   </div>
 );
 
+/**
+ * The captured picture of what is live, or a drawn stand-in.
+ *
+ * A release is captured after publishing, but a deployment may have no
+ * screenshot credentials and a fresh capture is still queued for a few seconds
+ * — so "no image yet" is an ordinary state, not an error.
+ *
+ * The stand-in is a wireframe rather than a photograph. The photograph it
+ * replaces showed a ceramics shop that was never the user's, and at a glance it
+ * read as their storefront. A flat drawing cannot be mistaken for a capture.
+ */
+const ThemeCaptureImage = ({
+  releaseId,
+  viewport,
+  placeholder,
+}: {
+  releaseId?: string;
+  viewport: "desktop" | "mobile";
+  placeholder: ReactNode;
+}) => {
+  const [captureFailed, setCaptureFailed] = useState(false);
+
+  if (!releaseId || captureFailed) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center bg-muted/40">
+        {placeholder}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={`/release-preview/${releaseId}/${viewport}`}
+      alt=""
+      className="absolute inset-0 size-full object-cover object-top"
+      onError={() => setCaptureFailed(true)}
+    />
+  );
+};
+
 const StorefrontPreview = ({
   storefrontId,
   themeId,
+  releaseId,
 }: {
   storefrontId?: string;
   themeId?: string;
+  releaseId?: string;
 }) => {
   const preview = (
     <div className="relative mx-auto flex min-h-0 w-full max-w-4xl origin-bottom transform-gpu items-end justify-center overflow-hidden px-4 pt-8 transition-transform duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] will-change-transform [backface-visibility:hidden] group-hover:scale-[1.015] group-focus-visible:scale-[1.015] motion-reduce:transition-none motion-reduce:group-hover:scale-100 motion-reduce:group-focus-visible:scale-100 sm:px-10 sm:pt-10">
       <div className="w-full overflow-hidden rounded-t-xl border border-border/80 bg-background shadow-[0_18px_50px_-24px_rgba(0,0,0,0.35)]">
         <PreviewHeader />
         <div className="relative flex aspect-[16/7] min-h-44 items-end overflow-hidden bg-muted sm:min-h-52">
-          <img
-            src="/static/storefront/theme-preview-default.png"
-            alt=""
-            className="absolute inset-0 size-full object-cover object-center"
+          <ThemeCaptureImage
+            releaseId={releaseId}
+            viewport="desktop"
+            placeholder={
+              <ThemePreviewPlaceholderDesktop className="size-full" />
+            }
           />
-          <div className="absolute inset-0 bg-gradient-to-r from-background/85 via-background/35 to-transparent" />
-          <div className="relative z-10 max-w-sm space-y-2 p-5 sm:p-8">
-            <p className="text-[7px] font-medium uppercase tracking-[0.22em] text-muted-foreground sm:text-[9px]">
-              New collection
-            </p>
-            <p className="font-serif text-xl leading-none tracking-tight text-foreground sm:text-4xl">
-              Objects for everyday rituals.
-            </p>
-            <span className="inline-flex border-b border-foreground/60 pb-0.5 text-[7px] font-medium text-foreground sm:text-[9px]">
-              Explore the collection
-            </span>
-          </div>
         </div>
       </div>
 
       <div className="absolute bottom-0 right-4 hidden w-[24%] min-w-36 overflow-hidden rounded-t-xl border border-border bg-background shadow-[0_18px_45px_-20px_rgba(0,0,0,0.45)] sm:block lg:right-10">
         <PreviewHeader compact />
         <div className="relative flex aspect-[4/5] items-end overflow-hidden bg-muted">
-          <img
-            src="/static/storefront/theme-preview-default.png"
-            alt=""
-            className="absolute inset-0 size-full object-cover object-[68%_center]"
+          <ThemeCaptureImage
+            releaseId={releaseId}
+            viewport="mobile"
+            placeholder={
+              <ThemePreviewPlaceholderMobile className="size-full" />
+            }
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-transparent to-transparent" />
-          <div className="relative z-10 space-y-1.5 p-4">
-            <p className="font-serif text-lg leading-none text-foreground">
-              Made to be kept.
-            </p>
-            <p className="text-[7px] leading-relaxed text-muted-foreground">
-              Quiet essentials, considered in every detail.
-            </p>
-          </div>
         </div>
       </div>
     </div>
@@ -289,6 +318,7 @@ export default function OnlineStoreOverview() {
           <StorefrontPreview
             storefrontId={storefront?.id}
             themeId={storefront?.activeThemeId ?? undefined}
+            releaseId={storefront?.activeReleaseId ?? undefined}
           />
 
           <div className="flex flex-col gap-3 border-t border-border/70 bg-amber-500/8 px-5 py-3 text-amber-950 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">

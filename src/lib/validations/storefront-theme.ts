@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_RELEASE_NOTE_LENGTH } from "@/lib/storefront/release-note";
 import { idSchema } from "./commerce";
 
 export const storefrontThemeEditorInputSchema = z.object({
@@ -22,6 +23,15 @@ export const publishStorefrontThemeTemplateInputSchema =
     expectedDraftRevisionId: z.string().uuid(),
     expectedDraftGeneration: z.number().int().min(1),
     expectedReleaseGeneration: z.number().int().min(1),
+    /** What changed, for recognising this release in the history later. */
+    note: z.string().trim().max(MAX_RELEASE_NOTE_LENGTH).optional(),
+  });
+
+/** Renaming an existing release, for a note written after the fact. */
+export const renameStorefrontReleaseInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    releaseId: z.string().uuid(),
+    note: z.string().trim().max(MAX_RELEASE_NOTE_LENGTH),
   });
 
 export const updateStorefrontThemeSectionPropsInputSchema =
@@ -50,6 +60,14 @@ export const storefrontThemeEditorSearchSchema = z.object({
     .optional()
     .catch(undefined),
   section: z.string().trim().max(100).optional().catch(undefined),
+  /**
+   * Page of the Release history surface.
+   *
+   * In the URL because the shared pager navigates rather than holding state,
+   * and an unlisted key is stripped by this schema — so without it the pager
+   * would render and do nothing.
+   */
+  releasePage: z.coerce.number().int().min(1).optional().catch(undefined),
   /** Public route selected from the source-derived Theme route registry. */
   routePath: z.string().trim().max(200).optional().catch(undefined),
   locale: z.string().trim().max(20).optional().catch(undefined),

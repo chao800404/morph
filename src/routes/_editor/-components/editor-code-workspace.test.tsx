@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createRef, type RefObject } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
@@ -9,7 +10,10 @@ import {
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
-import { EditorCodeWorkspace } from "./editor-code-workspace";
+import {
+  EditorCodeWorkspace,
+  type EditorCodeWorkspaceHandle,
+} from "./editor-code-workspace";
 import { configureThemeTypeScript } from "./editor-code-language-support";
 import { formatEditorCode } from "./editor-code-formatter";
 
@@ -137,6 +141,7 @@ const file: StorefrontThemeFileDTO = {
 };
 
 function renderWorkspace(props?: {
+  workspaceRef?: RefObject<EditorCodeWorkspaceHandle | null>;
   onSaveFile?: (
     path: string,
     content: string,
@@ -149,6 +154,7 @@ function renderWorkspace(props?: {
   return render(
     <QueryClientProvider client={client}>
       <EditorCodeWorkspace
+        ref={props?.workspaceRef}
         storefrontId="store-1"
         themeId="theme-1"
         files={[file]}
@@ -223,6 +229,27 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     await waitFor(() => {
       expect(onSaveFile).toHaveBeenCalledWith(file.path, "latest draft");
     });
+  });
+
+  it("exposes Save All for mode switches and persists the current Monaco draft", async () => {
+    const workspaceRef = createRef<EditorCodeWorkspaceHandle>();
+    const onSaveFile = vi.fn(async (_path: string, content: string) => ({
+      ...file,
+      content,
+      version: 2,
+    }));
+    renderWorkspace({ workspaceRef, onSaveFile });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), {
+      target: { value: "draft before switching to Design" },
+    });
+
+    await waitFor(() => expect(workspaceRef.current).not.toBeNull());
+    await expect(workspaceRef.current!.saveAll()).resolves.toBe(true);
+    expect(onSaveFile).toHaveBeenCalledWith(
+      file.path,
+      "draft before switching to Design",
+    );
   });
 
   it("saves Monaco's formatted model content", async () => {

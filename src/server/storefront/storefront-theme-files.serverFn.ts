@@ -1,4 +1,4 @@
-import { fail, failure, ok } from "@/lib/db/server-result";
+import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import { buildFileTree } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import {
   themeRevisionStore,
@@ -128,10 +128,15 @@ export const previewStarterThemeWorkspace = createServerFn({ method: "POST" })
  */
 export const applyStarterThemeWorkspace = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
-    applyStarterThemeWorkspaceInputSchema.parse(data),
+    parseInput(applyStarterThemeWorkspaceInputSchema, data),
   )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const files = await themeSourceStore.listFiles(
         data.storefrontId,
@@ -230,9 +235,14 @@ export const getStorefrontThemeFile = createServerFn({ method: "POST" })
   });
 
 export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
-  .validator((data: unknown) => saveThemeFileInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(saveThemeFileInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the editor already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const saved = await themeSourceStore.saveFile(
         data.storefrontId,
@@ -286,9 +296,16 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
   });
 
 export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
-  .validator((data: unknown) => saveThemeFilesBatchInputSchema.parse(data))
+  .validator((data: unknown) =>
+    parseInput(saveThemeFilesBatchInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the editor already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const saved = await themeSourceStore.saveFilesBatch(
         data.storefrontId,
@@ -341,9 +358,14 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
   });
 
 export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
-  .validator((data: unknown) => deleteThemeFileInputSchema.parse(data))
+  .validator((data: unknown) => parseInput(deleteThemeFileInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const success = await themeSourceStore.deleteFile(
         data.storefrontId,
@@ -421,9 +443,16 @@ export const listStorefrontThemeRevisions = createServerFn({ method: "POST" })
 export const rollbackStorefrontThemeRevision = createServerFn({
   method: "POST",
 })
-  .validator((data: unknown) => rollbackThemeRevisionInputSchema.parse(data))
+  .validator((data: unknown) =>
+    parseInput(rollbackThemeRevisionInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const files = await themeRevisionStore.rollbackToRevision(
         data.storefrontId,
@@ -447,9 +476,16 @@ export const rollbackStorefrontThemeRevision = createServerFn({
   });
 
 export const createStorefrontThemeRevision = createServerFn({ method: "POST" })
-  .validator((data: unknown) => createThemeRevisionInputSchema.parse(data))
+  .validator((data: unknown) =>
+    parseInput(createThemeRevisionInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const revision = await themeRevisionStore.createRevision(
         data.storefrontId,

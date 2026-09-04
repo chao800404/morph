@@ -1,4 +1,22 @@
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { MAX_RELEASE_NOTE_LENGTH } from "@/lib/storefront/release-note";
 import { RouteFullscreenSurface } from "@/components/dialog/route-fullscreen-surface";
 import { useCloseOnEscape } from "@/components/dialog/route-modal-close";
 import {
@@ -54,7 +72,6 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleAlert,
-  CircleCheck,
   Code2,
   ExternalLink,
   History,
@@ -88,6 +105,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { useEditorHistory } from "./use-editor-history";
+import type { EditorCodeWorkspaceHandle } from "./editor-code-workspace";
 
 import {
   createStorefrontCommentGroup,
@@ -121,7 +139,12 @@ import {
   patchThemeLinkElement,
 } from "@/lib/storefront/ast/theme-link-binding";
 import { waitForThemeBuild } from "@/lib/storefront/editor/theme-build-wait";
+import { resolveBuildRunOwnership } from "@/lib/storefront/editor/build-run-ownership";
 import { resolvePublishBuildPlan } from "@/lib/storefront/editor/publish-build-plan";
+import {
+  describeThemeSourceChanges,
+  describeUnpublishedChanges,
+} from "@/lib/storefront/editor/unpublished-changes";
 import { sourceLocationKey } from "@/lib/storefront/ast/element-target";
 import {
   hasInlineTextDocumentTarget,
@@ -155,6 +178,7 @@ import {
 import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
   toWorkspaceKey,
+  themeFileWritePrecondition,
   useThemeWorkspaceStore,
 } from "@/lib/storefront/store/theme-workspace-store";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
@@ -162,6 +186,7 @@ import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.q
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import {
   EditorAssistantPanel,
+  readStoredEditorAssistantPanelTab,
   type EditorAssistantPanelTab,
 } from "./editor-assistant-panel";
 import { EditorCanvasComments } from "./editor-canvas-comments";
@@ -586,8 +611,9 @@ export function VisualEditorShell({
   const [spacingOverlayMode, setSpacingOverlayMode] =
     useState<PreviewSpacingOverlayMode>("off");
   const [assistantPanelTab, setAssistantPanelTab] =
-    useState<EditorAssistantPanelTab>("chat");
-  const previousAssistantPanelTabRef = useRef<EditorAssistantPanelTab>("chat");
+    useState<EditorAssistantPanelTab>(readStoredEditorAssistantPanelTab);
+  const previousAssistantPanelTabRef =
+    useRef<EditorAssistantPanelTab>(assistantPanelTab);
   const autoEnabledSelectionForStylesRef = useRef(false);
   const [draftSaveState, setDraftSaveState] = useState<
     "idle" | "saving" | "error"
@@ -774,6 +800,7 @@ export function VisualEditorShell({
     mutationFn: (variables: {
       sourceRevisionId?: string;
       themeBuildId?: string;
+      note?: string;
       expectedDraftRevisionId: string;
       expectedDraftGeneration: number;
       expectedReleaseGeneration: number;
@@ -786,6 +813,7 @@ export function VisualEditorShell({
           templateId: activeTemplate.id,
           sourceRevisionId: variables.sourceRevisionId,
           themeBuildId: variables.themeBuildId,
+          note: variables.note,
           expectedDraftRevisionId: variables.expectedDraftRevisionId,
           expectedDraftGeneration: variables.expectedDraftGeneration,
           expectedReleaseGeneration: variables.expectedReleaseGeneration,
@@ -1087,6 +1115,12 @@ export function VisualEditorShell({
    * publish it was asked for, not any build that happens to be running.
    */
   const [isPublishBuilding, setIsPublishBuilding] = useState(false);
+  const { buildOwnsRun: isOwnBuildPending } = resolveBuildRunOwnership({
+    isBuildPending,
+    isPublishBuilding,
+  });
+  const [isPublishNoteOpen, setIsPublishNoteOpen] = useState(false);
+  const [publishNote, setPublishNote] = useState("");
   /**
    * Stops waiting on a build, and on an explicit cancel also stops the build.
    *
@@ -1190,6 +1224,10 @@ export function VisualEditorShell({
   const latestStyleRevisionRef = useRef(0);
   const latestAppliedStyleRevisionRef = useRef(0);
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
+  const editorCodeWorkspaceRef = useRef<EditorCodeWorkspaceHandle>(null);
+  const [isUnsavedCodeDialogOpen, setIsUnsavedCodeDialogOpen] = useState(false);
+  const [isSavingCodeBeforeModeSwitch, setIsSavingCodeBeforeModeSwitch] =
+    useState(false);
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -1775,7 +1813,8 @@ export function VisualEditorShell({
       (initialPreviewSyncRef.current?.key === previewKey &&
         initialPreviewSyncRef.current.readySequence ===
           previewFrameReady.sequence &&
-        initialPreviewSyncRef.current.filesFingerprint === previewFilesFingerprint)
+        initialPreviewSyncRef.current.filesFingerprint ===
+          previewFilesFingerprint)
     ) {
       return;
     }
@@ -1838,7 +1877,10 @@ export function VisualEditorShell({
   const latestPublishedRevision = themeFilesQuery.data?.latestPublishedRevision;
 
   const publishedSnapshotMap = useMemo(() => {
-    if (!latestPublishedRevision?.snapshot) return null;
+    // An empty snapshot is not a published theme with no files — a theme with
+    // no files cannot be published at all. It means the contents were not
+    // resolved, and comparing against it makes every file look newly added.
+    if (!latestPublishedRevision?.snapshot?.length) return null;
     const map = new Map<string, string>();
     for (const item of latestPublishedRevision.snapshot) {
       map.set(item.path, item.content);
@@ -1846,26 +1888,22 @@ export function VisualEditorShell({
     return map;
   }, [latestPublishedRevision]);
 
-  const hasThemeSourceChanges = useMemo(() => {
-    // True server-backed published state diffing
-    if (publishedSnapshotMap) {
-      if (effectiveThemeFiles.length !== publishedSnapshotMap.size) return true;
-      for (const f of effectiveThemeFiles) {
-        const publishedContent = publishedSnapshotMap.get(f.path);
-        if (publishedContent === undefined) return true; // new file
-        if (f.content !== publishedContent) return true; // modified file
-      }
-      return false;
-    }
-    // Fallback if theme has never been published yet
-    return effectiveThemeFiles.some((f) => (f.version ?? 1) > 1);
-  }, [effectiveThemeFiles, publishedSnapshotMap]);
+  const themeSourceDiff = useMemo(
+    () => describeThemeSourceChanges(effectiveThemeFiles, publishedSnapshotMap),
+    [effectiveThemeFiles, publishedSnapshotMap],
+  );
 
   const hasTemplateChanges = Boolean(
     activeTemplate?.draftRevisionId &&
     activeTemplate.draftRevisionId !== activeTemplate.publishedRevisionId,
   );
-  const hasUnpublishedChanges = hasTemplateChanges || hasThemeSourceChanges;
+  const hasUnpublishedChanges = hasTemplateChanges || themeSourceDiff.changed;
+  // Publish being lit with nothing edited is unfalsifiable from the outside,
+  // so the reason travels with the state instead of having to be guessed.
+  const unpublishedReason = describeUnpublishedChanges(
+    themeSourceDiff,
+    hasTemplateChanges,
+  );
 
   const saveThemeFileSequentially = useCallback(
     async (
@@ -1920,13 +1958,7 @@ export function VisualEditorShell({
                   themeId: context.theme.id,
                   path: filePath,
                   content: contentToSave,
-                  expectedFileId: current.serverExists
-                    ? (current.serverFileId ?? undefined)
-                    : undefined,
-                  expectedVersion: current.serverExists
-                    ? (current.serverVersion ?? undefined)
-                    : undefined,
-                  expectMissing: !current.serverExists,
+                  ...themeFileWritePrecondition(current),
                   expectedSourceGeneration: acceptedGeneration,
                 },
               });
@@ -2202,7 +2234,9 @@ export function VisualEditorShell({
           )[filePath]?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content;
       if (!source) {
-        toast.error(`Cannot repair link: source file ${filePath} is unavailable.`);
+        toast.error(
+          `Cannot repair link: source file ${filePath} is unavailable.`,
+        );
         return false;
       }
 
@@ -2253,7 +2287,9 @@ export function VisualEditorShell({
           )[filePath]?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content;
       if (!source) {
-        toast.error(`Cannot switch link: source file ${filePath} is unavailable.`);
+        toast.error(
+          `Cannot switch link: source file ${filePath} is unavailable.`,
+        );
         return false;
       }
 
@@ -2430,172 +2466,185 @@ export function VisualEditorShell({
     ],
   );
 
-  const handlePublish = useCallback(async () => {
-    if (monacoDirtyFiles.length > 0) {
-      toast.error(
-        `Cannot publish: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
-      );
-      return;
-    }
+  const handlePublish = useCallback(
+    async (note?: string) => {
+      if (monacoDirtyFiles.length > 0) {
+        toast.error(
+          `Cannot publish: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
+        );
+        return;
+      }
 
-    if (
-      useThemeWorkspaceStore
-        .getState()
-        .hasActiveConflictsOrErrors(workspaceScope)
-    ) {
-      toast.error(
-        "Cannot publish: resolve source conflicts/save errors first.",
-      );
-      return;
-    }
-
-    if (!activeTemplate) {
-      toast.error("Cannot publish: template is missing.");
-      return;
-    }
-
-    // 1. Flush any pending debounced props saves and await queued template mutations
-    await flushTemplatePendingProps(activeTemplate.id);
-
-    const publishDraftRevisionId =
-      templateDraftRevisionIdRef.current.get(activeTemplate.id) ??
-      activeTemplate.draftRevisionId;
-    const publishDraftGeneration =
-      templateDraftGenerationRef.current.get(activeTemplate.id) ??
-      activeTemplate.draftGeneration ??
-      1;
-
-    const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
-    for (const [opKey, timer] of Array.from(
-      pendingSaveTimersRef.current.entries(),
-    )) {
-      if (opKey.startsWith(scopedPrefix)) {
-        clearTimeout(timer);
-        pendingSaveTimersRef.current.delete(opKey);
-        const filePath = opKey.slice(scopedPrefix.length);
-        const content = useThemeWorkspaceStore
+      if (
+        useThemeWorkspaceStore
           .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[filePath]?.localContent;
-        if (content !== undefined) {
-          try {
-            await handleUnifiedSaveFile(filePath, content);
-          } catch (error) {
-            toast.error(
-              `Failed to save ${filePath}: ${
-                error instanceof Error ? error.message : "Save failed"
-              }`,
-            );
-            return;
+          .hasActiveConflictsOrErrors(workspaceScope)
+      ) {
+        toast.error(
+          "Cannot publish: resolve source conflicts/save errors first.",
+        );
+        return;
+      }
+
+      if (!activeTemplate) {
+        toast.error("Cannot publish: template is missing.");
+        return;
+      }
+
+      // 1. Flush any pending debounced props saves and await queued template mutations
+      await flushTemplatePendingProps(activeTemplate.id);
+
+      const publishDraftRevisionId =
+        templateDraftRevisionIdRef.current.get(activeTemplate.id) ??
+        activeTemplate.draftRevisionId;
+      const publishDraftGeneration =
+        templateDraftGenerationRef.current.get(activeTemplate.id) ??
+        activeTemplate.draftGeneration ??
+        1;
+
+      const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
+      for (const [opKey, timer] of Array.from(
+        pendingSaveTimersRef.current.entries(),
+      )) {
+        if (opKey.startsWith(scopedPrefix)) {
+          clearTimeout(timer);
+          pendingSaveTimersRef.current.delete(opKey);
+          const filePath = opKey.slice(scopedPrefix.length);
+          const content = useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            )[filePath]?.localContent;
+          if (content !== undefined) {
+            try {
+              await handleUnifiedSaveFile(filePath, content);
+            } catch (error) {
+              toast.error(
+                `Failed to save ${filePath}: ${
+                  error instanceof Error ? error.message : "Save failed"
+                }`,
+              );
+              return;
+            }
           }
         }
       }
-    }
 
-    const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
-    const pendingThemeSave = saveQueueRef.current.get(themeOpKey);
-    if (pendingThemeSave) {
-      await pendingThemeSave.catch(() => null);
-    }
-
-    const workspace = useThemeWorkspaceStore.getState();
-    if (
-      workspace.hasActiveConflictsOrErrors(workspaceScope) ||
-      workspace.hasUnsavedEdits(workspaceScope)
-    ) {
-      toast.error(
-        "Cannot publish: source workspace is not fully saved and conflict-free.",
-      );
-      return;
-    }
-
-    if (!activeTemplate || !publishDraftRevisionId) {
-      toast.error("Cannot publish: template draft revision is missing.");
-      return;
-    }
-
-    const currentGeneration = useThemeWorkspaceStore
-      .getState()
-      .getBaseSourceGeneration(workspaceScope);
-
-    // Verify with server that no remote changes occurred behind user's back
-    const refreshed = await themeFilesQuery.refetch();
-    const serverGeneration = refreshed.data?.sourceGeneration;
-    if (
-      typeof serverGeneration === "number" &&
-      serverGeneration !== currentGeneration
-    ) {
-      toast.error(
-        "Cannot publish: remote source changes detected. Please reload/review files before publishing.",
-      );
-      return;
-    }
-
-    if (
-      activeBuildPreview &&
-      (activeBuildPreview.status !== "succeeded" ||
-        activeBuildSourceGeneration === null)
-    ) {
-      toast.error("Cannot publish: the selected Build Preview is not ready.");
-      return;
-    }
-
-    // Publishing needs an artifact that matches the source being published.
-    // Building is a step of publishing, not a thing to remember to do first:
-    // every comparable platform either builds as part of publishing or has
-    // already built automatically, and none makes the person trigger it.
-    const plan = resolvePublishBuildPlan({
-      hasBuild: Boolean(activeBuildPreview),
-      buildSourceGeneration: activeBuildSourceGeneration,
-      currentSourceGeneration: currentGeneration,
-      hasActiveRelease: Boolean(context.theme.activeRelease),
-    });
-
-    let publishBuild = activeBuildPreview;
-    if (plan.action === "build") {
-      // Marked as publishing's own build so only this path reports progress on
-      // the Publish button. A build the person started themselves is not a
-      // publish in progress, and saying so would claim their store is about to
-      // go live when nothing of the sort was asked for.
-      setIsPublishBuilding(true);
-      try {
-        const attempt = await handleBuildPreviewRef.current?.();
-        if (!attempt?.ok || !attempt.build) {
-          // The build reported why it failed. Saying "publish failed" on top of
-          // that would name the wrong step.
-          return;
-        }
-        publishBuild = attempt.build;
-      } finally {
-        setIsPublishBuilding(false);
+      const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
+      const pendingThemeSave = saveQueueRef.current.get(themeOpKey);
+      if (pendingThemeSave) {
+        await pendingThemeSave.catch(() => null);
       }
-    }
 
-    await publishMutation.mutateAsync({
-      sourceRevisionId: publishBuild?.sourceRevisionId,
-      themeBuildId: publishBuild?.id,
-      expectedDraftRevisionId: publishDraftRevisionId,
-      expectedDraftGeneration: publishDraftGeneration,
-      expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
-    });
-  }, [
-    activeTemplate,
-    activeBuildPreview,
-    activeBuildSourceGeneration,
-    context.storefront.id,
-    context.theme.id,
-    handleUnifiedSaveFile,
-    monacoDirtyFiles,
-    publishMutation,
-    themeFilesQuery,
-    updatePropsMutation,
-    workspaceScope,
-  ]);
+      const workspace = useThemeWorkspaceStore.getState();
+      if (
+        workspace.hasActiveConflictsOrErrors(workspaceScope) ||
+        workspace.hasUnsavedEdits(workspaceScope)
+      ) {
+        toast.error(
+          "Cannot publish: source workspace is not fully saved and conflict-free.",
+        );
+        return;
+      }
 
-  const handleBuildPreview = useCallback(
-    async (): Promise<BuildAttempt> => {
+      if (!activeTemplate || !publishDraftRevisionId) {
+        toast.error("Cannot publish: template draft revision is missing.");
+        return;
+      }
+
+      const currentGeneration = useThemeWorkspaceStore
+        .getState()
+        .getBaseSourceGeneration(workspaceScope);
+
+      // Verify with server that no remote changes occurred behind user's back
+      const refreshed = await themeFilesQuery.refetch();
+      const serverGeneration = refreshed.data?.sourceGeneration;
+      if (
+        typeof serverGeneration === "number" &&
+        serverGeneration !== currentGeneration
+      ) {
+        toast.error(
+          "Cannot publish: remote source changes detected. Please reload/review files before publishing.",
+        );
+        return;
+      }
+
+      if (
+        activeBuildPreview &&
+        (activeBuildPreview.status !== "succeeded" ||
+          activeBuildSourceGeneration === null)
+      ) {
+        toast.error("Cannot publish: the selected Build Preview is not ready.");
+        return;
+      }
+
+      // Publishing needs an artifact that matches the source being published.
+      // Building is a step of publishing, not a thing to remember to do first:
+      // every comparable platform either builds as part of publishing or has
+      // already built automatically, and none makes the person trigger it.
+      const plan = resolvePublishBuildPlan({
+        hasBuild: Boolean(activeBuildPreview),
+        buildSourceGeneration: activeBuildSourceGeneration,
+        currentSourceGeneration: currentGeneration,
+        activeReleaseSourceGeneration:
+          context.theme.activeRelease?.sourceGeneration ?? null,
+      });
+
+      let publishBuild = activeBuildPreview;
+      if (plan.action === "build") {
+        // Marked as publishing's own build so only this path reports progress on
+        // the Publish button. A build the person started themselves is not a
+        // publish in progress, and saying so would claim their store is about to
+        // go live when nothing of the sort was asked for.
+        setIsPublishBuilding(true);
+        try {
+          const attempt = await handleBuildPreviewRef.current?.();
+          if (!attempt?.ok || !attempt.build) {
+            // The build reported why it failed. Saying "publish failed" on top of
+            // that would name the wrong step.
+            return;
+          }
+          publishBuild = attempt.build;
+        } finally {
+          setIsPublishBuilding(false);
+        }
+      }
+
+      await publishMutation.mutateAsync({
+        sourceRevisionId: publishBuild?.sourceRevisionId,
+        themeBuildId: publishBuild?.id,
+        note: note?.trim() || undefined,
+        expectedDraftRevisionId: publishDraftRevisionId,
+        expectedDraftGeneration: publishDraftGeneration,
+        expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
+      });
+    },
+    [
+      activeTemplate,
+      activeBuildPreview,
+      activeBuildSourceGeneration,
+      context.storefront.id,
+      context.theme.id,
+      handleUnifiedSaveFile,
+      monacoDirtyFiles,
+      publishMutation,
+      themeFilesQuery,
+      updatePropsMutation,
+      workspaceScope,
+    ],
+  );
+
+  const confirmPublish = useCallback(async () => {
+    // Closed first: the run reports itself on the toolbar button, and leaving
+    // the panel open over a disabled field only invites a second click.
+    setIsPublishNoteOpen(false);
+    const note = publishNote;
+    setPublishNote("");
+    await handlePublish(note);
+  }, [handlePublish, publishNote]);
+
+  const handleBuildPreview = useCallback(async (): Promise<BuildAttempt> => {
     if (isBuildPending) return { ok: false };
 
     if (themeFiles.length === 0) {
@@ -2759,16 +2808,14 @@ export function VisualEditorShell({
     // Reached when the build failed or was still running when the wait ended.
     // Neither produced an artifact, so neither is a usable build.
     return { ok: false };
-    },
-    [
-      context.storefront.id,
-      context.theme.id,
-      isBuildPending,
-      monacoDirtyFiles,
-      themeFiles,
-      workspaceScope,
-    ],
-  );
+  }, [
+    context.storefront.id,
+    context.theme.id,
+    isBuildPending,
+    monacoDirtyFiles,
+    themeFiles,
+    workspaceScope,
+  ]);
 
   handleBuildPreviewRef.current = handleBuildPreview;
 
@@ -4375,7 +4422,7 @@ export function VisualEditorShell({
     });
   }, [spacingOverlayMode]);
 
-  const handleSwitchToDesign = useCallback(() => {
+  const switchToDesign = useCallback(() => {
     setEditorMode("design");
     syncPreviewSpacingOverlay();
     const selectionRevision = nextPreviewSelectionRevision();
@@ -4396,6 +4443,45 @@ export function VisualEditorShell({
     nextPreviewSelectionRevision,
     syncPreviewSpacingOverlay,
   ]);
+
+  const handleContinueToDesign = useCallback(() => {
+    setIsUnsavedCodeDialogOpen(false);
+    switchToDesign();
+  }, [switchToDesign]);
+
+  const handleSaveAndSwitchToDesign = useCallback(async () => {
+    const saveAll = editorCodeWorkspaceRef.current?.saveAll;
+    if (!saveAll) {
+      toast.error("Code Workspace is still loading. Try again in a moment.");
+      return;
+    }
+
+    setIsSavingCodeBeforeModeSwitch(true);
+    try {
+      const saved = await saveAll();
+      if (!saved) {
+        toast.error(
+          "Could not save all Code Editor changes. Resolve any conflicts and try again.",
+        );
+        return;
+      }
+      setIsUnsavedCodeDialogOpen(false);
+      switchToDesign();
+    } catch {
+      // The Code Workspace reports the concrete save error. Keep the dialog
+      // open so a failed save never silently changes the editing mode.
+    } finally {
+      setIsSavingCodeBeforeModeSwitch(false);
+    }
+  }, [switchToDesign]);
+
+  const handleSwitchToDesign = useCallback(() => {
+    if (editorMode === "code" && monacoDirtyFiles.length > 0) {
+      setIsUnsavedCodeDialogOpen(true);
+      return;
+    }
+    switchToDesign();
+  }, [editorMode, monacoDirtyFiles.length, switchToDesign]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -5297,32 +5383,59 @@ export function VisualEditorShell({
                   ? firstThemeError
                     ? `Save failed: ${firstThemeError.slice(0, 30)}…`
                     : "Save failed"
-                  : hasUnpublishedChanges
-                    ? "Unpublished changes"
-                    : "All changes saved";
+                  : // One word each, and the same word stem, so the two states
+                    // read as a pair the eye can tell apart at a glance. The
+                    // longer phrasings sat beside four icon buttons and a
+                    // Publish button and read as a sentence in a toolbar.
+                    hasUnpublishedChanges
+                    ? "Unpublished"
+                    : "Published";
 
             return (
-              <span
-                data-editor-save-status
-                className={cn(
-                  // Below a wide viewport only the icon survives: the words
-                  // cost about 140px, which is the difference between this
-                  // toolbar fitting on a 1024px laptop and overlapping.
-                  "mr-2 hidden shrink-0 items-center gap-1.5 text-xs text-muted-foreground sm:flex",
-                  hasError && "text-destructive font-medium",
-                )}
-                title={firstThemeError ?? statusLabel}
-                aria-label={statusLabel}
-              >
-                {isSaving ? (
-                  <LoaderCircle className="size-3.5 animate-spin text-primary" />
-                ) : hasError ? (
-                  <CircleAlert className="size-3.5 text-destructive" />
-                ) : (
-                  <CircleCheck className="size-3.5" />
-                )}
-                <span className="hidden 2xl:inline">{statusLabel}</span>
-              </span>
+              <>
+                <span
+                  data-editor-save-status
+                  className={cn(
+                    // Below a wide viewport only the marker survives, because
+                    // the toolbar overlaps on a 1024px laptop once the words
+                    // are in it. One-word labels are about half the width the
+                    // phrases were, so they now survive a step further down.
+                    "hidden shrink-0 items-center gap-1.5 text-xs text-muted-foreground sm:flex",
+                    hasError && "text-destructive font-medium",
+                  )}
+                  title={firstThemeError ?? unpublishedReason}
+                  data-unpublished-reason={unpublishedReason}
+                  aria-label={statusLabel}
+                >
+                  {isSaving ? (
+                    <LoaderCircle className="size-3.5 animate-spin text-primary" />
+                  ) : hasError ? (
+                    <CircleAlert className="size-3.5 text-destructive" />
+                  ) : (
+                    // A dot, not a tick. The settled states differ only by
+                    // this marker and one word, and a tick beside
+                    // "Unpublished" says the opposite of the word next to it —
+                    // it reads as "done" for the one state that is not.
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "size-1.5 shrink-0 rounded-full",
+                        hasUnpublishedChanges
+                          ? "bg-primary"
+                          : "bg-muted-foreground/40",
+                      )}
+                    />
+                  )}
+                  <span className="hidden xl:inline">{statusLabel}</span>
+                </span>
+                {/* Splits the bar into what is true and what you can do. The
+                    status was the only item here with no container of its own,
+                    so against a row of icon buttons it read as loose text. */}
+                <span
+                  aria-hidden="true"
+                  className="mx-2 hidden h-4 w-px shrink-0 bg-border sm:block"
+                />
+              </>
             );
           })()}
           <Button
@@ -5390,6 +5503,12 @@ export function VisualEditorShell({
           </Button>
 
           {/*
+            Reports only the build it started itself. Publishing builds when it
+            needs to, and showing that run here spun two controls for one job
+            and — worse — offered to cancel it, from a button whose owner is
+            waiting on the result. During a publish build this stays idle and
+            disabled, and Publish is the one thing reporting progress.
+
             One control for a single running thing: while a build is in flight
             the only useful action on it is to stop it, so the button becomes
             that action instead of going dead and growing a second button.
@@ -5403,29 +5522,31 @@ export function VisualEditorShell({
             type="button"
             variant="outline"
             size="icon"
-            disabled={themeFiles.length === 0}
+            disabled={themeFiles.length === 0 || isPublishBuilding}
             // Stable across both states, so a test can address the control
             // without depending on the title that changes with it.
             data-editor-build-action
-            data-build-pending={isBuildPending ? "true" : "false"}
+            data-build-pending={isOwnBuildPending ? "true" : "false"}
             className="group max-sm:hidden"
             aria-label={
-              isBuildPending ? "Cancel the running build" : "Build the theme"
+              isOwnBuildPending ? "Cancel the running build" : "Build the theme"
             }
             onClick={
-              isBuildPending
+              isOwnBuildPending
                 ? () => void handleCancelBuild()
                 : handleBuildPreview
             }
             title={
               themeFiles.length === 0
                 ? "Initialize starter theme files in Code Workspace before building"
-                : isBuildPending
-                  ? "Cancel this build. A build that already finished keeps its result."
-                  : "Compile and bundle theme into immutable R2 preview build"
+                : isPublishBuilding
+                  ? "Publishing is building this theme. Cancel it from Publish."
+                  : isOwnBuildPending
+                    ? "Cancel this build. A build that already finished keeps its result."
+                    : "Compile and bundle theme into immutable R2 preview build"
             }
           >
-            {isBuildPending ? (
+            {isOwnBuildPending ? (
               <>
                 {/* Focus reveals the stop marker as well as hover: the icon is
                     the only thing saying what activating the button now does,
@@ -5448,43 +5569,105 @@ export function VisualEditorShell({
             screen reader, and the accessible name follows the visible label so
             the two never disagree.
           */}
-          <Button
-            type="button"
-            size="xs"
-            className="gap-1.5"
-            aria-busy={publishMutation.isPending || isPublishBuilding}
-            data-publish-pending={
-              publishMutation.isPending || isPublishBuilding ? "true" : "false"
-            }
-            disabled={
-              !hasUnpublishedChanges ||
-              draftSaveState !== "idle" ||
-              Object.values(themeFileSaveStatus).some((s) => s === "saving") ||
-              Object.values(themeFileSaveErrors).length > 0 ||
-              monacoDirtyFiles.length > 0 ||
-              useThemeWorkspaceStore
-                .getState()
-                .hasUnsavedEdits(workspaceScope) ||
-              useThemeWorkspaceStore
-                .getState()
-                .hasActiveConflictsOrErrors(workspaceScope) ||
-              publishMutation.isPending ||
-              isBuildPending
-            }
-            onClick={handlePublish}
-          >
-            {publishMutation.isPending || isPublishBuilding ? (
-              <>
-                <LoaderCircle className="size-3.5 animate-spin" />
-                {/* Publishing builds first when nothing usable exists, so the
-                    label names the step actually running rather than implying
-                    the release is already being written. */}
-                {isPublishBuilding ? "Building…" : "Publishing…"}
-              </>
-            ) : (
-              "Publish"
-            )}
-          </Button>
+          <Popover open={isPublishNoteOpen} onOpenChange={setIsPublishNoteOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="form"
+                size="xs"
+                className="gap-1.5"
+                aria-busy={publishMutation.isPending || isPublishBuilding}
+                data-publish-pending={
+                  publishMutation.isPending || isPublishBuilding
+                    ? "true"
+                    : "false"
+                }
+                disabled={
+                  !hasUnpublishedChanges ||
+                  draftSaveState !== "idle" ||
+                  Object.values(themeFileSaveStatus).some(
+                    (s) => s === "saving",
+                  ) ||
+                  Object.values(themeFileSaveErrors).length > 0 ||
+                  monacoDirtyFiles.length > 0 ||
+                  useThemeWorkspaceStore
+                    .getState()
+                    .hasUnsavedEdits(workspaceScope) ||
+                  useThemeWorkspaceStore
+                    .getState()
+                    .hasActiveConflictsOrErrors(workspaceScope) ||
+                  publishMutation.isPending ||
+                  isBuildPending
+                }
+              >
+                {publishMutation.isPending || isPublishBuilding ? (
+                  <>
+                    <LoaderCircle className="size-3.5 animate-spin" />
+                    {/* Publishing builds first when nothing usable exists, so the
+                        label names the step actually running rather than implying
+                        the release is already being written. */}
+                    {isPublishBuilding ? "Building…" : "Publishing…"}
+                  </>
+                ) : (
+                  "Publish"
+                )}
+              </Button>
+            </PopoverTrigger>
+            {/*
+              A release is otherwise identified by a hex fragment and a
+              timestamp, which says nothing about what it contains — so picking
+              one to roll back to means opening them one at a time. One line
+              written here is what makes the history readable later.
+
+              Optional on purpose: requiring it produces "update" and "fix",
+              which is the same non-information with more friction in the way.
+            */}
+            <PopoverContent align="end" className="w-80 space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="publish-note" className="text-xs">
+                  Describe this release{" "}
+                  <span className="font-normal text-muted-foreground">
+                    (optional)
+                  </span>
+                </Label>
+                <Input
+                  id="publish-note"
+                  value={publishNote}
+                  maxLength={MAX_RELEASE_NOTE_LENGTH}
+                  placeholder="Reworded the homepage hero"
+                  onChange={(event) => setPublishNote(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void confirmPublish();
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  You can rename it later from Release history.
+                </p>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="destructive"
+                  onClick={() => setIsPublishNoteOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="form"
+                  size="xs"
+                  data-publish-confirm
+                  onClick={() => void confirmPublish()}
+                >
+                  Publish
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       </header>
 
@@ -5583,6 +5766,7 @@ export function VisualEditorShell({
           }
         >
           <EditorCodeWorkspace
+            ref={editorCodeWorkspaceRef}
             storefrontId={context.storefront.id}
             themeId={context.theme.id}
             files={effectiveThemeFiles}
@@ -6055,6 +6239,48 @@ export function VisualEditorShell({
 
         <EditorSmallScreenNotice />
       </EditorModeSurface>
+
+      <AlertDialog
+        open={isUnsavedCodeDialogOpen}
+        onOpenChange={(open) => {
+          if (!isSavingCodeBeforeModeSwitch) {
+            setIsUnsavedCodeDialogOpen(open);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unsaved Code changes</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have unsaved changes in {monacoDirtyFiles.length} Code Editor{" "}
+              {monacoDirtyFiles.length === 1 ? "file" : "files"}. Save them
+              before switching to Design?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSavingCodeBeforeModeSwitch}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isSavingCodeBeforeModeSwitch}
+              onClick={handleContinueToDesign}
+            >
+              Continue without saving
+            </AlertDialogAction>
+            <Button
+              type="button"
+              variant="form"
+              disabled={isSavingCodeBeforeModeSwitch}
+              onClick={() => void handleSaveAndSwitchToDesign()}
+            >
+              {isSavingCodeBeforeModeSwitch ? (
+                <LoaderCircle className="size-3.5 animate-spin" />
+              ) : null}
+              {isSavingCodeBeforeModeSwitch ? "Saving…" : "Save & switch"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -13,15 +13,10 @@ import {
   updateStorefrontCommentGroup,
 } from "@/server/storefront/storefront-comments.serverFn";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  CheckCircle2,
-  MessageSquarePlus,
-  Plus,
-  Search,
-  X,
-} from "lucide-react";
+import { CheckCircle2, MessageSquarePlus, Plus, Search, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { optimisticListMutation } from "@/lib/query/optimistic-list";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { CommentGroupItem } from "./comments/comment-group-item";
 
@@ -57,15 +52,22 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
   onCreateGroup,
 }: EditorCommentsSidebarProps) {
   const queryClient = useQueryClient();
-  const [internalFilter, setInternalFilter] = useState<"open" | "resolved">("open");
+  const [internalFilter, setInternalFilter] = useState<"open" | "resolved">(
+    "open",
+  );
   const filter = filterProp ?? internalFilter;
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [collapsedGroups, setCollapsedGroups] = useState<
+    Record<string, boolean>
+  >({});
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
 
-  const getSessionGroupMap = useCallback((): { open?: string; resolved?: string } => {
+  const getSessionGroupMap = useCallback((): {
+    open?: string;
+    resolved?: string;
+  } => {
     try {
       const raw = sessionStorage.getItem(
         `morph:comments-last-group:${storefrontId}:${themeId}:${templateId ?? "default"}`,
@@ -143,9 +145,26 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
       setEditingGroupId(null);
       toast.success("Group updated");
     },
-    onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "Failed to update group");
-    },
+    ...optimisticListMutation<
+      StorefrontCommentGroupDTO,
+      { groupId: string; name?: string; viewportWidth?: number }
+    >({
+      queryClient,
+      prefix: storefrontCommentQueries.all(),
+      // Only the fields the caller actually sent are applied, so a viewport
+      // change does not blank the name it did not mention.
+      patch: (groups, { groupId, name, viewportWidth }) =>
+        groups.map((group) =>
+          group.id === groupId
+            ? {
+                ...group,
+                ...(name === undefined ? {} : { name }),
+                ...(viewportWidth === undefined ? {} : { viewportWidth }),
+              }
+            : group,
+        ),
+      onError: (error) => toast.error(error.message),
+    }),
   });
 
   const deleteGroupMutation = useMutation({
@@ -160,13 +179,14 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
-    onSuccess: () => {
-      invalidate();
-      toast.success("Group deleted");
-    },
-    onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "Failed to delete group");
-    },
+    ...optimisticListMutation<StorefrontCommentGroupDTO, string>({
+      queryClient,
+      prefix: storefrontCommentQueries.all(),
+      patch: (groups, groupId) =>
+        groups.filter((group) => group.id !== groupId),
+      onError: (error) => toast.error(error.message),
+    }),
+    onSuccess: () => toast.success("Group deleted"),
   });
 
   const clearResolvedGroupMutation = useMutation({
@@ -181,15 +201,17 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
-    onSuccess: () => {
-      invalidate();
-      toast.success("Resolved comments cleared");
-    },
-    onError: (err) => {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to clear comments",
-      );
-    },
+    ...optimisticListMutation<StorefrontCommentThreadDTO, string>({
+      queryClient,
+      prefix: storefrontCommentQueries.all(),
+      patch: (threads, groupId) =>
+        threads.filter(
+          (thread) =>
+            !(thread.groupId === groupId && thread.status === "resolved"),
+        ),
+      onError: (error) => toast.error(error.message),
+    }),
+    onSuccess: () => toast.success("Resolved comments cleared"),
   });
 
   const resolveMutation = useMutation({
@@ -211,13 +233,27 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
+    ...optimisticListMutation<
+      StorefrontCommentThreadDTO,
+      { threadId: string; resolved: boolean }
+    >({
+      queryClient,
+      prefix: storefrontCommentQueries.all(),
+      patch: (threads, { threadId, resolved }) =>
+        threads.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                status: resolved ? "resolved" : "open",
+                resolvedAt: resolved ? new Date().toISOString() : null,
+              }
+            : thread,
+        ),
+      onError: (error) => toast.error(error.message),
+    }),
     onSuccess: (_, vars) => {
-      invalidate();
       onSelectThread(null);
       toast.success(vars.resolved ? "Thread resolved" : "Thread reopened");
-    },
-    onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "Failed to update thread");
     },
   });
 
@@ -251,7 +287,9 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
         }
 
         const allGroupThreads = threads.filter((t) => t.groupId === group.id);
-        const openCount = allGroupThreads.filter((t) => t.status === "open").length;
+        const openCount = allGroupThreads.filter(
+          (t) => t.status === "open",
+        ).length;
         const resolvedCount = allGroupThreads.filter(
           (t) => t.status === "resolved",
         ).length;
@@ -266,7 +304,9 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
       .filter((group) => {
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase();
-          return group.name.toLowerCase().includes(q) || group.threads.length > 0;
+          return (
+            group.name.toLowerCase().includes(q) || group.threads.length > 0
+          );
         }
         if (filter === "resolved") {
           return group.resolvedCount > 0;
@@ -286,8 +326,12 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
     if (!currentGroup) return;
 
     if (filter === "open") {
-      const allGroupThreads = threads.filter((t) => t.groupId === activeGroupId);
-      const openCount = allGroupThreads.filter((t) => t.status === "open").length;
+      const allGroupThreads = threads.filter(
+        (t) => t.groupId === activeGroupId,
+      );
+      const openCount = allGroupThreads.filter(
+        (t) => t.status === "open",
+      ).length;
       const resolvedCount = allGroupThreads.filter(
         (t) => t.status === "resolved",
       ).length;
@@ -301,7 +345,9 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
         }
       }
     } else if (filter === "resolved") {
-      const allGroupThreads = threads.filter((t) => t.groupId === activeGroupId);
+      const allGroupThreads = threads.filter(
+        (t) => t.groupId === activeGroupId,
+      );
       const resolvedCount = allGroupThreads.filter(
         (t) => t.status === "resolved",
       ).length;
@@ -428,7 +474,8 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
               No comment groups yet
             </h3>
             <p className="mt-1 max-w-56 text-[11px] leading-relaxed text-muted-foreground">
-              Create a group to pin and organize feedback at your desired viewport width.
+              Create a group to pin and organize feedback at your desired
+              viewport width.
             </p>
             <Button
               variant="form"
@@ -446,7 +493,9 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
               <CheckCircle2
                 className={cn(
                   "size-5",
-                  filter === "open" ? "text-emerald-500" : "text-muted-foreground",
+                  filter === "open"
+                    ? "text-emerald-500"
+                    : "text-muted-foreground",
                 )}
               />
             </div>

@@ -94,3 +94,59 @@ describe("expectedActiveReleaseId", () => {
     expect(expectedActiveReleaseId(rows, "99999999-9999-4999-8999-999999999999")).toBeNull();
   });
 });
+
+describe("release notes in history rows", () => {
+  it("surfaces the note a publisher wrote", () => {
+    const [row] = describeReleaseHistory(
+      [
+        release({
+          id: "44444444-4444-4444-8444-444444444444",
+          metadata: { note: "Reworded the homepage hero" },
+        }),
+      ],
+      null,
+    );
+
+    expect(row.note).toBe("Reworded the homepage hero");
+    // The id fragment stays available: it is what matches a release to a build
+    // or a log line, which a description cannot do.
+    expect(row.label).toBe("44444444");
+  });
+
+  it("reports no note rather than an empty one when none was written", () => {
+    expect(
+      describeReleaseHistory(
+        [release({ id: "55555555-5555-4555-8555-555555555555" })],
+        null,
+      )[0].note,
+    ).toBeNull();
+
+    // Whitespace is not a description, and rendering it would leave a row that
+    // looks named but reads blank.
+    expect(
+      describeReleaseHistory(
+        [
+          release({
+            id: "66666666-6666-4666-8666-666666666666",
+            metadata: { note: "   " },
+          }),
+        ],
+        null,
+      )[0].note,
+    ).toBeNull();
+  });
+
+  it("ignores unrelated metadata", () => {
+    expect(
+      describeReleaseHistory(
+        [
+          release({
+            id: "77777777-7777-4777-8777-777777777777",
+            metadata: { deployedBy: "queue" },
+          }),
+        ],
+        null,
+      )[0].note,
+    ).toBeNull();
+  });
+});

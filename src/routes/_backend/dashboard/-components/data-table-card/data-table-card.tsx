@@ -60,6 +60,16 @@ export interface DataTableColumn<TRow> {
   defaultVisible?: boolean;
 }
 
+/**
+ * Which table's URL state a control reads and writes.
+ *
+ * Named rather than repeated so a new independently paginated table is one
+ * edit here instead of the same union widened in five files — which is how the
+ * pager, search, sort and empty state drift apart.
+ */
+export type DataTableScope =
+  "taxRate" | "orderItem" | "orderFulfillment" | "release";
+
 export interface DataTablePaginationInfo {
   page: number;
   limit: number;
@@ -74,6 +84,10 @@ export interface DataTableCardProps<TRow> {
   hideHeader?: boolean;
   /** Feature-owned layout only; visual styling remains inside the primitive. */
   className?: string;
+  /** Additional styling applied directly to the HTML table element. */
+  tableClassName?: string;
+  /** Width / layout styling applied to the trailing row actions column (defaults to w-16). */
+  rowActionsClassName?: string;
   /** Fill keeps the pager at the surface bottom and the row divider in place. */
   layout?: "fit" | "fill";
   columns: DataTableColumn<TRow>[];
@@ -109,7 +123,7 @@ export interface DataTableCardProps<TRow> {
   isRowClickable?: (row: TRow) => boolean;
   pagination?: DataTablePaginationInfo;
   /** Namespaced URL state for a second independently paginated table. */
-  searchScope?: "taxRate" | "orderItem" | "orderFulfillment";
+  searchScope?: DataTableScope;
   /** Declarative filters rendered by the shared Add filter control. */
   filters?: DataTableFilterDefinition[];
   /** Filters and active filter chips shown on the toolbar's leading edge. */
@@ -152,6 +166,8 @@ export const DataTableCard = <TRow,>({
   description,
   hideHeader,
   className,
+  tableClassName,
+  rowActionsClassName,
   layout = "fit",
   columns,
   rows,
@@ -307,7 +323,7 @@ export const DataTableCard = <TRow,>({
     selection?.selectedIds.has(getRowId(row)),
   );
   const tableContent = (
-    <Table>
+    <Table className={tableClassName}>
       <TableHeader>
         <TableRow>
           {selection ? (
@@ -339,7 +355,9 @@ export const DataTableCard = <TRow,>({
               {column.header}
             </SortableTableHead>
           ))}
-          {hasRowActions && <TableHead className="w-16" />}
+          {hasRowActions && (
+            <TableHead className={rowActionsClassName ?? "w-16"} />
+          )}
         </TableRow>
       </TableHeader>
       <TableBody preserveLastRowBorder={layout === "fill" || !pagination}>
@@ -415,7 +433,7 @@ export const DataTableCard = <TRow,>({
               ))}
               {hasRowActions && (
                 <TableCell
-                  className="w-16 text-right"
+                  className={cn(rowActionsClassName ?? "w-16", "text-right")}
                   onClick={(event) => event.stopPropagation()}
                 >
                   {renderRowActions?.(row) ?? (
@@ -440,7 +458,7 @@ export const DataTableCard = <TRow,>({
   const pendingTable = (
     <>
       <TableViewport>
-        <Table aria-label="Loading table data">
+        <Table className={tableClassName} aria-label="Loading table data">
           <TableHeader>
             <TableRow>
               {selection ? <TableHead className="w-14" /> : null}
@@ -449,7 +467,9 @@ export const DataTableCard = <TRow,>({
                   {column.header}
                 </TableHead>
               ))}
-              {hasRowActions ? <TableHead className="w-16" /> : null}
+              {hasRowActions ? (
+                <TableHead className={rowActionsClassName ?? "w-16"} />
+              ) : null}
             </TableRow>
           </TableHeader>
           <TableBody preserveLastRowBorder={layout === "fill" || !pagination}>
@@ -475,7 +495,7 @@ export const DataTableCard = <TRow,>({
                   </TableCell>
                 ))}
                 {hasRowActions ? (
-                  <TableCell className="w-16">
+                  <TableCell className={rowActionsClassName ?? "w-16"}>
                     <Skeleton className="ml-auto size-7 rounded-md" />
                   </TableCell>
                 ) : null}

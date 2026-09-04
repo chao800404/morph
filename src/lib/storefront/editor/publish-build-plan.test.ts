@@ -10,7 +10,7 @@ describe("resolvePublishBuildPlan", () => {
         hasBuild: true,
         buildSourceGeneration: 7,
         currentSourceGeneration: 7,
-        hasActiveRelease: true,
+        activeReleaseSourceGeneration: 7,
       }),
     ).toEqual({ action: "reuse-build" });
   });
@@ -21,7 +21,7 @@ describe("resolvePublishBuildPlan", () => {
         hasBuild: true,
         buildSourceGeneration: 7,
         currentSourceGeneration: 8,
-        hasActiveRelease: true,
+        activeReleaseSourceGeneration: 7,
       }),
     ).toEqual({ action: "build" });
   });
@@ -32,7 +32,7 @@ describe("resolvePublishBuildPlan", () => {
         hasBuild: false,
         buildSourceGeneration: null,
         currentSourceGeneration: 1,
-        hasActiveRelease: false,
+        activeReleaseSourceGeneration: null,
       }),
     ).toEqual({ action: "build" });
   });
@@ -45,7 +45,7 @@ describe("resolvePublishBuildPlan", () => {
         hasBuild: false,
         buildSourceGeneration: null,
         currentSourceGeneration: 3,
-        hasActiveRelease: true,
+        activeReleaseSourceGeneration: 3,
       }),
     ).toEqual({ action: "reuse-release" });
   });
@@ -58,7 +58,7 @@ describe("resolvePublishBuildPlan", () => {
         hasBuild: true,
         buildSourceGeneration: null,
         currentSourceGeneration: 4,
-        hasActiveRelease: true,
+        activeReleaseSourceGeneration: 4,
       }),
     ).toEqual({ action: "build" });
   });
@@ -69,8 +69,34 @@ describe("resolvePublishBuildPlan", () => {
         hasBuild: true,
         buildSourceGeneration: 2,
         currentSourceGeneration: 2,
-        hasActiveRelease: false,
+        activeReleaseSourceGeneration: null,
       }),
     ).toEqual({ action: "reuse-build" });
+  });
+
+  it("builds when the Theme was edited but never built", () => {
+    // The case that sent people to press Build themselves: source edited past
+    // the release, no build held. Reusing the release here ships the artifact
+    // from before the edit, and the server refuses it — so the plan has to
+    // build rather than propose something publishing will reject.
+    expect(
+      resolvePublishBuildPlan({
+        hasBuild: false,
+        buildSourceGeneration: null,
+        currentSourceGeneration: 4,
+        activeReleaseSourceGeneration: 3,
+      }),
+    ).toEqual({ action: "build" });
+  });
+
+  it("builds when the release's source generation is unknown", () => {
+    expect(
+      resolvePublishBuildPlan({
+        hasBuild: false,
+        buildSourceGeneration: null,
+        currentSourceGeneration: 4,
+        activeReleaseSourceGeneration: null,
+      }),
+    ).toEqual({ action: "build" });
   });
 });

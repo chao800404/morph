@@ -5,7 +5,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "morph",
-  "compatibility_date": "2025-09-02",
+  "compatibility_date": "2026-03-24",
   "compatibility_flags": ["nodejs_compat"],
   // User-owned entry instead of "@tanstack/react-start/server-entry".
   // See src/server.ts for why (TanStack/router#7285 breaks SSR HMR).

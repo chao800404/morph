@@ -12,6 +12,9 @@ vi.mock("@/lib/storefront/dal/storefront-theme-dependency.dal", () => ({
   storefrontThemeDependencyDal: { markBuildResult },
 }));
 
+const runReleasePreviewCapture = vi.fn();
+vi.mock("./release-preview-capture", () => ({ runReleasePreviewCapture }));
+
 const { processThemeBuildQueue } = await import("./theme-build-queue");
 
 const BUILD_ID = "3f1a2b4c-5d6e-4f70-8192-a3b4c5d6e7f8";
@@ -71,5 +74,60 @@ describe("processThemeBuildQueue", () => {
 
     expect(malformed.ack).toHaveBeenCalledTimes(1);
     expect(getThemeBuild).not.toHaveBeenCalled();
+  });
+});
+
+describe("release preview messages", () => {
+  const previewMessage = () => ({
+    body: {
+      version: 1,
+      type: "release-preview",
+      storefrontId: "11111111-2222-4333-8444-555555555555",
+      releaseId: "99999999-8888-4777-8666-555555555555",
+    },
+    ack: vi.fn(),
+  });
+
+  it("captures the release and never builds", async () => {
+    executeQueuedBuild.mockClear();
+    runReleasePreviewCapture.mockClear();
+    const msg = previewMessage();
+
+    await processThemeBuildQueue({ messages: [msg] });
+
+    expect(runReleasePreviewCapture).toHaveBeenCalledWith({
+      version: 1,
+      type: "release-preview",
+      storefrontId: "11111111-2222-4333-8444-555555555555",
+      releaseId: "99999999-8888-4777-8666-555555555555",
+    });
+    expect(executeQueuedBuild).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalled();
+  });
+
+  it("acknowledges a capture that failed rather than retrying it", async () => {
+    // Browser Run's daily cap is the common failure, and retrying would spend
+    // the remaining budget re-failing. The card falls back on its own.
+    runReleasePreviewCapture.mockClear();
+    runReleasePreviewCapture.mockRejectedValueOnce(new Error("429"));
+    const msg = previewMessage();
+
+    await expect(
+      processThemeBuildQueue({ messages: [msg] }),
+    ).resolves.toBeUndefined();
+    expect(msg.ack).toHaveBeenCalled();
+  });
+
+  it("drops a malformed preview message instead of poisoning the queue", async () => {
+    runReleasePreviewCapture.mockClear();
+    const msg = {
+      body: { version: 1, type: "release-preview", storefrontId: "not-a-uuid" },
+      ack: vi.fn(),
+    };
+
+    await processThemeBuildQueue({ messages: [msg] });
+
+    expect(runReleasePreviewCapture).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalled();
   });
 });

@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useThemeWorkspaceStore } from "./theme-workspace-store";
+import {
+  themeFileWritePrecondition,
+  useThemeWorkspaceStore,
+} from "./theme-workspace-store";
 import type { StorefrontThemeFileDTO } from "../dto/storefront-theme-file.dto";
 
 describe("ThemeWorkspaceStore", () => {
@@ -52,7 +55,9 @@ describe("ThemeWorkspaceStore", () => {
       "src/components/Hero.tsx",
       "export const Hero = () => <div>Theme A Dirty</div>;",
     );
-    expect(useThemeWorkspaceStore.getState().files["src/components/Hero.tsx"].dirty).toBe(true);
+    expect(
+      useThemeWorkspaceStore.getState().files["src/components/Hero.tsx"].dirty,
+    ).toBe(true);
     expect(useThemeWorkspaceStore.getState().getDirtyFiles()).toEqual([
       "src/components/Hero.tsx",
     ]);
@@ -109,17 +114,23 @@ describe("ThemeWorkspaceStore", () => {
       },
     ]);
 
-    expect(useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors()).toBe(true);
-    const fileState = useThemeWorkspaceStore.getState().files["src/pages/index.tsx"];
+    expect(useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors()).toBe(
+      true,
+    );
+    const fileState =
+      useThemeWorkspaceStore.getState().files["src/pages/index.tsx"];
     expect(fileState.saveState).toBe("conflict");
     expect(fileState.conflict?.kind).toBe("modified");
 
     // Reload remote resolution
     store.resolveConflict("src/pages/index.tsx", "reload");
-    expect(useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors()).toBe(false);
-    expect(useThemeWorkspaceStore.getState().files["src/pages/index.tsx"].localContent).toBe(
-      "concurrent server update",
+    expect(useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors()).toBe(
+      false,
     );
+    expect(
+      useThemeWorkspaceStore.getState().files["src/pages/index.tsx"]
+        .localContent,
+    ).toBe("concurrent server update");
   });
 
   it("never falls back to active workspace when explicit scope is given", () => {
@@ -164,9 +175,10 @@ describe("ThemeWorkspaceStore", () => {
     });
 
     // Active workspace (Theme B) must remain unchanged
-    expect(useThemeWorkspaceStore.getState().files["src/components/Hero.tsx"].localContent).toBe(
-      "Theme B original",
-    );
+    expect(
+      useThemeWorkspaceStore.getState().files["src/components/Hero.tsx"]
+        .localContent,
+    ).toBe("Theme B original");
 
     // Theme A workspace received the change
     const themeAFiles = useThemeWorkspaceStore
@@ -181,17 +193,33 @@ describe("ThemeWorkspaceStore", () => {
     const scope = { storefrontId: "store-a", themeId: "theme-a" };
 
     // Initial hydrate sets both accepted and observed to 10
-    useThemeWorkspaceStore.getState().hydrateFromQuery("store-a", "theme-a", [], 10);
-    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(10);
-    expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(10);
-    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(false);
+    useThemeWorkspaceStore
+      .getState()
+      .hydrateFromQuery("store-a", "theme-a", [], 10);
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(10);
+    expect(
+      useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope),
+    ).toBe(10);
+    expect(
+      useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope),
+    ).toBe(false);
 
     // Background poll observes server generation 12 (remote changed)
-    useThemeWorkspaceStore.getState().hydrateFromQuery("store-a", "theme-a", [], 12);
+    useThemeWorkspaceStore
+      .getState()
+      .hydrateFromQuery("store-a", "theme-a", [], 12);
     // Accepted generation remains 10 because user hasn't saved or accepted
-    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(10);
-    expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(12);
-    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(true);
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(10);
+    expect(
+      useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope),
+    ).toBe(12);
+    expect(
+      useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope),
+    ).toBe(true);
 
     // Own save completes with generation 13, advancing both accepted and observed
     useThemeWorkspaceStore.getState().markSaved(
@@ -211,9 +239,15 @@ describe("ThemeWorkspaceStore", () => {
       scope,
       13,
     );
-    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(13);
-    expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(13);
-    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(false);
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(13);
+    expect(
+      useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope),
+    ).toBe(13);
+    expect(
+      useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope),
+    ).toBe(false);
   });
 
   it("accepts the generation created by its own starter initialization", () => {
@@ -272,7 +306,9 @@ describe("ThemeWorkspaceStore", () => {
     );
 
     // Make local change
-    useThemeWorkspaceStore.getState().updateLocalContent("src/pages/index.tsx", "local draft", scope);
+    useThemeWorkspaceStore
+      .getState()
+      .updateLocalContent("src/pages/index.tsx", "local draft", scope);
 
     // Background refetch gets version 2, generation 15 -> creates conflict
     useThemeWorkspaceStore.getState().hydrateFromQuery(
@@ -295,19 +331,32 @@ describe("ThemeWorkspaceStore", () => {
       15,
     );
 
-    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(true);
-    expect(useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors(scope)).toBe(true);
+    expect(
+      useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope),
+    ).toBe(true);
+    expect(
+      useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors(scope),
+    ).toBe(true);
 
     // Explicitly accept remote workspace
     useThemeWorkspaceStore.getState().acceptRemoteWorkspace(scope);
 
-    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(15);
-    expect(useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope)).toBe(15);
-    expect(useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope)).toBe(false);
-    expect(useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors(scope)).toBe(false);
     expect(
-      useThemeWorkspaceStore.getState().getWorkspaceFiles("store-a", "theme-a")["src/pages/index.tsx"]
-        ?.localContent,
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(15);
+    expect(
+      useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope),
+    ).toBe(15);
+    expect(
+      useThemeWorkspaceStore.getState().hasRemoteSourceChanged(scope),
+    ).toBe(false);
+    expect(
+      useThemeWorkspaceStore.getState().hasActiveConflictsOrErrors(scope),
+    ).toBe(false);
+    expect(
+      useThemeWorkspaceStore.getState().getWorkspaceFiles("store-a", "theme-a")[
+        "src/pages/index.tsx"
+      ]?.localContent,
     ).toBe("remote update");
   });
 
@@ -345,18 +394,23 @@ describe("ThemeWorkspaceStore", () => {
     // Marked as saving
     store.markSaving("src/components/Hero.tsx", scope);
     expect(
-      store.getWorkspaceFiles("store-a", "theme-a")["src/components/Hero.tsx"]?.saveState,
+      store.getWorkspaceFiles("store-a", "theme-a")["src/components/Hero.tsx"]
+        ?.saveState,
     ).toBe("saving");
 
     // Source generation conflict occurs (e.g. Footer was modified concurrently)
     // Server rejects save with SOURCE_GENERATION_CONFLICT -> client calls markDirty
     store.markDirty("src/components/Hero.tsx", scope);
 
-    const heroFile = store.getWorkspaceFiles("store-a", "theme-a")["src/components/Hero.tsx"];
+    const heroFile = store.getWorkspaceFiles("store-a", "theme-a")[
+      "src/components/Hero.tsx"
+    ];
     expect(heroFile?.dirty).toBe(true);
     expect(heroFile?.saveState).toBe("dirty");
     expect(heroFile?.errorMessage).toBeUndefined();
-    expect(heroFile?.localContent).toBe("export const Hero = () => <div>My Dirty Hero</div>;");
+    expect(heroFile?.localContent).toBe(
+      "export const Hero = () => <div>My Dirty Hero</div>;",
+    );
 
     // Remote query background refetch observes generation 11
     store.hydrateFromQuery(
@@ -386,9 +440,124 @@ describe("ThemeWorkspaceStore", () => {
     expect(store.hasRemoteSourceChanged(scope)).toBe(false);
 
     // Hero is still dirty with user's edits intact ready for next save!
-    const heroAfterAccept = store.getWorkspaceFiles("store-a", "theme-a")["src/components/Hero.tsx"];
+    const heroAfterAccept = store.getWorkspaceFiles("store-a", "theme-a")[
+      "src/components/Hero.tsx"
+    ];
     expect(heroAfterAccept?.dirty).toBe(true);
     expect(heroAfterAccept?.saveState).toBe("dirty");
-    expect(heroAfterAccept?.localContent).toBe("export const Hero = () => <div>My Dirty Hero</div>;");
+    expect(heroAfterAccept?.localContent).toBe(
+      "export const Hero = () => <div>My Dirty Hero</div>;",
+    );
+  });
+});
+
+describe("themeFileWritePrecondition", () => {
+  it("sends the id and version together for a file the server holds", () => {
+    expect(
+      themeFileWritePrecondition({
+        serverExists: true,
+        serverFileId: "file-1",
+        serverVersion: 3,
+      }),
+    ).toEqual({
+      expectMissing: false,
+      expectedFileId: "file-1",
+      expectedVersion: 3,
+    });
+  });
+
+  it("asks for a create, and never a version, for a file the server lacks", () => {
+    // The server rejects `expectMissing` combined with either expected field,
+    // so the absent case has to omit them rather than send them as undefined.
+    const precondition = themeFileWritePrecondition({
+      serverExists: false,
+      serverFileId: null,
+      serverVersion: null,
+    });
+
+    expect(precondition).toEqual({ expectMissing: true });
+    expect(precondition).not.toHaveProperty("expectedFileId");
+    expect(precondition).not.toHaveProperty("expectedVersion");
+  });
+
+  it("treats a file the workspace has never seen as a create", () => {
+    expect(themeFileWritePrecondition(undefined)).toEqual({
+      expectMissing: true,
+    });
+  });
+});
+
+describe("server state stays indivisible", () => {
+  const serverFile: StorefrontThemeFileDTO = {
+    id: "file-1",
+    storefrontId: "store-a",
+    themeId: "theme-a",
+    path: "src/app.tsx",
+    content: "export const App = () => null;",
+    version: 2,
+    mimeType: "text/plain",
+    createdAt: "2026-01-01",
+    updatedAt: "2026-01-01",
+  } as StorefrontThemeFileDTO;
+
+  const scope = { storefrontId: "store-a", themeId: "theme-a" };
+
+  it("never records a file as present without an id and version", () => {
+    const store = useThemeWorkspaceStore.getState();
+    store.setActiveWorkspace(scope.storefrontId, scope.themeId);
+    store.hydrateFromQuery(scope.storefrontId, scope.themeId, [serverFile], 1);
+
+    // Walk the file through the transitions that used to write the three
+    // fields independently: a local edit, a save landing, and a conflict.
+    store.updateLocalContent(serverFile.path, "edited", scope);
+    store.markSaved({ ...serverFile, content: "edited", version: 3 }, scope);
+    store.updateLocalContent(serverFile.path, "edited again", scope);
+    store.markConflict(
+      serverFile.path,
+      {
+        kind: "modified",
+        remoteExists: true,
+        remoteFileId: serverFile.id,
+        remoteVersion: 4,
+        remoteContent: "remote",
+      },
+      scope,
+    );
+    useThemeWorkspaceStore
+      .getState()
+      .resolveConflict(serverFile.path, "force_mine", scope);
+
+    for (const file of Object.values(
+      useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(scope.storefrontId, scope.themeId),
+    )) {
+      if (file.serverExists) {
+        expect(file.serverFileId).toEqual(expect.any(String));
+        expect(file.serverVersion).toEqual(expect.any(Number));
+      } else {
+        expect(file.serverFileId).toBeNull();
+        expect(file.serverVersion).toBeNull();
+      }
+    }
+  });
+
+  it("keeps a locally created file addressable as a create", () => {
+    const store = useThemeWorkspaceStore.getState();
+    store.setActiveWorkspace(scope.storefrontId, scope.themeId);
+    store.updateLocalContent(
+      "src/new.tsx",
+      "export const New = () => null;",
+      scope,
+    );
+
+    const created = useThemeWorkspaceStore
+      .getState()
+      .getWorkspaceFiles(scope.storefrontId, scope.themeId)["src/new.tsx"];
+
+    expect(created.serverExists).toBe(false);
+    expect(themeFileWritePrecondition(created)).toEqual({
+      expectMissing: true,
+    });
   });
 });

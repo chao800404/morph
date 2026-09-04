@@ -18,7 +18,7 @@ import {
   SendHorizontal,
   WandSparkles,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
@@ -82,7 +82,62 @@ type EditorAssistantPanelProps = {
   onTabChange?: (tab: EditorAssistantPanelTab) => void;
 };
 
-export type EditorAssistantPanelTab = "chat" | "styles" | "comments";
+export type EditorAssistantPanelTab =
+  "chat" | "content" | "styles" | "comments";
+
+export const EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY =
+  "morph:editor-assistant-panel-tab";
+
+const persistedEditorAssistantPanelTabs = [
+  "chat",
+  "content",
+  "styles",
+] as const satisfies readonly EditorAssistantPanelTab[];
+
+type PersistedEditorAssistantPanelTab =
+  (typeof persistedEditorAssistantPanelTabs)[number];
+
+function isPersistedEditorAssistantPanelTab(
+  value: string | null,
+): value is PersistedEditorAssistantPanelTab {
+  return persistedEditorAssistantPanelTabs.some((tab) => tab === value);
+}
+
+/**
+ * Read the last normal inspector tab synchronously so the first render can
+ * use the user's previous view. Comment mode is transient and is therefore
+ * intentionally excluded from persisted tabs.
+ */
+export function readStoredEditorAssistantPanelTab(): EditorAssistantPanelTab {
+  if (typeof window === "undefined") return "chat";
+
+  try {
+    const storedTab = window.localStorage.getItem(
+      EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY,
+    );
+    return isPersistedEditorAssistantPanelTab(storedTab) ? storedTab : "chat";
+  } catch {
+    return "chat";
+  }
+}
+
+export function persistEditorAssistantPanelTab(tab: EditorAssistantPanelTab) {
+  if (
+    typeof window === "undefined" ||
+    !isPersistedEditorAssistantPanelTab(tab)
+  ) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY,
+      tab,
+    );
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+}
 
 export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   context,
@@ -113,7 +168,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onJumpToCode,
   onTabChange,
 }: EditorAssistantPanelProps) {
-  const [tab, setTab] = useState<EditorAssistantPanelTab>("chat");
+  const [tab, setTab] = useState<EditorAssistantPanelTab>(
+    readStoredEditorAssistantPanelTab,
+  );
   const activeTemplate = resolveEditorTemplate(context, search);
   const sections = activeTemplate?.document.sections ?? [];
   const documentSection = sections.find(
@@ -140,9 +197,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         } as NonNullable<typeof documentSection>)
       : undefined);
 
-  const initialSectionRef = useRef(search.section);
   const [isStylesPreRendered, setIsStylesPreRendered] = useState(false);
-  const shouldRenderStyles = isStylesPreRendered || tab === "styles";
+  const isInspectorTab = tab === "styles" || tab === "content";
+  const shouldRenderStyles = isStylesPreRendered || isInspectorTab;
 
   useEffect(() => {
     if (isStylesPreRendered || !selectedSection) return;
@@ -153,10 +210,10 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   }, [isStylesPreRendered, selectedSection]);
 
   useEffect(() => {
-    if (tab === "styles" && !isStylesPreRendered) {
+    if (isInspectorTab && !isStylesPreRendered) {
       setIsStylesPreRendered(true);
     }
-  }, [isStylesPreRendered, tab]);
+  }, [isInspectorTab, isStylesPreRendered]);
 
   const handleInspectorPropsChange = useCallback(
     (
@@ -176,6 +233,10 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
     onTabChange?.(tab);
   }, [onTabChange, tab]);
 
+  useEffect(() => {
+    persistEditorAssistantPanelTab(tab);
+  }, [tab]);
+
   // Auto-switch to comments tab when switching to Comment Mode
   useEffect(() => {
     if (isCommentMode) {
@@ -184,18 +245,6 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       setTab((prev) => (prev === "comments" ? "styles" : prev));
     }
   }, [isCommentMode]);
-
-  useEffect(() => {
-    // Only switch to styles when the user actively selects/changes a section during their session
-    if (
-      !isCommentMode &&
-      search.section &&
-      search.section !== initialSectionRef.current
-    ) {
-      setTab("styles");
-    }
-    initialSectionRef.current = search.section;
-  }, [search.section, isCommentMode]);
 
   return (
     <aside
@@ -210,7 +259,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       )}
     >
       <header className="flex items-center justify-between border-b px-2.5">
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
           <PanelTab active={tab === "chat"} onClick={() => setTab("chat")}>
             Agent
           </PanelTab>
@@ -223,12 +272,23 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               Comments
             </PanelTab>
           ) : (
-            <PanelTab
-              active={tab === "styles"}
-              onClick={() => setTab("styles")}
-            >
-              Styles
-            </PanelTab>
+            <>
+              {/* Content edits the Page/Template Document; Styles edits the
+                  Theme Source. Rule §2 keeps those apart, and one scrolling
+                  panel gave no clue which source of truth a field wrote to. */}
+              <PanelTab
+                active={tab === "content"}
+                onClick={() => setTab("content")}
+              >
+                Content
+              </PanelTab>
+              <PanelTab
+                active={tab === "styles"}
+                onClick={() => setTab("styles")}
+              >
+                Styles
+              </PanelTab>
+            </>
           )}
         </div>
         <div className="flex items-center gap-0.5">
@@ -310,11 +370,12 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       {shouldRenderStyles ? (
         <ScrollArea
           className="min-h-0"
-          hidden={tab !== "styles"}
-          aria-hidden={tab !== "styles"}
+          hidden={!isInspectorTab}
+          aria-hidden={!isInspectorTab}
         >
           {selectedSection ? (
             <EditorStyleInspector
+              view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
               themeFiles={themeFiles}
               selection={selection}
@@ -397,7 +458,7 @@ function PanelTab({
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "h-7 px-2.5 text-xs font-medium transition-colors",
+        "h-7 min-w-0 flex-1 px-2.5 text-xs font-medium transition-colors",
         active
           ? "cursor-default"
           : "text-muted-foreground hover:text-foreground",

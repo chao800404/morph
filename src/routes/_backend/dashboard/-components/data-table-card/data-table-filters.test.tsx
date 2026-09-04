@@ -34,12 +34,12 @@ describe("DataTableFilters", () => {
     });
     fireEvent.click(screen.getByRole("menuitem", { name: "Currency" }));
 
-    expect(await screen.findByRole("button", { name: "Currency filter" })).toBeTruthy();
+    expect(
+      await screen.findByRole("button", { name: "Currency filter" }),
+    ).toBeTruthy();
     expect(await screen.findByRole("dialog")).toBeTruthy();
     expect(await screen.findByText("TWD")).toBeTruthy();
-    expect(
-      screen.queryByRole("button", { name: "Add filter" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add filter" })).toBeNull();
   });
 
   it("returns a removed field to the Add filter menu", async () => {
@@ -68,9 +68,9 @@ describe("DataTableFilters", () => {
     fireEvent.click(await screen.findByText("TWD"));
     fireEvent.click(screen.getByText("USD"));
 
-    expect(screen.getByRole("button", { name: "Currency filter" }).textContent).toContain(
-      "isTWD, USD",
-    );
+    expect(
+      screen.getByRole("button", { name: "Currency filter" }).textContent,
+    ).toContain("isTWD, USD");
     expect(screen.getByRole("button", { name: "Clear all" })).toBeTruthy();
   });
 

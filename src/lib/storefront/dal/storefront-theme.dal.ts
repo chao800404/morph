@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
+import { withReleaseNote } from "@/lib/storefront/release-note";
 import {
   storefronts,
   storefrontThemes,
@@ -577,8 +578,20 @@ export const storefrontThemeDal = {
             id: storefrontReleases.id,
             sourceRevisionId: storefrontReleases.sourceRevisionId,
             themeBuildId: storefrontReleases.themeBuildId,
+            // Carried so the editor can tell whether this release's artifact
+            // still describes the current source. Publishing refuses to reuse
+            // a release built from older source, and without this the editor
+            // could not know that before asking.
+            sourceGeneration: storefrontThemeRevisions.sourceGeneration,
           })
           .from(storefrontReleases)
+          .innerJoin(
+            storefrontThemeRevisions,
+            eq(
+              storefrontReleases.sourceRevisionId,
+              storefrontThemeRevisions.id,
+            ),
+          )
           .where(
             and(
               eq(storefrontReleases.id, context.activeReleaseId),
@@ -689,7 +702,17 @@ export const storefrontThemeDal = {
         name: context.themeName,
         status: context.themeStatus,
         releaseGeneration: context.themeReleaseGeneration ?? 1,
-        activeRelease: activeRelease ?? null,
+        // A release whose revision carries no generation cannot be shown to
+        // still match the current source, so it is reported as absent rather
+        // than as a reusable artifact. Publishing then builds, which is the
+        // safe direction: the alternative ships an artifact of unknown vintage.
+        activeRelease:
+          activeRelease && activeRelease.sourceGeneration !== null
+            ? {
+                ...activeRelease,
+                sourceGeneration: activeRelease.sourceGeneration,
+              }
+            : null,
       },
       templates,
     };
@@ -1130,7 +1153,10 @@ export const storefrontThemeDal = {
     expectedReleaseGeneration: number;
     themeBuildId?: string;
     createdBy?: string;
+    /** What changed, for recognising this release in the history later. */
+    note?: string;
   }) {
+    const releaseMetadata = withReleaseNote(null, data.note);
     const db = await getDb();
     const [template] = await db
       .select({
@@ -1426,8 +1452,8 @@ export const storefrontThemeDal = {
           `
           INSERT INTO storefront_releases (
             id, storefront_id, theme_id, source_revision_id, theme_build_id,
-            content_publication_id, status, created_by, created_at, updated_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'available', ?7, ?8, ?8)
+            content_publication_id, status, metadata, created_by, created_at, updated_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'available', ?7, ?8, ?9, ?9)
         `,
         ).bind(
           releaseId,
@@ -1436,6 +1462,9 @@ export const storefrontThemeDal = {
           sourceRevisionId,
           themeBuildId,
           contentPublication?.id ?? null,
+          // Stored as the release's metadata so the history can show what a
+          // person wrote instead of only an id fragment and a timestamp.
+          releaseMetadata ? JSON.stringify(releaseMetadata) : null,
           data.createdBy ?? null,
           now,
         ),

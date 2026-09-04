@@ -6,11 +6,11 @@
 
 | 項目         | 內容                                                                                                                                                                            |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 最後更新     | 2026-09-02                                                                                                                                                                      |
+| 最後更新     | 2026-09-03                                                                                                                                                                      |
 | 目前狀態     | 核心 Editor／Build／Release 已完成主要鏈路；Production Runtime、Domain 與遠端 Publish 尚未閉環                                                                                  |
 | 整體完成度   | **90%**（重新按目前實作與交付閉環證據加權；未將未驗證的 Cloudflare production 路徑視為已完成）                                                                                   |
-| 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（229 files / 1525 tests passed、1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard 與 `git diff --check` 通過；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
+| 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration；待決：是否連同 theme runtime 版本一起升級 TanStack（見第十輪） |
+| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（236 files / 1600 tests passed、1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard 與 `git diff --check` 通過；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
 
 `█████████ 90%`
 
@@ -37,7 +37,7 @@
 | 2. 即時預覽與提交語意              | 操作中只更新 Live View，完成輸入後才真正提交資料                                                                                     | ✅   |   100% | 新控制項必須沿用同一套 draft/commit 規則                                  |
 | 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位、link 欄位                 | 🟢   |    99% | Content & Fields 其餘卡片仍有硬編碼 `text-[10px]`，待收斂到同一 token     |
 | 4. Editor ↔ Preview 通訊           | typed protocol、runtime validation、selection/style 同步、in-place route bridge                                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試                                 |
-| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | 🟢   |    95% | 補完 Performance trace，重新量測大型 theme、深層 DOM 與大量 capability      |
+| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、未儲存 Code ↔ Design 切換防護、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | 🟢   |    95% | 補完 Performance trace，重新量測大型 theme、深層 DOM 與大量 capability      |
 | 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence 與 production 交付鏈                                   | 🟢   |    85% | 補齊 Promo vertical slice，並以真實 production runtime 完成 Publish E2E    |
 | 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React、真實 router 與隔離的 TSX runtime 一致                                                                  | 🟡   |    75% | 完成真實 TSX/component iframe、模組邊界、Inspector 套用與 runtime fallback  |
 | 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                                                              | 🟡   |    80% | 完成 Cloudflare runtime/domain、remote migration 與 Publish E2E 發布閉環     |
@@ -114,6 +114,147 @@
   本機程式鏈和單元測試已核對。剩餘 4% 主要是需要實際 Cloudflare account/service/Zone/domain
   的遠端閉環、Publish E2E，以及 Code Workspace 約 3.57 MB minified client chunk；未把本機
   storefront id 猜寫進 `wrangler.jsonc`。
+
+### 2026-09-03 第十輪之二：工具列與佔位圖修整
+
+- **狀態文字縮短。** `Unpublished changes` / `All changes saved` →
+  `Unpublished` / `Published`。同字根、各一詞、對稱，而這兩個狀態**共用同一個
+  `CircleCheck` 圖示**，文字是唯一區別。字寬砍半後斷點從 `2xl:` 降到 `xl:`。
+  e2e 改用 `[data-editor-save-status]` 的 `aria-label` 定位，不再綁在文案上。
+- **佔位圖改用 Lucide `image` 圖示**（ISC，專案已依賴 `lucide-react`）。原本自畫的
+  花瓶剪影讀起來像變形蟲；「畫框 + 山」是 Figma／Notion／Shopify 共用的語彙，
+  一眼可讀。因為要放進外層 SVG 座標系，是 trace 三條 path 而非 import 元件。
+  商品卡也補上小一號的同一圖示。
+
+### 2026-09-03 第十輪：不透明 500 的根因與可診斷性
+
+`{"status":500,"unhandled":true,"message":"HTTPError"}` 反覆出現、「改了程式就壞、
+刷新就好」。**這一輪的教訓是：我前兩次的判斷都錯了，兩次都從 handler 邏輯查起。**
+正確的第一步是先確認請求有沒有抵達 handler。
+
+三個獨立問題，依發現順序：
+
+**1. serverFn URL 由 `undefined` 組成。** `createClientRpc` 用
+`process.env.TSS_SERVER_FN_BASE + functionId` 組 URL，而該表達式原封不動送到瀏覽器
+（瀏覽器沒有 `process`）。在 dev server 上實測 `typeof process === "undefined"`，
+且送到不存在的路徑會回**與回報一字不差**的那串 JSON。修法：`vite.config.ts` 加
+`define` 把 base 在 transform 階段釘死；已驗證 HMR 後 URL 仍正確、production
+client bundle 裡是字面值。
+
+**2. Validator 拋錯繞過 handler 的 try/catch。** 見 rules §13。已把 10 個帶
+OCC/CAS 前提（`expected*`、`expectMissing`）的 serverFn 改用
+`parseInput()`；其餘 137 個純表單驗證維持原狀——那些幾乎只在 client 有 bug 時才失敗，
+全面改動的 churn 大於收益。
+
+**3. 真正的殘餘病因：serverFn resolver 的冷啟動競速。** 上游已知
+（TanStack/router#6609、#7363）。`getServerFnById` 找不到 id 時**拋錯而非回 404**，
+h3 再包成空白 500。編輯器掛載時最早發出的兩個查詢
+（`listStorefrontCommentGroups` / `listStorefrontCommentThreads`）會輸掉這場競速；
+實測同樣的 id 稍後完全正常，且 React Query 預設重試已自行吸收。**不是本專案的
+程式錯誤。**
+
+- 新增 `src/server/server-fn-recovery.ts`：在 Worker entry 把空白 500 換成帶
+  `error: "SERVER_FN_UNHANDLED"` 與函式名稱的回應。**h3 是「回傳」而非拋出**，
+  所以必須檢查 response 而非 catch——第一版寫成 try/catch，實測完全攔不到。
+  刻意**不宣稱「id 過期」**、狀態碼**維持 500**：真的 handler crash 也落進同一個
+  兜底，貼上 "not found" 或改成 404 只是用一個謊話換掉另一個。
+  log 會把 base64 id 解碼成 `函式名 (檔案路徑)`。
+- 測試 16 項，重點在**不得過度匹配**：帶有原因的 500、其他路由的同樣 body、
+  非 500 回應，全部必須原封不動通過且 body 不可被消耗。
+
+**嘗試過但放棄的路：升級 TanStack。** #6609 的修正在 `react-start@1.168.49`
+（本專案 1.168.32）。升上去撞到專案自己的護欄——`generate-theme-package-types.mjs`
+要求 workspace 的 `@tanstack/react-router` 與 theme 相依鎖定值完全一致；只升 start
+則 typecheck 爆 10 個錯（`server` route option 在舊 router 型別裡不存在）。
+**`react-start@1.168.49` 綁 `react-router@1.170.32`，而 theme pin 不允許。**
+已完整還原 `package.json` 與 `pnpm-lock.yaml`。要做就得連 theme runtime 版本一起升，
+那會影響既有 theme 的建置對等性，留待決定。
+
+規則新增：§13「Validator 不得拋錯」與 §13.1「不透明 500 的診斷順序」。
+
+### 2026-09-02 第九輪：Release 截圖（尚未啟用）
+
+Online Store 卡片上的預覽是寫死的示意圖（`theme-preview-default.png` 加硬編碼
+文案），跟實際主題無關。改為 publish 後擷取真實畫面。
+
+查證後選 Cloudflare Browser Run（原 Browser Rendering）**REST API**，而非
+Workers binding：binding 的 `quickAction()` 需要 compatibility_date
+`2026-03-24` 以後（本專案為 `2025-09-02`），且未關閉的 session 會持續消耗
+瀏覽器時間；REST 單次請求沒有 session 可洩漏。前端 canvas（html2canvas 之類）
+不可行——Build Preview 的 iframe 是 `sandbox="allow-scripts"` 的 opaque
+origin，父視窗讀不到 DOM。
+
+- **擷取目標是該 release 的 build preview URL，不是主網域。** publish 建立
+  release 但不必然使其上線，對主網域截圖會拍到「上一版」卻標記成這一版。
+- **非同步。** 沿用既有的 `morph-theme-builds` queue，訊息改為 discriminated
+  union（`theme-build` | `release-preview`）。release 送到 queue 時已經是持久
+  的，截圖失敗一律 `ack` 不重試——Browser Run 的每日上限是最常見的失敗，重試
+  只會把剩餘額度用在重複失敗上。
+- **憑證缺席是正常狀態。** `createBrowserRunScreenshotter()` 沒有 token 就回
+  `null`，`captureReleasePreview()` 回 `skipped` 而非拋錯。
+- **無圖時改畫 SVG 線框，不再用照片。** 原本的 fallback 是一張陶器店照片配上
+  「Objects for everyday rituals.」等硬編碼文案——那家店從來不是使用者的，第一眼
+  卻會被讀成「這是你的店」，而且每次都是錯的。改為
+  `ThemePreviewPlaceholder{Desktop,Mobile}`：hero、商品格線的扁平線框，
+  desktop 用 `viewBox 800×350`（16/7）、mobile 用 `320×400`（4/5），
+  全程 `currentColor` + opacity，明暗模式共用一份。線框不會被誤認為截圖，
+  不需要標籤就說明了「還沒有東西」。
+- **圖片先寫 R2，metadata 後寫。** 反過來會讓 release 指向還不存在的圖，而頁面
+  無法分辨那與上傳失敗。
+- 圖片以 release id 為 key（`storefront-release-previews/{releaseId}/{viewport}.png`），
+  綁在 metadata 的 `preview`，與第八輪的 `note` 並存。舊 release 的圖不會被新的
+  覆寫，回滾時看到的是那一版自己的畫面。
+- 服務路由 `/release-preview/$releaseId/$viewport` **需要登入 session**：截圖
+  拍的是可能尚未公開或限制存取的店，公開 URL 等於把私有店內容洩漏給任何持有
+  release id 的人。key 由 release id 推導，不接受 query 參數指定物件。
+- 測試 33 項：metadata 7、擷取流程 7、Browser Run adapter 5（全部注入 fetch，
+  不觸網）、queue dispatch 3、placeholder 7（斷言不含 `<img>`／`url()`／寫死色碼）、
+  原有 build 訊息 4。
+
+**尚未啟用。** 需要三個環境設定才會真的產圖，缺任一項都只是靜默略過：
+`CLOUDFLARE_ACCOUNT_ID`、`BROWSER_RENDERING_API_TOKEN`（secret）、
+`PUBLIC_ORIGIN`（https，Browser Run 走公開網際網路，連不到 localhost）。
+
+### 2026-09-02 第八輪：Release 描述與事後重新命名
+
+Release 原本只以 hex 片段與時間戳呈現（`f555c94e · 2026/9/1 下午11:04`），
+兩者都能唯一識別一個 release，卻都不描述它的內容——要從歷史紀錄挑一個還原，
+只能一個一個開來看。
+
+查證其他 CMS：Contentful、Sanity、Strapi 皆**沒有**使用者填寫的版本號；
+Webflow 的 publish 有選填 note，Vercel／Netlify 用的是 commit message。
+共同點是**描述而非版本號**：語意化版本需要有人維護規則，
+而視覺編輯器的每次 publish 都是一次小改動，強制編號只會退化成流水號。
+
+- 新增 `src/lib/storefront/release-note.ts`：note 存進 release 既有的 `metadata`
+  欄位（保留其他 key，空字串則移除該 key，全空則整欄回 `null`），
+  上限 120 字。不另開 column：note 不參與任何 runtime 決策。
+- Publish 按鈕改為 Popover，內含**選填**的一行描述。刻意不設為必填——
+  強制填寫只會得到「update」「fix」這種同樣沒有資訊量的內容，還多一道摩擦。
+- Release history 以描述為主標題，hex 與時間戳降為次要行（對照 build 與 log
+  時仍然需要）；沒填的顯示 `Untitled`。
+- 每列可事後重新命名（`renameStorefrontRelease` serverFn →
+  `storefrontReleaseDal.renameRelease`）。發布當下常常還說不清改了什麼，
+  能事後補寫才不會讓清單永遠停在第一次的猜測。
+  DAL 經 `getById` 做 storefront 範圍檢查，且只更新 `metadata`：
+  release 指向 immutable build 與 content publication，
+  重新命名絕不能成為第二條改變線上內容的路徑。
+- 測試：`release-note` 11 項、history row note 3 項、DAL rename 4 項
+  （含跨 storefront 拒絕、保留其他 metadata、清空 note）。
+  e2e `publish.spec.ts` 改為點 Publish 後再點 `[data-publish-confirm]`，
+  且刻意留白描述，確認 note 不是建立 release 的必要條件。
+
+### 2026-09-02：Code → Design 未儲存變更提示
+
+- Code 模式切回 Design 前，若 Code Workspace 有 dirty source files，會先顯示明確提示。
+- 提供 `Save & switch`、`Continue without saving`、`Cancel` 三個選項；Save & switch
+  只有在所有 dirty files 實際保存成功且無 conflict 時才切換。
+- `Continue without saving` 只切換面板，不清除 Monaco transient draft；Code surface
+  維持掛載，切回 Code 時仍可繼續編輯。
+- 透過 `EditorCodeWorkspaceHandle.saveAll()` 連接既有 OCC／workspace save path，並新增
+  測試確認 Save All 會保存目前 Monaco model 內容。
+- 驗證：`pnpm typecheck`、`pnpm test`（230 files / 1544 tests passed、1 skipped）、
+  `pnpm build`、client bundle check、deploy artifact secret guard 與 `git diff --check` 通過。
 
 ### 2026-09-01 第七輪：Publish 需要時自動 build
 
@@ -685,7 +826,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 | 檢查             | 結果    | 備註                                            |
 | ---------------- | ------- | ----------------------------------------------- |
 | `pnpm typecheck` | ✅ 通過 | TypeScript 型別檢查完成                                  |
-| `pnpm test`      | ✅ 通過 | 229 個測試檔通過、1 個 skipped；1525 個 tests 通過、1 個 skipped |
+| `pnpm test`      | ✅ 通過 | 230 個測試檔通過、1 個 skipped；1543 個 tests 通過、1 個 skipped |
 | `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle 與 deploy artifact secret guard 檢查通過 |
 | `git diff --check` | ✅ 通過 | 工作樹差異沒有 whitespace error                         |
 
@@ -738,7 +879,8 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-09-02 | 依目前 repository 實作重新盤點並校正進度：核對 Theme Workspace → R2 source manifest → Build Queue／Sandbox → immutable artifact → Release／activeRelease CAS → hostname／Theme Runtime；保留已完成的 Editor、Build、Release 與 OCC 功能，不再把尚未接通的 production Theme Worker、custom domain、Page Registry、真實 TSX iframe、remote migration 與 Publish E2E 計入已完成；整體完成度由 97% 調整為 90% | `pnpm typecheck`、`pnpm test`（229 files passed / 1 skipped；1525 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration；保留既有未提交的 `visual-editor-shell.tsx` 修改 |
+| 2026-09-02 | Code → Design 切換加入未儲存 Code 變更提示：可選擇儲存並切換、保留 draft 後切換或取消；Save & switch 透過 Code Workspace imperative handle 實際保存全部 dirty files，失敗／conflict 時 fail closed；新增 Monaco draft Save All 測試 | `pnpm typecheck`、`pnpm test`（230 files / 1544 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration |
+| 2026-09-02 | 依目前 repository 實作重新盤點並校正進度：核對 Theme Workspace → R2 source manifest → Build Queue／Sandbox → immutable artifact → Release／activeRelease CAS → hostname／Theme Runtime；保留已完成的 Editor、Build、Release 與 OCC 功能，不再把尚未接通的 production Theme Worker、custom domain、Page Registry、真實 TSX iframe、remote migration 與 Publish E2E 計入已完成；整體完成度由 97% 調整為 90% | `pnpm typecheck`、`pnpm test`（230 files passed / 1 skipped；1543 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration；保留既有未提交的 `visual-editor-shell.tsx` 修改 |
 | 2026-09-01 | 第二輪修正：Code Workspace 改以真實 cold click 量測並壓縮 Monaco declaration payload；immutable source revision 接上 R2 content-addressed blobs、D1 manifest、digest／size／UTF-8 fail-closed 與 legacy snapshot fallback；OTP sign-in／email-verification 改走 email adapter 並移除收件者 PII log；Tailwind 排除測試來源並加入 deploy artifact secret guard | `pnpm typecheck`、`pnpm test`（217 files / 1388 tests，1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、R2 blob focused tests、email focused tests、`git diff --check` 通過；未執行遠端 Publish／deploy |
 | 2026-09-01 | 修正 Inspector 來源重複解析造成的兩項測試逾時；Code 模式改為意圖式預載並 hidden/inert 預掛載 Monaco；同步修正 Release history E2E 的 accessible-name 契約，重跑 Chromium、Firefox、WebKit，並核對 production Theme Worker／service binding／domain／rollback 本機程式鏈 | `pnpm typecheck`、`pnpm test`（215 files / 1380 tests，1 skipped）、`pnpm build`、client bundle check、Chromium E2E（23 passed / 1 skipped）、Firefox + WebKit E2E（39 passed / 8 skipped）、`git diff --check` 通過；未執行遠端 Publish／deploy |
 | 2026-08-31 | 完成 Visual Editor Shell 模式切換防抖動、Starter Clean TSX 標準化與 Preview Protocol 強化：面板切換改以 opacity / z-index 消除 preview layout shift；移除 starter 自訂 data attribute 回歸標準 React；支援 safe TanStack Router link 預覽導覽、Context Menu 自訂化與 AST transform / E2E 測試補強 | `pnpm typecheck`、`pnpm test`（215 files / 1376 tests，1 skipped）、`pnpm build`、client bundle check、`git diff --check` 通過 |

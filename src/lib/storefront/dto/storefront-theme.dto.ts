@@ -26,6 +26,8 @@ export interface StorefrontThemeEditorDTO {
       id: string;
       sourceRevisionId: string;
       themeBuildId: string;
+      /** Source generation the release's artifact was built from. */
+      sourceGeneration: number;
     } | null;
   };
   templates: Array<{

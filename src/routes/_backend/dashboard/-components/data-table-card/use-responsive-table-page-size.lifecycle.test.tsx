@@ -3,12 +3,11 @@ import { describe, expect, it } from "vitest";
 import { useResponsiveTablePageSize } from "./use-responsive-table-page-size";
 
 const Harness = ({ showTable }: { showTable: boolean }) => {
-  const { containerRef, pageSize, isMeasured } =
-    useResponsiveTablePageSize({
-      rowHeight: 48,
-      headerHeight: 48,
-      fallback: 10,
-    });
+  const { containerRef, pageSize, isMeasured } = useResponsiveTablePageSize({
+    rowHeight: 48,
+    headerHeight: 48,
+    fallback: 10,
+  });
 
   return (
     <>

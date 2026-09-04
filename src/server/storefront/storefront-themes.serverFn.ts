@@ -1,5 +1,9 @@
-import { fail, failure, ok } from "@/lib/db/server-result";
+import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
+import {
+  createReleasePreviewQueueMessage,
+  type ThemeBuildQueue,
+} from "@/lib/storefront/service/theme-build-queue";
 import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
 import {
   publishStorefrontThemeTemplateInputSchema,
@@ -89,10 +93,15 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
 
 export const reorderStorefrontThemeSections = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
-    reorderStorefrontThemeSectionsInputSchema.parse(data),
+    parseInput(reorderStorefrontThemeSectionsInputSchema, data),
   )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const result = await storefrontThemeDal.reorderSections({
         ...data,
@@ -117,10 +126,15 @@ export const updateStorefrontThemeSectionProps = createServerFn({
   method: "POST",
 })
   .validator((data: unknown) =>
-    updateStorefrontThemeSectionPropsInputSchema.parse(data),
+    parseInput(updateStorefrontThemeSectionPropsInputSchema, data),
   )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const result = await storefrontThemeDal.updateSectionProps({
         ...data,
@@ -150,12 +164,43 @@ export const updateStorefrontThemeSectionProps = createServerFn({
     }
   });
 
+/**
+ * Asks for a picture of a release that has just been published.
+ *
+ * Fire-and-forget on purpose: a capture reaches an external rendering service,
+ * and the release is already durable and deployed by the time this runs. A
+ * queue that is unreachable must not turn a publish that succeeded into one
+ * that reports failure, so the send is swallowed rather than awaited into the
+ * result.
+ */
+async function queueReleasePreviewCapture(
+  storefrontId: string,
+  releaseId: string,
+): Promise<void> {
+  try {
+    const queue = (
+      cloudflareEnv as unknown as { THEME_BUILD_QUEUE?: ThemeBuildQueue }
+    ).THEME_BUILD_QUEUE;
+    if (!queue) return;
+    await queue.send(
+      createReleasePreviewQueueMessage({ storefrontId, releaseId }),
+    );
+  } catch (error) {
+    console.error("Failed to queue release preview capture:", error);
+  }
+}
+
 export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
-    publishStorefrontThemeTemplateInputSchema.parse(data),
+    parseInput(publishStorefrontThemeTemplateInputSchema, data),
   )
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data: input, context }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       const result = await storefrontThemeDal.publishTemplate({
         ...data,
@@ -196,6 +241,7 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
             releaseId: result.releaseId,
             themeBuildId: result.themeBuildId,
           });
+          await queueReleasePreviewCapture(data.storefrontId, result.releaseId);
           return ok("Theme published", result);
         }
 
@@ -219,7 +265,8 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
                   }
                 : null;
             },
-            getBuild: (buildId) => storefrontThemeBuildDal.getBuildById(buildId),
+            getBuild: (buildId) =>
+              storefrontThemeBuildDal.getBuildById(buildId),
           },
         });
 
@@ -237,6 +284,7 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           releaseId: result.releaseId,
           themeBuildId: result.themeBuildId,
         });
+        await queueReleasePreviewCapture(data.storefrontId, result.releaseId);
       }
 
       return ok("Theme published", result);

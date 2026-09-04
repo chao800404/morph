@@ -1,3 +1,4 @@
+import type { DataTableScope } from "./data-table-card";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -25,7 +26,7 @@ export interface DataTableSortOption {
 
 export const useDataTableSort = (
   defaultSortBy: DataTableSortKey = "createdAt",
-  scope?: "taxRate" | "orderItem" | "orderFulfillment",
+  scope?: DataTableScope,
 ) => {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as DashboardSearch;
@@ -102,7 +103,7 @@ export const DataTableSort = ({
 }: {
   options: DataTableSortOption[];
   defaultSortBy?: DataTableSortKey;
-  scope?: "taxRate" | "orderItem" | "orderFulfillment";
+  scope?: DataTableScope;
 }) => {
   const { sortBy, sortOrder, toggleSort } = useDataTableSort(
     defaultSortBy,

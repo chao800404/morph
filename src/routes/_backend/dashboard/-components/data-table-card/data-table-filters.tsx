@@ -3,11 +3,7 @@ import {
   ButtonGroup,
   ButtonGroupSeparator,
 } from "@/components/ui/button-group";
-import {
-  Command,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
+import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -54,8 +50,7 @@ export const DataTableFilters = ({ filters }: DataTableFiltersProps) => {
     (filter) => filter.values.length > 0 || filter.key === draftFilterKey,
   );
   const availableFilters = filters.filter(
-    (filter) =>
-      filter.values.length === 0 && filter.key !== draftFilterKey,
+    (filter) => filter.values.length === 0 && filter.key !== draftFilterKey,
   );
 
   const clearFilter = (filter: DataTableFilterDefinition) => {
@@ -70,7 +65,9 @@ export const DataTableFilters = ({ filters }: DataTableFiltersProps) => {
         const selectedOptions = filter.options.filter((option) =>
           filter.values.includes(option.value),
         );
-        const valueLabel = selectedOptions.map((option) => option.label).join(", ");
+        const valueLabel = selectedOptions
+          .map((option) => option.label)
+          .join(", ");
 
         return (
           <Popover

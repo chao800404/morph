@@ -39,12 +39,45 @@ src/cms.config.ts
 ## 13. Server Function、Authorization 與 Actor
 
 - Server function 所有 external input 必須使用 Zod 或集中 validation。
+- **Validator 不得拋錯。** `.validator((data) => schema.parse(data))` 的 ZodError
+  會在 handler 之前拋出，繞過 handler 內把 domain failure 轉成 `fail(...)` 的
+  `try/catch`，最後被 h3 包成不透明的 500。改用
+  `parseInput(schema, data)`（`@/lib/db/server-result`）回傳 `ServerFailure`，
+  讓驗證失敗留在呼叫端本來就在處理的 union 裡，並帶上欄位錯誤。
+  **優先套用在 schema 編碼了伺服器狀態前提（OCC/CAS，例如 `expected*`、
+  `expectMissing`）的 server function**——那些會在正常操作中失敗，而純表單
+  validation 幾乎只在 client 有 bug 時才會失敗。
 - 權限必須在 server 端。
 - 登入與 session 由 Better Auth / existing helper 提供，不自行解析 auth cookie。
 - `createdBy`、`updatedBy`、`uploadedBy` 等 actor 必須來自 verified session，不能相信 client user id。
 - Theme / Storefront operation 必須同時驗證 `storefrontId` 與 `themeId` ownership。
 - Client hidden button 不是 authorization。
 - Preview capability token 只能授予 preview 能力，不可被當作 general admin token。
+
+### 13.1 診斷：`{"status":500,"unhandled":true,"message":"HTTPError"}`
+
+這個回應**不是**你的 handler 產生的，是 h3 對任何逃出處理鏈的例外的兜底包裝，
+原因整個被抹掉。看到它先確認請求是否真的抵達 handler，**不要從 handler 邏輯查起**。
+
+依可能性排序：
+
+1. **請求根本沒到 handler。** server function 的 URL 由
+   `process.env.TSS_SERVER_FN_BASE + functionId` 組成，而該表達式會原封不動送到
+   瀏覽器。若未在 transform 階段替換，URL 會由 `undefined` 組成，打到不存在的路徑。
+   驗證方式：在 browser console 檢查某個 server function 的 `.url` 是否以
+   `/_serverFn/` 開頭。這條會呈現為「改了程式就壞、刷新就好」，因為它取決於模組
+   被求值當下的順序。
+2. **Validator 拋錯**（見上）。
+3. 才輪到 handler 內部。
+
+判準：打到真正的 handler 時，回應會是有意義的（`405`、`401`、
+`{success:false, message}`）。**不透明的 500 代表沒打到。**
+
+`src/server/server-fn-recovery.ts` 會在 Worker entry 攔截這個空 500，換成帶
+`error: "SERVER_FN_UNHANDLED"` 與 function id 的訊息（h3 是**回傳**它而不是拋出，
+所以必須檢查 response 而非 catch）。**它刻意不宣稱「id 過期」**——真的 handler
+crash 也會落進同一個兜底，貼上「not found」只會把人帶去查錯地方；狀態碼也維持
+500，不改成 404。看到這個 error code 時原因仍然只在 server log 裡。
 
 ---
 

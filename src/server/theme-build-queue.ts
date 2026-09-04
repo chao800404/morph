@@ -1,6 +1,7 @@
 import { storefrontThemeDependencyDal } from "@/lib/storefront/dal/storefront-theme-dependency.dal";
 import { createServerThemeBuildService } from "@/lib/storefront/service/theme-build-service.factory";
-import { parseThemeBuildQueueMessage } from "@/lib/storefront/service/theme-build-queue";
+import { parseStorefrontQueueMessage } from "@/lib/storefront/service/theme-build-queue";
+import { runReleasePreviewCapture } from "./release-preview-capture";
 import { isTerminalThemeBuildStatus } from "@/lib/storefront/theme-build-status";
 
 type QueueMessage = {
@@ -21,10 +22,24 @@ export async function processThemeBuildQueue(
   for (const message of batch.messages) {
     let payload;
     try {
-      payload = parseThemeBuildQueueMessage(message.body);
+      payload = parseStorefrontQueueMessage(message.body);
     } catch {
       // Invalid messages are permanently malformed and must not poison the
       // queue. Acknowledge them after validation fails.
+      message.ack?.();
+      continue;
+    }
+
+    if (payload.type === "release-preview") {
+      // A capture is decoration for a release that already exists. Its result
+      // is acknowledged either way: retrying a rate-limited screenshot would
+      // spend the daily browser budget re-failing, and the page falls back to
+      // a placeholder on its own.
+      try {
+        await runReleasePreviewCapture(payload);
+      } catch (error) {
+        console.error("Release preview capture threw:", error);
+      }
       message.ack?.();
       continue;
     }

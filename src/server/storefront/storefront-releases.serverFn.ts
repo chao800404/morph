@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { fail, failure, ok } from "@/lib/db/server-result";
+import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import { storefrontReleaseDal } from "@/lib/storefront/dal/storefront-release.dal";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { activateReleaseWithDeployment } from "@/lib/storefront/service/storefront-release-reconciler";
@@ -8,6 +8,7 @@ import {
   activateStorefrontReleaseInputSchema,
   storefrontReleaseHistoryInputSchema,
 } from "@/lib/validations/storefront-release";
+import { renameStorefrontReleaseInputSchema } from "@/lib/validations/storefront-theme";
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
@@ -16,9 +17,16 @@ export const listStorefrontReleaseHistory = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
     try {
+      // A page is what the pager speaks; an offset is what the query needs.
+      // Translated here so neither side has to know about the other's shape.
+      const limit = data.limit ?? 50;
+      const offset = data.page ? (data.page - 1) * limit : (data.offset ?? 0);
       return ok(
         "Storefront release history fetched",
-        await storefrontReleaseDal.listHistory(data.storefrontId, data),
+        await storefrontReleaseDal.listHistory(data.storefrontId, {
+          limit,
+          offset,
+        }),
       );
     } catch (error) {
       return failure(
@@ -30,10 +38,46 @@ export const listStorefrontReleaseHistory = createServerFn({ method: "POST" })
     }
   });
 
-export const activateStorefrontRelease = createServerFn({ method: "POST" })
-  .validator((data: unknown) => activateStorefrontReleaseInputSchema.parse(data))
+/**
+ * Renames a release, for a note written after publishing.
+ *
+ * Only the note changes. A release points at an immutable build and content
+ * publication, so this must never become a second way to alter what is served.
+ */
+export const renameStorefrontRelease = createServerFn({ method: "POST" })
+  .validator((data: unknown) => renameStorefrontReleaseInputSchema.parse(data))
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data }) => {
+    try {
+      return ok(
+        "Release renamed",
+        await storefrontReleaseDal.renameRelease({
+          storefrontId: data.storefrontId,
+          releaseId: data.releaseId,
+          note: data.note,
+        }),
+      );
+    } catch (error) {
+      return failure(
+        "Rename storefront release error",
+        error,
+        "RELEASE_RENAME_FAILED",
+        "Failed to rename release",
+      );
+    }
+  });
+
+export const activateStorefrontRelease = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(activateStorefrontReleaseInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
     try {
       // Activation claims the release through the same CAS as before, then
       // deploys its immutable artifact. Both steps live in the reconciler so a
@@ -42,7 +86,8 @@ export const activateStorefrontRelease = createServerFn({ method: "POST" })
         releaseId: data.releaseId,
         expectedActiveReleaseId: data.expectedActiveReleaseId,
         deployer: createServerThemeWorkerDeployer(),
-        r2Bucket: (env as unknown as { R2_BUCKET?: unknown }).R2_BUCKET as never,
+        r2Bucket: (env as unknown as { R2_BUCKET?: unknown })
+          .R2_BUCKET as never,
         ports: {
           getRelease: async (releaseId) => {
             const release = await storefrontReleaseDal.getById(
@@ -100,10 +145,9 @@ export const activateStorefrontRelease = createServerFn({ method: "POST" })
         );
       }
       if (message.includes("RELEASE_NOT_ACTIVATABLE")) {
-        return fail(
-          "The selected release is not activatable.",
-          { error: "RELEASE_NOT_ACTIVATABLE" },
-        );
+        return fail("The selected release is not activatable.", {
+          error: "RELEASE_NOT_ACTIVATABLE",
+        });
       }
       return failure(
         "Activate storefront release error",

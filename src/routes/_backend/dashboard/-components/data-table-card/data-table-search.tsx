@@ -1,3 +1,4 @@
+import type { DataTableScope } from "./data-table-card";
 import {
   InputGroup,
   InputGroupAddon,
@@ -25,7 +26,7 @@ export const DataTableSearch = ({
 }: {
   placeholder?: string;
   className?: string;
-  scope?: "taxRate" | "orderItem" | "orderFulfillment";
+  scope?: DataTableScope;
 }) => {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as DashboardSearch;

@@ -100,7 +100,8 @@ async function manifestForWorkspaceMutation(args: {
  * the concrete D1 representation.
  */
 export const d1ThemeSourceStore: ThemeSourceStore = {
-  initStarterTheme: (...args) => storefrontThemeFileDal.initStarterTheme(...args),
+  initStarterTheme: (...args) =>
+    storefrontThemeFileDal.initStarterTheme(...args),
   listFiles: (...args) => storefrontThemeFileDal.listFiles(...args),
   getWorkspaceSnapshot: (...args) => storefrontThemeFileDal.listFiles(...args),
   getFileByPath: (...args) => storefrontThemeFileDal.getFileByPath(...args),
@@ -124,7 +125,8 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
   },
   async saveFilesBatch(storefrontId, themeId, files, options) {
     const sourceManifest =
-      options.createRevision && (files.length > 0 || (options.deletions?.length ?? 0) > 0)
+      options.createRevision &&
+      (files.length > 0 || (options.deletions?.length ?? 0) > 0)
         ? await manifestForWorkspaceMutation({
             storefrontId,
             themeId,
@@ -132,12 +134,10 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
             deletions: options.deletions ?? [],
           })
         : undefined;
-    return storefrontThemeFileDal.saveFilesBatch(
-      storefrontId,
-      themeId,
-      files,
-      { ...options, sourceManifest },
-    );
+    return storefrontThemeFileDal.saveFilesBatch(storefrontId, themeId, files, {
+      ...options,
+      sourceManifest,
+    });
   },
   deleteFile: (...args) => storefrontThemeFileDal.deleteFile(...args),
   getSourceGeneration: (...args) =>
@@ -292,7 +292,12 @@ export function createD1ThemeRevisionStore(
       return materializeR2SourceRevision(revision, blobStore);
     },
     listRevisions: (...args) => storefrontThemeFileDal.listRevisions(...args),
-    async rollbackToRevision(storefrontId, themeId, revisionNumber, rollbackOptions) {
+    async rollbackToRevision(
+      storefrontId,
+      themeId,
+      revisionNumber,
+      rollbackOptions,
+    ) {
       const revisions = await storefrontThemeFileDal.listRevisions(
         storefrontId,
         themeId,
@@ -322,8 +327,29 @@ export function createD1ThemeRevisionStore(
         },
       );
     },
-    getLatestPublishedRevision: (...args) =>
-      storefrontThemeFileDal.getLatestPublishedRevision(...args),
+    /**
+     * Reads the published revision with its file contents actually present.
+     *
+     * A revision written against R2 stores `snapshot` as `[]` and keeps the
+     * files behind `source_manifest`, so returning the row as-is hands back a
+     * revision that looks like a theme with no files. The editor compares the
+     * working tree against that to decide whether anything is unpublished, and
+     * against an empty snapshot every file reads as newly added — which left
+     * Publish enabled on a store where nothing had changed.
+     */
+    async getLatestPublishedRevision(storefrontId, themeId) {
+      const revision = await storefrontThemeFileDal.getLatestPublishedRevision(
+        storefrontId,
+        themeId,
+      );
+      if (!revision?.sourceManifest) return revision;
+      if (!blobStore) {
+        throw new Error(
+          "R2_BUCKET_UNAVAILABLE: This source revision references immutable R2 blobs, but the source blob storage binding is not configured.",
+        );
+      }
+      return materializeR2SourceRevision(revision, blobStore);
+    },
   };
 }
 

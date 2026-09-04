@@ -11,21 +11,27 @@ const targetReleaseId = "22222222-2222-4222-8222-222222222222";
 const validDocument = JSON.stringify({ version: 1, sections: [] });
 
 function insertValidPublicationItems() {
-  sqlite.prepare(
-    "INSERT INTO storefront_themes (id, storefront_id) VALUES (?, ?)",
-  ).run("theme-a", "storefront-a");
-  sqlite.prepare(
-    "INSERT INTO storefront_theme_templates (id, theme_id) VALUES (?, ?)",
-  ).run("template-a", "theme-a");
-  sqlite.prepare(
-    "INSERT INTO storefront_theme_template_revisions (id, template_id, document) VALUES (?, ?, ?)",
-  ).run("template-revision-a", "template-a", validDocument);
-  sqlite.prepare(
-    "INSERT INTO storefront_pages (id, storefront_id) VALUES (?, ?)",
-  ).run("page-a", "storefront-a");
-  sqlite.prepare(
-    "INSERT INTO storefront_page_revisions (id, page_id, document) VALUES (?, ?, ?)",
-  ).run("page-revision-a", "page-a", validDocument);
+  sqlite
+    .prepare("INSERT INTO storefront_themes (id, storefront_id) VALUES (?, ?)")
+    .run("theme-a", "storefront-a");
+  sqlite
+    .prepare(
+      "INSERT INTO storefront_theme_templates (id, theme_id) VALUES (?, ?)",
+    )
+    .run("template-a", "theme-a");
+  sqlite
+    .prepare(
+      "INSERT INTO storefront_theme_template_revisions (id, template_id, document) VALUES (?, ?, ?)",
+    )
+    .run("template-revision-a", "template-a", validDocument);
+  sqlite
+    .prepare("INSERT INTO storefront_pages (id, storefront_id) VALUES (?, ?)")
+    .run("page-a", "storefront-a");
+  sqlite
+    .prepare(
+      "INSERT INTO storefront_page_revisions (id, page_id, document) VALUES (?, ?, ?)",
+    )
+    .run("page-revision-a", "page-a", validDocument);
   sqlite.exec(`
     INSERT INTO storefront_content_publication_items
       (id, publication_id, item_type, content_id, revision_id)
@@ -57,19 +63,25 @@ vi.mock("cloudflare:workers", () => ({
             return { meta: { changes: result.changes } };
           },
           all: () => ({
-            results: sqlite.prepare(sql).all(
-              Object.fromEntries(
-                args.map((value, index) => [String(index + 1), value]),
+            results: sqlite
+              .prepare(sql)
+              .all(
+                Object.fromEntries(
+                  args.map((value, index) => [String(index + 1), value]),
+                ),
               ),
-            ),
           }),
         }),
       }),
-      batch: async (statements: Array<{ sql: string; run: () => unknown; all: () => unknown }>) =>
+      batch: async (
+        statements: Array<{
+          sql: string;
+          run: () => unknown;
+          all: () => unknown;
+        }>,
+      ) =>
         statements.map((statement) =>
-          /^\s*SELECT/i.test(statement.sql)
-            ? statement.all()
-            : statement.run(),
+          /^\s*SELECT/i.test(statement.sql) ? statement.all() : statement.run(),
         ),
     },
   },
@@ -174,10 +186,38 @@ afterEach(() => {
 describe("storefront release DAL", () => {
   it("lists release history newest first", async () => {
     const history = await storefrontReleaseDal.listHistory("storefront-a");
-    expect(history.map((release) => release.id)).toEqual([
+    expect(history.releases.map((release) => release.id)).toEqual([
       "22222222-2222-4222-8222-222222222222",
       "11111111-1111-4111-8111-111111111111",
     ]);
+    // The pager cannot tell a full page from the last one without the total.
+    expect(history.pagination).toEqual({
+      page: 1,
+      limit: 50,
+      total: 2,
+      totalPages: 1,
+    });
+  });
+
+  it("counts every release, not just the page it returned", async () => {
+    const first = await storefrontReleaseDal.listHistory("storefront-a", {
+      limit: 1,
+    });
+    expect(first.releases).toHaveLength(1);
+    expect(first.pagination).toMatchObject({
+      page: 1,
+      total: 2,
+      totalPages: 2,
+    });
+
+    const second = await storefrontReleaseDal.listHistory("storefront-a", {
+      limit: 1,
+      offset: 1,
+    });
+    expect(second.releases.map((release) => release.id)).toEqual([
+      "11111111-1111-4111-8111-111111111111",
+    ]);
+    expect(second.pagination).toMatchObject({ page: 2, totalPages: 2 });
   });
 
   it("activates a release with an OCC-protected atomic pointer switch", async () => {
@@ -185,9 +225,13 @@ describe("storefront release DAL", () => {
     const activated = await activateTarget();
     expect(activated.id).toBe(targetReleaseId);
     expect(
-      (sqlite
-        .prepare("SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'")
-        .get() as { active_release_id: string }).active_release_id,
+      (
+        sqlite
+          .prepare(
+            "SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'",
+          )
+          .get() as { active_release_id: string }
+      ).active_release_id,
     ).toBe(targetReleaseId);
   });
 
@@ -250,9 +294,11 @@ describe("storefront release DAL", () => {
 
   it("rejects a malformed content snapshot", async () => {
     insertValidPublicationItems();
-    sqlite.prepare(
-      "UPDATE storefront_theme_template_revisions SET document = ? WHERE id = ?",
-    ).run(JSON.stringify({ version: 2, sections: [] }), "template-revision-a");
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_template_revisions SET document = ? WHERE id = ?",
+      )
+      .run(JSON.stringify({ version: 2, sections: [] }), "template-revision-a");
     await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
   });
 
@@ -265,7 +311,6 @@ describe("storefront release DAL", () => {
     await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
   });
 
-
   it("rejects a stale expected active release", async () => {
     sqlite.exec(
       "UPDATE storefronts SET active_release_id = '11111111-1111-4111-8111-111111111111'",
@@ -277,5 +322,82 @@ describe("storefront release DAL", () => {
         expectedActiveReleaseId: null,
       }),
     ).rejects.toThrow("RELEASE_ACTIVATION_CONFLICT");
+  });
+});
+
+describe("renameRelease", () => {
+  function readMetadata(id: string) {
+    const row = sqlite
+      .prepare("SELECT metadata FROM storefront_releases WHERE id = ?")
+      .get(id) as { metadata: string | null };
+    return row.metadata === null ? null : JSON.parse(row.metadata);
+  }
+
+  it("stores the note without touching what the release serves", async () => {
+    await storefrontReleaseDal.renameRelease({
+      storefrontId: "storefront-a",
+      releaseId: targetReleaseId,
+      note: "  Reworded the homepage hero  ",
+    });
+
+    expect(readMetadata(targetReleaseId)).toEqual({
+      note: "Reworded the homepage hero",
+    });
+    // A release points at an immutable build and publication. Renaming must
+    // never become a second way to change what production serves.
+    const row = sqlite
+      .prepare(
+        "SELECT theme_build_id, content_publication_id, status FROM storefront_releases WHERE id = ?",
+      )
+      .get(targetReleaseId);
+    expect(row).toMatchObject({
+      theme_build_id: "build-b",
+      content_publication_id: "publication-b",
+      status: "available",
+    });
+  });
+
+  it("keeps other metadata a release already carries", async () => {
+    sqlite
+      .prepare("UPDATE storefront_releases SET metadata = ? WHERE id = ?")
+      .run(JSON.stringify({ deployedBy: "queue" }), targetReleaseId);
+
+    await storefrontReleaseDal.renameRelease({
+      storefrontId: "storefront-a",
+      releaseId: targetReleaseId,
+      note: "Hotfix",
+    });
+
+    expect(readMetadata(targetReleaseId)).toEqual({
+      deployedBy: "queue",
+      note: "Hotfix",
+    });
+  });
+
+  it("clears the note when renamed to nothing", async () => {
+    await storefrontReleaseDal.renameRelease({
+      storefrontId: "storefront-a",
+      releaseId: targetReleaseId,
+      note: "First try",
+    });
+    await storefrontReleaseDal.renameRelease({
+      storefrontId: "storefront-a",
+      releaseId: targetReleaseId,
+      note: "   ",
+    });
+
+    expect(readMetadata(targetReleaseId)).toBeNull();
+  });
+
+  it("refuses a release belonging to another storefront", async () => {
+    await expect(
+      storefrontReleaseDal.renameRelease({
+        storefrontId: "storefront-b",
+        releaseId: targetReleaseId,
+        note: "Not mine",
+      }),
+    ).rejects.toThrow();
+
+    expect(readMetadata(targetReleaseId)).toBeNull();
   });
 });

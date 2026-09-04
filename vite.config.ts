@@ -44,6 +44,25 @@ const config = defineConfig({
         .filter(Boolean),
     ],
   },
+  /**
+   * Pins where the browser posts server functions.
+   *
+   * `createClientRpc` builds every server function's URL as
+   * `process.env.TSS_SERVER_FN_BASE + functionId`, and it is shipped to the
+   * browser with that expression intact. `process` does not exist there, so
+   * unless this is substituted at transform time the URL is built from
+   * `undefined` — and a server function posted to an unroutable path comes back
+   * as `{"status":500,"unhandled":true,"message":"HTTPError"}`, h3's catch-all,
+   * with the real reason stripped. It looks like the request failed on the
+   * server when it never reached a handler at all.
+   *
+   * That made it intermittent and reload-sensitive: it depends on whether a
+   * given module was evaluated while the value happened to be reachable, so
+   * editing a file could break the next call and a refresh would fix it.
+   */
+  define: {
+    "process.env.TSS_SERVER_FN_BASE": JSON.stringify("/_serverFn/"),
+  },
   optimizeDeps: {
     exclude: ["vinxi/http"],
   },

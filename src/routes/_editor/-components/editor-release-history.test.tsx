@@ -2,13 +2,34 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const navigate = vi.fn();
+let searchState: Record<string, unknown> = {};
+
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useSearch: () => searchState,
+  useNavigate: () => navigate,
+}));
+
+vi.mock("@/server/table-view/table-views.serverFn", () => ({
+  getTableViewConfiguration: vi.fn(async () => ({ success: true, data: null })),
+  saveTableViewConfiguration: vi.fn(
+    async ({ data }: { data: { configuration: unknown } }) => ({
+      success: true,
+      data: data.configuration,
+    }),
+  ),
+}));
+
 const listStorefrontReleaseHistory = vi.fn();
 const activateStorefrontRelease = vi.fn();
+const renameStorefrontRelease = vi.fn();
 
 vi.mock("@/server/storefront/storefront-releases.serverFn", () => ({
   listStorefrontReleaseHistory: (args: unknown) =>
     listStorefrontReleaseHistory(args),
   activateStorefrontRelease: (args: unknown) => activateStorefrontRelease(args),
+  renameStorefrontRelease: (args: unknown) => renameStorefrontRelease(args),
 }));
 
 const toastError = vi.fn();
@@ -76,9 +97,17 @@ function renderDialog(activeReleaseId: string | null = releases[0].id) {
 describe("EditorReleaseHistoryDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    searchState = {};
     listStorefrontReleaseHistory.mockResolvedValue({
       success: true,
-      data: releases,
+      data: {
+        releases,
+        pagination: { page: 1, limit: 25, total: 2, totalPages: 1 },
+      },
+    });
+    renameStorefrontRelease.mockResolvedValue({
+      success: true,
+      data: releases[0],
     });
     activateStorefrontRelease.mockResolvedValue({
       success: true,
@@ -148,48 +177,99 @@ describe("EditorReleaseHistoryDialog", () => {
     expect(
       await screen.findByText("Failed to fetch storefront release history"),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    // The shared card owns this control, and it labels it "Retry".
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
-  it("reaches releases past the first page instead of stopping at 25", async () => {
+  it("asks the server for the page the URL names", async () => {
     // Releases only accumulate, so a fixed first page silently hides every
     // older one — including the version someone opened this panel to roll back
-    // to.
-    const first = page(25, "aaaa");
-    const second = page(3, "bbbb");
-    listStorefrontReleaseHistory.mockImplementation(
-      ({ data }: { data: { offset?: number } }) => ({
-        success: true,
-        data: (data.offset ?? 0) === 0 ? first : second,
-      }),
-    );
-
-    renderDialog(first[0].id);
-
-    const more = await screen.findByRole("button", {
-      name: /Load older releases/,
+    // to. The page lives in the URL because the shared pager navigates to it.
+    searchState = { releasePage: 3 };
+    const older = page(2, "bbbb");
+    listStorefrontReleaseHistory.mockResolvedValue({
+      success: true,
+      data: {
+        releases: older,
+        pagination: { page: 3, limit: 25, total: 60, totalPages: 3 },
+      },
     });
-    fireEvent.click(more);
+
+    renderDialog(older[0].id);
 
     await waitFor(() =>
-      expect(screen.getByText(second[0].id.slice(0, 8))).toBeTruthy(),
-    );
-    // The second request asks for what comes after everything already shown.
-    await waitFor(() =>
-      expect(listStorefrontReleaseHistory).toHaveBeenLastCalledWith({
-        data: { storefrontId: "store-1", limit: 25, offset: 25 },
+      expect(listStorefrontReleaseHistory).toHaveBeenCalledWith({
+        data: { storefrontId: "store-1", limit: 25, page: 3 },
       }),
     );
+    expect(await screen.findByText(older[1].id.slice(0, 8))).toBeTruthy();
   });
 
-  it("stops offering more once a short page comes back", async () => {
-    // A page shorter than the limit is the end of the list; asking again would
-    // repeat the work to learn the same thing.
+  it("reports how much history there is, not just what fits", async () => {
+    listStorefrontReleaseHistory.mockResolvedValue({
+      success: true,
+      data: {
+        releases: page(25, "aaaa"),
+        pagination: { page: 1, limit: 25, total: 60, totalPages: 3 },
+      },
+    });
+
+    renderDialog();
+
+    // Without the total a full page is indistinguishable from the last one.
+    expect(await screen.findByText(/of 60/)).toBeTruthy();
+  });
+  it("keeps Rename reachable on every row, not only the live one", async () => {
+    // The card treats a custom actions cell as a replacement for its own menu,
+    // so rendering just the Activate button silently removed Rename from every
+    // row that had one — leaving it only where there was no button.
     renderDialog();
 
     await screen.findByText("Live");
-    expect(
-      screen.queryByRole("button", { name: /Load older releases/ }),
-    ).toBeNull();
+    const menus = screen.getAllByRole("button", { name: /actions/i });
+    expect(menus).toHaveLength(releases.length);
+  });
+
+  it("locks table layout and column widths to prevent rename layout shifts", async () => {
+    renderDialog();
+
+    await screen.findByText("Live");
+    const table = screen.getByRole("table");
+    expect(table.className).toContain("table-fixed");
+
+    const descriptionHeader = screen.getByRole("columnheader", {
+      name: /Description/i,
+    });
+    expect(descriptionHeader.className).toContain("w-[25%]");
+  });
+
+  it("optimistically updates description before server responds", async () => {
+    let resolveRename: (value: unknown) => void;
+    renameStorefrontRelease.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRename = resolve;
+        }),
+    );
+
+    renderDialog();
+    await screen.findByText("Live");
+
+    const menus = screen.getAllByRole("button", { name: /actions/i });
+    fireEvent.pointerDown(menus[0], {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    const renameOption = await screen.findByRole("menuitem", { name: /rename/i });
+    fireEvent.click(renameOption);
+
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "v2.0.0-optimistic" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText("v2.0.0-optimistic")).toBeTruthy();
+
+    resolveRename!({ success: true, data: releases[0] });
   });
 });

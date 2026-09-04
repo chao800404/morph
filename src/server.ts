@@ -97,7 +97,23 @@ export default {
     if (await isStorefrontHost(request)) {
       return handleStorefrontRequest(request);
     }
-    return (await getHandler())(...args);
+    const response = await (await getHandler())(...args);
+
+    // h3 turns anything that escapes a handler into a 500 carrying no cause,
+    // and it *returns* that rather than throwing, so it has to be caught on the
+    // way out. Server function calls are the one route where this is common —
+    // Start throws out of `getServerFnById` for an id it does not have, which
+    // happens when the browser holds one from before an edit
+    // (TanStack/router#7363). Replace only that blank body; every other
+    // response passes through untouched.
+    if (response.status === 500) {
+      const { recoverServerFnResponse } =
+        await import("@/server/server-fn-recovery");
+      return recoverServerFnResponse(request, response, {
+        dev: import.meta.env.DEV,
+      });
+    }
+    return response;
   },
   async queue(batch: WorkerQueueBatch): Promise<void> {
     const { processThemeBuildQueue } =

@@ -34,9 +34,19 @@ export interface RowAction {
 export const RowActionsMenu = ({
   actions,
   label = "Row actions",
+  keepsFocusOnClose = false,
 }: {
   actions: RowAction[];
   label?: string;
+  /**
+   * Set when an action hands focus to something it opened.
+   *
+   * On close the menu returns focus to its own trigger, which is right when
+   * the action navigated or opened a dialog that manages its own focus — and
+   * wrong when it revealed an inline field in the row, because the restore
+   * lands after that field has focused and takes it straight back.
+   */
+  keepsFocusOnClose?: boolean;
 }) => {
   const regular = actions.filter((action) => !action.destructive);
   const destructive = actions.filter((action) => action.destructive);
@@ -56,7 +66,12 @@ export const RowActionsMenu = ({
           <MoreHorizontal className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
+      <DropdownMenuContent
+        align="end"
+        onCloseAutoFocus={
+          keepsFocusOnClose ? (event) => event.preventDefault() : undefined
+        }
+      >
         {regular.map((action) => (
           <DropdownMenuItem
             key={action.label}

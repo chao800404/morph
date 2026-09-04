@@ -56,9 +56,7 @@ export const DataTableColumnMenu = ({
         ))}
       </div>
       <DropdownMenuSeparator />
-      <DropdownMenuItem onSelect={onReset}>
-        Reset columns
-      </DropdownMenuItem>
+      <DropdownMenuItem onSelect={onReset}>Reset columns</DropdownMenuItem>
     </DropdownMenuContent>
   </DropdownMenu>
 );

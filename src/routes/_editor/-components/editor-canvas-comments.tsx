@@ -19,6 +19,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { toast } from "sonner";
+import { optimisticListMutation } from "@/lib/query/optimistic-list";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { CommentPin } from "./comments/comment-pin";
 import { CommentThreadCard } from "./comments/comment-thread-card";
@@ -173,13 +174,21 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
-    onSuccess: () => {
-      invalidate();
-    },
-    onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "Failed to move comment");
-      invalidate();
-    },
+    // The pin is already where it was dropped. Waiting for a round trip to
+    // agree makes it jump back and then forward again, which reads as the drag
+    // having failed.
+    ...optimisticListMutation<
+      StorefrontCommentThreadDTO,
+      { threadId: string; positionX: number; positionY: number }
+    >({
+      queryClient,
+      prefix: storefrontCommentQueries.all(),
+      patch: (threads, { threadId, positionX, positionY }) =>
+        threads.map((thread) =>
+          thread.id === threadId ? { ...thread, positionX, positionY } : thread,
+        ),
+      onError: (error) => toast.error(error.message),
+    }),
   });
 
   const handleCreateDraftSubmit = () => {
@@ -268,8 +277,14 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
       const deltaXPercent = (deltaX / currentScale / unscaledWidth) * 100;
       const deltaYPercent = (deltaY / currentScale / unscaledHeight) * 100;
 
-      const nextX = Math.max(0.5, Math.min(99.5, drag.initialX + deltaXPercent));
-      const nextY = Math.max(0.5, Math.min(99.5, drag.initialY + deltaYPercent));
+      const nextX = Math.max(
+        0.5,
+        Math.min(99.5, drag.initialX + deltaXPercent),
+      );
+      const nextY = Math.max(
+        0.5,
+        Math.min(99.5, drag.initialY + deltaYPercent),
+      );
 
       if (drag.isDraft) {
         onDraftPinChange({ x: nextX, y: nextY });
@@ -435,7 +450,8 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
             title="Drag to reposition comment pin (click to cancel)"
             className={cn(
               "flex size-8 cursor-grab items-center justify-center rounded-[16px_16px_16px_3px] bg-background border border-border p-[2px] shadow-lg animate-in zoom-in-75 duration-150 ring-2 ring-primary ring-offset-2 ring-offset-background active:cursor-grabbing touch-none",
-              isDraggingPin && "scale-115 cursor-grabbing shadow-xl ring-2 ring-primary",
+              isDraggingPin &&
+                "scale-115 cursor-grabbing shadow-xl ring-2 ring-primary",
             )}
           >
             <Avatar className="size-full rounded-full pointer-events-none">
@@ -528,7 +544,9 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
                   variant="form"
                   size="sm"
                   className="h-7 px-3 text-xs font-medium"
-                  disabled={!draftContent.trim() || createThreadMutation.isPending}
+                  disabled={
+                    !draftContent.trim() || createThreadMutation.isPending
+                  }
                   onClick={handleCreateDraftSubmit}
                 >
                   {createThreadMutation.isPending ? (

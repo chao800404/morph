@@ -35,6 +35,21 @@ const context: StorefrontThemeEditorDTO = {
 };
 
 describe("StorefrontPreview stored starter composition", () => {
+  it("keeps the live preview empty until Theme source code exists", () => {
+    const html = renderToStaticMarkup(
+      <StorefrontPreview
+        context={context}
+        templateId="template-a"
+        viewportHeight={900}
+        themeFiles={[]}
+      />,
+    );
+
+    expect(html).toContain('data-storefront-preview-root="true"');
+    expect(html).not.toContain("Stored test shop");
+    expect(html).not.toContain('data-storefront-section-id="starter-hero"');
+  });
+
   it("renders the Theme Workspace page shell around every stored document section", () => {
     const routeDocument = {
       ...document,

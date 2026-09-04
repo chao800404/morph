@@ -107,6 +107,7 @@ describe("code-authored text content", () => {
     const onPropsChange = vi.fn();
     render(
       <EditorStyleInspector
+        view="content"
         section={baseSection("principles", { items: [] })}
         selection={selectionDescriptor({
           kind: "label",
@@ -150,6 +151,7 @@ describe("code-authored text content", () => {
     };
     render(
       <EditorStyleInspector
+        view="content"
         section={baseSection("promo", {})}
         themeFiles={[
           {
@@ -225,6 +227,7 @@ describe("code-authored text content", () => {
     };
     render(
       <EditorStyleInspector
+        view="content"
         section={baseSection("promo", {})}
         themeFiles={[
           {
@@ -291,6 +294,7 @@ describe("code-authored text content", () => {
     };
     render(
       <EditorStyleInspector
+        view="content"
         section={baseSection("principles", { items: [] })}
         themeFiles={[
           {
@@ -362,6 +366,7 @@ describe("code-authored text content", () => {
     };
     render(
       <EditorStyleInspector
+        view="content"
         section={baseSection("promo", {})}
         themeFiles={[
           {
@@ -412,28 +417,36 @@ describe("EditorStyleInspector selection content", () => {
   };
 
   it("shows only image content for an image selection", () => {
-    render(
-      <EditorStyleInspector
-        {...common}
-        section={baseSection("hero", {
-          heading: "Heading",
-          description: "Description",
-          actionLabel: "Shop",
-          actionHref: "/shop",
-          imageSrc: "/image.png",
-          imageAlt: "Alt",
-        })}
-        selection={selectionDescriptor({
-          kind: "image",
-          tagName: "img",
-          elementKey: "image",
-          fieldKey: "imageSrc",
-        })}
-      />,
-    );
+    const props = {
+      ...common,
+      section: baseSection("hero", {
+        heading: "Heading",
+        description: "Description",
+        actionLabel: "Shop",
+        actionHref: "/shop",
+        imageSrc: "/image.png",
+        imageAlt: "Alt",
+      }),
+      selection: selectionDescriptor({
+        kind: "image",
+        tagName: "img",
+        elementKey: "image",
+        fieldKey: "imageSrc",
+      }),
+    };
+    const content = render(<EditorStyleInspector view="content" {...props} />);
     expect(screen.getByText("Media Image")).toBeTruthy();
+    expect(
+      screen.queryByRole("combobox", { name: "Object position" }),
+    ).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Object fit" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Aspect ratio" })).toBeNull();
+    content.unmount();
 
-    for (const name of ["Object fit", "Aspect ratio"]) {
+    render(<EditorStyleInspector view="styles" {...props} />);
+    expect(screen.getByText("Media")).toBeTruthy();
+
+    for (const name of ["Object position", "Object fit", "Aspect ratio"]) {
       const control = screen.getByRole("combobox", { name });
       expect(
         control.querySelector("[data-slot=select-value]")?.parentElement
@@ -446,9 +459,33 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.queryByPlaceholderText("Body description...")).toBeNull();
   });
 
+  it("shows an empty state for a layout element with no content fields", () => {
+    render(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        section={baseSection("hero", { className: "flex min-h-32" })}
+        selection={selectionDescriptor({
+          kind: "section",
+          tagName: "section",
+          isSection: true,
+          className: "flex min-h-32",
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("This element has no editable content."),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Content & Fields" }),
+    ).toBeNull();
+  });
+
   it("shows only the selected heading field", () => {
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         section={baseSection("hero", {
           heading: "Heading",
@@ -481,6 +518,7 @@ describe("EditorStyleInspector selection content", () => {
     });
     const { rerender } = render(
       <EditorStyleInspector
+        view="content"
         {...common}
         section={section}
         selection={selection}
@@ -491,6 +529,7 @@ describe("EditorStyleInspector selection content", () => {
 
     rerender(
       <EditorStyleInspector
+        view="content"
         {...common}
         section={section}
         selection={{ ...selection, contentValue: "Edited in preview" }}
@@ -506,6 +545,7 @@ describe("EditorStyleInspector selection content", () => {
     const onPropsChange = vi.fn();
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         section={baseSection("hero", {
           content: "01",
@@ -527,8 +567,16 @@ describe("EditorStyleInspector selection content", () => {
           descendantFields: [
             { fieldKey: "eyebrow", fieldPath: "eyebrow", sectionId: null },
             { fieldKey: "heading", fieldPath: "heading", sectionId: null },
-            { fieldKey: "description", fieldPath: "description", sectionId: null },
-            { fieldKey: "actionLabel", fieldPath: "actionLabel", sectionId: null },
+            {
+              fieldKey: "description",
+              fieldPath: "description",
+              sectionId: null,
+            },
+            {
+              fieldKey: "actionLabel",
+              fieldPath: "actionLabel",
+              sectionId: null,
+            },
           ],
         })}
         onPreviewSelectionField={onPreviewSelectionField}
@@ -545,6 +593,23 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.getByText("Action Button")).toBeTruthy();
     expect(screen.queryByDisplayValue("01")).toBeNull();
     expect(screen.queryByText("Media Image")).toBeNull();
+
+    const simpleContentFields = [
+      "Eyebrow / Subtitle",
+      "Heading",
+      "Description",
+    ].map((label) => {
+      const labelElement = screen
+        .getAllByText(label)
+        .find((element) => element.tagName === "LABEL");
+      return labelElement?.closest('[data-slot="inspector-content-field"]');
+    });
+    expect(simpleContentFields.every(Boolean)).toBe(true);
+    expect(
+      new Set(simpleContentFields.map((field) => field?.className)).size,
+    ).toBe(1);
+    expect(simpleContentFields[0]?.className).toContain("bg-muted/20");
+    expect(simpleContentFields[0]?.className).toContain("w-full");
 
     const heading = screen.getByPlaceholderText("Main headline...");
     fireEvent.input(heading, { target: { value: "Updated heading" } });
@@ -568,6 +633,7 @@ describe("EditorStyleInspector selection content", () => {
     const onPropsChange = vi.fn();
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         section={baseSection("principles", {
           items: [
@@ -822,6 +888,7 @@ describe("EditorStyleInspector selection content", () => {
   it("shows section content when the section itself is selected", () => {
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         section={baseSection("hero", {
           heading: "Heading",
@@ -841,11 +908,37 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.getByText("Action Button")).toBeTruthy();
   });
 
+  it("shows section content when the sidebar has cleared the canvas selection", () => {
+    render(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        section={baseSection("hero", {
+          eyebrow: "Frame work is good to use",
+          heading: "Tanstack start good use",
+          description: "Quiet essentials.",
+          actionLabel: "Explore the collection",
+          actionHref: "/aboutus",
+          imageSrc: "/hero.png",
+          imageAlt: "Ceramic objects",
+        })}
+        selection={null}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("Frame work is good to use")).toBeTruthy();
+    expect(screen.getByDisplayValue("Tanstack start good use")).toBeTruthy();
+    expect(screen.getByDisplayValue("Quiet essentials.")).toBeTruthy();
+    expect(screen.getByText("Action Button")).toBeTruthy();
+    expect(screen.getByDisplayValue("/hero.png")).toBeTruthy();
+  });
+
   it("updates only the selected nested item", () => {
     const onPropsChange = vi.fn();
     const onPreviewSelectionField = vi.fn();
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         onPropsChange={onPropsChange}
         onPreviewSelectionField={onPreviewSelectionField}
@@ -884,6 +977,7 @@ describe("EditorStyleInspector selection content", () => {
   it("renders a nested category image field and hides unrelated section fields", () => {
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         section={baseSection("category-showcase", {
           heading: "Collections",
@@ -985,13 +1079,12 @@ describe("EditorStyleInspector selection content", () => {
     const marginInput = screen.getByLabelText("Section margin");
     expect((marginInput as HTMLInputElement).value).toBe("12");
     const paddingInput = screen.getByLabelText("Section padding");
+    expect(screen.getByLabelText("Heading font size unit").textContent).toBe(
+      "px",
+    );
     expect(
-      screen.getByLabelText("Heading font size unit").textContent,
-    ).toBe("px");
-    expect(
-      screen
-        .getByLabelText("Line height multiplier")
-        .closest("form")?.textContent,
+      screen.getByLabelText("Line height multiplier").closest("form")
+        ?.textContent,
     ).toContain("×");
     const displayRow = screen
       .getByLabelText("Element display")
@@ -1027,9 +1120,7 @@ describe("EditorStyleInspector selection content", () => {
     });
     expect(expandPaddingButton.parentElement).toBe(paddingRow?.parentElement);
     expect(expandPaddingButton.parentElement).not.toBe(paddingRow);
-    expect(
-      screen.queryByLabelText("Top padding"),
-    ).toBeNull();
+    expect(screen.queryByLabelText("Top padding")).toBeNull();
 
     fireEvent.click(expandPaddingButton);
 
@@ -1040,20 +1131,14 @@ describe("EditorStyleInspector selection content", () => {
         })
         .getAttribute("aria-expanded"),
     ).toBe("true");
-    expect(
-      screen.getByLabelText("Top padding"),
-    ).not.toBeNull();
+    expect(screen.getByLabelText("Top padding")).not.toBeNull();
     for (const side of ["Top", "Bottom", "Left", "Right"]) {
-      expect(
-        screen.getByLabelText(`${side} padding`),
-      ).not.toBeNull();
+      expect(screen.getByLabelText(`${side} padding`)).not.toBeNull();
     }
     expect(paddingRow?.parentElement?.className).not.toMatch(
       /\b(?:border|bg-background|dark:bg-input\/30)\b/,
     );
-    expect(
-      screen.getByLabelText("Section padding"),
-    ).toBe(paddingInput);
+    expect(screen.getByLabelText("Section padding")).toBe(paddingInput);
     changeNumber("Top padding", "20");
     changeNumber("Bottom padding", "24");
     changeNumber("Left padding", "28");
@@ -1064,9 +1149,7 @@ describe("EditorStyleInspector selection content", () => {
       }),
     );
     for (const side of ["Top", "Bottom", "Left", "Right"]) {
-      expect(
-        screen.getByLabelText(`${side} margin`),
-      ).not.toBeNull();
+      expect(screen.getByLabelText(`${side} margin`)).not.toBeNull();
     }
     changeNumber("Top margin", "-20");
     changeNumber("Bottom margin", "-24");
@@ -1094,24 +1177,17 @@ describe("EditorStyleInspector selection content", () => {
     rerender(renderInspector());
 
     expect(
-      (
-        screen.getByLabelText("Section padding") as HTMLInputElement
-      ).value,
+      (screen.getByLabelText("Section padding") as HTMLInputElement).value,
     ).toBe("64");
     expect(
-      (
-        screen.getByLabelText("Heading font size") as HTMLInputElement
-      ).value,
+      (screen.getByLabelText("Heading font size") as HTMLInputElement).value,
     ).toBe("60");
     expect(
-      (
-        screen.getByLabelText("Line height multiplier") as HTMLInputElement
-      ).value,
+      (screen.getByLabelText("Line height multiplier") as HTMLInputElement)
+        .value,
     ).toBe("1.4");
     expect(
-      (
-        screen.getByLabelText("Corner radius") as HTMLInputElement
-      ).value,
+      (screen.getByLabelText("Corner radius") as HTMLInputElement).value,
     ).toBe("12");
     expect(onUpdateThemeFileStyle).toHaveBeenCalledTimes(13);
   }, 20_000);
@@ -1512,7 +1588,44 @@ describe("EditorStyleInspector selection content", () => {
     );
   });
 
-  it("places Tailwind classes before content and keeps them collapsed initially", () => {
+  it("keeps Tailwind classes out of the content view, and content out of styles", () => {
+    // These write to different sources of truth — Tailwind to the Theme
+    // Source, content fields to the Page Document — so neither view may offer
+    // the other's controls. This replaces an ordering assertion that only made
+    // sense while both lived in one scrolling panel.
+    const props = {
+      ...common,
+      section: baseSection("hero", {
+        heading: "Heading",
+        className: "min-h-[30rem] overflow-hidden",
+      }),
+      selection: selectionDescriptor({
+        kind: "section",
+        tagName: "section",
+        isSection: true,
+        className: "min-h-[30rem] overflow-hidden",
+      }),
+    };
+
+    const styles = render(<EditorStyleInspector {...props} />);
+    expect(
+      screen.getByRole("button", { name: "Tailwind CSS Classes · 2" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Content & Fields" }),
+    ).toBeNull();
+    styles.unmount();
+
+    render(<EditorStyleInspector {...props} view="content" />);
+    expect(
+      screen.getByRole("button", { name: "Content & Fields" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /Tailwind CSS Classes/ }),
+    ).toBeNull();
+  });
+
+  it("keeps the Tailwind editor collapsed until it is asked for", () => {
     render(
       <EditorStyleInspector
         {...common}
@@ -1532,17 +1645,12 @@ describe("EditorStyleInspector selection content", () => {
     const tailwindToggle = screen.getByRole("button", {
       name: "Tailwind CSS Classes · 2",
     });
-    const contentToggle = screen.getByRole("button", {
-      name: "Content & Fields",
-    });
-    const tailwindGroup = tailwindToggle.parentElement;
-
-    expect(tailwindGroup?.className).not.toContain("overflow-hidden");
-    expect(tailwindGroup?.className).toContain("focus-within:z-20");
-    expect(
-      tailwindToggle.compareDocumentPosition(contentToggle) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(tailwindToggle.parentElement?.className).not.toContain(
+      "overflow-hidden",
+    );
+    expect(tailwindToggle.parentElement?.className).toContain(
+      "focus-within:z-20",
+    );
     expect(
       screen.queryByRole("textbox", { name: "Add Tailwind CSS class" }),
     ).toBeNull();
@@ -1608,9 +1716,9 @@ describe("EditorStyleInspector selection content", () => {
       "Border width",
     ) as HTMLInputElement;
     expect(borderWidth.value).toBe("2");
-    expect(
-      screen.getByLabelText("Border style").textContent,
-    ).toContain("dashed");
+    expect(screen.getByLabelText("Border style").textContent).toContain(
+      "dashed",
+    );
     const borderColor = screen.getByLabelText(
       "Color color value",
     ) as HTMLInputElement;
@@ -1626,19 +1734,13 @@ describe("EditorStyleInspector selection content", () => {
     ) as HTMLInputElement;
     expect(topBorderWidth.value).toBe("1");
     expect(
-      (
-        screen.getByLabelText("Bottom border width") as HTMLInputElement
-      ).value,
+      (screen.getByLabelText("Bottom border width") as HTMLInputElement).value,
     ).toBe("2");
     expect(
-      (
-        screen.getByLabelText("Left border width") as HTMLInputElement
-      ).value,
+      (screen.getByLabelText("Left border width") as HTMLInputElement).value,
     ).toBe("2");
     expect(
-      (
-        screen.getByLabelText("Right border width") as HTMLInputElement
-      ).value,
+      (screen.getByLabelText("Right border width") as HTMLInputElement).value,
     ).toBe("2");
 
     fireEvent.focus(topBorderWidth);
@@ -1690,15 +1792,9 @@ describe("EditorStyleInspector selection content", () => {
       "Top left corner radius",
     ) as HTMLInputElement;
     expect(topLeft.value).toBe("4");
-    expect(
-      screen.getByLabelText("Top right corner radius"),
-    ).toBeTruthy();
-    expect(
-      screen.getByLabelText("Bottom left corner radius"),
-    ).toBeTruthy();
-    expect(
-      screen.getByLabelText("Bottom right corner radius"),
-    ).toBeTruthy();
+    expect(screen.getByLabelText("Top right corner radius")).toBeTruthy();
+    expect(screen.getByLabelText("Bottom left corner radius")).toBeTruthy();
+    expect(screen.getByLabelText("Bottom right corner radius")).toBeTruthy();
 
     fireEvent.focus(topLeft);
     fireEvent.change(topLeft, { target: { value: "12" } });
@@ -1838,6 +1934,7 @@ describe("EditorStyleInspector selection content", () => {
   it("renders a nested category image field and hides unrelated section fields", () => {
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         section={baseSection("category-showcase", {
           heading: "Collections",
@@ -1866,6 +1963,7 @@ describe("EditorStyleInspector selection content", () => {
     const onPreviewSelectionField = vi.fn();
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         onPropsChange={onPropsChange}
         onPreviewSelectionField={onPreviewSelectionField}
@@ -1905,6 +2003,7 @@ describe("EditorStyleInspector selection content", () => {
     const onPreviewSelectionField = vi.fn();
     render(
       <EditorStyleInspector
+        view="content"
         {...common}
         onPropsChange={onPropsChange}
         onPreviewSelectionField={onPreviewSelectionField}
@@ -1982,9 +2081,8 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.getByText("Sizing").closest("button")).toBeNull();
     expect(screen.getByText("Appearance").closest("button")).toBeNull();
     expect(screen.getByText("Typography").closest("button")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Content & Fields" }),
-    ).toBeTruthy();
+    // Content fields are no longer part of this view; that they still render,
+    // and only in the content view, is asserted where the split is tested.
   });
 
   it("keeps Layout wrapper and spacing controls for heading selections", () => {

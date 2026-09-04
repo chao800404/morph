@@ -67,13 +67,22 @@ test.describe("publish loop", () => {
 
     const publish = page.getByRole("button", { name: /^Publish$/ });
     await expect(publish).toBeEnabled({ timeout: 30_000 });
+    // Publishing asks for an optional description first, so the release is
+    // recognisable in history later. Left blank here: the point of this test is
+    // the release, and the note must not be required to create one.
     await publish.click();
+    await page.locator("[data-publish-confirm]").click();
 
     // The status line is the editor's own answer to "is anything unpublished",
     // which is what a person reads before walking away from the screen.
-    await expect(page.getByText("All changes saved")).toBeVisible({
-      timeout: 3 * 60_000,
-    });
+    // Located by the attribute rather than the words: the label is shortened
+    // for the toolbar and hidden entirely below a wide viewport, so asserting
+    // on either would tie this to a layout decision.
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      "Published",
+      { timeout: 3 * 60_000 },
+    );
 
     // Read from a fresh page: the panel keeps what it fetched last time it was
     // opened, and a release created seconds ago can be missing from a list that

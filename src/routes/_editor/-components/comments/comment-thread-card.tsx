@@ -8,7 +8,9 @@ import {
   replyStorefrontComment,
   resolveStorefrontCommentThread,
 } from "@/server/storefront/storefront-comments.serverFn";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { optimisticListMutation } from "@/lib/query/optimistic-list";
+import { storefrontCommentQueries } from "../../-queries/storefront-comment.queries";
 import {
   Check,
   LoaderCircle,
@@ -50,6 +52,8 @@ export const CommentThreadCard = memo(function CommentThreadCard({
     return () => clearTimeout(timer);
   }, [thread.id, thread.comments.length]);
 
+  const queryClient = useQueryClient();
+
   const replyMutation = useMutation({
     mutationFn: async (content: string) => {
       const res = await replyStorefrontComment({
@@ -85,8 +89,24 @@ export const CommentThreadCard = memo(function CommentThreadCard({
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
+    // Resolving is a judgement someone has already made; waiting for a round
+    // trip to see the pin change makes the editor feel like it did not hear.
+    ...optimisticListMutation<StorefrontCommentThreadDTO, boolean>({
+      queryClient,
+      prefix: storefrontCommentQueries.all(),
+      patch: (threads, resolved) =>
+        threads.map((candidate) =>
+          candidate.id === thread.id
+            ? {
+                ...candidate,
+                status: resolved ? "resolved" : "open",
+                resolvedAt: resolved ? new Date().toISOString() : null,
+              }
+            : candidate,
+        ),
+      onError: (error) => toast.error(error.message),
+    }),
     onSuccess: () => {
-      onInvalidate();
       onClose();
       toast.success(
         thread.status === "open" ? "Thread resolved" : "Thread reopened",
@@ -106,8 +126,14 @@ export const CommentThreadCard = memo(function CommentThreadCard({
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
+    ...optimisticListMutation<StorefrontCommentThreadDTO, void>({
+      queryClient,
+      prefix: storefrontCommentQueries.all(),
+      patch: (threads) =>
+        threads.filter((candidate) => candidate.id !== thread.id),
+      onError: (error) => toast.error(error.message),
+    }),
     onSuccess: () => {
-      onInvalidate();
       onClose();
       toast.success("Thread deleted");
     },
