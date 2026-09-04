@@ -6010,7 +6010,7 @@ export function VisualEditorShell({
           aria-valuenow={leftPanelWidth}
           tabIndex={0}
           {...leftPanelResize.handlers}
-          className="group relative z-30 flex w-2 -ml-1 cursor-col-resize touch-none select-none items-center justify-center outline-none transition-colors hover:bg-primary/10 active:bg-primary/20 max-md:hidden"
+          className="group relative z-30 flex w-2 -ml-1 cursor-col-resize touch-none select-none items-center justify-center outline-none max-md:hidden"
           title="Drag to resize sections panel (Double-click to reset)"
         >
           <div className="h-8 w-1 rounded-full bg-border group-hover:bg-primary group-active:bg-primary transition-colors" />
@@ -6350,7 +6350,7 @@ export function VisualEditorShell({
           aria-valuenow={rightPanelWidth}
           tabIndex={0}
           {...rightPanelResize.handlers}
-          className="group relative z-30 flex w-2 -mr-1 cursor-col-resize touch-none select-none items-center justify-center outline-none transition-colors hover:bg-primary/10 active:bg-primary/20 max-md:hidden"
+          className="group relative z-30 flex w-2 -mr-1 cursor-col-resize touch-none select-none items-center justify-center outline-none max-md:hidden"
           title="Drag to resize assistant panel (Double-click to reset)"
         >
           <div className="h-8 w-1 rounded-full bg-border group-hover:bg-primary group-active:bg-primary transition-colors" />
