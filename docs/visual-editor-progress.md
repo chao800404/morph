@@ -6,11 +6,11 @@
 
 | 項目         | 內容                                                                                                                                                                            |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 最後更新     | 2026-09-03                                                                                                                                                                      |
+| 最後更新     | 2026-09-04                                                                                                                                                                      |
 | 目前狀態     | 核心 Editor／Build／Release 已完成主要鏈路；Production Runtime、Domain 與遠端 Publish 尚未閉環                                                                                  |
 | 整體完成度   | **90%**（重新按目前實作與交付閉環證據加權；未將未驗證的 Cloudflare production 路徑視為已完成）                                                                                   |
 | 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration；待決：是否連同 theme runtime 版本一起升級 TanStack（見第十輪） |
-| 最近完整驗證 | `pnpm typecheck`、`pnpm test`（236 files / 1600 tests passed、1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard 與 `git diff --check` 通過；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
+| 最近完整驗證 | 2026-09-04 於 `9d88bd5` 實跑：`pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（244 files / 1682 tests passed、各 1 skipped）、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 與 `git diff --check` 通過；瀏覽器基準為歷史結果，本次未重跑瀏覽器層、遠端 Publish、deploy 或 migration |
 
 `█████████ 90%`
 
@@ -35,9 +35,9 @@
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---- | -----: | ------------------------------------------------------------------------- |
 | 1. Inspector 資料一致性            | 數值回朔、舊回應覆蓋新值、選取切換競態                                                                                               | ✅   |   100% | 新控制項持續沿用 pending value 與 stale response 防護                     |
 | 2. 即時預覽與提交語意              | 操作中只更新 Live View，完成輸入後才真正提交資料                                                                                     | ✅   |   100% | 新控制項必須沿用同一套 draft/commit 規則                                  |
-| 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位、link 欄位                 | 🟢   |    99% | Content & Fields 其餘卡片仍有硬編碼 `text-[10px]`，待收斂到同一 token     |
+| 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位、link 欄位                 | 🟢   |    99% | Content 已獨立成分頁（2026-09-04）；其餘卡片仍有硬編碼 `text-[10px]`（15 處），待收斂到同一 token |
 | 4. Editor ↔ Preview 通訊           | typed protocol、runtime validation、selection/style 同步、in-place route bridge                                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試                                 |
-| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、未儲存 Code ↔ Design 切換防護、Code 診斷與補全、Color Picker 拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | 🟢   |    95% | 補完 Performance trace，重新量測大型 theme、深層 DOM 與大量 capability      |
+| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、未儲存 Code ↔ Design 切換防護、Code 診斷與補全、Color Picker 拖曳、面板寬度拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | 🟢   |    95% | 補完 Performance trace，重新量測大型 theme、深層 DOM 與大量 capability；並逐一稽核其餘高頻操作 |
 | 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence 與 production 交付鏈                                   | 🟢   |    85% | 補齊 Promo vertical slice，並以真實 production runtime 完成 Publish E2E    |
 | 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React、真實 router 與隔離的 TSX runtime 一致                                                                  | 🟡   |    75% | 完成真實 TSX/component iframe、模組邊界、Inspector 套用與 runtime fallback  |
 | 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                                                              | 🟡   |    80% | 完成 Cloudflare runtime/domain、remote migration 與 Publish E2E 發布閉環     |
@@ -115,6 +115,102 @@
   的遠端閉環、Publish E2E，以及 Code Workspace 約 3.57 MB minified client chunk；未把本機
   storefront id 猜寫進 `wrangler.jsonc`。
 
+### 2026-09-04 第十一輪：資料層規則對齊、登入回跳與面板拖曳效能
+
+本輪起於一份外部架構審核報告。**逐項驗證後，報告四項主張裡只有兩項成立，
+另兩項被誇大或指錯位置**，因此先記錄查證結果再動手。
+
+**報告正確但描述失準的一項：`firstOrNull`。** 數量屬實（storefront DAL 約 60 處），
+但報告說的「會延後成不可預期的 `undefined` 崩潰」**不成立**——逐一打開後，每一處
+都有 `if (revision)` / `Boolean(theme)` 之類的 runtime guard，沒有 live bug。真正的
+缺陷只是型別不誠實：guard 寫了但 TS 認為是死碼，未來改動沒有保護。
+
+**報告誇大的一項：「DAL 混雜 AST Compiler」。** `resolveThemeContentCapabilities` /
+`filterThemeContentProps` 本來就住在 `theme-content-capability-resolver.ts`，是
+**import 進來的**；`deriveTemplateDocumentFromRoutes` 也只是薄薄組合 compiler 既有
+函式，沒有自己做 AST parsing。分層其實是對的。但報告**漏掉**了真正該搬的東西：
+`COMPONENT_CONTENT_MANIFESTS` 是 429 行純內容政策、零資料庫存取，佔掉該檔 23%。
+
+#### 做了什麼
+
+- **§13 validator 全面遷移。** 179 個 validator 中 168 個會拋錯，全部改用
+  `parseInput`。156 個由 codemod 處理，12 個手工（bare `z.object()`、`safeParse`
+  後自拋、FormData 型、游標跳過的 2 個）。156 次改寫只產生 1 個型別錯誤，而那正是
+  重點：`dashboard-search.tsx` 讀 `data.data.groups`，但失敗分支的 `data` 是 `null`。
+  另發現 `src/server/asset/` 的 `parseXInput` **本來就不拋錯**，早已是對的模式，
+  只是沒推廣。
+- **§18 theme revision 分頁。** 真正在燒的不是報告指的那個無上限查詢（那個查詢的
+  query **沒有任何 UI 在用**），而是 `rollbackToRevision` 為了用編號找一筆而載入
+  整張表——`snapshot` 是 NOT NULL JSON 欄位，裝著每個 revision 的完整 theme 原始碼。
+  新增 `findRevisionByNumber` 用 SQL 收斂成單列；`listRevisions` 比照
+  `listHistory` 分頁（count 與頁面同時取、limit 夾在 1..100）。
+- **§14.1 新增 `mapFirstOrNull`。** `rows.length > 0 ? toDTO(rows[0]) : null` 看似有
+  防護但沒有：length 檢查不會 narrow `rows[0]`。9 處重複寫法收斂。
+- **§14.2 manifest 搬離 DAL。** `storefront-theme.dal.ts` 從 1552 → 1123 行。搬移中
+  差點誤刪一段回傳值被丟棄的 `filterThemeContentProps(...)`——它其實是刻意的驗證
+  守衛，`assertThemeContentFieldValue` 會拋錯，已保留。
+- **登入後回到中斷的路徑。** 閒置登出本來就會寫 `?callbackURL=`，Better Auth 的
+  redirect plugin 也確實會用它，但 route guard（`/dashboard`、`/_editor`）——也就是
+  session 過期最常見的出口——丟的是裸 redirect，路徑直接遺失。兩處補上，並改存
+  `sessionStorage` 讓路徑撐過關分頁。主動登出則清除：那不是被中斷的 session。
+- **面板拖曳效能。** 見下方獨立條目。
+
+#### 順帶修掉的 open redirect ⚠️
+
+`callbackURL` 原本是 `z.string().optional()`，接受任意字串。Better Auth 只檢查 URL
+**scheme**——`isSafeUrlScheme` 擋 `javascript:`，但依其自身註解是「intentionally」
+放行絕對網址——然後把值交給 `window.location.href`。所以
+`/sign-in?callbackURL=https://evil.example` 會把一個**剛輸入完密碼**的使用者送到站外。
+
+新增 `sanitizeReturnPath`：只接受同源路徑，擋掉絕對網址、protocol-relative `//host`
+及其反斜線變體、控制字元，以及 auth 頁面本身。storage 在寫入與**讀出時各驗一次**，
+因為同源的任何腳本都能改它。此防護以 mutation test 驗證過：拿掉
+protocol-relative 檢查會讓 3 個測試失敗。
+
+#### 面板拖曳：把拖曳迴圈移出 React
+
+左右面板拖曳每個 `pointermove` 都 `setState`，等於在 120Hz 螢幕上每秒對
+`VisualEditorShell`（約 6700 行、150 個 hook）做 120+ 次完整 reconciliation。兩側面板
+雖有 `memo`，但被每次 render 都新建的 `style={{ width }}` 物件擊穿。iframe 本來就得在
+容器寬度改變時重排整份文件，那份工作與 React 搶同一條主執行緒，畫布因此明顯掉幀。
+
+改為把寬度寫進 design surface 的 CSS 自訂屬性，並用 `requestAnimationFrame` 合併，
+一幀內的多個 move 只付一次 layout。React state 只保留**已提交**的寬度（SSR 初始值與
+重新整理後還原），放開才寫一次。拖曳期間的 re-render：**0**。
+
+`aria-valuenow` 在同一幀直接寫 DOM——若仍綁 state，螢幕閱讀器整段手勢都會被告知
+拖曳前的舊寬度。面板 style 物件提為 module 常數，順帶修好被擊穿的 memo。
+
+此保證同樣以 mutation test 驗證：把 `setState` 放回 `pointermove` 會讓該測試失敗。
+
+#### 為什麼沒有全域開啟 `noUncheckedIndexedAccess`
+
+全開是 379 個錯誤。按層拆開後，**資料層只有 33 個**，其餘 338 個在 UI、AST、compiler
+與測試檔。其中 `theme-compiler-hasher.ts` 一個檔就佔 44 個——那是手寫 SHA-256，
+`words[i]` 由建構方式保證存在。實測 `Uint32Array` 也無法規避（該 flag 對 numeric
+index signature 一樣生效），所以那 44 處只能加 44 個 `!`，安全收益為零。
+
+因此改為**範圍化強制**：根 tsconfig 不開，`tsconfig.strict.json` 用該 flag 編譯整個
+程式，但 `scripts/typecheck-data-layer.mjs` 只回報 DAL / storage / serverFn 三層，
+由 `pnpm typecheck:data` 把關。此閘門以注入違規驗證過確實會擋。其他區域整理好後，
+擴大 `ENFORCED_PATHS` 即可漸進納管。
+
+#### 尚未驗證
+
+登入流程的端到端路徑（閒置登出 → 關分頁 → 重開 → 登入 → 回到原頁）與面板拖曳的實際
+手感都需要人工確認——進編輯器需要登入憑證。iframe 每幀重排亦刻意保留，待量測 React
+修正是否已足夠再決定是否加 `pointer-events: none` 或 CSS `contain`。
+
+### 2026-09-04 Content / Styles 分頁拆分與跨 section 選取同步
+
+- 依 §2（Presentation SSOT = Theme Source/Tailwind；Content = Page/Template Document），
+  Content fields 從 Styles 分頁移出，成為獨立分頁。做法是保留原本約 1000 行的內容區塊
+  不動，改以新的 `view` prop 控制渲染，讓共用的選取狀態仍留在同一個元件。
+- 沒有內容欄位的元素顯示虛線空狀態；分頁維持使用者上次選擇，不隨選取自動切換。
+- 測試調整 43 項：把 `view="content"` 限縮到真正以內容為主的測試，並把已失去意義的
+  「Tailwind classes 排在 content 之前」改寫為兩個各自有意義的斷言。
+- 另修正跨 section 的編輯器選取同步（`061df53`）。
+
 ### 2026-09-03 第十輪之二：工具列與佔位圖修整
 
 - **狀態文字縮短。** `Unpublished changes` / `All changes saved` →
@@ -141,10 +237,13 @@
 `define` 把 base 在 transform 階段釘死；已驗證 HMR 後 URL 仍正確、production
 client bundle 裡是字面值。
 
-**2. Validator 拋錯繞過 handler 的 try/catch。** 見 rules §13。已把 10 個帶
-OCC/CAS 前提（`expected*`、`expectMissing`）的 serverFn 改用
-`parseInput()`；其餘 137 個純表單驗證維持原狀——那些幾乎只在 client 有 bug 時才失敗，
-全面改動的 churn 大於收益。
+**2. Validator 拋錯繞過 handler 的 try/catch。** 見 rules §13。當時先把 10 個帶
+OCC/CAS 前提（`expected*`、`expectMissing`）的 serverFn 改用 `parseInput()`，
+其餘維持原狀，理由是「那些幾乎只在 client 有 bug 時才失敗，全面改動的 churn 大於收益」。
+
+> **這個取捨已於 2026-09-04 推翻，見第十一輪。** 全部 168 個都已遷移。改判的理由是
+> 分批遷移會留下一條「哪些 serverFn 會回不透明 500」的隱性知識，而那正是本輪要消除的
+> 東西；一次做完反而比日後回頭補便宜。
 
 **3. 真正的殘餘病因：serverFn resolver 的冷啟動競速。** 上游已知
 （TanStack/router#6609、#7363）。`getServerFnById` 找不到 id 時**拋錯而非回 404**，
@@ -804,6 +903,9 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [ ] 建立選取切換、拖曳數值、Color Picker、Code 輸入的可量測基準。
 - [ ] 確認大型 theme、深層 DOM 與大量 Inspector capability 時仍無明顯卡頓。
 - [ ] 檢查所有高頻操作都沒有在 pointer move/key stroke 期間送出持久更新。
+  - 2026-09-04：**已發現並修復一例**——左右面板拖曳在每個 `pointermove` 都 `setState`，
+    使整個 shell 每幀重繪並拖垮預覽 iframe（見第十一輪）。其餘高頻操作尚未逐一稽核，
+    因此本項維持未完成。
 
 ### 最終 UI／E2E 驗收
 
@@ -821,13 +923,14 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 ## 驗證基準
 
-最近一次完整驗證結果（2026-09-02，於 WSL checkout 實際執行）：
+最近一次完整驗證結果（2026-09-04，於 WSL checkout 針對 `9d88bd5` 實際執行）：
 
 | 檢查             | 結果    | 備註                                            |
 | ---------------- | ------- | ----------------------------------------------- |
-| `pnpm typecheck` | ✅ 通過 | TypeScript 型別檢查完成                                  |
-| `pnpm test`      | ✅ 通過 | 230 個測試檔通過、1 個 skipped；1543 個 tests 通過、1 個 skipped |
-| `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle 與 deploy artifact secret guard 檢查通過 |
+| `pnpm typecheck` | ✅ 通過 | 0 個 TypeScript 錯誤                                     |
+| `pnpm typecheck:data` | ✅ 通過 | 資料層在 `noUncheckedIndexedAccess` 下無違規；閘門已以注入違規驗證確實會擋 |
+| `pnpm test`      | ✅ 通過 | 244 個測試檔通過、1 個 skipped；1682 個 tests 通過、1 個 skipped |
+| `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle（331 檔）與 deploy artifact secret guard 檢查通過 |
 | `git diff --check` | ✅ 通過 | 工作樹差異沒有 whitespace error                         |
 
 已知非阻擋警告：
@@ -879,6 +982,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-04 | 資料層規則對齊、登入回跳與面板拖曳效能（第十一輪）：168 個會拋錯的 serverFn validator 全面改用 `parseInput`（推翻 2026-09-03「其餘 137 個維持原狀」的取捨）；theme revision 加分頁並新增 `findRevisionByNumber`，讓 rollback 不再為找一筆而載入全部 snapshot；新增 `mapFirstOrNull`；429 行內容政策搬離 theme DAL；新增 `pnpm typecheck:data` 以範圍化方式強制 §14.1；登入後回到中斷路徑並修補 `callbackURL` 的 open redirect；面板拖曳改以 CSS 變數 + rAF，拖曳期間 re-render 由每幀一次降為 0；Content 獨立成分頁 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（244 files / 1682 tests passed、各 1 skipped）、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard、`git diff --check` 通過；open redirect 防護與「拖曳不 re-render」皆以 mutation test 驗證；**未執行**瀏覽器 E2E、遠端 Publish／deploy／migration，登入流程與拖曳手感需人工確認 |
 | 2026-09-02 | Code → Design 切換加入未儲存 Code 變更提示：可選擇儲存並切換、保留 draft 後切換或取消；Save & switch 透過 Code Workspace imperative handle 實際保存全部 dirty files，失敗／conflict 時 fail closed；新增 Monaco draft Save All 測試 | `pnpm typecheck`、`pnpm test`（230 files / 1544 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration |
 | 2026-09-02 | 依目前 repository 實作重新盤點並校正進度：核對 Theme Workspace → R2 source manifest → Build Queue／Sandbox → immutable artifact → Release／activeRelease CAS → hostname／Theme Runtime；保留已完成的 Editor、Build、Release 與 OCC 功能，不再把尚未接通的 production Theme Worker、custom domain、Page Registry、真實 TSX iframe、remote migration 與 Publish E2E 計入已完成；整體完成度由 97% 調整為 90% | `pnpm typecheck`、`pnpm test`（230 files passed / 1 skipped；1543 tests passed / 1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、`git diff --check` 通過；未執行瀏覽器 E2E、遠端 Publish／deploy／migration；保留既有未提交的 `visual-editor-shell.tsx` 修改 |
 | 2026-09-01 | 第二輪修正：Code Workspace 改以真實 cold click 量測並壓縮 Monaco declaration payload；immutable source revision 接上 R2 content-addressed blobs、D1 manifest、digest／size／UTF-8 fail-closed 與 legacy snapshot fallback；OTP sign-in／email-verification 改走 email adapter 並移除收件者 PII log；Tailwind 排除測試來源並加入 deploy artifact secret guard | `pnpm typecheck`、`pnpm test`（217 files / 1388 tests，1 skipped）、`pnpm build`、client bundle check、deploy artifact secret guard、R2 blob focused tests、email focused tests、`git diff --check` 通過；未執行遠端 Publish／deploy |
