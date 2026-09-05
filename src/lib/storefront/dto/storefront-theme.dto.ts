@@ -39,6 +39,13 @@ export interface StorefrontThemeEditorDTO {
     publishedRevisionId: string | null;
     draftGeneration: number;
   }>;
+  /**
+   * Inspector tab restored from a cookie.
+   *
+   * Server-provided because reading it from `localStorage` during the first
+   * render disagrees with the server's HTML and costs the whole tree.
+   */
+  panelTab?: string;
   panelWidths?: {
     left: number;
     right: number;

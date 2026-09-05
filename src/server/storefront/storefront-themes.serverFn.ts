@@ -23,6 +23,22 @@ import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-
 import { getRequest } from "@tanstack/react-start/server";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
+/** Inspector tab the browser last used, so SSR renders the same one. */
+function parseEditorPanelTab(cookieHeader: string | null | undefined) {
+  if (!cookieHeader) return undefined;
+  for (const segment of cookieHeader.split(";")) {
+    const [rawKey, rawVal] = segment.trim().split("=");
+    if (!rawKey || !rawVal) continue;
+    if (decodeURIComponent(rawKey) !== "morph:editor-assistant-panel-tab") {
+      continue;
+    }
+    const value = decodeURIComponent(rawVal);
+    // Validated here rather than trusted: the value reaches a render.
+    if (["chat", "content", "styles"].includes(value)) return value;
+  }
+  return undefined;
+}
+
 function parseEditorPanelWidths(cookieHeader: string | null | undefined) {
   const defaults = { left: 260, right: 380 };
   if (!cookieHeader) return defaults;
@@ -67,6 +83,7 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
       const request = getRequest();
       const cookieHeader = request?.headers?.get("cookie");
       const panelWidths = parseEditorPanelWidths(cookieHeader);
+      const panelTab = parseEditorPanelTab(cookieHeader);
       const editorOrigin = request
         ? new URL(request.url).origin
         : process.env.PUBLIC_URL || "http://localhost:3000";
@@ -83,6 +100,7 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
         ? ok("Storefront theme editor fetched", {
             ...context,
             panelWidths,
+            panelTab,
             previewChannel: {
               editorOrigin,
               sessionId: crypto.randomUUID(),

@@ -101,24 +101,35 @@ type PersistedEditorAssistantPanelTab =
   (typeof persistedEditorAssistantPanelTabs)[number];
 
 function isPersistedEditorAssistantPanelTab(
-  value: string | null,
+  value: string | null | undefined,
 ): value is PersistedEditorAssistantPanelTab {
   return persistedEditorAssistantPanelTabs.some((tab) => tab === value);
 }
 
+/** Narrows a stored value to a tab that may be restored. */
+export function readEditorAssistantPanelTab(
+  value: string | null | undefined,
+): EditorAssistantPanelTab {
+  return isPersistedEditorAssistantPanelTab(value) ? value : "chat";
+}
+
 /**
- * Read the last normal inspector tab synchronously so the first render can
- * use the user's previous view. Comment mode is transient and is therefore
- * intentionally excluded from persisted tabs.
+ * The last inspector tab, for a client that has no server-provided value.
+ *
+ * Not used to seed the first render. The server cannot read `localStorage`, so
+ * rendering the stored tab on the client's first pass and the default on the
+ * server is a hydration mismatch — React discards the server tree and rebuilds
+ * it. The tab therefore travels in a cookie, exactly as the panel widths do,
+ * and this remains only as the fallback for a client that somehow has one and
+ * not the other. Comment mode is transient and is never persisted.
  */
 export function readStoredEditorAssistantPanelTab(): EditorAssistantPanelTab {
   if (typeof window === "undefined") return "chat";
 
   try {
-    const storedTab = window.localStorage.getItem(
-      EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY,
+    return readEditorAssistantPanelTab(
+      window.localStorage.getItem(EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY),
     );
-    return isPersistedEditorAssistantPanelTab(storedTab) ? storedTab : "chat";
   } catch {
     return "chat";
   }
@@ -136,6 +147,14 @@ export function persistEditorAssistantPanelTab(tab: EditorAssistantPanelTab) {
     window.localStorage.setItem(EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY, tab);
   } catch {
     // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+  try {
+    // Also a cookie, so the server renders the same tab the client will. This
+    // is what the panel widths already do, and what keeps the first paint from
+    // being thrown away.
+    document.cookie = `${EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY}=${tab}; path=/; max-age=31536000; SameSite=Lax`;
+  } catch {
+    // See above.
   }
 }
 
@@ -169,8 +188,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onJumpToCode,
   onTabChange,
 }: EditorAssistantPanelProps) {
-  const [tab, setTab] = useState<EditorAssistantPanelTab>(
-    readStoredEditorAssistantPanelTab,
+  // Seeded from the value the server already resolved, so both renders agree.
+  const [tab, setTab] = useState<EditorAssistantPanelTab>(() =>
+    readEditorAssistantPanelTab(context.panelTab),
   );
   const activeTemplate = resolveEditorTemplate(context, search);
   const sections = activeTemplate?.document.sections ?? [];
