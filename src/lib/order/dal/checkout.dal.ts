@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { firstOrNull } from "@/lib/db/single-row";
 import {
   cartAddresses,
   cartCreditLines,
@@ -72,12 +73,24 @@ export const checkoutDal = {
     displayIdRetry = 0,
   ): Promise<CheckoutResult> {
     const db = await getDb();
-    const [existingOrder] = await db
-      .select({ id: orders.id, displayId: orders.displayId })
-      .from(orderCarts)
-      .innerJoin(orders, eq(orders.id, orderCarts.orderId))
-      .where(and(eq(orderCarts.cartId, cartId), isNull(orders.deletedAt)))
-      .limit(1);
+    // Scoped to the caller's channel like every other read here. Answering by
+    // cart id alone made this idempotent return a cross-channel order's id and
+    // display id — the completed-cart path skips the channel-scoped cart lookup
+    // below, so nothing else would have caught it.
+    const existingOrder = firstOrNull(
+      await db
+        .select({ id: orders.id, displayId: orders.displayId })
+        .from(orderCarts)
+        .innerJoin(orders, eq(orders.id, orderCarts.orderId))
+        .where(
+          and(
+            eq(orderCarts.cartId, cartId),
+            eq(orders.salesChannelId, salesChannelId),
+            isNull(orders.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
     if (existingOrder)
       return {
         success: true,

@@ -1,4 +1,8 @@
 import { assetDal } from "@/lib/asset/dal/asset.dal";
+import {
+  checkProcessedImage,
+  processedImageRejectionMessage,
+} from "./processed-image-validation";
 import { createServerFn } from "@tanstack/react-start";
 import { isFormDataLike } from "./input-validation";
 import { env } from "cloudflare:workers";
@@ -30,6 +34,17 @@ export const processImage = createServerFn({ method: "POST" })
 
     const user = context.user;
     const arrayBuffer = await croppedFile.arrayBuffer();
+
+    // The normal upload route validates size, type and signature; this path
+    // used to store whatever it was given, labelled `image/png` regardless.
+    const check = checkProcessedImage(arrayBuffer);
+    if (!check.ok) {
+      return {
+        success: false,
+        message: processedImageRejectionMessage(check.reason),
+      };
+    }
+
     const fileId = crypto.randomUUID();
     const fileName = `${fileId}.png`;
     const key = `assets/${fileName}`;
@@ -44,6 +59,19 @@ export const processImage = createServerFn({ method: "POST" })
     });
 
     const r2Url = `/${key}`;
+    // R2 is written before D1, so every path that fails after this point has to
+    // remove the object it just wrote. Otherwise a failed save leaves bytes
+    // nothing references and nothing will ever collect.
+    const discardStoredImage = async () => {
+      try {
+        await env.R2_BUCKET.delete(key);
+      } catch {
+        // Best effort: the save already failed, and reporting a cleanup error
+        // instead would hide why.
+      }
+    };
+
+    try {
     if (saveMode === "update" && assetId) {
       const existing = await assetDal.findById(assetId);
       if (existing) {
@@ -93,4 +121,8 @@ export const processImage = createServerFn({ method: "POST" })
       assetName: newName,
       assetUrl: r2Url,
     };
+    } catch (error) {
+      await discardStoredImage();
+      throw error;
+    }
   });

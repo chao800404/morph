@@ -331,11 +331,14 @@ export const Route = createFileRoute("/_backend/api/store/$")({
               { error: "INVALID_REQUEST", message: "Invalid cart ID" },
               400,
             );
-          await cartReservationDal.renewCart(cartId.data);
+          // Scope first: renewing before the channel-scoped lookup extended
+          // another channel's reservations for anyone who knew a cart id, even
+          // though the response was still a 404.
           const cart = await cartDal.findById(
             cartId.data,
             context.salesChannelId,
           );
+          if (cart) await cartReservationDal.renewCart(cartId.data);
           return cart
             ? privateResponse({ cart })
             : privateResponse(

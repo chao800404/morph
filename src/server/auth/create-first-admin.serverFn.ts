@@ -2,6 +2,7 @@ import { parseInput } from "@/lib/db/server-result";
 import { createFirstAdminSchema } from "@/lib/validations/auth";
 import { createServerFn } from "@tanstack/react-start";
 import { ensureNoAdmin } from "../middleware/ensureNoAdmin.middleware";
+import { adminStatusDal } from "@/lib/user/dal/admin-status.dal";
 import { getAuthWithAdmin } from "./helpers";
 
 export const createFirstAdminServerFn = createServerFn({
@@ -20,12 +21,16 @@ export const createFirstAdminServerFn = createServerFn({
 
     // The admin plugin endpoint resolves to a `Response`-shaped object. Only
     // the created user is safe to hand back across the server boundary.
+    // Created without the role, then promoted by a single conditional write.
+    // The middleware's "no admin yet" check cannot hold across this call, so
+    // two concurrent bootstraps would otherwise both pass it and both end up
+    // admin — different emails, so uniqueness does not catch it.
     const created = await auth.api.createUser({
       body: {
         email: data.email,
         password: data.password,
         name: data.name,
-        role: "admin",
+        role: "user",
       },
     });
 
@@ -33,6 +38,17 @@ export const createFirstAdminServerFn = createServerFn({
       return {
         success: false as const,
         message: "Failed to create admin user",
+      };
+    }
+
+    const claimed = await adminStatusDal.claimFirstAdmin(created.user.id);
+    if (!claimed) {
+      // Lost the race. The account is removed rather than left as an
+      // unexpected non-admin user nobody asked for, so a retry starts clean.
+      await adminStatusDal.deleteUser(created.user.id);
+      return {
+        success: false as const,
+        message: "An administrator already exists. Please sign in instead.",
       };
     }
 

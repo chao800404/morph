@@ -1,4 +1,5 @@
 import { parseInput } from "@/lib/db/server-result";
+import { resolveRemoveBackgroundTarget } from "./remove-background-target";
 import { cmsConfig } from "@/cms.config";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { isRemoveBackgroundEnabled } from "@/lib/config/create-config";
@@ -6,6 +7,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
+
+/** Upper bound on the image this will pull into memory to base64-encode. */
+const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 
 const inputSchema = z.object({
   assetId: z.string().optional(),
@@ -31,34 +35,38 @@ export const removeBackground = createServerFn({ method: "POST" })
     }
 
     const request = getRequest();
-    let targetUrl: string | null = null;
 
+    // The stored asset is the trusted reference; the caller-supplied URL is
+    // only a fallback for the same image. Both are resolved against this
+    // request's own origin and refused if they leave it — see
+    // `resolveRemoveBackgroundTarget` for why that matters when the fetch
+    // below carries the caller's session cookie.
+    let candidate: string | null = null;
     if (parsedInput.assetId) {
       const asset = await assetDal.findById(parsedInput.assetId);
-      if (asset && asset.url) {
-        targetUrl = new URL(asset.url, request.url).toString();
-      }
+      candidate = asset?.url ?? null;
     }
+    if (!candidate) candidate = parsedInput.imageUrl ?? null;
 
-    if (!targetUrl && parsedInput.imageUrl) {
-      if (
-        parsedInput.imageUrl.startsWith("http://") ||
-        parsedInput.imageUrl.startsWith("https://")
-      ) {
-        targetUrl = parsedInput.imageUrl;
-      } else {
-        targetUrl = new URL(parsedInput.imageUrl, request.url).toString();
-      }
-    }
-
-    if (!targetUrl) {
+    const target = resolveRemoveBackgroundTarget({
+      candidate,
+      requestUrl: request.url,
+    });
+    if (!target.ok) {
       return {
         success: false,
-        message: "A valid asset ID or image URL is required",
+        message:
+          target.reason === "cross-origin"
+            ? "Background removal only accepts images hosted by this CMS."
+            : "A valid asset ID or image URL is required",
       };
     }
+    const targetUrl = target.url;
 
     try {
+      // Same-origin only, enforced above. The cookie is required because the
+      // asset route this reads from is session-gated; it must never ride along
+      // to a host the caller chose.
       const cookie = request.headers.get("cookie");
       // `segment` is a Cloudflare Image Resizing option that the generated
       // RequestInitCfProperties type does not model yet.
@@ -82,8 +90,27 @@ export const removeBackground = createServerFn({ method: "POST" })
         };
       }
 
+      // The whole image is base64'd into memory below, so an oversized source
+      // is a memory problem rather than a slow one. `content-length` is a hint
+      // the origin may omit, so the decoded size is checked as well.
+      const declaredLength = Number(
+        transformed.headers.get("content-length") ?? Number.NaN,
+      );
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_SOURCE_BYTES) {
+        return {
+          success: false,
+          message: "That image is too large to process.",
+        };
+      }
+
       const imageBlob = await transformed.blob();
       const imageBuffer = await imageBlob.arrayBuffer();
+      if (imageBuffer.byteLength > MAX_SOURCE_BYTES) {
+        return {
+          success: false,
+          message: "That image is too large to process.",
+        };
+      }
       const base64Image = Buffer.from(imageBuffer).toString("base64");
       const dataUrl = `data:image/png;base64,${base64Image}`;
 
