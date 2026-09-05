@@ -118,7 +118,11 @@ export const storefrontPageDal = {
     const db = await getDb();
     const revisionId = crypto.randomUUID();
     const now = new Date().toISOString();
-    const document: StorefrontPageDocument = { version: 1, sections: [] };
+    const document: StorefrontPageDocument = {
+      version: 1,
+      handle: data.handle,
+      sections: [],
+    };
     await db.batch([
       db.insert(storefrontPages).values({
         id: data.id,
@@ -168,7 +172,7 @@ export const storefrontPageDal = {
         id: revisionId,
         pageId: data.id,
         version,
-        document: data.document,
+        document: { ...data.document, handle: data.handle },
         createdBy: data.createdBy,
         createdAt: now,
         publishedAt: data.publish ? now : null,

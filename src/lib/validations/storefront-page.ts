@@ -10,6 +10,7 @@ export const storefrontPageStatusSchema = z.enum([
 
 export const storefrontPageDocumentSchema = z.object({
   version: z.literal(1),
+  handle: handleSchema.optional(),
   sections: z
     .array(
       z.object({

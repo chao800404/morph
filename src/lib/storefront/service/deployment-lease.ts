@@ -13,7 +13,7 @@
  * exclusion has to happen before the deploy starts.
  */
 
-/** How long a holder may keep the lease before another deployment may take it. */
+/** Diagnostic stale threshold, never permission for a second upload. */
 export const DEPLOYMENT_LEASE_TTL_MS = 10 * 60 * 1000;
 
 export type DeploymentLeasePorts = Readonly<{
@@ -22,6 +22,8 @@ export type DeploymentLeasePorts = Readonly<{
    *
    * Must be a single conditional write: reading the current holder and then
    * overwriting it reintroduces exactly the race this exists to close.
+   * An existing owner MUST NOT be displaced even past expiresAt: the external
+   * deployment sink cannot fence it. Crashed holders need verified recovery.
    */
   acquire(args: {
     storefrontId: string;
@@ -34,15 +36,14 @@ export type DeploymentLeasePorts = Readonly<{
 }>;
 
 export type DeploymentLeaseResult<T> =
-  | { acquired: true; value: T }
-  | { acquired: false };
+  { acquired: true; value: T } | { acquired: false };
 
 /**
  * Runs `operation` while holding the storefront's deployment lease.
  *
  * The lease is released even when the operation throws: a deployment that
- * fails still has to hand the storefront back, or one crash would block
- * publishing until the TTL expired.
+ * settles still has to hand the storefront back. A process crash instead
+ * leaves the owner in place, deliberately blocking until verified recovery.
  */
 export async function withDeploymentLease<T>({
   storefrontId,

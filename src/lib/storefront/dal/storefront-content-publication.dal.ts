@@ -292,14 +292,66 @@ export const storefrontContentPublicationDal = {
         id: storefrontPages.id,
         revisionId: storefrontPages.publishedRevisionId,
         handle: storefrontPages.handle,
+        draftRevisionId: storefrontPages.draftRevisionId,
+        document: storefrontPageRevisions.document,
       })
       .from(storefrontPages)
+      .innerJoin(
+        storefrontPageRevisions,
+        and(
+          eq(storefrontPageRevisions.id, storefrontPages.publishedRevisionId),
+          eq(storefrontPageRevisions.pageId, storefrontPages.id),
+        ),
+      )
       .where(
         and(
           eq(storefrontPages.storefrontId, data.storefrontId),
           isNull(storefrontPages.deletedAt),
         ),
       );
+
+    const pageHandles = new Map<string, string>();
+    for (const page of publishedPages) {
+      let handle = page.document.handle;
+      if (!handle) {
+        // Legacy revisions can only reuse an actual immutable route snapshot.
+        // Conflicting history is not evidence for either URL.
+        const snapshots = await db
+          .select({ metadata: storefrontContentPublicationItems.metadata })
+          .from(storefrontContentPublicationItems)
+          .where(
+            and(
+              eq(storefrontContentPublicationItems.itemType, "page"),
+              eq(storefrontContentPublicationItems.contentId, page.id),
+              eq(
+                storefrontContentPublicationItems.revisionId,
+                page.revisionId!,
+              ),
+              isNull(storefrontContentPublicationItems.deletedAt),
+            ),
+          );
+        const handles = new Set(
+          snapshots.flatMap((row) =>
+            typeof row.metadata?.handle === "string"
+              ? [row.metadata.handle]
+              : [],
+          ),
+        );
+        if (handles.size === 1) handle = [...handles][0];
+        // No intervening draft exists: the original legacy handle is provable.
+        if (
+          !handle &&
+          handles.size === 0 &&
+          page.draftRevisionId === page.revisionId
+        )
+          handle = page.handle;
+      }
+      if (!handle)
+        throw new Error(
+          "CONTENT_PUBLICATION_PAGE_ROUTE_UNAVAILABLE: Republish this Page to capture its route before publishing the Theme.",
+        );
+      pageHandles.set(page.id, handle);
+    }
 
     const publicationId = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -322,9 +374,8 @@ export const storefrontContentPublicationDal = {
             Boolean(template.revisionId),
         ),
       ...publishedPages
-        .filter(
-          (page): page is { id: string; revisionId: string; handle: string } =>
-            Boolean(page.revisionId),
+        .filter((page): page is typeof page & { revisionId: string } =>
+          Boolean(page.revisionId),
         )
         .map((page) => ({
           id: crypto.randomUUID(),
@@ -336,7 +387,7 @@ export const storefrontContentPublicationDal = {
           // public runtime resolved a URL against the *current* one, so
           // renaming a draft silently changed which content an already
           // published release served at that address.
-          metadata: { handle: page.handle },
+          metadata: { handle: pageHandles.get(page.id)! },
           createdAt: now,
           updatedAt: now,
         })),
@@ -519,18 +570,15 @@ export const storefrontContentPublicationDal = {
               data.publicationId,
             ),
             eq(storefrontContentPublicationItems.itemType, "page"),
-            isNull(storefrontPages.deletedAt),
             isNull(storefrontContentPublicationItems.deletedAt),
             or(
               // The handle this release was published under.
               sql`json_extract(${storefrontContentPublicationItems.metadata}, '$.handle') = ${data.handle}`,
-              // Publications made before the handle was recorded have no
-              // snapshot to match, so they fall back to the live handle. New
-              // ones do not, which is what stops a draft rename from moving
-              // published content.
+              // Legacy items may use the immutable revision's route, never
+              // the mutable Page handle or deletion flag.
               and(
                 sql`json_extract(${storefrontContentPublicationItems.metadata}, '$.handle') IS NULL`,
-                eq(storefrontPages.handle, data.handle),
+                sql`json_extract(${storefrontPageRevisions.document}, '$.handle') = ${data.handle}`,
               ),
             ),
           ),

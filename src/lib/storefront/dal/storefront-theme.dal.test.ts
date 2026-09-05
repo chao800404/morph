@@ -173,6 +173,7 @@ beforeEach(() => {
       updated_at text NOT NULL,
       deleted_at text
     );
+    CREATE TABLE storefront_page_revisions (id text, page_id text, document text);
     CREATE TABLE storefront_content_publications (
       id text PRIMARY KEY NOT NULL,
       storefront_id text NOT NULL,
@@ -218,14 +219,13 @@ afterEach(() => {
 describe("storefront theme DAL", () => {
   it("persists a Page handle snapshot and preserves it after a draft rename", async () => {
     sqlite.exec(`
-      CREATE TABLE storefront_page_revisions (id text, page_id text, document text);
       INSERT INTO storefront_theme_templates (id,theme_id,type,name,document,created_at,updated_at)
         VALUES ('t','theme-a','index','Home','{"version":1,"sections":[]}','now','now');
       INSERT INTO storefront_theme_template_revisions (id,template_id,version,document,created_at)
         VALUES ('tr','t',1,'{"version":1,"sections":[]}','now');
       INSERT INTO storefront_pages (id,storefront_id,title,handle,status,published_revision_id,created_by,created_at,updated_at)
         VALUES ('p','storefront-a','About','original','published','pr','u','now','now');
-      INSERT INTO storefront_page_revisions VALUES ('pr','p','{"version":1,"sections":[]}');
+      INSERT INTO storefront_page_revisions VALUES ('pr','p','{"version":1,"handle":"original","sections":[]}');
     `);
     const publication = await storefrontContentPublicationDal.createForTheme({
       storefrontId: "storefront-a",
@@ -236,6 +236,16 @@ describe("storefront theme DAL", () => {
     const page = publication.items.find((item) => item.itemType === "page");
     expect(page?.metadata).toEqual({ handle: "original" });
     sqlite.exec("UPDATE storefront_pages SET handle = 'renamed'");
+    const next = await storefrontContentPublicationDal.createForTheme({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "t",
+      templateRevisionId: "tr",
+    });
+    expect(
+      next.items.find((item) => item.itemType === "page")?.metadata,
+    ).toEqual({ handle: "original" });
+    sqlite.exec("UPDATE storefront_pages SET deleted_at = 'later'");
     expect(
       await storefrontContentPublicationDal.getPublishedPageDocument({
         publicationId: publication.id,

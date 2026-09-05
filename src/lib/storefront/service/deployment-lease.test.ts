@@ -7,19 +7,16 @@ import {
 /** In-memory stand-in for the single conditional UPDATE the DAL runs. */
 function createLease(): DeploymentLeasePorts & { held: () => string | null } {
   let owner: string | null = null;
-  let expiresAt = 0;
 
   return {
-    async acquire({ owner: next, expiresAt: until, now }) {
-      if (owner !== null && expiresAt > now) return false;
+    async acquire({ owner: next }) {
+      if (owner !== null) return false;
       owner = next;
-      expiresAt = until;
       return true;
     },
     async release({ owner: candidate }) {
       if (owner === candidate) {
         owner = null;
-        expiresAt = 0;
       }
     },
     held: () => owner,
@@ -105,8 +102,7 @@ describe("withDeploymentLease", () => {
     expect(second).toEqual({ acquired: true, value: "second" });
   });
 
-  // A crashed holder must not wedge the storefront until someone intervenes.
-  it("lets an expired lease be taken over", async () => {
+  it("does not mistake elapsed TTL for proof that an upload stopped", async () => {
     const lease = createLease();
     await lease.acquire({
       storefrontId: "s1",
@@ -123,7 +119,8 @@ describe("withDeploymentLease", () => {
       operation: async () => "second",
     });
 
-    expect(result).toEqual({ acquired: true, value: "second" });
+    expect(result).toEqual({ acquired: false });
+    expect(lease.held()).toBe("crashed");
   });
 
   it("releases the lease when the deployment throws", async () => {

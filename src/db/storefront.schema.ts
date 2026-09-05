@@ -24,6 +24,8 @@ export type StorefrontTemplateType =
 
 export type StorefrontPageDocument = {
   version: 1;
+  /** Page route captured with this revision; absent on legacy/template docs. */
+  handle?: string;
   sections: Array<{
     id: string;
     type: string;
@@ -431,18 +433,17 @@ export const storefrontThemeRevisions = sqliteTable(
      * Content-addressed R2 source blob manifest. Nullable for existing
      * revisions while the legacy D1 snapshot compatibility path is migrated.
      */
-    sourceManifest: text("source_manifest", { mode: "json" })
-      .$type<{
-        version: 1;
-        algorithm: "sha256";
-        files: Array<{
-          path: string;
-          digest: string;
-          sizeBytes: number;
-          mimeType: string;
-          isEntry: boolean;
-        }>;
-      }>(),
+    sourceManifest: text("source_manifest", { mode: "json" }).$type<{
+      version: 1;
+      algorithm: "sha256";
+      files: Array<{
+        path: string;
+        digest: string;
+        sizeBytes: number;
+        mimeType: string;
+        isEntry: boolean;
+      }>;
+    }>(),
     createdBy: text("created_by"),
     ...timestamps,
   },
@@ -467,11 +468,7 @@ export const storefrontThemeRevisions = sqliteTable(
  * relabel a cancelled build as failed.
  */
 export type StorefrontThemeBuildStatus =
-  | "queued"
-  | "building"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
+  "queued" | "building" | "succeeded" | "failed" | "cancelled";
 
 export type StorefrontThemeDependencyStatus =
   "requested" | "building" | "ready" | "failed" | "rejected";

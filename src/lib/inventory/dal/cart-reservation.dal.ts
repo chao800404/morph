@@ -5,7 +5,7 @@ import {
   productVariantInventoryItems,
   salesChannelStockLocations,
 } from "@/db/link.schema";
-import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 
 const RESERVATION_TTL_MS = 15 * 60 * 1000;
 
@@ -266,85 +266,106 @@ export const cartReservationDal = {
       if (delta < 0)
         negative.push({ inventoryItemId, locationId, delta: -delta });
     }
-    const applied: typeof positive = [];
-    for (const change of positive) {
-      const result = await db
-        .update(inventoryLevels)
-        .set({
-          reservedQuantity: sql`${inventoryLevels.reservedQuantity} + ${change.delta}`,
-          updatedAt: new Date().toISOString(),
-        })
-        .where(
-          and(
-            eq(inventoryLevels.inventoryItemId, change.inventoryItemId),
-            eq(inventoryLevels.locationId, change.locationId),
-            isNull(inventoryLevels.deletedAt),
-            input.allowBackorder
-              ? sql`1 = 1`
-              : sql`${inventoryLevels.stockedQuantity} - ${inventoryLevels.reservedQuantity} >= ${change.delta}`,
-          ),
-        );
-      if (!Number(result.meta.changes ?? 0)) {
-        for (const rollback of applied)
-          await db
-            .update(inventoryLevels)
-            .set({
-              reservedQuantity: sql`max(0, ${inventoryLevels.reservedQuantity} - ${rollback.delta})`,
-              updatedAt: new Date().toISOString(),
-            })
-            .where(
-              and(
-                eq(inventoryLevels.inventoryItemId, rollback.inventoryItemId),
-                eq(inventoryLevels.locationId, rollback.locationId),
-              ),
-            );
-        return { managed: true, success: false };
-      }
-      applied.push(change);
-    }
-    for (const change of negative)
-      await db
-        .update(inventoryLevels)
-        .set({
-          reservedQuantity: sql`max(0, ${inventoryLevels.reservedQuantity} - ${change.delta})`,
-          updatedAt: new Date().toISOString(),
-        })
-        .where(
-          and(
-            eq(inventoryLevels.inventoryItemId, change.inventoryItemId),
-            eq(inventoryLevels.locationId, change.locationId),
-          ),
-        );
-    if (existing.length)
-      await db
-        .update(reservationItems)
-        .set({
-          deletedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        })
-        .where(
-          and(
-            eq(reservationItems.lineItemId, input.lineItemId),
-            isNull(reservationItems.deletedAt),
-          ),
-        );
     const timestamp = new Date().toISOString();
     const expiresAt = new Date(Date.now() + RESERVATION_TTL_MS).toISOString();
-    if (desired.size)
-      await db.insert(reservationItems).values(
-        [...desired.values()].map((reservation) => ({
-          id: crypto.randomUUID(),
-          cartId: input.cartId,
-          lineItemId: input.lineItemId,
-          ...reservation,
-          allowBackorder: input.allowBackorder,
-          description: "Cart inventory reservation",
-          expiresAt,
-          metadata: {},
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        })),
+    // One aggregate write, including the read-set CAS. A renewal, release or
+    // competing sync invalidates this plan before any inventory is changed.
+    // JSON input keeps the guard's bind count constant for multi-location carts.
+    const statements = [
+      env.DATABASE.prepare(
+        `
+      SELECT CASE WHEN
+        (SELECT count(*) FROM reservation_items WHERE line_item_id = ?1 AND deleted_at IS NULL) = json_array_length(?2)
+        AND NOT EXISTS (
+          SELECT 1 FROM json_each(?2) snapshot WHERE NOT EXISTS (
+            SELECT 1 FROM reservation_items r
+            WHERE r.id = json_extract(snapshot.value, '$.id')
+              AND r.line_item_id = ?1 AND r.cart_id = ?3 AND r.deleted_at IS NULL
+              AND r.quantity = json_extract(snapshot.value, '$.quantity')
+              AND r.inventory_item_id = json_extract(snapshot.value, '$.inventoryItemId')
+              AND r.location_id = json_extract(snapshot.value, '$.locationId')
+              AND r.updated_at IS json_extract(snapshot.value, '$.updatedAt')
+              AND r.expires_at IS json_extract(snapshot.value, '$.expiresAt')
+          )
+        ) THEN 1 ELSE json('') END
+    `,
+      ).bind(input.lineItemId, JSON.stringify(existing), input.cartId),
+    ];
+    for (const change of [
+      ...positive,
+      ...negative.map((value) => ({ ...value, delta: -value.delta })),
+    ]) {
+      statements.push(
+        env.DATABASE.prepare(
+          `
+        SELECT CASE WHEN EXISTS (
+          SELECT 1 FROM inventory_levels
+          WHERE inventory_item_id = ?1 AND location_id = ?2 AND deleted_at IS NULL
+            AND reserved_quantity + ?3 >= 0
+            AND (?3 <= 0 OR ?4 = 1 OR stocked_quantity - reserved_quantity >= ?3)
+        ) THEN 1 ELSE json('') END
+      `,
+        ).bind(
+          change.inventoryItemId,
+          change.locationId,
+          change.delta,
+          Number(input.allowBackorder),
+        ),
       );
+      statements.push(
+        env.DATABASE.prepare(
+          `
+        UPDATE inventory_levels SET reserved_quantity = reserved_quantity + ?3, updated_at = ?4
+        WHERE inventory_item_id = ?1 AND location_id = ?2 AND deleted_at IS NULL
+      `,
+        ).bind(
+          change.inventoryItemId,
+          change.locationId,
+          change.delta,
+          timestamp,
+        ),
+      );
+    }
+    statements.push(
+      env.DATABASE.prepare(
+        `
+      UPDATE reservation_items SET deleted_at = ?2, updated_at = ?2
+      WHERE line_item_id = ?1 AND deleted_at IS NULL
+    `,
+      ).bind(input.lineItemId, timestamp),
+    );
+    for (const reservation of desired.values()) {
+      statements.push(
+        env.DATABASE.prepare(
+          `
+        INSERT INTO reservation_items
+          (id, cart_id, line_item_id, inventory_item_id, location_id, quantity,
+           allow_backorder, description, expires_at, metadata, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Cart inventory reservation', ?8, '{}', ?9, ?9)
+      `,
+        ).bind(
+          crypto.randomUUID(),
+          input.cartId,
+          input.lineItemId,
+          reservation.inventoryItemId,
+          reservation.locationId,
+          reservation.quantity,
+          Number(input.allowBackorder),
+          expiresAt,
+          timestamp,
+        ),
+      );
+    }
+    try {
+      await env.DATABASE.batch(statements);
+    } catch (error) {
+      // Only our SQL precondition failure is a normal unavailable/conflict.
+      // Storage failures remain failures; the whole batch has rolled back.
+      if (error instanceof Error && error.message.includes("malformed JSON")) {
+        return { managed: true, success: false };
+      }
+      throw error;
+    }
     return { managed: true, success: true };
   },
 

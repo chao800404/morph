@@ -396,7 +396,7 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
       if (!held.acquired) {
         // Nothing was written: the pointer only moves inside the lease.
         return fail(
-          "Another deployment is in progress for this storefront. Retry once it finishes.",
+          "A deployment still holds this storefront's lock. Wait for it to finish; if it was interrupted, an operator must verify it stopped before clearing the lock.",
           { error: "RELEASE_DEPLOYMENT_BUSY" },
         );
       }

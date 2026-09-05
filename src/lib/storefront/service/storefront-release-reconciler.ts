@@ -306,7 +306,7 @@ export async function activateReleaseWithDeployment(args: {
       success: false,
       reason: "ACTIVATION_CONFLICT",
       message:
-        "Another deployment is in progress for this storefront. Try again once it finishes.",
+        "A deployment still holds this storefront's lock. Wait for it to finish; if it was interrupted, an operator must verify it stopped before clearing the lock.",
     };
   }
   return held.value;

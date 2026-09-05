@@ -95,6 +95,8 @@ beforeEach(() => {
     CREATE TABLE storefronts (
       id text PRIMARY KEY,
       active_release_id text,
+      deployment_lease_owner text,
+      deployment_lease_expires_at integer,
       updated_at text,
       deleted_at text
     );
@@ -322,6 +324,33 @@ describe("storefront release DAL", () => {
         expectedActiveReleaseId: null,
       }),
     ).rejects.toThrow("RELEASE_ACTIVATION_CONFLICT");
+  });
+});
+
+describe("deployment mutex DAL", () => {
+  it("refuses takeover after expiry and permits only owner release", async () => {
+    sqlite.exec(
+      "INSERT OR IGNORE INTO storefronts (id) VALUES ('mutex-store')",
+    );
+    const claim = (owner: string, now: number) =>
+      storefrontReleaseDal.acquireDeploymentLease({
+        storefrontId: "mutex-store",
+        owner,
+        now,
+        expiresAt: now + 1000,
+      });
+    expect(await claim("slow", 0)).toBe(true);
+    expect(await claim("new", 100_000)).toBe(false);
+    await storefrontReleaseDal.releaseDeploymentLease({
+      storefrontId: "mutex-store",
+      owner: "new",
+    });
+    expect(await claim("new", 100_001)).toBe(false);
+    await storefrontReleaseDal.releaseDeploymentLease({
+      storefrontId: "mutex-store",
+      owner: "slow",
+    });
+    expect(await claim("new", 100_002)).toBe(true);
   });
 });
 

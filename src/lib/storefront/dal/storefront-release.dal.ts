@@ -368,8 +368,9 @@ export const storefrontReleaseDal = {
    *
    * One conditional statement: reading the holder and then writing it would
    * leave the same gap between check and act that the activation CAS already
-   * leaves around the deploy. An expired lease is takeable, which is what stops
-   * a crashed deployment from blocking the storefront permanently.
+   * leaves around the deploy. Expiry is diagnostic only: the upload API cannot
+   * fence a stale writer, so elapsed time never proves the old upload stopped.
+   * An abandoned owner requires verified operational recovery, not takeover.
    */
   async acquireDeploymentLease(args: {
     storefrontId: string;
@@ -383,14 +384,10 @@ export const storefrontReleaseDal = {
       SET deployment_lease_owner = ?1, deployment_lease_expires_at = ?2
       WHERE id = ?3
         AND deleted_at IS NULL
-        AND (
-          deployment_lease_owner IS NULL
-          OR deployment_lease_expires_at IS NULL
-          OR deployment_lease_expires_at <= ?4
-        )
+        AND deployment_lease_owner IS NULL
     `,
     )
-      .bind(args.owner, args.expiresAt, args.storefrontId, args.now)
+      .bind(args.owner, args.expiresAt, args.storefrontId)
       .run();
 
     return (result.meta?.changes ?? 0) > 0;

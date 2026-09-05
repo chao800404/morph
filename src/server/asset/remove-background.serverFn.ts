@@ -1,5 +1,6 @@
 import { parseInput } from "@/lib/db/server-result";
 import { resolveRemoveBackgroundTarget } from "./remove-background-target";
+import { fetchRemoveBackgroundImage } from "./remove-background-image";
 import { cmsConfig } from "@/cms.config";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { isRemoveBackgroundEnabled } from "@/lib/config/create-config";
@@ -7,9 +8,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
-
-/** Upper bound on the image this will pull into memory to base64-encode. */
-const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 
 const inputSchema = z.object({
   assetId: z.string().optional(),
@@ -68,49 +66,7 @@ export const removeBackground = createServerFn({ method: "POST" })
       // asset route this reads from is session-gated; it must never ride along
       // to a host the caller chose.
       const cookie = request.headers.get("cookie");
-      // `segment` is a Cloudflare Image Resizing option that the generated
-      // RequestInitCfProperties type does not model yet.
-      const cfImageOptions: RequestInitCfProperties = {
-        image: {
-          segment: "foreground",
-          format: "png",
-          quality: 100,
-        } as RequestInitCfPropertiesImage & { segment: string },
-      };
-
-      const transformed = await fetch(targetUrl, {
-        headers: cookie ? { cookie } : undefined,
-        cf: cfImageOptions,
-      });
-
-      if (!transformed.ok) {
-        return {
-          success: false,
-          message: `Cloudflare Image Resizing requires Cloudflare deployment / zone enabled (${transformed.status} ${transformed.statusText})`,
-        };
-      }
-
-      // The whole image is base64'd into memory below, so an oversized source
-      // is a memory problem rather than a slow one. `content-length` is a hint
-      // the origin may omit, so the decoded size is checked as well.
-      const declaredLength = Number(
-        transformed.headers.get("content-length") ?? Number.NaN,
-      );
-      if (Number.isFinite(declaredLength) && declaredLength > MAX_SOURCE_BYTES) {
-        return {
-          success: false,
-          message: "That image is too large to process.",
-        };
-      }
-
-      const imageBlob = await transformed.blob();
-      const imageBuffer = await imageBlob.arrayBuffer();
-      if (imageBuffer.byteLength > MAX_SOURCE_BYTES) {
-        return {
-          success: false,
-          message: "That image is too large to process.",
-        };
-      }
+      const imageBuffer = await fetchRemoveBackgroundImage(targetUrl, cookie);
       const base64Image = Buffer.from(imageBuffer).toString("base64");
       const dataUrl = `data:image/png;base64,${base64Image}`;
 

@@ -595,7 +595,7 @@ export function content(slotId: string): Record<string, unknown> {
 }
 `;
 
-export const STARTER_THEME_CONTENT_MODULE_SOURCE = `import { createIsomorphicFn } from "@tanstack/react-start";
+export const LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE = `import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { createContext, useContext } from "react";
 
@@ -648,6 +648,97 @@ const EMPTY_CONTENT: MorphContent = { slots: {}, hiddenSlots: [] };
 
 export const loadContentSlots = createIsomorphicFn()
   .client(async (_pathname: string): Promise<MorphContent> => EMPTY_CONTENT)
+  .server(async (pathname: string): Promise<MorphContent> => {
+    try {
+      const request = getRequest();
+      const origin = request.headers.get("x-morph-content-origin");
+      if (!origin) return EMPTY_CONTENT;
+      const response = await fetch(
+        origin + "/_morph/content?path=" + encodeURIComponent(pathname),
+        { headers: { accept: "application/json" } },
+      );
+      if (!response.ok) return EMPTY_CONTENT;
+      const payload = (await response.json()) as {
+        slots?: MorphContentSlots;
+        hiddenSlots?: string[];
+      };
+      return {
+        slots: payload?.slots ?? {},
+        hiddenSlots: payload?.hiddenSlots ?? [],
+      };
+    } catch {
+      return EMPTY_CONTENT;
+    }
+  });
+`;
+
+export const STARTER_THEME_CONTENT_MODULE_SOURCE = `import { createIsomorphicFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { createContext, useContext } from "react";
+
+export type MorphContentSlots = Record<string, Record<string, unknown>>;
+
+export type MorphContent = {
+  slots: MorphContentSlots;
+  /** Sections the author hid. Absent slots are not the same thing. */
+  hiddenSlots: string[];
+};
+
+const MorphContentContext = createContext<MorphContent>({
+  slots: {},
+  hiddenSlots: [],
+});
+
+export const MorphContentProvider = MorphContentContext.Provider;
+
+/** Reads the stored values for one content slot. */
+export function content(slotId: string): Record<string, unknown> {
+  return useContext(MorphContentContext).slots[slotId] ?? {};
+}
+
+/**
+ * Whether the author hid this section.
+ *
+ * Spreading props cannot cancel a render, so the route has to ask. A slot with
+ * no stored values is not hidden — it just has none, and the component's
+ * defaults are the right answer for it.
+ */
+export function isSectionHidden(slotId: string): boolean {
+  return useContext(MorphContentContext).hiddenSlots.includes(slotId);
+}
+
+/**
+ * Loads the published content for one route.
+ *
+ * The server branch is the only one that touches the request; Start strips it
+ * from the client bundle, which is what keeps the server-only import out of
+ * client code. Client navigation fetches the destination route's public content;
+ * an error must not silently replace authored values/visibility with defaults.
+ *
+ * Morph Core owns the answer \u2014 only it knows which release is active \u2014 so
+ * this asks it back on the origin it forwarded the request from, rather than
+ * reading any store directly. Every failure degrades to defaults: content must
+ * never be able to take the storefront down.
+ */
+/** Every degradation path returns this, so callers never see a partial shape. */
+const EMPTY_CONTENT: MorphContent = { slots: {}, hiddenSlots: [] };
+
+export const loadContentSlots = createIsomorphicFn()
+  .client(async (pathname: string): Promise<MorphContent> => {
+    const response = await fetch(
+      "/_morph/content?path=" + encodeURIComponent(pathname),
+      { headers: { accept: "application/json" }, credentials: "omit", signal: AbortSignal.timeout(15_000) },
+    );
+    if (!response.ok) throw new Error("Published content is temporarily unavailable.");
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== "object"
+      || !("slots" in payload) || !payload.slots || typeof payload.slots !== "object" || Array.isArray(payload.slots)
+      || !("hiddenSlots" in payload) || !Array.isArray(payload.hiddenSlots)
+      || !payload.hiddenSlots.every((slot: unknown) => typeof slot === "string")) {
+      throw new Error("Invalid published content response.");
+    }
+    return { slots: payload.slots as MorphContentSlots, hiddenSlots: payload.hiddenSlots as string[] };
+  })
   .server(async (pathname: string): Promise<MorphContent> => {
     try {
       const request = getRequest();
