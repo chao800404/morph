@@ -362,4 +362,53 @@ export const storefrontReleaseDal = {
     }
     return mapReleaseRowToDTO(updated);
   },
+
+  /**
+   * Claims the storefront's deployment slot, or reports it already taken.
+   *
+   * One conditional statement: reading the holder and then writing it would
+   * leave the same gap between check and act that the activation CAS already
+   * leaves around the deploy. An expired lease is takeable, which is what stops
+   * a crashed deployment from blocking the storefront permanently.
+   */
+  async acquireDeploymentLease(args: {
+    storefrontId: string;
+    owner: string;
+    expiresAt: number;
+    now: number;
+  }): Promise<boolean> {
+    const result = await env.DATABASE.prepare(
+      `
+      UPDATE storefronts
+      SET deployment_lease_owner = ?1, deployment_lease_expires_at = ?2
+      WHERE id = ?3
+        AND deleted_at IS NULL
+        AND (
+          deployment_lease_owner IS NULL
+          OR deployment_lease_expires_at IS NULL
+          OR deployment_lease_expires_at <= ?4
+        )
+    `,
+    )
+      .bind(args.owner, args.expiresAt, args.storefrontId, args.now)
+      .run();
+
+    return (result.meta?.changes ?? 0) > 0;
+  },
+
+  /** Releases the lease only if this owner still holds it. */
+  async releaseDeploymentLease(args: {
+    storefrontId: string;
+    owner: string;
+  }): Promise<void> {
+    await env.DATABASE.prepare(
+      `
+      UPDATE storefronts
+      SET deployment_lease_owner = NULL, deployment_lease_expires_at = NULL
+      WHERE id = ?1 AND deployment_lease_owner = ?2
+    `,
+    )
+      .bind(args.storefrontId, args.owner)
+      .run();
+  },
 };

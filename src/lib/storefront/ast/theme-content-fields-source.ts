@@ -10,8 +10,23 @@ const MAX_SOURCE_BYTES = 512 * 1024;
 
 export const COLOCATED_CONTENT_FIELDS_EXPORT = "contentFields";
 
+/**
+ * What a module says about its own content fields.
+ *
+ * `fields: null` used to mean three different things — no declaration, an
+ * empty one, and one that could not be understood — and callers could only
+ * fall back to the manifest for all three. That made an empty declaration
+ * unable to revoke a stale manifest field, and made a broken one fail open.
+ *
+ * - `absent`: no declaration. The manifest may still answer for this module.
+ * - `valid`: a declaration was read. `fields` is authoritative *including when
+ *   it is empty*, which is how a module withdraws fields the manifest lists.
+ * - `invalid`: a declaration exists but could not be trusted. Nothing is
+ *   editable, and the manifest must not stand in for it.
+ */
 export type ColocatedContentFieldsResult = Readonly<{
-  /** `null` when the module declares no content fields at all. */
+  declaration: "absent" | "valid" | "invalid";
+  /** Empty for `absent` and `invalid`. */
   fields: Readonly<Record<string, ThemeContentFieldDefinition>> | null;
   diagnostics: readonly string[];
 }>;
@@ -138,19 +153,28 @@ export function parseColocatedContentFields(
   sourceCode: string,
 ): ColocatedContentFieldsResult {
   if (typeof sourceCode !== "string" || sourceCode.trim() === "") {
-    return { fields: null, diagnostics: [] };
+    return { declaration: "absent", fields: null, diagnostics: [] };
   }
   const cached = parseCache.get(sourceCode);
   if (cached) return cached;
   if (sourceCode.length > MAX_SOURCE_BYTES) {
     return cacheParse(sourceCode, {
+      // A file too large to scan may simply have no declaration, so this only
+      // fails closed when it looks like it has one.
+      declaration: sourceCode.includes(COLOCATED_CONTENT_FIELDS_EXPORT)
+        ? "invalid"
+        : "absent",
       fields: null,
       diagnostics: ["Component source is too large to scan for contentFields."],
     });
   }
   // Cheap guard so unrelated component files are not parsed at all.
   if (!sourceCode.includes(COLOCATED_CONTENT_FIELDS_EXPORT)) {
-    return cacheParse(sourceCode, { fields: null, diagnostics: [] });
+    return cacheParse(sourceCode, {
+      declaration: "absent",
+      fields: null,
+      diagnostics: [],
+    });
   }
 
   let ast: any;
@@ -158,6 +182,7 @@ export function parseColocatedContentFields(
     ast = parseAst(sourceCode);
   } catch (error) {
     return cacheParse(sourceCode, {
+      declaration: "invalid",
       fields: null,
       diagnostics: [
         `Could not parse component source: ${
@@ -168,11 +193,18 @@ export function parseColocatedContentFields(
   }
 
   const initializer = findContentFieldsInitializer(ast);
-  if (!initializer) return cacheParse(sourceCode, { fields: null, diagnostics: [] });
+  if (!initializer) {
+    return cacheParse(sourceCode, {
+      declaration: "absent",
+      fields: null,
+      diagnostics: [],
+    });
+  }
 
   const literal = readStaticLiteral(initializer);
   if (!literal.ok || !literal.value || typeof literal.value !== "object") {
     return cacheParse(sourceCode, {
+      declaration: "invalid",
       fields: null,
       diagnostics: [
         `"${COLOCATED_CONTENT_FIELDS_EXPORT}" must be a static object literal to be editable.`,
@@ -183,6 +215,7 @@ export function parseColocatedContentFields(
   const entries = Object.entries(literal.value as Record<string, unknown>);
   if (entries.length > MAX_COMPONENT_CONTENT_FIELDS) {
     return cacheParse(sourceCode, {
+      declaration: "invalid",
       fields: null,
       diagnostics: [
         `"${COLOCATED_CONTENT_FIELDS_EXPORT}" declares more than ${MAX_COMPONENT_CONTENT_FIELDS} fields.`,
@@ -208,8 +241,14 @@ export function parseColocatedContentFields(
     fields[key] = parsed.data;
   }
 
+  // A rejected field is dropped, not fatal: the rest of the declaration is
+  // still what the author expressed, and the diagnostics name what was
+  // skipped. `invalid` is reserved for a declaration that could not be read at
+  // all — the distinction that matters is whether the manifest may answer in
+  // its place, and here it may not.
   return cacheParse(sourceCode, {
-    fields: Object.keys(fields).length > 0 ? fields : null,
+    declaration: "valid",
+    fields,
     diagnostics,
   });
 }

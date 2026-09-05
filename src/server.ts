@@ -76,6 +76,24 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
         storefrontContentPublicationDal.getPublishedTemplateDocument(
           args,
         ) as never,
+      getPublishedPageDocument: (args) =>
+        storefrontContentPublicationDal.getPublishedPageDocument(args) as never,
+    },
+    // Library media referenced by the live release, served to anonymous
+    // visitors. The CMS `/assets` route needs a session, which a storefront
+    // visitor does not have.
+    mediaPorts: {
+      listPublishedAssetIds: (publicationId) =>
+        storefrontContentPublicationDal.listPublishedAssetIds(publicationId),
+      getAssetDelivery: async (assetId) => {
+        const { assetDal } = await import("@/lib/asset/dal/asset.dal");
+        const asset = await assetDal.findById(assetId);
+        // The stored URL is the CMS delivery path; its R2 key is that path
+        // without the leading slash, the same derivation `/assets` uses.
+        const key = asset?.url?.replace(/^\/+/, "") ?? "";
+        if (!key.startsWith("assets/") || key.includes("..")) return null;
+        return { storageKey: key, contentType: asset?.mimeType ?? null };
+      },
     },
   });
   return service.handleRequest(request);

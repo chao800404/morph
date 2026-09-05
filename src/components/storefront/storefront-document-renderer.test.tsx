@@ -140,6 +140,40 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
     expect(content?.className).toContain("bg-black");
   });
 
+  it("resolves an Asset-backed Hero image before rendering the Theme", () => {
+    const document: StorefrontPageDocument = {
+      version: 1,
+      sections: [
+        {
+          id: "hero-1",
+          type: "hero",
+          componentRef: "hero.default",
+          enabled: true,
+          props: {
+            imageSrc: {
+              source: "asset",
+              mediaType: "image",
+              assetId: "6550fe95-9fb0-4008-b837-962da1b449d7",
+              url: "/assets/hero.webp",
+              name: "Hero image",
+            },
+          },
+        },
+      ],
+    };
+
+    const { container } = render(
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={STARTER_THEME_FILES}
+      />,
+    );
+
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(
+      "/assets/hero.webp",
+    );
+  });
+
   it("renders component-local instance classes for only the matching item", () => {
     const principles = STARTER_THEME_FILES.find(
       (file) => file.path === "src/components/Principles.tsx",

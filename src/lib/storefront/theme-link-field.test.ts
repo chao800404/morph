@@ -61,8 +61,12 @@ export const contentFields = {
 } as const;
 `);
 
-    expect(result.fields).toBeNull();
     expect(result.diagnostics.length).toBeGreaterThan(0);
+    // Declared but exposing nothing, which is not the same as not declaring:
+    // `null` is reserved for a module with no declaration, and only that may
+    // fall back to the manifest.
+    expect(result.declaration).toBe("valid");
+    expect(result.fields).toEqual({});
   });
 });
 

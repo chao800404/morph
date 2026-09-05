@@ -1,5 +1,10 @@
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
 import {
+  lookupPublishedMedia,
+  parsePublishedMediaPath,
+  type PublishedMediaPorts,
+} from "./storefront-media-delivery";
+import {
   PRODUCTION_ARTIFACT_POLICY,
   sanitizeArtifactPath,
   serveThemeArtifact,
@@ -58,6 +63,8 @@ export type StorefrontProductionServiceOptions = Readonly<{
   r2Bucket?: R2BucketLike;
   resolverDeps?: StorefrontHostResolverDeps;
   contentPorts?: ContentRuntimePorts;
+  /** Required to serve published CMS media on the merchant hostname. */
+  mediaPorts?: PublishedMediaPorts;
 }>;
 
 /**
@@ -91,6 +98,11 @@ export class StorefrontProductionService {
 
     if (url.pathname === STOREFRONT_CONTENT_PATH) {
       return this.serveContent(request, url, resolved);
+    }
+
+    const mediaAssetId = parsePublishedMediaPath(url.pathname);
+    if (mediaAssetId) {
+      return this.servePublishedMedia(request, mediaAssetId, resolved);
     }
 
     if (request.method === "GET" || request.method === "HEAD") {
@@ -147,6 +159,67 @@ export class StorefrontProductionService {
         ETag: `"${resolved.releaseId}:${requestedPath}"`,
         "X-Content-Type-Options": "nosniff",
       },
+    });
+  }
+
+  /**
+   * Serves a CMS asset that the active release published.
+   *
+   * Authorised by the publication rather than by a session: a visitor may read
+   * exactly the media the live release refers to, and nothing else in the
+   * library. The asset is only looked up after that check, so an unpublished id
+   * cannot be used to find out whether it exists.
+   */
+  private async servePublishedMedia(
+    request: Request,
+    assetId: string,
+    resolved: ResolvedStorefrontHost,
+  ): Promise<Response> {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return errorResponse(405, "Method not allowed.");
+    }
+    if (!this.options.mediaPorts || !this.options.r2Bucket) {
+      return errorResponse(503, "Storefront media is not configured.");
+    }
+
+    const lookup = await lookupPublishedMedia({
+      assetId,
+      publicationId: resolved.contentPublicationId,
+      ports: this.options.mediaPorts,
+    });
+    // Both cases answer the same way: whether an asset exists is not something
+    // an unpublished id should be able to distinguish.
+    if (lookup.status !== "found") return errorResponse(404, "Not found.");
+
+    const object = await this.options.r2Bucket.get(lookup.storageKey);
+    if (!object) return errorResponse(404, "Not found.");
+
+    const headers = new Headers();
+    // The stored asset row is the type authority; R2 metadata is a fallback
+    // for objects written before a type was recorded.
+    const contentType =
+      lookup.contentType ??
+      object.httpMetadata?.contentType ??
+      "application/octet-stream";
+    headers.set("Content-Type", contentType);
+    // Bytes are immutable for an asset id, and the release id keeps a rollback
+    // from serving a stale cache entry under the same URL.
+    headers.set("Cache-Control", "public, max-age=300, must-revalidate");
+    headers.set("ETag", `"${resolved.releaseId}:${assetId}"`);
+    headers.set("X-Content-Type-Options", "nosniff");
+    // Never inline: a stored SVG is script-capable, and this route has no
+    // session to lose but the storefront's own origin to protect.
+    if (headers.get("Content-Type") === "image/svg+xml") {
+      headers.set("Content-Disposition", "attachment");
+    }
+
+    if (request.headers.get("if-none-match") === headers.get("ETag")) {
+      return new Response(null, { status: 304, headers });
+    }
+
+    return new Response(request.method === "HEAD" ? null : object.body, {
+      status: 200,
+      headers,
     });
   }
 

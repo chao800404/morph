@@ -36,6 +36,11 @@ export type ReleaseActivationResult =
       deploymentDrift?: boolean;
     };
 
+import {
+  withDeploymentLease,
+  type DeploymentLeasePorts,
+} from "./deployment-lease";
+
 export type ReleaseReconcilerPorts = Readonly<{
   getRelease(releaseId: string): Promise<{
     id: string;
@@ -55,6 +60,15 @@ export type ReleaseReconcilerPorts = Readonly<{
     releaseId: string;
     expectedActiveReleaseId: string | null;
   }): Promise<unknown>;
+  /**
+   * Serialises deployments for one storefront.
+   *
+   * Optional so a caller that never deploys — a smoke harness, a test that
+   * only exercises activation — is not forced to implement it. Production
+   * wiring must provide it; without it the activate-and-deploy sequence is
+   * only guarded at the pointer flip. See `deployment-lease.ts`.
+   */
+  deploymentLease?: DeploymentLeasePorts;
   /**
    * Records the build the Theme Worker now runs.
    *
@@ -213,7 +227,53 @@ export async function deployReleaseArtifact(args: {
  * bytes are not deployed yet; during that window production still serves the
  * previous script, which is what a deployment looks like anyway.
  */
+/**
+ * Activates a release and deploys it, holding the storefront's deployment
+ * lease for the whole sequence.
+ *
+ * The CAS inside only decides who may move the pointer; it says nothing about
+ * who is uploading. Without the lease a second request reads the pointer the
+ * first just wrote, passes its own CAS and deploys concurrently, and the
+ * storefront ends up naming one release while running another's build.
+ */
 export async function activateReleaseWithDeployment(args: {
+  releaseId: string;
+  expectedActiveReleaseId: string | null;
+  deployer: ThemeWorkerDeployer;
+  ports: ReleaseReconcilerPorts;
+  r2Bucket?: R2BucketLike;
+}): Promise<ReleaseActivationResult> {
+  const lease = args.ports.deploymentLease;
+  if (!lease) return activateReleaseWithDeploymentUnsynchronised(args);
+
+  const release = await args.ports.getRelease(args.releaseId);
+  if (!release) {
+    return {
+      success: false,
+      reason: "RELEASE_NOT_FOUND",
+      message: `Release "${args.releaseId}" was not found.`,
+    };
+  }
+
+  const held = await withDeploymentLease({
+    storefrontId: release.storefrontId,
+    owner: `activate:${args.releaseId}:${crypto.randomUUID()}`,
+    ports: lease,
+    operation: () => activateReleaseWithDeploymentUnsynchronised(args),
+  });
+
+  if (!held.acquired) {
+    return {
+      success: false,
+      reason: "ACTIVATION_CONFLICT",
+      message:
+        "Another deployment is in progress for this storefront. Try again once it finishes.",
+    };
+  }
+  return held.value;
+}
+
+async function activateReleaseWithDeploymentUnsynchronised(args: {
   releaseId: string;
   expectedActiveReleaseId: string | null;
   deployer: ThemeWorkerDeployer;

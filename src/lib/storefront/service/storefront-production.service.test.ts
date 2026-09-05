@@ -516,8 +516,12 @@ describe("published content endpoint", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toContain("application/json");
+    // `hiddenSlots` travels with the slots: a section the author hid has to be
+    // named, because an absent slot means "no stored values" and the theme
+    // answers that with the component's own defaults.
     expect(await res.json()).toEqual({
       slots: { "starter-hero": { heading: "Published" } },
+      hiddenSlots: [],
     });
     // Scoped to the publication the active release points at, never a draft.
     expect(contentPorts.getPublishedDocument).toHaveBeenCalledWith({

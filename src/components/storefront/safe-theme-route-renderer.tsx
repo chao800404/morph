@@ -21,6 +21,7 @@ import {
   renderThemeRouterLink,
 } from "./safe-theme-router-link";
 import { resolveThemeLinksInSlotValues } from "@/lib/storefront/theme-link";
+import { resolveThemeMediaInSlotValues } from "@/lib/storefront/theme-media";
 
 type ThemeSourceFile = {
   path: string;
@@ -97,7 +98,11 @@ function createDocumentComponentResolver(args: {
     const { section } = match;
     return {
       render: section.enabled !== false,
-      props: (section.props ?? {}) as Record<string, unknown>,
+      props: resolveThemeMediaInSlotValues(
+        resolveThemeLinksInSlotValues(
+          (section.props ?? {}) as Record<string, unknown>,
+        ),
+      ),
       section: {
         sectionId: section.id,
         sectionType: section.type,
@@ -154,8 +159,10 @@ function readContentSlots(
     if (section.enabled === false) continue;
     // Resolved the same way the published content response resolves them, so a
     // link behaves identically in the preview and on the built site.
-    slots[section.id] = resolveThemeLinksInSlotValues(
-      (section.props ?? {}) as Record<string, unknown>,
+    slots[section.id] = resolveThemeMediaInSlotValues(
+      resolveThemeLinksInSlotValues(
+        (section.props ?? {}) as Record<string, unknown>,
+      ),
     );
     count += 1;
   }

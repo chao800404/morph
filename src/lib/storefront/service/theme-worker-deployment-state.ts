@@ -61,3 +61,36 @@ export function withDeployedThemeBuildId<
     [DEPLOYED_THEME_BUILD_METADATA_KEY]: themeBuildId,
   };
 }
+
+/**
+ * Whether a publish has nothing left to do.
+ *
+ * Content identity alone is not enough. A publish writes D1 and then deploys;
+ * if the deploy failed, every identity below still matches on the retry, so
+ * reporting "already published" skipped the deploy and left the active release
+ * naming a build the Worker never received. The only way out was to change the
+ * content so the identities differed — which is not a recovery, it is a
+ * workaround for a state the publish refused to re-enter.
+ *
+ * So the deployed build is part of the question.
+ */
+export function isPublishAlreadyLive(args: {
+  templateUnchanged: boolean;
+  sourceUnchanged: boolean;
+  activeReleaseSourceRevisionId: string | null | undefined;
+  activeReleaseThemeBuildId: string | null | undefined;
+  deployedThemeBuildId: string | null | undefined;
+  sourceRevisionId: string | null | undefined;
+  themeBuildId: string | null | undefined;
+}): boolean {
+  return (
+    args.templateUnchanged &&
+    args.sourceUnchanged &&
+    args.activeReleaseSourceRevisionId === args.sourceRevisionId &&
+    args.activeReleaseThemeBuildId === args.themeBuildId &&
+    canSkipThemeWorkerDeployment({
+      deployedThemeBuildId: args.deployedThemeBuildId,
+      releaseThemeBuildId: args.themeBuildId,
+    })
+  );
+}

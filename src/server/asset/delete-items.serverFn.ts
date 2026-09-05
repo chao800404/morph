@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { env } from "cloudflare:workers";
 import { assetDal, assetFolderDal, type AssetDTO } from "../../lib/asset";
 import { assetAdminMiddleware } from "../middleware/auth.middleware";
@@ -116,6 +117,22 @@ export const deleteItems = createServerFn({ method: "POST" })
     // Reference usage is checked after folder expansion, then checked again on
     // every confirmed request. This closes the race where an asset is attached
     // to a product between opening the dialog and pressing the final button.
+    // Published content is immutable, so its media cannot be detached the way a
+    // product's can. Deleting it would break a page that is already public and
+    // remove the bytes a rollback needs, so this refuses outright rather than
+    // offering a confirmation.
+    const publishedReferences =
+      await storefrontContentPublicationDal.findPublishedAssetReferences(
+        uniqueAssetIds,
+      );
+    if (publishedReferences.size > 0) {
+      return {
+        success: false as const,
+        message: "Some assets are used by published storefront content",
+        description: `${publishedReferences.size} of the selected asset${publishedReferences.size === 1 ? " is" : "s are"} referenced by a published release. Remove ${publishedReferences.size === 1 ? "it" : "them"} from the storefront and publish that change before deleting.`,
+      };
+    }
+
     const usage = await findAssetUsageInD1(uniqueAssetIds);
     if (
       !detachReferences &&

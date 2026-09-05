@@ -118,6 +118,14 @@ export const activateStorefrontRelease = createServerFn({ method: "POST" })
           },
           getBuild: (buildId) => storefrontThemeBuildDal.getBuildById(buildId),
           activateRelease: (args) => storefrontReleaseDal.activateRelease(args),
+          // Serialises the whole activate-and-deploy sequence for this
+          // storefront, which the activation CAS alone does not cover.
+          deploymentLease: {
+            acquire: (leaseArgs) =>
+              storefrontReleaseDal.acquireDeploymentLease(leaseArgs),
+            release: (leaseArgs) =>
+              storefrontReleaseDal.releaseDeploymentLease(leaseArgs),
+          },
         },
       });
 

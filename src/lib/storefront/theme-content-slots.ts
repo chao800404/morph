@@ -12,6 +12,14 @@
  */
 export const THEME_CONTENT_SLOT_HELPER = "content";
 
+/**
+ * Helper a route calls to ask whether the author hid a section.
+ *
+ * Spreading props cannot cancel a render, so hiding has to be a question the
+ * route asks rather than something the slot values can express.
+ */
+export const THEME_SECTION_HIDDEN_HELPER = "isSectionHidden";
+
 /** Path of the platform-owned module that provides the helper to a Theme. */
 export const THEME_CONTENT_MODULE_PATH = "src/morph/content.ts";
 

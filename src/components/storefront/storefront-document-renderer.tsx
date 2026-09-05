@@ -7,6 +7,7 @@ import {
   sanitizeThemeLinkHref,
   themeLinkAnchorProps,
 } from "@/lib/storefront/theme-link";
+import { resolveThemeMediaInSlotValues } from "@/lib/storefront/theme-media";
 import { cn } from "@/lib/utils";
 import { z } from "zod";
 import { renderSafeThemeComponent } from "./safe-theme-component-renderer";
@@ -220,7 +221,9 @@ function renderSection(
   } as const;
   const schema = sectionSchemas[section.type as keyof typeof sectionSchemas];
 
-  const rawProps = (section.props ?? {}) as Record<string, any>;
+  const rawProps = resolveThemeMediaInSlotValues(
+    (section.props ?? {}) as Record<string, any>,
+  );
   const parsed = schema ? schema.safeParse(rawProps) : null;
   const parsedData = parsed?.success ? parsed.data : rawProps;
   const componentPath = getComponentFilePath(

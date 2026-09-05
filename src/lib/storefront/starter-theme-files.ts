@@ -270,7 +270,7 @@ export default function Principles({
               },
               actionHref: { type: "url", label: "Action link" },
               actionTarget: { type: "text", label: "Open in" },
-              imageSrc: { type: "url", label: "Image" },
+              imageSrc: { type: "image", label: "Image" },
               imageAlt: {
                 type: "text",
                 label: "Image description",

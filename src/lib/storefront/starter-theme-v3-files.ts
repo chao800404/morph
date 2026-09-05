@@ -520,14 +520,33 @@ import { createContext, useContext } from "react";
 
 export type MorphContentSlots = Record<string, Record<string, unknown>>;
 
-const MorphContentContext = createContext<MorphContentSlots>({});
+export type MorphContent = {
+  slots: MorphContentSlots;
+  /** Sections the author hid. Absent slots are not the same thing. */
+  hiddenSlots: string[];
+};
+
+const MorphContentContext = createContext<MorphContent>({
+  slots: {},
+  hiddenSlots: [],
+});
 
 export const MorphContentProvider = MorphContentContext.Provider;
 
 /** Reads the stored values for one content slot. */
 export function content(slotId: string): Record<string, unknown> {
-  const slots = useContext(MorphContentContext);
-  return slots[slotId] ?? {};
+  return useContext(MorphContentContext).slots[slotId] ?? {};
+}
+
+/**
+ * Whether the author hid this section.
+ *
+ * Spreading props cannot cancel a render, so the route has to ask. A slot with
+ * no stored values is not hidden — it just has none, and the component's
+ * defaults are the right answer for it.
+ */
+export function isSectionHidden(slotId: string): boolean {
+  return useContext(MorphContentContext).hiddenSlots.includes(slotId);
 }
 
 /**
@@ -543,28 +562,37 @@ export function content(slotId: string): Record<string, unknown> {
  * reading any store directly. Every failure degrades to defaults: content must
  * never be able to take the storefront down.
  */
+/** Every degradation path returns this, so callers never see a partial shape. */
+const EMPTY_CONTENT: MorphContent = { slots: {}, hiddenSlots: [] };
+
 export const loadContentSlots = createIsomorphicFn()
-  .client(async (_pathname: string): Promise<MorphContentSlots> => ({}))
-  .server(async (pathname: string): Promise<MorphContentSlots> => {
+  .client(async (_pathname: string): Promise<MorphContent> => EMPTY_CONTENT)
+  .server(async (pathname: string): Promise<MorphContent> => {
     try {
       const request = getRequest();
       const origin = request.headers.get("x-morph-content-origin");
-      if (!origin) return {};
+      if (!origin) return EMPTY_CONTENT;
       const response = await fetch(
         origin + "/_morph/content?path=" + encodeURIComponent(pathname),
         { headers: { accept: "application/json" } },
       );
-      if (!response.ok) return {};
-      const payload = (await response.json()) as { slots?: MorphContentSlots };
-      return payload?.slots ?? {};
+      if (!response.ok) return EMPTY_CONTENT;
+      const payload = (await response.json()) as {
+        slots?: MorphContentSlots;
+        hiddenSlots?: string[];
+      };
+      return {
+        slots: payload?.slots ?? {},
+        hiddenSlots: payload?.hiddenSlots ?? [],
+      };
     } catch {
-      return {};
+      return EMPTY_CONTENT;
     }
   });
 `;
 
 export const STARTER_THEME_HOME_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
-import { content } from "../morph/content";
+import { content, isSectionHidden } from "../morph/content";
 import CategoryShowcase from "../components/CategoryShowcase";
 import EditorialIntro from "../components/EditorialIntro";
 import Hero from "../components/Hero";
@@ -579,12 +607,22 @@ export const Route = createFileRoute("/")({
 function HomeRoute() {
   return (
     <main>
-      <Hero {...content("starter-hero")} />
-      <EditorialIntro {...content("starter-introduction")} />
-      <CategoryShowcase {...content("starter-categories")} />
-      <ImageWithText {...content("starter-story")} />
-      <Principles {...content("starter-principles")} />
-      <Newsletter {...content("starter-newsletter")} />
+      {!isSectionHidden("starter-hero") && <Hero {...content("starter-hero")} />}
+      {!isSectionHidden("starter-introduction") && (
+        <EditorialIntro {...content("starter-introduction")} />
+      )}
+      {!isSectionHidden("starter-categories") && (
+        <CategoryShowcase {...content("starter-categories")} />
+      )}
+      {!isSectionHidden("starter-story") && (
+        <ImageWithText {...content("starter-story")} />
+      )}
+      {!isSectionHidden("starter-principles") && (
+        <Principles {...content("starter-principles")} />
+      )}
+      {!isSectionHidden("starter-newsletter") && (
+        <Newsletter {...content("starter-newsletter")} />
+      )}
     </main>
   );
 }

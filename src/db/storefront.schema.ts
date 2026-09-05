@@ -49,6 +49,18 @@ export const storefronts = sqliteTable(
     // Kept as a plain id here to avoid a circular table declaration; the
     // release DAL validates ownership and existence before activation.
     activeReleaseId: text("active_release_id"),
+    /**
+     * Held for the whole activate-and-deploy sequence, not just the pointer
+     * flip. Without it a second request reads the freshly written pointer,
+     * passes its own CAS and deploys alongside the first, leaving the active
+     * release naming one build while the Worker runs another.
+     *
+     * Not in `preferences`: that column is user-facing and a preferences write
+     * would drop whatever the platform hid there.
+     */
+    deploymentLeaseOwner: text("deployment_lease_owner"),
+    /** Bound on how long a crashed holder blocks the next deployment. */
+    deploymentLeaseExpiresAt: integer("deployment_lease_expires_at"),
     preferences: metadata(),
     ...timestamps,
   },

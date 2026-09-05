@@ -17,6 +17,7 @@ import {
   THEME_CONTENT_CONTEXT_KEY,
   THEME_CONTENT_MODULE_PATH,
   THEME_CONTENT_SLOT_HELPER,
+  THEME_SECTION_HIDDEN_HELPER,
   THEME_ROUTE_CONTEXT_HOOK,
   isValidThemeContentSlotId,
   resolveThemeContentSlot,
@@ -42,6 +43,11 @@ type RuntimeContext = {
   files: Map<string, ThemeSourceFile>;
   /** Stored values for each content slot the route declares. */
   contentSlots?: ThemeContentSlotValues;
+  /**
+   * Sections the author hid. Empty in the Design preview, which shows a hidden
+   * section so it can be seen and unhidden.
+   */
+  hiddenContentSlots?: readonly string[];
   /** Declared type of each stored section, keyed by its slot id. */
   sectionTypeBySlot?: Readonly<Record<string, string>>;
   /** Route-derived component identity for each content slot. */
@@ -420,6 +426,25 @@ function evaluateCall(
       );
     }
     return resolveThemeContentSlot(context.contentSlots, slotArgument.value);
+  }
+
+  if (
+    node.callee?.type === "Identifier" &&
+    node.callee.name === THEME_SECTION_HIDDEN_HELPER
+  ) {
+    const slotArgument = node.arguments?.[0];
+    if (slotArgument?.type !== "StringLiteral") {
+      throw new SafeThemeRuntimeError(
+        `${THEME_SECTION_HIDDEN_HELPER}() requires a literal slot id.`,
+      );
+    }
+    // The Design preview renders the section it is editing, hidden or not —
+    // an author has to be able to see and unhide it. The published runtime is
+    // what honours the flag; both engines answer the same call so a route
+    // written against it stays renderable here.
+    return (context.hiddenContentSlots ?? []).includes(slotArgument.value)
+      ? true
+      : false;
   }
 
   if (
@@ -1620,6 +1645,11 @@ export function renderSafeThemeComponent({
   injectedProps?: Record<string, unknown>;
   resolveComponent?: SafeThemeComponentResolver;
   contentSlots?: ThemeContentSlotValues;
+  /**
+   * Sections the author hid. Empty in the Design preview, which shows a hidden
+   * section so it can be seen and unhidden.
+   */
+  hiddenContentSlots?: readonly string[];
   sectionTypeBySlot?: Readonly<Record<string, string>>;
   componentRefBySlot?: Readonly<Record<string, string>>;
 }): SafeThemeComponentRenderResult {

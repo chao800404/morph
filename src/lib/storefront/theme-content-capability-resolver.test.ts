@@ -213,3 +213,88 @@ describe("row shapes declared by reference resolve the same on both paths", () =
     }
   });
 });
+
+describe("a source declaration decides for itself (EDIT-03)", () => {
+  const MANIFEST = JSON.stringify({
+    components: {
+      "promo.default": {
+        name: "Promo",
+        source: "src/components/Promo.tsx",
+        sectionType: "promo",
+        contentFields: { outdated: { type: "text", label: "Outdated" } },
+      },
+    },
+  });
+  const promo = (body: string) => [
+    { path: "morph.theme.json", content: MANIFEST },
+    { path: "src/components/Promo.tsx", content: body },
+  ];
+  const fieldsOf = (files: { path: string; content: string }[]) =>
+    Object.keys(
+      resolveThemeContentCapabilitiesFromFiles(files).capabilities[
+        "promo.default"
+      ]?.fields ?? {},
+    );
+
+  // Only a module that says nothing lets the manifest answer for it.
+  it("falls back to the manifest when nothing is declared", () => {
+    expect(fieldsOf(promo("export default function P(){return null}"))).toEqual(
+      ["outdated"],
+    );
+  });
+
+  // The point of the fix: an empty declaration is a statement, not a silence.
+  it("lets an empty declaration withdraw a stale manifest field", () => {
+    expect(
+      fieldsOf(
+        promo(
+          `export const contentFields = {} as const;
+           export default function P(){return null}`,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it("replaces the manifest fields rather than merging with them", () => {
+    expect(
+      fieldsOf(
+        promo(
+          `export const contentFields = { fresh: { type: "text" } } as const;
+           export default function P(){return null}`,
+        ),
+      ),
+    ).toEqual(["fresh"]);
+  });
+
+  // A declaration that cannot be read must not leave the manifest in charge:
+  // that is fail open, and it is what this used to do.
+  it("exposes nothing, with a diagnostic, when a declaration cannot be read", () => {
+    const files = promo(
+      `export const contentFields = makeFields();
+       export default function P(){return null}`,
+    );
+    const result = resolveThemeContentCapabilitiesFromFiles(files);
+
+    expect(
+      Object.keys(result.capabilities["promo.default"]?.fields ?? {}),
+    ).toEqual([]);
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+  });
+
+  it("applies the same rules when sources are read on demand", async () => {
+    const source = `export const contentFields = {} as const;
+      export default function P(){return null}`;
+    const result = await resolveThemeContentCapabilities({
+      manifestContent: MANIFEST,
+      additionalSourcePaths: [],
+      readSource: async (path) =>
+        path === "src/components/Promo.tsx" ? source : null,
+    });
+
+    // Server-side validation has to reach the same answer as the editor, or a
+    // withdrawn field stays writable through the mutation path.
+    expect(
+      Object.keys(result.capabilities["promo.default"]?.fields ?? {}),
+    ).toEqual([]);
+  });
+});

@@ -433,3 +433,132 @@ describe("recording what the Theme Worker runs", () => {
     expect(result.success).toBe(true);
   });
 });
+
+describe("concurrent activation (REL-01)", () => {
+  /** Shared active pointer plus the lease, as one storefront's D1 row. */
+  function storefront() {
+    let active: string | null = "rel_old";
+    let leaseOwner: string | null = null;
+    let leaseExpires = 0;
+    const deployed: string[] = [];
+
+    return {
+      deployed,
+      activeReleaseId: () => active,
+      portsFor(releaseId: string) {
+        return ports({
+          getRelease: async () => ({
+            id: releaseId,
+            storefrontId: "sf_1",
+            themeId: "th_1",
+            themeBuildId: "bld_1",
+          }),
+          // The CAS the reconciler already had: it only guards this write.
+          activateRelease: async (args) => {
+            if (active !== args.expectedActiveReleaseId) {
+              throw new Error("Another release was activated first.");
+            }
+            active = args.releaseId;
+            return {};
+          },
+          deploymentLease: {
+            acquire: async ({ owner, expiresAt, now }) => {
+              if (leaseOwner !== null && leaseExpires > now) return false;
+              leaseOwner = owner;
+              leaseExpires = expiresAt;
+              return true;
+            },
+            release: async ({ owner }) => {
+              if (leaseOwner === owner) {
+                leaseOwner = null;
+                leaseExpires = 0;
+              }
+            },
+          },
+        });
+      },
+      expected: () => active,
+    };
+  }
+
+  const slowDeployer = (deployed: string[], gate: Promise<void>) => ({
+    kind: "sandbox-wrangler" as const,
+    deploy: vi.fn(async (input: { releaseId: string }) => {
+      await gate;
+      deployed.push(input.releaseId);
+      return {
+        success: true as const,
+        scriptName: "morph-theme-sf-1",
+        deploymentId: "dep",
+        durationMs: 1,
+      };
+    }),
+  });
+
+  // Reproduces the reported drift: A claims the pointer and stalls uploading,
+  // B reads the value A just wrote, passes its own CAS and deploys. Without
+  // the lease both succeed and the pointer ends up naming a release the Worker
+  // is not running.
+  it("refuses a second activation while the first is still deploying", async () => {
+    const store = storefront();
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+
+    const first = activateReleaseWithDeployment({
+      releaseId: "rel_first",
+      expectedActiveReleaseId: "rel_old",
+      deployer: slowDeployer(store.deployed, gate),
+      ports: store.portsFor("rel_first"),
+      r2Bucket: r2(),
+    });
+
+    // Give the first activation time to claim the lease and the pointer.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const second = await activateReleaseWithDeployment({
+      releaseId: "rel_second",
+      expectedActiveReleaseId: store.expected(),
+      deployer: slowDeployer(store.deployed, Promise.resolve()),
+      ports: store.portsFor("rel_second"),
+      r2Bucket: r2(),
+    });
+
+    expect(second.success).toBe(false);
+    expect(second).toMatchObject({ reason: "ACTIVATION_CONFLICT" });
+
+    openGate();
+    const firstResult = await first;
+
+    expect(firstResult.success).toBe(true);
+    // The one that deployed is the one the pointer names — no drift.
+    expect(store.deployed).toEqual(["rel_first"]);
+    expect(store.activeReleaseId()).toBe("rel_first");
+  });
+
+  it("lets the next activation proceed once the first has finished", async () => {
+    const store = storefront();
+
+    const first = await activateReleaseWithDeployment({
+      releaseId: "rel_first",
+      expectedActiveReleaseId: "rel_old",
+      deployer: slowDeployer(store.deployed, Promise.resolve()),
+      ports: store.portsFor("rel_first"),
+      r2Bucket: r2(),
+    });
+    expect(first.success).toBe(true);
+
+    const second = await activateReleaseWithDeployment({
+      releaseId: "rel_second",
+      expectedActiveReleaseId: store.expected(),
+      deployer: slowDeployer(store.deployed, Promise.resolve()),
+      ports: store.portsFor("rel_second"),
+      r2Bucket: r2(),
+    });
+
+    expect(second.success).toBe(true);
+    expect(store.deployed).toEqual(["rel_first", "rel_second"]);
+    expect(store.activeReleaseId()).toBe("rel_second");
+  });
+});

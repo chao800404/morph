@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { THEME_LINK_VALUE_KEYS } from "./theme-link";
+import {
+  isSafeThemeMediaUrl,
+  THEME_MEDIA_VALUE_KEYS,
+  type ThemeMediaKind,
+} from "./theme-media";
 
 const MAX_THEME_MANIFEST_BYTES = 256 * 1024;
 const MAX_THEME_COMPONENTS = 200;
@@ -66,6 +71,35 @@ const linkContentFieldSchema = z
   })
   .strict();
 
+const mediaContentFieldShape = {
+  label: fieldLabelSchema,
+  description: fieldDescriptionSchema,
+  allowExternal: z.boolean().optional(),
+  allowAsset: z.boolean().optional(),
+};
+
+const imageContentFieldSchema = z
+  .object({
+    type: z.literal("image"),
+    ...mediaContentFieldShape,
+  })
+  .strict()
+  .refine(
+    (field) => field.allowExternal !== false || field.allowAsset !== false,
+    { message: "a media field must allow at least one source" },
+  );
+
+const videoContentFieldSchema = z
+  .object({
+    type: z.literal("video"),
+    ...mediaContentFieldShape,
+  })
+  .strict()
+  .refine(
+    (field) => field.allowExternal !== false || field.allowAsset !== false,
+    { message: "a media field must allow at least one source" },
+  );
+
 const numberContentFieldSchema = z
   .object({
     type: z.literal("number"),
@@ -120,6 +154,8 @@ const scalarContentFieldSchema = z.discriminatedUnion("type", [
   textareaContentFieldSchema,
   urlContentFieldSchema,
   linkContentFieldSchema,
+  imageContentFieldSchema,
+  videoContentFieldSchema,
   numberContentFieldSchema,
   booleanContentFieldSchema,
   selectContentFieldSchema,
@@ -414,6 +450,60 @@ function isSafeContentUrl(value: string): boolean {
   }
 }
 
+function assertThemeMediaFieldValue(
+  value: unknown,
+  mediaType: ThemeMediaKind,
+  sources: { allowExternal?: boolean; allowAsset?: boolean },
+  invalid: (reason?: string) => never,
+): void {
+  // A string is the backwards-compatible value of a field promoted from URL.
+  if (typeof value === "string") {
+    if (sources.allowExternal === false) invalid("external-media-disabled");
+    if (value.length > 2_000 || !isSafeThemeMediaUrl(value)) invalid();
+    return;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const media = value as Record<string, unknown>;
+  if (media.source !== "external" && media.source !== "asset") {
+    invalid("bad-media-source");
+  }
+  if (media.mediaType !== mediaType) invalid("wrong-media-type");
+  if (media.source === "external" && sources.allowExternal === false) {
+    invalid("external-media-disabled");
+  }
+  if (media.source === "asset" && sources.allowAsset === false) {
+    invalid("asset-media-disabled");
+  }
+  if (
+    typeof media.url !== "string" ||
+    media.url.length > 2_000 ||
+    !isSafeThemeMediaUrl(media.url)
+  ) {
+    invalid("bad-media-url");
+  }
+  if (
+    media.source === "asset" &&
+    (typeof media.assetId !== "string" ||
+      !z.uuid().safeParse(media.assetId).success)
+  ) {
+    invalid("bad-asset-id");
+  }
+  if (media.source === "external" && media.assetId !== undefined) {
+    invalid("unexpected-asset-id");
+  }
+  if (
+    media.name !== undefined &&
+    (typeof media.name !== "string" || media.name.length > 240)
+  ) {
+    invalid("bad-media-name");
+  }
+  for (const key of Object.keys(media)) {
+    if (!(THEME_MEDIA_VALUE_KEYS as readonly string[]).includes(key)) {
+      invalid("unknown-media-property");
+    }
+  }
+}
+
 /** Prefix of the error thrown when a value fails its field declaration. */
 export const INVALID_CONTENT_FIELD_ERROR = "INVALID_THEME_CONTENT_FIELD_VALUE";
 
@@ -514,6 +604,11 @@ function assertThemeContentFieldValue(
         invalid();
       }
     }
+    return;
+  }
+
+  if (definition.type === "image" || definition.type === "video") {
+    assertThemeMediaFieldValue(value, definition.type, definition, invalid);
     return;
   }
 

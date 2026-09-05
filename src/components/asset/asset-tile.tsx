@@ -8,6 +8,8 @@ export interface SelectedAsset {
   id: string;
   name: string;
   url: string;
+  type?: "image" | "video";
+  thumbnailUrl?: string | null;
 }
 
 const assetTileCornerControlClassName =

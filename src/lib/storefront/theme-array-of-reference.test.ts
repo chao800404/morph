@@ -66,7 +66,11 @@ describe("array rows declared by reference", () => {
     ]);
 
     expect(result.diagnostics.join(" ")).toContain("./Missing");
-    expect(result.capabilities["src/components/List.tsx"]).toBeUndefined();
+    // The module declared fields, so it answers for itself even though nothing
+    // resolved: an empty capability. It used to be absent instead, which let
+    // the platform's own section manifest answer in its place and made a
+    // mistyped path fail open.
+    expect(result.capabilities["src/components/List.tsx"]?.fields).toEqual({});
   });
 
   it("refuses a declaration that names both a shape and a reference", () => {
@@ -125,6 +129,8 @@ export default function Card() { return null; }`,
       list(`{ items: { type: "array", of: "../../etc/passwd" } }`),
     ]);
 
-    expect(result.capabilities["src/components/List.tsx"]).toBeUndefined();
+    // Nothing is exposed, and stated as such rather than by omission — see the
+    // note above on why absence is the weaker answer.
+    expect(result.capabilities["src/components/List.tsx"]?.fields).toEqual({});
   });
 });

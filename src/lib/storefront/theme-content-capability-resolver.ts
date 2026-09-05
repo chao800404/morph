@@ -165,15 +165,27 @@ function mergeCapabilities(
  */
 function expandRowReferences({
   declared,
+  invalidDeclarations,
   colocated,
   diagnostics,
   componentRefForPath,
 }: {
   declared: Map<string, Record<string, ThemeContentFieldDefinition>>;
+  invalidDeclarations: Set<string>;
   colocated: Map<string, ThemeComponentContentCapability>;
   diagnostics: string[];
   componentRefForPath: (path: string) => string | null;
 }): void {
+  // A module whose declaration could not be read exposes nothing. Recorded as
+  // an explicit empty capability rather than left out, because leaving it out
+  // is what let the manifest answer in its place.
+  for (const path of invalidDeclarations) {
+    const capability = { fields: {} };
+    colocated.set(path, capability);
+    const componentRef = componentRefForPath(path);
+    if (componentRef) colocated.set(componentRef, capability);
+  }
+
   for (const [path, fields] of declared) {
     const resolvedFields: Record<string, ThemeContentFieldDefinition> = {};
     for (const [fieldKey, definition] of Object.entries(fields)) {
@@ -196,7 +208,9 @@ function expandRowReferences({
       }
       resolvedFields[fieldKey] = { ...definition, fields: rowFields };
     }
-    if (Object.keys(resolvedFields).length === 0) continue;
+    // No early exit on an empty result: a declaration that resolves to nothing
+    // is the module saying it exposes nothing, which has to override the
+    // manifest rather than defer to it.
     const capability = { fields: resolvedFields };
     // Keyed by source path so an unregistered component resolves, and by its
     // manifest ref as well so existing Document sections keep resolving.
@@ -253,6 +267,7 @@ export function resolveThemeContentCapabilitiesFromFiles(
     string,
     Record<string, ThemeContentFieldDefinition>
   >();
+  const invalidDeclarations = new Set<string>();
   let scanned = 0;
   for (const [path, source] of byPath) {
     if (scanned >= MAX_SCANNED_COMPONENT_SOURCES) break;
@@ -263,12 +278,16 @@ export function resolveThemeContentCapabilitiesFromFiles(
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${path}: ${diagnostic}`);
     }
-    if (!parsed.fields) continue;
-    declared.set(path, parsed.fields);
+    // `valid` wins even when empty — that is how a module withdraws a field the
+    // manifest still lists. `invalid` is recorded too, so the merge below can
+    // refuse to fall back rather than serving a stale capability.
+    if (parsed.declaration === "valid") declared.set(path, parsed.fields ?? {});
+    else if (parsed.declaration === "invalid") invalidDeclarations.add(path);
   }
 
   expandRowReferences({
     declared,
+    invalidDeclarations,
     colocated,
     diagnostics,
     componentRefForPath: (path) => manifestRefsBySource.get(path) ?? null,
@@ -307,6 +326,7 @@ export async function resolveThemeContentCapabilities(args: {
     string,
     Record<string, ThemeContentFieldDefinition>
   >();
+  const invalidDeclarations = new Set<string>();
   const refForPath = new Map<string, string>();
   for (const [componentRef, sourcePath] of sources) {
     const source = await args.readSource(sourcePath);
@@ -315,8 +335,13 @@ export async function resolveThemeContentCapabilities(args: {
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${sourcePath}: ${diagnostic}`);
     }
-    if (!parsed.fields) continue;
-    declared.set(sourcePath, parsed.fields);
+    if (parsed.declaration === "invalid") {
+      invalidDeclarations.add(sourcePath);
+      if (componentRef !== sourcePath) refForPath.set(sourcePath, componentRef);
+      continue;
+    }
+    if (parsed.declaration !== "valid") continue;
+    declared.set(sourcePath, parsed.fields ?? {});
     // A route is allowed to be the only registration for a component. In that
     // case its source path becomes the persisted component identity, and
     // server validation must resolve the same co-located declaration the
@@ -349,6 +374,7 @@ export async function resolveThemeContentCapabilities(args: {
 
   expandRowReferences({
     declared,
+    invalidDeclarations,
     colocated,
     diagnostics,
     componentRefForPath: (path) => refForPath.get(path) ?? null,

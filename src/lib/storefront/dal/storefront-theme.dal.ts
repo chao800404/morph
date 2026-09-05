@@ -16,12 +16,20 @@ import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
-import { readDeployedThemeBuildId } from "@/lib/storefront/service/theme-worker-deployment-state";
+import {
+  isPublishAlreadyLive,
+  readDeployedThemeBuildId,
+} from "@/lib/storefront/service/theme-worker-deployment-state";
 import {
   deriveThemeRouteSections,
   mergeDocumentWithRouteSections,
 } from "@/lib/storefront/compiler/theme-route-sections";
+import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { filterSectionContentProps } from "@/lib/storefront/content/section-content-manifest";
+import {
+  collectMediaAssetIds,
+  verifyMediaReferences,
+} from "@/lib/storefront/theme-media-verification";
 import { and, asc, desc, eq, isNotNull, isNull, max } from "drizzle-orm";
 
 const revisionIdPattern =
@@ -528,9 +536,26 @@ export const storefrontThemeDal = {
       null;
 
     const { enabled: propEnabled, ...restProps } = data.props;
+    // Asset references are resolved against the library before anything is
+    // stored: the shape validation upstream only checks that the id parses,
+    // not that it names an asset of the right kind, and it takes the URL on
+    // the caller's word.
+    const assetIds = collectMediaAssetIds(restProps);
+    const verifiedProps =
+      assetIds.size > 0
+        ? verifyMediaReferences({
+            props: restProps,
+            assetsById: new Map(
+              (await assetDal.findByIds([...assetIds])).map((asset) => [
+                asset.id,
+                { id: asset.id, type: asset.type, url: asset.url },
+              ]),
+            ),
+          })
+        : restProps;
     const cleanIncomingProps = filterSectionContentProps(
       targetSection.type,
-      restProps,
+      verifiedProps,
       resolvedComponentRef,
       themeCapabilities,
     );
@@ -914,11 +939,23 @@ export const storefrontThemeDal = {
       template.draftRevisionId === template.publishedRevisionId;
     const sourceUnchanged =
       template.publishedSourceRevisionId === sourceRevisionId;
-    const unchanged =
-      templateUnchanged &&
-      sourceUnchanged &&
-      activeRelease?.sourceRevisionId === sourceRevisionId &&
-      activeRelease?.themeBuildId === themeBuildId;
+    // Whether the Worker actually received this build, not just whether D1
+    // says it should have. A publish writes D1 and then deploys; when the
+    // deploy failed, everything above still matches on the retry and the
+    // publish would report "already published" without ever deploying again,
+    // leaving the active pointer naming a build the Worker never got. There is
+    // then no way back short of editing the content to force a difference.
+    const unchanged = isPublishAlreadyLive({
+      templateUnchanged,
+      sourceUnchanged,
+      activeReleaseSourceRevisionId: activeRelease?.sourceRevisionId,
+      activeReleaseThemeBuildId: activeRelease?.themeBuildId,
+      deployedThemeBuildId: readDeployedThemeBuildId(
+        activeRelease?.metadata as Record<string, unknown> | null,
+      ),
+      sourceRevisionId,
+      themeBuildId,
+    });
     const releaseId = unchanged
       ? (activeRelease?.id ?? null)
       : crypto.randomUUID();

@@ -15,6 +15,8 @@ const manifest = JSON.stringify({
         heading: { type: "text", label: "Heading", maxLength: 80 },
         body: { type: "textarea", label: "Body" },
         href: { type: "url", label: "Link" },
+        image: { type: "image", label: "Image" },
+        video: { type: "video", label: "Video", allowExternal: false },
         emphasis: {
           type: "select",
           label: "Emphasis",
@@ -105,6 +107,77 @@ describe("Theme content capabilities", () => {
       filterThemeContentProps({ emphasis: "unknown" }, capability),
     ).toThrow("INVALID_THEME_CONTENT_FIELD_VALUE:emphasis");
   });
+
+  it("accepts external and Asset-backed media while rejecting mismatched media", () => {
+    const capability = getThemeComponentContentCapability(
+      manifest,
+      "promo.default",
+    )!;
+
+    expect(
+      filterThemeContentProps(
+        {
+          image: {
+            source: "asset",
+            mediaType: "image",
+            assetId: "6550fe95-9fb0-4008-b837-962da1b449d7",
+            url: "/cdn/hero.webp",
+            name: "Hero",
+          },
+          video: {
+            source: "asset",
+            mediaType: "video",
+            assetId: "24418689-71d5-4591-a5c7-eff52f7c848f",
+            url: "https://cdn.example.com/hero.mp4",
+          },
+        },
+        capability,
+      ),
+    ).toMatchObject({
+      image: {
+        source: "asset",
+        mediaType: "image",
+        assetId: "6550fe95-9fb0-4008-b837-962da1b449d7",
+      },
+      video: {
+        source: "asset",
+        mediaType: "video",
+        assetId: "24418689-71d5-4591-a5c7-eff52f7c848f",
+      },
+    });
+    expect(() =>
+      filterThemeContentProps(
+        {
+          image: {
+            source: "external",
+            mediaType: "video",
+            url: "https://cdn.example.com/hero.mp4",
+          },
+        },
+        capability,
+      ),
+    ).toThrow("INVALID_THEME_CONTENT_FIELD_VALUE:image:wrong-media-type");
+    expect(() =>
+      filterThemeContentProps(
+        {
+          image: {
+            source: "external",
+            mediaType: "image",
+            url: "javascript:alert(1)",
+          },
+        },
+        capability,
+      ),
+    ).toThrow("INVALID_THEME_CONTENT_FIELD_VALUE:image:bad-media-url");
+    expect(() =>
+      filterThemeContentProps(
+        { video: "https://cdn.example.com/hero.mp4" },
+        capability,
+      ),
+    ).toThrow(
+      "INVALID_THEME_CONTENT_FIELD_VALUE:video:external-media-disabled",
+    );
+  });
 });
 
 const arrayManifest = JSON.stringify({
@@ -135,7 +208,12 @@ const arrayCapability = () =>
     "principles.default"
   ]!;
 
-const row = (id: string, title: string) => ({ id, number: "01", title, body: "b" });
+const row = (id: string, title: string) => ({
+  id,
+  number: "01",
+  title,
+  body: "b",
+});
 
 describe("array content fields", () => {
   it("parses a repeated group of row fields", () => {
@@ -206,7 +284,9 @@ describe("array content fields", () => {
           contentFields: {
             items: {
               type: "array",
-              fields: { inner: { type: "array", fields: { a: { type: "text" } } } },
+              fields: {
+                inner: { type: "array", fields: { a: { type: "text" } } },
+              },
             },
           },
         },
@@ -264,7 +344,9 @@ describe("rejectedContentFieldKey", () => {
   });
 
   it("returns null for an unrelated error", () => {
-    expect(rejectedContentFieldKey("CONFLICT_SOURCE_GENERATION_MISMATCH")).toBeNull();
+    expect(
+      rejectedContentFieldKey("CONFLICT_SOURCE_GENERATION_MISMATCH"),
+    ).toBeNull();
     expect(rejectedContentFieldKey("")).toBeNull();
     expect(
       rejectedContentFieldKey("INVALID_THEME_CONTENT_FIELD_VALUE:"),
@@ -275,10 +357,9 @@ describe("rejectedContentFieldKey", () => {
 describe("parseRejectedContentField", () => {
   const reasonFor = (fields: unknown, value: unknown) => {
     try {
-      filterThemeContentProps(
-        { items: value },
-        { fields: { items: fields } } as never,
-      );
+      filterThemeContentProps({ items: value }, {
+        fields: { items: fields },
+      } as never);
     } catch (error) {
       return parseRejectedContentField(
         error instanceof Error ? error.message : "",

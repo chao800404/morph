@@ -189,7 +189,11 @@ describe("starter Principles theme source", () => {
       expect(homeRoute).toContain(`import ${component} from`);
       expect(homeRoute).toContain(`<${component} {...content("${slot}")} />`);
     }
-    expect(homeRoute).toContain('import { content } from "../morph/content"');
+    // The route also asks whether a section is hidden: spreading props cannot
+    // cancel a render, so hiding has to be a question the route asks.
+    expect(homeRoute).toContain(
+      'import { content, isSectionHidden } from "../morph/content"',
+    );
     expect(homeRoute).not.toContain("StorefrontPage");
 
     const packageJson = JSON.parse(

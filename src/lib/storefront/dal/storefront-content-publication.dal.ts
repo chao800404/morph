@@ -31,6 +31,46 @@ const mapItem = (
 });
 
 /** Creates an immutable content revision set for a storefront release. */
+/**
+ * Collects `assetId` from every media reference in a published document.
+ *
+ * Walks the document rather than reading known field names: media can sit at
+ * any depth, including inside array rows, and a walker cannot fall out of step
+ * with the field types a Theme declares.
+ */
+function collectAssetIds(document: unknown, into: Set<string>): void {
+  const seen = new Set<unknown>();
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (seen.has(node)) return;
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+
+    const record = node as Record<string, unknown>;
+    if (record.source === "asset" && typeof record.assetId === "string") {
+      const assetId = record.assetId.trim();
+      if (assetId) into.add(assetId);
+    }
+    for (const value of Object.values(record)) visit(value);
+  };
+
+  visit(
+    typeof document === "string"
+      ? (() => {
+          try {
+            return JSON.parse(document);
+          } catch {
+            return null;
+          }
+        })()
+      : document,
+  );
+}
+
 export const storefrontContentPublicationDal = {
   async isRevisionReferenced(revisionId: string): Promise<boolean> {
     const db = await getDb();
@@ -300,6 +340,123 @@ export const storefrontContentPublicationDal = {
    * publishes nothing for that template, which the caller treats as "no
    * authored content" rather than an error.
    */
+  /**
+   * Asset ids the given publication's documents refer to.
+   *
+   * This is the authorisation set for public media delivery: a visitor may
+   * read the media a release actually published, and nothing else in the
+   * library. Derived from the published documents rather than a side table so
+   * it cannot drift from what is being served — a reference that is not in the
+   * content is not published, whatever any index says.
+   */
+  async listPublishedAssetIds(publicationId: string): Promise<Set<string>> {
+    const db = await getDb();
+    const rows = await db
+      .select({ document: storefrontThemeTemplateRevisions.document })
+      .from(storefrontContentPublicationItems)
+      .innerJoin(
+        storefrontThemeTemplateRevisions,
+        eq(
+          storefrontContentPublicationItems.revisionId,
+          storefrontThemeTemplateRevisions.id,
+        ),
+      )
+      .where(
+        and(
+          eq(storefrontContentPublicationItems.publicationId, publicationId),
+          isNull(storefrontContentPublicationItems.deletedAt),
+        ),
+      );
+
+    const assetIds = new Set<string>();
+    for (const row of rows) {
+      collectAssetIds(row.document, assetIds);
+    }
+    return assetIds;
+  },
+
+  /**
+   * Which of these assets are referenced by published content.
+   *
+   * Deletion treats product and variant usage as detachable, but a publication
+   * is immutable: its bytes are what a live storefront serves and what a
+   * rollback restores. Removing them does not detach a reference, it breaks a
+   * page that is already public, so this is a refusal rather than a warning.
+   */
+  async findPublishedAssetReferences(
+    assetIds: readonly string[],
+  ): Promise<Set<string>> {
+    const referenced = new Set<string>();
+    if (assetIds.length === 0) return referenced;
+
+    const db = await getDb();
+    const rows = await db
+      .select({ document: storefrontThemeTemplateRevisions.document })
+      .from(storefrontContentPublicationItems)
+      .innerJoin(
+        storefrontThemeTemplateRevisions,
+        eq(
+          storefrontContentPublicationItems.revisionId,
+          storefrontThemeTemplateRevisions.id,
+        ),
+      )
+      .where(isNull(storefrontContentPublicationItems.deletedAt));
+
+    const wanted = new Set(assetIds);
+    for (const row of rows) {
+      const found = new Set<string>();
+      collectAssetIds(row.document, found);
+      for (const id of found) if (wanted.has(id)) referenced.add(id);
+    }
+    return referenced;
+  },
+
+  /**
+   * The published document for one Page, found by its handle.
+   *
+   * Publications already carry page items, but the content endpoint could only
+   * ask for a *template type*, so a published Page was unreachable and every
+   * request for it fell through to empty slots. Two different pages resolved
+   * identically, which is the same answer as "no content" and therefore
+   * indistinguishable from a route the Document never described.
+   */
+  async getPublishedPageDocument(data: {
+    publicationId: string;
+    handle: string;
+  }): Promise<unknown | null> {
+    const db = await getDb();
+    const row = firstOrNull(
+      await db
+        .select({ document: storefrontPageRevisions.document })
+        .from(storefrontContentPublicationItems)
+        .innerJoin(
+          storefrontPageRevisions,
+          eq(
+            storefrontContentPublicationItems.revisionId,
+            storefrontPageRevisions.id,
+          ),
+        )
+        .innerJoin(
+          storefrontPages,
+          eq(storefrontPageRevisions.pageId, storefrontPages.id),
+        )
+        .where(
+          and(
+            eq(
+              storefrontContentPublicationItems.publicationId,
+              data.publicationId,
+            ),
+            eq(storefrontContentPublicationItems.itemType, "page"),
+            eq(storefrontPages.handle, data.handle),
+            isNull(storefrontPages.deletedAt),
+            isNull(storefrontContentPublicationItems.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
+    return row?.document ?? null;
+  },
+
   async getPublishedTemplateDocument(data: {
     publicationId: string;
     templateType: StorefrontTemplateType;
