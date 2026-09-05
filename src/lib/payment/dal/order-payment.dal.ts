@@ -7,7 +7,7 @@ import {
   payments,
   refunds,
 } from "@/db/payment.schema";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 import { paymentProviderRegistry } from "../providers/payment-provider-registry.server";
 
@@ -43,6 +43,32 @@ const paymentForOrder = async (orderId: string) => {
   return row ?? null;
 };
 
+/**
+ * Fails the batch unless the collection still holds the amount that was read.
+ *
+ * Both capture and refund decide how much is allowed from a read taken before
+ * the provider call, then write the new total as an absolute value. Two
+ * concurrent operations therefore each pass the limit check and each write
+ * their own sum: the ledger gains two rows while the aggregate advances once,
+ * so the recorded total is lower than the money that moved.
+ *
+ * `json('')` is malformed, so evaluating it raises and D1 rolls the whole batch
+ * back — the ledger rows never land without the matching aggregate.
+ */
+function preparePaymentAmountGuard(args: {
+  collectionId: string;
+  column: "captured_amount" | "refunded_amount";
+  expected: number;
+}) {
+  return sql`
+    SELECT CASE WHEN EXISTS (
+      SELECT 1 FROM payment_collections
+      WHERE id = ${args.collectionId}
+        AND COALESCE(${sql.raw(args.column)}, 0) = ${args.expected}
+    ) THEN 1 ELSE json('') END AS ok
+  `;
+}
+
 export const orderPaymentDal = {
   async capture(
     orderId: string,
@@ -69,6 +95,13 @@ export const orderPaymentDal = {
     const now = new Date().toISOString();
     const captureId = crypto.randomUUID();
     await db.batch([
+      db.run(
+        preparePaymentAmountGuard({
+          collectionId: row.collection.id,
+          column: "captured_amount",
+          expected: alreadyCaptured,
+        }),
+      ),
       db.insert(captures).values({
         id: captureId,
         paymentId: row.payment.id,
@@ -140,6 +173,13 @@ export const orderPaymentDal = {
     const now = new Date().toISOString();
     const refundId = crypto.randomUUID();
     await db.batch([
+      db.run(
+        preparePaymentAmountGuard({
+          collectionId: row.collection.id,
+          column: "refunded_amount",
+          expected: alreadyRefunded,
+        }),
+      ),
       db.insert(refunds).values({
         id: refundId,
         paymentId: row.payment.id,

@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
 import { inventoryLevels, reservationItems } from "@/db/inventory.schema";
 import {
@@ -89,6 +90,29 @@ export const cartReservationDal = {
         ),
       );
     for (const reservation of expired) {
+      // Claim the reservation before releasing its quantity, not after.
+      //
+      // Two carts syncing at once both listed this row while it was still
+      // undeleted, and each subtracted its quantity: the same reservation was
+      // released twice, eating into other reservations' counts and reporting
+      // stock that is actually held. `max(0, ...)` only stops the total going
+      // negative, which is not the same thing.
+      //
+      // The delete is conditional on the row still being undeleted, so exactly
+      // one caller can win it. Claiming first also means a crash between the
+      // two statements under-releases rather than over-releases — stock stays
+      // held until the next sweep, which is the safe direction to fail.
+      const claim = await env.DATABASE.prepare(
+        `
+        UPDATE reservation_items
+        SET deleted_at = ?1, updated_at = ?1
+        WHERE id = ?2 AND deleted_at IS NULL
+      `,
+      )
+        .bind(now.toISOString(), reservation.id)
+        .run();
+      if ((claim.meta?.changes ?? 0) === 0) continue;
+
       await db
         .update(inventoryLevels)
         .set({
@@ -102,10 +126,6 @@ export const cartReservationDal = {
             isNull(inventoryLevels.deletedAt),
           ),
         );
-      await db
-        .update(reservationItems)
-        .set({ deletedAt: now.toISOString(), updatedAt: now.toISOString() })
-        .where(eq(reservationItems.id, reservation.id));
     }
   },
 
