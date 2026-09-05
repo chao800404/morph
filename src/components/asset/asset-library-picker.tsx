@@ -32,12 +32,15 @@ export function AssetLibraryPicker({
   selectedIds,
   onToggle,
   atLimit = false,
+  disabled = false,
   className,
 }: {
   assetType: "image" | "video";
   selectedIds: string[];
   onToggle: (asset: SelectedAsset) => void;
   atLimit?: boolean;
+  /** A disabled field must not be able to pick, not merely look inert. */
+  disabled?: boolean;
   className?: string;
 }) {
   const [folderId, setFolderId] = useState<string | null>(null);
@@ -58,7 +61,7 @@ export function AssetLibraryPicker({
     page,
     limit: PAGE_SIZE,
   };
-  const { data, isPending } = useQuery(
+  const { data, isPending, isError, refetch, isFetching } = useQuery(
     queryOptions({
       queryKey: [...ASSET_QUERY_KEY, "library-picker", params],
       queryFn: () => listItemsServerFn({ data: params }),
@@ -108,6 +111,25 @@ export function AssetLibraryPicker({
           <div className="flex h-full items-center justify-center">
             <Spinner className="size-4 text-muted-foreground" />
           </div>
+        ) : isError || (data && !data.success) ? (
+          // A failed request used to fall through to the empty state, which
+          // reads as "you have no images" — the one conclusion the request
+          // cannot support.
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              {(data && !data.success && data.message) ||
+                `Could not load ${noun}.`}
+            </p>
+            <Button
+              type="button"
+              variant="form"
+              size="xs"
+              disabled={isFetching}
+              onClick={() => void refetch()}
+            >
+              {isFetching ? "Retrying…" : "Retry"}
+            </Button>
+          </div>
         ) : folders.length === 0 && assets.length === 0 ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
             {term
@@ -142,12 +164,12 @@ export function AssetLibraryPicker({
               {assets.map((asset) => {
                 const id = String(asset.id);
                 const isSelected = selected.has(id);
-                const disabled = atLimit && !isSelected;
+                const itemDisabled = disabled || (atLimit && !isSelected);
                 return (
                   <button
                     key={id}
                     type="button"
-                    disabled={disabled}
+                    disabled={itemDisabled}
                     aria-pressed={isSelected}
                     title={asset.name}
                     onClick={() =>

@@ -62,7 +62,17 @@ export function EditorMediaField({
             size="xs"
             disabled={disabled}
             className="h-6 px-1.5 text-[10px]"
-            onClick={() => onChange({ source: "external", mediaType, url: "" })}
+            onClick={() =>
+              // Cleared in whichever source this field allows. Always emitting
+              // an `external` empty value made Clear fail validation on a
+              // field declared `allowExternal: false` — the control offered an
+              // action its own rules rejected.
+              onChange(
+                allowExternal
+                  ? { source: "external", mediaType, url: "" }
+                  : { source: "asset", mediaType, assetId: "", url: "" },
+              )
+            }
           >
             Clear
           </Button>
@@ -131,18 +141,22 @@ export function EditorMediaField({
           <TabsContent value="asset" className="space-y-2">
             <AssetLibraryPicker
               assetType={mediaType}
+              // Without this a disabled field still emitted changes: the
+              // control looked inert and was not.
+              disabled={disabled}
               selectedIds={
                 normalized.source === "asset" ? [normalized.assetId] : []
               }
-              onToggle={(asset) =>
+              onToggle={(asset) => {
+                if (disabled) return;
                 onChange({
                   source: "asset",
                   mediaType,
                   assetId: asset.id,
                   url: asset.url,
                   name: asset.name,
-                })
-              }
+                });
+              }}
             />
             <a
               href="/dashboard/assets"

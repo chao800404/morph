@@ -284,13 +284,24 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           return ok("Theme published", result);
         }
 
+        // Narrowed once, here: `releaseId` is nullable, and a deploy without
+        // one has nothing to send. Reading it inside the lease callback below
+        // loses the narrowing, and defaulting it would deploy the wrong thing.
+        const releaseId = result.releaseId;
+        if (!releaseId) {
+          return fail(
+            "Theme published, but no release was created to deploy.",
+            { error: "RELEASE_DEPLOYMENT_FAILED", ...result },
+          );
+        }
+
         // Under the same storefront-wide lease as release activation.
         // Publish reaches the Theme Worker through its own path, so guarding
         // only the activation route left a publish and a rollback able to
         // deploy at once — the case the lease exists to prevent.
         const held = await withDeploymentLease({
           storefrontId: data.storefrontId,
-          owner: `publish:${result.releaseId}:${crypto.randomUUID()}`,
+          owner: `publish:${releaseId}:${crypto.randomUUID()}`,
           ports: {
             acquire: (leaseArgs) =>
               storefrontReleaseDal.acquireDeploymentLease(leaseArgs),
@@ -299,7 +310,7 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           },
           operation: () =>
             deployReleaseArtifact({
-          releaseId: result.releaseId,
+          releaseId,
           deployer: createServerThemeWorkerDeployer(),
           r2Bucket: (cloudflareEnv as unknown as { R2_BUCKET?: unknown })
             .R2_BUCKET as never,

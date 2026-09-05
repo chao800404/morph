@@ -56,3 +56,68 @@ describe("AssetLibraryPicker", () => {
     });
   });
 });
+
+describe("AssetLibraryPicker failure states (MEDIA-03)", () => {
+  const renderPicker = (props: Record<string, unknown> = {}) => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <AssetLibraryPicker
+          assetType="image"
+          selectedIds={[]}
+          onToggle={vi.fn()}
+          {...props}
+        />
+      </QueryClientProvider>,
+    );
+  };
+
+  // A failed request used to render the empty state, telling the author they
+  // have no images — the one conclusion a failed request cannot support.
+  it("reports a failed load instead of showing an empty library", async () => {
+    mocks.listItemsServerFn.mockRejectedValue(new Error("network down"));
+    renderPicker();
+
+    await waitFor(() =>
+      expect(screen.getByText(/could not load images/i)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/has no images yet/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+  });
+
+  it("surfaces a rejected response's own message", async () => {
+    mocks.listItemsServerFn.mockResolvedValue({
+      success: false,
+      message: "Not permitted",
+    });
+    renderPicker();
+
+    await waitFor(() => expect(screen.getByText("Not permitted")).toBeTruthy());
+  });
+
+  it("retries on request", async () => {
+    mocks.listItemsServerFn.mockRejectedValueOnce(new Error("network down"));
+    mocks.listItemsServerFn.mockResolvedValue({
+      success: true,
+      data: {
+        currentFolder: null,
+        folders: [],
+        assets: [],
+        pagination: { page: 1, limit: 12, totalAssets: 0, totalPages: 1 },
+      },
+    });
+    renderPicker();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+
+    // Recovering shows the real empty state, which now means what it says.
+    await waitFor(() =>
+      expect(screen.getByText(/has no images yet/i)).toBeTruthy(),
+    );
+  });
+});
