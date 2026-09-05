@@ -61,7 +61,7 @@ export const storefronts = sqliteTable(
      * would drop whatever the platform hid there.
      */
     deploymentLeaseOwner: text("deployment_lease_owner"),
-    /** Bound on how long a crashed holder blocks the next deployment. */
+    /** Stale diagnostic threshold only; never permits automatic takeover. */
     deploymentLeaseExpiresAt: integer("deployment_lease_expires_at"),
     preferences: metadata(),
     ...timestamps,

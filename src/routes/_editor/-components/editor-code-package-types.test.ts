@@ -17,7 +17,7 @@ describe("extractThemeDependencyNames", () => {
               "lucide-react": "^0.544.0",
             },
             devDependencies: {
-              vite: "7.2.7",
+              vite: "7.3.5",
               "class-variance-authority": "^0.7.1",
             },
           }),

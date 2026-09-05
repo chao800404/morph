@@ -241,7 +241,7 @@ describe("starter Principles theme source", () => {
     expect(packageJson.devDependencies).toMatchObject({
       "@tanstack/router-plugin": "1.168.23",
       "@cloudflare/vite-plugin": "1.50.0",
-      vite: "7.2.7",
+      vite: "7.3.5",
     });
   });
 
@@ -562,7 +562,7 @@ describe("platform toolchain version correction", () => {
 
     expect(upgraded.dependencies.react).toBe("19.2.1");
     expect(upgraded.dependencies["react-dom"]).toBe("19.2.1");
-    expect(upgraded.devDependencies.vite).toBe("7.2.7");
+    expect(upgraded.devDependencies.vite).toBe("7.3.5");
     // Dependencies the platform does not own keep the customer's choice.
     expect(upgraded.dependencies.clsx).toBe("customer-version");
   });

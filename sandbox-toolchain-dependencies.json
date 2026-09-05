@@ -12,5 +12,5 @@
   "react-dom": "19.2.1",
   "tailwind-merge": "3.4.0",
   "tailwindcss": "4.1.17",
-  "vite": "7.2.7"
+  "vite": "7.3.5"
 }

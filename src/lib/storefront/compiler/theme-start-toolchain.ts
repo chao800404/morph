@@ -4,7 +4,7 @@ export const THEME_START_TOOLCHAIN = {
   reactRouter: "1.170.18",
   reactStart: "1.168.32",
   routerPlugin: "1.168.23",
-  vite: "7.2.7",
+  vite: "7.3.5",
   viteReact: "5.2.0",
   tailwind: "4.1.17",
   tailwindVite: "4.1.17",

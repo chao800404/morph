@@ -258,6 +258,39 @@ describe("storefront theme DAL", () => {
         handle: "renamed",
       }),
     ).toBeNull();
+
+    // An old revision without a route may reuse a real publication snapshot,
+    // but may never infer it from an intervening draft's mutable handle.
+    sqlite.exec(`
+      UPDATE storefront_pages SET deleted_at = NULL, draft_revision_id = 'new-draft';
+      UPDATE storefront_page_revisions SET document = '{"version":1,"sections":[]}';
+    `);
+    const legacy = await storefrontContentPublicationDal.createForTheme({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "t",
+      templateRevisionId: "tr",
+    });
+    expect(
+      legacy.items.find((item) => item.itemType === "page")?.metadata,
+    ).toEqual({ handle: "original" });
+    sqlite.exec(
+      "UPDATE storefront_content_publication_items SET metadata = '{}' WHERE item_type = 'page'",
+    );
+    await expect(
+      storefrontContentPublicationDal.createForTheme({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "t",
+        templateRevisionId: "tr",
+      }),
+    ).rejects.toThrow("CONTENT_PUBLICATION_PAGE_ROUTE_UNAVAILABLE");
+    expect(
+      await storefrontContentPublicationDal.getPublishedPageDocument({
+        publicationId: legacy.id,
+        handle: "renamed",
+      }),
+    ).toBeNull();
   });
 
   it("restores only its own failed publish, including first-publication null state", async () => {

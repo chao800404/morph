@@ -18,8 +18,8 @@ export const GENERATED_THEME_DEPENDENCY_VERSIONS = {
   "react/jsx-runtime": "19.2.1",
   "tailwind-merge": "3.4.0",
   "tailwindcss": "4.1.17",
-  "vite": "7.2.7",
-  "vite/modulepreload-polyfill": "7.2.7"
+  "vite": "7.3.5",
+  "vite/modulepreload-polyfill": "7.3.5"
 } as const;
 // prettier-ignore
 export const GENERATED_SANDBOX_DEPENDENCY_VERSIONS = {
@@ -36,5 +36,5 @@ export const GENERATED_SANDBOX_DEPENDENCY_VERSIONS = {
   "react-dom": "19.2.1",
   "tailwind-merge": "3.4.0",
   "tailwindcss": "4.1.17",
-  "vite": "7.2.7"
+  "vite": "7.3.5"
 } as const;

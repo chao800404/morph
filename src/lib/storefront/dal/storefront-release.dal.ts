@@ -257,7 +257,7 @@ export const storefrontReleaseDal = {
                     SELECT 1 FROM storefront_page_revisions pr
                     INNER JOIN storefront_pages pg ON pg.id = pr.page_id
                     WHERE pr.id = i.revision_id AND pr.page_id = i.content_id
-                      AND pg.storefront_id = r.storefront_id AND pg.deleted_at IS NULL
+                      AND pg.storefront_id = r.storefront_id
                   ))
                 )
               )

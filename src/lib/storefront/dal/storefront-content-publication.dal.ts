@@ -204,7 +204,6 @@ export const storefrontContentPublicationDal = {
               eq(storefrontPageRevisions.id, item.revisionId),
               eq(storefrontPageRevisions.pageId, item.contentId),
               eq(storefrontPages.storefrontId, data.storefrontId),
-              isNull(storefrontPages.deletedAt),
             ),
           )
           .limit(1);

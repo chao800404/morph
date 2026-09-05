@@ -277,12 +277,12 @@ describe("storefront release DAL", () => {
     await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
   });
 
-  it("rejects a deleted content owner", async () => {
+  it("can reactivate an immutable page snapshot after its mutable page owner is deleted", async () => {
     insertValidPublicationItems();
     sqlite.exec(
       "UPDATE storefront_pages SET deleted_at = '2026-01-03' WHERE id = 'page-a'",
     );
-    await expect(activateTarget()).rejects.toThrow("RELEASE_NOT_ACTIVATABLE");
+    await expect(activateTarget()).resolves.toBeDefined();
   });
 
   it("rejects a cross-storefront content owner", async () => {
