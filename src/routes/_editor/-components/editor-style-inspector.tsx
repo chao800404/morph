@@ -159,6 +159,8 @@ export type InspectorPropsChangeOptions = {
 };
 
 type EditorStyleInspectorProps = {
+  /** Storefront/theme/template identity; section ids are only locally unique. */
+  resourceKey?: string;
   section: EditorSection;
   themeFiles?: StorefrontThemeFileDTO[];
   selection?: EditorSelectionDescriptor | null;
@@ -567,6 +569,7 @@ function sameContentValue(a: unknown, b: unknown): boolean {
 }
 
 export const EditorStyleInspector = memo(function EditorStyleInspector({
+  resourceKey = "",
   section,
   themeFiles,
   selection,
@@ -630,6 +633,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     (section.props as Record<string, any>) ?? {},
   );
 
+  const contentResourceKey = `${resourceKey}:${section.id}`;
+  const lastContentResourceKeyRef = useRef(contentResourceKey);
   useEffect(() => {
     const incoming = (section.props as Record<string, any>) ?? {};
     const baseline = serverBaselineRef.current;
@@ -637,7 +642,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
     // Switching sections replaces everything; there is no edit in progress
     // that belongs to the new one.
-    if (section.id !== lastSectionIdRef.current) {
+    if (contentResourceKey !== lastContentResourceKeyRef.current) {
+      lastContentResourceKeyRef.current = contentResourceKey;
       lastSectionIdRef.current = section.id;
       localPropsRef.current = incoming;
       setLocalProps(incoming);
@@ -661,7 +667,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
     localPropsRef.current = rebased;
     setLocalProps(rebased);
-  }, [section.id, section.props]);
+  }, [contentResourceKey, section.id, section.props]);
   useEffect(() => {
     if (
       optimisticStyleRef.current.revision > 0 &&
@@ -689,7 +695,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     elementKey: activeElementKey,
     sourceLocation: activeSourceLocation,
   });
-  const props = localProps;
+  // Render the new resource before its uncontrolled fields mount.
+  const props = contentResourceKey === lastContentResourceKeyRef.current
+    ? localProps : ((section.props as Record<string, any>) ?? {});
   const selectedField = activeFieldKey ?? activeElementKey;
   const isSelectedNode = activeSelectionIsSection === false;
   // Selecting a section from the sidebar intentionally clears the transient
@@ -761,7 +769,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       : undefined;
   };
   const contentFieldInputKey = (fieldKey: string) =>
-    `${fieldKey}:${
+    `${contentResourceKey}:${fieldKey}:${
       isSelectedNode && selectedField === fieldKey
         ? (selection?.contentValue ?? "")
         : ""
@@ -1838,7 +1846,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             expanded={sectionsExpanded.content}
             onToggle={() => toggleSection("content")}
           >
-            <div className="w-full min-w-0 space-y-3">
+            <div key={contentResourceKey} className="w-full min-w-0 space-y-3">
               {orderContentBlocks(
                 [
                   ...declaredContentFields

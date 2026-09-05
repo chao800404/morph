@@ -157,7 +157,9 @@ export function resolveThemeMediaInSlotValues(
  */
 export function resolvePublishedThemeMediaUrl(media: ThemeMediaValue): string {
   if (media.source === "asset" && media.assetId) {
-    return publishedMediaPath(media.assetId);
+    const key = media.url.replace(/^\/+/, "");
+    if (!key.startsWith("assets/") || key.includes("..")) return "";
+    return publishedMediaPath(media.assetId, key);
   }
   return isSafeThemeMediaUrl(media.url) ? media.url : "";
 }

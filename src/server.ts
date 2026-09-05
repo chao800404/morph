@@ -85,12 +85,6 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
     mediaPorts: {
       listPublishedAssetKeys: (publicationId) =>
         storefrontContentPublicationDal.listPublishedAssetKeys(publicationId),
-      getAssetContentType: async (assetId) => {
-        const { assetDal } = await import("@/lib/asset/dal/asset.dal");
-        // Only the response header. The bytes come from the published
-        // snapshot, so editing the asset cannot change what is served.
-        return (await assetDal.findById(assetId))?.mimeType ?? null;
-      },
     },
   });
   return service.handleRequest(request);

@@ -2,6 +2,7 @@ import {
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
@@ -470,9 +471,7 @@ export function createStarterThemeWorkspaceBootstrapPlan(
         const existingDependencies = isRecord(parsedExisting.dependencies)
           ? { ...parsedExisting.dependencies }
           : {};
-        const existingDevDependencies = isRecord(
-          parsedExisting.devDependencies,
-        )
+        const existingDevDependencies = isRecord(parsedExisting.devDependencies)
           ? { ...parsedExisting.devDependencies }
           : {};
         const targetDependencies = isRecord(parsedTarget.dependencies)
@@ -496,7 +495,7 @@ export function createStarterThemeWorkspaceBootstrapPlan(
             ? THEME_START_RUNTIME_DEPENDENCIES[
                 dependency as keyof typeof THEME_START_RUNTIME_DEPENDENCIES
               ]
-            : existingDependencies[dependency] ?? version;
+            : (existingDependencies[dependency] ?? version);
           if (existingDependencies[dependency] === nextVersion) continue;
           existingDependencies[dependency] = nextVersion;
           packageChanged = true;
@@ -510,7 +509,7 @@ export function createStarterThemeWorkspaceBootstrapPlan(
             ? THEME_START_BUILD_DEPENDENCIES[
                 dependency as keyof typeof THEME_START_BUILD_DEPENDENCIES
               ]
-            : existingDevDependencies[dependency] ?? version;
+            : (existingDevDependencies[dependency] ?? version);
           if (existingDevDependencies[dependency] === nextVersion) continue;
           existingDevDependencies[dependency] = nextVersion;
           packageChanged = true;
@@ -672,7 +671,10 @@ export function createStarterThemeWorkspaceUpgrade(
     if (
       existingContentModule &&
       targetContentModule &&
-      existingContentModule.content === LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE
+      (existingContentModule.content ===
+        LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE ||
+        existingContentModule.content ===
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE)
     ) {
       upgrades.push({
         path: existingContentModule.path,
@@ -706,9 +708,7 @@ export function createStarterThemeWorkspaceUpgrade(
             : {};
           let packageChanged = false;
 
-          if (
-            existingDependencies["@morph/storefront-runtime"] === "1.0.0"
-          ) {
+          if (existingDependencies["@morph/storefront-runtime"] === "1.0.0") {
             delete existingDependencies["@morph/storefront-runtime"];
             packageChanged = true;
           }

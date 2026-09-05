@@ -1,3 +1,4 @@
+import { commitPendingContent } from "@/lib/storefront/editor/pending-content-write";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
 import {
@@ -879,6 +880,12 @@ export function VisualEditorShell({
     onSuccess: async (result) => {
       if (!result.success) {
         toast.error(result.message);
+        await queryClient.invalidateQueries({
+          queryKey: storefrontThemeQueries.detail(
+            context.storefront.id,
+            context.theme.id,
+          ).queryKey,
+        });
         return;
       }
       await Promise.all([
@@ -920,13 +927,14 @@ export function VisualEditorShell({
       sectionId: string;
       props: Record<string, unknown>;
       expectedDraftGeneration: number;
+      templateId?: string;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return updateStorefrontThemeSectionProps({
         data: {
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
-          templateId: activeTemplate.id,
+          templateId: variables.templateId ?? activeTemplate.id,
           sectionId: variables.sectionId,
           props: variables.props,
           expectedDraftGeneration: variables.expectedDraftGeneration,
@@ -1003,58 +1011,65 @@ export function VisualEditorShell({
     [activeTemplate?.draftGeneration],
   );
 
+  const contentChangeRef = useRef<
+    ((sectionId: string, props: Record<string, unknown>) => void) | null
+  >(null);
+  const commitSectionPending = useCallback(
+    (tid: string, key: string, recordHistory = true) =>
+      commitPendingContent({
+        key,
+        pending: pendingPropsMapRef.current,
+        baselines: pendingPropsBaselineRef.current,
+        save: (entry) =>
+          enqueueTemplateMutation(tid, (generation) =>
+            updatePropsMutation.mutateAsync({
+              templateId: tid,
+              sectionId: entry.sectionId,
+              props: entry.props,
+              expectedDraftGeneration: generation,
+            }),
+          ),
+        onSaved: recordHistory
+          ? (entry, baseline) => {
+              if (!baseline) return;
+              history.record({
+                label: "Content",
+                scope: sectionHistoryScope(entry.sectionId),
+                undo: () =>
+                  contentChangeRef.current?.(entry.sectionId, baseline),
+                redo: () =>
+                  contentChangeRef.current?.(entry.sectionId, entry.props),
+              });
+            }
+          : undefined,
+      }),
+    [enqueueTemplateMutation, updatePropsMutation, history],
+  );
+
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
       const tid = targetTemplateId ?? activeTemplate?.id;
       if (!tid) return;
       const prefix = `${tid}:`;
-      const flushPromises: Promise<unknown>[] = [];
-
-      // Driven by the pending payloads, not by the timers.
-      //
-      // A debounced save clears its own timer before awaiting, so an edit whose
-      // write was rejected still has a payload but no timer. Walking timers
-      // skipped exactly those — the entries the retry exists for.
+      await templateMutationQueueRef.current.get(tid)?.catch(() => {});
       for (const key of Array.from(pendingPropsMapRef.current.keys())) {
         if (!key.startsWith(prefix)) continue;
-
         const timer = pendingPropsTimersRef.current.get(key);
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          pendingPropsTimersRef.current.delete(key);
-        }
-
-        const pending = pendingPropsMapRef.current.get(key);
-        if (!pending) continue;
-
-        flushPromises.push(
-          (async () => {
-            const result = await enqueueTemplateMutation(tid, (gen) =>
-              updatePropsMutation.mutateAsync({
-                sectionId: pending.sectionId,
-                props: pending.props,
-                expectedDraftGeneration: gen,
-              }),
-            );
-            // Dropped only once the write is acknowledged, for the same reason
-            // the debounced path keeps it: a rejected edit that has been
-            // forgotten cannot be retried by anything.
-            if (
-              result?.success &&
-              pendingPropsMapRef.current.get(key) === pending
-            ) {
-              pendingPropsMapRef.current.delete(key);
-              pendingPropsBaselineRef.current.delete(key);
-            }
-            return result;
-          })(),
+        if (timer !== undefined) clearTimeout(timer);
+        pendingPropsTimersRef.current.delete(key);
+        await commitSectionPending(tid, key);
+      }
+      if (
+        [...pendingPropsMapRef.current.keys()].some((key) =>
+          key.startsWith(prefix),
+        )
+      ) {
+        throw new Error(
+          "Content changed while saving. Retry before continuing.",
         );
       }
-
-      await Promise.all(flushPromises);
-      await templateMutationQueueRef.current.get(tid);
     },
-    [activeTemplate?.id, enqueueTemplateMutation, updatePropsMutation],
+    [activeTemplate?.id, commitSectionPending],
   );
 
   const livePreviewSecurity = resolveLivePreviewSecurity({
@@ -4168,71 +4183,26 @@ export function VisualEditorShell({
       }
       pendingPropsMapRef.current.set(key, { sectionId, props: mergedProps });
 
-      const timer = setTimeout(async () => {
+      const timer = setTimeout(() => {
         pendingPropsTimersRef.current.delete(key);
-        const pending = pendingPropsMapRef.current.get(key);
-        if (!pending) return;
-
-        const baseline = pendingPropsBaselineRef.current.get(key);
-
-        // The entry stays queued until the write is acknowledged. Clearing it
-        // before awaiting meant a rejected edit was gone: the preview had
-        // already been updated, so the canvas and Inspector went on showing
-        // content the server refused, with nothing left to retry from.
-        let result: Awaited<ReturnType<typeof enqueueTemplateMutation>>;
-        try {
-          result = await enqueueTemplateMutation(templateId, (gen) =>
-            updatePropsMutation.mutateAsync({
-              sectionId: pending.sectionId,
-              props: pending.props,
-              expectedDraftGeneration: gen,
-            }),
-          );
-        } catch (error) {
-          // Kept for the next edit or an explicit retry, unless a newer edit to
-          // the same section has already replaced it.
-          if (pendingPropsMapRef.current.get(key) === pending) {
-            pendingPropsMapRef.current.set(key, pending);
-          }
-          throw error;
-        }
-
-        if (!result?.success) {
-          if (pendingPropsMapRef.current.get(key) === pending) {
-            pendingPropsMapRef.current.set(key, pending);
-          }
-          return;
-        }
-
-        // Acknowledged: only now is it safe to forget.
-        if (pendingPropsMapRef.current.get(key) === pending) {
-          pendingPropsMapRef.current.delete(key);
-        }
-        pendingPropsBaselineRef.current.delete(key);
-
-        // Recorded only once the write landed: an entry for a rejected edit
-        // would reverse a change that never happened.
-        if (baseline && result?.success) {
-          const after = pending.props;
-          history.record({
-            label: `Content · ${Object.keys(after).join(", ").slice(0, 40)}`,
-            scope: sectionHistoryScope(pending.sectionId),
-            undo: () => handleSectionPropsChange(pending.sectionId, baseline),
-            redo: () => handleSectionPropsChange(pending.sectionId, after),
-          });
-        }
+        void commitSectionPending(templateId, key).catch(() => {
+          // Mutation UI reports the error; the shared queue keeps the input.
+        });
       }, 300);
 
       pendingPropsTimersRef.current.set(key, timer);
     },
     [
       activeTemplate,
+      commitSectionPending,
+      sectionPropsSnapshot,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       updatePropsMutation,
     ],
   );
 
+  contentChangeRef.current = handleSectionPropsChange;
   useEffect(() => {
     inlineTextCommitHandlerRef.current = (message) => {
       const selection = activeSelection;
@@ -4383,7 +4353,11 @@ export function VisualEditorShell({
         clearTimeout(existingTimer);
         pendingPropsTimersRef.current.delete(key);
       }
-      pendingPropsMapRef.current.delete(key);
+      const reorderPending = { sectionId, props: result.value };
+      if (!pendingPropsBaselineRef.current.has(key)) {
+        pendingPropsBaselineRef.current.set(key, { ...section.props });
+      }
+      pendingPropsMapRef.current.set(key, reorderPending);
       syncPreviewSectionProps(sectionId, previewProps);
       setActiveSelection((current) => {
         if (!current?.fieldPath) return current;
@@ -4400,19 +4374,7 @@ export function VisualEditorShell({
       });
 
       try {
-        const mutationResult = await enqueueTemplateMutation(
-          templateId,
-          (generation) =>
-            updatePropsMutation.mutateAsync({
-              sectionId,
-              props: result.value,
-              expectedDraftGeneration: generation,
-            }),
-        );
-        if (!mutationResult?.success) {
-          restoreSelectionAndProps();
-          return;
-        }
+        await commitSectionPending(templateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
         // props the other one started from.
         history.record({
@@ -4422,6 +4384,12 @@ export function VisualEditorShell({
           redo: () => handleSectionPropsChange(sectionId, result.value),
         });
       } catch {
+        if (pendingPropsMapRef.current.get(key) === reorderPending) {
+          pendingPropsMapRef.current.set(key, {
+            sectionId,
+            props: currentProps,
+          });
+        }
         restoreSelectionAndProps();
       }
     },
@@ -4429,6 +4397,7 @@ export function VisualEditorShell({
       history,
       handleSectionPropsChange,
       invalidateSectionHistory,
+      commitSectionPending,
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
@@ -4472,18 +4441,22 @@ export function VisualEditorShell({
       }
 
       const existingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
-      pendingPropsMapRef.current.delete(key);
       const mergedProps = { ...existingProps, enabled };
+      const togglePending = { sectionId, props: mergedProps };
+      if (!pendingPropsBaselineRef.current.has(key)) {
+        pendingPropsBaselineRef.current.set(
+          key,
+          sectionPropsSnapshot(sectionId),
+        );
+      }
+      pendingPropsMapRef.current.set(key, togglePending);
 
-      const result = await enqueueTemplateMutation(templateId, (gen) =>
-        updatePropsMutation.mutateAsync({
-          sectionId,
-          props: mergedProps,
-          expectedDraftGeneration: gen,
-        }),
-      );
-
-      if (result?.success) {
+      try {
+        await commitSectionPending(templateId, key, false);
+      } catch {
+        return;
+      }
+      {
         history.record({
           label: enabled ? "Show section" : "Hide section",
           scope: sectionHistoryScope(sectionId),
@@ -4497,6 +4470,8 @@ export function VisualEditorShell({
     [
       history,
       invalidateSectionHistory,
+      sectionPropsSnapshot,
+      commitSectionPending,
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,

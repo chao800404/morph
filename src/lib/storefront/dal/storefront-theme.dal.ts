@@ -79,7 +79,6 @@ function deriveTemplateDocumentFromRoutes(args: {
   });
 }
 
-
 function prepareTemplateDraftCASGuard(args: {
   storefrontId: string;
   themeId: string;
@@ -1129,6 +1128,9 @@ export const storefrontThemeDal = {
 
     return {
       revisionId: data.expectedDraftRevisionId,
+      previousActiveReleaseId: template.activeReleaseId,
+      previousPublishedRevisionId: template.publishedRevisionId,
+      previousPublishedSourceRevisionId: template.publishedSourceRevisionId,
       sourceRevisionId,
       draftGeneration: templateUnchanged
         ? (template.draftGeneration ?? 1)
@@ -1156,5 +1158,46 @@ export const storefrontThemeDal = {
         activeRelease?.metadata ?? null,
       ),
     };
+  },
+  /** Compensates only this failed activation; never rewinds draft/OCC generations. */
+  async restoreFailedPublish(data: {
+    storefrontId: string;
+    themeId: string;
+    templateId: string;
+    releaseId: string;
+    releaseGeneration: number;
+    previousActiveReleaseId: string | null;
+    previousPublishedRevisionId: string | null;
+    previousPublishedSourceRevisionId: string | null;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    await env.DATABASE.batch([
+      env.DATABASE.prepare(
+        `
+        SELECT CASE WHEN EXISTS (
+          SELECT 1 FROM storefronts s JOIN storefront_themes th ON th.storefront_id = s.id
+          JOIN storefront_theme_templates t ON t.theme_id = th.id
+          WHERE s.id = ?1 AND th.id = ?2 AND t.id = ?3
+            AND s.active_release_id = ?4 AND th.release_generation = ?5
+            AND s.deleted_at IS NULL AND th.deleted_at IS NULL AND t.deleted_at IS NULL
+        ) THEN 1 ELSE json('') END AS ok
+      `,
+      ).bind(
+        data.storefrontId,
+        data.themeId,
+        data.templateId,
+        data.releaseId,
+        data.releaseGeneration,
+      ),
+      env.DATABASE.prepare(
+        `UPDATE storefronts SET active_release_id = ?1, updated_at = ?2 WHERE id = ?3`,
+      ).bind(data.previousActiveReleaseId, now, data.storefrontId),
+      env.DATABASE.prepare(
+        `UPDATE storefront_themes SET published_source_revision_id = ?1, updated_at = ?2 WHERE id = ?3`,
+      ).bind(data.previousPublishedSourceRevisionId, now, data.themeId),
+      env.DATABASE.prepare(
+        `UPDATE storefront_theme_templates SET published_revision_id = ?1, updated_at = ?2 WHERE id = ?3`,
+      ).bind(data.previousPublishedRevisionId, now, data.templateId),
+    ]);
   },
 };

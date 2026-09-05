@@ -16,7 +16,10 @@ import { createServerFn } from "@tanstack/react-start";
 import { env as cloudflareEnv } from "cloudflare:workers";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { storefrontReleaseDal } from "@/lib/storefront/dal/storefront-release.dal";
-import { deployReleaseArtifact } from "@/lib/storefront/service/storefront-release-reconciler";
+import {
+  deployReleaseArtifact,
+  deployWithRecovery,
+} from "@/lib/storefront/service/storefront-release-reconciler";
 import { withDeploymentLease } from "@/lib/storefront/service/deployment-lease";
 import { canSkipThemeWorkerDeployment } from "@/lib/storefront/service/theme-worker-deployment-state";
 import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-worker-deployer.factory";
@@ -318,35 +321,58 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
               );
             }
 
-            const deployed = await deployReleaseArtifact({
-              releaseId,
-              deployer: createServerThemeWorkerDeployer(),
-              r2Bucket: (cloudflareEnv as unknown as { R2_BUCKET?: unknown })
-                .R2_BUCKET as never,
-              ports: {
-                getRelease: async (releaseId) => {
-                  const release = await storefrontReleaseDal.getById(
-                    data.storefrontId,
-                    releaseId,
-                  );
-                  return release
-                    ? {
-                        id: release.id,
-                        storefrontId: data.storefrontId,
-                        themeId: release.themeId,
-                        themeBuildId: release.themeBuildId,
-                      }
-                    : null;
-                },
-                getBuild: (buildId) =>
-                  storefrontThemeBuildDal.getBuildById(buildId),
-              },
+            const deployed = await deployWithRecovery({
+              restore: () =>
+                storefrontThemeDal.restoreFailedPublish({
+                  storefrontId: data.storefrontId,
+                  themeId: data.themeId,
+                  templateId: data.templateId,
+                  releaseId,
+                  releaseGeneration: result.releaseGeneration,
+                  previousActiveReleaseId: result.previousActiveReleaseId,
+                  previousPublishedRevisionId:
+                    result.previousPublishedRevisionId,
+                  previousPublishedSourceRevisionId:
+                    result.previousPublishedSourceRevisionId,
+                }),
+              deploy: () =>
+                deployReleaseArtifact({
+                  releaseId,
+                  deployer: createServerThemeWorkerDeployer(),
+                  r2Bucket: (
+                    cloudflareEnv as unknown as { R2_BUCKET?: unknown }
+                  ).R2_BUCKET as never,
+                  ports: {
+                    getRelease: async (releaseId) => {
+                      const release = await storefrontReleaseDal.getById(
+                        data.storefrontId,
+                        releaseId,
+                      );
+                      return release
+                        ? {
+                            id: release.id,
+                            storefrontId: data.storefrontId,
+                            themeId: release.themeId,
+                            themeBuildId: release.themeBuildId,
+                          }
+                        : null;
+                    },
+                    getBuild: (buildId) =>
+                      storefrontThemeBuildDal.getBuildById(buildId),
+                  },
+                }),
             });
-
             if (!deployed.success) {
               return fail(
-                `Theme published, but the storefront was not updated: ${deployed.message} The site still serves the previous build — retry publishing once the cause is resolved.`,
-                { error: "RELEASE_DEPLOYMENT_FAILED", ...result },
+                "deploymentDrift" in deployed && deployed.deploymentDrift
+                  ? "Deployment failed and the previous activation could not be restored. The storefront requires reconciliation."
+                  : "Deployment failed. The previous activation was restored; reload and retry publishing.",
+                {
+                  error:
+                    "deploymentDrift" in deployed && deployed.deploymentDrift
+                      ? "RELEASE_DEPLOYMENT_DRIFT"
+                      : "RELEASE_DEPLOYMENT_FAILED",
+                },
               );
             }
 

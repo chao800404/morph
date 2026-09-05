@@ -681,7 +681,7 @@ describe("EditorStyleInspector selection content", () => {
         />,
       );
 
-      const promo = screen.getByDisplayValue("Hero description");
+      const promo = screen.getByDisplayValue("Promo description");
       fireEvent.change(promo, { target: { value: "Edited promo" } });
       fireEvent.blur(promo);
 
@@ -2315,5 +2315,31 @@ describe("EditorStyleInspector selection content", () => {
         screen.getByText("Sizing").closest("[data-inspector-module=Sizing]")!,
       ) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("discards only the old resource's local props when another template reuses the section id", () => {
+    const section = baseSection("hero", { heading: "Template A" });
+    const props = {
+      ...common,
+      section,
+      view: "content" as const,
+      onPropsChange: vi.fn(),
+    };
+    const rendered = render(
+      <EditorStyleInspector {...props} resourceKey="store:theme:A" />,
+    );
+    fireEvent.input(screen.getByDisplayValue("Template A"), {
+      target: { value: "Unsaved A" },
+    });
+    fireEvent.blur(screen.getByDisplayValue("Unsaved A"));
+    rendered.rerender(
+      <EditorStyleInspector
+        {...props}
+        resourceKey="store:theme:B"
+        section={{ ...section, props: { heading: "Template B" } }}
+      />,
+    );
+    expect(screen.getByDisplayValue("Template B")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Unsaved A")).toBeNull();
   });
 });

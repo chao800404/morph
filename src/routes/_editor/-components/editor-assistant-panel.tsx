@@ -402,6 +402,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         >
           {selectedSection ? (
             <EditorStyleInspector
+              resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}`}
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
               themeFiles={themeFiles}

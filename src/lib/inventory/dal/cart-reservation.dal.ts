@@ -30,7 +30,6 @@ const keyOf = (inventoryItemId: string, locationId: string) =>
  * the reason it was selected, not just that the row still exists.
  */
 async function claimAndRelease(
-  db: Awaited<ReturnType<typeof getDb>>,
   reservation: {
     id: string;
     inventoryItemId: string;
@@ -40,44 +39,34 @@ async function claimAndRelease(
   now: string,
   requireExpiredBefore?: string,
 ): Promise<boolean> {
-  const claim = await env.DATABASE.prepare(
-    `
-    UPDATE reservation_items
-    SET deleted_at = ?1, updated_at = ?1
-    WHERE id = ?2
-      AND deleted_at IS NULL
-      AND (?3 IS NULL OR expires_at < ?3)
-  `,
-  )
-    .bind(now, reservation.id, requireExpiredBefore ?? null)
-    .run();
-  if ((claim.meta?.changes ?? 0) === 0) return false;
-
-  try {
-    await db
-      .update(inventoryLevels)
-      .set({
-        reservedQuantity: sql`max(0, ${inventoryLevels.reservedQuantity} - ${reservation.quantity})`,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(inventoryLevels.inventoryItemId, reservation.inventoryItemId),
-          eq(inventoryLevels.locationId, reservation.locationId),
-          isNull(inventoryLevels.deletedAt),
-        ),
-      );
-    return true;
-  } catch (error) {
-    // The claim already removed the row, so nothing would ever retry this
-    // decrement. Put it back and let the next sweep or release own it.
-    await env.DATABASE.prepare(
-      `UPDATE reservation_items SET deleted_at = NULL, updated_at = ?1 WHERE id = ?2`,
-    )
-      .bind(now, reservation.id)
-      .run();
-    throw error;
-  }
+  // D1 serialises the entire batch. Both statements see the same live hold;
+  // any failure rolls back both, without relying on a later compensation.
+  // Read quantity from the row, never from the caller's earlier snapshot.
+  const results = await env.DATABASE.batch([
+    env.DATABASE.prepare(
+      `
+      UPDATE inventory_levels
+      SET reserved_quantity = max(0, reserved_quantity - (
+        SELECT quantity FROM reservation_items WHERE id = ?1
+      )), updated_at = ?2
+      WHERE deleted_at IS NULL AND EXISTS (
+        SELECT 1 FROM reservation_items r
+        WHERE r.id = ?1 AND r.deleted_at IS NULL
+          AND (?3 IS NULL OR r.expires_at < ?3)
+          AND r.inventory_item_id = inventory_levels.inventory_item_id
+          AND r.location_id = inventory_levels.location_id
+      )
+    `,
+    ).bind(reservation.id, now, requireExpiredBefore ?? null),
+    env.DATABASE.prepare(
+      `
+      UPDATE reservation_items SET deleted_at = ?2, updated_at = ?2
+      WHERE id = ?1 AND deleted_at IS NULL
+        AND (?3 IS NULL OR expires_at < ?3)
+    `,
+    ).bind(reservation.id, now, requireExpiredBefore ?? null),
+  ]);
+  return (results[1]?.meta.changes ?? 0) > 0;
 }
 
 export const cartReservationDal = {
@@ -160,7 +149,7 @@ export const cartReservationDal = {
     for (const reservation of expired) {
       // Re-asserts "still expired" as part of the claim: a renewal between the
       // read above and this write must not be swept away.
-      await claimAndRelease(db, reservation, now.toISOString(), now.toISOString());
+      await claimAndRelease(reservation, now.toISOString(), now.toISOString());
     }
   },
 
@@ -374,7 +363,7 @@ export const cartReservationDal = {
     // Same claim as the expiry sweep. Decrementing here and deleting afterwards
     // let this path and the sweep each release the same reservation.
     for (const reservation of reservations) {
-      await claimAndRelease(db, reservation, now);
+      await claimAndRelease(reservation, now);
     }
   },
 };

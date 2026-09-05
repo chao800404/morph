@@ -184,6 +184,7 @@ export class StorefrontProductionService {
 
     const lookup = await lookupPublishedMedia({
       assetId,
+      storageKey: new URL(request.url).searchParams.get("version"),
       publicationId: resolved.contentPublicationId,
       ports: this.options.mediaPorts,
     });
@@ -205,7 +206,10 @@ export class StorefrontProductionService {
     // Bytes are immutable for an asset id, and the release id keeps a rollback
     // from serving a stale cache entry under the same URL.
     headers.set("Cache-Control", "public, max-age=300, must-revalidate");
-    headers.set("ETag", `"${resolved.releaseId}:${assetId}"`);
+    headers.set(
+      "ETag",
+      `"${resolved.releaseId}:${encodeURIComponent(lookup.storageKey)}"`,
+    );
     headers.set("X-Content-Type-Options", "nosniff");
     // Never inline: a stored SVG is script-capable, and this route has no
     // session to lose but the storefront's own origin to protect.

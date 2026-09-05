@@ -42,7 +42,9 @@ describe("resolvePublishedThemeMediaUrl", () => {
         assetId: "3f1c9a2e-4b5d-4c6e-8f70-1a2b3c4d5e6f",
         url: "/assets/abc.png",
       }),
-    ).toBe("/_storefront-media/3f1c9a2e-4b5d-4c6e-8f70-1a2b3c4d5e6f");
+    ).toBe(
+      "/_storefront-media/3f1c9a2e-4b5d-4c6e-8f70-1a2b3c4d5e6f?version=assets%2Fabc.png",
+    );
   });
 
   it("leaves an external URL alone", () => {
@@ -69,8 +71,36 @@ describe("resolvePublishedThemeMediaUrl", () => {
 describe("lookupPublishedMedia", () => {
   const published = "3f1c9a2e-4b5d-4c6e-8f70-1a2b3c4d5e6f";
   const ports = (entries: [string, string][]): PublishedMediaPorts => ({
-    listPublishedAssetKeys: vi.fn(async () => new Map(entries)),
-    getAssetContentType: vi.fn(async () => "image/png"),
+    listPublishedAssetKeys: vi.fn(
+      async () => new Map(entries.map(([id, key]) => [id, new Set([key])])),
+    ),
+  });
+
+  it("keeps distinct versions of one asset and rejects an unpublished key", async () => {
+    const p: PublishedMediaPorts = {
+      listPublishedAssetKeys: async () =>
+        new Map([[published, new Set(["assets/old.png", "assets/new.png"])]]),
+    };
+    for (const key of ["assets/old.png", "assets/new.png"]) {
+      expect(
+        await lookupPublishedMedia({
+          assetId: published,
+          publicationId: "pub",
+          storageKey: key,
+          ports: p,
+        }),
+      ).toMatchObject({ status: "found", storageKey: key });
+    }
+    for (const key of [undefined, "assets/private.png", "../secret"]) {
+      expect(
+        await lookupPublishedMedia({
+          assetId: published,
+          publicationId: "pub",
+          storageKey: key,
+          ports: p,
+        }),
+      ).toEqual({ status: "not-published" });
+    }
   });
 
   it("serves the key the release published", async () => {
@@ -83,7 +113,7 @@ describe("lookupPublishedMedia", () => {
     ).toEqual({
       status: "found",
       storageKey: "assets/abc.png",
-      contentType: "image/png",
+      contentType: null,
     });
   });
 
@@ -111,7 +141,7 @@ describe("lookupPublishedMedia", () => {
     ).toEqual({ status: "not-published" });
     // Membership and bytes come from one lookup, so an unpublished id cannot
     // be used to find out whether that asset exists.
-    expect(p.getAssetContentType).not.toHaveBeenCalled();
+    expect(p.listPublishedAssetKeys).toHaveBeenCalledOnce();
   });
 
   it("refuses everything when the storefront has no publication", async () => {

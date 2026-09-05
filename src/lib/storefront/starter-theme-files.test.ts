@@ -11,6 +11,8 @@ import {
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
+  LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE,
@@ -22,6 +24,36 @@ import {
 } from "./starter-theme-v3-files";
 
 describe("starter Principles theme source", () => {
+  it("upgrades both untouched v12 content bindings and visibility source, preserving authored files", () => {
+    const existing = STARTER_THEME_FILES.map((file, index) => ({
+      ...file,
+      id: String(index),
+      version: 1,
+      content:
+        file.path === "src/routes/index.tsx"
+          ? LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE
+          : file.path === "src/morph/content.ts"
+            ? LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE
+            : file.content,
+    }));
+    const upgrades = createStarterThemeWorkspaceUpgrade(existing);
+    expect(
+      upgrades.find((file) => file.path === "src/routes/index.tsx")?.content,
+    ).toBe(STARTER_THEME_HOME_ROUTE_SOURCE);
+    expect(
+      upgrades.find((file) => file.path === "src/morph/content.ts")?.content,
+    ).toContain("isSectionHidden");
+    const edited = existing.map((file) =>
+      file.path === "src/routes/index.tsx"
+        ? { ...file, content: file.content + "\n// authored" }
+        : file,
+    );
+    expect(
+      createStarterThemeWorkspaceUpgrade(edited).some(
+        (file) => file.path === "src/routes/index.tsx",
+      ),
+    ).toBe(false);
+  });
   it("creates the complete template as an additive plan for an empty workspace", () => {
     const plan = createStarterThemeWorkspaceBootstrapPlan([]);
 
@@ -453,9 +485,7 @@ describe("starter Principles theme source", () => {
     const packageUpgrade = upgrades.find(
       (upgrade) => upgrade.path === "package.json",
     );
-    expect(packageUpgrade?.content).not.toContain(
-      "@morph/storefront-runtime",
-    );
+    expect(packageUpgrade?.content).not.toContain("@morph/storefront-runtime");
 
     const emptyRouteUpgrade = createStarterThemeWorkspaceUpgrade([
       {
@@ -634,11 +664,10 @@ describe("root document shell upgrade", () => {
   });
 
   it("never overwrites an authored root route", () => {
-    const authored =
-      LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE.replace(
-        "StorefrontLayout",
-        "MyCustomLayout",
-      );
+    const authored = LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE.replace(
+      "StorefrontLayout",
+      "MyCustomLayout",
+    );
     const upgrades = createStarterThemeWorkspaceUpgrade(
       withRoot(authored) as never,
     );
@@ -694,7 +723,9 @@ describe("content slot upgrade", () => {
     );
 
     expect(routeUpgrade).toBeDefined();
-    expect(routeUpgrade!.content).toContain('<Hero {...content("starter-hero")} />');
+    expect(routeUpgrade!.content).toContain(
+      '<Hero {...content("starter-hero")} />',
+    );
     expect(routeUpgrade).toMatchObject({
       expectedFileId: "home",
       expectedVersion: 4,
@@ -748,7 +779,10 @@ describe("content module upgrade", () => {
     expect(upgrade).toBeDefined();
     expect(upgrade!.content).toContain("loadContentSlots");
     expect(upgrade!.content).toContain("x-morph-content-origin");
-    expect(upgrade).toMatchObject({ expectedFileId: "content", expectedVersion: 3 });
+    expect(upgrade).toMatchObject({
+      expectedFileId: "content",
+      expectedVersion: 3,
+    });
   });
 
   it("never overwrites an authored content module", () => {

@@ -25,8 +25,14 @@ export const PUBLISHED_MEDIA_PATH_PREFIX = "/_storefront-media/";
  * host by a stored value, and it keeps the bytes behind the storefront's cache
  * rather than the CMS's.
  */
-export function publishedMediaPath(assetId: string): string {
-  return `${PUBLISHED_MEDIA_PATH_PREFIX}${encodeURIComponent(assetId)}`;
+export function publishedMediaPath(
+  assetId: string,
+  storageKey?: string,
+): string {
+  const path = `${PUBLISHED_MEDIA_PATH_PREFIX}${encodeURIComponent(assetId)}`;
+  return storageKey
+    ? `${path}?version=${encodeURIComponent(storageKey)}`
+    : path;
 }
 
 /**
@@ -65,9 +71,7 @@ export type PublishedMediaPorts = Readonly<{
    */
   listPublishedAssetKeys(
     publicationId: string,
-  ): Promise<ReadonlyMap<string, string>>;
-  /** Content type for an asset, for the response headers only. */
-  getAssetContentType(assetId: string): Promise<string | null>;
+  ): Promise<ReadonlyMap<string, ReadonlySet<string>>>;
 }>;
 
 export type PublishedMediaLookup =
@@ -83,17 +87,27 @@ export type PublishedMediaLookup =
  */
 export async function lookupPublishedMedia({
   assetId,
+  storageKey: requestedKey,
   publicationId,
   ports,
 }: {
   assetId: string;
+  storageKey?: string | null;
   publicationId: string | null | undefined;
   ports: PublishedMediaPorts;
 }): Promise<PublishedMediaLookup> {
   if (!publicationId) return { status: "not-published" };
 
   const published = await ports.listPublishedAssetKeys(publicationId);
-  const storageKey = published.get(assetId);
+  const versions = published.get(assetId);
+  // Legacy URLs may resolve only when the publication names exactly one version.
+  const storageKey = requestedKey
+    ? versions?.has(requestedKey)
+      ? requestedKey
+      : undefined
+    : versions?.size === 1
+      ? versions.values().next().value
+      : undefined;
   // Membership and bytes come from the same snapshot, so an id that was never
   // published cannot be used to probe what exists, and one that was always
   // resolves to the version that was published.
@@ -102,6 +116,6 @@ export async function lookupPublishedMedia({
   return {
     status: "found",
     storageKey,
-    contentType: await ports.getAssetContentType(assetId),
+    contentType: null, // Immutable R2 object metadata, never the mutable asset row.
   };
 }

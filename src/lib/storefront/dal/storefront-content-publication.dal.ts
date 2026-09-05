@@ -28,6 +28,9 @@ const mapItem = (
   itemType: row.itemType,
   contentId: row.contentId,
   revisionId: row.revisionId,
+  ...(typeof row.metadata?.handle === "string"
+    ? { metadata: { handle: row.metadata.handle } }
+    : {}),
 });
 
 /** Creates an immutable content revision set for a storefront release. */
@@ -45,7 +48,7 @@ const mapItem = (
  */
 function collectAssetKeys(
   document: unknown,
-  into: Map<string, string>,
+  into: Map<string, Set<string>>,
 ): void {
   const seen = new Set<unknown>();
   const visit = (node: unknown): void => {
@@ -65,7 +68,9 @@ function collectAssetKeys(
       const key = url.replace(/^\/+/, "");
       // Only a CMS delivery path names an object this may serve.
       if (assetId && key.startsWith("assets/") && !key.includes("..")) {
-        if (!into.has(assetId)) into.set(assetId, key);
+        const versions = into.get(assetId) ?? new Set<string>();
+        versions.add(key);
+        into.set(assetId, versions);
       }
     }
     for (const value of Object.values(record)) visit(value);
@@ -145,10 +150,18 @@ export const storefrontContentPublicationDal = {
         deletedAt: storefrontContentPublicationItems.deletedAt,
       })
       .from(storefrontContentPublicationItems)
-      .where(eq(storefrontContentPublicationItems.publicationId, data.publicationId));
+      .where(
+        eq(storefrontContentPublicationItems.publicationId, data.publicationId),
+      );
     for (const item of items) {
-      if (item.deletedAt !== null || !item.contentId.trim() || !item.revisionId.trim()) {
-        throw new Error("CONTENT_PUBLICATION_INVALID: Publication contains an invalid or deleted content reference.");
+      if (
+        item.deletedAt !== null ||
+        !item.contentId.trim() ||
+        !item.revisionId.trim()
+      ) {
+        throw new Error(
+          "CONTENT_PUBLICATION_INVALID: Publication contains an invalid or deleted content reference.",
+        );
       }
 
       let document: unknown;
@@ -156,32 +169,50 @@ export const storefrontContentPublicationDal = {
         const [revision] = await db
           .select({ document: storefrontThemeTemplateRevisions.document })
           .from(storefrontThemeTemplateRevisions)
-          .innerJoin(storefrontThemeTemplates, eq(storefrontThemeTemplateRevisions.templateId, storefrontThemeTemplates.id))
-          .innerJoin(storefrontThemes, eq(storefrontThemeTemplates.themeId, storefrontThemes.id))
-          .where(and(
-            eq(storefrontThemeTemplateRevisions.id, item.revisionId),
-            eq(storefrontThemeTemplateRevisions.templateId, item.contentId),
-            eq(storefrontThemes.storefrontId, data.storefrontId),
-            isNull(storefrontThemeTemplates.deletedAt),
-            isNull(storefrontThemes.deletedAt),
-          ))
+          .innerJoin(
+            storefrontThemeTemplates,
+            eq(
+              storefrontThemeTemplateRevisions.templateId,
+              storefrontThemeTemplates.id,
+            ),
+          )
+          .innerJoin(
+            storefrontThemes,
+            eq(storefrontThemeTemplates.themeId, storefrontThemes.id),
+          )
+          .where(
+            and(
+              eq(storefrontThemeTemplateRevisions.id, item.revisionId),
+              eq(storefrontThemeTemplateRevisions.templateId, item.contentId),
+              eq(storefrontThemes.storefrontId, data.storefrontId),
+              isNull(storefrontThemeTemplates.deletedAt),
+              isNull(storefrontThemes.deletedAt),
+            ),
+          )
           .limit(1);
         document = revision?.document;
       } else if (item.itemType === "page") {
         const [revision] = await db
           .select({ document: storefrontPageRevisions.document })
           .from(storefrontPageRevisions)
-          .innerJoin(storefrontPages, eq(storefrontPageRevisions.pageId, storefrontPages.id))
-          .where(and(
-            eq(storefrontPageRevisions.id, item.revisionId),
-            eq(storefrontPageRevisions.pageId, item.contentId),
-            eq(storefrontPages.storefrontId, data.storefrontId),
-            isNull(storefrontPages.deletedAt),
-          ))
+          .innerJoin(
+            storefrontPages,
+            eq(storefrontPageRevisions.pageId, storefrontPages.id),
+          )
+          .where(
+            and(
+              eq(storefrontPageRevisions.id, item.revisionId),
+              eq(storefrontPageRevisions.pageId, item.contentId),
+              eq(storefrontPages.storefrontId, data.storefrontId),
+              isNull(storefrontPages.deletedAt),
+            ),
+          )
           .limit(1);
         document = revision?.document;
       } else {
-        throw new Error("CONTENT_PUBLICATION_INVALID: Navigation publication items are not supported.");
+        throw new Error(
+          "CONTENT_PUBLICATION_INVALID: Navigation publication items are not supported.",
+        );
       }
 
       let parsedDocument = document;
@@ -189,11 +220,18 @@ export const storefrontContentPublicationDal = {
         try {
           parsedDocument = JSON.parse(parsedDocument) as unknown;
         } catch {
-          throw new Error("CONTENT_PUBLICATION_INVALID: Publication contains a missing or malformed content snapshot.");
+          throw new Error(
+            "CONTENT_PUBLICATION_INVALID: Publication contains a missing or malformed content snapshot.",
+          );
         }
       }
-      if (parsedDocument === undefined || !storefrontPageDocumentSchema.safeParse(parsedDocument).success) {
-        throw new Error("CONTENT_PUBLICATION_INVALID: Publication contains a missing or malformed content snapshot.");
+      if (
+        parsedDocument === undefined ||
+        !storefrontPageDocumentSchema.safeParse(parsedDocument).success
+      ) {
+        throw new Error(
+          "CONTENT_PUBLICATION_INVALID: Publication contains a missing or malformed content snapshot.",
+        );
       }
     }
   },
@@ -213,7 +251,10 @@ export const storefrontContentPublicationDal = {
       .from(storefrontThemeTemplateRevisions)
       .innerJoin(
         storefrontThemeTemplates,
-        eq(storefrontThemeTemplateRevisions.templateId, storefrontThemeTemplates.id),
+        eq(
+          storefrontThemeTemplateRevisions.templateId,
+          storefrontThemeTemplates.id,
+        ),
       )
       .where(
         and(
@@ -225,7 +266,9 @@ export const storefrontContentPublicationDal = {
       )
       .limit(1);
     if (!templateRevision) {
-      throw new Error("CONTENT_PUBLICATION_REVISION_NOT_FOUND: Template revision is not valid for this theme.");
+      throw new Error(
+        "CONTENT_PUBLICATION_REVISION_NOT_FOUND: Template revision is not valid for this theme.",
+      );
     }
 
     const publishedTemplates = await db
@@ -311,34 +354,40 @@ export const storefrontContentPublicationDal = {
         itemType: item.itemType,
         contentId: item.contentId,
         revisionId: item.revisionId,
+        ...("metadata" in item ? { metadata: item.metadata } : {}),
       })),
     };
   },
 
   insertStatements(publication: StorefrontContentPublicationDraft) {
     return [
-      env.DATABASE.prepare(`
+      env.DATABASE.prepare(
+        `
         INSERT INTO storefront_content_publications
           (id, storefront_id, created_by, created_at, updated_at)
         VALUES (?1, ?2, ?3, ?4, ?4)
-      `).bind(
+      `,
+      ).bind(
         publication.id,
         publication.storefrontId,
         publication.createdBy,
         publication.createdAt,
       ),
       ...publication.items.map((item) =>
-        env.DATABASE.prepare(`
+        env.DATABASE.prepare(
+          `
           INSERT INTO storefront_content_publication_items
-            (id, publication_id, item_type, content_id, revision_id, created_at, updated_at)
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-        `).bind(
+            (id, publication_id, item_type, content_id, revision_id, created_at, updated_at, metadata)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
+        `,
+        ).bind(
           item.id,
           publication.id,
           item.itemType,
           item.contentId,
           item.revisionId,
           publication.createdAt,
+          JSON.stringify(item.metadata ?? {}),
         ),
       ),
     ];
@@ -412,8 +461,8 @@ export const storefrontContentPublicationDal = {
    */
   async listPublishedAssetKeys(
     publicationId: string,
-  ): Promise<Map<string, string>> {
-    const keys = new Map<string, string>();
+  ): Promise<Map<string, Set<string>>> {
+    const keys = new Map<string, Set<string>>();
     for (const document of await this.listPublishedDocuments(publicationId)) {
       collectAssetKeys(document, keys);
     }
@@ -436,7 +485,7 @@ export const storefrontContentPublicationDal = {
 
     const wanted = new Set(assetIds);
     for (const document of await this.listPublishedDocuments()) {
-      const found = new Map<string, string>();
+      const found = new Map<string, Set<string>>();
       collectAssetKeys(document, found);
       for (const id of found.keys()) if (wanted.has(id)) referenced.add(id);
     }

@@ -10,6 +10,41 @@ import type { ThemeWorkerDeployer } from "./theme-worker-deployer.types";
  */
 const GENERATED_WORKER_CONFIG_PATH = "runtime/server/wrangler.json";
 
+/** Both activation callers restore their own CAS claim after deployment failure. */
+export async function deployWithRecovery<
+  T extends { success: boolean; message?: string },
+>({
+  deploy,
+  restore,
+}: {
+  deploy: () => Promise<T>;
+  restore: () => Promise<unknown>;
+}): Promise<T | { success: false; message: string; deploymentDrift: boolean }> {
+  let outcome: T | { success: false; message: string };
+  try {
+    outcome = await deploy();
+  } catch {
+    outcome = { success: false, message: "Deployment failed unexpectedly." };
+  }
+  if (outcome.success) return outcome as T;
+  try {
+    await restore();
+    return {
+      ...outcome,
+      success: false,
+      message: outcome.message ?? "Deployment failed.",
+      deploymentDrift: false,
+    };
+  } catch {
+    return {
+      ...outcome,
+      success: false,
+      message: outcome.message ?? "Deployment failed.",
+      deploymentDrift: true,
+    };
+  }
+}
+
 export type ReleaseActivationFailureReason =
   | "RELEASE_NOT_FOUND"
   | "BUILD_NOT_DEPLOYABLE"
@@ -181,7 +216,11 @@ export async function deployReleaseArtifact(args: {
     workerConfig,
   });
   if (!planned.success) {
-    return { success: false, reason: "PLAN_REJECTED", message: planned.message };
+    return {
+      success: false,
+      reason: "PLAN_REJECTED",
+      message: planned.message,
+    };
   }
 
   const deployed = await args.deployer.deploy({
@@ -355,47 +394,35 @@ async function activateReleaseWithDeploymentUnsynchronised(args: {
     };
   }
 
-  // 2. Deploy the claimed release.
-  const deployed = await args.deployer.deploy({
-    plan: planned.plan,
-    artifactPrefix: build.artifactPrefix,
-    storefrontId: release.storefrontId,
-    releaseId: release.id,
-    themeBuildId: build.id,
-  });
-
-  if (!deployed.success) {
-    // 3. Release the claim so D1 stops naming a release that was never
-    //    deployed. Reverting to "no active release" is not expressible through
-    //    the activation CAS, so a first-ever activation reports drift instead
-    //    of silently leaving a release named with no script behind it.
-    if (!args.expectedActiveReleaseId) {
-      return {
-        success: false,
-        reason: "DEPLOY_FAILED",
-        message: deployed.message,
-        deploymentDrift: true,
-      };
-    }
-    try {
-      await args.ports.activateRelease({
+  const deployed = await deployWithRecovery({
+    deploy: () =>
+      args.deployer.deploy({
+        plan: planned.plan,
+        artifactPrefix: build.artifactPrefix!,
+        storefrontId: release.storefrontId,
+        releaseId: release.id,
+        themeBuildId: build.id,
+      }),
+    restore: () => {
+      if (!args.expectedActiveReleaseId)
+        throw new Error("No prior activation.");
+      return args.ports.activateRelease({
         storefrontId: release.storefrontId,
         releaseId: args.expectedActiveReleaseId,
         expectedActiveReleaseId: release.id,
       });
-      return {
-        success: false,
-        reason: "DEPLOY_FAILED",
-        message: deployed.message,
-      };
-    } catch {
-      return {
-        success: false,
-        reason: "DEPLOY_FAILED",
-        message: deployed.message,
-        deploymentDrift: true,
-      };
-    }
+    },
+  });
+
+  if (!deployed.success) {
+    return {
+      success: false,
+      reason: "DEPLOY_FAILED",
+      message: deployed.message ?? "Deployment failed.",
+      ...("deploymentDrift" in deployed && deployed.deploymentDrift
+        ? { deploymentDrift: true }
+        : {}),
+    };
   }
 
   // 4. Record what the Worker now runs. Written only on success, and after the

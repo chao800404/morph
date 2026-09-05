@@ -38,11 +38,13 @@ vi.mock("cloudflare:workers", () => ({
         },
       }),
       batch: async (statements: Array<any>) => {
-        return statements.map((s) => {
-          if (typeof s.run === "function") return s.run();
-          if (typeof s.all === "function") return s.all();
-          return {};
-        });
+        return sqlite.transaction(() =>
+          statements.map((s) => {
+            if (typeof s.run === "function") return s.run();
+            if (typeof s.all === "function") return s.all();
+            return {};
+          }),
+        )();
       },
     },
   },
@@ -214,6 +216,74 @@ afterEach(() => {
 });
 
 describe("storefront theme DAL", () => {
+  it("persists a Page handle snapshot and preserves it after a draft rename", async () => {
+    sqlite.exec(`
+      CREATE TABLE storefront_page_revisions (id text, page_id text, document text);
+      INSERT INTO storefront_theme_templates (id,theme_id,type,name,document,created_at,updated_at)
+        VALUES ('t','theme-a','index','Home','{"version":1,"sections":[]}','now','now');
+      INSERT INTO storefront_theme_template_revisions (id,template_id,version,document,created_at)
+        VALUES ('tr','t',1,'{"version":1,"sections":[]}','now');
+      INSERT INTO storefront_pages (id,storefront_id,title,handle,status,published_revision_id,created_by,created_at,updated_at)
+        VALUES ('p','storefront-a','About','original','published','pr','u','now','now');
+      INSERT INTO storefront_page_revisions VALUES ('pr','p','{"version":1,"sections":[]}');
+    `);
+    const publication = await storefrontContentPublicationDal.createForTheme({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "t",
+      templateRevisionId: "tr",
+    });
+    const page = publication.items.find((item) => item.itemType === "page");
+    expect(page?.metadata).toEqual({ handle: "original" });
+    sqlite.exec("UPDATE storefront_pages SET handle = 'renamed'");
+    expect(
+      await storefrontContentPublicationDal.getPublishedPageDocument({
+        publicationId: publication.id,
+        handle: "original",
+      }),
+    ).not.toBeNull();
+    expect(
+      await storefrontContentPublicationDal.getPublishedPageDocument({
+        publicationId: publication.id,
+        handle: "renamed",
+      }),
+    ).toBeNull();
+  });
+
+  it("restores only its own failed publish, including first-publication null state", async () => {
+    sqlite.exec(`INSERT INTO storefront_theme_templates (id,theme_id,type,name,document,created_at,updated_at)
+      VALUES ('t','theme-a','index','Home','{}','now','now');
+      UPDATE storefronts SET active_release_id = 'failed';`);
+    const args = {
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "t",
+      releaseId: "failed",
+      releaseGeneration: 1,
+      previousActiveReleaseId: null,
+      previousPublishedRevisionId: null,
+      previousPublishedSourceRevisionId: null,
+    };
+    await storefrontThemeDal.restoreFailedPublish(args);
+    expect(
+      (
+        sqlite
+          .prepare("SELECT active_release_id id FROM storefronts")
+          .get() as { id: null }
+      ).id,
+    ).toBeNull();
+    sqlite.exec("UPDATE storefronts SET active_release_id = 'winner'");
+    await expect(
+      storefrontThemeDal.restoreFailedPublish(args),
+    ).rejects.toThrow();
+    expect(
+      (
+        sqlite
+          .prepare("SELECT active_release_id id FROM storefronts")
+          .get() as { id: string }
+      ).id,
+    ).toBe("winner");
+  });
   it("does not return a theme owned by another storefront", async () => {
     await expect(
       storefrontThemeDal.findEditorContext("storefront-a", "theme-b"),
@@ -1320,7 +1390,9 @@ describe("co-located content field declarations", () => {
       MANIFEST_WITHOUT_FIELDS,
     );
     // `subtitle` was stored before the 5-character limit existed.
-    seedSection('{"headline":"Original","subtitle":"far too long for the limit"}');
+    seedSection(
+      '{"headline":"Original","subtitle":"far too long for the limit"}',
+    );
 
     const result = await storefrontThemeDal.updateSectionProps({
       storefrontId: "storefront-a",
