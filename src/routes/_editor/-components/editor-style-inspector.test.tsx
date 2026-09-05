@@ -611,6 +611,43 @@ describe("EditorStyleInspector selection content", () => {
       expect(sent?.heading).toBe("Changed elsewhere");
     });
 
+    // `Object.is` compares references, and every refetch parses fresh JSON, so
+    // an array prop was always read as "the user changed it" and never rebased
+    // — a repeater kept a stale local copy over whatever the server had.
+    it("rebases an array field the server changed", () => {
+      const onPropsChange = vi.fn();
+      const view = (props: Record<string, unknown>) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", props)}
+          selection={sectionSelection}
+          onPropsChange={onPropsChange}
+        />
+      );
+
+      const { rerender } = render(
+        view({ heading: "Heading", items: [{ title: "Row one" }] }),
+      );
+
+      // Structurally identical but a new reference, as a refetch produces.
+      rerender(view({ heading: "Heading", items: [{ title: "Row one" }] }));
+
+      // Then the server actually changes it.
+      rerender(
+        view({
+          heading: "Heading",
+          items: [{ title: "Row one" }, { title: "Row two" }],
+        }),
+      );
+
+      const field = screen.getByDisplayValue("Heading");
+      fireEvent.change(field, { target: { value: "Edited heading" } });
+      fireEvent.blur(field);
+
+      const sent = lastSent(onPropsChange);
+      expect(sent?.items).toEqual([{ title: "Row one" }, { title: "Row two" }]);
+    });
+
     it("takes the new section wholesale when the section itself changes", () => {
       const onPropsChange = vi.fn();
       const { rerender } = render(

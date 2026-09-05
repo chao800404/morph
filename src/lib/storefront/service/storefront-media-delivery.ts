@@ -54,13 +54,20 @@ export function parsePublishedMediaPath(pathname: string): string | null {
 }
 
 export type PublishedMediaPorts = Readonly<{
-  /** Asset ids the given publication's content refers to. */
-  listPublishedAssetIds(publicationId: string): Promise<ReadonlySet<string>>;
-  /** Storage key and type for an asset, or `null` if it is gone. */
-  getAssetDelivery(assetId: string): Promise<{
-    storageKey: string;
-    contentType: string | null;
-  } | null>;
+  /**
+   * The storage key each asset had *when the release was published*.
+   *
+   * Keyed by asset id, but the value is the published snapshot rather than the
+   * asset's current state. Resolving the live asset instead meant editing an
+   * image in the library changed what a published storefront served, with no
+   * publish and no way back: a rollback restores the document, and the document
+   * pointed at whatever the asset had become.
+   */
+  listPublishedAssetKeys(
+    publicationId: string,
+  ): Promise<ReadonlyMap<string, string>>;
+  /** Content type for an asset, for the response headers only. */
+  getAssetContentType(assetId: string): Promise<string | null>;
 }>;
 
 export type PublishedMediaLookup =
@@ -85,15 +92,16 @@ export async function lookupPublishedMedia({
 }): Promise<PublishedMediaLookup> {
   if (!publicationId) return { status: "not-published" };
 
-  const published = await ports.listPublishedAssetIds(publicationId);
-  if (!published.has(assetId)) return { status: "not-published" };
-
-  const asset = await ports.getAssetDelivery(assetId);
-  if (!asset) return { status: "missing" };
+  const published = await ports.listPublishedAssetKeys(publicationId);
+  const storageKey = published.get(assetId);
+  // Membership and bytes come from the same snapshot, so an id that was never
+  // published cannot be used to probe what exists, and one that was always
+  // resolves to the version that was published.
+  if (!storageKey) return { status: "not-published" };
 
   return {
     status: "found",
-    storageKey: asset.storageKey,
-    contentType: asset.contentType,
+    storageKey,
+    contentType: await ports.getAssetContentType(assetId),
   };
 }

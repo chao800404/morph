@@ -531,6 +531,41 @@ export function resolveStyleInspectorClassName(
   return "";
 }
 
+/**
+ * Whether two content values are the same as far as an edit is concerned.
+ *
+ * Reference equality is wrong here. Every refetch parses fresh JSON, so an
+ * object or array prop is a new reference with identical contents — and reading
+ * that as "the user changed it" meant array fields such as a repeater's rows
+ * were *never* rebased, keeping a stale local copy over whatever the server
+ * had. Scalars were fine, which is why it looked like it worked.
+ */
+function sameContentValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null) return false;
+  if (typeof a !== "object" || typeof b !== "object") return false;
+
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return (
+      a.length === b.length &&
+      a.every((item, index) => sameContentValue(item, b[index]))
+    );
+  }
+
+  const aKeys = Object.keys(a as Record<string, unknown>);
+  const bKeys = Object.keys(b as Record<string, unknown>);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(b, key) &&
+      sameContentValue(
+        (a as Record<string, unknown>)[key],
+        (b as Record<string, unknown>)[key],
+      ),
+  );
+}
+
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   themeFiles,
@@ -621,8 +656,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     const local = localPropsRef.current;
     const rebased: Record<string, any> = { ...incoming };
     for (const key of Object.keys(local)) {
-      const isLocallyEdited = !Object.is(local[key], baseline[key]);
-      if (isLocallyEdited) rebased[key] = local[key];
+      if (!sameContentValue(local[key], baseline[key])) rebased[key] = local[key];
     }
 
     localPropsRef.current = rebased;

@@ -12,6 +12,74 @@ const RESERVATION_TTL_MS = 15 * 60 * 1000;
 const keyOf = (inventoryItemId: string, locationId: string) =>
   `${inventoryItemId}:${locationId}`;
 
+/**
+ * Releases one reservation's quantity, exactly once.
+ *
+ * Every path that gives stock back goes through here. Releasing is
+ * claim-then-decrement, and the claim is the delete: whoever wins it owns the
+ * decrement, and everyone else does nothing. Splitting that across entry points
+ * is what made the same reservation releasable twice — the expiry sweep and a
+ * line release could each read the row while it was still undeleted and each
+ * subtract its quantity, reporting stock that is genuinely held.
+ *
+ * `max(0, ...)` does not help: it stops the total going negative, which is a
+ * different problem from releasing the same hold twice.
+ *
+ * `requireExpiredBefore` is what keeps the sweep from deleting a reservation
+ * that was renewed between the read and the claim — the claim has to re-assert
+ * the reason it was selected, not just that the row still exists.
+ */
+async function claimAndRelease(
+  db: Awaited<ReturnType<typeof getDb>>,
+  reservation: {
+    id: string;
+    inventoryItemId: string;
+    locationId: string;
+    quantity: number;
+  },
+  now: string,
+  requireExpiredBefore?: string,
+): Promise<boolean> {
+  const claim = await env.DATABASE.prepare(
+    `
+    UPDATE reservation_items
+    SET deleted_at = ?1, updated_at = ?1
+    WHERE id = ?2
+      AND deleted_at IS NULL
+      AND (?3 IS NULL OR expires_at < ?3)
+  `,
+  )
+    .bind(now, reservation.id, requireExpiredBefore ?? null)
+    .run();
+  if ((claim.meta?.changes ?? 0) === 0) return false;
+
+  try {
+    await db
+      .update(inventoryLevels)
+      .set({
+        reservedQuantity: sql`max(0, ${inventoryLevels.reservedQuantity} - ${reservation.quantity})`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(inventoryLevels.inventoryItemId, reservation.inventoryItemId),
+          eq(inventoryLevels.locationId, reservation.locationId),
+          isNull(inventoryLevels.deletedAt),
+        ),
+      );
+    return true;
+  } catch (error) {
+    // The claim already removed the row, so nothing would ever retry this
+    // decrement. Put it back and let the next sweep or release own it.
+    await env.DATABASE.prepare(
+      `UPDATE reservation_items SET deleted_at = NULL, updated_at = ?1 WHERE id = ?2`,
+    )
+      .bind(now, reservation.id)
+      .run();
+    throw error;
+  }
+}
+
 export const cartReservationDal = {
   async availableForVariant(
     variantId: string,
@@ -90,42 +158,9 @@ export const cartReservationDal = {
         ),
       );
     for (const reservation of expired) {
-      // Claim the reservation before releasing its quantity, not after.
-      //
-      // Two carts syncing at once both listed this row while it was still
-      // undeleted, and each subtracted its quantity: the same reservation was
-      // released twice, eating into other reservations' counts and reporting
-      // stock that is actually held. `max(0, ...)` only stops the total going
-      // negative, which is not the same thing.
-      //
-      // The delete is conditional on the row still being undeleted, so exactly
-      // one caller can win it. Claiming first also means a crash between the
-      // two statements under-releases rather than over-releases — stock stays
-      // held until the next sweep, which is the safe direction to fail.
-      const claim = await env.DATABASE.prepare(
-        `
-        UPDATE reservation_items
-        SET deleted_at = ?1, updated_at = ?1
-        WHERE id = ?2 AND deleted_at IS NULL
-      `,
-      )
-        .bind(now.toISOString(), reservation.id)
-        .run();
-      if ((claim.meta?.changes ?? 0) === 0) continue;
-
-      await db
-        .update(inventoryLevels)
-        .set({
-          reservedQuantity: sql`max(0, ${inventoryLevels.reservedQuantity} - ${reservation.quantity})`,
-          updatedAt: now.toISOString(),
-        })
-        .where(
-          and(
-            eq(inventoryLevels.inventoryItemId, reservation.inventoryItemId),
-            eq(inventoryLevels.locationId, reservation.locationId),
-            isNull(inventoryLevels.deletedAt),
-          ),
-        );
+      // Re-asserts "still expired" as part of the claim: a renewal between the
+      // read above and this write must not be swept away.
+      await claimAndRelease(db, reservation, now.toISOString(), now.toISOString());
     }
   },
 
@@ -336,28 +371,10 @@ export const cartReservationDal = {
         ),
       );
     const now = new Date().toISOString();
-    for (const reservation of reservations)
-      await db
-        .update(inventoryLevels)
-        .set({
-          reservedQuantity: sql`max(0, ${inventoryLevels.reservedQuantity} - ${reservation.quantity})`,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(inventoryLevels.inventoryItemId, reservation.inventoryItemId),
-            eq(inventoryLevels.locationId, reservation.locationId),
-          ),
-        );
-    if (reservations.length)
-      await db
-        .update(reservationItems)
-        .set({ deletedAt: now, updatedAt: now })
-        .where(
-          and(
-            eq(reservationItems.lineItemId, lineItemId),
-            isNull(reservationItems.deletedAt),
-          ),
-        );
+    // Same claim as the expiry sweep. Decrementing here and deleting afterwards
+    // let this path and the sweep each release the same reservation.
+    for (const reservation of reservations) {
+      await claimAndRelease(db, reservation, now);
+    }
   },
 };

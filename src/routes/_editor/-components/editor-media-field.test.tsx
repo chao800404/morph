@@ -84,7 +84,10 @@ describe("EditorMediaField failure states (MEDIA-03)", () => {
   // Clear used to always emit an `external` empty value, which a field
   // declared asset-only then rejected — the control offered an action its own
   // rules refused.
-  it("clears in a source the field actually allows", () => {
+  // One canonical empty for every field. The asset-shaped empty this used to
+  // send was rejected by the server for having no UUID, so an asset-only field
+  // still could not be cleared.
+  it("clears an asset-only field with the canonical empty value", () => {
     const onChange = vi.fn();
     render(
       <EditorMediaField
@@ -103,9 +106,8 @@ describe("EditorMediaField failure states (MEDIA-03)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /clear/i }));
     expect(onChange).toHaveBeenCalledWith({
-      source: "asset",
+      source: "external",
       mediaType: "image",
-      assetId: "",
       url: "",
     });
   });

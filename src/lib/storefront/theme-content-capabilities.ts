@@ -468,6 +468,13 @@ function assertThemeMediaFieldValue(
     invalid("bad-media-source");
   }
   if (media.mediaType !== mediaType) invalid("wrong-media-type");
+
+  // Empty means "no media", which every field allows however it is sourced.
+  // Clearing an asset-only field had no expressible value: an empty external
+  // value was refused for being external, and an empty asset value for having
+  // no id, so the Clear button offered something the field could never accept.
+  if (media.url === "" && !media.assetId) return;
+
   if (media.source === "external" && sources.allowExternal === false) {
     invalid("external-media-disabled");
   }

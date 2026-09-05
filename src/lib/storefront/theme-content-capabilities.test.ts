@@ -420,3 +420,59 @@ describe("parseRejectedContentField", () => {
     expect(parseRejectedContentField("SOMETHING_ELSE")).toBeNull();
   });
 });
+
+describe("clearing a media field", () => {
+  const assetOnly = {
+    fields: {
+      hero: {
+        type: "image" as const,
+        label: "Hero",
+        allowExternal: false,
+      },
+    },
+  } as never;
+
+  // Empty is "no media", which every field allows however it is sourced. The
+  // asset-only field previously had no expressible empty at all: an empty
+  // external value was refused for being external, an empty asset value for
+  // having no UUID.
+  it("accepts the canonical empty on an asset-only field", () => {
+    expect(() =>
+      filterThemeContentProps(
+        { hero: { source: "external", mediaType: "image", url: "" } },
+        assetOnly,
+      ),
+    ).not.toThrow();
+  });
+
+  it("still refuses a real external URL on an asset-only field", () => {
+    expect(() =>
+      filterThemeContentProps(
+        {
+          hero: {
+            source: "external",
+            mediaType: "image",
+            url: "https://cdn.example.com/a.png",
+          },
+        },
+        assetOnly,
+      ),
+    ).toThrow("external-media-disabled");
+  });
+
+  it("still refuses an asset reference with no usable id", () => {
+    expect(() =>
+      filterThemeContentProps(
+        {
+          hero: {
+            source: "asset",
+            mediaType: "image",
+            assetId: "not-a-uuid",
+            url: "/assets/a.png",
+          },
+        },
+        assetOnly,
+      ),
+    ).toThrow("bad-asset-id");
+  });
+});

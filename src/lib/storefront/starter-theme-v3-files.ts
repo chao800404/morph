@@ -456,6 +456,39 @@ function HomeRoute() {
  * Document could never reach the component. Kept verbatim so an untouched copy
  * can be upgraded and an edited one left alone.
  */
+/**
+ * The slot-bound home route before sections could be hidden.
+ *
+ * Renders every section unconditionally, so hiding one in the editor still
+ * published the component with its own defaults. Listed here so an existing
+ * workspace on this exact source is upgraded — matching only the older legacy
+ * shapes left every theme created since then stuck with it.
+ */
+export const LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import CategoryShowcase from "../components/CategoryShowcase";
+import EditorialIntro from "../components/EditorialIntro";
+import Hero from "../components/Hero";
+import ImageWithText from "../components/ImageWithText";
+import Newsletter from "../components/Newsletter";
+import Principles from "../components/Principles";
+
+export const Route = createFileRoute("/")({ component: HomeRoute });
+
+function HomeRoute() {
+  return (
+    <main>
+      <Hero {...content("starter-hero")} />
+      <EditorialIntro {...content("starter-introduction")} />
+      <CategoryShowcase {...content("starter-categories")} />
+      <ImageWithText {...content("starter-story")} />
+      <Principles {...content("starter-principles")} />
+      <Newsletter {...content("starter-newsletter")} />
+    </main>
+  );
+}
+`;
+
 export const LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
 import CategoryShowcase from "../components/CategoryShowcase";
 import EditorialIntro from "../components/EditorialIntro";

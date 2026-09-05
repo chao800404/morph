@@ -4,6 +4,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
+  LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE,
   LEGACY_STARTER_THEME_ROOT_ROUTE_CONTENTLESS_SOURCE,
   LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE,
@@ -623,7 +624,11 @@ export function createStarterThemeWorkspaceUpgrade(
       existingHomeRoute?.content ===
         LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE ||
       existingHomeRoute?.content ===
-        LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE
+        LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE ||
+      // Slot-bound but always visible: hiding a section in the editor still
+      // published the component with its own defaults.
+      existingHomeRoute?.content ===
+        LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE
     ) {
       upgrades.push({
         path: existingHomeRoute.path,

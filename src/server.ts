@@ -83,16 +83,13 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
     // visitors. The CMS `/assets` route needs a session, which a storefront
     // visitor does not have.
     mediaPorts: {
-      listPublishedAssetIds: (publicationId) =>
-        storefrontContentPublicationDal.listPublishedAssetIds(publicationId),
-      getAssetDelivery: async (assetId) => {
+      listPublishedAssetKeys: (publicationId) =>
+        storefrontContentPublicationDal.listPublishedAssetKeys(publicationId),
+      getAssetContentType: async (assetId) => {
         const { assetDal } = await import("@/lib/asset/dal/asset.dal");
-        const asset = await assetDal.findById(assetId);
-        // The stored URL is the CMS delivery path; its R2 key is that path
-        // without the leading slash, the same derivation `/assets` uses.
-        const key = asset?.url?.replace(/^\/+/, "") ?? "";
-        if (!key.startsWith("assets/") || key.includes("..")) return null;
-        return { storageKey: key, contentType: asset?.mimeType ?? null };
+        // Only the response header. The bytes come from the published
+        // snapshot, so editing the asset cannot change what is served.
+        return (await assetDal.findById(assetId))?.mimeType ?? null;
       },
     },
   });

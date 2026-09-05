@@ -15,7 +15,7 @@ import type {
   StorefrontContentPublicationDTO,
   StorefrontContentPublicationItemDTO,
 } from "@/lib/storefront/dto/storefront-content-publication.dto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 
 export type StorefrontContentPublicationDraft = StorefrontContentPublicationDTO;
@@ -32,13 +32,21 @@ const mapItem = (
 
 /** Creates an immutable content revision set for a storefront release. */
 /**
- * Collects `assetId` from every media reference in a published document.
+ * Collects each published media reference as `assetId -> storage key`.
+ *
+ * The key comes from the URL stored in the document, which is the one the
+ * asset had when the release was published. Reading the asset's current URL
+ * instead let an edit in the library change a live storefront with no publish,
+ * and left a rollback with no way to reach the bytes it needed.
  *
  * Walks the document rather than reading known field names: media can sit at
  * any depth, including inside array rows, and a walker cannot fall out of step
  * with the field types a Theme declares.
  */
-function collectAssetIds(document: unknown, into: Set<string>): void {
+function collectAssetKeys(
+  document: unknown,
+  into: Map<string, string>,
+): void {
   const seen = new Set<unknown>();
   const visit = (node: unknown): void => {
     if (!node || typeof node !== "object") return;
@@ -53,7 +61,12 @@ function collectAssetIds(document: unknown, into: Set<string>): void {
     const record = node as Record<string, unknown>;
     if (record.source === "asset" && typeof record.assetId === "string") {
       const assetId = record.assetId.trim();
-      if (assetId) into.add(assetId);
+      const url = typeof record.url === "string" ? record.url : "";
+      const key = url.replace(/^\/+/, "");
+      // Only a CMS delivery path names an object this may serve.
+      if (assetId && key.startsWith("assets/") && !key.includes("..")) {
+        if (!into.has(assetId)) into.set(assetId, key);
+      }
     }
     for (const value of Object.values(record)) visit(value);
   };
@@ -232,7 +245,11 @@ export const storefrontContentPublicationDal = {
     // template is replaced with the revision being published; all other
     // templates/pages remain exactly as they were in this release.
     const publishedPages = await db
-      .select({ id: storefrontPages.id, revisionId: storefrontPages.publishedRevisionId })
+      .select({
+        id: storefrontPages.id,
+        revisionId: storefrontPages.publishedRevisionId,
+        handle: storefrontPages.handle,
+      })
       .from(storefrontPages)
       .where(
         and(
@@ -262,13 +279,21 @@ export const storefrontContentPublicationDal = {
             Boolean(template.revisionId),
         ),
       ...publishedPages
-        .filter((page): page is { id: string; revisionId: string } => Boolean(page.revisionId))
+        .filter(
+          (page): page is { id: string; revisionId: string; handle: string } =>
+            Boolean(page.revisionId),
+        )
         .map((page) => ({
           id: crypto.randomUUID(),
           publicationId,
           itemType: "page" as const,
           contentId: page.id,
           revisionId: page.revisionId,
+          // The handle at publish time. A Page's handle is editable, and the
+          // public runtime resolved a URL against the *current* one, so
+          // renaming a draft silently changed which content an already
+          // published release served at that address.
+          metadata: { handle: page.handle },
           createdAt: now,
           updatedAt: now,
         })),
@@ -333,46 +358,66 @@ export const storefrontContentPublicationDal = {
   },
 
   /**
-   * Published document for one template type inside a ContentPublication.
+   * Every published document in a publication, template and Page alike.
    *
-   * Scoped to the publication the active release points at, so a draft revision
-   * can never reach the public runtime. Returns `null` when the release
-   * publishes nothing for that template, which the caller treats as "no
-   * authored content" rather than an error.
-   */
-  /**
-   * Asset ids the given publication's documents refer to.
+   * Scanning only template revisions left media that a Page referenced outside
+   * the published set: those images 404'd for visitors and were not protected
+   * from deletion, even though a live page was serving them.
    *
-   * This is the authorisation set for public media delivery: a visitor may
-   * read the media a release actually published, and nothing else in the
-   * library. Derived from the published documents rather than a side table so
-   * it cannot drift from what is being served — a reference that is not in the
-   * content is not published, whatever any index says.
+   * Omitting `publicationId` scans every live publication, which is what a
+   * deletion check needs.
    */
-  async listPublishedAssetIds(publicationId: string): Promise<Set<string>> {
+  async listPublishedDocuments(publicationId?: string): Promise<unknown[]> {
     const db = await getDb();
-    const rows = await db
-      .select({ document: storefrontThemeTemplateRevisions.document })
-      .from(storefrontContentPublicationItems)
-      .innerJoin(
-        storefrontThemeTemplateRevisions,
-        eq(
-          storefrontContentPublicationItems.revisionId,
-          storefrontThemeTemplateRevisions.id,
-        ),
-      )
-      .where(
-        and(
+    const scope = publicationId
+      ? and(
           eq(storefrontContentPublicationItems.publicationId, publicationId),
           isNull(storefrontContentPublicationItems.deletedAt),
-        ),
-      );
+        )
+      : isNull(storefrontContentPublicationItems.deletedAt);
 
-    const assetIds = new Set<string>();
-    for (const row of rows) {
-      collectAssetIds(row.document, assetIds);
+    const [templates, pages] = await Promise.all([
+      db
+        .select({ document: storefrontThemeTemplateRevisions.document })
+        .from(storefrontContentPublicationItems)
+        .innerJoin(
+          storefrontThemeTemplateRevisions,
+          eq(
+            storefrontContentPublicationItems.revisionId,
+            storefrontThemeTemplateRevisions.id,
+          ),
+        )
+        .where(scope),
+      db
+        .select({ document: storefrontPageRevisions.document })
+        .from(storefrontContentPublicationItems)
+        .innerJoin(
+          storefrontPageRevisions,
+          eq(
+            storefrontContentPublicationItems.revisionId,
+            storefrontPageRevisions.id,
+          ),
+        )
+        .where(scope),
+    ]);
+
+    return [...templates, ...pages].map((row) => row.document);
+  },
+
+  /**
+   * Asset id to the storage key it had when this publication was made.
+   *
+   * The key is both the authorisation and the bytes: a visitor may read exactly
+   * what the live release published, at the version it published.
+   */
+  async listPublishedAssetKeys(
+    publicationId: string,
+  ): Promise<Map<string, string>> {
+    const keys = new Map<string, string>();
+    for (const document of await this.listPublishedDocuments(publicationId)) {
+      collectAssetKeys(document, keys);
     }
-    return assetIds;
+    return keys;
   },
 
   /**
@@ -389,37 +434,15 @@ export const storefrontContentPublicationDal = {
     const referenced = new Set<string>();
     if (assetIds.length === 0) return referenced;
 
-    const db = await getDb();
-    const rows = await db
-      .select({ document: storefrontThemeTemplateRevisions.document })
-      .from(storefrontContentPublicationItems)
-      .innerJoin(
-        storefrontThemeTemplateRevisions,
-        eq(
-          storefrontContentPublicationItems.revisionId,
-          storefrontThemeTemplateRevisions.id,
-        ),
-      )
-      .where(isNull(storefrontContentPublicationItems.deletedAt));
-
     const wanted = new Set(assetIds);
-    for (const row of rows) {
-      const found = new Set<string>();
-      collectAssetIds(row.document, found);
-      for (const id of found) if (wanted.has(id)) referenced.add(id);
+    for (const document of await this.listPublishedDocuments()) {
+      const found = new Map<string, string>();
+      collectAssetKeys(document, found);
+      for (const id of found.keys()) if (wanted.has(id)) referenced.add(id);
     }
     return referenced;
   },
 
-  /**
-   * The published document for one Page, found by its handle.
-   *
-   * Publications already carry page items, but the content endpoint could only
-   * ask for a *template type*, so a published Page was unreachable and every
-   * request for it fell through to empty slots. Two different pages resolved
-   * identically, which is the same answer as "no content" and therefore
-   * indistinguishable from a route the Document never described.
-   */
   async getPublishedPageDocument(data: {
     publicationId: string;
     handle: string;
@@ -447,9 +470,20 @@ export const storefrontContentPublicationDal = {
               data.publicationId,
             ),
             eq(storefrontContentPublicationItems.itemType, "page"),
-            eq(storefrontPages.handle, data.handle),
             isNull(storefrontPages.deletedAt),
             isNull(storefrontContentPublicationItems.deletedAt),
+            or(
+              // The handle this release was published under.
+              sql`json_extract(${storefrontContentPublicationItems.metadata}, '$.handle') = ${data.handle}`,
+              // Publications made before the handle was recorded have no
+              // snapshot to match, so they fall back to the live handle. New
+              // ones do not, which is what stops a draft rename from moving
+              // published content.
+              and(
+                sql`json_extract(${storefrontContentPublicationItems.metadata}, '$.handle') IS NULL`,
+                eq(storefrontPages.handle, data.handle),
+              ),
+            ),
           ),
         )
         .limit(1),
@@ -457,6 +491,14 @@ export const storefrontContentPublicationDal = {
     return row?.document ?? null;
   },
 
+  /**
+   * Published document for one template type inside a ContentPublication.
+   *
+   * Scoped to the publication the active release points at, so a draft revision
+   * can never reach the public runtime. Returns `null` when the release
+   * publishes nothing for that template, which the caller treats as "no
+   * authored content" rather than an error.
+   */
   async getPublishedTemplateDocument(data: {
     publicationId: string;
     templateType: StorefrontTemplateType;

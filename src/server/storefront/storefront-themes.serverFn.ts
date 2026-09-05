@@ -70,7 +70,9 @@ function parseEditorPanelWidths(cookieHeader: string | null | undefined) {
 }
 
 export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(storefrontThemeEditorInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(storefrontThemeEditorInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context: authContext }) => {
     // A rejected precondition is a client error the caller already
@@ -241,126 +243,138 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
     if (!input.success) return input;
     const data = input.data;
     try {
-      const result = await storefrontThemeDal.publishTemplate({
-        ...data,
-        createdBy: context.user.id,
-      });
-      if (!result) {
-        return fail("Theme template or draft revision not found", {
-          error: "NOT_FOUND",
-        });
-      }
-
-      if (result.unchanged) {
-        return ok("Theme is already published", result);
-      }
-
-      // D1 activation is written atomically by publishTemplate, but the Theme
-      // Worker is separate state. Deploy the release that was just activated,
-      // and report a failure explicitly: silently returning success would leave
-      // the storefront serving the previous build while the dashboard reports
-      // the new release as live.
+      // The lease covers the whole sequence, not just the deploy.
       //
-      // Concurrent publishes cannot race here — `expectedReleaseGeneration`
-      // already rejects the second one before it reaches this point.
-      if (result.releaseId) {
-        // A publish that only changed content reuses the build that is already
-        // live, so redeploying uploads bytes the Worker already serves — a
-        // container start and a wrangler run for a text edit. Skipped only when
-        // a previous deployment of exactly this build is recorded as having
-        // succeeded; every uncertain case still deploys.
-        if (
-          canSkipThemeWorkerDeployment({
-            deployedThemeBuildId: result.previousDeployedThemeBuildId,
-            releaseThemeBuildId: result.themeBuildId,
-          })
-        ) {
-          await storefrontReleaseDal.recordDeployedThemeBuild({
-            storefrontId: data.storefrontId,
-            releaseId: result.releaseId,
-            themeBuildId: result.themeBuildId,
+      // `publishTemplate` moves `active_release_id` before anything is sent to
+      // the Worker. Taking the lease afterwards meant a publish that lost the
+      // race had already changed the pointer and then reported BUSY, leaving
+      // the storefront naming release B while the Worker still ran A — the
+      // exact drift the lease exists to prevent, reached through the door it
+      // was not guarding.
+      const held = await withDeploymentLease({
+        storefrontId: data.storefrontId,
+        owner: `publish:${crypto.randomUUID()}`,
+        ports: {
+          acquire: (leaseArgs) =>
+            storefrontReleaseDal.acquireDeploymentLease(leaseArgs),
+          release: (leaseArgs) =>
+            storefrontReleaseDal.releaseDeploymentLease(leaseArgs),
+        },
+        operation: async () => {
+          const result = await storefrontThemeDal.publishTemplate({
+            ...data,
+            createdBy: context.user.id,
           });
-          await queueReleasePreviewCapture(data.storefrontId, result.releaseId);
-          return ok("Theme published", result);
-        }
+          if (!result) {
+            return fail("Theme template or draft revision not found", {
+              error: "NOT_FOUND",
+            });
+          }
 
-        // Narrowed once, here: `releaseId` is nullable, and a deploy without
-        // one has nothing to send. Reading it inside the lease callback below
-        // loses the narrowing, and defaulting it would deploy the wrong thing.
-        const releaseId = result.releaseId;
-        if (!releaseId) {
-          return fail(
-            "Theme published, but no release was created to deploy.",
-            { error: "RELEASE_DEPLOYMENT_FAILED", ...result },
-          );
-        }
+          if (result.unchanged) {
+            return ok("Theme is already published", result);
+          }
 
-        // Under the same storefront-wide lease as release activation.
-        // Publish reaches the Theme Worker through its own path, so guarding
-        // only the activation route left a publish and a rollback able to
-        // deploy at once — the case the lease exists to prevent.
-        const held = await withDeploymentLease({
-          storefrontId: data.storefrontId,
-          owner: `publish:${releaseId}:${crypto.randomUUID()}`,
-          ports: {
-            acquire: (leaseArgs) =>
-              storefrontReleaseDal.acquireDeploymentLease(leaseArgs),
-            release: (leaseArgs) =>
-              storefrontReleaseDal.releaseDeploymentLease(leaseArgs),
-          },
-          operation: () =>
-            deployReleaseArtifact({
-          releaseId,
-          deployer: createServerThemeWorkerDeployer(),
-          r2Bucket: (cloudflareEnv as unknown as { R2_BUCKET?: unknown })
-            .R2_BUCKET as never,
-          ports: {
-            getRelease: async (releaseId) => {
-              const release = await storefrontReleaseDal.getById(
+          // D1 activation is written atomically by publishTemplate, but the Theme
+          // Worker is separate state. Deploy the release that was just activated,
+          // and report a failure explicitly: silently returning success would leave
+          // the storefront serving the previous build while the dashboard reports
+          // the new release as live.
+          //
+          // Concurrent publishes cannot race here — `expectedReleaseGeneration`
+          // already rejects the second one before it reaches this point.
+          if (result.releaseId) {
+            // A publish that only changed content reuses the build that is already
+            // live, so redeploying uploads bytes the Worker already serves — a
+            // container start and a wrangler run for a text edit. Skipped only when
+            // a previous deployment of exactly this build is recorded as having
+            // succeeded; every uncertain case still deploys.
+            if (
+              canSkipThemeWorkerDeployment({
+                deployedThemeBuildId: result.previousDeployedThemeBuildId,
+                releaseThemeBuildId: result.themeBuildId,
+              })
+            ) {
+              await storefrontReleaseDal.recordDeployedThemeBuild({
+                storefrontId: data.storefrontId,
+                releaseId: result.releaseId,
+                themeBuildId: result.themeBuildId,
+              });
+              await queueReleasePreviewCapture(
                 data.storefrontId,
-                releaseId,
+                result.releaseId,
               );
-              return release
-                ? {
-                    id: release.id,
-                    storefrontId: data.storefrontId,
-                    themeId: release.themeId,
-                    themeBuildId: release.themeBuildId,
-                  }
-                : null;
-            },
-            getBuild: (buildId) =>
-              storefrontThemeBuildDal.getBuildById(buildId),
-          },
-            }),
-        });
+              return ok("Theme published", result);
+            }
 
-        if (!held.acquired) {
-          return fail(
-            "Theme published, but the storefront was not updated: another deployment is in progress. Retry once it finishes.",
-            { error: "RELEASE_DEPLOYMENT_BUSY", ...result },
-          );
-        }
-        const deployed = held.value;
+            // Narrowed once, here: `releaseId` is nullable, and a deploy without
+            // one has nothing to send. Reading it inside the lease callback below
+            // loses the narrowing, and defaulting it would deploy the wrong thing.
+            const releaseId = result.releaseId;
+            if (!releaseId) {
+              return fail(
+                "Theme published, but no release was created to deploy.",
+                { error: "RELEASE_DEPLOYMENT_FAILED", ...result },
+              );
+            }
 
-        if (!deployed.success) {
-          return fail(
-            `Theme published, but the storefront was not updated: ${deployed.message} The site still serves the previous build — retry publishing once the cause is resolved.`,
-            { error: "RELEASE_DEPLOYMENT_FAILED", ...result },
-          );
-        }
+            const deployed = await deployReleaseArtifact({
+              releaseId,
+              deployer: createServerThemeWorkerDeployer(),
+              r2Bucket: (cloudflareEnv as unknown as { R2_BUCKET?: unknown })
+                .R2_BUCKET as never,
+              ports: {
+                getRelease: async (releaseId) => {
+                  const release = await storefrontReleaseDal.getById(
+                    data.storefrontId,
+                    releaseId,
+                  );
+                  return release
+                    ? {
+                        id: release.id,
+                        storefrontId: data.storefrontId,
+                        themeId: release.themeId,
+                        themeBuildId: release.themeBuildId,
+                      }
+                    : null;
+                },
+                getBuild: (buildId) =>
+                  storefrontThemeBuildDal.getBuildById(buildId),
+              },
+            });
 
-        // Recorded only now, so a failed deploy above leaves no trace that
-        // would let the next publish skip a deployment that never landed.
-        await storefrontReleaseDal.recordDeployedThemeBuild({
-          storefrontId: data.storefrontId,
-          releaseId: result.releaseId,
-          themeBuildId: result.themeBuildId,
-        });
-        await queueReleasePreviewCapture(data.storefrontId, result.releaseId);
+            if (!deployed.success) {
+              return fail(
+                `Theme published, but the storefront was not updated: ${deployed.message} The site still serves the previous build — retry publishing once the cause is resolved.`,
+                { error: "RELEASE_DEPLOYMENT_FAILED", ...result },
+              );
+            }
+
+            // Recorded only now, so a failed deploy above leaves no trace that
+            // would let the next publish skip a deployment that never landed.
+            await storefrontReleaseDal.recordDeployedThemeBuild({
+              storefrontId: data.storefrontId,
+              releaseId: result.releaseId,
+              themeBuildId: result.themeBuildId,
+            });
+            await queueReleasePreviewCapture(
+              data.storefrontId,
+              result.releaseId,
+            );
+          }
+
+          return ok("Theme published", result);
+        },
+      });
+
+      if (!held.acquired) {
+        // Nothing was written: the pointer only moves inside the lease.
+        return fail(
+          "Another deployment is in progress for this storefront. Retry once it finishes.",
+          { error: "RELEASE_DEPLOYMENT_BUSY" },
+        );
       }
-
-      return ok("Theme published", result);
+      return held.value;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to publish theme";

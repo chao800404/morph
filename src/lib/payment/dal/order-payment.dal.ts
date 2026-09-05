@@ -55,16 +55,38 @@ const paymentForOrder = async (orderId: string) => {
  * `json('')` is malformed, so evaluating it raises and D1 rolls the whole batch
  * back — the ledger rows never land without the matching aggregate.
  */
-function preparePaymentAmountGuard(args: {
+/**
+ * Fails the batch unless the payment is still in the state the caller read.
+ *
+ * Every money-moving path here reads state, calls the provider, then writes the
+ * result. Between the read and the write another operation can land, so the
+ * write has to re-assert what it assumed. Guarding only the amount was not
+ * enough: a capture and a cancellation each saw an uncaptured, uncancelled
+ * payment, both succeeded at the provider, and the row ended up cancelled *and*
+ * captured — after which a refund cannot find a valid payment to refund.
+ *
+ * `json('')` is malformed, so evaluating it raises and D1 rolls the whole batch
+ * back — the ledger rows never land without the matching aggregate.
+ */
+function preparePaymentStateGuard(args: {
   collectionId: string;
-  column: "captured_amount" | "refunded_amount";
-  expected: number;
+  paymentId: string;
+  /** Omitted by cancellation, which moves no amount. */
+  column?: "captured_amount" | "refunded_amount";
+  expected?: number;
 }) {
+  const amountCondition =
+    args.column !== undefined && args.expected !== undefined
+      ? sql` AND COALESCE(${sql.raw(`pc.${args.column}`)}, 0) = ${args.expected}`
+      : sql``;
+
   return sql`
     SELECT CASE WHEN EXISTS (
-      SELECT 1 FROM payment_collections
-      WHERE id = ${args.collectionId}
-        AND COALESCE(${sql.raw(args.column)}, 0) = ${args.expected}
+      SELECT 1
+      FROM payment_collections pc
+      JOIN payments p ON p.id = ${args.paymentId}
+      WHERE pc.id = ${args.collectionId}
+        AND p.canceled_at IS NULL${amountCondition}
     ) THEN 1 ELSE json('') END AS ok
   `;
 }
@@ -96,8 +118,9 @@ export const orderPaymentDal = {
     const captureId = crypto.randomUUID();
     await db.batch([
       db.run(
-        preparePaymentAmountGuard({
+        preparePaymentStateGuard({
           collectionId: row.collection.id,
+          paymentId: row.payment.id,
           column: "captured_amount",
           expected: alreadyCaptured,
         }),
@@ -174,8 +197,9 @@ export const orderPaymentDal = {
     const refundId = crypto.randomUUID();
     await db.batch([
       db.run(
-        preparePaymentAmountGuard({
+        preparePaymentStateGuard({
           collectionId: row.collection.id,
+          paymentId: row.payment.id,
           column: "refunded_amount",
           expected: alreadyRefunded,
         }),
@@ -228,6 +252,16 @@ export const orderPaymentDal = {
     const db = await getDb();
     const now = new Date().toISOString();
     await db.batch([
+      // Re-asserts what the check above read: a capture that landed while the
+      // provider was cancelling must not be overwritten by a cancellation.
+      db.run(
+        preparePaymentStateGuard({
+          collectionId: row.collection.id,
+          paymentId: row.payment.id,
+          column: "captured_amount",
+          expected: 0,
+        }),
+      ),
       db
         .update(payments)
         .set({ canceledAt: now, data: result.data, updatedAt: now })

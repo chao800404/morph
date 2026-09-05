@@ -1010,26 +1010,45 @@ export function VisualEditorShell({
       const prefix = `${tid}:`;
       const flushPromises: Promise<unknown>[] = [];
 
-      for (const [key, timer] of Array.from(
-        pendingPropsTimersRef.current.entries(),
-      )) {
-        if (key.startsWith(prefix)) {
+      // Driven by the pending payloads, not by the timers.
+      //
+      // A debounced save clears its own timer before awaiting, so an edit whose
+      // write was rejected still has a payload but no timer. Walking timers
+      // skipped exactly those — the entries the retry exists for.
+      for (const key of Array.from(pendingPropsMapRef.current.keys())) {
+        if (!key.startsWith(prefix)) continue;
+
+        const timer = pendingPropsTimersRef.current.get(key);
+        if (timer !== undefined) {
           clearTimeout(timer);
           pendingPropsTimersRef.current.delete(key);
-          const pending = pendingPropsMapRef.current.get(key);
-          pendingPropsMapRef.current.delete(key);
-          if (pending) {
-            flushPromises.push(
-              enqueueTemplateMutation(tid, (gen) =>
-                updatePropsMutation.mutateAsync({
-                  sectionId: pending.sectionId,
-                  props: pending.props,
-                  expectedDraftGeneration: gen,
-                }),
-              ),
-            );
-          }
         }
+
+        const pending = pendingPropsMapRef.current.get(key);
+        if (!pending) continue;
+
+        flushPromises.push(
+          (async () => {
+            const result = await enqueueTemplateMutation(tid, (gen) =>
+              updatePropsMutation.mutateAsync({
+                sectionId: pending.sectionId,
+                props: pending.props,
+                expectedDraftGeneration: gen,
+              }),
+            );
+            // Dropped only once the write is acknowledged, for the same reason
+            // the debounced path keeps it: a rejected edit that has been
+            // forgotten cannot be retried by anything.
+            if (
+              result?.success &&
+              pendingPropsMapRef.current.get(key) === pending
+            ) {
+              pendingPropsMapRef.current.delete(key);
+              pendingPropsBaselineRef.current.delete(key);
+            }
+            return result;
+          })(),
+        );
       }
 
       await Promise.all(flushPromises);

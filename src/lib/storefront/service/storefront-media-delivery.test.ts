@@ -68,21 +68,17 @@ describe("resolvePublishedThemeMediaUrl", () => {
 
 describe("lookupPublishedMedia", () => {
   const published = "3f1c9a2e-4b5d-4c6e-8f70-1a2b3c4d5e6f";
-  const ports = (ids: string[]): PublishedMediaPorts => ({
-    listPublishedAssetIds: vi.fn(async () => new Set(ids)),
-    getAssetDelivery: vi.fn(async (assetId) =>
-      assetId === published
-        ? { storageKey: "assets/abc.png", contentType: "image/png" }
-        : null,
-    ),
+  const ports = (entries: [string, string][]): PublishedMediaPorts => ({
+    listPublishedAssetKeys: vi.fn(async () => new Map(entries)),
+    getAssetContentType: vi.fn(async () => "image/png"),
   });
 
-  it("resolves an asset the release published", async () => {
+  it("serves the key the release published", async () => {
     expect(
       await lookupPublishedMedia({
         assetId: published,
         publicationId: "pub_1",
-        ports: ports([published]),
+        ports: ports([[published, "assets/abc.png"]]),
       }),
     ).toEqual({
       status: "found",
@@ -91,7 +87,19 @@ describe("lookupPublishedMedia", () => {
     });
   });
 
-  // The whole point: the library is not readable, only what was published.
+  // The published document holds the key the asset had at publish time.
+  // Resolving the live asset instead let an edit in the library change what a
+  // published storefront served, with no publish and no way to roll back.
+  it("ignores what the asset has become since", async () => {
+    const result = await lookupPublishedMedia({
+      assetId: published,
+      publicationId: "pub_1",
+      ports: ports([[published, "assets/original.png"]]),
+    });
+
+    expect(result).toMatchObject({ storageKey: "assets/original.png" });
+  });
+
   it("refuses an asset the release did not publish", async () => {
     const p = ports([]);
     expect(
@@ -101,14 +109,13 @@ describe("lookupPublishedMedia", () => {
         ports: p,
       }),
     ).toEqual({ status: "not-published" });
-
-    // Not looked up at all, so an unpublished id cannot be used to find out
-    // whether that asset exists.
-    expect(p.getAssetDelivery).not.toHaveBeenCalled();
+    // Membership and bytes come from one lookup, so an unpublished id cannot
+    // be used to find out whether that asset exists.
+    expect(p.getAssetContentType).not.toHaveBeenCalled();
   });
 
   it("refuses everything when the storefront has no publication", async () => {
-    const p = ports([published]);
+    const p = ports([[published, "assets/abc.png"]]);
     expect(
       await lookupPublishedMedia({
         assetId: published,
@@ -116,16 +123,6 @@ describe("lookupPublishedMedia", () => {
         ports: p,
       }),
     ).toEqual({ status: "not-published" });
-    expect(p.listPublishedAssetIds).not.toHaveBeenCalled();
-  });
-
-  it("reports a published asset whose bytes are gone", async () => {
-    expect(
-      await lookupPublishedMedia({
-        assetId: "11111111-2222-4333-8444-555555555555",
-        publicationId: "pub_1",
-        ports: ports(["11111111-2222-4333-8444-555555555555"]),
-      }),
-    ).toEqual({ status: "missing" });
+    expect(p.listPublishedAssetKeys).not.toHaveBeenCalled();
   });
 });

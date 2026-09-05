@@ -67,11 +67,11 @@ export function EditorMediaField({
               // an `external` empty value made Clear fail validation on a
               // field declared `allowExternal: false` — the control offered an
               // action its own rules rejected.
-              onChange(
-                allowExternal
-                  ? { source: "external", mediaType, url: "" }
-                  : { source: "asset", mediaType, assetId: "", url: "" },
-              )
+              // One canonical empty, which the server accepts for any field
+              // regardless of which sources it allows. Emitting an asset-shaped
+              // empty instead just traded one rejected shape for another: the
+              // id has to be a UUID.
+              onChange({ source: "external", mediaType, url: "" })
             }
           >
             Clear
