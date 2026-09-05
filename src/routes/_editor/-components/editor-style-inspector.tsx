@@ -110,6 +110,7 @@ import { InspectorDisclosureField } from "./style-inspector/inspector-disclosure
 import { InspectorControlRow } from "./style-inspector/inspector-control-row";
 import { inspectorControlSurface } from "./style-inspector/inspector-control-surface";
 import { InspectorBreakpointIndicator } from "./style-inspector/inspector-breakpoint-indicator";
+import { EditorMediaField } from "./editor-media-field";
 import {
   InspectorLengthControl,
   inspectorLengthUtility,
@@ -581,17 +582,52 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     () => (section.props as Record<string, any>) ?? {},
   );
   const localPropsRef = useRef(localProps);
+  const lastSectionIdRef = useRef(section.id);
   const optimisticStyleRef = useRef<{
     key: string;
     revision: number;
     values: Record<string, string | number>;
   }>({ key: "", revision: 0, values: {} });
 
+  // What the server last said this section holds. Kept so a change arriving
+  // from elsewhere can be told apart from this component's own edits.
+  const serverBaselineRef = useRef<Record<string, any>>(
+    (section.props as Record<string, any>) ?? {},
+  );
+
   useEffect(() => {
-    const next = (section.props as Record<string, any>) ?? {};
-    localPropsRef.current = next;
-    setLocalProps(next);
-  }, [section.id]);
+    const incoming = (section.props as Record<string, any>) ?? {};
+    const baseline = serverBaselineRef.current;
+    serverBaselineRef.current = incoming;
+
+    // Switching sections replaces everything; there is no edit in progress
+    // that belongs to the new one.
+    if (section.id !== lastSectionIdRef.current) {
+      lastSectionIdRef.current = section.id;
+      localPropsRef.current = incoming;
+      setLocalProps(incoming);
+      return;
+    }
+
+    // Same section, new server state — a refetch, a reorder, an undo, or a
+    // template swap that reused the id. Syncing only on `section.id` left the
+    // local snapshot stale, and every field edit sends the *whole* object, so
+    // the next keystroke wrote the stale values back over the change. OCC
+    // cannot catch that: the generation is current and the payload looks
+    // deliberate.
+    //
+    // Fields the user has locally diverged on are kept, because discarding
+    // them would delete something being typed. Everything else rebases.
+    const local = localPropsRef.current;
+    const rebased: Record<string, any> = { ...incoming };
+    for (const key of Object.keys(local)) {
+      const isLocallyEdited = !Object.is(local[key], baseline[key]);
+      if (isLocallyEdited) rebased[key] = local[key];
+    }
+
+    localPropsRef.current = rebased;
+    setLocalProps(rebased);
+  }, [section.id, section.props]);
   useEffect(() => {
     if (
       optimisticStyleRef.current.revision > 0 &&
@@ -1794,6 +1830,23 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     });
                   };
 
+                  if (definition.type === "image" || definition.type === "video") {
+                    return (
+                      <EditorMediaField
+                        key={fieldKey}
+                        label={label}
+                        description={definition.description}
+                        mediaType={definition.type}
+                        value={value}
+                        allowExternal={definition.allowExternal !== false}
+                        allowAsset={definition.allowAsset !== false}
+                        disabled={disabled}
+                        isFocused={activeFieldKey === fieldKey}
+                        onChange={(next) => handleFieldChange(fieldKey, next)}
+                      />
+                    );
+                  }
+
                   if (definition.type === "array") {
                     const rows: Record<string, unknown>[] = Array.isArray(value)
                       ? (value as Record<string, unknown>[])
@@ -1914,6 +1967,29 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                             )
                                         : undefined
                                     }
+                                    disabled={disabled}
+                                    onChange={(next) =>
+                                      handleNestedFieldChange(
+                                        `${fieldKey}.${index}.${rowKey}`,
+                                        next,
+                                      )
+                                    }
+                                  />
+                                );
+                              }
+                              if (
+                                rowDefinition.type === "image" ||
+                                rowDefinition.type === "video"
+                              ) {
+                                return (
+                                  <EditorMediaField
+                                    key={rowKey}
+                                    label={rowLabel}
+                                    description={rowDefinition.description}
+                                    mediaType={rowDefinition.type}
+                                    value={row?.[rowKey]}
+                                    allowExternal={rowDefinition.allowExternal !== false}
+                                    allowAsset={rowDefinition.allowAsset !== false}
                                     disabled={disabled}
                                     onChange={(next) =>
                                       handleNestedFieldChange(
@@ -2584,67 +2660,71 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 ) },
               { key: contentOrderKey("imageSrc", "imageAlt", "image"), node: showField("imageSrc", "imageAlt", "image") &&
                 selectedFieldValue("imageSrc") !== undefined && (
-                  <div
-                    className={cn(
-                      inspectorContentCardClassName,
-                      activeFieldKey === "imageSrc" ||
-                        activeFieldKey === "imageAlt" ||
-                        activeElementKey === "image"
-                        ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
-                        : "bg-muted/20",
-                    )}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                        <ImageIcon className="size-3 text-muted-foreground" />
-                        <span>Media Image</span>
-                      </span>
-                    </div>
-                    <Input
+                  <div className="space-y-2">
+                    <EditorMediaField
                       key={contentFieldInputKey("imageSrc")}
-                      defaultValue={String(
-                        selectedFieldValue("imageSrc") ?? "",
-                      )}
-                      onBlur={(e) =>
-                        nestedFieldPath("imageSrc")
-                          ? handleNestedFieldChange(
-                              nestedFieldPath("imageSrc")!,
-                              e.currentTarget.value,
-                            )
-                          : handleFieldChange("imageSrc", e.currentTarget.value)
+                      label={declaredContentFieldLabel("imageSrc", "Media Image")}
+                      mediaType="image"
+                      value={selectedFieldValue("imageSrc")}
+                      isFocused={
+                        activeFieldKey === "imageSrc" ||
+                        activeElementKey === "image"
+                      }
+                      allowExternal={
+                        themeContentCapability?.fields.imageSrc?.type !== "image" ||
+                        themeContentCapability.fields.imageSrc.allowExternal !== false
+                      }
+                      allowAsset={
+                        themeContentCapability?.fields.imageSrc?.type !== "image" ||
+                        themeContentCapability.fields.imageSrc.allowAsset !== false
                       }
                       disabled={disabled}
-                      placeholder="Image URL path..."
-                      className="h-7 text-xs font-mono"
+                      onChange={(next) => {
+                        const storedValue =
+                          themeContentCapability?.fields.imageSrc?.type === "image"
+                            ? next
+                            : next.url;
+                        const path = nestedFieldPath("imageSrc");
+                        if (path) {
+                          handleNestedFieldChange(path, storedValue);
+                        } else {
+                          handleFieldChange("imageSrc", storedValue);
+                        }
+                      }}
                     />
                     {selectedFieldValue("imageAlt") !== undefined && (
-                      <Input
-                        key={contentFieldInputKey("imageAlt")}
-                        defaultValue={String(
-                          selectedFieldValue("imageAlt") ?? "",
-                        )}
-                        onInput={(e) =>
-                          onPreviewSelectionField?.(
-                            "imageAlt",
-                            nestedFieldPath("imageAlt"),
-                            e.currentTarget.value,
-                          )
-                        }
-                        onBlur={(e) =>
-                          nestedFieldPath("imageAlt")
-                            ? handleNestedFieldChange(
-                                nestedFieldPath("imageAlt")!,
-                                e.currentTarget.value,
-                              )
-                            : handleFieldChange(
-                                "imageAlt",
-                                e.currentTarget.value,
-                              )
-                        }
-                        disabled={disabled}
-                        placeholder="Alt text description"
-                        className="h-7 text-xs"
-                      />
+                      <InspectorField
+                        label={declaredContentFieldLabel("imageAlt", "Alt text")}
+                        isFocused={activeFieldKey === "imageAlt"}
+                      >
+                        <Input
+                          key={contentFieldInputKey("imageAlt")}
+                          defaultValue={String(
+                            selectedFieldValue("imageAlt") ?? "",
+                          )}
+                          onInput={(e) =>
+                            onPreviewSelectionField?.(
+                              "imageAlt",
+                              nestedFieldPath("imageAlt"),
+                              e.currentTarget.value,
+                            )
+                          }
+                          onBlur={(e) =>
+                            nestedFieldPath("imageAlt")
+                              ? handleNestedFieldChange(
+                                  nestedFieldPath("imageAlt")!,
+                                  e.currentTarget.value,
+                                )
+                              : handleFieldChange(
+                                  "imageAlt",
+                                  e.currentTarget.value,
+                                )
+                          }
+                          disabled={disabled}
+                          placeholder="Describe this image"
+                          className="h-7 text-xs"
+                        />
+                      </InspectorField>
                     )}
                   </div>
                 ) },

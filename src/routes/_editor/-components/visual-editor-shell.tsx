@@ -4152,19 +4152,44 @@ export function VisualEditorShell({
       const timer = setTimeout(async () => {
         pendingPropsTimersRef.current.delete(key);
         const pending = pendingPropsMapRef.current.get(key);
-        pendingPropsMapRef.current.delete(key);
         if (!pending) return;
 
         const baseline = pendingPropsBaselineRef.current.get(key);
-        pendingPropsBaselineRef.current.delete(key);
 
-        const result = await enqueueTemplateMutation(templateId, (gen) =>
-          updatePropsMutation.mutateAsync({
-            sectionId: pending.sectionId,
-            props: pending.props,
-            expectedDraftGeneration: gen,
-          }),
-        );
+        // The entry stays queued until the write is acknowledged. Clearing it
+        // before awaiting meant a rejected edit was gone: the preview had
+        // already been updated, so the canvas and Inspector went on showing
+        // content the server refused, with nothing left to retry from.
+        let result: Awaited<ReturnType<typeof enqueueTemplateMutation>>;
+        try {
+          result = await enqueueTemplateMutation(templateId, (gen) =>
+            updatePropsMutation.mutateAsync({
+              sectionId: pending.sectionId,
+              props: pending.props,
+              expectedDraftGeneration: gen,
+            }),
+          );
+        } catch (error) {
+          // Kept for the next edit or an explicit retry, unless a newer edit to
+          // the same section has already replaced it.
+          if (pendingPropsMapRef.current.get(key) === pending) {
+            pendingPropsMapRef.current.set(key, pending);
+          }
+          throw error;
+        }
+
+        if (!result?.success) {
+          if (pendingPropsMapRef.current.get(key) === pending) {
+            pendingPropsMapRef.current.set(key, pending);
+          }
+          return;
+        }
+
+        // Acknowledged: only now is it safe to forget.
+        if (pendingPropsMapRef.current.get(key) === pending) {
+          pendingPropsMapRef.current.delete(key);
+        }
+        pendingPropsBaselineRef.current.delete(key);
 
         // Recorded only once the write landed: an entry for a rejected edit
         // would reverse a change that never happened.
