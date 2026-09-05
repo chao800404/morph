@@ -506,6 +506,155 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.queryByText("Action Button")).toBeNull();
   });
 
+  // EDIT-01: the Inspector used to seed its local props once per `section.id`
+  // and send the whole merged object on every edit, so server state arriving
+  // for the same section was written back over on the next keystroke.
+  // EDIT-01: the Inspector seeded its local props once per `section.id` and
+  // sends the whole merged object on every edit, so server state arriving for
+  // the same section was written back over on the next keystroke. The bug is
+  // about what gets *sent*, so that is what these assert — the controls
+  // themselves are uncontrolled and keep whatever the user typed.
+  describe("server changes to the same section (EDIT-01)", () => {
+    const sectionSelection = {
+      sectionId: "section-1",
+      kind: "section",
+      tagName: "section",
+      isSection: true,
+    } as never;
+
+    const sectionWith = (id: string, props: Record<string, unknown>) =>
+      ({
+        id,
+        type: "hero",
+        componentRef: "hero.default",
+        enabled: true,
+        props,
+      }) as never;
+
+    const lastSent = (spy: ReturnType<typeof vi.fn>) =>
+      spy.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+
+    it("does not send back a field the server changed elsewhere", () => {
+      const onPropsChange = vi.fn();
+      const view = (props: Record<string, unknown>) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", props)}
+          selection={sectionSelection}
+          onPropsChange={onPropsChange}
+        />
+      );
+
+      const { rerender } = render(
+        view({
+          heading: "Original heading",
+          description: "Original description",
+        }),
+      );
+
+      // Same section id, new server props — a refetch, an undo, a reorder.
+      rerender(
+        view({
+          heading: "Changed elsewhere",
+          description: "Original description",
+        }),
+      );
+
+      const field = screen.getByDisplayValue("Original description");
+      fireEvent.change(field, { target: { value: "Edited here" } });
+      fireEvent.blur(field);
+
+      const sent = lastSent(onPropsChange);
+      expect(sent?.description).toBe("Edited here");
+      // Without the rebase this carried the stale "Original heading" and
+      // silently reverted the other change.
+      expect(sent?.heading).toBe("Changed elsewhere");
+    });
+
+    it("keeps an in-progress edit when server state lands mid-typing", () => {
+      const onPropsChange = vi.fn();
+      const view = (props: Record<string, unknown>) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", props)}
+          selection={sectionSelection}
+          onPropsChange={onPropsChange}
+        />
+      );
+
+      const { rerender } = render(
+        view({
+          heading: "Original heading",
+          description: "Original description",
+        }),
+      );
+
+      fireEvent.change(screen.getByDisplayValue("Original description"), {
+        target: { value: "Half-typed" },
+      });
+
+      rerender(
+        view({
+          heading: "Changed elsewhere",
+          description: "Original description",
+        }),
+      );
+
+      // Continue typing; the next send must carry both the new server value
+      // and the field being edited.
+      const typing = screen.getByDisplayValue("Half-typed");
+      fireEvent.change(typing, { target: { value: "Half-typed more" } });
+      fireEvent.blur(typing);
+
+      const sent = lastSent(onPropsChange);
+      expect(sent?.description).toBe("Half-typed more");
+      expect(sent?.heading).toBe("Changed elsewhere");
+    });
+
+    it("takes the new section wholesale when the section itself changes", () => {
+      const onPropsChange = vi.fn();
+      const { rerender } = render(
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", {
+            heading: "Hero heading",
+            description: "Hero description",
+          })}
+          selection={sectionSelection}
+          onPropsChange={onPropsChange}
+        />,
+      );
+
+      rerender(
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-2", {
+            heading: "Promo heading",
+            description: "Promo description",
+          })}
+          selection={
+            {
+              sectionId: "section-2",
+              kind: "section",
+              tagName: "section",
+              isSection: true,
+            } as never
+          }
+          onPropsChange={onPropsChange}
+        />,
+      );
+
+      const promo = screen.getByDisplayValue("Hero description");
+      fireEvent.change(promo, { target: { value: "Edited promo" } });
+      fireEvent.blur(promo);
+
+      const sent = lastSent(onPropsChange);
+      // Nothing of the previous section may ride along.
+      expect(sent?.heading).toBe("Promo heading");
+      expect(sent?.description).toBe("Edited promo");
+    });
+  });
+
   it("reflects a value committed from the live preview", () => {
     const section = baseSection("hero", { heading: "Original heading" });
     const selection = selectionDescriptor({
