@@ -17,6 +17,7 @@ import { env as cloudflareEnv } from "cloudflare:workers";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { storefrontReleaseDal } from "@/lib/storefront/dal/storefront-release.dal";
 import { deployReleaseArtifact } from "@/lib/storefront/service/storefront-release-reconciler";
+import { withDeploymentLease } from "@/lib/storefront/service/deployment-lease";
 import { canSkipThemeWorkerDeployment } from "@/lib/storefront/service/theme-worker-deployment-state";
 import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-worker-deployer.factory";
 import { getRequest } from "@tanstack/react-start/server";
@@ -265,7 +266,21 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           return ok("Theme published", result);
         }
 
-        const deployed = await deployReleaseArtifact({
+        // Under the same storefront-wide lease as release activation.
+        // Publish reaches the Theme Worker through its own path, so guarding
+        // only the activation route left a publish and a rollback able to
+        // deploy at once — the case the lease exists to prevent.
+        const held = await withDeploymentLease({
+          storefrontId: data.storefrontId,
+          owner: `publish:${result.releaseId}:${crypto.randomUUID()}`,
+          ports: {
+            acquire: (leaseArgs) =>
+              storefrontReleaseDal.acquireDeploymentLease(leaseArgs),
+            release: (leaseArgs) =>
+              storefrontReleaseDal.releaseDeploymentLease(leaseArgs),
+          },
+          operation: () =>
+            deployReleaseArtifact({
           releaseId: result.releaseId,
           deployer: createServerThemeWorkerDeployer(),
           r2Bucket: (cloudflareEnv as unknown as { R2_BUCKET?: unknown })
@@ -288,7 +303,16 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
             getBuild: (buildId) =>
               storefrontThemeBuildDal.getBuildById(buildId),
           },
+            }),
         });
+
+        if (!held.acquired) {
+          return fail(
+            "Theme published, but the storefront was not updated: another deployment is in progress. Retry once it finishes.",
+            { error: "RELEASE_DEPLOYMENT_BUSY", ...result },
+          );
+        }
+        const deployed = held.value;
 
         if (!deployed.success) {
           return fail(
