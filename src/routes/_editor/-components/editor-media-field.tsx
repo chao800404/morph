@@ -86,17 +86,20 @@ export function EditorMediaField({
       </div>
 
       {normalized.url ? (
-        <div className="group/preview relative h-28 overflow-hidden rounded-md border bg-background">
+        <div
+          style={{ background: "var(--gradient-checker-board)" }}
+          className="group/preview relative h-28 overflow-hidden rounded-md border"
+        >
           {mediaType === "image" ? (
             <img
               src={normalized.url}
               alt=""
-              className="size-full object-cover"
+              className="size-full object-contain p-1.5"
             />
           ) : (
             <video
               src={normalized.url}
-              className="size-full object-cover"
+              className="size-full object-contain"
               controls
               muted
               playsInline
