@@ -49,6 +49,47 @@ if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
+/**
+ * Node 22+ introduces an experimental built-in `localStorage` that lacks standard
+ * Web Storage methods (`clear`, `removeItem`, `setItem`, `getItem`) unless
+ * `--localstorage-file` is configured. Polyfill standard mock Storage if missing.
+ */
+if (typeof window !== "undefined" && typeof window.localStorage?.removeItem !== "function") {
+  class MemoryStorage implements Storage {
+    private store = new Map<string, string>();
+    get length() {
+      return this.store.size;
+    }
+    clear(): void {
+      this.store.clear();
+    }
+    getItem(key: string): string | null {
+      return this.store.get(key) ?? null;
+    }
+    key(index: number): string | null {
+      return Array.from(this.store.keys())[index] ?? null;
+    }
+    removeItem(key: string): void {
+      this.store.delete(key);
+    }
+    setItem(key: string, value: string): void {
+      this.store.set(key, String(value));
+    }
+  }
+
+  const memoryStorage = new MemoryStorage();
+  Object.defineProperty(window, "localStorage", {
+    value: memoryStorage,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    value: memoryStorage,
+    configurable: true,
+    writable: true,
+  });
+}
+
 
 /**
  * Unmount between tests.
