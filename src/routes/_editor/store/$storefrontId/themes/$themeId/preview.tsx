@@ -65,6 +65,7 @@ import {
 } from "@/lib/storefront/editor/preview-protocol";
 import { parseArrayItemFieldPath } from "@/lib/storefront/editor/reorder-array-items";
 import { readSelectionContentValue } from "@/lib/storefront/editor/selection-content-value";
+import { PREVIEW_SIZING_CSS } from "@/lib/storefront/editor/preview-sizing-css";
 import {
   PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE,
   syncPreviewEmptyTextLines,
@@ -3443,67 +3444,24 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
   useEffect(() => {
     if (!enabled || window.parent === window) return;
 
-    const previewRoot = document.querySelector<HTMLElement>(
-      "[data-storefront-preview-root]",
-    );
-    if (!previewRoot) return;
+    // Resolved per measurement, never captured. Changing route replaces the
+    // root element, and a bridge holding the old node measured a detached
+    // subtree: height and scrollHeight both read 0, so the editor clamped the
+    // frame to its 320px floor and the page looked truncated.
+    const currentPreviewRoot = () =>
+      document.querySelector<HTMLElement>("[data-storefront-preview-root]");
+    if (!currentPreviewRoot()) return;
 
     const previousDocumentOverflow = document.documentElement.style.overflow;
     const previousBodyOverflow = document.body.style.overflow;
     document.documentElement.style.overflow = "hidden";
     document.body.style.overflow = "hidden";
 
-    // The editor frame is sized from the rendered page. A page shell that
-    // uses `min-h-screen` creates a circular dependency here: the iframe
-    // height becomes the CSS viewport height, which becomes the shell's
-    // minimum height, which is then reported back as the iframe height. Keep
-    // the production theme untouched and replace viewport-relative sizing only
-    // inside the preview. Resolve it against the editor-provided viewport
-    // height instead of the iframe's own height: that preserves the page's
-    // intended minimum while preventing a route's `min-h-screen` from growing
-    // every time the iframe is measured. Apply this to descendants too because
-    // authored routes commonly put viewport sizing on their `<main>`.
+    // Viewport units are rewritten against the editor-provided token; see
+    // `preview-sizing-css` for why, and for the selectors it must not match.
     const previewSizingStyle = document.createElement("style");
     previewSizingStyle.dataset.storefrontPreviewSizing = "true";
-    previewSizingStyle.textContent = `
-      [data-storefront-preview-root] > [data-morph-source-file] {
-        min-height: 0 !important;
-      }
-      [data-storefront-preview-root] [class~="min-h-screen"],
-      [data-storefront-preview-root] [class~="min-h-svh"],
-      [data-storefront-preview-root] [class~="min-h-dvh"],
-      [data-storefront-preview-root] [class~="min-h-lvh"],
-      [data-storefront-preview-root] [class~="sm:min-h-screen"],
-      [data-storefront-preview-root] [class~="md:min-h-screen"],
-      [data-storefront-preview-root] [class~="lg:min-h-screen"],
-      [data-storefront-preview-root] [class~="xl:min-h-screen"],
-      [data-storefront-preview-root] [class~="2xl:min-h-screen"],
-      [data-storefront-preview-root] [class~="min-h-[100vh]"],
-      [data-storefront-preview-root] [class~="min-h-[100svh]"],
-      [data-storefront-preview-root] [class~="min-h-[100dvh]"],
-      [data-storefront-preview-root] [class~="min-h-[100lvh]"] {
-        min-height: var(--storefront-preview-viewport-height, 100vh) !important;
-      }
-      [data-storefront-preview-root] [data-morph-source-file][class*="h-screen"],
-      [data-storefront-preview-root] [data-morph-source-file][class*="h-svh"],
-      [data-storefront-preview-root] [data-morph-source-file][class*="h-dvh"],
-      [data-storefront-preview-root] [data-morph-source-file][class*="h-lvh"],
-      [data-storefront-preview-root] [class~="h-screen"],
-      [data-storefront-preview-root] [class~="h-svh"],
-      [data-storefront-preview-root] [class~="h-dvh"],
-      [data-storefront-preview-root] [class~="h-lvh"],
-      [data-storefront-preview-root] [class~="sm:h-screen"],
-      [data-storefront-preview-root] [class~="md:h-screen"],
-      [data-storefront-preview-root] [class~="lg:h-screen"],
-      [data-storefront-preview-root] [class~="xl:h-screen"],
-      [data-storefront-preview-root] [class~="2xl:h-screen"],
-      [data-storefront-preview-root] [class~="h-[100vh]"],
-      [data-storefront-preview-root] [class~="h-[100svh]"],
-      [data-storefront-preview-root] [class~="h-[100dvh]"],
-      [data-storefront-preview-root] [class~="h-[100lvh]"] {
-        height: var(--storefront-preview-viewport-height, 100vh) !important;
-      }
-    `;
+    previewSizingStyle.textContent = PREVIEW_SIZING_CSS;
     document.head.appendChild(previewSizingStyle);
 
     let animationFrame = 0;
@@ -3522,6 +3480,10 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
         // `scrollHeight` captures content that extends beyond it. Reading
         // both in the same animation frame keeps this a read-only geometry
         // phase and avoids layout read/write thrashing.
+        const previewRoot = currentPreviewRoot();
+        if (!previewRoot) return;
+        observeCurrentRoot(previewRoot);
+
         const nextHeight = Math.ceil(
           Math.max(
             previewRoot.getBoundingClientRect().height,
@@ -3563,7 +3525,18 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
       stableFrameCount = 0;
       measureUntilStable();
     });
-    observer.observe(previewRoot);
+
+    let observedRoot: HTMLElement | null = null;
+    const observeCurrentRoot = (root: HTMLElement) => {
+      if (observedRoot === root) return;
+      if (observedRoot) observer.unobserve(observedRoot);
+      observedRoot = root;
+      observer.observe(root);
+    };
+
+    // `body` is the one node that outlives a route change, so a swapped root is
+    // still noticed even before anything inside the new one resizes.
+    observer.observe(document.body);
     const handleSizeRequest = (event: MessageEvent<unknown>) => {
       const message = parseEditorToPreviewWindowEvent(event);
       if (message?.type === "morph:storefront-preview-request-size") {
