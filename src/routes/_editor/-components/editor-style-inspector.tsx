@@ -108,7 +108,7 @@ import {
 } from "./style-inspector/inspector-select-control";
 import { InspectorDisclosureField } from "./style-inspector/inspector-disclosure-field";
 import { InspectorControlRow } from "./style-inspector/inspector-control-row";
-import { inspectorControlSurface } from "./style-inspector/inspector-control-surface";
+import { InspectorSegmentedSwitch } from "./style-inspector/inspector-segmented-switch";
 import { InspectorBreakpointIndicator } from "./style-inspector/inspector-breakpoint-indicator";
 import { EditorMediaField } from "./editor-media-field";
 import {
@@ -2083,7 +2083,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                         )
                                       }
                                       disabled={disabled}
-                                      className="h-8 text-xs"
+                                      className={cn(
+                                        "h-7 text-xs",
+                                        rowDefinition.type === "url" &&
+                                          "font-mono",
+                                      )}
                                     />
                                   )}
                                 </InspectorField>
@@ -2247,7 +2251,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             }
                           }}
                           disabled={disabled}
-                          className="h-8 text-xs"
+                          className="h-7 text-xs"
                         />
                       ) : (
                         <Input
@@ -2260,7 +2264,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             );
                           }}
                           disabled={disabled}
-                          className="h-8 text-xs"
+                          className={cn(
+                            "h-7 text-xs",
+                            definition.type === "url" && "font-mono",
+                          )}
                         />
                       )}
                       {definition.description ? (
@@ -2310,7 +2317,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       }
                       disabled={disabled}
                       placeholder="Eyebrow text..."
-                      className="h-8 text-xs"
+                      className="h-7 text-xs"
                     />
                   </InspectorField>
                 ) },
@@ -2345,7 +2352,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       }
                       disabled={disabled}
                       placeholder="Section label..."
-                      className="h-8 text-xs"
+                      className="h-7 text-xs"
                     />
                   </InspectorField>
                 ) },
@@ -2812,7 +2819,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             )
                           }
                           disabled={disabled}
-                          className="h-8 text-xs"
+                          className="h-7 text-xs"
                         />
                       </InspectorField>
                     ))
@@ -4043,7 +4050,7 @@ const inspectorContentCardClassName =
 
 /** One surface for a simple text/number/boolean content field. */
 const inspectorContentFieldClassName =
-  "w-full min-w-0 space-y-1 rounded-lg border bg-muted/20 p-1.5 shadow-xs transition-all duration-150";
+  "w-full min-w-0 space-y-1 rounded-lg border p-1.5 shadow-xs transition-all duration-150";
 
 /**
  * A boolean field, rendered with the shared Checkbox rather than a bare input.
@@ -4100,42 +4107,25 @@ function LinkDestinationKindSwitch({
   onSwitch: (target: "router" | "anchor") => void;
 }) {
   const options = [
-    { id: "router" as const, label: "In store" },
-    { id: "anchor" as const, label: "External" },
+    {
+      id: "router" as const,
+      label: "In store",
+      title: "Render with the router's <Link> and choose a page",
+    },
+    {
+      id: "anchor" as const,
+      label: "External",
+      title: "Render with a plain <a> and enter any address",
+    },
   ];
   return (
-    <div
-      role="group"
-      aria-label="Link destination kind"
-      className={cn(
-        inspectorControlSurface,
-        "flex h-7 shrink-0 items-center gap-0.5 p-0.5",
-      )}
-    >
-      {options.map((option) => (
-        <Button
-          key={option.id}
-          type="button"
-          size="xs"
-          variant="ghost"
-          className={cn(
-            "h-6 rounded-sm px-2 text-[10px] font-medium",
-            binding === option.id
-              ? "bg-background text-foreground shadow-sm hover:bg-background"
-              : "text-muted-foreground",
-          )}
-          disabled={disabled || binding === option.id}
-          onClick={() => onSwitch(option.id)}
-          title={
-            option.id === "router"
-              ? "Render with the router's <Link> and choose a page"
-              : "Render with a plain <a> and enter any address"
-          }
-        >
-          {option.label}
-        </Button>
-      ))}
-    </div>
+    <InspectorSegmentedSwitch
+      value={binding === "router" ? "router" : "anchor"}
+      options={options}
+      disabled={disabled}
+      ariaLabel="Link destination kind"
+      onChange={onSwitch}
+    />
   );
 }
 
@@ -4199,36 +4189,34 @@ function InspectorLinkField({
           : "bg-muted/20",
       )}
     >
-      <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-        <Link className="size-3 text-muted-foreground" />
-        <span>{label}</span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+          <Link className="size-3 text-muted-foreground" />
+          <span>{label}</span>
+        </span>
+        {showModeToggle ? (
+          <InspectorSegmentedSwitch
+            value={mode}
+            options={[
+              { id: "internal", label: "This store" },
+              { id: "external", label: "External URL" },
+            ]}
+            disabled={disabled}
+            ariaLabel="Link destination mode"
+            onChange={(next) =>
+              setFallbackMode(next as "internal" | "external")
+            }
+          />
+        ) : onSwitchBinding ? (
+          <LinkDestinationKindSwitch
+            binding={binding}
+            disabled={disabled}
+            onSwitch={onSwitchBinding}
+          />
+        ) : null}
       </div>
 
-      {showModeToggle ? (
-        <div className="flex gap-1">
-          {(["internal", "external"] as const).map((option) => (
-            <Button
-              key={option}
-              type="button"
-              size="xs"
-              variant={mode === option ? "secondary" : "ghost"}
-              className="h-6 flex-1 text-[10px]"
-              disabled={disabled}
-              onClick={() => setFallbackMode(option)}
-            >
-              {option === "internal" ? "This store" : "External URL"}
-            </Button>
-          ))}
-        </div>
-      ) : onSwitchBinding ? (
-        // The element decides where the link may point, so switching sides
-        // rewrites the source rather than only the stored value.
-        <LinkDestinationKindSwitch
-          binding={binding}
-          disabled={disabled}
-          onSwitch={onSwitchBinding}
-        />
-      ) : binding === "router" ? (
+      {!onSwitchBinding && binding === "router" ? (
         <p className="text-[10px] leading-relaxed text-muted-foreground">
           This link is rendered by the router, so it can only point at a page of
           this store.
@@ -4374,14 +4362,16 @@ function InspectorField({
       data-slot="inspector-content-field"
       className={cn(
         inspectorContentFieldClassName,
-        isFocused && "bg-primary/10 ring-1 ring-primary/40",
+        isFocused
+          ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
+          : "bg-muted/20",
       )}
     >
       <label
         className={cn(
           inspectorFieldLabelClassName,
           "transition-colors",
-          isFocused ? "text-primary font-semibold" : "text-muted-foreground",
+          isFocused ? "text-primary font-medium" : "text-muted-foreground",
         )}
       >
         {label}
