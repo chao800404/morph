@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import { firstOrNull } from "@/lib/db/single-row";
 import { assets } from "@/db/asset.schema";
 import { productSalesChannels } from "@/db/link.schema";
 import {
@@ -38,6 +39,25 @@ import type {
 } from "../dto/store-catalog.dto";
 
 export const storeCatalogDal = {
+  async hasChannelProducts(salesChannelId: string): Promise<boolean> {
+    const db = await getDb();
+    return (
+      firstOrNull(
+        await db
+          .select({ id: products.id })
+          .from(products)
+          .innerJoin(
+            productSalesChannels,
+            and(
+              eq(productSalesChannels.productId, products.id),
+              eq(productSalesChannels.salesChannelId, salesChannelId),
+            ),
+          )
+          .where(isNull(products.deletedAt))
+          .limit(1),
+      ) !== null
+    );
+  },
   async listProducts(options: {
     salesChannelId: string;
     query?: string | null;
@@ -124,8 +144,8 @@ export const storeCatalogDal = {
   async findProductByHandle(
     handle: string,
     salesChannelId: string,
-    currencyCode: string,
-    regionId: string,
+    currencyCode: string | null,
+    regionId: string | null,
   ): Promise<StoreProductDetailDTO | null> {
     const db = await getDb();
     const [match] = await db
@@ -164,12 +184,14 @@ export const storeCatalogDal = {
       variantPage.variants.map((variant) =>
         resolveVariant(async () => {
           const [price, managedAvailable] = await Promise.all([
-            pricingDal.resolveVariantPrice(variant.id, {
-              currencyCode,
-              quantity: 1,
-              regionId,
-              salesChannelId,
-            }),
+            currencyCode && regionId
+              ? pricingDal.resolveVariantPrice(variant.id, {
+                  currencyCode,
+                  quantity: 1,
+                  regionId,
+                  salesChannelId,
+                })
+              : null,
             cartReservationDal.availableForVariant(variant.id, salesChannelId),
           ]);
           return {
@@ -183,14 +205,15 @@ export const storeCatalogDal = {
               ...asset,
               url: `/api/store/assets/${asset.id}`,
             })),
-            price: price
-              ? {
-                  currencyCode,
-                  amount: price.amount,
-                  originalAmount: price.originalAmount,
-                  priceListType: price.priceListType,
-                }
-              : null,
+            price:
+              price && currencyCode
+                ? {
+                    currencyCode,
+                    amount: price.amount,
+                    originalAmount: price.originalAmount,
+                    priceListType: price.priceListType,
+                  }
+                : null,
           };
         }),
       ),

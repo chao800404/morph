@@ -130,7 +130,10 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
     };
 
     const { container } = render(
-      <StorefrontDocumentRenderer document={document} themeFiles={themeFiles} />,
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={themeFiles}
+      />,
     );
     const content = container.querySelector('[data-morph-node="hero-content"]');
     expect(content?.getAttribute("data-morph-node")).toBe("hero-content");
@@ -172,6 +175,43 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
     expect(container.querySelector("img")?.getAttribute("src")).toBe(
       "/assets/hero.webp",
     );
+  });
+
+  it("renders the grouped Hero image source and alt text", () => {
+    const document: StorefrontPageDocument = {
+      version: 1,
+      sections: [
+        {
+          id: "hero-1",
+          type: "hero",
+          componentRef: "hero.default",
+          enabled: true,
+          props: {
+            image: {
+              src: {
+                source: "asset",
+                mediaType: "image",
+                assetId: "asset-hero",
+                url: "/assets/hero.webp",
+              },
+              alt: "Grouped hero image",
+            },
+          },
+        },
+      ],
+    };
+
+    const { container } = render(
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={STARTER_THEME_FILES}
+      />,
+    );
+
+    const image = container.querySelector("img");
+    expect(image?.getAttribute("src")).toBe("/assets/hero.webp");
+    expect(image?.getAttribute("alt")).toBe("Grouped hero image");
+    expect(image?.getAttribute("data-storefront-field")).toBe("image");
   });
 
   it("renders component-local instance classes for only the matching item", () => {
@@ -278,7 +318,10 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
     };
 
     const { container } = render(
-      <StorefrontDocumentRenderer document={document} themeFiles={themeFiles} />,
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={themeFiles}
+      />,
     );
     const notice = container.querySelector('[data-morph-node="hero-notice"]');
 
@@ -301,13 +344,12 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
         file.path === "src/components/Hero.tsx"
           ? {
               ...file,
-              content:
-                `import Notice from "./Notice";
+              content: `import Notice from "./Notice";
 ${hero?.content ?? ""}`.replace(
-                  '<div className="max-w-xl">',
-                  `<div className="max-w-xl">
+                '<div className="max-w-xl">',
+                `<div className="max-w-xl">
           <Notice text={heading} />`,
-                ),
+              ),
             }
           : file,
       ),
@@ -340,7 +382,10 @@ ${hero?.content ?? ""}`.replace(
     };
 
     const { container } = render(
-      <StorefrontDocumentRenderer document={document} themeFiles={themeFiles} />,
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={themeFiles}
+      />,
     );
     const notice = container.querySelector('[data-morph-node="notice-root"]');
 
@@ -386,9 +431,7 @@ ${hero?.content ?? ""}`.replace(
         themeFiles={createFiles("max-w-xl bg-white")}
       />,
     );
-    const before = container.querySelector(
-      '[data-morph-node="hero-content"]',
-    );
+    const before = container.querySelector('[data-morph-node="hero-content"]');
     before?.setAttribute("data-storefront-editor-selected", "true");
 
     rerender(
@@ -429,7 +472,10 @@ ${hero?.content ?? ""}`.replace(
     };
 
     const { container } = render(
-      <StorefrontDocumentRenderer document={document} themeFiles={themeFiles} />,
+      <StorefrontDocumentRenderer
+        document={document}
+        themeFiles={themeFiles}
+      />,
     );
 
     expect(container.querySelector("script")).toBeNull();

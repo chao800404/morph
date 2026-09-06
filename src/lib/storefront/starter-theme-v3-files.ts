@@ -1,3 +1,226 @@
+export const LEGACY_STARTER_THEME_HERO_SOURCE = `export type HeroProps = {
+  eyebrow?: string;
+  heading?: string;
+  description?: string;
+  actionLabel?: string;
+  actionHref?: string;
+  actionTarget?: "_self" | "_blank";
+  imageSrc?: string;
+  imageAlt?: string;
+};
+
+export default function Hero({
+  eyebrow = "New collection",
+  heading = "Objects for everyday rituals.",
+  description = "Quiet essentials, thoughtfully made for the spaces you call home.",
+  actionLabel = "Explore the collection",
+  actionHref = "/collections/new",
+  actionTarget = "_self",
+  imageSrc = "/static/storefront/theme-preview-default.png",
+  imageAlt = "A neutral collection of ceramic objects",
+}: HeroProps) {
+  // A new tab must not hand the opened page a window.opener handle back to the
+  // store, which it could use to redirect this tab to a spoofed page.
+  const actionRel = actionTarget === "_blank" ? "noopener noreferrer" : undefined;
+  return (
+    <section
+      className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]"
+    >
+      <div className="flex items-center px-[clamp(1.75rem,6vw,6rem)] py-20">
+        <div className="max-w-xl">
+          <p
+            className="text-xs font-medium uppercase tracking-[0.24em] text-stone-500"
+          >
+            {eyebrow}
+          </p>
+          <h1
+            className="mt-6 font-serif text-[clamp(3.25rem,7vw,7rem)] leading-[0.88] tracking-[-0.055em] text-stone-950"
+          >
+            {heading}
+          </h1>
+          <p
+            className="mt-7 max-w-md text-base leading-7 text-stone-600"
+          >
+            {description}
+          </p>
+          <div className="mt-8">
+            <a
+              href={actionHref}
+              target={actionTarget}
+              rel={actionRel}
+              className="inline-flex items-center justify-center rounded-md bg-stone-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-stone-800"
+            >
+              {actionLabel}
+            </a>
+          </div>
+        </div>
+      </div>
+      <div
+        className="min-h-[30rem] overflow-hidden lg:min-h-0"
+      >
+        <img
+          src={imageSrc}
+          alt={imageAlt}
+          className="size-full object-cover"
+        />
+      </div>
+    </section>
+  );
+}
+`;
+
+export const LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE = `export type CategoryShowcaseItem = {
+  title?: string;
+  caption?: string;
+  href?: string;
+  imageSrc?: string;
+  imageAlt?: string;
+  imagePosition?: string;
+};
+
+export type CategoryShowcaseProps = {
+  heading?: string;
+  items?: CategoryShowcaseItem[];
+};
+
+export default function CategoryShowcase({
+  heading = "Shop by collection",
+  items = [],
+}: CategoryShowcaseProps) {
+  return (
+    <section
+      className="bg-stone-900 px-[clamp(1.25rem,4vw,4rem)] py-[clamp(5rem,9vw,9rem)] text-stone-100"
+    >
+      <div className="mb-12 flex items-end justify-between border-b border-stone-700 pb-6">
+        <h2
+          data-storefront-field="heading"
+          className="font-serif text-[clamp(2.5rem,5vw,5rem)] tracking-[-0.04em]"
+        >
+          {heading}
+        </h2>
+        <span className="hidden text-xs uppercase tracking-[0.2em] text-stone-400 sm:block">
+          The collection
+        </span>
+      </div>
+      <div
+        className="grid gap-4 lg:grid-cols-3"
+      >
+        {items.map((item, index) => (
+          <a
+            key={item.href ?? index}
+            href={item.href ?? "#"}
+            data-storefront-field-path={\`items.\${index}\`}
+            className="group block border-t border-stone-700 pt-4 lg:border-t-0 lg:pt-0"
+          >
+            <div className="aspect-[4/5] overflow-hidden bg-stone-800">
+              <img
+                src={item.imageSrc ?? "/static/storefront/theme-preview-default.png"}
+                alt={item.imageAlt ?? "Collection item"}
+                style={{ objectPosition: item.imagePosition ?? "center" }}
+                className="size-full object-cover opacity-80 transition-transform duration-500 ease-out group-hover:scale-[1.025]"
+              />
+            </div>
+            <div className="flex gap-5 py-5">
+              <span className="pt-1 text-xs text-stone-500">{index + 1}</span>
+              <div>
+                <h3
+                  data-storefront-field-path={\`items.\${index}.title\`}
+                  className="font-serif text-2xl"
+                >
+                  {item.title ?? "Collection"}
+                </h3>
+                <p
+                  data-storefront-field-path={\`items.\${index}.caption\`}
+                  className="mt-2 max-w-xs text-sm leading-6 text-stone-400"
+                >
+                  {item.caption ?? ""}
+                </p>
+              </div>
+            </div>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+`;
+
+export const LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE = `export type ImageWithTextProps = {
+  eyebrow?: string;
+  heading?: string;
+  body?: string;
+  actionLabel?: string;
+  actionHref?: string;
+  actionTarget?: "_self" | "_blank";
+  imageSrc?: string;
+  imageAlt?: string;
+  imagePosition?: string;
+};
+
+export default function ImageWithText({
+  eyebrow = "",
+  heading = "Story",
+  body = "",
+  actionLabel = "Explore",
+  actionHref = "#",
+  actionTarget = "_self",
+  imageSrc = "/static/storefront/theme-preview-default.png",
+  imageAlt = "Image with text",
+  imagePosition = "center",
+}: ImageWithTextProps) {
+  // A new tab must not hand the opened page a window.opener handle back to the
+  // store, which it could use to redirect this tab to a spoofed page.
+  const actionRel = actionTarget === "_blank" ? "noopener noreferrer" : undefined;
+  return (
+    <section
+      className="grid bg-[#d8d0c3] lg:grid-cols-2"
+    >
+      <div
+        className="min-h-[32rem] overflow-hidden lg:min-h-[52rem]"
+      >
+        <img
+          src={imageSrc}
+          alt={imageAlt}
+          style={{ objectPosition: imagePosition }}
+          className="size-full scale-110 object-cover"
+        />
+      </div>
+      <div className="flex items-center px-[clamp(2rem,7vw,7rem)] py-20">
+        <div className="max-w-xl">
+          <p
+            data-storefront-field="eyebrow"
+            className="text-xs font-medium uppercase tracking-[0.22em] text-stone-600"
+          >
+            {eyebrow}
+          </p>
+          <h2
+            data-storefront-field="heading"
+            className="mt-5 font-serif text-[clamp(3rem,5vw,5.5rem)] leading-[0.94] tracking-[-0.045em] text-stone-950"
+          >
+            {heading}
+          </h2>
+          <p
+            data-storefront-field="body"
+            className="mt-7 text-base leading-7 text-stone-700"
+          >
+            {body}
+          </p>
+          <a
+            href={actionHref}
+            target={actionTarget}
+            rel={actionRel}
+            data-storefront-field="actionLabel"
+            className="mt-9 inline-flex border-b border-current pb-1 text-sm font-medium"
+          >
+            {actionLabel}
+          </a>
+        </div>
+      </div>
+    </section>
+  );
+}
+`;
+
 export const LEGACY_STARTER_THEME_HEADER_SOURCE = `export default function Header({ storeName = "Online Store" }: { storeName?: string }) {
   return (
     <header className="flex h-16 items-center justify-between border-b border-neutral-200 bg-stone-50 px-5 sm:px-8">
@@ -882,6 +1105,8 @@ export default function EditorialIntro({
   title?: string;
   caption?: string;
   href?: string;
+  image?: { src?: string; alt?: string };
+  /** Read-only compatibility for documents created before image was grouped. */
   imageSrc?: string;
   imageAlt?: string;
   imagePosition?: string;
@@ -891,6 +1116,21 @@ export type CategoryShowcaseProps = {
   heading?: string;
   items?: CategoryShowcaseItem[];
 };
+
+export const contentFields = {
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  items: {
+    type: "array",
+    label: "Collections",
+    fields: {
+      title: { type: "text", label: "Title", maxLength: 150 },
+      caption: { type: "textarea", label: "Caption", maxLength: 300 },
+      href: { type: "url", label: "Link" },
+      image: { type: "image", label: "Image" },
+      imagePosition: { type: "text", label: "Image position", maxLength: 100 },
+    },
+  },
+} as const;
 
 export default function CategoryShowcase({
   heading = "Shop by collection",
@@ -923,8 +1163,10 @@ export default function CategoryShowcase({
           >
             <div className="aspect-[4/5] overflow-hidden bg-stone-800">
               <img
-                src={item.imageSrc ?? "/static/storefront/theme-preview-default.png"}
-                alt={item.imageAlt ?? "Collection item"}
+                data-storefront-field="image"
+                data-storefront-field-path={\`items.\${index}.image\`}
+                src={item.image?.src ?? item.imageSrc ?? "/static/storefront/theme-preview-default.png"}
+                alt={item.image?.alt ?? item.imageAlt ?? "Collection item"}
                 style={{ objectPosition: item.imagePosition ?? "center" }}
                 className="size-full object-cover opacity-80 transition-transform duration-500 ease-out group-hover:scale-[1.025]"
               />
@@ -964,10 +1206,22 @@ export default function CategoryShowcase({
   actionLabel?: string;
   actionHref?: string;
   actionTarget?: "_self" | "_blank";
+  image?: { src?: string; alt?: string };
+  /** Read-only compatibility for documents created before image was grouped. */
   imageSrc?: string;
   imageAlt?: string;
   imagePosition?: string;
 };
+
+export const contentFields = {
+  eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  body: { type: "textarea", label: "Body", maxLength: 700 },
+  actionLabel: { type: "text", label: "Action label", maxLength: 100 },
+  actionHref: { type: "url", label: "Action link" },
+  actionTarget: { type: "text", label: "Open in" },
+  image: { type: "image", label: "Image" },
+} as const;
 
 export default function ImageWithText({
   eyebrow = "",
@@ -976,13 +1230,18 @@ export default function ImageWithText({
   actionLabel = "Explore",
   actionHref = "#",
   actionTarget = "_self",
-  imageSrc = "/static/storefront/theme-preview-default.png",
-  imageAlt = "Image with text",
+  image,
+  imageSrc,
+  imageAlt,
   imagePosition = "center",
 }: ImageWithTextProps) {
   // A new tab must not hand the opened page a window.opener handle back to the
   // store, which it could use to redirect this tab to a spoofed page.
   const actionRel = actionTarget === "_blank" ? "noopener noreferrer" : undefined;
+  const displayImage = image ?? {
+    src: imageSrc ?? "/static/storefront/theme-preview-default.png",
+    alt: imageAlt ?? "Image with text",
+  };
   return (
     <section
       className="grid bg-[#d8d0c3] lg:grid-cols-2"
@@ -991,8 +1250,9 @@ export default function ImageWithText({
         className="min-h-[32rem] overflow-hidden lg:min-h-[52rem]"
       >
         <img
-          src={imageSrc}
-          alt={imageAlt}
+          data-storefront-field="image"
+          src={displayImage.src}
+          alt={displayImage.alt}
           style={{ objectPosition: imagePosition }}
           className="size-full scale-110 object-cover"
         />

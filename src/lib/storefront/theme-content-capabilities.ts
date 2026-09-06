@@ -2,6 +2,7 @@ import { z } from "zod";
 import { THEME_LINK_VALUE_KEYS } from "./theme-link";
 import {
   isSafeThemeMediaUrl,
+  isThemeImageValue,
   THEME_MEDIA_VALUE_KEYS,
   type ThemeMediaKind,
 } from "./theme-media";
@@ -230,8 +231,18 @@ const arrayContentFieldSchema = z
      * and nothing has to be repeated here.
      */
     of: rowComponentSpecifierSchema.optional(),
-    minRows: z.number().int().min(0).max(MAX_ARRAY_CONTENT_FIELD_ROWS).optional(),
-    maxRows: z.number().int().min(1).max(MAX_ARRAY_CONTENT_FIELD_ROWS).optional(),
+    minRows: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_ARRAY_CONTENT_FIELD_ROWS)
+      .optional(),
+    maxRows: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_ARRAY_CONTENT_FIELD_ROWS)
+      .optional(),
   })
   .strict()
   .refine(
@@ -244,10 +255,9 @@ const arrayContentFieldSchema = z
   // Exactly one source for the row shape. Accepting both would leave which one
   // wins to be discovered by experiment, and accepting neither would describe
   // a list whose rows have no fields.
-  .refine(
-    (field) => Boolean(field.fields) !== Boolean(field.of),
-    { message: "array fields must declare either fields or of, not both" },
-  );
+  .refine((field) => Boolean(field.fields) !== Boolean(field.of), {
+    message: "array fields must declare either fields or of, not both",
+  });
 
 export const themeContentFieldDefinitionSchema = z.union([
   scalarContentFieldSchema,
@@ -456,6 +466,16 @@ function assertThemeMediaFieldValue(
   sources: { allowExternal?: boolean; allowAsset?: boolean },
   invalid: (reason?: string) => never,
 ): void {
+  if (mediaType === "image" && isThemeImageValue(value)) {
+    if (typeof value.alt !== "string" || value.alt.length > 200) {
+      invalid("bad-image-alt");
+    }
+    // The grouped image keeps the existing media contract inside `src`, so
+    // asset ownership and source restrictions remain enforced in one place.
+    assertThemeMediaFieldValue(value.src, mediaType, sources, invalid);
+    return;
+  }
+
   // A string is the backwards-compatible value of a field promoted from URL.
   if (typeof value === "string") {
     if (sources.allowExternal === false) invalid("external-media-disabled");
@@ -599,7 +619,11 @@ function assertThemeContentFieldValue(
       if (typeof link.href !== "string" || link.href.length > 500) invalid();
       if (!isSafeContentUrl(link.href as string)) invalid();
     }
-    if (link.target !== undefined && link.target !== "_self" && link.target !== "_blank") {
+    if (
+      link.target !== undefined &&
+      link.target !== "_self" &&
+      link.target !== "_blank"
+    ) {
       invalid();
     }
     for (const key of ["nofollow", "download"] as const) {
@@ -607,7 +631,10 @@ function assertThemeContentFieldValue(
     }
     for (const key of ["title", "ariaLabel"] as const) {
       const text = link[key];
-      if (text !== undefined && (typeof text !== "string" || text.length > 200)) {
+      if (
+        text !== undefined &&
+        (typeof text !== "string" || text.length > 200)
+      ) {
         invalid();
       }
     }

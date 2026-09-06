@@ -65,6 +65,10 @@ export type StorefrontProductionServiceOptions = Readonly<{
   contentPorts?: ContentRuntimePorts;
   /** Required to serve published CMS media on the merchant hostname. */
   mediaPorts?: PublishedMediaPorts;
+  catalogHandler?: (
+    request: Request,
+    resolved: ResolvedStorefrontHost,
+  ) => Promise<Response | null>;
 }>;
 
 /**
@@ -95,6 +99,19 @@ export class StorefrontProductionService {
     }
 
     const resolved = resolution.value;
+
+    // Merchant hosts never enter the dashboard router. Only the public,
+    // read-only catalog capability is exposed here, under the resolved host.
+    if (/^\/api\/store\/(?:products(?:\/|$)|assets\/)/.test(url.pathname)) {
+      if (request.method !== "GET")
+        return errorResponse(405, "Method not allowed.");
+      if (!this.options.catalogHandler)
+        return errorResponse(503, "Catalog unavailable.");
+      return (
+        (await this.options.catalogHandler(request, resolved)) ??
+        errorResponse(404, "Not found.")
+      );
+    }
 
     if (url.pathname === STOREFRONT_CONTENT_PATH) {
       return this.serveContent(request, url, resolved);

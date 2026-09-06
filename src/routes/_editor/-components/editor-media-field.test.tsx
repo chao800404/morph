@@ -28,6 +28,19 @@ vi.mock("@/components/asset/asset-library-picker", () => ({
 }));
 
 describe("EditorMediaField", () => {
+  it("shows an image placeholder when the field is empty", () => {
+    render(
+      <EditorMediaField
+        label="Hero image"
+        mediaType="image"
+        value=""
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "No image selected" })).toBeTruthy();
+  });
+
   it("stores an external URL as a typed media value", () => {
     const onChange = vi.fn();
     render(
@@ -68,6 +81,8 @@ describe("EditorMediaField", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Assets" }));
+    expect(screen.getByRole("dialog").getAttribute("data-side")).toBe("left");
     fireEvent.click(screen.getByRole("button", { name: "Pick Hero image" }));
 
     expect(onChange).toHaveBeenCalledWith({
@@ -149,9 +164,33 @@ describe("EditorMediaField failure states (MEDIA-03)", () => {
       />,
     );
 
-    const pick = screen.getByRole("button", { name: /pick hero image/i });
-    expect(pick.getAttribute("data-disabled")).toBe("true");
-    fireEvent.click(pick);
+    const assets = screen.getByRole("button", { name: "Assets" });
+    expect((assets as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(assets);
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps alt text in the same image field card", () => {
+    const onAltChange = vi.fn();
+    const onAltPreview = vi.fn();
+    render(
+      <EditorMediaField
+        label="Hero image"
+        mediaType="image"
+        value="/hero.webp"
+        altText="Hero product"
+        onAltPreview={onAltPreview}
+        onAltChange={onAltChange}
+        onChange={vi.fn()}
+      />,
+    );
+
+    const alt = screen.getByRole("textbox", { name: "Hero image alt text" });
+    fireEvent.input(alt, { target: { value: "Updated hero" } });
+    fireEvent.blur(alt);
+
+    expect(onAltPreview).toHaveBeenLastCalledWith("Updated hero");
+    expect(onAltChange).toHaveBeenLastCalledWith("Updated hero");
   });
 });

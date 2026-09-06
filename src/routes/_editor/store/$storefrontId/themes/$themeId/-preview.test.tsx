@@ -112,6 +112,28 @@ describe("preview selection restore", () => {
     );
   });
 
+  it("does not let a stale source location select an image wrapper over its field", () => {
+    const section = document.createElement("section");
+    section.innerHTML = `
+      <div data-morph-loc="src/components/Hero.tsx:46:7">
+        <img data-morph-loc="src/components/Hero.tsx:47:9" data-storefront-field="imageSrc" />
+      </div>
+    `;
+    const image = section.querySelector<HTMLElement>(
+      '[data-storefront-field="imageSrc"]',
+    )!;
+
+    expect(
+      resolvePreviewSelectionRestoreElement(section, {
+        sectionId: "hero",
+        // This is the location of the image's wrapper from the previous
+        // preview structure. The field identity must win after a re-render.
+        sourceLocation: "src/components/Hero.tsx:46:7",
+        fieldKey: "imageSrc",
+      }),
+    ).toBe(image);
+  });
+
   it("falls back to the section and supports selecting another child afterward", () => {
     const section = document.createElement("section");
     section.innerHTML = `<button data-morph-element="first"></button><button data-morph-element="second"></button>`;

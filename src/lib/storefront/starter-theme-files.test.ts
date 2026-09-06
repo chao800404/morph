@@ -8,8 +8,11 @@ import {
   STARTER_THEME_FILES,
 } from "./starter-theme-files";
 import {
+  LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_HERO_SOURCE,
+  LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
@@ -376,6 +379,76 @@ describe("starter Principles theme source", () => {
     expect(upgradedPackage.devDependencies["@tanstack/router-plugin"]).toBe(
       "1.168.23",
     );
+  });
+
+  it("groups image source and alt props when upgrading untouched starter components", () => {
+    const currentByPath = new Map(
+      STARTER_THEME_FILES.map((file) => [file.path, file.content]),
+    );
+    for (const file of STARTER_THEME_V3_NEW_FILES) {
+      currentByPath.set(file.path, file.content);
+    }
+    const existing = [
+      {
+        id: "hero",
+        path: "src/components/Hero.tsx",
+        content: LEGACY_STARTER_THEME_HERO_SOURCE,
+        version: 4,
+      },
+      {
+        id: "categories",
+        path: "src/components/CategoryShowcase.tsx",
+        content: LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
+        version: 3,
+      },
+      {
+        id: "story",
+        path: "src/components/ImageWithText.tsx",
+        content: LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
+        version: 2,
+      },
+    ];
+
+    const upgrades = createStarterThemeWorkspaceUpgrade(existing);
+
+    expect(
+      upgrades.find((file) => file.path === "src/components/Hero.tsx"),
+    ).toMatchObject({
+      content: currentByPath.get("src/components/Hero.tsx"),
+      expectedFileId: "hero",
+      expectedVersion: 4,
+    });
+    expect(
+      upgrades.find(
+        (file) => file.path === "src/components/CategoryShowcase.tsx",
+      ),
+    ).toMatchObject({
+      content: currentByPath.get("src/components/CategoryShowcase.tsx"),
+      expectedFileId: "categories",
+      expectedVersion: 3,
+    });
+    expect(
+      upgrades.find((file) => file.path === "src/components/ImageWithText.tsx"),
+    ).toMatchObject({
+      content: currentByPath.get("src/components/ImageWithText.tsx"),
+      expectedFileId: "story",
+      expectedVersion: 2,
+    });
+
+    expect(
+      createStarterThemeWorkspaceUpgrade(
+        existing.map((file) => ({
+          ...file,
+          content: `${file.content}\n// authored`,
+        })),
+      ).some((file) =>
+        [
+          "src/components/Hero.tsx",
+          "src/components/CategoryShowcase.tsx",
+          "src/components/ImageWithText.tsx",
+        ].includes(file.path),
+      ),
+    ).toBe(false);
   });
 
   it("does not declare a document layout over an authored entry file", () => {

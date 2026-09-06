@@ -7,11 +7,8 @@ import { cartShippingDal } from "@/lib/shipping/dal/cart-shipping.dal";
 import { regionDal } from "@/lib/region/dal/region.dal";
 import { storeCatalogDal } from "@/lib/storefront/dal/store-catalog.dal";
 import { storeContextDal } from "@/lib/storefront/dal/store-context.dal";
-import {
-  productHandleSchema,
-  storeContextParamsSchema,
-  storeProductListParamsSchema,
-} from "@/lib/validations/store-api";
+import type { StoreContextDTO, StoreCatalogContextDTO } from "@/lib/storefront/dto/store-context.dto";
+import { storeContextParamsSchema } from "@/lib/validations/store-api";
 import {
   addStoreCartItemInputSchema,
   applyStoreCartPromotionInputSchema,
@@ -26,8 +23,6 @@ import {
   updateStoreCartInputSchema,
 } from "@/lib/validations/store-cart";
 import { createFileRoute } from "@tanstack/react-router";
-import { env } from "cloudflare:workers";
-import { z } from "zod";
 
 const jsonHeaders = {
   "access-control-allow-headers":
@@ -48,7 +43,9 @@ const privateResponse = (body: unknown, status = 200) =>
     headers: { ...jsonHeaders, "cache-control": "private, no-store" },
   });
 
-const contextOf = async (request: Request) => {
+function contextOf(request: Request, catalog: true): Promise<StoreCatalogContextDTO | null>;
+function contextOf(request: Request, catalog?: false): Promise<StoreContextDTO | null>;
+async function contextOf(request: Request, catalog = false): Promise<StoreCatalogContextDTO | null> {
   const url = new URL(request.url);
   const publishableKey =
     request.headers.get("x-publishable-api-key") ?? undefined;
@@ -57,7 +54,7 @@ const contextOf = async (request: Request) => {
     countryCode: url.searchParams.get("country_code") ?? undefined,
   });
   if (!parsed.success) return null;
-  return storeContextDal.resolve({
+  const input = {
     publishableKey,
     hostname:
       request.headers.get("x-storefront-host") ??
@@ -65,8 +62,9 @@ const contextOf = async (request: Request) => {
       undefined,
     regionId: parsed.data.regionId,
     countryCode: parsed.data.countryCode,
-  });
-};
+  };
+  return catalog ? storeContextDal.resolveCatalog(input) : storeContextDal.resolve(input);
+}
 
 const readJson = async (request: Request): Promise<unknown> => {
   try {
@@ -115,6 +113,11 @@ export const Route = createFileRoute("/_backend/api/store/$")({
         const path = url.pathname
           .replace(/^\/api\/store\/?/, "")
           .replace(/\/$/, "");
+        if (/^(?:products(?:\/|$)|assets\/)/.test(path)) {
+          const catalogContext = await contextOf(request, true);
+          if (!catalogContext) return invalidContext();
+          return (await handleStoreCatalogGet(request, catalogContext)) ?? response({ error: "NOT_FOUND" }, 404);
+        }
         const context = await contextOf(request);
         if (!context) {
           return response(
@@ -127,108 +130,6 @@ export const Route = createFileRoute("/_backend/api/store/$")({
           );
         }
 
-        if (path.startsWith("assets/")) {
-          const assetId = z.uuid().safeParse(path.slice("assets/".length));
-          if (!assetId.success)
-            return privateResponse(
-              { error: "INVALID_REQUEST", message: "Invalid asset ID" },
-              400,
-            );
-          const asset = await storeCatalogDal.findPublishedAsset(
-            assetId.data,
-            context.salesChannelId,
-          );
-          if (!asset)
-            return response(
-              { error: "NOT_FOUND", message: "Asset not found" },
-              404,
-            );
-          const rawKey = asset.url.replace(/^\/+/, "");
-          const object = await env.R2_BUCKET.get(
-            rawKey.startsWith("assets/") ? rawKey : `assets/${rawKey}`,
-          );
-          if (!object)
-            return response(
-              { error: "NOT_FOUND", message: "Asset file not found" },
-              404,
-            );
-          const headers = new Headers();
-          object.writeHttpMetadata(headers);
-          if (headers.get("content-type") === "image/svg+xml") {
-            const isValidatedSvg =
-              object.customMetadata?.svgValidated === "true";
-            headers.set(
-              "content-disposition",
-              isValidatedSvg ? "inline" : "attachment",
-            );
-            headers.set(
-              "content-security-policy",
-              "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
-            );
-          }
-          headers.set("etag", object.httpEtag);
-          headers.set("cache-control", "public, max-age=3600");
-          headers.set("x-content-type-options", "nosniff");
-          return new Response(object.body, { headers });
-        }
-
-        if (path === "products") {
-          const params = storeProductListParamsSchema.safeParse({
-            q: url.searchParams.get("q") ?? undefined,
-            page: url.searchParams.get("page") ?? undefined,
-            limit: url.searchParams.get("limit") ?? undefined,
-            order: url.searchParams.get("order") ?? undefined,
-          });
-          if (!params.success)
-            return response(
-              {
-                error: "INVALID_REQUEST",
-                message: "Invalid product list parameters",
-                details: params.error.flatten().fieldErrors,
-              },
-              400,
-            );
-          const result = await storeCatalogDal.listProducts({
-            salesChannelId: context.salesChannelId,
-            query: params.data.q,
-            page: params.data.page,
-            limit: params.data.limit,
-            sortOrder: params.data.order,
-          });
-          return response({
-            products: result.products,
-            context,
-            pagination: {
-              page: params.data.page,
-              limit: params.data.limit,
-              total: result.total,
-              totalPages: Math.ceil(result.total / params.data.limit),
-            },
-          });
-        }
-
-        if (path.startsWith("products/")) {
-          const parsed = productHandleSchema.safeParse(
-            decodeURIComponent(path.slice("products/".length)),
-          );
-          if (!parsed.success)
-            return response(
-              { error: "INVALID_REQUEST", message: "Invalid product handle" },
-              400,
-            );
-          const product = await storeCatalogDal.findProductByHandle(
-            parsed.data,
-            context.salesChannelId,
-            context.currencyCode,
-            context.regionId,
-          );
-          return product
-            ? response({ product, context })
-            : response(
-                { error: "NOT_FOUND", message: "Product not found" },
-                404,
-              );
-        }
 
         if (path === "collections") {
           return response({
@@ -692,3 +593,4 @@ export const Route = createFileRoute("/_backend/api/store/$")({
     },
   },
 });
+import { handleStoreCatalogGet } from "@/lib/storefront/service/store-catalog-request";

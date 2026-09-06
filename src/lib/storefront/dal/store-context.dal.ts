@@ -5,31 +5,101 @@ import { stores, storeLocales } from "@/db/currency.schema";
 import { publishableApiKeySalesChannels } from "@/db/link.schema";
 import { regionCountries, regions } from "@/db/region.schema";
 import { salesChannels } from "@/db/sales-channel.schema";
-import { storefrontDomains, storefronts } from "@/db/storefront.schema";
+import {
+  storefrontDomains,
+  storefronts,
+  storefrontThemes,
+} from "@/db/storefront.schema";
 import {
   parsePublishableKeyId,
   verifyPublishableKey,
 } from "@/lib/api-key/publishable-key";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import type { StoreContextDTO } from "../dto/store-context.dto";
+import type {
+  StoreContextDTO,
+  StoreCatalogContextDTO,
+} from "../dto/store-context.dto";
 
 export interface ResolveStoreContextInput {
   publishableKey?: string;
   hostname?: string;
   regionId?: string;
   countryCode?: string;
+  /** Internal only: the caller must already authorize this storefront. Never parse from public API input. */
+  authorizedStorefrontId?: string;
 }
 
 const normalizeHostname = (hostname: string) =>
   hostname.trim().toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "");
 
 export const storeContextDal = {
+  async resolveForTheme(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<StoreCatalogContextDTO | null> {
+    const db = await getDb();
+    const theme = firstOrNull(
+      await db
+        .select({ id: storefrontThemes.id })
+        .from(storefrontThemes)
+        .where(
+          and(
+            eq(storefrontThemes.id, themeId),
+            eq(storefrontThemes.storefrontId, storefrontId),
+            isNull(storefrontThemes.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
+    return theme
+      ? this.resolveCatalog({ authorizedStorefrontId: storefrontId })
+      : null;
+  },
   async resolve(
     input: ResolveStoreContextInput,
   ): Promise<StoreContextDTO | null> {
+    const context = await this.resolveCatalog(input);
+    return context?.regionId && context.currencyCode
+      ? {
+          ...context,
+          regionId: context.regionId,
+          currencyCode: context.currencyCode,
+        }
+      : null;
+  },
+  async resolveCatalog(
+    input: ResolveStoreContextInput,
+  ): Promise<StoreCatalogContextDTO | null> {
     const db = await getDb();
     const channelIds = new Set<string>();
     let storefrontId: string | null = null;
+    if (
+      !input.publishableKey &&
+      !input.hostname &&
+      !input.authorizedStorefrontId
+    )
+      return null;
+
+    if (input.authorizedStorefrontId) {
+      const storefront = firstOrNull(
+        await db
+          .select({
+            id: storefronts.id,
+            salesChannelId: storefronts.salesChannelId,
+          })
+          .from(storefronts)
+          .where(
+            and(
+              eq(storefronts.id, input.authorizedStorefrontId),
+              isNull(storefronts.deletedAt),
+            ),
+          )
+          .limit(1),
+      );
+      if (!storefront) return null;
+      storefrontId = storefront.id;
+      channelIds.add(storefront.salesChannelId);
+    }
 
     if (input.publishableKey) {
       const keyId = parsePublishableKeyId(input.publishableKey);
@@ -58,6 +128,7 @@ export const storeContextDal = {
         .from(publishableApiKeySalesChannels)
         .where(eq(publishableApiKeySalesChannels.apiKeyId, key.id));
       for (const link of links) channelIds.add(link.salesChannelId);
+      if (channelIds.size === 0) return null;
     }
 
     if (input.hostname) {
@@ -138,18 +209,21 @@ export const storeContextDal = {
         return null;
       regionId = country.regionId;
     }
-    if (!regionId) return null;
-    const [region] = await db
-      .select({
-        id: regions.id,
-        currencyCode: regions.currencyCode,
-        automaticTaxes: regions.automaticTaxes,
-        isTaxInclusive: regions.isTaxInclusive,
-      })
-      .from(regions)
-      .where(and(eq(regions.id, regionId), isNull(regions.deletedAt)))
-      .limit(1);
-    if (!region) return null;
+    const region = regionId
+      ? firstOrNull(
+          await db
+            .select({
+              id: regions.id,
+              currencyCode: regions.currencyCode,
+              automaticTaxes: regions.automaticTaxes,
+              isTaxInclusive: regions.isTaxInclusive,
+            })
+            .from(regions)
+            .where(and(eq(regions.id, regionId), isNull(regions.deletedAt)))
+            .limit(1),
+        )
+      : null;
+    if (regionId && !region) return null;
     const [locale] = await db
       .select({ localeCode: storeLocales.localeCode })
       .from(storeLocales)
@@ -160,10 +234,10 @@ export const storeContextDal = {
       storeId: store.id,
       storefrontId,
       salesChannelId,
-      regionId: region.id,
-      currencyCode: region.currencyCode,
-      automaticTaxes: region.automaticTaxes,
-      isTaxInclusive: region.isTaxInclusive,
+      regionId: region?.id ?? null,
+      currencyCode: region?.currencyCode ?? null,
+      automaticTaxes: region?.automaticTaxes ?? false,
+      isTaxInclusive: region?.isTaxInclusive ?? false,
       countryCode,
       localeCode: locale?.localeCode ?? null,
     };

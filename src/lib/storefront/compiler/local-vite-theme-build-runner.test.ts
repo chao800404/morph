@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import { STARTER_THEME_CATALOG_FILES } from "@/lib/storefront/starter-theme-catalog-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 
@@ -8,7 +9,11 @@ import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 // not enough headroom above that; the sibling describe below already uses 60s.
 describe("LocalViteThemeBuildRunner (Phase 4B-5)", { timeout: 60_000 }, () => {
   const createInput = (
-    files: Array<{ path: string; content: string | Uint8Array; isEntry?: boolean }>,
+    files: Array<{
+      path: string;
+      content: string | Uint8Array;
+      isEntry?: boolean;
+    }>,
     overrides?: Partial<ThemeBuildRunnerInput>,
   ): ThemeBuildRunnerInput => ({
     buildId: "test-build-1",
@@ -67,20 +72,22 @@ export default function HomePage() {
     if (result.success) {
       expect(result.artifacts.length).toBeGreaterThanOrEqual(3);
 
-      const htmlArtifact = result.artifacts.find((a) => a.path === "index.html");
+      const htmlArtifact = result.artifacts.find(
+        (a) => a.path === "index.html",
+      );
       expect(htmlArtifact).toBeDefined();
       expect(htmlArtifact?.mimeType).toBe("text/html");
       // Verify portable relative asset base: dist/index.html references ./assets/*
       expect(String(htmlArtifact?.content)).toMatch(/src=["']\.\/assets\//);
 
-      const jsArtifact = result.artifacts.find((a) =>
-        a.path.startsWith("assets/") && a.path.endsWith(".js"),
+      const jsArtifact = result.artifacts.find(
+        (a) => a.path.startsWith("assets/") && a.path.endsWith(".js"),
       );
       expect(jsArtifact).toBeDefined();
       expect(jsArtifact?.mimeType).toBe("application/javascript");
 
-      const cssArtifact = result.artifacts.find((a) =>
-        a.path.startsWith("assets/") && a.path.endsWith(".css"),
+      const cssArtifact = result.artifacts.find(
+        (a) => a.path.startsWith("assets/") && a.path.endsWith(".css"),
       );
       expect(cssArtifact).toBeDefined();
       expect(cssArtifact?.mimeType).toBe("text/css");
@@ -114,18 +121,23 @@ export default function HomePage() {
       },
       {
         path: "src/components/Hero.tsx",
-        content: "export default function Hero() { return <h1>Alias works</h1>; }",
+        content:
+          "export default function Hero() { return <h1>Alias works</h1>; }",
       },
       {
         path: "src/pages/index.tsx",
-        content: 'import Hero from "@/components/Hero"; export default () => <Hero />;',
+        content:
+          'import Hero from "@/components/Hero"; export default () => <Hero />;',
         isEntry: true,
       },
     ]);
 
     const result = await runner.run(input);
 
-    expect(result.success, result.success ? undefined : result.errorMessage).toBe(true);
+    expect(
+      result.success,
+      result.success ? undefined : result.errorMessage,
+    ).toBe(true);
   });
 
   it("builds source-authored TanStack routes through the isolated client preview adapter", async () => {
@@ -208,11 +220,26 @@ export const Route = createFileRoute("/")({ component: () => <main>Home</main> }
     }
   });
 
+  it("builds the independent catalog routes and isomorphic public loaders", async () => {
+    const runner = new LocalViteThemeBuildRunner();
+    const result = await runner.run(
+      createInput([...STARTER_THEME_FILES, ...STARTER_THEME_CATALOG_FILES], {
+        entry: "src/routes/index.tsx",
+      }),
+    );
+    expect(
+      result.success,
+      result.success ? undefined : result.errorMessage,
+    ).toBe(true);
+  });
+
   it("preserves binary artifacts intact as Uint8Array without utf-8 corruption", async () => {
     const runner = new LocalViteThemeBuildRunner();
 
     // 4-byte PNG signature header: 0x89, 0x50, 0x4E, 0x47
-    const mockPngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const mockPngBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
 
     const input = createInput([
       {
@@ -236,7 +263,9 @@ export const Route = createFileRoute("/")({ component: () => <main>Home</main> }
 
     expect(result.success).toBe(true);
     if (result.success) {
-      const pngArtifact = result.artifacts.find((a) => a.path === "test-image.png");
+      const pngArtifact = result.artifacts.find(
+        (a) => a.path === "test-image.png",
+      );
       expect(pngArtifact).toBeDefined();
       expect(pngArtifact?.mimeType).toBe("image/png");
       expect(pngArtifact?.content instanceof Uint8Array).toBe(true);
@@ -432,7 +461,6 @@ export default function Page() {
     }
   });
 
-
   it("enforces max source files limit", async () => {
     const runner = new LocalViteThemeBuildRunner({
       maxSourceFiles: 2,
@@ -461,7 +489,10 @@ export default function Page() {
     const input = createInput([
       {
         path: "src/pages/index.tsx",
-        content: "export default function Home() { return <div>" + "x".repeat(100) + "</div>; }",
+        content:
+          "export default function Home() { return <div>" +
+          "x".repeat(100) +
+          "</div>; }",
         isEntry: true,
       },
     ]);
@@ -509,7 +540,8 @@ export default function Page() {
     const input = createInput([
       {
         path: "src/pages/index.tsx",
-        content: "export default function Home() { return <div>Normal size</div>; }",
+        content:
+          "export default function Home() { return <div>Normal size</div>; }",
         isEntry: true,
       },
     ]);
@@ -531,7 +563,7 @@ export default function Page() {
     const input = createInput([
       {
         path: "src/styles/global.css",
-        content: "@import \"tailwindcss\";",
+        content: '@import "tailwindcss";',
       },
       {
         path: "src/pages/index.tsx",
@@ -550,40 +582,44 @@ export default function Page() {
   });
 });
 
-describe("build output stays free of editor annotations", { timeout: 60_000 }, () => {
-  it("never ships Theme source positions in a build artifact", async () => {
-    // Build Preview shows an immutable artifact and carries no editor channel,
-    // so source positions would be unreadable weight — and would place Theme
-    // source paths into stored build output.
-    const runner = new LocalViteThemeBuildRunner();
-    const result = await runner.run({
-      buildId: "loc-build",
-      storefrontId: "storefront-1",
-      themeId: "theme-1",
-      sourceRevisionId: "rev-1",
-      revisionNumber: 1,
-      entry: "src/routes/index.tsx",
-      inputHash: "a".repeat(64),
-      compilerId: "tailwind-v4-build",
-      compilerVersion: "4.1.17",
-      files: STARTER_THEME_FILES as never,
-    } as never);
+describe(
+  "build output stays free of editor annotations",
+  { timeout: 60_000 },
+  () => {
+    it("never ships Theme source positions in a build artifact", async () => {
+      // Build Preview shows an immutable artifact and carries no editor channel,
+      // so source positions would be unreadable weight — and would place Theme
+      // source paths into stored build output.
+      const runner = new LocalViteThemeBuildRunner();
+      const result = await runner.run({
+        buildId: "loc-build",
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        sourceRevisionId: "rev-1",
+        revisionNumber: 1,
+        entry: "src/routes/index.tsx",
+        inputHash: "a".repeat(64),
+        compilerId: "tailwind-v4-build",
+        compilerVersion: "4.1.17",
+        files: STARTER_THEME_FILES as never,
+      } as never);
 
-    expect(
-      result.success,
-      result.success ? undefined : result.errorMessage,
-    ).toBe(true);
-    if (!result.success) return;
+      expect(
+        result.success,
+        result.success ? undefined : result.errorMessage,
+      ).toBe(true);
+      if (!result.success) return;
 
-    const allOutput = result.artifacts
-      .filter((artifact) => artifact.path.endsWith(".js"))
-      .map((artifact) =>
-        typeof artifact.content === "string"
-          ? artifact.content
-          : new TextDecoder().decode(artifact.content as Uint8Array),
-      )
-      .join("");
+      const allOutput = result.artifacts
+        .filter((artifact) => artifact.path.endsWith(".js"))
+        .map((artifact) =>
+          typeof artifact.content === "string"
+            ? artifact.content
+            : new TextDecoder().decode(artifact.content as Uint8Array),
+        )
+        .join("");
 
-    expect(allOutput).not.toContain("data-morph-loc");
-  });
-});
+      expect(allOutput).not.toContain("data-morph-loc");
+    });
+  },
+);

@@ -59,6 +59,10 @@ import {
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
+import {
+  normalizeThemeImageValue,
+  withThemeImageSource,
+} from "@/lib/storefront/theme-media";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
@@ -269,6 +273,7 @@ const SPECIALIZED_CONTENT_FIELD_KEYS = new Set([
   "actionHref",
   "imageSrc",
   "imageAlt",
+  "image",
   "imagePosition",
 ]);
 
@@ -282,7 +287,24 @@ const DIRECT_CONTENT_FIELD_KEYS = [
   "actionHref",
   "imageSrc",
   "imageAlt",
+  "image",
 ] as const;
+
+// `selection.contentValue` is the live text-edit buffer from the preview. A
+// media element has no text nodes, so its value must continue to come from the
+// section Document instead of a stale/empty rendered text value.
+const MEDIA_SELECTION_KINDS = new Set([
+  "image",
+  "picture",
+  "icon",
+  "svg",
+  "video",
+  "audio",
+  "canvas",
+  "iframe",
+  "embed",
+  "map",
+]);
 
 const IMAGE_POSITION_OPTIONS = [
   "center",
@@ -662,7 +684,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     const local = localPropsRef.current;
     const rebased: Record<string, any> = { ...incoming };
     for (const key of Object.keys(local)) {
-      if (!sameContentValue(local[key], baseline[key])) rebased[key] = local[key];
+      if (!sameContentValue(local[key], baseline[key]))
+        rebased[key] = local[key];
     }
 
     localPropsRef.current = rebased;
@@ -696,8 +719,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     sourceLocation: activeSourceLocation,
   });
   // Render the new resource before its uncontrolled fields mount.
-  const props = contentResourceKey === lastContentResourceKeyRef.current
-    ? localProps : ((section.props as Record<string, any>) ?? {});
+  const props =
+    contentResourceKey === lastContentResourceKeyRef.current
+      ? localProps
+      : ((section.props as Record<string, any>) ?? {});
   const selectedField = activeFieldKey ?? activeElementKey;
   const isSelectedNode = activeSelectionIsSection === false;
   // Selecting a section from the sidebar intentionally clears the transient
@@ -706,6 +731,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // rendered empty even though the Document section has editable fields.
   const isSectionSelection = !isSelectedNode;
   const selectedKind = selection?.kind ?? "custom";
+  const useSelectionContentValue = !MEDIA_SELECTION_KINDS.has(selectedKind);
   // Restricted to this section: a selected parent can span several components,
   // and two instances of one component expose the same field names. Editing
   // through an unfiltered list would write to whichever instance came first.
@@ -757,6 +783,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     // selected text control so the Inspector converges immediately.
     if (
       isSelectedNode &&
+      useSelectionContentValue &&
       selectedField === key &&
       selection?.contentValue !== null &&
       selection?.contentValue !== undefined
@@ -764,13 +791,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       return selection.contentValue;
     }
     if (value !== undefined) return value;
-    return isSelectedNode && selectedField === key
+    return isSelectedNode && useSelectionContentValue && selectedField === key
       ? selection?.contentValue
       : undefined;
   };
   const contentFieldInputKey = (fieldKey: string) =>
     `${contentResourceKey}:${fieldKey}:${
-      isSelectedNode && selectedField === fieldKey
+      isSelectedNode && useSelectionContentValue && selectedField === fieldKey
         ? (selection?.contentValue ?? "")
         : ""
     }`;
@@ -978,7 +1005,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     visibleModules.add("content");
     if (
       descendantFieldKeys.has("imageSrc") ||
-      descendantFieldKeys.has("imageAlt")
+      descendantFieldKeys.has("imageAlt") ||
+      descendantFieldKeys.has("image")
     ) {
       visibleModules.add("media");
     }
@@ -1850,933 +1878,1098 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               {orderContentBlocks(
                 [
                   ...declaredContentFields
-                  .filter(
-                    ([fieldKey]) =>
-                      !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
-                      (!isSelectedNode || selectedField === fieldKey),
-                  )
+                    .filter(
+                      ([fieldKey]) =>
+                        !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
+                        (!isSelectedNode || selectedField === fieldKey),
+                    )
                     .map(([fieldKey, definition]) => ({
                       key: fieldKey,
                       node: ((): React.ReactNode => {
-                  const value = contentFieldDisplayValue(fieldKey);
-                  const label =
-                    definition.label ?? fieldKey.replace(/[-_]/g, " ");
-                  const previewAndCommitTextValue = (nextValue: string) => {
-                    onPreviewSelectionField?.(
-                      fieldKey,
-                      nestedFieldPath(fieldKey),
-                      nextValue,
-                    );
-                    handleFieldChange(fieldKey, nextValue, {
-                      skipPreviewSync: true,
-                    });
-                  };
+                        const value = contentFieldDisplayValue(fieldKey);
+                        const label =
+                          definition.label ?? fieldKey.replace(/[-_]/g, " ");
+                        const previewAndCommitTextValue = (
+                          nextValue: string,
+                        ) => {
+                          onPreviewSelectionField?.(
+                            fieldKey,
+                            nestedFieldPath(fieldKey),
+                            nextValue,
+                          );
+                          handleFieldChange(fieldKey, nextValue, {
+                            skipPreviewSync: true,
+                          });
+                        };
 
-                  if (definition.type === "image" || definition.type === "video") {
-                    return (
-                      <EditorMediaField
-                        key={fieldKey}
-                        label={label}
-                        description={definition.description}
-                        mediaType={definition.type}
-                        value={value}
-                        allowExternal={definition.allowExternal !== false}
-                        allowAsset={definition.allowAsset !== false}
-                        disabled={disabled}
-                        isFocused={activeFieldKey === fieldKey}
-                        onChange={(next) => handleFieldChange(fieldKey, next)}
-                      />
-                    );
-                  }
+                        if (
+                          definition.type === "image" ||
+                          definition.type === "video"
+                        ) {
+                          return (
+                            <EditorMediaField
+                              key={fieldKey}
+                              label={label}
+                              description={definition.description}
+                              mediaType={definition.type}
+                              value={value}
+                              allowExternal={definition.allowExternal !== false}
+                              allowAsset={definition.allowAsset !== false}
+                              disabled={disabled}
+                              isFocused={activeFieldKey === fieldKey}
+                              onChange={(next) =>
+                                handleFieldChange(fieldKey, next)
+                              }
+                            />
+                          );
+                        }
 
-                  if (definition.type === "array") {
-                    const rows: Record<string, unknown>[] = Array.isArray(value)
-                      ? (value as Record<string, unknown>[])
-                      : [];
-                    const resolvedRowFields = arrayRowFields(definition);
-                    // A list whose row shape never resolved is shown as such
-                    // rather than as an empty list: the difference is whether the
-                    // Theme is misdeclared or simply has no entries yet.
-                    if (!resolvedRowFields) {
-                      return (
-                        <p
-                          key={fieldKey}
-                          className={cn(
-                            inspectorFieldHintClassName,
-                            "leading-relaxed",
-                          )}
-                        >
-                          {label} cannot be edited: its row component could not
-                          be resolved.
-                        </p>
-                      );
-                    }
-                    const rowFields = Object.entries(resolvedRowFields);
-                    const minRows = definition.minRows ?? 0;
-                    const maxRows =
-                      definition.maxRows ?? MAX_ARRAY_CONTENT_FIELD_ROWS;
-                    return (
-                      <div key={fieldKey} className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span
-                            className={cn(
-                              inspectorFieldLabelClassName,
-                              "text-muted-foreground capitalize",
-                            )}
-                          >
-                            {label}
-                          </span>
-                          <span className={inspectorFieldHintClassName}>
-                            {rows.length}
-                          </span>
-                        </div>
-                        {rows.length === 0 ? (
-                          <p
-                            className={cn(
-                              inspectorFieldHintClassName,
-                              "leading-relaxed",
-                            )}
-                          >
-                            No entries yet.
-                          </p>
-                        ) : null}
-                        {rows.map((row, index) => (
-                          <div
-                            key={
-                              typeof row?.id === "string"
-                                ? row.id
-                                : `${fieldKey}-${index}`
-                            }
-                            className={cn(
-                              inspectorContentCardClassName,
-                              "bg-muted/30",
-                            )}
-                          >
-                            <div className="flex items-center justify-between">
+                        if (definition.type === "array") {
+                          const rows: Record<string, unknown>[] = Array.isArray(
+                            value,
+                          )
+                            ? (value as Record<string, unknown>[])
+                            : [];
+                          const resolvedRowFields = arrayRowFields(definition);
+                          // A list whose row shape never resolved is shown as such
+                          // rather than as an empty list: the difference is whether the
+                          // Theme is misdeclared or simply has no entries yet.
+                          if (!resolvedRowFields) {
+                            return (
                               <p
+                                key={fieldKey}
                                 className={cn(
                                   inspectorFieldHintClassName,
-                                  "font-mono",
+                                  "leading-relaxed",
                                 )}
                               >
-                                {index + 1}
+                                {label} cannot be edited: its row component
+                                could not be resolved.
                               </p>
+                            );
+                          }
+                          const rowFields = Object.entries(resolvedRowFields);
+                          const minRows = definition.minRows ?? 0;
+                          const maxRows =
+                            definition.maxRows ?? MAX_ARRAY_CONTENT_FIELD_ROWS;
+                          return (
+                            <div key={fieldKey} className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span
+                                  className={cn(
+                                    inspectorFieldLabelClassName,
+                                    "text-muted-foreground capitalize",
+                                  )}
+                                >
+                                  {label}
+                                </span>
+                                <span className={inspectorFieldHintClassName}>
+                                  {rows.length}
+                                </span>
+                              </div>
+                              {rows.length === 0 ? (
+                                <p
+                                  className={cn(
+                                    inspectorFieldHintClassName,
+                                    "leading-relaxed",
+                                  )}
+                                >
+                                  No entries yet.
+                                </p>
+                              ) : null}
+                              {rows.map((row, index) => (
+                                <div
+                                  key={
+                                    typeof row?.id === "string"
+                                      ? row.id
+                                      : `${fieldKey}-${index}`
+                                  }
+                                  className={cn(
+                                    inspectorContentCardClassName,
+                                    "bg-muted/30",
+                                  )}
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <p
+                                      className={cn(
+                                        inspectorFieldHintClassName,
+                                        "font-mono",
+                                      )}
+                                    >
+                                      {index + 1}
+                                    </p>
+                                    <button
+                                      type="button"
+                                      disabled={
+                                        disabled || rows.length <= minRows
+                                      }
+                                      onClick={() =>
+                                        mutateArrayRows((current) =>
+                                          removeArrayRowAtFieldPath(
+                                            current,
+                                            `${fieldKey}.${index}`,
+                                            definition,
+                                          ),
+                                        )
+                                      }
+                                      className="text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-40"
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                  {rowFields.map(([rowKey, rowDefinition]) => {
+                                    const rowLabel =
+                                      rowDefinition.label ??
+                                      rowKey.replace(/[-_]/g, " ");
+                                    // Brings its own header and several controls, so it
+                                    // replaces the single-control row rather than
+                                    // sitting inside it.
+                                    if (rowDefinition.type === "link") {
+                                      return (
+                                        <InspectorLinkField
+                                          key={rowKey}
+                                          label={rowLabel}
+                                          description={
+                                            rowDefinition.description
+                                          }
+                                          value={normalizeThemeLinkValue(
+                                            row?.[rowKey],
+                                          )}
+                                          pages={internalLinkPages}
+                                          binding={resolveThemeLinkBinding(
+                                            componentFile?.content,
+                                            rowKey,
+                                          )}
+                                          onSwitchBinding={
+                                            componentPath &&
+                                            onSwitchThemeLinkElement
+                                              ? (target) =>
+                                                  void onSwitchThemeLinkElement(
+                                                    componentPath,
+                                                    rowKey,
+                                                    target,
+                                                  )
+                                              : undefined
+                                          }
+                                          disabled={disabled}
+                                          onChange={(next) =>
+                                            handleNestedFieldChange(
+                                              `${fieldKey}.${index}.${rowKey}`,
+                                              next,
+                                            )
+                                          }
+                                        />
+                                      );
+                                    }
+                                    if (
+                                      rowDefinition.type === "image" ||
+                                      rowDefinition.type === "video"
+                                    ) {
+                                      const usesGroupedImage =
+                                        rowDefinition.type === "image" &&
+                                        rowKey === "image";
+                                      const groupedImage = usesGroupedImage
+                                        ? normalizeThemeImageValue(
+                                            row?.[rowKey],
+                                          )
+                                        : null;
+                                      const rowMediaValue = usesGroupedImage
+                                        ? groupedImage?.src
+                                        : row?.[rowKey];
+                                      const rowImagePath = `${fieldKey}.${index}.${rowKey}`;
+                                      return (
+                                        <EditorMediaField
+                                          key={rowKey}
+                                          label={rowLabel}
+                                          description={
+                                            rowDefinition.description
+                                          }
+                                          mediaType={rowDefinition.type}
+                                          value={rowMediaValue}
+                                          altText={
+                                            usesGroupedImage
+                                              ? groupedImage?.alt
+                                              : undefined
+                                          }
+                                          onAltPreview={
+                                            usesGroupedImage
+                                              ? (next) =>
+                                                  onPreviewSelectionField?.(
+                                                    rowKey,
+                                                    `${rowImagePath}.alt`,
+                                                    next,
+                                                  )
+                                              : undefined
+                                          }
+                                          onAltChange={
+                                            usesGroupedImage
+                                              ? (next) =>
+                                                  handleNestedFieldChange(
+                                                    rowImagePath,
+                                                    {
+                                                      src:
+                                                        groupedImage?.src ?? "",
+                                                      alt: next,
+                                                    },
+                                                  )
+                                              : undefined
+                                          }
+                                          allowExternal={
+                                            rowDefinition.allowExternal !==
+                                            false
+                                          }
+                                          allowAsset={
+                                            rowDefinition.allowAsset !== false
+                                          }
+                                          disabled={disabled}
+                                          onChange={(next) =>
+                                            handleNestedFieldChange(
+                                              rowImagePath,
+                                              usesGroupedImage
+                                                ? withThemeImageSource(
+                                                    row?.[rowKey],
+                                                    next,
+                                                  )
+                                                : next,
+                                            )
+                                          }
+                                        />
+                                      );
+                                    }
+                                    return (
+                                      <InspectorField
+                                        key={rowKey}
+                                        label={rowLabel}
+                                      >
+                                        {rowDefinition.type === "textarea" ? (
+                                          <Textarea
+                                            key={contentFieldInputKey(rowKey)}
+                                            defaultValue={String(
+                                              row?.[rowKey] ?? "",
+                                            )}
+                                            maxLength={rowDefinition.maxLength}
+                                            onInput={(event) =>
+                                              handleNestedFieldChange(
+                                                `${fieldKey}.${index}.${rowKey}`,
+                                                event.currentTarget.value,
+                                              )
+                                            }
+                                            disabled={disabled}
+                                            className="min-h-16 text-xs"
+                                          />
+                                        ) : (
+                                          <Input
+                                            type={
+                                              rowDefinition.type === "url"
+                                                ? "url"
+                                                : rowDefinition.type ===
+                                                    "number"
+                                                  ? "number"
+                                                  : "text"
+                                            }
+                                            defaultValue={String(
+                                              row?.[rowKey] ?? "",
+                                            )}
+                                            maxLength={
+                                              rowDefinition.type === "text" ||
+                                              rowDefinition.type === "url"
+                                                ? rowDefinition.maxLength
+                                                : undefined
+                                            }
+                                            onInput={(event) =>
+                                              handleNestedFieldChange(
+                                                `${fieldKey}.${index}.${rowKey}`,
+                                                rowDefinition.type === "number"
+                                                  ? Number(
+                                                      event.currentTarget.value,
+                                                    )
+                                                  : event.currentTarget.value,
+                                              )
+                                            }
+                                            disabled={disabled}
+                                            className={cn(
+                                              "h-7 text-xs",
+                                              rowDefinition.type === "url" &&
+                                                "font-mono",
+                                            )}
+                                          />
+                                        )}
+                                      </InspectorField>
+                                    );
+                                  })}
+                                </div>
+                              ))}
                               <button
                                 type="button"
-                                disabled={disabled || rows.length <= minRows}
+                                disabled={disabled || rows.length >= maxRows}
                                 onClick={() =>
                                   mutateArrayRows((current) =>
-                                    removeArrayRowAtFieldPath(
+                                    addArrayRowAtFieldPath(
                                       current,
-                                      `${fieldKey}.${index}`,
+                                      fieldKey,
                                       definition,
+                                      {
+                                        createId: createMorphItemId,
+                                      },
                                     ),
                                   )
                                 }
-                                className="text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-40"
+                                className="w-full rounded-lg border border-dashed py-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
                               >
-                                Remove
+                                Add entry
                               </button>
-                            </div>
-                            {rowFields.map(([rowKey, rowDefinition]) => {
-                              const rowLabel =
-                                rowDefinition.label ??
-                                rowKey.replace(/[-_]/g, " ");
-                              // Brings its own header and several controls, so it
-                              // replaces the single-control row rather than
-                              // sitting inside it.
-                              if (rowDefinition.type === "link") {
-                                return (
-                                  <InspectorLinkField
-                                    key={rowKey}
-                                    label={rowLabel}
-                                    description={rowDefinition.description}
-                                    value={normalizeThemeLinkValue(
-                                      row?.[rowKey],
-                                    )}
-                                    pages={internalLinkPages}
-                                    binding={resolveThemeLinkBinding(
-                                      componentFile?.content,
-                                      rowKey,
-                                    )}
-                                    onSwitchBinding={
-                                      componentPath && onSwitchThemeLinkElement
-                                        ? (target) =>
-                                            void onSwitchThemeLinkElement(
-                                              componentPath,
-                                              rowKey,
-                                              target,
-                                            )
-                                        : undefined
-                                    }
-                                    disabled={disabled}
-                                    onChange={(next) =>
-                                      handleNestedFieldChange(
-                                        `${fieldKey}.${index}.${rowKey}`,
-                                        next,
-                                      )
-                                    }
-                                  />
-                                );
-                              }
-                              if (
-                                rowDefinition.type === "image" ||
-                                rowDefinition.type === "video"
-                              ) {
-                                return (
-                                  <EditorMediaField
-                                    key={rowKey}
-                                    label={rowLabel}
-                                    description={rowDefinition.description}
-                                    mediaType={rowDefinition.type}
-                                    value={row?.[rowKey]}
-                                    allowExternal={rowDefinition.allowExternal !== false}
-                                    allowAsset={rowDefinition.allowAsset !== false}
-                                    disabled={disabled}
-                                    onChange={(next) =>
-                                      handleNestedFieldChange(
-                                        `${fieldKey}.${index}.${rowKey}`,
-                                        next,
-                                      )
-                                    }
-                                  />
-                                );
-                              }
-                              return (
-                                <InspectorField key={rowKey} label={rowLabel}>
-                                  {rowDefinition.type === "textarea" ? (
-                                    <Textarea
-                                      key={contentFieldInputKey(rowKey)}
-                                      defaultValue={String(row?.[rowKey] ?? "")}
-                                      maxLength={rowDefinition.maxLength}
-                                      onInput={(event) =>
-                                        handleNestedFieldChange(
-                                          `${fieldKey}.${index}.${rowKey}`,
-                                          event.currentTarget.value,
-                                        )
-                                      }
-                                      disabled={disabled}
-                                      className="min-h-16 text-xs"
-                                    />
-                                  ) : (
-                                    <Input
-                                      type={
-                                        rowDefinition.type === "url"
-                                          ? "url"
-                                          : rowDefinition.type === "number"
-                                            ? "number"
-                                            : "text"
-                                      }
-                                      defaultValue={String(row?.[rowKey] ?? "")}
-                                      maxLength={
-                                        rowDefinition.type === "text" ||
-                                        rowDefinition.type === "url"
-                                          ? rowDefinition.maxLength
-                                          : undefined
-                                      }
-                                      onInput={(event) =>
-                                        handleNestedFieldChange(
-                                          `${fieldKey}.${index}.${rowKey}`,
-                                          rowDefinition.type === "number"
-                                            ? Number(event.currentTarget.value)
-                                            : event.currentTarget.value,
-                                        )
-                                      }
-                                      disabled={disabled}
-                                      className={cn(
-                                        "h-7 text-xs",
-                                        rowDefinition.type === "url" &&
-                                          "font-mono",
-                                      )}
-                                    />
+                              {definition.description ? (
+                                <p
+                                  className={cn(
+                                    inspectorFieldHintClassName,
+                                    "leading-relaxed",
                                   )}
-                                </InspectorField>
-                              );
-                            })}
-                          </div>
-                        ))}
-                        <button
-                          type="button"
-                          disabled={disabled || rows.length >= maxRows}
-                          onClick={() =>
-                            mutateArrayRows((current) =>
-                              addArrayRowAtFieldPath(
-                                current,
-                                fieldKey,
-                                definition,
-                                {
-                                  createId: createMorphItemId,
-                                },
-                              ),
-                            )
-                          }
-                          className="w-full rounded-lg border border-dashed py-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-                        >
-                          Add entry
-                        </button>
-                        {definition.description ? (
-                          <p
-                            className={cn(
-                              inspectorFieldHintClassName,
-                              "leading-relaxed",
-                            )}
-                          >
-                            {definition.description}
-                          </p>
-                        ) : null}
-                      </div>
-                    );
-                  }
-
-                  if (definition.type === "boolean") {
-                    return (
-                      <InspectorSelectControl
-                        key={fieldKey}
-                        label={label}
-                        ariaLabel={label}
-                        value={value === true ? "true" : "false"}
-                        onValueChange={(nextValue) => {
-                          onPreviewSelectionField?.(
-                            fieldKey,
-                            nestedFieldPath(fieldKey),
-                            nextValue,
+                                >
+                                  {definition.description}
+                                </p>
+                              ) : null}
+                            </div>
                           );
-                          handleFieldChange(fieldKey, nextValue === "true");
-                        }}
-                        options={["true", "false"]}
-                        formatOption={(option) =>
-                          option === "true" ? "True" : "False"
                         }
-                        disabled={disabled}
-                      />
-                    );
-                  }
 
-                  if (definition.type === "link") {
-                    return (
-                      <InspectorLinkField
-                        key={fieldKey}
-                        label={label}
-                        description={definition.description}
-                        value={normalizeThemeLinkValue(value)}
-                        pages={internalLinkPages}
-                        binding={resolveThemeLinkBinding(
-                          componentFile?.content,
-                          fieldKey,
-                        )}
-                        disabled={disabled}
-                        isFocused={activeFieldKey === fieldKey}
-                        onChange={(next) => handleFieldChange(fieldKey, next)}
-                        onSwitchBinding={
-                          componentPath && onSwitchThemeLinkElement
-                            ? (target) =>
-                                void onSwitchThemeLinkElement(
-                                  componentPath,
+                        if (definition.type === "boolean") {
+                          return (
+                            <InspectorSelectControl
+                              key={fieldKey}
+                              label={label}
+                              ariaLabel={label}
+                              value={value === true ? "true" : "false"}
+                              onValueChange={(nextValue) => {
+                                onPreviewSelectionField?.(
                                   fieldKey,
-                                  target,
-                                )
-                            : undefined
-                        }
-                      />
-                    );
-                  }
-
-                  if (definition.type === "select") {
-                    return (
-                      <InspectorSelectControl
-                        key={fieldKey}
-                        label={label}
-                        ariaLabel={label}
-                        value={String(value ?? definition.options[0]?.value)}
-                        onValueChange={(nextValue) => {
-                          onPreviewSelectionField?.(
-                            fieldKey,
-                            nestedFieldPath(fieldKey),
-                            nextValue,
+                                  nestedFieldPath(fieldKey),
+                                  nextValue,
+                                );
+                                handleFieldChange(
+                                  fieldKey,
+                                  nextValue === "true",
+                                );
+                              }}
+                              options={["true", "false"]}
+                              formatOption={(option) =>
+                                option === "true" ? "True" : "False"
+                              }
+                              disabled={disabled}
+                            />
                           );
-                          handleFieldChange(fieldKey, nextValue);
-                        }}
-                        options={definition.options.map(
-                          (option) => option.value,
-                        )}
-                        formatOption={(value) =>
-                          definition.options.find(
-                            (option) => option.value === value,
-                          )?.label ?? value
                         }
-                        disabled={disabled}
-                      />
-                    );
-                  }
 
-                  return (
-                    <InspectorField
-                      key={fieldKey}
-                      label={label}
-                      isFocused={activeFieldKey === fieldKey}
-                    >
-                      {definition.type === "textarea" ? (
-                        <Textarea
-                          rows={3}
-                          defaultValue={String(value ?? "")}
-                          maxLength={definition.maxLength}
-                          onInput={(event) => {
-                            previewAndCommitTextValue(
-                              event.currentTarget.value,
-                            );
-                          }}
-                          disabled={disabled}
-                          className="min-h-20 resize-none text-xs"
-                        />
-                      ) : definition.type === "number" ? (
-                        <Input
-                          type="number"
-                          defaultValue={typeof value === "number" ? value : ""}
-                          min={definition.min}
-                          max={definition.max}
-                          step={definition.step}
-                          onInput={(event) => {
-                            onPreviewSelectionField?.(
-                              fieldKey,
-                              nestedFieldPath(fieldKey),
-                              event.currentTarget.value,
-                            );
-                          }}
-                          onBlur={(event) => {
-                            const rawValue = event.currentTarget.value.trim();
-                            if (!rawValue) return;
-                            const parsed = Number(rawValue);
-                            if (Number.isFinite(parsed)) {
-                              handleFieldChange(fieldKey, parsed);
-                            }
-                          }}
-                          disabled={disabled}
-                          className="h-7 text-xs"
-                        />
-                      ) : (
-                        <Input
-                          type={definition.type === "url" ? "url" : "text"}
-                          defaultValue={String(value ?? "")}
-                          maxLength={definition.maxLength}
-                          onInput={(event) => {
-                            previewAndCommitTextValue(
-                              event.currentTarget.value,
-                            );
-                          }}
-                          disabled={disabled}
-                          className={cn(
-                            "h-7 text-xs",
-                            definition.type === "url" && "font-mono",
-                          )}
-                        />
-                      )}
-                      {definition.description ? (
-                        <p
-                          className={cn(
-                            inspectorFieldHintClassName,
-                            "leading-relaxed",
-                          )}
-                        >
-                          {definition.description}
-                        </p>
-                      ) : null}
-                    </InspectorField>
-                  );
+                        if (definition.type === "link") {
+                          return (
+                            <InspectorLinkField
+                              key={fieldKey}
+                              label={label}
+                              description={definition.description}
+                              value={normalizeThemeLinkValue(value)}
+                              pages={internalLinkPages}
+                              binding={resolveThemeLinkBinding(
+                                componentFile?.content,
+                                fieldKey,
+                              )}
+                              disabled={disabled}
+                              isFocused={activeFieldKey === fieldKey}
+                              onChange={(next) =>
+                                handleFieldChange(fieldKey, next)
+                              }
+                              onSwitchBinding={
+                                componentPath && onSwitchThemeLinkElement
+                                  ? (target) =>
+                                      void onSwitchThemeLinkElement(
+                                        componentPath,
+                                        fieldKey,
+                                        target,
+                                      )
+                                  : undefined
+                              }
+                            />
+                          );
+                        }
+
+                        if (definition.type === "select") {
+                          return (
+                            <InspectorSelectControl
+                              key={fieldKey}
+                              label={label}
+                              ariaLabel={label}
+                              value={String(
+                                value ?? definition.options[0]?.value,
+                              )}
+                              onValueChange={(nextValue) => {
+                                onPreviewSelectionField?.(
+                                  fieldKey,
+                                  nestedFieldPath(fieldKey),
+                                  nextValue,
+                                );
+                                handleFieldChange(fieldKey, nextValue);
+                              }}
+                              options={definition.options.map(
+                                (option) => option.value,
+                              )}
+                              formatOption={(value) =>
+                                definition.options.find(
+                                  (option) => option.value === value,
+                                )?.label ?? value
+                              }
+                              disabled={disabled}
+                            />
+                          );
+                        }
+
+                        return (
+                          <InspectorField
+                            key={fieldKey}
+                            label={label}
+                            isFocused={activeFieldKey === fieldKey}
+                          >
+                            {definition.type === "textarea" ? (
+                              <Textarea
+                                rows={3}
+                                defaultValue={String(value ?? "")}
+                                maxLength={definition.maxLength}
+                                onInput={(event) => {
+                                  previewAndCommitTextValue(
+                                    event.currentTarget.value,
+                                  );
+                                }}
+                                disabled={disabled}
+                                className="min-h-20 resize-none text-xs"
+                              />
+                            ) : definition.type === "number" ? (
+                              <Input
+                                type="number"
+                                defaultValue={
+                                  typeof value === "number" ? value : ""
+                                }
+                                min={definition.min}
+                                max={definition.max}
+                                step={definition.step}
+                                onInput={(event) => {
+                                  onPreviewSelectionField?.(
+                                    fieldKey,
+                                    nestedFieldPath(fieldKey),
+                                    event.currentTarget.value,
+                                  );
+                                }}
+                                onBlur={(event) => {
+                                  const rawValue =
+                                    event.currentTarget.value.trim();
+                                  if (!rawValue) return;
+                                  const parsed = Number(rawValue);
+                                  if (Number.isFinite(parsed)) {
+                                    handleFieldChange(fieldKey, parsed);
+                                  }
+                                }}
+                                disabled={disabled}
+                                className="h-7 text-xs"
+                              />
+                            ) : (
+                              <Input
+                                type={
+                                  definition.type === "url" ? "url" : "text"
+                                }
+                                defaultValue={String(value ?? "")}
+                                maxLength={definition.maxLength}
+                                onInput={(event) => {
+                                  previewAndCommitTextValue(
+                                    event.currentTarget.value,
+                                  );
+                                }}
+                                disabled={disabled}
+                                className={cn(
+                                  "h-7 text-xs",
+                                  definition.type === "url" && "font-mono",
+                                )}
+                              />
+                            )}
+                            {definition.description ? (
+                              <p
+                                className={cn(
+                                  inspectorFieldHintClassName,
+                                  "leading-relaxed",
+                                )}
+                              >
+                                {definition.description}
+                              </p>
+                            ) : null}
+                          </InspectorField>
+                        );
                       })(),
                     })),
-              { key: contentOrderKey("eyebrow"), node: showField("eyebrow") &&
-                ("eyebrow" in props ||
-                  descendantFieldKeys.has("eyebrow") ||
-                  isDeclaredContentField("eyebrow")) && (
-                  <InspectorField
-                    label={declaredContentFieldLabel(
-                      "eyebrow",
-                      "Eyebrow / Subtitle",
-                    )}
-                    isFocused={activeFieldKey === "eyebrow"}
-                  >
-                    <Input
-                      key={contentFieldInputKey("eyebrow")}
-                      defaultValue={String(
-                        contentFieldDisplayValue("eyebrow") ?? "",
-                      )}
-                      maxLength={declaredContentFieldMaxLength("eyebrow")}
-                      onInput={(e) =>
-                        onPreviewSelectionField?.(
-                          "eyebrow",
-                          nestedFieldPath("eyebrow"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      onBlur={(e) =>
-                        handleTextFieldBlur(
-                          "eyebrow",
-                          contentFieldDisplayValue("eyebrow"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      disabled={disabled}
-                      placeholder="Eyebrow text..."
-                      className="h-7 text-xs"
-                    />
-                  </InspectorField>
-                ) },
-              { key: contentOrderKey("label"), node: showField("label") &&
-                ("label" in props ||
-                  descendantFieldKeys.has("label") ||
-                  isDeclaredContentField("label") ||
-                  (isSelectedNode && selectedField === "label")) && (
-                  <InspectorField
-                    label={declaredContentFieldLabel("label", "Label")}
-                    isFocused={activeFieldKey === "label"}
-                  >
-                    <Input
-                      key={contentFieldInputKey("label")}
-                      defaultValue={String(
-                        contentFieldDisplayValue("label") ?? "",
-                      )}
-                      maxLength={declaredContentFieldMaxLength("label")}
-                      onInput={(e) =>
-                        onPreviewSelectionField?.(
-                          "label",
-                          nestedFieldPath("label"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      onBlur={(e) =>
-                        handleTextFieldBlur(
-                          "label",
-                          contentFieldDisplayValue("label"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      disabled={disabled}
-                      placeholder="Section label..."
-                      className="h-7 text-xs"
-                    />
-                  </InspectorField>
-                ) },
-              { key: contentOrderKey("heading"), node: showField("heading") &&
-                ("heading" in props ||
-                  descendantFieldKeys.has("heading") ||
-                  isDeclaredContentField("heading")) && (
-                  <InspectorField
-                    label={declaredContentFieldLabel("heading", "Heading")}
-                    isFocused={activeFieldKey === "heading"}
-                  >
-                    <Textarea
-                      key={contentFieldInputKey("heading")}
-                      rows={2}
-                      defaultValue={String(
-                        contentFieldDisplayValue("heading") ?? "",
-                      )}
-                      maxLength={declaredContentFieldMaxLength("heading")}
-                      onInput={(e) =>
-                        onPreviewSelectionField?.(
-                          "heading",
-                          nestedFieldPath("heading"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      onBlur={(e) =>
-                        handleTextFieldBlur(
-                          "heading",
-                          contentFieldDisplayValue("heading"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      disabled={disabled}
-                      placeholder="Main headline..."
-                      className="min-h-16 text-xs resize-none"
-                    />
-                  </InspectorField>
-                ) },
-              { key: contentOrderKey("description", "body"), node: showField("description", "body") &&
-                ("description" in props ||
-                  descendantFieldKeys.has("description") ||
-                  isDeclaredContentField("description")) && (
-                  <InspectorField
-                    label={declaredContentFieldLabel(
-                      "description",
-                      "Description",
-                    )}
-                    isFocused={activeFieldKey === "description"}
-                  >
-                    <Textarea
-                      key={contentFieldInputKey("description")}
-                      rows={3}
-                      defaultValue={String(
-                        contentFieldDisplayValue("description") ?? "",
-                      )}
-                      maxLength={declaredContentFieldMaxLength("description")}
-                      onInput={(e) =>
-                        onPreviewSelectionField?.(
-                          "description",
-                          nestedFieldPath("description"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      onBlur={(e) =>
-                        handleTextFieldBlur(
-                          "description",
-                          contentFieldDisplayValue("description"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      disabled={disabled}
-                      placeholder="Body description..."
-                      className="min-h-20 text-xs resize-none"
-                    />
-                  </InspectorField>
-                ) },
-              { key: contentOrderKey("body", "description"), node: showField("body", "description") &&
-                ("body" in props ||
-                  hasActiveRepeatedBody ||
-                  descendantFieldKeys.has("body") ||
-                  isDeclaredContentField("body")) && (
-                  <InspectorField
-                    label={declaredContentFieldLabel("body", "Body text")}
-                    isFocused={activeFieldKey === "body"}
-                  >
-                    <Textarea
-                      key={contentFieldInputKey("body")}
-                      rows={3}
-                      defaultValue={String(
-                        hasActiveRepeatedBody
-                          ? (contentFieldDisplayValue("body") ?? "")
-                          : (contentFieldDisplayValue("body") ?? ""),
-                      )}
-                      maxLength={declaredContentFieldMaxLength("body")}
-                      onInput={(e) =>
-                        onPreviewSelectionField?.(
-                          "body",
-                          nestedFieldPath("body"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      onBlur={(e) =>
-                        handleTextFieldBlur(
-                          "body",
-                          contentFieldDisplayValue("body"),
-                          e.currentTarget.value,
-                        )
-                      }
-                      disabled={disabled}
-                      placeholder="Section body text..."
-                      className="min-h-20 text-xs resize-none"
-                    />
-                  </InspectorField>
-                ) },
-              { key: contentOrderKey("actionLabel", "actionHref", "action"), node: showField("actionLabel", "actionHref", "action") &&
-                ("actionLabel" in props ||
-                  descendantFieldKeys.has("actionLabel")) && (
-                  <div
-                    className={cn(
-                      inspectorContentCardClassName,
-                      activeFieldKey === "actionLabel" ||
-                        activeFieldKey === "actionHref" ||
-                        activeElementKey === "action"
-                        ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
-                        : "bg-muted/20",
-                    )}
-                  >
-                    {/* Header carries the destination switch the way Media Image
-                      carries its position select: the card's one mode control
-                      sits beside the title, not inside the field grid. */}
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                        <Link className="size-3 text-muted-foreground" />
-                        <span>Action Button</span>
-                      </span>
-                      {legacyActionLinkBinding !== "unknown" ? (
-                        <LinkDestinationKindSwitch
-                          binding={legacyActionLinkBinding}
-                          disabled={disabled || !componentPath}
-                          onSwitch={(target) => {
-                            if (!componentPath) return;
-                            void onSwitchThemeLinkElement?.(
-                              componentPath,
-                              "actionHref",
-                              target,
-                            );
-                          }}
-                        />
-                      ) : null}
-                    </div>
-                    <div className="space-y-2">
-                      <div className={inspectorFieldControlGroupClassName}>
-                        <label
-                          className={cn(
-                            inspectorFieldLabelClassName,
-                            "text-muted-foreground",
+                  {
+                    key: contentOrderKey("eyebrow"),
+                    node: showField("eyebrow") &&
+                      ("eyebrow" in props ||
+                        descendantFieldKeys.has("eyebrow") ||
+                        isDeclaredContentField("eyebrow")) && (
+                        <InspectorField
+                          label={declaredContentFieldLabel(
+                            "eyebrow",
+                            "Eyebrow / Subtitle",
                           )}
+                          isFocused={activeFieldKey === "eyebrow"}
                         >
-                          Label
-                        </label>
-                        <Input
-                          key={contentFieldInputKey("actionLabel")}
-                          defaultValue={String(
-                            selectedFieldValue("actionLabel") ?? "",
-                          )}
-                          onInput={(e) =>
-                            onPreviewSelectionField?.(
-                              "actionLabel",
-                              nestedFieldPath("actionLabel"),
-                              e.currentTarget.value,
-                            )
-                          }
-                          onBlur={(e) =>
-                            handleTextFieldBlur(
-                              "actionLabel",
-                              selectedFieldValue("actionLabel"),
-                              e.currentTarget.value,
-                            )
-                          }
-                          disabled={disabled}
-                          placeholder="Button text"
-                          className="h-7 text-xs"
-                        />
-                      </div>
-                      {legacyActionLinkBinding === "unknown" ? (
-                        <div className="rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 p-2 text-[10px] leading-relaxed text-muted-foreground">
-                          <p className="font-medium text-foreground">
-                            Link destination is not connected to the editable
-                            field.
-                          </p>
-                          <p className="mt-1">
-                            This component has a hardcoded or unsupported link.
-                            Bind it to{" "}
-                            <code className="rounded bg-muted px-1 font-mono text-[10px]">
-                              to={"{"}actionHref{"}"}
-                            </code>{" "}
-                            (or{" "}
-                            <code className="rounded bg-muted px-1 font-mono text-[10px]">
-                              href={"{"}actionHref{"}"}
-                            </code>{" "}
-                            ) to enable the correct control here.
-                          </p>
-                          <div className="mt-1.5 flex flex-wrap gap-1">
-                            {componentPath &&
-                            canRepairLegacyActionLink &&
-                            onRepairThemeLinkBinding ? (
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                size="xs"
-                                className="h-6 px-1.5 text-[10px]"
-                                onClick={() =>
-                                  void onRepairThemeLinkBinding(
-                                    componentPath,
-                                    "actionHref",
-                                  )
-                                }
-                              >
-                                <Link className="mr-1 size-3" />
-                                Connect actionHref
-                              </Button>
-                            ) : null}
-                            {componentPath && onJumpToCode ? (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="xs"
-                                className="h-6 px-1.5 text-[10px]"
-                                onClick={() => onJumpToCode(componentPath)}
-                              >
-                                <Code2 className="mr-1 size-3" />
-                                Edit in Code
-                              </Button>
-                            ) : null}
-                          </div>
-                        </div>
-                      ) : legacyActionLinkBinding === "router" ? (
-                        <div className={inspectorFieldControlGroupClassName}>
-                          <label
-                            className={cn(
-                              inspectorFieldLabelClassName,
-                              "text-muted-foreground",
-                            )}
-                          >
-                            Page
-                          </label>
-                          <Select
-                            value={
-                              internalLinkPages.some(
-                                (page) =>
-                                  page.path ===
-                                  String(
-                                    selectedFieldValue("actionHref") ?? "",
-                                  ),
-                              )
-                                ? String(selectedFieldValue("actionHref"))
-                                : ""
-                            }
-                            onValueChange={(value) =>
-                              handleFieldChange("actionHref", value)
-                            }
-                            disabled={
-                              disabled || internalLinkPages.length === 0
-                            }
-                          >
-                            <InspectorSelectTrigger className="h-7 w-full">
-                              <SelectValue
-                                placeholder={
-                                  internalLinkPages.length === 0
-                                    ? "No pages yet"
-                                    : "Choose a page"
-                                }
-                              />
-                            </InspectorSelectTrigger>
-                            <InspectorSelectContent>
-                              {internalLinkPages.map((page) => (
-                                <InspectorSelectItem
-                                  key={page.path}
-                                  value={page.path}
-                                >
-                                  {page.label}
-                                </InspectorSelectItem>
-                              ))}
-                            </InspectorSelectContent>
-                          </Select>
-                        </div>
-                      ) : (
-                        <div className={inspectorFieldControlGroupClassName}>
-                          <label
-                            className={cn(
-                              inspectorFieldLabelClassName,
-                              "text-muted-foreground",
-                            )}
-                          >
-                            Link path / URL
-                          </label>
                           <Input
-                            key={contentFieldInputKey("actionHref")}
+                            key={contentFieldInputKey("eyebrow")}
                             defaultValue={String(
-                              selectedFieldValue("actionHref") ?? "",
+                              contentFieldDisplayValue("eyebrow") ?? "",
                             )}
+                            maxLength={declaredContentFieldMaxLength("eyebrow")}
+                            onInput={(e) =>
+                              onPreviewSelectionField?.(
+                                "eyebrow",
+                                nestedFieldPath("eyebrow"),
+                                e.currentTarget.value,
+                              )
+                            }
                             onBlur={(e) =>
                               handleTextFieldBlur(
-                                "actionHref",
-                                selectedFieldValue("actionHref"),
+                                "eyebrow",
+                                contentFieldDisplayValue("eyebrow"),
                                 e.currentTarget.value,
                               )
                             }
                             disabled={disabled}
-                            placeholder="/about or https://example.com"
-                            className="h-7 text-xs font-mono"
-                            aria-label="Action Button path or URL"
+                            placeholder="Eyebrow text..."
+                            className="h-7 text-xs"
                           />
-                        </div>
-                      )}
-                    </div>
-
-                    {legacyActionLinkBinding !== "unknown" ? (
-                      <div>
-                        <div className={inspectorFieldControlGroupClassName}>
-                          <label
-                            className={cn(
-                              inspectorFieldLabelClassName,
-                              "text-muted-foreground",
+                        </InspectorField>
+                      ),
+                  },
+                  {
+                    key: contentOrderKey("label"),
+                    node: showField("label") &&
+                      ("label" in props ||
+                        descendantFieldKeys.has("label") ||
+                        isDeclaredContentField("label") ||
+                        (isSelectedNode && selectedField === "label")) && (
+                        <InspectorField
+                          label={declaredContentFieldLabel("label", "Label")}
+                          isFocused={activeFieldKey === "label"}
+                        >
+                          <Input
+                            key={contentFieldInputKey("label")}
+                            defaultValue={String(
+                              contentFieldDisplayValue("label") ?? "",
                             )}
-                          >
-                            Open in
-                          </label>
-                          <Select
-                            value={normalizeThemeLinkTarget(
-                              selectedFieldValue("actionTarget"),
-                            )}
-                            onValueChange={(value) =>
-                              handleFieldChange("actionTarget", value)
+                            maxLength={declaredContentFieldMaxLength("label")}
+                            onInput={(e) =>
+                              onPreviewSelectionField?.(
+                                "label",
+                                nestedFieldPath("label"),
+                                e.currentTarget.value,
+                              )
+                            }
+                            onBlur={(e) =>
+                              handleTextFieldBlur(
+                                "label",
+                                contentFieldDisplayValue("label"),
+                                e.currentTarget.value,
+                              )
                             }
                             disabled={disabled}
-                          >
-                            <InspectorSelectTrigger className="h-7 w-full">
-                              <SelectValue placeholder="Same tab" />
-                            </InspectorSelectTrigger>
-                            <InspectorSelectContent>
-                              <InspectorSelectItem value="_self">
-                                Same tab
-                              </InspectorSelectItem>
-                              <InspectorSelectItem value="_blank">
-                                New tab
-                              </InspectorSelectItem>
-                            </InspectorSelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) },
-              { key: contentOrderKey("imageSrc", "imageAlt", "image"), node: showField("imageSrc", "imageAlt", "image") &&
-                selectedFieldValue("imageSrc") !== undefined && (
-                  <div className="space-y-2">
-                    <EditorMediaField
-                      key={contentFieldInputKey("imageSrc")}
-                      label={declaredContentFieldLabel("imageSrc", "Media Image")}
-                      mediaType="image"
-                      value={selectedFieldValue("imageSrc")}
-                      isFocused={
-                        activeFieldKey === "imageSrc" ||
-                        activeElementKey === "image"
-                      }
-                      allowExternal={
-                        themeContentCapability?.fields.imageSrc?.type !== "image" ||
-                        themeContentCapability.fields.imageSrc.allowExternal !== false
-                      }
-                      allowAsset={
-                        themeContentCapability?.fields.imageSrc?.type !== "image" ||
-                        themeContentCapability.fields.imageSrc.allowAsset !== false
-                      }
-                      disabled={disabled}
-                      onChange={(next) => {
-                        const storedValue =
-                          themeContentCapability?.fields.imageSrc?.type === "image"
-                            ? next
-                            : next.url;
-                        const path = nestedFieldPath("imageSrc");
-                        if (path) {
-                          handleNestedFieldChange(path, storedValue);
-                        } else {
-                          handleFieldChange("imageSrc", storedValue);
-                        }
-                      }}
-                    />
-                    {selectedFieldValue("imageAlt") !== undefined && (
-                      <InspectorField
-                        label={declaredContentFieldLabel("imageAlt", "Alt text")}
-                        isFocused={activeFieldKey === "imageAlt"}
-                      >
-                        <Input
-                          key={contentFieldInputKey("imageAlt")}
-                          defaultValue={String(
-                            selectedFieldValue("imageAlt") ?? "",
+                            placeholder="Section label..."
+                            className="h-7 text-xs"
+                          />
+                        </InspectorField>
+                      ),
+                  },
+                  {
+                    key: contentOrderKey("heading"),
+                    node: showField("heading") &&
+                      ("heading" in props ||
+                        descendantFieldKeys.has("heading") ||
+                        isDeclaredContentField("heading")) && (
+                        <InspectorField
+                          label={declaredContentFieldLabel(
+                            "heading",
+                            "Heading",
                           )}
-                          onInput={(e) =>
+                          isFocused={activeFieldKey === "heading"}
+                        >
+                          <Textarea
+                            key={contentFieldInputKey("heading")}
+                            rows={2}
+                            defaultValue={String(
+                              contentFieldDisplayValue("heading") ?? "",
+                            )}
+                            maxLength={declaredContentFieldMaxLength("heading")}
+                            onInput={(e) =>
+                              onPreviewSelectionField?.(
+                                "heading",
+                                nestedFieldPath("heading"),
+                                e.currentTarget.value,
+                              )
+                            }
+                            onBlur={(e) =>
+                              handleTextFieldBlur(
+                                "heading",
+                                contentFieldDisplayValue("heading"),
+                                e.currentTarget.value,
+                              )
+                            }
+                            disabled={disabled}
+                            placeholder="Main headline..."
+                            className="min-h-16 text-xs resize-none"
+                          />
+                        </InspectorField>
+                      ),
+                  },
+                  {
+                    key: contentOrderKey("description", "body"),
+                    node: showField("description", "body") &&
+                      ("description" in props ||
+                        descendantFieldKeys.has("description") ||
+                        isDeclaredContentField("description")) && (
+                        <InspectorField
+                          label={declaredContentFieldLabel(
+                            "description",
+                            "Description",
+                          )}
+                          isFocused={activeFieldKey === "description"}
+                        >
+                          <Textarea
+                            key={contentFieldInputKey("description")}
+                            rows={3}
+                            defaultValue={String(
+                              contentFieldDisplayValue("description") ?? "",
+                            )}
+                            maxLength={declaredContentFieldMaxLength(
+                              "description",
+                            )}
+                            onInput={(e) =>
+                              onPreviewSelectionField?.(
+                                "description",
+                                nestedFieldPath("description"),
+                                e.currentTarget.value,
+                              )
+                            }
+                            onBlur={(e) =>
+                              handleTextFieldBlur(
+                                "description",
+                                contentFieldDisplayValue("description"),
+                                e.currentTarget.value,
+                              )
+                            }
+                            disabled={disabled}
+                            placeholder="Body description..."
+                            className="min-h-20 text-xs resize-none"
+                          />
+                        </InspectorField>
+                      ),
+                  },
+                  {
+                    key: contentOrderKey("body", "description"),
+                    node: showField("body", "description") &&
+                      ("body" in props ||
+                        hasActiveRepeatedBody ||
+                        descendantFieldKeys.has("body") ||
+                        isDeclaredContentField("body")) && (
+                        <InspectorField
+                          label={declaredContentFieldLabel("body", "Body text")}
+                          isFocused={activeFieldKey === "body"}
+                        >
+                          <Textarea
+                            key={contentFieldInputKey("body")}
+                            rows={3}
+                            defaultValue={String(
+                              hasActiveRepeatedBody
+                                ? (contentFieldDisplayValue("body") ?? "")
+                                : (contentFieldDisplayValue("body") ?? ""),
+                            )}
+                            maxLength={declaredContentFieldMaxLength("body")}
+                            onInput={(e) =>
+                              onPreviewSelectionField?.(
+                                "body",
+                                nestedFieldPath("body"),
+                                e.currentTarget.value,
+                              )
+                            }
+                            onBlur={(e) =>
+                              handleTextFieldBlur(
+                                "body",
+                                contentFieldDisplayValue("body"),
+                                e.currentTarget.value,
+                              )
+                            }
+                            disabled={disabled}
+                            placeholder="Section body text..."
+                            className="min-h-20 text-xs resize-none"
+                          />
+                        </InspectorField>
+                      ),
+                  },
+                  {
+                    key: contentOrderKey("actionLabel", "actionHref", "action"),
+                    node: showField("actionLabel", "actionHref", "action") &&
+                      ("actionLabel" in props ||
+                        descendantFieldKeys.has("actionLabel")) && (
+                        <div
+                          className={cn(
+                            inspectorContentCardClassName,
+                            activeFieldKey === "actionLabel" ||
+                              activeFieldKey === "actionHref" ||
+                              activeElementKey === "action"
+                              ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
+                              : "bg-muted/20",
+                          )}
+                        >
+                          {/* Header carries the destination switch the way Media Image
+                      carries its position select: the card's one mode control
+                      sits beside the title, not inside the field grid. */}
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                              <Link className="size-3 text-muted-foreground" />
+                              <span>Action Button</span>
+                            </span>
+                            {legacyActionLinkBinding !== "unknown" ? (
+                              <LinkDestinationKindSwitch
+                                binding={legacyActionLinkBinding}
+                                disabled={disabled || !componentPath}
+                                onSwitch={(target) => {
+                                  if (!componentPath) return;
+                                  void onSwitchThemeLinkElement?.(
+                                    componentPath,
+                                    "actionHref",
+                                    target,
+                                  );
+                                }}
+                              />
+                            ) : null}
+                          </div>
+                          <div className="space-y-2">
+                            <div
+                              className={inspectorFieldControlGroupClassName}
+                            >
+                              <label
+                                className={cn(
+                                  inspectorFieldLabelClassName,
+                                  "text-muted-foreground",
+                                )}
+                              >
+                                Label
+                              </label>
+                              <Input
+                                key={contentFieldInputKey("actionLabel")}
+                                defaultValue={String(
+                                  selectedFieldValue("actionLabel") ?? "",
+                                )}
+                                onInput={(e) =>
+                                  onPreviewSelectionField?.(
+                                    "actionLabel",
+                                    nestedFieldPath("actionLabel"),
+                                    e.currentTarget.value,
+                                  )
+                                }
+                                onBlur={(e) =>
+                                  handleTextFieldBlur(
+                                    "actionLabel",
+                                    selectedFieldValue("actionLabel"),
+                                    e.currentTarget.value,
+                                  )
+                                }
+                                disabled={disabled}
+                                placeholder="Button text"
+                                className="h-7 text-xs"
+                              />
+                            </div>
+                            {legacyActionLinkBinding === "unknown" ? (
+                              <div className="rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 p-2 text-[10px] leading-relaxed text-muted-foreground">
+                                <p className="font-medium text-foreground">
+                                  Link destination is not connected to the
+                                  editable field.
+                                </p>
+                                <p className="mt-1">
+                                  This component has a hardcoded or unsupported
+                                  link. Bind it to{" "}
+                                  <code className="rounded bg-muted px-1 font-mono text-[10px]">
+                                    to={"{"}actionHref{"}"}
+                                  </code>{" "}
+                                  (or{" "}
+                                  <code className="rounded bg-muted px-1 font-mono text-[10px]">
+                                    href={"{"}actionHref{"}"}
+                                  </code>{" "}
+                                  ) to enable the correct control here.
+                                </p>
+                                <div className="mt-1.5 flex flex-wrap gap-1">
+                                  {componentPath &&
+                                  canRepairLegacyActionLink &&
+                                  onRepairThemeLinkBinding ? (
+                                    <Button
+                                      type="button"
+                                      variant="secondary"
+                                      size="xs"
+                                      className="h-6 px-1.5 text-[10px]"
+                                      onClick={() =>
+                                        void onRepairThemeLinkBinding(
+                                          componentPath,
+                                          "actionHref",
+                                        )
+                                      }
+                                    >
+                                      <Link className="mr-1 size-3" />
+                                      Connect actionHref
+                                    </Button>
+                                  ) : null}
+                                  {componentPath && onJumpToCode ? (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="xs"
+                                      className="h-6 px-1.5 text-[10px]"
+                                      onClick={() =>
+                                        onJumpToCode(componentPath)
+                                      }
+                                    >
+                                      <Code2 className="mr-1 size-3" />
+                                      Edit in Code
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ) : legacyActionLinkBinding === "router" ? (
+                              <div
+                                className={inspectorFieldControlGroupClassName}
+                              >
+                                <label
+                                  className={cn(
+                                    inspectorFieldLabelClassName,
+                                    "text-muted-foreground",
+                                  )}
+                                >
+                                  Page
+                                </label>
+                                <Select
+                                  value={
+                                    internalLinkPages.some(
+                                      (page) =>
+                                        page.path ===
+                                        String(
+                                          selectedFieldValue("actionHref") ??
+                                            "",
+                                        ),
+                                    )
+                                      ? String(selectedFieldValue("actionHref"))
+                                      : ""
+                                  }
+                                  onValueChange={(value) =>
+                                    handleFieldChange("actionHref", value)
+                                  }
+                                  disabled={
+                                    disabled || internalLinkPages.length === 0
+                                  }
+                                >
+                                  <InspectorSelectTrigger className="h-7 w-full">
+                                    <SelectValue
+                                      placeholder={
+                                        internalLinkPages.length === 0
+                                          ? "No pages yet"
+                                          : "Choose a page"
+                                      }
+                                    />
+                                  </InspectorSelectTrigger>
+                                  <InspectorSelectContent>
+                                    {internalLinkPages.map((page) => (
+                                      <InspectorSelectItem
+                                        key={page.path}
+                                        value={page.path}
+                                      >
+                                        {page.label}
+                                      </InspectorSelectItem>
+                                    ))}
+                                  </InspectorSelectContent>
+                                </Select>
+                              </div>
+                            ) : (
+                              <div
+                                className={inspectorFieldControlGroupClassName}
+                              >
+                                <label
+                                  className={cn(
+                                    inspectorFieldLabelClassName,
+                                    "text-muted-foreground",
+                                  )}
+                                >
+                                  Link path / URL
+                                </label>
+                                <Input
+                                  key={contentFieldInputKey("actionHref")}
+                                  defaultValue={String(
+                                    selectedFieldValue("actionHref") ?? "",
+                                  )}
+                                  onBlur={(e) =>
+                                    handleTextFieldBlur(
+                                      "actionHref",
+                                      selectedFieldValue("actionHref"),
+                                      e.currentTarget.value,
+                                    )
+                                  }
+                                  disabled={disabled}
+                                  placeholder="/about or https://example.com"
+                                  className="h-7 text-xs font-mono"
+                                  aria-label="Action Button path or URL"
+                                />
+                              </div>
+                            )}
+                          </div>
+
+                          {legacyActionLinkBinding !== "unknown" ? (
+                            <div>
+                              <div
+                                className={inspectorFieldControlGroupClassName}
+                              >
+                                <label
+                                  className={cn(
+                                    inspectorFieldLabelClassName,
+                                    "text-muted-foreground",
+                                  )}
+                                >
+                                  Open in
+                                </label>
+                                <Select
+                                  value={normalizeThemeLinkTarget(
+                                    selectedFieldValue("actionTarget"),
+                                  )}
+                                  onValueChange={(value) =>
+                                    handleFieldChange("actionTarget", value)
+                                  }
+                                  disabled={disabled}
+                                >
+                                  <InspectorSelectTrigger className="h-7 w-full">
+                                    <SelectValue placeholder="Same tab" />
+                                  </InspectorSelectTrigger>
+                                  <InspectorSelectContent>
+                                    <InspectorSelectItem value="_self">
+                                      Same tab
+                                    </InspectorSelectItem>
+                                    <InspectorSelectItem value="_blank">
+                                      New tab
+                                    </InspectorSelectItem>
+                                  </InspectorSelectContent>
+                                </Select>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ),
+                  },
+                  {
+                    key: contentOrderKey("image", "imageSrc", "imageAlt"),
+                    node: (() => {
+                      const usesGroupedImage =
+                        isDeclaredContentField("image") ||
+                        Object.prototype.hasOwnProperty.call(props, "image") ||
+                        descendantFieldKeys.has("image") ||
+                        selectedField === "image";
+                      const imageFieldKey = usesGroupedImage
+                        ? "image"
+                        : "imageSrc";
+                      const legacyImageValue =
+                        props.imageSrc !== undefined
+                          ? {
+                              src: props.imageSrc,
+                              alt: String(props.imageAlt ?? ""),
+                            }
+                          : undefined;
+                      const rawImageValue = usesGroupedImage
+                        ? props.image !== undefined
+                          ? contentFieldDisplayValue("image")
+                          : (legacyImageValue ??
+                            contentFieldDisplayValue("image"))
+                        : contentFieldDisplayValue("imageSrc");
+                      const imageValue = usesGroupedImage
+                        ? normalizeThemeImageValue(rawImageValue)
+                        : null;
+                      const imageSourceValue = usesGroupedImage
+                        ? imageValue?.src
+                        : rawImageValue;
+                      const imageAltValue = usesGroupedImage
+                        ? imageValue?.alt
+                        : contentFieldDisplayValue("imageAlt");
+                      const imageDefinition =
+                        themeContentCapability?.fields[imageFieldKey];
+                      const hasImageValue =
+                        rawImageValue !== undefined ||
+                        isDeclaredContentField(imageFieldKey) ||
+                        selectedField === imageFieldKey;
+                      if (
+                        !hasImageValue ||
+                        !showField("image", "imageSrc", "imageAlt")
+                      ) {
+                        return null;
+                      }
+                      const imagePath = nestedFieldPath(imageFieldKey);
+                      const altPath = usesGroupedImage
+                        ? imagePath
+                          ? `${imagePath}.alt`
+                          : "image.alt"
+                        : nestedFieldPath("imageAlt");
+                      const commitImage = (next: unknown) => {
+                        if (imagePath) {
+                          handleNestedFieldChange(imagePath, next);
+                        } else {
+                          handleFieldChange(imageFieldKey, next);
+                        }
+                      };
+                      const commitImageAlt = (next: string) => {
+                        if (usesGroupedImage) {
+                          const grouped =
+                            normalizeThemeImageValue(rawImageValue);
+                          commitImage({ src: grouped.src, alt: next });
+                        } else if (altPath) {
+                          handleNestedFieldChange(altPath, next);
+                        } else {
+                          handleFieldChange("imageAlt", next);
+                        }
+                      };
+                      return (
+                        <EditorMediaField
+                          key={contentFieldInputKey(imageFieldKey)}
+                          label={declaredContentFieldLabel(
+                            imageFieldKey,
+                            "Media Image",
+                          )}
+                          mediaType="image"
+                          value={imageSourceValue}
+                          altText={String(imageAltValue ?? "")}
+                          onAltPreview={(next) =>
                             onPreviewSelectionField?.(
-                              "imageAlt",
-                              nestedFieldPath("imageAlt"),
-                              e.currentTarget.value,
+                              usesGroupedImage ? "image" : "imageAlt",
+                              altPath,
+                              next,
                             )
                           }
-                          onBlur={(e) =>
-                            nestedFieldPath("imageAlt")
-                              ? handleNestedFieldChange(
-                                  nestedFieldPath("imageAlt")!,
-                                  e.currentTarget.value,
-                                )
-                              : handleFieldChange(
-                                  "imageAlt",
-                                  e.currentTarget.value,
-                                )
+                          onAltChange={commitImageAlt}
+                          isFocused={
+                            activeFieldKey === imageFieldKey ||
+                            activeElementKey === "image"
+                          }
+                          allowExternal={
+                            imageDefinition?.type !== "image" ||
+                            imageDefinition.allowExternal !== false
+                          }
+                          allowAsset={
+                            imageDefinition?.type !== "image" ||
+                            imageDefinition.allowAsset !== false
                           }
                           disabled={disabled}
-                          placeholder="Describe this image"
-                          className="h-7 text-xs"
+                          onChange={(next) =>
+                            commitImage(
+                              usesGroupedImage
+                                ? withThemeImageSource(rawImageValue, next)
+                                : imageDefinition?.type === "image"
+                                  ? next
+                                  : next.url,
+                            )
+                          }
                         />
-                      </InspectorField>
-                    )}
-                  </div>
-                ) },
+                      );
+                    })(),
+                  },
                 ],
                 contentFieldOrder,
               ).map(({ key, node }) =>

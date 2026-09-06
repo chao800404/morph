@@ -85,7 +85,17 @@ const linkSchema = z.object({
   actionTarget: z.enum(["_self", "_blank"]).nullish().default("_self"),
 });
 
+const groupedImageSchema = z.object({
+  src: z
+    .string()
+    .max(2_000)
+    .nullish()
+    .default("/static/storefront/theme-preview-default.png"),
+  alt: z.string().max(200).nullish().default("Storefront image"),
+});
+
 const imageSchema = z.object({
+  image: z.union([groupedImageSchema, z.string().max(2_000)]).nullish(),
   imageSrc: z
     .string()
     .max(2_000)
@@ -139,6 +149,7 @@ const categoryShowcasePropsSchema = z
           title: z.string().max(150).nullish().default("Collection"),
           caption: z.string().max(300).nullish().default(""),
           href: z.string().max(500).nullish().default("/collections/all"),
+          image: z.union([groupedImageSchema, z.string().max(2_000)]).nullish(),
           imageSrc: z
             .string()
             .max(2_000)
@@ -358,6 +369,7 @@ function StorefrontHero({
   actionLabel,
   actionHref,
   actionTarget,
+  image,
   imageSrc,
   imageAlt,
 }: {
@@ -371,6 +383,13 @@ function StorefrontHero({
   actionLabel?: string | null;
   actionHref?: string | null;
   actionTarget?: string | null;
+  image?:
+    | string
+    | {
+        src?: string | null;
+        alt?: string | null;
+      }
+    | null;
   imageSrc?: string | null;
   imageAlt?: string | null;
 }) {
@@ -402,7 +421,8 @@ function StorefrontHero({
     heroAst?.elements["heading"]?.className ||
     "mt-6 font-serif text-[clamp(3.25rem,7vw,7rem)] leading-[0.88] tracking-[-0.055em] text-stone-950";
 
-  const contentClassName = heroAst?.elements["content"]?.className || "max-w-xl";
+  const contentClassName =
+    heroAst?.elements["content"]?.className || "max-w-xl";
 
   const descriptionClassName =
     heroAst?.elements["description"]?.className ||
@@ -435,14 +455,19 @@ function StorefrontHero({
     displayActionHref,
     actionTarget ?? heroAst?.defaultProps.actionTarget,
   );
-  const displayImageSrc =
-    imageSrc ||
-    heroAst?.defaultProps.imageSrc ||
-    "/static/storefront/theme-preview-default.png";
-  const displayImageAlt =
-    imageAlt ||
-    heroAst?.defaultProps.imageAlt ||
-    "A neutral collection of ceramic objects";
+  const displayImage =
+    typeof image === "string"
+      ? { src: image, alt: imageAlt }
+      : (image ?? {
+          src:
+            imageSrc ||
+            heroAst?.defaultProps.imageSrc ||
+            "/static/storefront/theme-preview-default.png",
+          alt:
+            imageAlt ||
+            heroAst?.defaultProps.imageAlt ||
+            "A neutral collection of ceramic objects",
+        });
 
   return (
     <section
@@ -505,14 +530,16 @@ function StorefrontHero({
       </div>
       <div
         data-storefront-component="image"
-        data-storefront-field="imageSrc"
+        data-storefront-field="image"
         data-morph-node={heroAst?.elements["image"]?.nodeId}
         data-morph-element="image"
         className={imageContainerClassName}
       >
         <img
-          src={displayImageSrc}
-          alt={displayImageAlt}
+          src={
+            displayImage.src ?? "/static/storefront/theme-preview-default.png"
+          }
+          alt={displayImage.alt ?? "A neutral collection of ceramic objects"}
           className="size-full object-cover"
         />
       </div>
@@ -590,6 +617,13 @@ function CategoryShowcase({
     title?: string | null;
     caption?: string | null;
     href?: string | null;
+    image?:
+      | string
+      | {
+          src?: string | null;
+          alt?: string | null;
+        }
+      | null;
     imageSrc?: string | null;
     imageAlt?: string | null;
     imagePosition?: string | null;
@@ -640,14 +674,20 @@ function CategoryShowcase({
             <div className="aspect-[4/5] overflow-hidden bg-stone-800">
               <img
                 data-storefront-component="image"
-                data-storefront-field="imageSrc"
-                data-storefront-field-path={`items.${index}.imageSrc`}
+                data-storefront-field="image"
+                data-storefront-field-path={`items.${index}.image`}
                 src={
+                  (typeof item.image === "string"
+                    ? item.image
+                    : item.image?.src) ??
                   item.imageSrc ??
                   "/static/storefront/theme-preview-default.png"
                 }
-                data-storefront-field-alt={`items.${index}.imageAlt`}
-                alt={item.imageAlt ?? "Collection item"}
+                alt={
+                  (typeof item.image === "string" ? null : item.image?.alt) ??
+                  item.imageAlt ??
+                  "Collection item"
+                }
                 style={{
                   objectPosition: (item.imagePosition as any) ?? "center",
                 }}
@@ -691,6 +731,7 @@ function ImageWithText({
   actionLabel,
   actionHref,
   actionTarget,
+  image,
   imageSrc,
   imageAlt,
   imagePosition,
@@ -703,12 +744,26 @@ function ImageWithText({
   actionLabel?: string | null;
   actionHref?: string | null;
   actionTarget?: string | null;
+  image?:
+    | string
+    | {
+        src?: string | null;
+        alt?: string | null;
+      }
+    | null;
   imageSrc?: string | null;
   imageAlt?: string | null;
   imagePosition?: string | null;
 }) {
   const customStyle = resolveSectionStyle(rawProps ?? {});
   const customClass = rawProps?.className ?? rawProps?.customClass;
+  const displayImage =
+    typeof image === "string"
+      ? { src: image, alt: imageAlt }
+      : (image ?? {
+          src: imageSrc,
+          alt: imageAlt,
+        });
 
   return (
     <section
@@ -721,12 +776,14 @@ function ImageWithText({
     >
       <div
         data-storefront-component="image"
-        data-storefront-field="imageSrc"
+        data-storefront-field="image"
         className="min-h-[32rem] overflow-hidden lg:min-h-[52rem]"
       >
         <img
-          src={imageSrc ?? "/static/storefront/theme-preview-default.png"}
-          alt={imageAlt ?? "Image with text"}
+          src={
+            displayImage.src ?? "/static/storefront/theme-preview-default.png"
+          }
+          alt={displayImage.alt ?? "Image with text"}
           style={{ objectPosition: (imagePosition as any) ?? "center" }}
           className="size-full scale-110 object-cover"
         />

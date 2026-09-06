@@ -40,6 +40,7 @@ export type SafeThemeComponentRenderResult =
   | { success: false; node: null; diagnostics: string[] };
 
 type RuntimeContext = {
+  loaderData?: Record<string, unknown>;
   files: Map<string, ThemeSourceFile>;
   /** Stored values for each content slot the route declares. */
   contentSlots?: ThemeContentSlotValues;
@@ -392,6 +393,30 @@ function evaluateCall(
   env: Record<string, unknown>,
   context: RuntimeContext,
 ): unknown {
+  if (
+    node.callee?.type === "MemberExpression" &&
+    node.callee.computed !== true &&
+    node.callee.object?.name === "Route" &&
+    node.callee.property?.name === "useLoaderData"
+  ) {
+    if (!context.loaderData)
+      throw new SafeThemeRuntimeError(
+        "Route loader data is unavailable in Design preview.",
+      );
+    return context.loaderData;
+  }
+  // A root route reads published content through the router context its
+  if (
+    node.callee?.type === "Identifier" &&
+    node.callee.name === "encodeURIComponent" &&
+    node.arguments?.length === 1
+  ) {
+    const value = evaluateExpression(node.arguments[0], env, context);
+    if (typeof value !== "string")
+      throw new SafeThemeRuntimeError("encodeURIComponent requires a string.");
+    return encodeURIComponent(value);
+  }
+
   // A root route reads published content through the router context its
   // `beforeLoad` populated. The preview has no router and never runs a loader,
   // so it answers with the same shape resolved from the Document, which is what
@@ -792,7 +817,10 @@ function readContentSlotSection(
       continue;
     }
     const slot = call.arguments?.[0];
-    if (slot?.type !== "StringLiteral" || !isValidThemeContentSlotId(slot.value)) {
+    if (
+      slot?.type !== "StringLiteral" ||
+      !isValidThemeContentSlotId(slot.value)
+    ) {
       continue;
     }
     return {
@@ -913,7 +941,6 @@ function applyArrayItemContext(
   env.__morphArrayItemName = inherited.itemName;
 }
 
-
 /**
  * Prop name a JSX expression reads, when it reads exactly one.
  *
@@ -985,9 +1012,7 @@ function inferElementFieldKey(
       : null;
   const inMap = typeof env.__morphArrayPath === "string";
   const mappedPaths = env.__morphFieldPathByProp as
-    | Record<string, string>
-    | null
-    | undefined;
+    Record<string, string> | null | undefined;
   // Three places a name can legitimately come from: the row being repeated,
   // the component's own props, and a prop the parent renamed on the way in.
   // A row extracted into its own component reads its own prop names, so
@@ -1253,9 +1278,7 @@ function readJsxProps(
       typeof item === "object" &&
       typeof (item as Record<string, unknown>).id === "string"
     ) {
-      props["data-storefront-item-id"] ??= (
-        item as Record<string, unknown>
-      ).id;
+      props["data-storefront-item-id"] ??= (item as Record<string, unknown>).id;
     }
     return sanitizeProps(props);
   }
@@ -1304,7 +1327,8 @@ function themeSourceLocationOf(
   const line = node?.openingElement?.loc?.start?.line;
   const column = node?.openingElement?.loc?.start?.column;
   if (typeof line !== "number" || typeof column !== "number") return null;
-  const currentFrame = context.componentStack[context.componentStack.length - 1];
+  const currentFrame =
+    context.componentStack[context.componentStack.length - 1];
   const filePath = currentFrame?.split("#")[0];
   if (!filePath || !filePath.startsWith("src/")) return null;
   return `${filePath}:${line}:${column + 1}`;
@@ -1374,7 +1398,10 @@ function renderJsxElement(
     // without it a component with no authored markers is selectable in Build
     // Preview but not in Live.
     const sourceLocation = themeSourceLocationOf(node, context);
-    if (sourceLocation && props[MORPH_SOURCE_LOCATION_ATTRIBUTE] === undefined) {
+    if (
+      sourceLocation &&
+      props[MORPH_SOURCE_LOCATION_ATTRIBUTE] === undefined
+    ) {
       props[MORPH_SOURCE_LOCATION_ATTRIBUTE] = sourceLocation;
     }
     return createElement(name, props, ...children);
@@ -1409,8 +1436,7 @@ function renderJsxElement(
   const imported = env[`__import:${name}`] as
     { path: string; imported: string } | undefined;
   const builtin = env[`__builtin:${name}`] as
-    | SafeThemeBuiltinComponent
-    | undefined;
+    SafeThemeBuiltinComponent | undefined;
   if (builtin) {
     return createElement(builtin, { ...props, children });
   }
@@ -1624,6 +1650,7 @@ function renderModuleComponent(
 }
 
 export function renderSafeThemeComponent({
+  loaderData,
   files,
   sourcePath,
   props,
@@ -1636,6 +1663,7 @@ export function renderSafeThemeComponent({
   sectionTypeBySlot,
   componentRefBySlot,
 }: {
+  loaderData?: Record<string, unknown>;
   files: ThemeSourceFile[];
   sourcePath: string;
   props: Record<string, unknown>;
@@ -1658,6 +1686,7 @@ export function renderSafeThemeComponent({
   );
   const normalizedSourcePath = normalizePath(sourcePath);
   const context: RuntimeContext = {
+    loaderData,
     files: fileMap,
     // `<Link>` is not route-specific: authors use it in ordinary components
     // such as headers, footers and hero sections, which render through this

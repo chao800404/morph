@@ -15,7 +15,9 @@ export function readSelectionContentValue(
     tagName === "input" || tagName === "textarea" || tagName === "select"
       ? (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)
           .value
-      : (element.textContent ?? "");
+      : tagName === "img" || tagName === "video" || tagName === "audio"
+        ? (element.getAttribute("src") ?? "")
+        : (element.textContent ?? "");
 
   return content.slice(0, MAX_SELECTION_CONTENT_LENGTH);
 }

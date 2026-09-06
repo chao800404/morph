@@ -34,6 +34,79 @@ export type ThemeAssetMediaValue = {
  */
 export type ThemeMediaValue = ThemeExternalMediaValue | ThemeAssetMediaValue;
 
+/**
+ * Image content is one authoring decision: the source and its accessible name
+ * travel together. Asset-backed sources may retain the richer media value so
+ * the server can still verify ownership and resolve the published URL.
+ */
+export type ThemeImageValue = {
+  src: string | ThemeMediaValue;
+  alt: string;
+};
+
+export function isThemeImageValue(value: unknown): value is ThemeImageValue {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const image = value as Record<string, unknown>;
+  return (
+    Object.keys(image).every((key) => key === "src" || key === "alt") &&
+    Object.prototype.hasOwnProperty.call(image, "src") &&
+    (typeof image.src === "string" || isThemeMediaShape(image.src)) &&
+    typeof image.alt === "string"
+  );
+}
+
+/** Reads the new grouped image value and legacy imageSrc/imageAlt values. */
+export function normalizeThemeImageValue(value: unknown): ThemeImageValue {
+  if (isThemeImageValue(value)) {
+    return {
+      src: value.src,
+      alt: typeof value.alt === "string" ? value.alt : "",
+    };
+  }
+  return {
+    src: typeof value === "string" || isThemeMediaShape(value) ? value : "",
+    alt: "",
+  };
+}
+
+/** Stores a picker result while keeping the image source and alt text grouped. */
+export function withThemeImageSource(
+  value: unknown,
+  source: ThemeMediaValue,
+): ThemeImageValue {
+  const image = normalizeThemeImageValue(value);
+  return {
+    src: source.source === "external" ? source.url : source,
+    alt: image.alt,
+  };
+}
+
+function isThemeMediaShape(value: unknown): value is ThemeMediaValue {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const source = value as Record<string, unknown>;
+  if (
+    (source.source !== "external" && source.source !== "asset") ||
+    (source.mediaType !== "image" && source.mediaType !== "video") ||
+    typeof source.url !== "string"
+  ) {
+    return false;
+  }
+  if (source.source === "external" && source.assetId !== undefined) {
+    return false;
+  }
+  if (
+    source.source === "asset" &&
+    (typeof source.assetId !== "string" || !source.assetId.trim())
+  ) {
+    return false;
+  }
+  return Object.keys(source).every((key) =>
+    (THEME_MEDIA_VALUE_KEYS as readonly string[]).includes(key),
+  );
+}
+
 export function isSafeThemeMediaUrl(value: string): boolean {
   const normalized = value.trim();
   if (!normalized) return true;
@@ -81,30 +154,6 @@ export function normalizeThemeMediaValue(
   return { source: "external", mediaType, url };
 }
 
-function isThemeMediaShape(value: unknown): value is ThemeMediaValue {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const source = value as Record<string, unknown>;
-  if (
-    (source.source !== "external" && source.source !== "asset") ||
-    (source.mediaType !== "image" && source.mediaType !== "video") ||
-    typeof source.url !== "string"
-  ) {
-    return false;
-  }
-  if (source.source === "external" && source.assetId !== undefined) {
-    return false;
-  }
-  if (
-    source.source === "asset" &&
-    (typeof source.assetId !== "string" || !source.assetId.trim())
-  ) {
-    return false;
-  }
-  return Object.keys(source).every((key) =>
-    (THEME_MEDIA_VALUE_KEYS as readonly string[]).includes(key),
-  );
-}
-
 /**
  * Converts stored media references to the URL props Theme components already
  * consume. This runs at both preview and published-content boundaries.
@@ -128,24 +177,27 @@ export function resolveThemeMediaInSlotValues(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(props)) {
-    if (isThemeMediaShape(value)) {
-      result[key] = resolveUrl(value as ThemeMediaValue);
-      continue;
-    }
-    if (Array.isArray(value)) {
-      result[key] = value.map((row) =>
-        row && typeof row === "object" && !Array.isArray(row)
-          ? resolveThemeMediaInSlotValues(
-              row as Record<string, unknown>,
-              resolveUrl,
-            )
-          : row,
-      );
-      continue;
-    }
-    result[key] = value;
+    result[key] = resolveThemeMediaValue(value, resolveUrl);
   }
   return result;
+}
+
+function resolveThemeMediaValue(
+  value: unknown,
+  resolveUrl: ThemeMediaUrlResolver,
+): unknown {
+  if (isThemeMediaShape(value)) return resolveUrl(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveThemeMediaValue(item, resolveUrl));
+  }
+  if (value && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      result[key] = resolveThemeMediaValue(item, resolveUrl);
+    }
+    return result;
+  }
+  return value;
 }
 
 /**

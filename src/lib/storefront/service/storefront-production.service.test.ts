@@ -17,7 +17,11 @@ const ASSET_PATH = "runtime/client/assets/app-abc123.js";
 const manifest = {
   artifactEntry: "preview/index.html",
   files: [
-    { path: ASSET_PATH, sha256: "deadbeef", contentType: "application/javascript; charset=utf-8" },
+    {
+      path: ASSET_PATH,
+      sha256: "deadbeef",
+      contentType: "application/javascript; charset=utf-8",
+    },
   ],
   runtime: {
     kind: "cloudflare-worker",
@@ -77,6 +81,33 @@ function req(path: string, init?: RequestInit) {
 }
 
 describe("StorefrontProductionService", () => {
+  it("routes only read-only catalog requests using the resolved storefront", async () => {
+    const catalogHandler = vi.fn(async () => new Response("catalog"));
+    const runtime = new UnavailableThemeRuntime();
+    const service = new StorefrontProductionService({
+      runtime,
+      resolverDeps: resolverDeps(),
+      catalogHandler,
+    });
+    const response = await service.handleRequest(
+      req("/api/store/products", {
+        headers: { "x-storefront-host": "attacker.example" },
+      }),
+    );
+    expect(await response.text()).toBe("catalog");
+    expect(catalogHandler).toHaveBeenCalledWith(
+      expect.any(Request),
+      expect.objectContaining({ storefrontId: "sf_1", hostname: HOST }),
+    );
+    expect(
+      (
+        await service.handleRequest(
+          req("/api/store/products", { method: "POST" }),
+        )
+      ).status,
+    ).toBe(405);
+    expect(catalogHandler).toHaveBeenCalledTimes(1);
+  });
   it("serves a declared client asset from the immutable artifact with public caching", async () => {
     const bucket = r2();
     const runtime = { kind: "local-direct" as const, handle: vi.fn() };

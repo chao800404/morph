@@ -12,7 +12,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { ASSET_QUERY_KEY } from "@/lib/asset/query-key";
 import { listItemsServerFn } from "@/server/asset/list-items.serverFn";
-import { keepPreviousData, queryOptions, useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  queryOptions,
+  useQuery,
+} from "@tanstack/react-query";
 import {
   Check,
   ChevronLeft,
@@ -33,6 +37,7 @@ export function AssetLibraryPicker({
   onToggle,
   atLimit = false,
   disabled = false,
+  paginationLayout = "inline",
   className,
 }: {
   assetType: "image" | "video";
@@ -41,6 +46,7 @@ export function AssetLibraryPicker({
   atLimit?: boolean;
   /** A disabled field must not be able to pick, not merely look inert. */
   disabled?: boolean;
+  paginationLayout?: "inline" | "stacked";
   className?: string;
 }) {
   const [folderId, setFolderId] = useState<string | null>(null);
@@ -235,6 +241,7 @@ export function AssetLibraryPicker({
             pagination.page * pagination.limit,
             pagination.totalAssets,
           )}
+          layout={paginationLayout}
           onPageChange={(action) =>
             setPage((current) => {
               if (action === "first") return 1;

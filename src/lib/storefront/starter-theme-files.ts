@@ -1,6 +1,9 @@
 import {
+  LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_HERO_SOURCE,
+  LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
@@ -85,9 +88,21 @@ body {
   actionLabel?: string;
   actionHref?: string;
   actionTarget?: "_self" | "_blank";
+  image?: { src?: string; alt?: string };
+  /** Read-only compatibility for documents created before image was grouped. */
   imageSrc?: string;
   imageAlt?: string;
 };
+
+export const contentFields = {
+  eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  description: { type: "textarea", label: "Description", maxLength: 500 },
+  actionLabel: { type: "text", label: "Action label", maxLength: 100 },
+  actionHref: { type: "url", label: "Action link" },
+  actionTarget: { type: "text", label: "Open in" },
+  image: { type: "image", label: "Image" },
+} as const;
 
 export default function Hero({
   eyebrow = "New collection",
@@ -96,12 +111,17 @@ export default function Hero({
   actionLabel = "Explore the collection",
   actionHref = "/collections/new",
   actionTarget = "_self",
-  imageSrc = "/static/storefront/theme-preview-default.png",
-  imageAlt = "A neutral collection of ceramic objects",
+  image,
+  imageSrc,
+  imageAlt,
 }: HeroProps) {
   // A new tab must not hand the opened page a window.opener handle back to the
   // store, which it could use to redirect this tab to a spoofed page.
   const actionRel = actionTarget === "_blank" ? "noopener noreferrer" : undefined;
+  const displayImage = image ?? {
+    src: imageSrc ?? "/static/storefront/theme-preview-default.png",
+    alt: imageAlt ?? "A neutral collection of ceramic objects",
+  };
   return (
     <section
       className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]"
@@ -139,8 +159,9 @@ export default function Hero({
         className="min-h-[30rem] overflow-hidden lg:min-h-0"
       >
         <img
-          src={imageSrc}
-          alt={imageAlt}
+          data-storefront-field="image"
+          src={displayImage.src}
+          alt={displayImage.alt}
           className="size-full object-cover"
         />
       </div>
@@ -273,12 +294,7 @@ export default function Principles({
               },
               actionHref: { type: "url", label: "Action link" },
               actionTarget: { type: "text", label: "Open in" },
-              imageSrc: { type: "image", label: "Image" },
-              imageAlt: {
-                type: "text",
-                label: "Image description",
-                maxLength: 200,
-              },
+              image: { type: "image", label: "Image" },
             },
           },
           "editorial-intro.default": {
@@ -314,12 +330,7 @@ export default function Principles({
               },
               actionHref: { type: "url", label: "Action link" },
               actionTarget: { type: "text", label: "Open in" },
-              imageSrc: { type: "url", label: "Image" },
-              imageAlt: {
-                type: "text",
-                label: "Image description",
-                maxLength: 200,
-              },
+              image: { type: "image", label: "Image" },
             },
           },
           "principles.default": {
@@ -776,6 +787,27 @@ export function createStarterThemeWorkspaceUpgrade(
   }
 
   const exactLegacyReplacements = [
+    {
+      path: "src/components/Hero.tsx",
+      legacy: LEGACY_STARTER_THEME_HERO_SOURCE,
+      current: STARTER_THEME_FILES.find(
+        (file) => file.path === "src/components/Hero.tsx",
+      )!.content,
+    },
+    {
+      path: "src/components/CategoryShowcase.tsx",
+      legacy: LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
+      current: STARTER_THEME_V3_NEW_FILES.find(
+        (file) => file.path === "src/components/CategoryShowcase.tsx",
+      )!.content,
+    },
+    {
+      path: "src/components/ImageWithText.tsx",
+      legacy: LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
+      current: STARTER_THEME_V3_NEW_FILES.find(
+        (file) => file.path === "src/components/ImageWithText.tsx",
+      )!.content,
+    },
     {
       path: "src/components/Header.tsx",
       legacy: LEGACY_STARTER_THEME_HEADER_SOURCE,

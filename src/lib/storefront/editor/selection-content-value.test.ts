@@ -38,4 +38,11 @@ describe("readSelectionContentValue", () => {
     input.value = "x".repeat(10_001);
     expect(readSelectionContentValue(input)).toHaveLength(10_000);
   });
+
+  it("reads the source URL from a selected media element", () => {
+    const image = document.createElement("img");
+    image.src = "/assets/hero.webp";
+
+    expect(readSelectionContentValue(image)).toBe("/assets/hero.webp");
+  });
 });

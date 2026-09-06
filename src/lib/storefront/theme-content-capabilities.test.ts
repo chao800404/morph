@@ -178,6 +178,33 @@ describe("Theme content capabilities", () => {
       "INVALID_THEME_CONTENT_FIELD_VALUE:video:external-media-disabled",
     );
   });
+
+  it("accepts an image source and alt text as one grouped content value", () => {
+    const capability = getThemeComponentContentCapability(
+      manifest,
+      "promo.default",
+    )!;
+    const source = {
+      source: "asset" as const,
+      mediaType: "image" as const,
+      assetId: "6550fe95-9fb0-4008-b837-962da1b449d7",
+      url: "/cdn/hero.webp",
+    };
+
+    expect(
+      filterThemeContentProps(
+        { image: { src: source, alt: "Hero product image" } },
+        capability,
+      ),
+    ).toEqual({ image: { src: source, alt: "Hero product image" } });
+
+    expect(() =>
+      filterThemeContentProps(
+        { image: { src: source, alt: "x".repeat(201) } },
+        capability,
+      ),
+    ).toThrow("INVALID_THEME_CONTENT_FIELD_VALUE:image:bad-image-alt");
+  });
 });
 
 const arrayManifest = JSON.stringify({

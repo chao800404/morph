@@ -71,6 +71,24 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
       env as unknown as Record<string, unknown>,
     ),
     r2Bucket: (env as any)?.R2_BUCKET,
+    catalogHandler: async (request, resolved) => {
+      const [{ storeContextDal }, { handleStoreCatalogGet }] =
+        await Promise.all([
+          import("@/lib/storefront/dal/store-context.dal"),
+          import("@/lib/storefront/service/store-catalog-request"),
+        ]);
+      // Do not accept a visitor's publishable key, channel, or host override.
+      const context = await storeContextDal.resolveCatalog({
+        hostname: resolved.hostname,
+      });
+      if (!context || context.storefrontId !== resolved.storefrontId) {
+        return new Response("Catalog context unavailable", {
+          status: 503,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      return handleStoreCatalogGet(request, context);
+    },
     contentPorts: {
       getPublishedDocument: (args) =>
         storefrontContentPublicationDal.getPublishedTemplateDocument(

@@ -137,10 +137,39 @@ export function resolvePreviewSelectionRestoreElement(
   target: PreviewSelectionRestoreTarget,
 ): HTMLElement {
   if (target.isSection) return section;
+  const sourceLocationSelector = target.sourceLocation
+    ? `[data-morph-loc="${CSS.escape(target.sourceLocation)}"]`
+    : null;
+  const selectorWithSourceLocation = (selector: string) =>
+    sourceLocationSelector ? `${selector}${sourceLocationSelector}` : null;
   const selectors = [
-    // Source position is the most precise handle when the build provided one.
-    target.sourceLocation
-      ? `[data-morph-loc="${CSS.escape(target.sourceLocation)}"]`
+    // A source location can be stale while the preview is being replaced. Use
+    // it to disambiguate an authored identity first, but never let it override
+    // a field/node identity and select an adjacent wrapper instead.
+    target.nodeId && target.fieldPath
+      ? selectorWithSourceLocation(
+          `[data-morph-node="${CSS.escape(target.nodeId)}"][data-storefront-field-path="${CSS.escape(target.fieldPath)}"]`,
+        )
+      : null,
+    target.fieldPath
+      ? selectorWithSourceLocation(
+          `[data-storefront-field-path="${CSS.escape(target.fieldPath)}"]`,
+        )
+      : null,
+    target.nodeId
+      ? selectorWithSourceLocation(
+          `[data-morph-node="${CSS.escape(target.nodeId)}"]`,
+        )
+      : null,
+    target.elementKey
+      ? selectorWithSourceLocation(
+          `[data-morph-element="${CSS.escape(target.elementKey)}"]`,
+        )
+      : null,
+    target.fieldKey
+      ? selectorWithSourceLocation(
+          `[data-storefront-field="${CSS.escape(target.fieldKey)}"]`,
+        )
       : null,
     target.nodeId && target.fieldPath
       ? `[data-morph-node="${CSS.escape(target.nodeId)}"][data-storefront-field-path="${CSS.escape(target.fieldPath)}"]`
@@ -155,6 +184,7 @@ export function resolvePreviewSelectionRestoreElement(
     target.fieldKey
       ? `[data-storefront-field="${CSS.escape(target.fieldKey)}"]`
       : null,
+    sourceLocationSelector,
   ].filter((selector): selector is string => selector !== null);
   for (const selector of selectors) {
     const match = section.querySelector<HTMLElement>(selector);
@@ -460,13 +490,10 @@ export const Route = createFileRoute(
       params.themeId,
     );
 
-    // Hydrate the source workspace alongside the theme document. The preview
-    // needs both to render a route-authored page on its first paint; waiting
-    // for the file query in an effect briefly shows the template fallback.
-    const [detail] = await Promise.all([
-      context.queryClient.ensureQueryData(detailQuery),
-      context.queryClient.ensureQueryData(filesQuery).catch(() => undefined),
-    ]);
+    // Context can add catalog source. Read files only after provisioning so
+    // the first preview cannot hydrate an obsolete route registry.
+    const detail = await context.queryClient.ensureQueryData(detailQuery);
+    await context.queryClient.fetchQuery(filesQuery).catch(() => undefined);
     return detail;
   },
   pendingComponent: PreviewPending,
@@ -545,6 +572,38 @@ function usePreviewNavigation(
     return () => window.removeEventListener("message", handleNavigationMessage);
   }, [resetPreviewScrollPosition]);
 
+  useEffect(() => {
+    // Selection's capture handler prevents its clicks. Normal catalog links
+    // stay inside the trusted preview shell instead of opening a Core route.
+    const onCatalogLink = (event: MouseEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      )
+        return;
+      const anchor =
+        event.target instanceof Element
+          ? event.target.closest("a[href]")
+          : null;
+      if (
+        !(anchor instanceof HTMLAnchorElement) ||
+        (anchor.target && anchor.target !== "_self")
+      )
+        return;
+      const href = anchor.getAttribute("href") ?? "";
+      if (!/^\/products(?:\/[a-z0-9-]+)?\/?(?:\?page=\d+)?$/.test(href)) return;
+      event.preventDefault();
+      resetPreviewScrollPosition();
+      setNavigation((current) => ({ ...current, routePath: href }));
+    };
+    document.addEventListener("click", onCatalogLink);
+    return () => document.removeEventListener("click", onCatalogLink);
+  }, [resetPreviewScrollPosition]);
+
   return navigation;
 }
 
@@ -564,6 +623,23 @@ function ReadyStorefrontPreview({
     (candidate) => candidate.id === navigation.templateId,
   );
   const activeRoutePath = navigation.routePath;
+  const catalogUrl = new URL(activeRoutePath ?? "/", "https://preview.invalid");
+  const catalogMatch = /^\/products(?:\/([^/]+))?\/?$/.exec(
+    catalogUrl.pathname,
+  );
+  const catalogPage = Math.min(
+    10000,
+    Math.max(1, Number(catalogUrl.searchParams.get("page")) || 1),
+  );
+  const catalog = useQuery({
+    ...storefrontCatalogQueries.preview(
+      context.storefront.id,
+      context.theme.id,
+      catalogPage,
+      catalogMatch?.[1],
+    ),
+    enabled: Boolean(catalogMatch),
+  });
   const {
     themeFiles: previewThemeFiles,
     renderThemeFiles,
@@ -633,14 +709,21 @@ function ReadyStorefrontPreview({
           </div>
         </div>
       )}
-      <StorefrontPreview
-        context={context}
-        templateId={navigation.templateId}
-        routePath={activeRoutePath}
-        viewportHeight={viewportHeight}
-        document={previewDocument}
-        themeFiles={renderThemeFiles}
-      />
+      {catalogMatch && !catalog.data ? (
+        <div role="status" className="p-8 text-sm">
+          {catalog.isError ? catalog.error.message : "Loading products…"}
+        </div>
+      ) : (
+        <StorefrontPreview
+          context={context}
+          templateId={navigation.templateId}
+          routePath={catalogUrl.pathname}
+          viewportHeight={viewportHeight}
+          document={previewDocument}
+          themeFiles={renderThemeFiles}
+          loaderData={catalogMatch ? catalog.data : undefined}
+        />
+      )}
     </>
   );
 }
@@ -2977,10 +3060,19 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       ) {
         const scope = selectedItem.section ?? document;
         const fieldPath = message.fieldPath;
+        const groupedImagePath =
+          message.fieldKey === "image" && fieldPath?.endsWith(".alt")
+            ? fieldPath.slice(0, -4)
+            : null;
         const target =
           (fieldPath
             ? scope.querySelector<HTMLElement>(
                 `[data-storefront-field-path="${CSS.escape(fieldPath)}"]`,
+              )
+            : null) ??
+          (groupedImagePath
+            ? scope.querySelector<HTMLElement>(
+                `[data-storefront-field-path="${CSS.escape(groupedImagePath)}"]`,
               )
             : null) ??
           scope.querySelector<HTMLElement>(
@@ -2990,10 +3082,22 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
             ? selectedItem.element
             : null);
         if (!target) return;
-        if (message.fieldKey === "imageSrc") {
-          target.setAttribute("src", message.value);
+        const mediaTarget =
+          message.fieldKey === "image" ||
+          message.fieldKey === "imageSrc" ||
+          message.fieldKey === "imageAlt"
+            ? target.matches("img,video,audio")
+              ? target
+              : (target.querySelector<HTMLElement>("img,video,audio") ?? target)
+            : target;
+        if (message.fieldKey === "image" && groupedImagePath) {
+          mediaTarget.setAttribute("alt", message.value);
+        } else if (message.fieldKey === "image") {
+          mediaTarget.setAttribute("src", message.value);
+        } else if (message.fieldKey === "imageSrc") {
+          mediaTarget.setAttribute("src", message.value);
         } else if (message.fieldKey === "imageAlt") {
-          target.setAttribute("alt", message.value);
+          mediaTarget.setAttribute("alt", message.value);
         } else if (message.fieldKey === "actionHref") {
           target.setAttribute("href", message.value);
         } else {
@@ -3516,3 +3620,4 @@ function PreviewMessage({
     </main>
   );
 }
+import { storefrontCatalogQueries } from "@/routes/_editor/-queries/storefront-catalog.queries";

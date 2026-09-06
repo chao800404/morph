@@ -1,4 +1,3 @@
-import { AssetLibraryPicker } from "@/components/asset/asset-library-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -7,9 +6,10 @@ import {
   type ThemeMediaKind,
   type ThemeMediaValue,
 } from "@/lib/storefront/theme-media";
-import { ExternalLink, Image as ImageIcon, Video } from "lucide-react";
+import { Image as ImageIcon, Video } from "lucide-react";
 import { useState } from "react";
-import { InspectorSegmentedSwitch } from "./style-inspector/inspector-segmented-switch";
+import { EditorMediaPickerPopover } from "./editor-media-picker-popover";
+import { inspectorControlSurface } from "./style-inspector/inspector-control-surface";
 
 export function EditorMediaField({
   label,
@@ -20,6 +20,9 @@ export function EditorMediaField({
   allowAsset = true,
   disabled,
   isFocused = false,
+  altText,
+  onAltPreview,
+  onAltChange,
   onChange,
 }: {
   label: string;
@@ -30,6 +33,9 @@ export function EditorMediaField({
   allowAsset?: boolean;
   disabled?: boolean;
   isFocused?: boolean;
+  altText?: string;
+  onAltPreview?: (value: string) => void;
+  onAltChange?: (value: string) => void;
   onChange: (value: ThemeMediaValue) => void;
 }) {
   const normalized = normalizeThemeMediaValue(value, mediaType);
@@ -42,7 +48,7 @@ export function EditorMediaField({
   const [source, setSource] = useState<"external" | "asset">(initialSource);
   const noun = mediaType === "image" ? "image" : "video";
   const PreviewIcon = mediaType === "image" ? ImageIcon : Video;
-  const showSourceSwitch = allowExternal && allowAsset;
+  const showSourceControls = allowExternal || allowAsset;
 
   return (
     <div
@@ -58,17 +64,69 @@ export function EditorMediaField({
           <PreviewIcon className="size-3 shrink-0 text-muted-foreground" />
           <span className="truncate capitalize">{label}</span>
         </span>
-        {showSourceSwitch ? (
-          <InspectorSegmentedSwitch
-            value={source}
-            options={[
-              { id: "external", label: "External URL" },
-              { id: "asset", label: "Assets" },
-            ]}
-            disabled={disabled}
-            ariaLabel="Media source kind"
-            onChange={(next) => setSource(next as "external" | "asset")}
-          />
+        {showSourceControls ? (
+          <div
+            role="group"
+            aria-label="Media source kind"
+            className={cn(
+              inspectorControlSurface,
+              "flex h-7 shrink-0 items-center gap-0.5 p-0.5",
+            )}
+          >
+            {allowExternal ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                disabled={disabled || source === "external"}
+                className={cn(
+                  "h-6 rounded-sm px-2 text-[10px] font-medium",
+                  source === "external"
+                    ? "bg-background text-foreground shadow-sm hover:bg-background"
+                    : "text-muted-foreground",
+                )}
+                onClick={() => setSource("external")}
+              >
+                External URL
+              </Button>
+            ) : null}
+            {allowAsset ? (
+              <EditorMediaPickerPopover
+                label={label}
+                assetType={mediaType}
+                selectedIds={
+                  normalized.source === "asset" ? [normalized.assetId] : []
+                }
+                disabled={disabled}
+                onSelect={(asset) =>
+                  onChange({
+                    source: "asset",
+                    mediaType,
+                    assetId: asset.id,
+                    url: asset.url,
+                    ...(asset.name ? { name: asset.name } : {}),
+                  })
+                }
+                trigger={
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    disabled={disabled}
+                    className={cn(
+                      "h-6 rounded-sm px-2 text-[10px] font-medium",
+                      source === "asset"
+                        ? "bg-background text-foreground shadow-sm hover:bg-background"
+                        : "text-muted-foreground",
+                    )}
+                    onClick={() => setSource("asset")}
+                  >
+                    Assets
+                  </Button>
+                }
+              />
+            ) : null}
+          </div>
         ) : normalized.url ? (
           <Button
             type="button"
@@ -76,21 +134,28 @@ export function EditorMediaField({
             size="xs"
             disabled={disabled}
             className="h-6 px-1.5 text-[10px]"
-            onClick={() =>
-              onChange({ source: "external", mediaType, url: "" })
-            }
+            onClick={() => onChange({ source: "external", mediaType, url: "" })}
           >
             Clear
           </Button>
         ) : null}
       </div>
 
-      {normalized.url ? (
-        <div
-          style={{ background: "var(--gradient-checker-board)" }}
-          className="group/preview relative h-28 overflow-hidden rounded-md border"
-        >
-          {mediaType === "image" ? (
+      <div
+        style={
+          normalized.url
+            ? { background: "var(--gradient-checker-board)" }
+            : undefined
+        }
+        className={cn(
+          "group/preview relative flex h-28 items-center justify-center overflow-hidden rounded-md border",
+          normalized.url ? null : "border-dashed bg-muted/30",
+        )}
+        role="img"
+        aria-label={normalized.url ? `${label} preview` : `No ${noun} selected`}
+      >
+        {normalized.url ? (
+          mediaType === "image" ? (
             <img
               src={normalized.url}
               alt=""
@@ -104,23 +169,26 @@ export function EditorMediaField({
               muted
               playsInline
             />
-          )}
-          {showSourceSwitch ? (
-            <Button
-              type="button"
-              variant="secondary"
-              size="xs"
-              disabled={disabled}
-              className="absolute top-1.5 right-1.5 h-6 px-2 text-[10px] bg-background/80 hover:bg-background shadow-xs backdrop-blur-xs"
-              onClick={() =>
-                onChange({ source: "external", mediaType, url: "" })
-              }
-            >
-              Clear
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
+          )
+        ) : (
+          <div className="flex flex-col items-center gap-1 text-muted-foreground">
+            <PreviewIcon className="size-6" aria-hidden="true" />
+            <span className="text-[11px]">No {noun} selected</span>
+          </div>
+        )}
+        {normalized.url && showSourceControls ? (
+          <Button
+            type="button"
+            variant="secondary"
+            size="xs"
+            disabled={disabled}
+            className="absolute top-1.5 right-1.5 h-6 px-2 text-[10px] bg-background/80 hover:bg-background shadow-xs backdrop-blur-xs"
+            onClick={() => onChange({ source: "external", mediaType, url: "" })}
+          >
+            Clear
+          </Button>
+        ) : null}
+      </div>
 
       {source === "external" && allowExternal ? (
         <div className="space-y-1">
@@ -147,37 +215,21 @@ export function EditorMediaField({
         </div>
       ) : null}
 
-      {source === "asset" && allowAsset ? (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-[11px] font-medium block text-muted-foreground">
-              Asset Library
-            </label>
-            <a
-              href="/dashboard/assets"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
-            >
-              Manage Assets <ExternalLink className="size-3" />
-            </a>
-          </div>
-          <AssetLibraryPicker
-            assetType={mediaType}
+      {onAltChange ? (
+        <div className="space-y-1">
+          <label className="block text-[11px] font-medium text-muted-foreground">
+            Alt text
+          </label>
+          <Input
+            key={altText ?? ""}
+            defaultValue={altText ?? ""}
+            maxLength={200}
+            aria-label={`${label} alt text`}
+            onInput={(event) => onAltPreview?.(event.currentTarget.value)}
+            onBlur={(event) => onAltChange(event.currentTarget.value)}
             disabled={disabled}
-            selectedIds={
-              normalized.source === "asset" ? [normalized.assetId] : []
-            }
-            onToggle={(asset) => {
-              if (disabled) return;
-              onChange({
-                source: "asset",
-                mediaType,
-                assetId: asset.id,
-                url: asset.url,
-                name: asset.name,
-              });
-            }}
+            placeholder="Describe this image"
+            className="h-7 text-xs"
           />
         </div>
       ) : null}
@@ -190,4 +242,3 @@ export function EditorMediaField({
     </div>
   );
 }
-

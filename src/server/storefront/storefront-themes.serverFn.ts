@@ -97,6 +97,11 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
         themeId: data.themeId,
         createdBy: authContext.user.id,
       });
+      await ensureThemeCatalog({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        createdBy: authContext.user.id,
+      });
       const context = await storefrontThemeDal.findEditorContext(
         data.storefrontId,
         data.themeId,
@@ -433,3 +438,4 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
       );
     }
   });
+import { ensureThemeCatalog } from "@/lib/storefront/service/theme-catalog-setup";

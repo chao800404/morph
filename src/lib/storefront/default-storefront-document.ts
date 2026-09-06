@@ -15,12 +15,37 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  *     `content("slot")` and the platform-owned `src/morph/content.ts` is
  *     seeded. Without it authored content stays in the Document and never
  *     reaches the rendered component.
+ * 15: image content is stored as `{ image: { src, alt } }` and untouched
+ *     Starter component sources are upgraded to consume the grouped value.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 14;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 15;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 
 const legacyStarterDocument: StorefrontPageDocument = {
+  version: 1,
+  sections: [
+    {
+      id: "starter-hero",
+      type: "hero",
+      enabled: true,
+      props: {
+        eyebrow: "New collection",
+        heading: "Objects for everyday rituals.",
+        description:
+          "Quiet essentials, thoughtfully made for the spaces you call home.",
+        actionLabel: "Explore the collection",
+        actionHref: "/collections/new",
+        image: {
+          src: imageSrc,
+          alt: "A neutral collection of ceramic objects",
+        },
+      },
+    },
+  ],
+};
+
+const legacyStarterDocumentV14: StorefrontPageDocument = {
   version: 1,
   sections: [
     {
@@ -46,7 +71,8 @@ export function isUpgradeableStarterHomeDocument(
 ): boolean {
   return (
     document.sections.length === 0 ||
-    JSON.stringify(document) === JSON.stringify(legacyStarterDocument)
+    JSON.stringify(document) === JSON.stringify(legacyStarterDocument) ||
+    JSON.stringify(document) === JSON.stringify(legacyStarterDocumentV14)
   );
 }
 
@@ -81,24 +107,30 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
               title: "The morning table",
               caption: "Cups, carafes, and objects for an unhurried start.",
               href: "/collections/morning-table",
-              imageSrc,
-              imageAlt: "Ceramic vessels arranged on a morning table",
+              image: {
+                src: imageSrc,
+                alt: "Ceramic vessels arranged on a morning table",
+              },
               imagePosition: "30% center",
             },
             {
               title: "Quiet corners",
               caption: "Sculptural forms that give a room its rhythm.",
               href: "/collections/quiet-corners",
-              imageSrc,
-              imageAlt: "A sculptural ceramic vase in warm light",
+              image: {
+                src: imageSrc,
+                alt: "A sculptural ceramic vase in warm light",
+              },
               imagePosition: "72% center",
             },
             {
               title: "Soft essentials",
               caption: "Natural textures made for slower evenings.",
               href: "/collections/soft-essentials",
-              imageSrc,
-              imageAlt: "Folded natural fabric beside ceramic objects",
+              image: {
+                src: imageSrc,
+                alt: "Folded natural fabric beside ceramic objects",
+              },
               imagePosition: "95% center",
             },
           ],
@@ -115,8 +147,10 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
           body: "We look for objects that age gracefully and makers who understand restraint. The result is a collection that feels personal from the first day and more familiar with every year.",
           actionLabel: "Read our story",
           actionHref: "/pages/about",
-          imageSrc,
-          imageAlt: "Timeless ceramic objects in natural light",
+          image: {
+            src: imageSrc,
+            alt: "Timeless ceramic objects in natural light",
+          },
           imagePosition: "center center",
         },
       },

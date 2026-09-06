@@ -205,6 +205,7 @@ export function renderSafeThemeRoute(args: {
   pathname: string;
   document: StorefrontPageDocument;
   runtimeProps?: Record<string, unknown>;
+  loaderData?: Record<string, unknown>;
 }): SafeThemeComponentRenderResult {
   const registry = buildThemeRouteRegistry(args.files);
   if (!registry.valid) {
@@ -278,6 +279,7 @@ export function renderSafeThemeRoute(args: {
       );
     }
     const rendered = renderSafeThemeComponent({
+      loaderData: route === matched ? args.loaderData : undefined,
       files: args.files,
       sourcePath: route.sourcePath,
       componentName: route.componentName,

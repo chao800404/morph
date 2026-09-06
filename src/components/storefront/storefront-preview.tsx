@@ -16,6 +16,7 @@ type StorefrontPreviewProps = {
   viewportHeight: number;
   document?: StorefrontPageDocument;
   themeFiles?: Array<{ path: string; content: string }>;
+  loaderData?: Record<string, unknown>;
 };
 
 type StorefrontPreviewStyle = CSSProperties & {
@@ -29,6 +30,7 @@ export const StorefrontPreview = memo(function StorefrontPreview({
   viewportHeight,
   document,
   themeFiles,
+  loaderData,
 }: StorefrontPreviewProps) {
   const template = context.templates.find(
     (candidate) => candidate.id === templateId,
@@ -72,6 +74,7 @@ export const StorefrontPreview = memo(function StorefrontPreview({
     />
   );
   const storedRoute = renderStoredRoute({
+    loaderData,
     themeFiles,
     pathname: routePath ?? "/",
     document: pageDocument,
@@ -160,11 +163,13 @@ function usesThemeRouteRuntime(
 }
 
 function renderStoredRoute({
+  loaderData,
   themeFiles,
   pathname,
   document,
   storeName,
 }: {
+  loaderData?: Record<string, unknown>;
   themeFiles?: Array<{ path: string; content: string }>;
   pathname: string;
   document: StorefrontPageDocument;
@@ -172,6 +177,7 @@ function renderStoredRoute({
 }): ReactNode | null {
   if (!themeFiles || !usesThemeRouteRuntime(themeFiles)) return null;
   const rendered = renderSafeThemeRoute({
+    loaderData,
     files: themeFiles,
     pathname,
     document,

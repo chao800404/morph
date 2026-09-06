@@ -25,14 +25,10 @@ export const Route = createFileRoute(
       params.themeId,
     );
 
-    // The editor cannot render the correct route tree until both the theme
-    // document and its source files are available. Start them together so
-    // the first editor paint does not fall back to the starter template while
-    // the source workspace is still loading.
-    const [detail] = await Promise.all([
-      context.queryClient.ensureQueryData(detailQuery),
-      context.queryClient.ensureQueryData(filesQuery).catch(() => undefined),
-    ]);
+    // Context may provision missing catalog routes with OCC. Source must be
+    // read after that write, never raced against it or hydrated from old cache.
+    const detail = await context.queryClient.ensureQueryData(detailQuery);
+    await context.queryClient.fetchQuery(filesQuery).catch(() => undefined);
     return detail;
   },
   pendingMs: 0,

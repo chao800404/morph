@@ -13,7 +13,7 @@ describe("default storefront home document", () => {
 
     // Pinned so a bump is always a deliberate decision: raising it re-runs the
     // Starter upgrade for every existing Theme.
-    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(14);
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(15);
     expect(storefrontPageDocumentSchema.parse(first)).toEqual(first);
     expect(first.sections).toHaveLength(6);
     expect(first.sections[0]?.type).toBe("hero");
@@ -36,5 +36,27 @@ describe("default storefront home document", () => {
     expect(
       isUpgradeableStarterHomeDocument(createDefaultStorefrontHomeDocument()),
     ).toBe(false);
+    expect(
+      isUpgradeableStarterHomeDocument({
+        version: 1,
+        sections: [
+          {
+            id: "starter-hero",
+            type: "hero",
+            enabled: true,
+            props: {
+              eyebrow: "New collection",
+              heading: "Objects for everyday rituals.",
+              description:
+                "Quiet essentials, thoughtfully made for the spaces you call home.",
+              actionLabel: "Explore the collection",
+              actionHref: "/collections/new",
+              imageSrc: "/static/storefront/theme-preview-default.png",
+              imageAlt: "A neutral collection of ceramic objects",
+            },
+          },
+        ],
+      }),
+    ).toBe(true);
   });
 });

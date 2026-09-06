@@ -432,10 +432,18 @@ describe("EditorStyleInspector selection content", () => {
         tagName: "img",
         elementKey: "image",
         fieldKey: "imageSrc",
+        contentValue: "/image.png",
       }),
     };
     const content = render(<EditorStyleInspector view="content" {...props} />);
     expect(screen.getByText("Media Image")).toBeTruthy();
+    expect(
+      (
+        screen.getByPlaceholderText(
+          "https://example.com/image",
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("/image.png");
     expect(
       screen.queryByRole("combobox", { name: "Object position" }),
     ).toBeNull();
@@ -457,6 +465,73 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.queryByText("Action Button")).toBeNull();
     expect(screen.queryByPlaceholderText("Main headline...")).toBeNull();
     expect(screen.queryByPlaceholderText("Body description...")).toBeNull();
+  });
+
+  it("uses the document image value after a preview image has been cleared", () => {
+    render(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        section={baseSection("hero", {
+          imageSrc: "",
+          imageAlt: "Alt",
+        })}
+        selection={selectionDescriptor({
+          kind: "image",
+          tagName: "img",
+          elementKey: "image",
+          fieldKey: "imageSrc",
+          // The preview selection can still carry the previous rendered value
+          // while the debounced Document write is being applied.
+          contentValue: "/previous-image.png",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "No image selected" })).toBeTruthy();
+    expect(
+      (
+        screen.getByPlaceholderText(
+          "https://example.com/image",
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("");
+  });
+
+  it("writes image source and alt text together under the image field", () => {
+    const onPropsChange = vi.fn();
+    const onPreviewSelectionField = vi.fn();
+    render(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        onPropsChange={onPropsChange}
+        onPreviewSelectionField={onPreviewSelectionField}
+        section={baseSection("hero", {
+          image: { src: "/image.png", alt: "Original alt" },
+        })}
+        selection={selectionDescriptor({
+          kind: "image",
+          tagName: "img",
+          elementKey: "image",
+          fieldKey: "image",
+        })}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("/image.png")).toBeTruthy();
+    const alt = screen.getByRole("textbox", { name: "Media Image alt text" });
+    fireEvent.input(alt, { target: { value: "Updated alt" } });
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "image",
+      "image.alt",
+      "Updated alt",
+    );
+    fireEvent.blur(alt);
+
+    expect(onPropsChange).toHaveBeenLastCalledWith({
+      image: { src: "/image.png", alt: "Updated alt" },
+    });
   });
 
   it("shows an empty state for a layout element with no content fields", () => {
