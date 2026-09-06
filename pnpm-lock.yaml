@@ -17,7 +17,7 @@ overrides:
   picomatch: 4.0.5
   postcss: 8.5.23
   rollup: 4.59.0
-  seroval: 1.5.3
+  seroval: 1.5.6
   sharp: 0.35.2
   shell-quote: 1.9.0
   undici: 7.29.0
@@ -4155,16 +4155,16 @@ packages:
     resolution: {integrity: sha512-16OL3NnUBw8JG1jBLUoZJsLnQq0n5Ua6aHalhJK4fMQkz1lqR7Osz1sA30trBtd9VUDc2NgkuRCn8+/pBwqZ+w==}
     engines: {node: '>=10'}
     peerDependencies:
-      seroval: 1.5.3
+      seroval: 1.5.6
 
   seroval-plugins@1.5.6:
     resolution: {integrity: sha512-HXuLAX2pu/UByPpaeo/TaMfvMIi+1QqIoPJYCcAtU8QkVNwgR6MPlGuCQTErV1JwraaMbYaWVIBX7mppzGLATQ==}
     engines: {node: '>=10'}
     peerDependencies:
-      seroval: 1.5.3
+      seroval: 1.5.6
 
-  seroval@1.5.3:
-    resolution: {integrity: sha512-BXe0x4buEeYiIKaRUnth1WqCILQ3k4O67KP/B4pC3pVz0Mv2c96ngA9QDREUYxWY1sb2RZVRqwI9RcpVMyHCVw==}
+  seroval@1.5.6:
+    resolution: {integrity: sha512-rVQVWjjSvlINzaQPZH5JFqsqEsIWdTxY3iJZCnTL/5gQbXIRooVZKI60tVCkOVfzcRPejboxO2t0P89dg5mQaA==}
     engines: {node: '>=10'}
 
   set-cookie-parser@3.1.2:
@@ -6638,8 +6638,8 @@ snapshots:
     dependencies:
       '@tanstack/history': 1.162.0
       cookie-es: 3.1.1
-      seroval: 1.5.3
-      seroval-plugins: 1.5.6(seroval@1.5.3)
+      seroval: 1.5.6
+      seroval-plugins: 1.5.6(seroval@1.5.6)
 
   '@tanstack/router-devtools-core@1.168.0(@tanstack/router-core@1.171.15)(csstype@3.2.3)':
     dependencies:
@@ -6709,7 +6709,7 @@ snapshots:
       '@tanstack/router-core': 1.171.15
       '@tanstack/start-fn-stubs': 1.162.0
       '@tanstack/start-storage-context': 1.167.17
-      seroval: 1.5.3
+      seroval: 1.5.6
 
   '@tanstack/start-fn-stubs@1.162.0': {}
 
@@ -6727,7 +6727,7 @@ snapshots:
       lightningcss: 1.33.0
       pathe: 2.0.3
       picomatch: 4.0.5
-      seroval: 1.5.3
+      seroval: 1.5.6
       source-map: 0.7.6
       srvx: 0.11.22
       tinyglobby: 0.2.17
@@ -6759,7 +6759,7 @@ snapshots:
       '@tanstack/start-storage-context': 1.167.17
       fetchdts: 0.1.7
       h3-v2: h3@2.0.1-rc.20
-      seroval: 1.5.3
+      seroval: 1.5.6
     transitivePeerDependencies:
       - crossws
 
@@ -8024,15 +8024,15 @@ snapshots:
 
   semver@7.8.5: {}
 
-  seroval-plugins@1.3.3(seroval@1.5.3):
+  seroval-plugins@1.3.3(seroval@1.5.6):
     dependencies:
-      seroval: 1.5.3
+      seroval: 1.5.6
 
-  seroval-plugins@1.5.6(seroval@1.5.3):
+  seroval-plugins@1.5.6(seroval@1.5.6):
     dependencies:
-      seroval: 1.5.3
+      seroval: 1.5.6
 
-  seroval@1.5.3: {}
+  seroval@1.5.6: {}
 
   set-cookie-parser@3.1.2: {}
 
@@ -8091,8 +8091,8 @@ snapshots:
   solid-js@1.9.10:
     dependencies:
       csstype: 3.2.3
-      seroval: 1.5.3
-      seroval-plugins: 1.3.3(seroval@1.5.3)
+      seroval: 1.5.6
+      seroval-plugins: 1.3.3(seroval@1.5.6)
 
   sonner@2.0.7(react-dom@19.2.1(react@19.2.1))(react@19.2.1):
     dependencies:
