@@ -1173,6 +1173,9 @@ export function VisualEditorShell({
     Monitor;
 
   const [editorMode, setEditorMode] = useState<"design" | "code">("design");
+  // Read by callbacks that must not be rebuilt on every mode change.
+  const editorModeRef = useRef(editorMode);
+  editorModeRef.current = editorMode;
   const [shouldPreloadCodeWorkspace, setShouldPreloadCodeWorkspace] =
     useState(false);
   const [previewMode, setPreviewMode] = useState<"live" | "build">("live");
@@ -1613,6 +1616,10 @@ export function VisualEditorShell({
     ) {
       return;
     }
+    // The editor context is fetched per template, so the URL always needs a
+    // valid id even for a route that has no template of its own. Borrow one
+    // to keep the editor loading; `templateAppliesToRoute` is what stops the
+    // panel presenting it as this page's content.
     const routeTemplate =
       context.templates.find(
         (template) => template.type === templateTypeForRoute(pendingRoutePath),
@@ -1698,6 +1705,10 @@ export function VisualEditorShell({
     () => listThemeRouteSectionOptions(effectiveThemeFiles),
     [effectiveThemeFiles],
   );
+  // Picking a page changes what the canvas shows, nothing else. This used to
+  // jump into Code unconditionally, so a list that looks like a page switcher
+  // threw anyone in Design mode into a source file they did not ask for. Code
+  // is still followed along when that is already the mode being worked in.
   const handleOpenThemeRoute = useCallback(
     (route: ThemeRouteRecord) => {
       setPendingRoutePath(route.path);
@@ -1710,9 +1721,20 @@ export function VisualEditorShell({
       if (routeTemplate) {
         onSearchChange(toEditorRouteSearch(routeTemplate, route.path));
       }
-      handleJumpToCode(route.sourcePath, 1, 1);
+      if (editorModeRef.current === "code") {
+        handleJumpToCode(route.sourcePath, 1, 1);
+      }
     },
     [activeTemplate, context.templates, handleJumpToCode, onSearchChange],
+  );
+
+  /** Explicit request for a route's source, from the page row's own control. */
+  const handleOpenThemeRouteCode = useCallback(
+    (route: ThemeRouteRecord) => {
+      handleOpenThemeRoute(route);
+      handleJumpToCode(route.sourcePath, 1, 1);
+    },
+    [handleJumpToCode, handleOpenThemeRoute],
   );
   const handleOpenSelectedCode = useCallback(() => {
     const selectedSection = activeTemplate?.document.sections.find(
@@ -6009,6 +6031,7 @@ export function VisualEditorShell({
           )}
           onPrefetchThemeRoute={handlePrefetchThemeRoute}
           onOpenThemeRoute={handleOpenThemeRoute}
+          onOpenThemeRouteCode={handleOpenThemeRouteCode}
           sectionOptions={routeSectionOptions}
           onAddSection={activeThemeRoute ? handleAddSection : undefined}
           onDeleteSection={

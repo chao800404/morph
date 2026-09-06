@@ -5,13 +5,6 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -106,7 +99,7 @@ import { toast } from "sonner";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import {
   resolveEditorTemplate,
-  toEditorTemplateSearch,
+  templateAppliesToRoute,
 } from "./editor-template";
 
 export type EditorSectionsPanelProps = {
@@ -134,6 +127,8 @@ export type EditorSectionsPanelProps = {
   /** Warm a route before navigation commits. */
   onPrefetchThemeRoute?: (route: ThemeRouteRecord) => void;
   onOpenThemeRoute?: (route: ThemeRouteRecord) => void;
+  /** Explicit "show me the source" action on a page row. */
+  onOpenThemeRouteCode?: (route: ThemeRouteRecord) => void;
   sectionOptions?: readonly ThemeRouteSectionOption[];
   onAddSection?: (option: ThemeRouteSectionOption) => Promise<unknown>;
   onDeleteSection?: (
@@ -156,6 +151,9 @@ const useIsomorphicLayoutEffect =
 
 type EditorSection =
   StorefrontThemeEditorDTO["templates"][number]["document"]["sections"][number];
+
+/** Shared empty tree; a new literal would defeat the identity checks below. */
+const NO_SECTIONS: EditorSection[] = [];
 
 type EditorDeleteCandidate =
   | { kind: "section"; sectionId: string; label: string }
@@ -584,13 +582,27 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   themeRoutes = [],
   onPrefetchThemeRoute,
   onOpenThemeRoute,
+  onOpenThemeRouteCode,
   sectionOptions = [],
   onAddSection,
   onDeleteSection,
   onDeleteEditableNode,
 }: EditorSectionsPanelProps) {
   const activeTemplate = resolveEditorTemplate(context, search);
-  const sourceSections = activeTemplate?.document.sections ?? [];
+  // A route whose kind has no template still loads the editor against a
+  // borrowed one. Showing that template's sections here is what let the panel
+  // offer the product template for editing while an About page was previewed,
+  // so the tree falls back to the route's own structure instead.
+  // Memoised because an effect below syncs state from this array by identity:
+  // returning a fresh `[]` each render sets state on every render, which is an
+  // infinite loop rather than an empty tree.
+  const sourceSections = useMemo(
+    () =>
+      templateAppliesToRoute(activeTemplate, search.routePath)
+        ? (activeTemplate?.document.sections ?? NO_SECTIONS)
+        : NO_SECTIONS,
+    [activeTemplate, search.routePath],
+  );
   const [sections, setSections] = useState(sourceSections);
   const sectionsRef = useRef(sourceSections);
   const dragStartSectionsRef = useRef<EditorSection[] | null>(null);
@@ -854,47 +866,39 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
               </div>
               <SidebarMenu aria-label="Theme pages">
                 {themeRoutes.map((route) => (
-                  <SidebarMenuItem key={`${route.sourcePath}:${route.path}`}>
+                  <SidebarMenuItem
+                    key={`${route.sourcePath}:${route.path}`}
+                    className="group/page"
+                  >
                     <SidebarMenuButton
                       type="button"
                       size="sm"
                       className="cursor-pointer"
+                      isActive={(search.routePath ?? "/") === route.path}
                       onMouseEnter={() => onPrefetchThemeRoute?.(route)}
                       onFocus={() => onPrefetchThemeRoute?.(route)}
                       onClick={() => onOpenThemeRoute?.(route)}
-                      title={`Open ${route.sourcePath}`}
+                      title={`Preview ${route.path}`}
                     >
                       <FileCode2 aria-hidden="true" />
                       <span>{route.path === "/" ? "Home /" : route.path}</span>
                     </SidebarMenuButton>
+                    {/* Opening the source is a deliberate act, not what every
+                        click on a page happens to do. */}
+                    <SidebarMenuAction
+                      type="button"
+                      aria-label={`Open ${route.sourcePath}`}
+                      title={`Open ${route.sourcePath}`}
+                      className="opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/page:opacity-100 group-hover/page:opacity-100"
+                      onClick={() => onOpenThemeRouteCode?.(route)}
+                    >
+                      <Code2 aria-hidden="true" />
+                    </SidebarMenuAction>
                   </SidebarMenuItem>
                 ))}
               </SidebarMenu>
             </SidebarGroup>
           ) : null}
-
-          <SidebarGroup className="border-b border-solid p-3">
-            <Select
-              value={activeTemplate?.id}
-              onValueChange={(templateId) => {
-                const template = context.templates.find(
-                  (candidate) => candidate.id === templateId,
-                );
-                if (template) onSearchChange(toEditorTemplateSearch(template));
-              }}
-            >
-              <SelectTrigger size="sm" aria-label="Template" className="w-full">
-                <SelectValue placeholder="Select template" />
-              </SelectTrigger>
-              <SelectContent align="start">
-                {context.templates.map((template) => (
-                  <SelectItem key={template.id} value={template.id}>
-                    {template.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </SidebarGroup>
 
           <SidebarContent className="min-h-0 w-full">
             <SidebarGroup className="border-0 p-2" aria-label="Theme structure">
