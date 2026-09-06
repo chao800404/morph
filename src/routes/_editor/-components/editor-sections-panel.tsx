@@ -625,19 +625,45 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     }
     return result;
   }, [editableNodes]);
-  const routeNodeSectionIds = useMemo(() => {
-    if (sourceSections.length > 0 || !activeRoute) return [];
-    const sectionIds = new Set(
-      editableNodes
-        .map((node) => node.sectionId)
-        .filter((sectionId): sectionId is string => Boolean(sectionId)),
-    );
-    return [...sectionIds].sort((left, right) => {
-      if (left === activeRoute.sourcePath) return -1;
-      if (right === activeRoute.sourcePath) return 1;
-      return left.localeCompare(right);
-    });
-  }, [activeRoute, editableNodes, sourceSections.length]);
+  const templateSectionIds = useMemo(
+    () => new Set(sections.map((section) => section.id)),
+    [sections],
+  );
+
+  /**
+   * The page's own roots: layout shell, route file, Header, Footer.
+   *
+   * These were shown only when the template had no sections, so Home listed
+   * five editable sections and no way to reach the header or footer that were
+   * plainly on the canvas -- the same header a product page let you select.
+   * They are ordered by where they appear in the rendered page and split
+   * around the template's sections, so the tree reads top to bottom like the
+   * page does.
+   */
+  const layoutRoots = useMemo(() => {
+    const before: string[] = [];
+    const after: string[] = [];
+    if (!activeRoute) return { before, after };
+    const seen = new Set<string>();
+    let passedTemplateSections = false;
+    for (const node of editableNodes) {
+      const sectionId = node.sectionId;
+      if (!sectionId) continue;
+      if (templateSectionIds.has(sectionId)) {
+        passedTemplateSections = true;
+        continue;
+      }
+      if (seen.has(sectionId)) continue;
+      seen.add(sectionId);
+      (passedTemplateSections ? after : before).push(sectionId);
+    }
+    return { before, after };
+  }, [activeRoute, editableNodes, templateSectionIds]);
+
+  const layoutRootIds = useMemo(
+    () => [...layoutRoots.before, ...layoutRoots.after],
+    [layoutRoots],
+  );
   const editableNodeById = useMemo(
     () => new Map(editableNodes.map((node) => [node.id, node])),
     [editableNodes],
@@ -754,18 +780,18 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   }, [search.section]);
 
   useIsomorphicLayoutEffect(() => {
-    if (routeNodeSectionIds.length === 0) return;
+    if (layoutRootIds.length === 0) return;
     setExpandedSectionIds((current) => {
       let changed = false;
       const next = new Set(current);
-      for (const sectionId of routeNodeSectionIds) {
+      for (const sectionId of layoutRootIds) {
         if (next.has(sectionId)) continue;
         next.add(sectionId);
         changed = true;
       }
       return changed ? next : current;
     });
-  }, [routeNodeSectionIds]);
+  }, [layoutRootIds]);
 
   useIsomorphicLayoutEffect(() => {
     if (!selectedEditableNode) return;
@@ -841,6 +867,39 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     );
   };
 
+  /** A page root the template does not own: the layout, Header, Footer. */
+  const renderLayoutRoot = (sectionId: string): React.ReactNode => {
+    const sectionNodes = nodesByParent.get(`${sectionId} `) ?? [];
+    const sourceName = sectionId.split("/").at(-1) ?? sectionId;
+    const sourceStem = sourceName.replace(/\.[cm]?[jt]sx?$/, "");
+    const label =
+      sectionId === activeRoute?.sourcePath
+        ? activeRoute.path === "/"
+          ? "Home"
+          : activeRoute.path
+        : sourceStem
+            .replace(/[-_]+/g, " ")
+            .replace(/\w/g, (character) => character.toUpperCase());
+    return (
+      <RouteTreeRootRow
+        key={sectionId}
+        label={label}
+        expanded={expandedSectionIds.has(sectionId)}
+        hasChildren={sectionNodes.length > 0}
+        onToggleExpanded={() =>
+          setExpandedSectionIds((current) => {
+            const next = new Set(current);
+            if (next.has(sectionId)) next.delete(sectionId);
+            else next.add(sectionId);
+            return next;
+          })
+        }
+      >
+        {sectionNodes.length > 0 ? renderEditableNodes(sectionId, null) : null}
+      </RouteTreeRootRow>
+    );
+  };
+
   return (
     <aside
       style={style}
@@ -910,7 +969,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                 >
                   Loading route structure…
                 </div>
-              ) : sections.length > 0 ? (
+              ) : sections.length > 0 || layoutRootIds.length > 0 ? (
                 <DragDropProvider
                   sensors={sensors}
                   onDragStart={() => {
@@ -959,6 +1018,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   }}
                 >
                   <SidebarMenu>
+                    {layoutRoots.before.map(renderLayoutRoot)}
                     {sections.map((section, index) => {
                       const sectionNodes =
                         nodesByParent.get(`${section.id}\u0000`) ?? [];
@@ -1012,51 +1072,9 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                         </SortableSectionRow>
                       );
                     })}
+                    {layoutRoots.after.map(renderLayoutRoot)}
                   </SidebarMenu>
                 </DragDropProvider>
-              ) : routeNodeSectionIds.length > 0 ? (
-                <SidebarMenu>
-                  {routeNodeSectionIds.map((sectionId) => {
-                    const sectionNodes =
-                      nodesByParent.get(`${sectionId}\u0000`) ?? [];
-                    const expanded = expandedSectionIds.has(sectionId);
-                    const sourceName = sectionId.split("/").at(-1) ?? sectionId;
-                    const sourceStem = sourceName.replace(
-                      /\.[cm]?[jt]sx?$/,
-                      "",
-                    );
-                    const label =
-                      sectionId === activeRoute?.sourcePath
-                        ? activeRoute.path === "/"
-                          ? "Home"
-                          : activeRoute.path
-                        : sourceStem
-                            .replace(/[-_]+/g, " ")
-                            .replace(/\b\w/g, (character) =>
-                              character.toUpperCase(),
-                            );
-                    return (
-                      <RouteTreeRootRow
-                        key={sectionId}
-                        label={label}
-                        expanded={expanded}
-                        hasChildren={sectionNodes.length > 0}
-                        onToggleExpanded={() =>
-                          setExpandedSectionIds((current) => {
-                            const next = new Set(current);
-                            if (next.has(sectionId)) next.delete(sectionId);
-                            else next.add(sectionId);
-                            return next;
-                          })
-                        }
-                      >
-                        {sectionNodes.length > 0
-                          ? renderEditableNodes(sectionId, null)
-                          : null}
-                      </RouteTreeRootRow>
-                    );
-                  })}
-                </SidebarMenu>
               ) : (
                 <div className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground">
                   This template has no sections yet. New sections will appear

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
+import type { ThemeRouteRecord } from "@/lib/storefront/compiler/theme-route-registry";
 import type { PreviewEditableNode } from "@/lib/storefront/editor/preview-protocol";
 import {
   EditorSectionsPanel,
@@ -701,5 +702,94 @@ describe("EditorSectionsPanel editable node tree", () => {
         screen.queryByRole("heading", { name: "Delete “hero”?" }),
       ).toBeNull(),
     );
+  });
+});
+
+describe("EditorSectionsPanel page structure", () => {
+  const activeRoute = {
+    kind: "route",
+    path: "/",
+    sourcePath: "src/routes/index.tsx",
+  } as unknown as ThemeRouteRecord;
+
+  /** Header before the template's sections, Footer after, as the page renders. */
+  const layoutNodes: readonly PreviewEditableNode[] = [
+    {
+      id: "header:node:store-name",
+      parentId: null,
+      sectionId: "src/components/Header.tsx",
+      label: "Store Name",
+      kind: "text",
+      tagName: "span",
+      target: {
+        sectionId: "src/components/Header.tsx",
+        nodeId: "store-name",
+        isSection: false,
+      },
+    },
+    ...editableNodes,
+    {
+      id: "footer:node:copyright",
+      parentId: null,
+      sectionId: "src/components/Footer.tsx",
+      label: "Copyright Text",
+      kind: "text",
+      tagName: "p",
+      target: {
+        sectionId: "src/components/Footer.tsx",
+        nodeId: "copyright",
+        isSection: false,
+      },
+    },
+  ] as unknown as readonly PreviewEditableNode[];
+
+  /**
+   * Row labels in the order they are painted.
+   *
+   * Section rows and layout rows use different wrappers, so this reads every
+   * button and filters to the roots under test rather than assuming a shape.
+   */
+  const rootOrder = (container: HTMLElement, roots: readonly string[]) =>
+    [...container.querySelectorAll("button")]
+      .map((button) => button.textContent?.trim() ?? "")
+      .filter((label) => roots.includes(label));
+
+  // The tree used to show the route's own structure only when the template had
+  // no sections, so Home listed five sections and gave no way to reach the
+  // header and footer that were plainly on the canvas.
+  it("shows the layout around the template's sections, in page order", () => {
+    const { container } = renderPanel(vi.fn(), vi.fn(), {
+      editableNodes: layoutNodes,
+      activeRoute,
+    });
+
+    expect(
+      rootOrder(container, ["Header", "hero", "newsletter", "Footer"]),
+    ).toEqual(["Header", "hero", "newsletter", "Footer"]);
+  });
+
+  it("still lists a route with no template sections", () => {
+    const emptyTemplateSearch = {
+      ...search,
+      template: "product",
+      templateId: "template-missing",
+      routePath: "/products",
+    } as StorefrontThemeEditorSearch;
+    const { container } = renderPanel(vi.fn(), vi.fn(), {
+      search: emptyTemplateSearch,
+      editableNodes: layoutNodes,
+      activeRoute: {
+        kind: "route",
+        path: "/products",
+        sourcePath: "src/routes/products.index.tsx",
+      } as unknown as ThemeRouteRecord,
+    });
+
+    // No template applies, so every root is a layout root and the template's
+    // section ids fall back to their source-derived labels.
+    expect(rootOrder(container, ["Header", "Footer"])).toEqual([
+      "Header",
+      "Footer",
+    ]);
   });
 });
