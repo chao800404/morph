@@ -12,9 +12,14 @@ vi.mock("../storage/theme-storage.server", () => ({ themeSourceStore: mocks }));
 import {
   ensureThemeCatalog,
   planThemeCatalogFiles,
+  planThemeCatalogUpgrades,
 } from "./theme-catalog-setup";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
-import { STARTER_THEME_CATALOG_FILES } from "../starter-theme-catalog-files";
+import {
+  STARTER_THEME_CATALOG_FILES,
+  STARTER_THEME_CATALOG_UPGRADES,
+  starterThemeCatalogSource,
+} from "../starter-theme-catalog-files";
 const input = {
   storefrontId: "storefront",
   themeId: "theme",
@@ -91,5 +96,85 @@ describe("automatic catalog source setup", () => {
     mocks.saveFilesBatch.mockRejectedValue(new Error("SOURCE_CONFLICT"));
     await expect(ensureThemeCatalog(input)).rejects.toThrow("SOURCE_CONFLICT");
     expect(mocks.saveFilesBatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("catalog source upgrades", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolveForTheme.mockResolvedValue({ salesChannelId: "sc" });
+    mocks.hasChannelProducts.mockResolvedValue(true);
+    mocks.getSourceGeneration.mockResolvedValue(8);
+    mocks.saveFilesBatch.mockResolvedValue([]);
+  });
+
+  const legacyFiles = () =>
+    STARTER_THEME_CATALOG_UPGRADES.map((upgrade) => ({
+      id: `file-${upgrade.path}`,
+      path: upgrade.path,
+      content: upgrade.legacyContent,
+      version: 3,
+    }));
+
+  it("has a legacy copy to recognise, derived from the current source", () => {
+    expect(STARTER_THEME_CATALOG_UPGRADES.length).toBeGreaterThan(0);
+    for (const upgrade of STARTER_THEME_CATALOG_UPGRADES) {
+      expect(upgrade.legacyContent).not.toBe(
+        starterThemeCatalogSource(upgrade.path),
+      );
+    }
+  });
+
+  // Gallery images with no reserved space resized the page as each one landed,
+  // so the editor walked the frame up image by image before settling.
+  it("replaces an untouched legacy file with the current source", () => {
+    const planned = planThemeCatalogUpgrades(legacyFiles());
+    expect(planned).toHaveLength(STARTER_THEME_CATALOG_UPGRADES.length);
+    for (const file of planned) {
+      expect(file.content).toBe(starterThemeCatalogSource(file.path));
+      expect(file.content).toContain("aspect-square w-full bg-stone-200");
+      // The write must lose to a concurrent edit rather than overwrite it.
+      expect(file.expectedFileId).toBe(`file-${file.path}`);
+      expect(file.expectedVersion).toBe(3);
+    }
+  });
+
+  it("leaves a file the author has edited alone", () => {
+    const edited = legacyFiles().map((file) => ({
+      ...file,
+      content: `${file.content}\n// author's note\n`,
+    }));
+    expect(planThemeCatalogUpgrades(edited)).toEqual([]);
+  });
+
+  it("writes nothing once every file is current", () => {
+    const current = STARTER_THEME_CATALOG_FILES.map((file) => ({
+      id: `file-${file.path}`,
+      path: file.path,
+      content: file.content,
+      version: 3,
+    }));
+    expect(planThemeCatalogUpgrades(current)).toEqual([]);
+  });
+
+  it("upgrades a theme that already has the catalog routes", async () => {
+    mocks.listFiles.mockResolvedValue([
+      ...STARTER_THEME_CATALOG_FILES.filter(
+        (file) =>
+          !STARTER_THEME_CATALOG_UPGRADES.some(
+            (upgrade) => upgrade.path === file.path,
+          ),
+      ),
+      ...legacyFiles(),
+    ]);
+
+    await expect(ensureThemeCatalog(input)).resolves.toBe(true);
+
+    const [, , files, options] = mocks.saveFilesBatch.mock.calls[0] ?? [];
+    expect(files).toHaveLength(STARTER_THEME_CATALOG_UPGRADES.length);
+    expect(options.revisionMessage).toBe(
+      "Update storefront product catalog routes",
+    );
+    expect(options.expectedSourceGeneration).toBe(8);
   });
 });

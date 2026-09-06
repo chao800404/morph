@@ -249,7 +249,7 @@ export default function ProductDetail({ product }: { product: CatalogDetail }) {
       <div data-morph-node="product-detail-grid" className="mt-10 grid gap-12 lg:grid-cols-2">
         <div data-morph-node="product-gallery" className="space-y-6">
           {product.thumbnailUrl ? <img data-morph-node="product-image" src={product.thumbnailUrl} alt={product.title} className="aspect-square w-full bg-stone-200 object-cover" /> : <div data-morph-node="product-placeholder" className="flex aspect-square items-center justify-center bg-stone-200 text-sm text-stone-600">No cover image available</div>}
-          {product.assets.map((asset) => <img key={asset.id} data-morph-node="product-asset" src={asset.url} alt={asset.name} loading="lazy" className="w-full bg-stone-200 object-cover" />)}
+          {product.assets.map((asset) => <img key={asset.id} data-morph-node="product-asset" src={asset.url} alt={asset.name} loading="lazy" className="aspect-square w-full bg-stone-200 object-cover" />)}
         </div>
         <div data-morph-node="product-information" className="min-w-0 py-4">
           <h1 data-morph-node="product-title" className="break-words font-serif text-5xl tracking-tight md:text-6xl">{product.title}</h1>
@@ -280,3 +280,53 @@ export default function ProductDetail({ product }: { product: CatalogDetail }) {
 `,
   },
 ];
+
+const PRODUCT_DETAIL_PATH = "src/components/ProductDetail.tsx";
+
+/** The generated copy of a catalog file, or `null` if the path is not one. */
+export function starterThemeCatalogSource(path: string): string | null {
+  return (
+    STARTER_THEME_CATALOG_FILES.find((file) => file.path === path)?.content ??
+    null
+  );
+}
+
+/**
+ * `ProductDetail.tsx` before the gallery images reserved their space.
+ *
+ * Without an aspect ratio each gallery image resized the page as it loaded, so
+ * the editor walked the preview frame up one image at a time and took seconds
+ * to settle on a height. Derived from the current source by reversing exactly
+ * that edit, so the two can never drift into a match that upgrades the wrong
+ * bytes.
+ */
+export const LEGACY_STARTER_THEME_PRODUCT_DETAIL_SOURCE: string | null =
+  (() => {
+    const current = starterThemeCatalogSource(PRODUCT_DETAIL_PATH);
+    if (!current) return null;
+    const reserved = `data-morph-node="product-asset" src={asset.url} alt={asset.name} loading="lazy" className="aspect-square w-full`;
+    if (!current.includes(reserved)) return null;
+    return current.replace(
+      reserved,
+      `data-morph-node="product-asset" src={asset.url} alt={asset.name} loading="lazy" className="w-full`,
+    );
+  })();
+
+/**
+ * Catalog files whose generated content changed since a Theme installed them.
+ *
+ * Byte-exact only: a file an author has touched is left alone, because a
+ * preview that settles a second faster is not worth overwriting their work.
+ */
+export const STARTER_THEME_CATALOG_UPGRADES: ReadonlyArray<{
+  path: string;
+  legacyContent: string;
+}> =
+  LEGACY_STARTER_THEME_PRODUCT_DETAIL_SOURCE === null
+    ? []
+    : [
+        {
+          path: PRODUCT_DETAIL_PATH,
+          legacyContent: LEGACY_STARTER_THEME_PRODUCT_DETAIL_SOURCE,
+        },
+      ];

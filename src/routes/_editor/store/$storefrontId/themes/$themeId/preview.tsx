@@ -3440,6 +3440,9 @@ function usePreviewViewportHeight(initialHeight: number) {
   return viewportHeight;
 }
 
+/** A decode that never settles must not withhold the height indefinitely. */
+const MEDIA_SETTLE_TIMEOUT_MS = 2_000;
+
 function useStorefrontPreviewSizeBridge(enabled: boolean) {
   useEffect(() => {
     if (!enabled || window.parent === window) return;
@@ -3480,8 +3483,15 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
         // `scrollHeight` captures content that extends beyond it. Reading
         // both in the same animation frame keeps this a read-only geometry
         // phase and avoids layout read/write thrashing.
+        // Between routes the old root is gone and the new one is not mounted
+        // yet. Returning here would abandon the measurement altogether and
+        // leave the editor on the previous route's height until something else
+        // happened to resize; keep waiting for the new root instead.
         const previewRoot = currentPreviewRoot();
-        if (!previewRoot) return;
+        if (!previewRoot) {
+          measureUntilStable();
+          return;
+        }
         observeCurrentRoot(previewRoot);
 
         const nextHeight = Math.ceil(
@@ -3535,8 +3545,44 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
     };
 
     // `body` is the one node that outlives a route change, so a swapped root is
-    // still noticed even before anything inside the new one resizes.
+    // still noticed even before anything inside the new one resizes. It is also
+    // the only stable candidate: `documentElement` is sized by the iframe, and
+    // the iframe is sized from this measurement, so observing it would close
+    // the frame/content feedback loop the sizing token exists to break.
     observer.observe(document.body);
+
+    // An image with no reserved space resizes the page when it lands, so a
+    // gallery of them walks the frame up one image at a time and the editor
+    // spends seconds converging. Waiting for them turns that into a single
+    // correct answer. The race is the safety valve: a decode that never
+    // settles must not be able to withhold the measurement entirely.
+    const waitForMedia = async () => {
+      const root = currentPreviewRoot();
+      if (!root) return;
+      const pending = Array.from(root.querySelectorAll("img")).filter(
+        (image) => !image.complete,
+      );
+      if (pending.length === 0) return;
+      await Promise.race([
+        Promise.allSettled(pending.map((image) => image.decode())),
+        new Promise((resolve) =>
+          setTimeout(resolve, MEDIA_SETTLE_TIMEOUT_MS),
+        ),
+      ]);
+    };
+
+    // Measure now so the editor is never left holding a stale frame, then
+    // again once fonts and images have settled to correct it.
+    const measureNowAndAfterMedia = () => {
+      measureUntilStable();
+      void (async () => {
+        await document.fonts.ready;
+        await waitForMedia();
+        if (isDisposed) return;
+        stableFrameCount = 0;
+        measureUntilStable();
+      })();
+    };
     const handleSizeRequest = (event: MessageEvent<unknown>) => {
       const message = parseEditorToPreviewWindowEvent(event);
       if (message?.type === "morph:storefront-preview-request-size") {
@@ -3547,15 +3593,11 @@ function useStorefrontPreviewSizeBridge(enabled: boolean) {
         // provisional height it shrank to in order to ask.
         lastPublishedHeight = null;
         stableFrameCount = 0;
-        measureUntilStable();
+        measureNowAndAfterMedia();
       }
     };
     window.addEventListener("message", handleSizeRequest);
-    const beginMeasurement = async () => {
-      await document.fonts.ready;
-      if (!isDisposed) measureUntilStable();
-    };
-    void beginMeasurement();
+    measureNowAndAfterMedia();
 
     return () => {
       isDisposed = true;
