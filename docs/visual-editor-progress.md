@@ -8,11 +8,11 @@
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 最後更新     | 2026-09-07                                                                                                                                                                      |
 | 目前狀態     | 核心 Editor／Build／Release 已完成主要鏈路；商品 catalog 的 route／API／預覽垂直切片已在本機閉環，但 Production Runtime、Domain 與遠端 Publish 尚未閉環 |
-| 整體完成度   | **91%**（依目前實作與本輪本機／瀏覽器驗證重新加權；未將未驗證的 Cloudflare production 路徑視為已完成）                                                                            |
+| 整體完成度   | **90%**（本輪首次實跑 Playwright，E2E 原為 6 失敗；修復後回到全綠，但據此重評第 4、8 階段） |
 | 目前重點     | 補齊商品設定完成後的 provisioning 觸發、真實 Cloudflare Theme Worker／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration |
-| 最近完整驗證 | 2026-09-07 於目前工作樹實跑：`pnpm typecheck`、`pnpm test`（268 files / 1909 tests passed、各 1 skipped）、`pnpm build`（client bundle 332 檔、deploy artifact secret guard）、Playwright `e2e/catalog.spec.ts --project=editor --no-deps`（1 passed）。未執行遠端 Publish、deploy、remote migration 或跨瀏覽器 catalog E2E |
+| 最近完整驗證 | 2026-09-07 於 `49cc327` 實跑：`pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（269 files / 1910 tests passed、各 1 skipped）、`pnpm build` 含 client bundle check（332 檔）與 deploy artifact guard、**`pnpm test:e2e`（24 passed / 1 skipped / 0 failed）**。仍未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod` |
 
-`█████████ 91%`
+`█████████ 90%`
 
 > 完成度依下方權重表計算，可自行複核。權重反映各階段的規模與剩餘風險，不是平均分配 ——
 > 把「Inspector 數值輸入一致性」與「真實 Theme Runtime」等重看待，是先前數字偏高的主因。
@@ -49,12 +49,12 @@
 | 1. Inspector 資料一致性            |       5 |   100% |           5.00 |
 | 2. 即時預覽與提交語意              |       5 |   100% |           5.00 |
 | 3. Inspector 模組化與基本樣式      |      18 |    99% |          17.82 |
-| 4. Editor ↔ Preview 通訊           |      10 |   100% |          10.00 |
+| 4. Editor ↔ Preview 通訊           |      10 |    95% |           9.50 |
 | 5. 編輯器互動效能                  |      15 |    95% |          14.25 |
 | 6. Code-authored 內容 round-trip   |      15 |    88% |          13.20 |
 | 7. Live Runtime 與真實建置的一致性 |      12 |    78% |           9.36 |
-| 8. 最終品質與發布準備              |      20 |    82% |          16.40 |
-| **合計**                           | **100** |        | **91.03 → 91%** |
+| 8. 最終品質與發布準備              |      20 |    78% |          15.60 |
+| **合計**                           | **100** |        | **89.88 → 90%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
@@ -1121,6 +1121,11 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-07 | 首次實跑 Playwright 並修復 E2E 閘門（第十七輪）：進度表記載「23 passed」但實跑為 6 失敗。四項是測試過時 —— 點選畫布節點會落在 Content 分頁，測試卻直接找 Styles 裡的控制項，補上 `openStylesTab` 前置；兩項是真實缺陷 —— `RouteFullscreenSurface` 覆蓋整個視窗卻只是個 `section`，沒有 `role="dialog"`、`aria-modal` 或名稱,現在補上並將 `label` 設為必填,兩個泛用外框自行命名以免波及約 70 個呼叫點；掃描對話框內部又找到 `kbd` 在 `bg-muted` 上用 `text-muted-foreground` 未達 4.5:1,以及兩個 `ul` 直接放 `div`／`button` 的無效清單標記。另修復自己在第十六輪引入的回歸：版面列插進區塊清單後,sortable 宣告的索引與實際位置不符,第一次拖曳變成無效操作,排序功能無聲失效 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（269 files / 1910 passed）、`pnpm build`、**`pnpm test:e2e` 24 passed / 1 skipped / 0 failed** |
+| 2026-09-07 | 結構樹改為呈現整個頁面（第十六輪）：原本 `if (sourceSections.length > 0) return []` 讓有區塊的版型完全蓋掉路由結構,首頁因此列出五個區塊卻碰不到畫面上明明存在的 Header／Footer,而商品頁反而點得到 —— 差別只是商品版型剛好沒存區塊。兩種來源合成一份清單,版型未擁有的根節點依畫面出現順序排列並以區塊為界分成前後段,樹讀起來由上到下對應頁面 | 瀏覽器實測：Home 為 Header／hero…hello／Footer,`/products` 與 `/aboutus` 各自顯示自己的結構；新增 2 個回歸測試鎖住順序 |
+| 2026-09-07 | Pages 清單回歸為頁面切換器（第十六輪）：點擊原本無條件呼叫 `handleJumpToCode`,在 Design 模式工作的人會被丟進沒要求開啟的原始碼；改為只在已經處於 Code 模式時跟隨,開啟原始碼成為列上的獨立控制項。移除與 Pages 清單重複的 Template 下拉。修正路由找不到對應版型時借用不相關版型的 fallback | 瀏覽器實測四條路由各自載入、維持當前模式、顯示自己的樹 |
+| 2026-09-07 | 預覽高度一次到位（第十五輪後續）：商品圖庫圖未預留空間,每張載入都改變頁面高度,編輯器逐張往上爬。改為預留比例並讓橋接等待字型與圖片解碼；舊 Theme 以位元組完全相符為條件就地升級 | 實測 `/products` 由 10.7 秒分段收斂變為 6.6 秒一次到位 |
+| 2026-09-07 | 修復 Live Preview 頁面被截斷（第十五輪後續）：`[class*="h-screen"]` 是子字串比對,連 `min-h-screen` 也被打中,只要求最小高度的頁面被釘死成 viewport 高度,其餘內容溢出遭裁切；另一個缺陷是量測橋接在掛載時抓一次 root,換頁後該節點已被替換,量到 0 讓編輯器夾在 320px 下限 | 瀏覽器實測：`/products` 1754px、`/products/$slug` 3971px、Home 2501px 各自依內容決定高度；新增 5 個選擇器回歸測試 |
 | 2026-09-07 | 依完整 route → server function → service → DAL／storage → schema 呼叫鏈重新盤點，完成商品 catalog vertical slice：新增受限的 `/products` 與 `/products/$slug` Theme source、published-only sales-channel catalog DTO／API、圖片公開路徑與 handle／page／URL 邊界；Theme Editor 開啟時以 storefront ownership + source-generation／OCC additive provisioning 建檔，Editor preview 由受保護 server function 注入 loader data，正式 storefront 只接受 server-resolved context。另修正只有已發布商品才觸發 catalog 建檔，避免草稿商品建立公開 route；商品 create／update 尚未直接觸發 provisioning | `pnpm typecheck`、`pnpm typecheck:data`、`pnpm test`（268 files / 1909 tests passed、各 1 skipped）、`pnpm build`（client bundle 332 檔、deploy artifact secret guard）、`pnpm exec playwright test e2e/catalog.spec.ts --project=editor --no-deps`（1 passed）、`git diff --check` |
 | 2026-09-05 | 安全與架構審查 16 項全數修正（第十四輪）：`sanitizeReturnPath` 收斂登出回跳（Better Auth 的 `isSafeUrlScheme` 只擋危險 scheme，仍放行絕對網址）；發布與 reconcile 共用 deployment lease（含 `deployReleaseArtifact` 這條原本漏掉的路徑）；已發布媒體改走公開路徑與 `lookupPublishedMedia`；Inspector 分頁改由 cookie 經 route context 播種，修掉 `localStorage` 造成的 hydration mismatch；`mapFirstOrNull` 收斂單列讀取，並新增 `pnpm typecheck:data` 針對資料層強制 `noUncheckedIndexedAccess`；migration 0053 建立 lease 表 | `pnpm typecheck`、`pnpm typecheck:data`、`pnpm test`、`pnpm build` 全綠；lease SQL 以 `wrangler d1 execute --local` 對真實 D1 驗證；瀏覽器實測分頁寬度與鍵盤縮放；`pnpm db:migrate:prod` 尚未執行（使用者尚未部署到 Cloudflare） |
 | 2026-09-05 | 針對第十四輪修正的再審查，10 項全數修正（第十五輪）：釋放庫存的兩條路徑收斂為單一 `claimAndRelease`（先以條件 UPDATE 搶下該列再扣減，扣減拋錯則還原），修掉同一筆 hold 被重複釋放；付款前置條件改為 `preparePaymentStateGuard`，capture／refund／cancel 一律先斷言 `canceled_at IS NULL`（原本取消完全沒有守衛）；發布鎖提前到 `publishTemplate` 之前，避免 BUSY 時 `active_release_id` 已被改動；已發布資產掃描改用 `listPublishedDocuments` 同時涵蓋 template 與 Page，且發布項目記下當時的 handle，改名後不再讓公開網址指向別的內容；Inspector rebase 以 `sameContentValue` 結構比較取代 `Object.is`（陣列欄位過去永遠被判定為 dirty）；`flushTemplatePendingProps` 只在伺服器接受後才丟棄 pending props；媒體欄位清除改為送出明確的空值並由 capability 檢查接受；v3 starter theme 首頁補上編輯器原本看不到的區塊，舊 Theme 比對來源後就地升級 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（256 files / 1805 tests passed，各 1 skipped）、`pnpm build` 含 client bundle check（332 檔）與 deploy artifact secret guard 全數通過；新增釋放競態、付款守衛、陣列 rebase、媒體清除與已發布頁面查詢的回歸測試 |
