@@ -104,6 +104,72 @@ function renderPanel(
   };
 }
 
+describe("EditorSectionsPanel pages", () => {
+  const routes = [
+    {
+      id: "/",
+      path: "/",
+      sourcePath: "src/routes/index.tsx",
+      kind: "route",
+      dynamic: false,
+      componentName: "HomeRoute",
+    },
+    {
+      id: "/about",
+      path: "/about",
+      sourcePath: "src/routes/about.tsx",
+      kind: "route",
+      dynamic: false,
+      componentName: "AboutRoute",
+    },
+    {
+      id: "/products",
+      path: "/products",
+      sourcePath: "src/routes/products.index.tsx",
+      kind: "route",
+      dynamic: false,
+      componentName: "ProductsRoute",
+    },
+  ] as unknown as readonly ThemeRouteRecord[];
+
+  it("keeps the standalone search available when Pages is collapsed", () => {
+    renderPanel(vi.fn(), vi.fn(), { themeRoutes: routes });
+
+    expect(screen.getByRole("button", { name: "/about" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Collapse pages" }));
+
+    expect(screen.queryByRole("button", { name: "/about" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Search pages" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand pages" }));
+    expect(screen.getByRole("button", { name: "/about" })).toBeTruthy();
+  });
+
+  it("opens a standalone command dialog and filters pages by route or source path", async () => {
+    const onOpenThemeRoute = vi.fn();
+    renderPanel(vi.fn(), vi.fn(), { themeRoutes: routes, onOpenThemeRoute });
+
+    expect(
+      screen.queryByPlaceholderText("Search pages by route or source file…"),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Search pages" }));
+
+    const input = await screen.findByPlaceholderText(
+      "Search pages by route or source file…",
+    );
+
+    fireEvent.change(input, { target: { value: "products" } });
+
+    expect(screen.queryByText("src/routes/about.tsx")).toBeNull();
+    expect(screen.getByText("src/routes/products.index.tsx")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("option", { name: /\/products/ }));
+    await waitFor(() =>
+      expect(onOpenThemeRoute).toHaveBeenCalledWith(routes[2]),
+    );
+  });
+});
+
 describe("EditorSectionsPanel visibility controls", () => {
   it("enables Add section and forwards the selected route component", async () => {
     const onAddSection = vi.fn().mockResolvedValue({ success: true });

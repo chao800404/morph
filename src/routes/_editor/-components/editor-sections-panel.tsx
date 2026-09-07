@@ -101,6 +101,7 @@ import {
   resolveEditorTemplate,
   templateAppliesToRoute,
 } from "./editor-template";
+import { EditorPagesSearch } from "./editor-pages-search";
 
 export type EditorSectionsPanelProps = {
   context: StorefrontThemeEditorDTO;
@@ -612,6 +613,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [pagesExpanded, setPagesExpanded] = useState(true);
   const [deleteCandidate, setDeleteCandidate] =
     useState<EditorDeleteCandidate | null>(null);
   const [isDeletePending, setIsDeletePending] = useState(false);
@@ -629,7 +631,6 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     () => new Set(sections.map((section) => section.id)),
     [sections],
   );
-
   /**
    * The page's own roots: layout shell, route file, Header, Footer.
    *
@@ -922,44 +923,82 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           </SidebarHeader>
 
           {themeRoutes.length > 0 ? (
-            <SidebarGroup className="border-b border-solid p-2">
-              <div className="px-2 pb-1 text-xs font-medium text-muted-foreground">
-                Pages
-              </div>
-              <SidebarMenu aria-label="Theme pages">
-                {themeRoutes.map((route) => (
-                  <SidebarMenuItem
-                    key={`${route.sourcePath}:${route.path}`}
-                    className="group/page"
+            <EditorPagesSearch
+              routes={themeRoutes}
+              onPrefetchRoute={onPrefetchThemeRoute}
+              onOpenRoute={onOpenThemeRoute}
+            />
+          ) : null}
+
+          {themeRoutes.length > 0 ? (
+            <Collapsible
+              open={pagesExpanded}
+              onOpenChange={setPagesExpanded}
+            >
+              <SidebarGroup className="border-b border-solid p-2">
+                <div className="flex items-center gap-1 px-1 pb-1">
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1 py-1 text-left text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={`${pagesExpanded ? "Collapse" : "Expand"} pages`}
+                      aria-expanded={pagesExpanded}
+                    >
+                      {pagesExpanded ? (
+                        <ChevronDown className="size-3.5 shrink-0" />
+                      ) : (
+                        <ChevronRight className="size-3.5 shrink-0" />
+                      )}
+                      <span className="truncate">Pages</span>
+                    </button>
+                  </CollapsibleTrigger>
+                  <span
+                    className="shrink-0 px-1 text-[10px] tabular-nums text-muted-foreground/70"
+                    aria-live="polite"
                   >
-                    <SidebarMenuButton
-                      type="button"
-                      size="sm"
-                      className="cursor-pointer"
-                      isActive={(search.routePath ?? "/") === route.path}
-                      onMouseEnter={() => onPrefetchThemeRoute?.(route)}
-                      onFocus={() => onPrefetchThemeRoute?.(route)}
-                      onClick={() => onOpenThemeRoute?.(route)}
-                      title={`Preview ${route.path}`}
-                    >
-                      <FileCode2 aria-hidden="true" />
-                      <span>{route.path === "/" ? "Home /" : route.path}</span>
-                    </SidebarMenuButton>
-                    {/* Opening the source is a deliberate act, not what every
-                        click on a page happens to do. */}
-                    <SidebarMenuAction
-                      type="button"
-                      aria-label={`Open ${route.sourcePath}`}
-                      title={`Open ${route.sourcePath}`}
-                      className="opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/page:opacity-100 group-hover/page:opacity-100"
-                      onClick={() => onOpenThemeRouteCode?.(route)}
-                    >
-                      <Code2 aria-hidden="true" />
-                    </SidebarMenuAction>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroup>
+                    {themeRoutes.length}/{themeRoutes.length}
+                  </span>
+                </div>
+
+                <CollapsibleContent>
+                  <SidebarMenu aria-label="Theme pages">
+                    {themeRoutes.map((route) => (
+                      <SidebarMenuItem
+                        key={`${route.sourcePath}:${route.path}`}
+                        className="group/page"
+                      >
+                        <SidebarMenuButton
+                          type="button"
+                          size="sm"
+                          className="cursor-pointer"
+                          isActive={(search.routePath ?? "/") === route.path}
+                          onMouseEnter={() => onPrefetchThemeRoute?.(route)}
+                          onFocus={() => onPrefetchThemeRoute?.(route)}
+                          onClick={() => onOpenThemeRoute?.(route)}
+                          title={`Preview ${route.path}`}
+                        >
+                          <FileCode2 aria-hidden="true" />
+                          <span>
+                            {route.path === "/" ? "Home /" : route.path}
+                          </span>
+                        </SidebarMenuButton>
+                        {/* Opening the source is a deliberate act, not what every
+                            click on a page happens to do. */}
+                        <SidebarMenuAction
+                          type="button"
+                          aria-label={`Open ${route.sourcePath}`}
+                          title={`Open ${route.sourcePath}`}
+                          className="opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/page:opacity-100 group-hover/page:opacity-100"
+                          onClick={() => onOpenThemeRouteCode?.(route)}
+                        >
+                          <Code2 aria-hidden="true" />
+                        </SidebarMenuAction>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                </CollapsibleContent>
+              </SidebarGroup>
+            </Collapsible>
           ) : null}
 
           <SidebarContent className="min-h-0 w-full">
