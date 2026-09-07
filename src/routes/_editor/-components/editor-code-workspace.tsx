@@ -140,6 +140,16 @@ import {
   type EditorCodeDiagnostic,
 } from "./editor-code-status-panel";
 import { EditorThemeDependenciesDialog } from "./editor-theme-dependencies";
+import { usePanelResize } from "./use-panel-resize";
+
+const DEFAULT_CODE_SIDEBAR_WIDTH = 280;
+const MIN_CODE_SIDEBAR_WIDTH = 220;
+const MAX_CODE_SIDEBAR_WIDTH = 520;
+const CODE_SIDEBAR_WIDTH_VARIABLE = "--editor-code-sidebar-width";
+
+const CODE_SIDEBAR_STYLE: React.CSSProperties = {
+  width: `var(${CODE_SIDEBAR_WIDTH_VARIABLE}, ${DEFAULT_CODE_SIDEBAR_WIDTH}px)`,
+};
 
 type EditorCodeWorkspaceProps = {
   storefrontId: string;
@@ -352,6 +362,17 @@ const EditorCodeWorkspaceContent = forwardRef<
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
+  const codeSurfaceRef = useRef<HTMLDivElement>(null);
+  const sidebarResize = usePanelResize({
+    initialWidth: DEFAULT_CODE_SIDEBAR_WIDTH,
+    defaultWidth: DEFAULT_CODE_SIDEBAR_WIDTH,
+    minWidth: MIN_CODE_SIDEBAR_WIDTH,
+    maxWidth: MAX_CODE_SIDEBAR_WIDTH,
+    edge: "left",
+    cssVariable: CODE_SIDEBAR_WIDTH_VARIABLE,
+    surfaceRef: codeSurfaceRef,
+    storageKey: "morph:editor-code-sidebar-width",
+  });
   /** Folder the inline create input is anchored to; "" is the workspace root. */
   const pendingFolderKey = pendingFolderStorageKey(storefrontId, themeId);
   const [pendingFolders, setPendingFolders] = useState<string[]>(() =>
@@ -2701,7 +2722,15 @@ const EditorCodeWorkspaceContent = forwardRef<
   }
 
   return (
-    <div className="flex h-full w-full min-h-0 bg-background text-foreground overflow-hidden">
+    <div
+      ref={codeSurfaceRef}
+      style={
+        {
+          [CODE_SIDEBAR_WIDTH_VARIABLE]: `${sidebarResize.width}px`,
+        } as React.CSSProperties
+      }
+      className="flex h-full w-full min-h-0 bg-background text-foreground overflow-hidden"
+    >
       <nav
         className="flex w-11 shrink-0 flex-col items-center border-r bg-card py-1"
         aria-label="Code workspace views"
@@ -2744,19 +2773,66 @@ const EditorCodeWorkspaceContent = forwardRef<
       </nav>
 
       {/* Left: Theme Workspace side bar */}
-      <div className="flex w-60 shrink-0 flex-col border-r bg-card/60">
+      <div
+        style={CODE_SIDEBAR_STYLE}
+        className="flex shrink-0 flex-col border-r bg-card/60 overflow-hidden"
+      >
         <div className="flex h-10 items-center justify-between border-b px-3 text-xs font-semibold text-muted-foreground">
-          <div className="flex items-center gap-1.5">
-            <Code2 className="size-3.5 text-primary" />
-            <span className="uppercase tracking-wider text-[11px]">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Code2 className="size-3.5 text-primary shrink-0" />
+            <span className="uppercase tracking-wider text-[11px] font-semibold text-foreground/80 truncate">
               {sideView === "explorer" ? "Explorer" : "Search"}
             </span>
+            {sideView === "explorer" ? (
+              <span className="rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground shrink-0 leading-none">
+                {files.length}
+              </span>
+            ) : null}
           </div>
           {sideView === "explorer" ? (
-            <div className="flex items-center gap-1.5">
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
-                {files.length} files
-              </span>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button
+                type="button"
+                title="New file"
+                aria-label="New file"
+                disabled={createMutation.isPending}
+                onClick={() => startCreatingIn("")}
+                className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+              >
+                <FilePlus2 className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                title="New folder"
+                aria-label="New folder"
+                disabled={createMutation.isPending}
+                onClick={() => startCreatingFolder("")}
+                className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+              >
+                <FolderPlus className="size-3.5" />
+              </button>
+              {copiedPaths.length > 0 ? (
+                <button
+                  type="button"
+                  title="Paste into workspace root"
+                  aria-label="Paste into workspace root"
+                  disabled={copyMutation.isPending}
+                  onClick={() => handlePasteInto("")}
+                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                >
+                  <Files className="size-3.5" />
+                </button>
+              ) : null}
+              <div className="mx-1 h-3.5 w-px bg-border/60" />
+              <button
+                type="button"
+                title="Theme packages"
+                aria-label="Theme packages"
+                onClick={() => setDependenciesDialogOpen(true)}
+                className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <Package className="size-3.5" />
+              </button>
               <button
                 type="button"
                 title="Set up Starter Theme"
@@ -2767,51 +2843,10 @@ const EditorCodeWorkspaceContent = forwardRef<
                   dirtyPaths.length > 0
                 }
                 onClick={openStarterBootstrap}
-                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
               >
                 <PackagePlus className="size-3.5" />
               </button>
-              <button
-                type="button"
-                title="Theme packages"
-                aria-label="Theme packages"
-                onClick={() => setDependenciesDialogOpen(true)}
-                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <Package className="size-3.5" />
-              </button>
-              <button
-                type="button"
-                title="New folder"
-                aria-label="New folder"
-                disabled={createMutation.isPending}
-                onClick={() => startCreatingFolder("")}
-                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <FolderPlus className="size-3.5" />
-              </button>
-              <button
-                type="button"
-                title="New file"
-                aria-label="New file"
-                disabled={createMutation.isPending}
-                onClick={() => startCreatingIn("")}
-                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-              >
-                <FilePlus2 className="size-3.5" />
-              </button>
-              {copiedPaths.length > 0 ? (
-                <button
-                  type="button"
-                  title="Paste into workspace root"
-                  aria-label="Paste into workspace root"
-                  disabled={copyMutation.isPending}
-                  onClick={() => handlePasteInto("")}
-                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-                >
-                  <Files className="size-3.5" />
-                </button>
-              ) : null}
             </div>
           ) : null}
         </div>
@@ -2857,6 +2892,22 @@ const EditorCodeWorkspaceContent = forwardRef<
             </DragDropProvider>
           </ScrollArea>
         )}
+      </div>
+
+      {/* Sidebar Resizer */}
+      <div
+        role="separator"
+        aria-label="Resize explorer sidebar"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_CODE_SIDEBAR_WIDTH}
+        aria-valuemax={MAX_CODE_SIDEBAR_WIDTH}
+        aria-valuenow={sidebarResize.width}
+        tabIndex={0}
+        {...sidebarResize.handlers}
+        className="group relative z-30 flex w-2 -ml-1 cursor-col-resize touch-none select-none items-center justify-center outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset max-md:hidden"
+        title="Drag to resize explorer sidebar. Arrow keys adjust, Home/End jump to the limits, double-click resets."
+      >
+        <div className="h-8 w-1 rounded-full bg-border group-hover:bg-primary group-active:bg-primary transition-colors" />
       </div>
 
       {/* Right: Monaco Editor Workspace */}
