@@ -5888,6 +5888,7 @@ export function VisualEditorShell({
       */}
       {previewMode === "build" && activeBuildPreview ? (
         <RouteFullscreenSurface
+          label="Build preview"
           onClose={returnToLivePreview}
           bodyClassName="flex min-h-0 flex-col p-0"
           headerLeading={

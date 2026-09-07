@@ -1,5 +1,9 @@
 import { Button } from "@/components/ui/button";
-import { Pagination, PaginationContent } from "@/components/ui/pagination";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+} from "@/components/ui/pagination";
 import { cn } from "@/lib/utils";
 import {
   ChevronFirst,
@@ -40,8 +44,14 @@ export const CardPagination = ({
           : "items-center justify-between",
       )}
     >
-      <PaginationContent
+      {/*
+        A count, not a list of pages. It was a `ul` holding two `div`s, which
+        is invalid list markup and reads to a screen reader as a list with no
+        items in it.
+      */}
+      <div
         className={cn(
+          "flex flex-row items-center gap-1",
           isStacked
             ? "w-full justify-between gap-3 text-xs"
             : "flex-1 justify-between",
@@ -55,46 +65,54 @@ export const CardPagination = ({
         <div className={cn(isStacked ? "shrink-0" : "mr-5")}>
           {`${page} of ${totalPages} Pages`}
         </div>
-      </PaginationContent>
+      </div>
       <PaginationContent
         className={cn("w-fit gap-1", isStacked ? "ml-auto" : "justify-between")}
       >
-        <Button
-          onClick={() => onPageChange("first")}
-          variant="formDark"
-          size="xs"
-          disabled={page === 1}
-          title="First page"
-        >
-          <ChevronFirst />
-        </Button>
-        <Button
-          onClick={() => onPageChange("prev")}
-          variant="formDark"
-          size="xs"
-          disabled={page === 1}
-          title="Previous page"
-        >
-          <ChevronLeft />
-        </Button>
-        <Button
-          onClick={() => onPageChange("next")}
-          variant="formDark"
-          size="xs"
-          disabled={page === totalPages}
-          title="Next page"
-        >
-          <ChevronRight />
-        </Button>
-        <Button
-          onClick={() => onPageChange("last")}
-          variant="formDark"
-          size="xs"
-          disabled={page === totalPages}
-          title="Last page"
-        >
-          <ChevronLast />
-        </Button>
+        <PaginationItem>
+          <Button
+            onClick={() => onPageChange("first")}
+            variant="formDark"
+            size="xs"
+            disabled={page === 1}
+            title="First page"
+          >
+            <ChevronFirst />
+          </Button>
+        </PaginationItem>
+        <PaginationItem>
+          <Button
+            onClick={() => onPageChange("prev")}
+            variant="formDark"
+            size="xs"
+            disabled={page === 1}
+            title="Previous page"
+          >
+            <ChevronLeft />
+          </Button>
+        </PaginationItem>
+        <PaginationItem>
+          <Button
+            onClick={() => onPageChange("next")}
+            variant="formDark"
+            size="xs"
+            disabled={page === totalPages}
+            title="Next page"
+          >
+            <ChevronRight />
+          </Button>
+        </PaginationItem>
+        <PaginationItem>
+          <Button
+            onClick={() => onPageChange("last")}
+            variant="formDark"
+            size="xs"
+            disabled={page === totalPages}
+            title="Last page"
+          >
+            <ChevronLast />
+          </Button>
+        </PaginationItem>
       </PaginationContent>
     </Pagination>
   );

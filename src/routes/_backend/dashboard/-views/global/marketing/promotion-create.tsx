@@ -587,6 +587,7 @@ const PromotionCreate = () => {
       className="contents"
     >
       <RouteFullscreenSurface
+      label="Create promotion"
         onClose={close}
         bodyClassName="overflow-y-auto"
         headerLeading={

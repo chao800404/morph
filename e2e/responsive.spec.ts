@@ -5,6 +5,7 @@ import {
   clickExposedElement,
   enableSelection,
   openEditor as openEditorShell,
+  openStylesTab,
 } from "./helpers";
 
 /**
@@ -109,6 +110,9 @@ test.describe("inspector panel", () => {
       for (let attempt = 0; attempt < 6 && !opened; attempt += 1) {
         const clicked = await clickExposedElement(page, fields, attempt);
         if (!clicked) break;
+        // Selecting a node opens Content; the controls measured here are in
+        // Styles, so the tab has to be asked for.
+        await openStylesTab(page);
         opened = await colorInput.isVisible().catch(() => false);
       }
       expect(opened, "no styleable element was reachable").toBe(true);

@@ -110,6 +110,7 @@ export const AssetEditSurface = ({
 
   return (
     <RouteFullscreenSurface
+      label="Edit asset"
       onClose={onClose}
       header={<h1 className="truncate text-sm font-medium">{title}</h1>}
       headerActions={

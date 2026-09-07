@@ -96,10 +96,7 @@ export const DialogFooterActions = ({
 
   const Content = (
     <div
-      className={cn(
-        "flex w-full items-center justify-end gap-2",
-        className,
-      )}
+      className={cn("flex w-full items-center justify-end gap-2", className)}
     >
       {showCancel &&
         (isSheet ? (

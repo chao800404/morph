@@ -94,6 +94,7 @@ const ProductVariantPricing = () => {
   return (
     <form action={formAction} className="contents">
       <RouteFormModal
+        label="Variant pricing"
         header={<h2 className="text-sm font-medium">Edit prices</h2>}
         footer={
           <DialogFooterActions

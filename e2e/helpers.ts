@@ -145,3 +145,19 @@ export async function clickExposedElement(
   }
   return null;
 }
+
+/**
+ * Bring the Styles module into view.
+ *
+ * Selecting a node in the canvas lands on Content, so a test that reaches
+ * straight for a style control is asserting against a panel that was never
+ * showing styles. Silent when the tab is already pressed or not rendered, so
+ * callers can use it as a precondition rather than a step.
+ */
+export async function openStylesTab(page: Page) {
+  const styles = page.getByRole("button", { name: "Styles", exact: true });
+  if (!(await styles.isVisible().catch(() => false))) return;
+  if ((await styles.getAttribute("aria-pressed")) === "true") return;
+  await styles.click();
+  await page.waitForTimeout(300);
+}

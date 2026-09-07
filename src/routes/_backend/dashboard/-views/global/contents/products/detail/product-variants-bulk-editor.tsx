@@ -149,6 +149,7 @@ export const ProductVariantsBulkEditor = ({
   return (
     <form onSubmit={submit} className="contents">
       <RouteFormModal
+        label="Edit variants"
         header={
           <h2 className="text-sm font-medium">
             {mode === "prices" ? "Edit prices" : "Edit inventory"}

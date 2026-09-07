@@ -46,6 +46,7 @@ export const AssetPreviewSurface = ({
 
   return (
     <RouteFullscreenSurface
+      label="Asset preview"
       onClose={closePreview}
       animated
       header={

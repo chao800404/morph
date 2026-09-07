@@ -168,6 +168,7 @@ const CurrencyAdd = () => {
 
   return (
     <RouteFullscreenSurface
+      label="Add currencies"
       onClose={close}
       bodyClassName="flex min-h-0 flex-col overflow-hidden"
       footer={

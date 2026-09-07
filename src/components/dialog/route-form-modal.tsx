@@ -2,10 +2,7 @@ import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { cn } from "@/lib/utils";
 import type { FormField } from "@/lib/validations/form";
 import { useActionState, type ReactNode } from "react";
-import {
-  useCloseOnEscape,
-  useRouteModalClose,
-} from "./route-modal-close";
+import { useCloseOnEscape, useRouteModalClose } from "./route-modal-close";
 
 // Re-exported so the many call sites that reach for these through the modal
 // keep working; the definitions live in the smaller module.
@@ -34,10 +31,13 @@ import { RouteFullscreenSurface } from "./route-fullscreen-surface";
  */
 
 export const RouteFormModal = ({
+  label,
   header,
   footer,
   children,
 }: {
+  /** Names the surface for assistive tech; see `RouteFullscreenSurface`. */
+  label: string;
   header?: ReactNode;
   footer?: ReactNode;
   children: ReactNode;
@@ -47,6 +47,7 @@ export const RouteFormModal = ({
   return (
     <RouteFullscreenSurface
       onClose={close}
+      label={label}
       header={header}
       footer={footer}
       bodyClassName="overflow-y-auto"
@@ -86,7 +87,10 @@ export const RouteFormPage = ({
   fields: FormField[];
   /** Grid overrides for forms whose fields are not a single column. */
   fieldsClassName?: string;
-  action: (state: RouteFormState, formData: FormData) => Promise<RouteFormState>;
+  action: (
+    state: RouteFormState,
+    formData: FormData,
+  ) => Promise<RouteFormState>;
   submitLabel?: string;
   loadingLabel?: string;
   additionalActions?: SubmitAction[];
@@ -99,6 +103,7 @@ export const RouteFormPage = ({
   return (
     <form action={formAction} className="contents">
       <RouteFormModal
+        label={title}
         footer={
           <DialogFooterActions
             isSheet={false}

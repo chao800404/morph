@@ -193,6 +193,7 @@ const ProductCreateWizard = () => {
   return (
     <Tabs value={String(step)} onValueChange={selectStep} className="contents">
       <RouteFullscreenSurface
+      label="Create product"
         onClose={close}
         bodyClassName="overflow-y-auto"
         headerLeading={

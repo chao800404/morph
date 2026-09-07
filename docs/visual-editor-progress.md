@@ -6,13 +6,13 @@
 
 | 項目         | 內容                                                                                                                                                                            |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 最後更新     | 2026-09-05                                                                                                                                                                      |
-| 目前狀態     | 核心 Editor／Build／Release 已完成主要鏈路；Production Runtime、Domain 與遠端 Publish 尚未閉環                                                                                  |
-| 整體完成度   | **90%**（重新按目前實作與交付閉環證據加權；未將未驗證的 Cloudflare production 路徑視為已完成）                                                                                   |
-| 目前重點     | 完成真實 Cloudflare Theme Worker／Service Binding／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration；待決：是否連同 theme runtime 版本一起升級 TanStack（見第十輪） |
-| 最近完整驗證 | 2026-09-05 於 `3358b1b` 實跑：`pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（256 files / 1805 tests passed、各 1 skipped）、`pnpm build`、client bundle check（332 檔）、deploy artifact secret guard 通過。本次未重跑瀏覽器層、遠端 Publish、deploy 或 remote migration —— `pnpm db:migrate:prod` 仍待使用者在部署視窗執行 |
+| 最後更新     | 2026-09-07                                                                                                                                                                      |
+| 目前狀態     | 核心 Editor／Build／Release 已完成主要鏈路；商品 catalog 的 route／API／預覽垂直切片已在本機閉環，但 Production Runtime、Domain 與遠端 Publish 尚未閉環 |
+| 整體完成度   | **91%**（依目前實作與本輪本機／瀏覽器驗證重新加權；未將未驗證的 Cloudflare production 路徑視為已完成）                                                                            |
+| 目前重點     | 補齊商品設定完成後的 provisioning 觸發、真實 Cloudflare Theme Worker／Domain／Publish E2E，並收斂真實 TSX Live Runtime、Page Registry 與 remote migration |
+| 最近完整驗證 | 2026-09-07 於目前工作樹實跑：`pnpm typecheck`、`pnpm test`（268 files / 1909 tests passed、各 1 skipped）、`pnpm build`（client bundle 332 檔、deploy artifact secret guard）、Playwright `e2e/catalog.spec.ts --project=editor --no-deps`（1 passed）。未執行遠端 Publish、deploy、remote migration 或跨瀏覽器 catalog E2E |
 
-`█████████ 90%`
+`█████████ 91%`
 
 > 完成度依下方權重表計算，可自行複核。權重反映各階段的規模與剩餘風險，不是平均分配 ——
 > 把「Inspector 數值輸入一致性」與「真實 Theme Runtime」等重看待，是先前數字偏高的主因。
@@ -38,9 +38,9 @@
 | 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位、link 欄位                 | 🟢   |    99% | Content 已獨立成分頁（2026-09-04）；其餘卡片仍有硬編碼 `text-[10px]`（15 處），待收斂到同一 token |
 | 4. Editor ↔ Preview 通訊           | typed protocol、runtime validation、selection/style 同步、in-place route bridge                                                      | ✅   |   100% | 新訊息必須登錄 protocol registry 並加測試                                 |
 | 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、未儲存 Code ↔ Design 切換防護、Code 診斷與補全、Color Picker 拖曳、面板寬度拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | 🟢   |    95% | 補完 Performance trace，重新量測大型 theme、深層 DOM 與大量 capability；並逐一稽核其餘高頻操作 |
-| 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence 與 production 交付鏈                                   | 🟢   |    85% | 補齊 Promo vertical slice，並以真實 production runtime 完成 Publish E2E    |
-| 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React、真實 router 與隔離的 TSX runtime 一致                                                                  | 🟡   |    75% | 完成真實 TSX/component iframe、模組邊界、Inspector 套用與 runtime fallback  |
-| 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾                                                              | 🟡   |    80% | 完成 Cloudflare runtime/domain、remote migration 與 Publish E2E 發布閉環     |
+| 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence、商品 catalog source 與 preview loader                | 🟢   |    88% | 將 catalog provisioning 從 Editor 開啟時的 lazy path 接到商品 create/update，並以真實 production runtime 完成 Publish E2E |
+| 7. Live Runtime 與真實建置的一致性 | 解釋器輸出必須與真實 React、真實 router、catalog loader 與隔離的 TSX runtime 一致                                      | 🟡   |    78% | 完成真實 TSX/component iframe、模組邊界、公開 catalog runtime 與 Inspector 套用的完整回歸 |
+| 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾、catalog 瀏覽流程                              | 🟡   |    82% | 完成 Cloudflare runtime/domain、remote migration、跨瀏覽器 catalog 與 Publish E2E 發布閉環 |
 
 ## 權重與計算
 
@@ -51,10 +51,10 @@
 | 3. Inspector 模組化與基本樣式      |      18 |    99% |          17.82 |
 | 4. Editor ↔ Preview 通訊           |      10 |   100% |          10.00 |
 | 5. 編輯器互動效能                  |      15 |    95% |          14.25 |
-| 6. Code-authored 內容 round-trip   |      15 |    85% |          12.75 |
-| 7. Live Runtime 與真實建置的一致性 |      12 |    75% |           9.00 |
-| 8. 最終品質與發布準備              |      20 |    80% |          16.00 |
-| **合計**                           | **100** |        | **89.82 → 90%** |
+| 6. Code-authored 內容 round-trip   |      15 |    88% |          13.20 |
+| 7. Live Runtime 與真實建置的一致性 |      12 |    78% |           9.36 |
+| 8. 最終品質與發布準備              |      20 |    82% |          16.40 |
+| **合計**                           | **100** |        | **91.03 → 91%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
@@ -64,10 +64,11 @@
   vertical slice 與真實 customer source 邊界。
 - 階段 5（15）：已有互動延遲 baseline，但大型 theme、深層 DOM 與大量 capability 的壓力
   尚未完整量測，因此保留 5% 待驗證。
-- 階段 6（15）：D1 draft／OCC round-trip 已完成，但 production runtime 與 Publish E2E
-  仍未閉環，因此不再標示 100%。
-- 階段 7（12）：目前 editor Live Preview 仍使用 compatibility renderer，真實 TSX/component
-  iframe 與安全模組邊界尚未完成，因此下修為 75%。
+- 階段 6（15）：D1 draft／OCC round-trip 與商品 catalog source／preview vertical slice 已完成，
+  但商品 mutation provisioning、production runtime 與 Publish E2E 仍未閉環，因此不標示 100%。
+- 階段 7（12）：catalog loader 已接入 Local Vite build、editor preview 與 production handler 的
+  本機程式鏈；editor Live Preview 仍使用 compatibility renderer，真實 TSX/component iframe 與
+  完整公開 runtime 邊界尚未完成，因此調整為 78%。
 - 階段 1、2 各 5：已完成的一致性修正，範圍小。
 
 ### 2026-08-31 實碼審核與降評依據
@@ -1002,6 +1003,13 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 - [x] Code Search、全域指令中心（Command Center）與完整檔案操作生命週期（建立、重新命名、刪除、複製、移動）。
 - [x] 既有無 router metadata 的 Theme 保留 legacy component build 相容路徑。
 
+### Product catalog route vertical slice
+
+- [x] 只在 sales channel 存在已發布商品時，透過受保護的 Theme context 與 source-generation/OCC additive 寫入 `/products`、`/products/$slug` 及共用 catalog components。
+- [x] 公開 list/detail API 僅依 server-side storefront context 決定 store／sales channel；handle、page、image URL 有界限與 allowlist，未設定 Region 時不捏造價格。
+- [x] Editor preview 以受保護 server function 注入 loader data；Local Vite build、catalog unit tests 與 editor Playwright 已驗證 list → detail → back 流程。
+- [ ] 商品 create／update mutation 尚未直接觸發 provisioning；目前觸發點是開啟 Theme Editor 時的 lazy ensure，且既有 `/products` source conflict 會 fail closed。
+
 ## 尚未完成／需持續確認
 
 ### 最高優先：Theme-level 內容欄位 capability
@@ -1049,20 +1057,21 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 ## 驗證基準
 
-最近一次完整驗證結果（2026-09-04，於 WSL checkout 針對 `9d88bd5` 實際執行）：
+最近一次完整驗證結果（2026-09-07，於目前 WSL checkout 實際執行）：
 
 | 檢查             | 結果    | 備註                                            |
 | ---------------- | ------- | ----------------------------------------------- |
 | `pnpm typecheck` | ✅ 通過 | 0 個 TypeScript 錯誤                                     |
-| `pnpm typecheck:data` | ✅ 通過 | 資料層在 `noUncheckedIndexedAccess` 下無違規；閘門已以注入違規驗證確實會擋 |
-| `pnpm test`      | ✅ 通過 | 245 個測試檔通過、1 個 skipped；1722 個 tests 通過、1 個 skipped。連續多次完整執行皆全綠（timeout 餘裕已於第十三輪修正） |
-| `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle（331 檔）與 deploy artifact secret guard 檢查通過 |
-| `git diff --check` | ✅ 通過 | 工作樹差異沒有 whitespace error                         |
+| `pnpm typecheck:data` | ✅ 通過 | 資料層在 `noUncheckedIndexedAccess` 下無違規 |
+| `pnpm test`      | ✅ 通過 | 268 個測試檔通過、1 個 skipped；1909 個 tests 通過、1 個 skipped |
+| `pnpm build`     | ✅ 通過 | 正式建置、server-only、client bundle（332 檔）與 deploy artifact secret guard 檢查通過 |
+| `pnpm exec playwright test e2e/catalog.spec.ts --project=editor --no-deps` | ✅ 通過 | 1 個 editor catalog 瀏覽流程通過（15.8 秒） |
+| `git diff --check` | ✅ 通過 | 文件更新後重跑，無 whitespace error                         |
 
 已知非阻擋警告：
 
 - 部分 bundle chunk size 警告仍存在，後續效能階段處理。
-- 本次未重跑 Playwright；未執行遠端 D1 migration、Cloudflare production deploy 或 Publish。
+- 本次只重跑 editor catalog Playwright；未執行完整跨瀏覽器 E2E、遠端 D1 migration、Cloudflare production deploy 或 Publish。
 - ~~測試套件在平行負載下不穩定~~ **已於第十三輪解決**：實測滿載下最慢的通過案例
   落在 4.8～5.2 秒，正好卡在 Vitest 的 5 秒預設值上。`testTimeout` 與 `hookTimeout`
   設為 20 秒，build runner 的 `describe` 提到 60 秒。連續三次完整執行全綠（先前
@@ -1112,6 +1121,7 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
 
 | 日期       | 階段／內容                                                                                                                                                                                                                                                                                                                                                                                                                                             | 驗證                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-07 | 依完整 route → server function → service → DAL／storage → schema 呼叫鏈重新盤點，完成商品 catalog vertical slice：新增受限的 `/products` 與 `/products/$slug` Theme source、published-only sales-channel catalog DTO／API、圖片公開路徑與 handle／page／URL 邊界；Theme Editor 開啟時以 storefront ownership + source-generation／OCC additive provisioning 建檔，Editor preview 由受保護 server function 注入 loader data，正式 storefront 只接受 server-resolved context。另修正只有已發布商品才觸發 catalog 建檔，避免草稿商品建立公開 route；商品 create／update 尚未直接觸發 provisioning | `pnpm typecheck`、`pnpm typecheck:data`、`pnpm test`（268 files / 1909 tests passed、各 1 skipped）、`pnpm build`（client bundle 332 檔、deploy artifact secret guard）、`pnpm exec playwright test e2e/catalog.spec.ts --project=editor --no-deps`（1 passed）、`git diff --check` |
 | 2026-09-05 | 安全與架構審查 16 項全數修正（第十四輪）：`sanitizeReturnPath` 收斂登出回跳（Better Auth 的 `isSafeUrlScheme` 只擋危險 scheme，仍放行絕對網址）；發布與 reconcile 共用 deployment lease（含 `deployReleaseArtifact` 這條原本漏掉的路徑）；已發布媒體改走公開路徑與 `lookupPublishedMedia`；Inspector 分頁改由 cookie 經 route context 播種，修掉 `localStorage` 造成的 hydration mismatch；`mapFirstOrNull` 收斂單列讀取，並新增 `pnpm typecheck:data` 針對資料層強制 `noUncheckedIndexedAccess`；migration 0053 建立 lease 表 | `pnpm typecheck`、`pnpm typecheck:data`、`pnpm test`、`pnpm build` 全綠；lease SQL 以 `wrangler d1 execute --local` 對真實 D1 驗證；瀏覽器實測分頁寬度與鍵盤縮放；`pnpm db:migrate:prod` 尚未執行（使用者尚未部署到 Cloudflare） |
 | 2026-09-05 | 針對第十四輪修正的再審查，10 項全數修正（第十五輪）：釋放庫存的兩條路徑收斂為單一 `claimAndRelease`（先以條件 UPDATE 搶下該列再扣減，扣減拋錯則還原），修掉同一筆 hold 被重複釋放；付款前置條件改為 `preparePaymentStateGuard`，capture／refund／cancel 一律先斷言 `canceled_at IS NULL`（原本取消完全沒有守衛）；發布鎖提前到 `publishTemplate` 之前，避免 BUSY 時 `active_release_id` 已被改動；已發布資產掃描改用 `listPublishedDocuments` 同時涵蓋 template 與 Page，且發布項目記下當時的 handle，改名後不再讓公開網址指向別的內容；Inspector rebase 以 `sameContentValue` 結構比較取代 `Object.is`（陣列欄位過去永遠被判定為 dirty）；`flushTemplatePendingProps` 只在伺服器接受後才丟棄 pending props；媒體欄位清除改為送出明確的空值並由 capability 檢查接受；v3 starter theme 首頁補上編輯器原本看不到的區塊，舊 Theme 比對來源後就地升級 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（256 files / 1805 tests passed，各 1 skipped）、`pnpm build` 含 client bundle check（332 檔）與 deploy artifact secret guard 全數通過；新增釋放競態、付款守衛、陣列 rebase、媒體清除與已發布頁面查詢的回歸測試 |
 | 2026-09-04 | 讓測試重新具有證據力，並補上把手的鍵盤操作（第十三輪）：實測滿載下最慢的通過案例落在 4.8～5.2 秒、正好卡在 Vitest 5 秒預設值，`testTimeout`／`hookTimeout` 設為 20 秒、build runner describe 提到 60 秒；拖曳把手補上方向鍵調整、Shift 大步長、Home／End 到上下限與 focus ring，並且不吞掉未處理的鍵；移除把手 hover 時的滿高灰色色帶 | `pnpm typecheck`（0 錯誤）、`pnpm typecheck:data`、`pnpm test`（245 files / 1722 tests passed、各 1 skipped）、`pnpm build`、client bundle check（331 檔）、deploy artifact secret guard 通過；**測試穩定性以連續三次完整執行全綠驗證**（改動前四次有三次紅）；步進邏輯為純函式並獨立測試；**未執行**瀏覽器 E2E、遠端 Publish／deploy／migration |

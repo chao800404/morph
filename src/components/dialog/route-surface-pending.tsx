@@ -21,6 +21,7 @@ const RouteSurfacePendingFrame = ({ fieldCount }: { fieldCount: number }) => {
   return (
     <RouteFullscreenSurface
       onClose={close}
+      label="Loading"
       bodyClassName="overflow-y-auto"
       footer={
         <DialogFooterActions

@@ -53,7 +53,12 @@ export const storeCatalogDal = {
               eq(productSalesChannels.salesChannelId, salesChannelId),
             ),
           )
-          .where(isNull(products.deletedAt))
+          .where(
+            and(
+              eq(products.status, "published"),
+              isNull(products.deletedAt),
+            ),
+          )
           .limit(1),
       ) !== null
     );

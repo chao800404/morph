@@ -38,6 +38,7 @@ export const CurrencyAddSkeleton = ({
   onClose,
 }: CurrencyAddSkeletonProps) => (
   <RouteFullscreenSurface
+      label="Add currencies"
     onClose={onClose}
     bodyClassName="flex min-h-0 flex-col overflow-hidden"
     footer={

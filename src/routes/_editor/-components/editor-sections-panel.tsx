@@ -780,7 +780,10 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   }, [search.section]);
 
   useIsomorphicLayoutEffect(() => {
-    if (layoutRootIds.length === 0) return;
+    // Only when the layout is all there is. With the template's sections in
+    // the tree, opening Header and Footer as well buries them under rows
+    // nobody asked to see.
+    if (layoutRootIds.length === 0 || sections.length > 0) return;
     setExpandedSectionIds((current) => {
       let changed = false;
       const next = new Set(current);
@@ -791,7 +794,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
       }
       return changed ? next : current;
     });
-  }, [layoutRootIds]);
+  }, [layoutRootIds, sections.length]);
 
   useIsomorphicLayoutEffect(() => {
     if (!selectedEditableNode) return;
@@ -869,7 +872,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
 
   /** A page root the template does not own: the layout, Header, Footer. */
   const renderLayoutRoot = (sectionId: string): React.ReactNode => {
-    const sectionNodes = nodesByParent.get(`${sectionId} `) ?? [];
+    const sectionNodes = nodesByParent.get(`${sectionId}\u0000`) ?? [];
     const sourceName = sectionId.split("/").at(-1) ?? sectionId;
     const sourceStem = sourceName.replace(/\.[cm]?[jt]sx?$/, "");
     const label =
@@ -1019,7 +1022,12 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                 >
                   <SidebarMenu>
                     {layoutRoots.before.map(renderLayoutRoot)}
-                    {sections.map((section, index) => {
+                    {sections.map((section, position) => {
+                      // dnd-kit sorts by the index it is given, so it has to
+                      // count the layout rows rendered above these: a sortable
+                      // claiming index 0 while sitting second in the list makes
+                      // the first drag a no-op.
+                      const index = layoutRoots.before.length + position;
                       const sectionNodes =
                         nodesByParent.get(`${section.id}\u0000`) ?? [];
                       const expanded = expandedSectionIds.has(section.id);

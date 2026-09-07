@@ -11,7 +11,8 @@ const AssetPreview = () => {
 
   if (controller.errorMessage || !controller.currentAsset) {
     return (
-      <RouteFullscreenSurface onClose={controller.closePreview}>
+      <RouteFullscreenSurface
+      label="Asset preview" onClose={controller.closePreview}>
         <div className="flex size-full items-center justify-center">
           <div className="flex flex-col items-center gap-3 text-center">
             <p className="text-sm text-muted-foreground">

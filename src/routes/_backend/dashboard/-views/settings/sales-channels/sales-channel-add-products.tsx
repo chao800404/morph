@@ -80,6 +80,7 @@ export default function SalesChannelAddProducts() {
 
   return (
     <RouteFullscreenSurface
+      label="Add products to sales channel"
       onClose={close}
       bodyClassName="overflow-hidden p-0"
       footer={

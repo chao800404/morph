@@ -363,6 +363,7 @@ function ReleaseHistorySurface({
 
   return (
     <RouteFullscreenSurface
+      label="Release history"
       onClose={() => onOpenChange(false)}
       bodyClassName="overflow-hidden p-0"
     >

@@ -9,6 +9,14 @@ import { createSurface } from "./create-surface";
 interface RouteFullscreenSurfaceProps {
   children: ReactNode;
   onClose: () => void;
+  /**
+   * Accessible name for the surface.
+   *
+   * Required rather than optional: this covers the whole viewport, so a screen
+   * reader that is told a dialog opened and not which one has been handed a
+   * worse experience than no announcement at all.
+   */
+  label: string;
   headerLeading?: ReactNode;
   header?: ReactNode;
   headerActions?: ReactNode;
@@ -23,12 +31,14 @@ interface RouteFullscreenSurfaceProps {
  * Shared full-viewport shell for route-backed dashboard surfaces.
  *
  * The route decides what the body does; this component owns the viewport
- * positioning, surface tokens, close control and Esc hint so create, edit and
- * preview screens cannot drift visually.
+ * positioning, surface tokens, close control, Esc hint and dialog semantics so
+ * create, edit and preview screens cannot drift visually or in what they
+ * announce.
  */
 export const RouteFullscreenSurface = ({
   children,
   onClose,
+  label,
   headerLeading,
   header,
   headerActions,
@@ -40,6 +50,12 @@ export const RouteFullscreenSurface = ({
 }: RouteFullscreenSurfaceProps) => (
   <div className="fixed inset-0 z-50 flex p-2">
     <motion.section
+      // Covers the viewport and takes every click, but announced itself as a
+      // plain section: assistive tech was given no signal that a modal had
+      // opened, and nothing named what it was.
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
       className={cn(
         createSurface.shell,
         "grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-lg dark:shadow-elevation-modal",

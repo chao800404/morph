@@ -129,6 +129,7 @@ export default function UserInvite() {
   return (
     <form key={formKey} action={formAction} className="contents">
       <RouteFullscreenSurface
+      label="Invite user"
         onClose={close}
         bodyClassName="overflow-y-auto"
         footer={

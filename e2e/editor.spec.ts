@@ -5,6 +5,7 @@ import {
   clickExposedElement,
   enableSelection,
   openEditor,
+  openStylesTab,
   previewFrame,
 } from "./helpers";
 
@@ -101,6 +102,13 @@ test.describe("visual editor", () => {
 
     const before = await settleHeight(page, measure);
     const hide = page.getByRole("button", { name: /^Hide section / }).first();
+    // Restoring by "the first Show button" put the wrong section back when an
+    // earlier failure had left another one hidden, and the suite shares one
+    // theme workspace: the next test then started from a tree nobody expected.
+    const hidden = ((await hide.getAttribute("aria-label")) ?? "").replace(
+      /^Hide section /,
+      "",
+    );
     await hide.click();
 
     try {
@@ -115,9 +123,14 @@ test.describe("visual editor", () => {
       ).toBeLessThan(before.frameHeight);
       expect(Math.abs(after.frameHeight - after.contentHeight)).toBeLessThan(4);
     } finally {
-      const show = page.getByRole("button", { name: /^Show section / }).first();
+      const show = page.getByRole("button", {
+        name: `Show section ${hidden}`,
+      });
       if (await show.count()) await show.click();
-      await page.waitForTimeout(2_000);
+      // Wait for the write, not a guess at how long it takes.
+      await expect(
+        page.getByRole("button", { name: `Hide section ${hidden}` }),
+      ).toBeVisible({ timeout: 15_000 });
     }
   });
 
@@ -189,6 +202,8 @@ test.describe("visual editor", () => {
     for (let attempt = 0; attempt < 6 && !clicked; attempt += 1) {
       const candidate = await clickExposedElement(page, fields, attempt);
       if (!candidate) break;
+      // Selecting a node opens Content; a text colour lives in Styles.
+      await openStylesTab(page);
       if (await colorInput.isVisible().catch(() => false)) clicked = candidate;
     }
     expect(
