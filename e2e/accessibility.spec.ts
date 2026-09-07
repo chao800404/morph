@@ -40,7 +40,11 @@ test.describe("editor accessibility", () => {
       impact: violation.impact,
       nodes: violation.nodes.length,
       help: violation.help,
+      // A selector like `.text-[10px]` matches half the editor; the failing
+      // element and what axe measured are what make this actionable.
       first: violation.nodes[0]?.target.join(" "),
+      html: violation.nodes[0]?.html.slice(0, 120),
+      why: violation.nodes[0]?.any[0]?.message,
     }));
     if (summary.length > 0) console.log(JSON.stringify(summary, null, 2));
 

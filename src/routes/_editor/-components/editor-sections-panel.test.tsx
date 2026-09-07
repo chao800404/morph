@@ -817,8 +817,13 @@ describe("EditorSectionsPanel page structure", () => {
    */
   const rootOrder = (container: HTMLElement, roots: readonly string[]) =>
     [...container.querySelectorAll("button")]
-      .map((button) => button.textContent?.trim() ?? "")
-      .filter((label) => roots.includes(label));
+      // A shared root carries an "All pages" badge inside the same button, so
+      // the row is matched by the name it leads with.
+      .map((button) => {
+        const text = button.textContent?.trim() ?? "";
+        return roots.find((root) => text.startsWith(root)) ?? "";
+      })
+      .filter(Boolean);
 
   // The tree used to show the route's own structure only when the template had
   // no sections, so Home listed five sections and gave no way to reach the
@@ -832,6 +837,42 @@ describe("EditorSectionsPanel page structure", () => {
     expect(
       rootOrder(container, ["Header", "hero", "newsletter", "Footer"]),
     ).toEqual(["Header", "hero", "newsletter", "Footer"]);
+  });
+
+  // Header and hero looked identical in the tree, so nothing said that editing
+  // one reaches every page on the store and the other only this one.
+  it("marks the layout roots as shared, and the route's own root as not", () => {
+    renderPanel(vi.fn(), vi.fn(), {
+      editableNodes: [
+        ...layoutNodes,
+        {
+          id: "route:node:body",
+          parentId: null,
+          sectionId: "src/routes/index.tsx",
+          label: "Body",
+          kind: "text",
+          tagName: "p",
+          target: {
+            sectionId: "src/routes/index.tsx",
+            nodeId: "body",
+            isSection: false,
+          },
+        },
+      ] as unknown as readonly PreviewEditableNode[],
+      activeRoute,
+    });
+
+    const header = screen.getByRole("button", {
+      name: /Expand shared layout Header/,
+    });
+    expect(header.getAttribute("aria-label")).toContain(
+      "Shared by every page",
+    );
+    expect(header.textContent).toContain("All pages");
+
+    // The route's own module is this page's alone.
+    const route = screen.getByRole("button", { name: /Expand route Home/ });
+    expect(route.textContent).not.toContain("All pages");
   });
 
   it("still lists a route with no template sections", () => {

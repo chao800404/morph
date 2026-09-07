@@ -163,6 +163,7 @@ import {
   type PreviewSelectionRestoreTarget,
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
+import { splitPageRoots } from "@/lib/storefront/editor/page-structure";
 import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
 import {
   setFieldPathValue,
@@ -1593,6 +1594,25 @@ export function VisualEditorShell({
       ) ?? null
     );
   }, [activeTemplate, search.routePath, themeRouteRegistry.routes]);
+  /**
+   * Modules the layout supplies rather than this route.
+   *
+   * Editing one changes every page that uses the layout, which the panels have
+   * to be able to say. Derived here so the tree and the inspector agree.
+   */
+  const sharedLayoutPaths = useMemo(() => {
+    const nodes =
+      previewStructure?.key === previewKey ? previewStructure.nodes : undefined;
+    if (!nodes || !activeThemeRoute) return new Set<string>();
+    return splitPageRoots({
+      editableNodes: nodes,
+      templateSectionIds: new Set(
+        activeTemplate?.document.sections.map((section) => section.id) ?? [],
+      ),
+      routeSourcePath: activeThemeRoute.sourcePath,
+    }).shared;
+  }, [activeTemplate, activeThemeRoute, previewKey, previewStructure]);
+
   const pendingThemeRoute = useMemo(
     () =>
       pendingRoutePath
@@ -6401,6 +6421,7 @@ export function VisualEditorShell({
 
         <EditorAssistantPanel
           style={RIGHT_PANEL_STYLE}
+          sharedLayoutPaths={sharedLayoutPaths}
           // Same nodes the sections tree uses, so the Content tab can fall back
           // to document order when a component declares no `contentFields`.
           editableNodes={

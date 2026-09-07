@@ -165,6 +165,14 @@ export type InspectorPropsChangeOptions = {
 type EditorStyleInspectorProps = {
   /** Storefront/theme/template identity; section ids are only locally unique. */
   resourceKey?: string;
+  /**
+   * Modules the layout supplies rather than the previewed route.
+   *
+   * A header edited from here is the header on every page, and the panel looks
+   * identical either way; naming the reach is the only thing that separates
+   * them.
+   */
+  sharedLayoutPaths?: ReadonlySet<string>;
   section: EditorSection;
   themeFiles?: StorefrontThemeFileDTO[];
   selection?: EditorSelectionDescriptor | null;
@@ -605,6 +613,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onSwitchThemeLinkElement,
   onPropsChange,
   onJumpToCode,
+  sharedLayoutPaths,
   view = "styles",
   disabled = false,
 }: EditorStyleInspectorProps) {
@@ -1750,6 +1759,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               </p>
             </div>
           </div>
+          {componentPath && sharedLayoutPaths?.has(componentPath) ? (
+            <span
+              className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium text-foreground"
+              title="Shared by every page — editing this changes them all"
+            >
+              All pages
+            </span>
+          ) : null}
         </div>
 
         {/* Jump to Source Code Bridge */}

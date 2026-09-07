@@ -84,6 +84,7 @@ import {
   Type,
   Video,
   FileCode2,
+  Globe,
   Trash2,
   type LucideIcon,
 } from "lucide-react";
@@ -97,6 +98,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
+import { splitPageRoots } from "@/lib/storefront/editor/page-structure";
 import {
   resolveEditorTemplate,
   templateAppliesToRoute,
@@ -372,19 +374,25 @@ function SortableSectionRow({
  * sections. Keep that source tree visible without pretending it is a stored
  * section (which would incorrectly enable reorder, visibility, or delete).
  */
+const SHARED_ROOT_HINT = "Shared by every page — editing this changes them all";
+
 function RouteTreeRootRow({
   label,
+  shared,
   expanded,
   hasChildren,
   onToggleExpanded,
   children,
 }: {
   label: string;
+  /** Supplied by the layout, so it is on every page rather than this one. */
+  shared: boolean;
   expanded: boolean;
   hasChildren: boolean;
   onToggleExpanded: () => void;
   children?: React.ReactNode;
 }) {
+  const Icon = shared ? Globe : FileCode2;
   return (
     <SidebarMenuItem>
       <Collapsible open={expanded} onOpenChange={onToggleExpanded}>
@@ -392,8 +400,14 @@ function RouteTreeRootRow({
           <button
             type="button"
             className="flex h-8 w-full min-w-0 items-center rounded-md px-1.5 text-left text-sm text-sidebar-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            aria-label={`${expanded ? "Collapse" : "Expand"} route ${label}`}
+            // The consequence is in the name, not only in a tooltip: a header
+            // row that looks like a section row invites an edit whose reach --
+            // every page on the store -- nothing on screen mentions.
+            aria-label={`${expanded ? "Collapse" : "Expand"} ${
+              shared ? "shared layout" : "route"
+            } ${label}${shared ? `. ${SHARED_ROOT_HINT}` : ""}`}
             aria-expanded={hasChildren ? expanded : undefined}
+            title={shared ? SHARED_ROOT_HINT : undefined}
             disabled={!hasChildren}
           >
             {expanded ? (
@@ -401,11 +415,18 @@ function RouteTreeRootRow({
             ) : (
               <ChevronRight className="mr-1.5 size-3.5 shrink-0 text-muted-foreground" />
             )}
-            <FileCode2
+            <Icon
               className="mr-1.5 size-4 shrink-0 text-muted-foreground"
               aria-hidden="true"
             />
             <span className="min-w-0 truncate">{label}</span>
+            {/* The sidebar has its own surface token; `text-foreground` is
+                tuned for the page background and does not clear 4.5:1 here. */}
+            {shared ? (
+              <span className="ml-auto shrink-0 pl-2 text-[10px] font-medium text-sidebar-foreground">
+                All pages
+              </span>
+            ) : null}
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent>{children}</CollapsibleContent>
@@ -637,29 +658,18 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
    * These were shown only when the template had no sections, so Home listed
    * five editable sections and no way to reach the header or footer that were
    * plainly on the canvas -- the same header a product page let you select.
-   * They are ordered by where they appear in the rendered page and split
-   * around the template's sections, so the tree reads top to bottom like the
-   * page does.
    */
-  const layoutRoots = useMemo(() => {
-    const before: string[] = [];
-    const after: string[] = [];
-    if (!activeRoute) return { before, after };
-    const seen = new Set<string>();
-    let passedTemplateSections = false;
-    for (const node of editableNodes) {
-      const sectionId = node.sectionId;
-      if (!sectionId) continue;
-      if (templateSectionIds.has(sectionId)) {
-        passedTemplateSections = true;
-        continue;
-      }
-      if (seen.has(sectionId)) continue;
-      seen.add(sectionId);
-      (passedTemplateSections ? after : before).push(sectionId);
-    }
-    return { before, after };
-  }, [activeRoute, editableNodes, templateSectionIds]);
+  const layoutRoots = useMemo(
+    () =>
+      activeRoute
+        ? splitPageRoots({
+            editableNodes,
+            templateSectionIds,
+            routeSourcePath: activeRoute.sourcePath,
+          })
+        : { before: [], after: [], shared: new Set<string>() },
+    [activeRoute, editableNodes, templateSectionIds],
+  );
 
   const layoutRootIds = useMemo(
     () => [...layoutRoots.before, ...layoutRoots.after],
@@ -888,6 +898,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
       <RouteTreeRootRow
         key={sectionId}
         label={label}
+        shared={layoutRoots.shared.has(sectionId)}
         expanded={expandedSectionIds.has(sectionId)}
         hasChildren={sectionNodes.length > 0}
         onToggleExpanded={() =>
@@ -931,10 +942,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           ) : null}
 
           {themeRoutes.length > 0 ? (
-            <Collapsible
-              open={pagesExpanded}
-              onOpenChange={setPagesExpanded}
-            >
+            <Collapsible open={pagesExpanded} onOpenChange={setPagesExpanded}>
               <SidebarGroup className="border-b border-solid p-2">
                 <div className="flex items-center gap-1 px-1 pb-1">
                   <CollapsibleTrigger asChild>
@@ -953,7 +961,10 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                     </button>
                   </CollapsibleTrigger>
                   <span
-                    className="shrink-0 px-1 text-[10px] tabular-nums text-muted-foreground/70"
+                    // `/70` took a 10px counter to 2.72:1 on white. At this
+                    // size the text needs 4.5:1, so the dimming has to come
+                    // from the size, not from washing the colour out.
+                    className="shrink-0 px-1 text-[10px] tabular-nums text-sidebar-foreground"
                     aria-live="polite"
                   >
                     {themeRoutes.length}/{themeRoutes.length}
