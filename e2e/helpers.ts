@@ -139,7 +139,7 @@ export async function clickExposedElement(
       }
 
       await page.mouse.click(point.x, point.y);
-      await page.waitForTimeout(1_500);
+      await settleSelection(page);
       return (await candidate.getAttribute("data-morph-loc")) ?? "";
     }
   }
@@ -160,4 +160,26 @@ export async function openStylesTab(page: Page) {
   if ((await styles.getAttribute("aria-pressed")) === "true") return;
   await styles.click();
   await page.waitForTimeout(300);
+}
+
+/**
+ * Waits for a canvas click to reach the panels.
+ *
+ * This was a flat 1.5s, which is a bet on how long the round trip takes rather
+ * than a wait for it. The trip measures around 700ms and exceeds a second on a
+ * loaded machine, so the bet lost often enough to read as "the click did not
+ * select anything" -- in a test about something else entirely. The cap is
+ * generous because how *fast* selection lands is the performance suite's
+ * question, not this one's.
+ */
+export async function settleSelection(page: Page) {
+  const selected = page.locator(
+    '[data-editor-tree-node-selected="true"], [data-sidebar="menu-button"][data-active="true"]',
+  );
+  await selected
+    .first()
+    .waitFor({ state: "visible", timeout: 6_000 })
+    .catch(() => undefined);
+  // One frame past the tree so the inspector has rendered against it too.
+  await page.waitForTimeout(250);
 }

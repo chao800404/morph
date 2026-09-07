@@ -342,19 +342,50 @@ async function dragSection(page: Page, fromIndex: number, toIndex: number) {
     "draggable",
     { timeout: 15_000 },
   );
-  const from = await sectionRows(page).nth(fromIndex).boundingBox();
-  const to = await sectionRows(page).nth(toIndex).boundingBox();
-  if (!from || !to) throw new Error("section rows are not laid out");
+  // The helper verifies its own effect rather than leaving that to the caller.
+  // The panel re-renders on every preview structure message, and one arriving
+  // mid-gesture replaces the row and swallows the pointer sequence: no drag,
+  // no error. A caller that only sees "the order did not change" cannot tell
+  // that from "reordering is broken", so the retry lives here, where the
+  // difference is knowable, and a genuinely dead drag still fails loudly.
+  const before = await sectionOrder(page);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const from = await sectionRows(page).nth(fromIndex).boundingBox();
+    const to = await sectionRows(page).nth(toIndex).boundingBox();
+    if (!from || !to) throw new Error("section rows are not laid out");
 
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 10, {
-    steps: 5,
-  });
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2 + 4, {
-    steps: 12,
-  });
-  await page.mouse.up();
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      from.x + from.width / 2,
+      from.y + from.height / 2 + 10,
+      { steps: 5 },
+    );
+
+    const started = await sectionRows(page)
+      .nth(fromIndex)
+      .getAttribute("aria-grabbed")
+      .then((value) => value === "true")
+      .catch(() => false);
+    if (!started) {
+      await page.mouse.up();
+      await page.waitForTimeout(500);
+      continue;
+    }
+
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2 + 4, {
+      steps: 12,
+    });
+    await page.mouse.up();
+
+    const landed = await expect
+      .poll(() => sectionOrder(page), { timeout: 8_000 })
+      .not.toEqual(before)
+      .then(() => true)
+      .catch(() => false);
+    if (landed) return;
+  }
+  throw new Error("the drag never changed the section order");
 }
 
 /**
