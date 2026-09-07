@@ -1023,116 +1023,128 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   Loading route structure…
                 </div>
               ) : sections.length > 0 || layoutRootIds.length > 0 ? (
-                <DragDropProvider
-                  sensors={sensors}
-                  onDragStart={() => {
-                    dragStartSectionsRef.current = sectionsRef.current;
-                  }}
-                  onDragOver={(event) => {
-                    if (reorderMutation.isPending) return;
-                    const { source, target } = event.operation;
-                    if (
-                      !source ||
-                      !target ||
-                      !isSortable(source) ||
-                      !isSortable(target) ||
-                      source.id === target.id
-                    )
-                      return;
-
-                    const current = sectionsRef.current;
-                    const from = current.findIndex(
-                      (section) => section.id === source.id,
-                    );
-                    const to = current.findIndex(
-                      (section) => section.id === target.id,
-                    );
-                    if (from < 0 || to < 0 || from === to) return;
-                    updateSections(moveSection(current, from, to));
-                  }}
-                  onDragEnd={(event) => {
-                    const initial = dragStartSectionsRef.current;
-                    dragStartSectionsRef.current = null;
-                    if (!initial || reorderMutation.isPending) return;
-                    if (event.canceled) {
-                      updateSections(initial);
-                      return;
-                    }
-
-                    const next = sectionsRef.current;
-                    const initialIds = initial.map((section) => section.id);
-                    const nextIds = next.map((section) => section.id);
-                    if (
-                      initialIds.every((id, index) => id === nextIds[index])
-                    ) {
-                      return;
-                    }
-                    reorderMutation.mutate(nextIds);
-                  }}
-                >
+                <>
+                  {/*
+                    Kept out of the sortable list on purpose. dnd-kit sorts by
+                    the index it is given, so interleaving these made every
+                    section's index depend on how many layout rows happened to
+                    be above it -- a number that is 0 until the preview reports
+                    its structure. Every row then re-registered and remounted,
+                    which dropped the focus of anyone driving the tree from the
+                    keyboard. Three sibling lists give the same reading order
+                    with the sortables alone and their indices stable.
+                  */}
                   <SidebarMenu>
                     {layoutRoots.before.map(renderLayoutRoot)}
-                    {sections.map((section, position) => {
-                      // dnd-kit sorts by the index it is given, so it has to
-                      // count the layout rows rendered above these: a sortable
-                      // claiming index 0 while sitting second in the list makes
-                      // the first drag a no-op.
-                      const index = layoutRoots.before.length + position;
-                      const sectionNodes =
-                        nodesByParent.get(`${section.id}\u0000`) ?? [];
-                      const expanded = expandedSectionIds.has(section.id);
-                      return (
-                        <SortableSectionRow
-                          key={section.id}
-                          section={section}
-                          index={index}
-                          selected={
-                            (activeSelection?.sectionId ?? search.section) ===
-                              section.id &&
-                            (!activeSelection || activeSelection.isSection)
-                          }
-                          disabled={reorderMutation.isPending}
-                          expanded={expanded}
-                          hasChildren={sectionNodes.length > 0}
-                          onSelect={() =>
-                            onSearchChange({ section: section.id })
-                          }
-                          onToggleExpanded={() =>
-                            setExpandedSectionIds((current) => {
-                              const next = new Set(current);
-                              if (next.has(section.id)) next.delete(section.id);
-                              else next.add(section.id);
-                              return next;
-                            })
-                          }
-                          onToggleEnabled={() =>
-                            onToggleSectionEnabled?.(
-                              section.id,
-                              section.enabled === false,
-                            )
-                          }
-                          onRequestDelete={() =>
-                            setDeleteCandidate({
-                              kind: "section",
-                              sectionId: section.id,
-                              label: section.type,
-                            })
-                          }
-                          deleteDisabled={
-                            isDeletePending ||
-                            reorderMutation.isPending ||
-                            !onDeleteSection
-                          }
-                        >
-                          {sectionNodes.length > 0
-                            ? renderEditableNodes(section.id, null)
-                            : null}
-                        </SortableSectionRow>
+                  </SidebarMenu>
+                  <DragDropProvider
+                    sensors={sensors}
+                    onDragStart={() => {
+                      dragStartSectionsRef.current = sectionsRef.current;
+                    }}
+                    onDragOver={(event) => {
+                      if (reorderMutation.isPending) return;
+                      const { source, target } = event.operation;
+                      if (
+                        !source ||
+                        !target ||
+                        !isSortable(source) ||
+                        !isSortable(target) ||
+                        source.id === target.id
+                      )
+                        return;
+
+                      const current = sectionsRef.current;
+                      const from = current.findIndex(
+                        (section) => section.id === source.id,
                       );
-                    })}
+                      const to = current.findIndex(
+                        (section) => section.id === target.id,
+                      );
+                      if (from < 0 || to < 0 || from === to) return;
+                      updateSections(moveSection(current, from, to));
+                    }}
+                    onDragEnd={(event) => {
+                      const initial = dragStartSectionsRef.current;
+                      dragStartSectionsRef.current = null;
+                      if (!initial || reorderMutation.isPending) return;
+                      if (event.canceled) {
+                        updateSections(initial);
+                        return;
+                      }
+
+                      const next = sectionsRef.current;
+                      const initialIds = initial.map((section) => section.id);
+                      const nextIds = next.map((section) => section.id);
+                      if (
+                        initialIds.every((id, index) => id === nextIds[index])
+                      ) {
+                        return;
+                      }
+                      reorderMutation.mutate(nextIds);
+                    }}
+                  >
+                    <SidebarMenu>
+                      {sections.map((section, index) => {
+                        const sectionNodes =
+                          nodesByParent.get(`${section.id}\u0000`) ?? [];
+                        const expanded = expandedSectionIds.has(section.id);
+                        return (
+                          <SortableSectionRow
+                            key={section.id}
+                            section={section}
+                            index={index}
+                            selected={
+                              (activeSelection?.sectionId ?? search.section) ===
+                                section.id &&
+                              (!activeSelection || activeSelection.isSection)
+                            }
+                            disabled={reorderMutation.isPending}
+                            expanded={expanded}
+                            hasChildren={sectionNodes.length > 0}
+                            onSelect={() =>
+                              onSearchChange({ section: section.id })
+                            }
+                            onToggleExpanded={() =>
+                              setExpandedSectionIds((current) => {
+                                const next = new Set(current);
+                                if (next.has(section.id))
+                                  next.delete(section.id);
+                                else next.add(section.id);
+                                return next;
+                              })
+                            }
+                            onToggleEnabled={() =>
+                              onToggleSectionEnabled?.(
+                                section.id,
+                                section.enabled === false,
+                              )
+                            }
+                            onRequestDelete={() =>
+                              setDeleteCandidate({
+                                kind: "section",
+                                sectionId: section.id,
+                                label: section.type,
+                              })
+                            }
+                            deleteDisabled={
+                              isDeletePending ||
+                              reorderMutation.isPending ||
+                              !onDeleteSection
+                            }
+                          >
+                            {sectionNodes.length > 0
+                              ? renderEditableNodes(section.id, null)
+                              : null}
+                          </SortableSectionRow>
+                        );
+                      })}
+                    </SidebarMenu>
+                  </DragDropProvider>
+                  <SidebarMenu>
                     {layoutRoots.after.map(renderLayoutRoot)}
                   </SidebarMenu>
-                </DragDropProvider>
+                </>
               ) : (
                 <div className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground">
                   This template has no sections yet. New sections will appear

@@ -333,6 +333,15 @@ async function dragSection(page: Page, fromIndex: number, toIndex: number) {
   // rows are waited for rather than assumed to be settled from a prior read.
   await sectionRows(page).nth(fromIndex).waitFor({ state: "visible" });
   await sectionRows(page).nth(toIndex).waitFor({ state: "visible" });
+  // Visible is not the same as draggable. The row paints first and dnd-kit
+  // registers it a moment later, and a pointer sequence that starts in that
+  // gap is delivered to a row that is not yet a drag source -- no drag, no
+  // error, and a test that reads as "reordering is broken".
+  await expect(sectionRows(page).nth(fromIndex)).toHaveAttribute(
+    "aria-roledescription",
+    "draggable",
+    { timeout: 15_000 },
+  );
   const from = await sectionRows(page).nth(fromIndex).boundingBox();
   const to = await sectionRows(page).nth(toIndex).boundingBox();
   if (!from || !to) throw new Error("section rows are not laid out");
