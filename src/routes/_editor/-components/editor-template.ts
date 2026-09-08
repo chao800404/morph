@@ -44,6 +44,31 @@ export function resolveEditorTemplate(
 }
 
 /**
+ * Give the editor a complete template identity before it creates the preview
+ * iframe. Shared/bookmarked URLs may omit `templateId`; letting the shell add
+ * it in an effect starts one preview session and immediately navigates the
+ * route underneath it, which can strand the initial preview handshake.
+ */
+export function normalizeEditorTemplateSearch(
+  context: StorefrontThemeEditorDTO,
+  search: StorefrontThemeEditorSearch,
+): StorefrontThemeEditorSearch {
+  const template = resolveEditorTemplate(context, search);
+  if (
+    !template ||
+    (search.templateId === template.id && search.template === template.type)
+  ) {
+    return search;
+  }
+
+  return {
+    ...search,
+    template: template.type,
+    templateId: template.id,
+  };
+}
+
+/**
  * Whether the loaded template is actually the one behind this route.
  *
  * `/aboutus` resolves to kind `page`, and a theme with only `index` and

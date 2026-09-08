@@ -140,6 +140,7 @@ import {
 import {
   arrayRowFields,
   MAX_ARRAY_CONTENT_FIELD_ROWS,
+  type ThemeContentFieldDefinition,
 } from "@/lib/storefront/theme-content-capabilities";
 import { toast } from "sonner";
 import {
@@ -855,9 +856,30 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       null
     );
   }, [componentPath, section.componentRef, themeFiles]);
-  const declaredContentFields = Object.entries(
-    themeContentCapability?.fields ?? {},
-  );
+  const resolvedContentFields = useMemo<
+    Record<string, ThemeContentFieldDefinition>
+  >(() => {
+    const declared = themeContentCapability?.fields ?? {};
+    if (Object.keys(declared).length > 0) return declared;
+
+    // Older/code-authored components may predate co-located `contentFields`
+    // while still exposing literal default props. Those defaults are a safe,
+    // concrete editing contract: the source patcher can update exactly the
+    // same literals, so the Inspector does not have to render an empty panel.
+    return Object.fromEntries(
+      Object.keys(parsedMeta?.defaultProps ?? {}).map((fieldKey) => [
+        fieldKey,
+        {
+          type: "text" as const,
+          label: fieldKey
+            .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+            .replace(/[-_]+/g, " ")
+            .replace(/^\w/, (character) => character.toUpperCase()),
+        },
+      ]),
+    ) as Record<string, ThemeContentFieldDefinition>;
+  }, [parsedMeta?.defaultProps, themeContentCapability?.fields]);
+  const declaredContentFields = Object.entries(resolvedContentFields);
   /**
    * Where each content control belongs in the panel.
    *
@@ -868,10 +890,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const contentFieldOrder = useMemo(
     () =>
       resolveContentFieldOrder({
-        declaredKeys: Object.keys(themeContentCapability?.fields ?? {}),
+        declaredKeys: Object.keys(resolvedContentFields),
         documentOrder: buildContentFieldOrder(editableNodes, section.id),
       }),
-    [themeContentCapability, editableNodes, section.id],
+    [resolvedContentFields, editableNodes, section.id],
   );
   /**
    * A control can stand for several field keys (an action is a label plus an
@@ -880,11 +902,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const contentOrderKey = (...keys: string[]) =>
     keys.find((key) => contentFieldOrder.has(key)) ?? keys[0] ?? "";
   const isDeclaredContentField = (fieldKey: string) =>
-    Boolean(themeContentCapability?.fields[fieldKey]);
+    Boolean(resolvedContentFields[fieldKey]);
   const declaredContentFieldLabel = (fieldKey: string, fallback: string) =>
-    themeContentCapability?.fields[fieldKey]?.label ?? fallback;
+    resolvedContentFields[fieldKey]?.label ?? fallback;
   const declaredContentFieldMaxLength = (fieldKey: string) => {
-    const definition = themeContentCapability?.fields[fieldKey];
+    const definition = resolvedContentFields[fieldKey];
     return definition &&
       (definition.type === "text" ||
         definition.type === "textarea" ||
@@ -1739,7 +1761,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 
   return (
-    <div className="space-y-3 p-3 text-xs">
+    <div className="min-w-0 space-y-3 p-3 text-xs">
       {/* Component Header & Code Bridge */}
       <div className="space-y-2 rounded-xl border bg-muted/40 p-3">
         <div className="flex items-center justify-between">
@@ -2908,7 +2930,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         ? imageValue?.alt
                         : contentFieldDisplayValue("imageAlt");
                       const imageDefinition =
-                        themeContentCapability?.fields[imageFieldKey];
+                        resolvedContentFields[imageFieldKey];
                       const hasImageValue =
                         rawImageValue !== undefined ||
                         isDeclaredContentField(imageFieldKey) ||

@@ -862,17 +862,40 @@ describe("EditorSectionsPanel page structure", () => {
       activeRoute,
     });
 
-    const header = screen.getByRole("button", {
+    const headerToggle = screen.getByRole("button", {
       name: /Expand shared layout Header/,
     });
-    expect(header.getAttribute("aria-label")).toContain(
+    expect(headerToggle.getAttribute("aria-label")).toContain(
       "Shared by every page",
     );
+    const header = screen.getByRole("button", { name: /HeaderAll pages/ });
     expect(header.textContent).toContain("All pages");
 
     // The route's own module is this page's alone.
-    const route = screen.getByRole("button", { name: /Expand route Home/ });
+    const route = screen.getByRole("button", { name: "Home" });
     expect(route.textContent).not.toContain("All pages");
+  });
+
+  it("uses the same separate select and expand controls for layout roots and sections", () => {
+    const onSearchChange = vi.fn();
+    renderPanel(vi.fn(), onSearchChange, {
+      editableNodes: layoutNodes,
+      activeRoute,
+    });
+
+    const headerRow = screen.getByRole("button", { name: /HeaderAll pages/ });
+    const headerToggle = screen.getByRole("button", {
+      name: /Expand shared layout Header/,
+    });
+
+    fireEvent.click(headerRow);
+    expect(onSearchChange).toHaveBeenCalledWith({
+      section: "src/components/Header.tsx",
+    });
+    expect(headerToggle.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(headerToggle);
+    expect(headerToggle.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("still lists a route with no template sections", () => {

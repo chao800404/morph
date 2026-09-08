@@ -83,6 +83,10 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  onCodeComponentPropsChange?: (
+    filePath: string,
+    nextProps: Record<string, unknown>,
+  ) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   onTabChange?: (tab: EditorAssistantPanelTab) => void;
 };
@@ -92,6 +96,16 @@ export type EditorAssistantPanelTab =
 
 export const EDITOR_ASSISTANT_PANEL_TAB_STORAGE_KEY =
   "morph:editor-assistant-panel-tab";
+
+/**
+ * Radix adds a table-like content wrapper inside every ScrollArea viewport.
+ * Inspector cards must be allowed to shrink with the panel instead of letting
+ * that wrapper grow to their intrinsic width and clipping the card's right
+ * edge behind the viewport.
+ */
+const inspectorScrollAreaClassName = "min-h-0 min-w-0";
+const inspectorScrollAreaViewportClassName =
+  "[&>div]:!block [&>div]:!w-full [&>div]:!min-w-0 [&>div]:!max-w-full";
 
 const persistedEditorAssistantPanelTabs = [
   "chat",
@@ -188,6 +202,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onSectionPropsChange,
+  onCodeComponentPropsChange,
   onJumpToCode,
   onTabChange,
 }: EditorAssistantPanelProps) {
@@ -248,13 +263,30 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       nextProps: Record<string, unknown>,
       options?: InspectorPropsChangeOptions,
     ) => {
-      // Never write content for a stand-in: there is no Document section to
-      // receive it, and the server would reject the mutation anyway.
       if (documentSection) {
         onSectionPropsChange?.(documentSection.id, nextProps, options);
+        return;
       }
+
+      const sourcePath =
+        (selection?.sourceFilePath &&
+        themeFiles?.some((file) => file.path === selection.sourceFilePath)
+          ? selection.sourceFilePath
+          : null) ??
+        (selectedSection?.id &&
+        themeFiles?.some((file) => file.path === selectedSection.id)
+          ? selectedSection.id
+          : null);
+      if (sourcePath) onCodeComponentPropsChange?.(sourcePath, nextProps);
     },
-    [documentSection, onSectionPropsChange],
+    [
+      documentSection,
+      onCodeComponentPropsChange,
+      onSectionPropsChange,
+      selectedSection?.id,
+      selection?.sourceFilePath,
+      themeFiles,
+    ],
   );
 
   useEffect(() => {
@@ -279,7 +311,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       data-editor-inspector-panel
       style={style}
       className={cn(
-        "m-3 ml-0 grid min-h-0 shrink-0 grid-cols-1 overflow-hidden rounded-xl border bg-component shadow-lg max-md:hidden",
+        "m-3 ml-0 grid min-h-0 min-w-0 shrink-0 grid-cols-1 overflow-hidden rounded-xl border bg-component shadow-lg max-md:hidden",
         tab === "chat"
           ? "grid-rows-[3.25rem_minmax(0,1fr)_auto]"
           : "grid-rows-[3.25rem_minmax(0,1fr)]",
@@ -358,7 +390,10 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       </header>
 
       {tab === "chat" ? (
-        <ScrollArea className="min-h-0">
+        <ScrollArea
+          className={inspectorScrollAreaClassName}
+          viewportClassName={inspectorScrollAreaViewportClassName}
+        >
           <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">
             <div className="flex size-10 items-center justify-center rounded-lg border bg-background shadow-xs">
               <WandSparkles className="size-4 text-muted-foreground" />
@@ -399,7 +434,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
 
       {shouldRenderStyles ? (
         <ScrollArea
-          className="min-h-0"
+          className={inspectorScrollAreaClassName}
+          viewportClassName={inspectorScrollAreaViewportClassName}
           hidden={!isInspectorTab}
           aria-hidden={!isInspectorTab}
         >

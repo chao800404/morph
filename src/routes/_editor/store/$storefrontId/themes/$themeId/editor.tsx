@@ -5,9 +5,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { VisualEditorPending } from "../../../../-components/visual-editor-pending";
 import { VisualEditorShell } from "../../../../-components/visual-editor-shell";
+import { normalizeEditorTemplateSearch } from "../../../../-components/editor-template";
 import { storefrontThemeFileQueries } from "../../../../-queries/storefront-theme-files.queries";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
 
@@ -92,11 +93,50 @@ function VisualEditorRoute() {
   }
 
   return (
-    <VisualEditorShell
+    <ReadyVisualEditorRoute
       context={result.data}
       search={search}
       onSearchChange={handleSearchChange}
       currentUser={routeContext?.session?.user}
+    />
+  );
+}
+
+function ReadyVisualEditorRoute({
+  context,
+  search,
+  onSearchChange,
+  currentUser,
+}: {
+  context: Parameters<typeof VisualEditorShell>[0]["context"];
+  search: StorefrontThemeEditorSearch;
+  onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
+  currentUser: Parameters<typeof VisualEditorShell>[0]["currentUser"];
+}) {
+  const normalizedSearch = normalizeEditorTemplateSearch(context, search);
+  const shouldNormalizeSearch = normalizedSearch !== search;
+  const normalizedTemplateId = normalizedSearch.templateId;
+  const normalizedTemplateType = normalizedSearch.template;
+
+  useEffect(() => {
+    if (!shouldNormalizeSearch) return;
+    onSearchChange({
+      template: normalizedTemplateType,
+      templateId: normalizedTemplateId,
+    });
+  }, [
+    normalizedTemplateId,
+    normalizedTemplateType,
+    onSearchChange,
+    shouldNormalizeSearch,
+  ]);
+
+  return (
+    <VisualEditorShell
+      context={context}
+      search={normalizedSearch}
+      onSearchChange={onSearchChange}
+      currentUser={currentUser}
     />
   );
 }

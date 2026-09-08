@@ -379,16 +379,20 @@ const SHARED_ROOT_HINT = "Shared by every page — editing this changes them all
 function RouteTreeRootRow({
   label,
   shared,
+  selected,
   expanded,
   hasChildren,
+  onSelect,
   onToggleExpanded,
   children,
 }: {
   label: string;
   /** Supplied by the layout, so it is on every page rather than this one. */
   shared: boolean;
+  selected: boolean;
   expanded: boolean;
   hasChildren: boolean;
+  onSelect: () => void;
   onToggleExpanded: () => void;
   children?: React.ReactNode;
 }) {
@@ -396,27 +400,36 @@ function RouteTreeRootRow({
   return (
     <SidebarMenuItem>
       <Collapsible open={expanded} onOpenChange={onToggleExpanded}>
-        <CollapsibleTrigger asChild>
-          <button
+        <div className="group/layout-root flex min-w-0 items-center">
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
+              aria-label={`${expanded ? "Collapse" : "Expand"} ${
+                shared ? "shared layout" : "route"
+              } ${label}${shared ? `. ${SHARED_ROOT_HINT}` : ""}`}
+              aria-expanded={hasChildren ? expanded : undefined}
+              disabled={!hasChildren}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+            >
+              {expanded ? (
+                <ChevronDown className="size-3.5" />
+              ) : (
+                <ChevronRight className="size-3.5" />
+              )}
+            </button>
+          </CollapsibleTrigger>
+          <SidebarMenuButton
             type="button"
-            className="flex h-8 w-full min-w-0 items-center rounded-md px-1.5 text-left text-sm text-sidebar-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            // The consequence is in the name, not only in a tooltip: a header
-            // row that looks like a section row invites an edit whose reach --
-            // every page on the store -- nothing on screen mentions.
-            aria-label={`${expanded ? "Collapse" : "Expand"} ${
-              shared ? "shared layout" : "route"
-            } ${label}${shared ? `. ${SHARED_ROOT_HINT}` : ""}`}
-            aria-expanded={hasChildren ? expanded : undefined}
-            title={shared ? SHARED_ROOT_HINT : undefined}
-            disabled={!hasChildren}
+            size="sm"
+            isActive={selected}
+            className="min-w-0 flex-1 cursor-pointer px-1.5"
+            onClick={onSelect}
+            title={shared ? SHARED_ROOT_HINT : `Select ${label}`}
           >
-            {expanded ? (
-              <ChevronDown className="mr-1.5 size-3.5 shrink-0 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="mr-1.5 size-3.5 shrink-0 text-muted-foreground" />
-            )}
             <Icon
-              className="mr-1.5 size-4 shrink-0 text-muted-foreground"
+              className="shrink-0 text-muted-foreground"
               aria-hidden="true"
             />
             <span className="min-w-0 truncate">{label}</span>
@@ -427,8 +440,8 @@ function RouteTreeRootRow({
                 All pages
               </span>
             ) : null}
-          </button>
-        </CollapsibleTrigger>
+          </SidebarMenuButton>
+        </div>
         <CollapsibleContent>{children}</CollapsibleContent>
       </Collapsible>
     </SidebarMenuItem>
@@ -899,8 +912,13 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
         key={sectionId}
         label={label}
         shared={layoutRoots.shared.has(sectionId)}
+        selected={
+          (activeSelection?.sectionId ?? search.section) === sectionId &&
+          (!activeSelection || activeSelection.isSection)
+        }
         expanded={expandedSectionIds.has(sectionId)}
         hasChildren={sectionNodes.length > 0}
+        onSelect={() => onSearchChange({ section: sectionId })}
         onToggleExpanded={() =>
           setExpandedSectionIds((current) => {
             const next = new Set(current);

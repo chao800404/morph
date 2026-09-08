@@ -132,6 +132,7 @@ import {
 
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
+  patchComponentDefaultProp,
   patchElementClassNameResult,
   removeJsxElement,
   swapSiblingMorphNodes,
@@ -2960,6 +2961,32 @@ export function VisualEditorShell({
 
   handleBuildPreviewRef.current = handleBuildPreview;
 
+  const handleCodeComponentPropsChange = useCallback(
+    (filePath: string, nextProps: Record<string, unknown>) => {
+      const workspaceFile = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        filePath
+      ];
+      const currentSource =
+        workspaceFile?.localContent ??
+        themeFiles.find((file) => file.path === filePath)?.content;
+      if (!currentSource) return;
+
+      let nextSource = currentSource;
+      for (const [fieldKey, value] of Object.entries(nextProps)) {
+        if (typeof value !== "string") continue;
+        nextSource = patchComponentDefaultProp(nextSource, fieldKey, value);
+      }
+      if (nextSource === currentSource) return;
+
+      void handleUnifiedSaveFile(filePath, nextSource, {
+        preserveCanvasPosition: true,
+      });
+    },
+    [handleUnifiedSaveFile, themeFiles, workspaceScope],
+  );
+
   const handleUpdateThemeFileStyle = useCallback(
     (
       filePath: string,
@@ -3561,6 +3588,16 @@ export function VisualEditorShell({
     const handlePreviewMessage = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (message?.type !== "morph:storefront-preview-size") return;
+
+      // A validated size response proves that the preview has installed its
+      // editor message bridge. This recovers when the preview's one-shot
+      // `ready` message was emitted before the parent listener was attached,
+      // without sending Theme files prematurely from the iframe load event.
+      setPreviewFrameReady((current) =>
+        current?.key === previewKey
+          ? current
+          : { key: previewKey, sequence: 1 },
+      );
       if (
         message.measurementRevision !==
         previewSizeMeasurementRevisionRef.current
@@ -6147,6 +6184,7 @@ export function VisualEditorShell({
                     scrolling="no"
                     className="block size-full border-0 bg-stone-50"
                     onLoad={() => {
+                      if (!previewKey) return;
                       syncPreviewViewportHeight();
                       syncPreviewSection();
                       syncPreviewSelectionMode();
@@ -6452,6 +6490,7 @@ export function VisualEditorShell({
           onRepairThemeLinkBinding={handleRepairThemeLinkBinding}
           onSwitchThemeLinkElement={handleSwitchThemeLinkElement}
           onSectionPropsChange={handleSectionPropsChange}
+          onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}
           onTabChange={setAssistantPanelTab}
         />

@@ -262,6 +262,7 @@ export type HeaderProps = {
 };
 
 export const contentFields = {
+  storeName: { type: "text", label: "Store name", maxLength: 80 },
   navItems: {
     type: "array",
     label: "Navigation",
@@ -289,6 +290,7 @@ export default function Header({
       className="flex h-16 items-center justify-between border-b border-neutral-200 bg-stone-50 px-5 sm:px-8"
     >
       <span
+        data-storefront-field="storeName"
         className="font-serif text-lg font-semibold tracking-tight"
       >
         {storeName}
@@ -297,9 +299,11 @@ export default function Header({
         className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
         aria-label="Storefront navigation"
       >
-        {navItems.map((item) => (
+        {navItems.map((item, index) => (
           <a
             key={item.label}
+            data-storefront-field="label"
+            data-storefront-field-path={\`navItems.\${index}.label\`}
             href={item.link.href}
             target={item.link.target}
             rel={item.link.rel}
@@ -310,6 +314,7 @@ export default function Header({
         ))}
       </nav>
       <a
+        data-storefront-field="cartLabel"
         href={cartLink.href}
         target={cartLink.target}
         rel={cartLink.rel}
@@ -370,6 +375,8 @@ export type FooterProps = {
 };
 
 export const contentFields = {
+  storeName: { type: "text", label: "Store name", maxLength: 80 },
+  copyrightText: { type: "text", label: "Copyright text", maxLength: 120 },
   tagline: { type: "textarea", label: "Tagline", maxLength: 200 },
   exploreHeading: { type: "text", label: "Explore heading", maxLength: 40 },
   exploreItems: {
@@ -413,18 +420,20 @@ export default function Footer({
       className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]"
     >
       <div>
-        <p className="font-serif text-3xl text-stone-100">{storeName}</p>
-        <p className="mt-4 max-w-xs text-sm leading-6 text-stone-500">
+        <p data-storefront-field="storeName" className="font-serif text-3xl text-stone-100">{storeName}</p>
+        <p data-storefront-field="tagline" className="mt-4 max-w-xs text-sm leading-6 text-stone-500">
           {tagline}
         </p>
       </div>
       <div
         className="text-sm leading-8"
       >
-        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">{exploreHeading}</p>
-        {exploreItems.map((item) => (
+        <p data-storefront-field="exploreHeading" className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">{exploreHeading}</p>
+        {exploreItems.map((item, index) => (
           <a
             key={item.label}
+            data-storefront-field="label"
+            data-storefront-field-path={\`exploreItems.\${index}.label\`}
             className="block hover:text-white"
             href={item.link.href}
             target={item.link.target}
@@ -437,10 +446,12 @@ export default function Footer({
       <div
         className="text-sm leading-8"
       >
-        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">{helpHeading}</p>
-        {helpItems.map((item) => (
+        <p data-storefront-field="helpHeading" className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">{helpHeading}</p>
+        {helpItems.map((item, index) => (
           <a
             key={item.label}
+            data-storefront-field="label"
+            data-storefront-field-path={\`helpItems.\${index}.label\`}
             className="block hover:text-white"
             href={item.link.href}
             target={item.link.target}
@@ -451,6 +462,7 @@ export default function Footer({
         ))}
       </div>
       <div
+        data-storefront-field="copyrightText"
         className="border-t border-stone-800 pt-6 text-xs text-stone-600 sm:col-span-2 lg:col-span-3"
       >
         {copyrightText}

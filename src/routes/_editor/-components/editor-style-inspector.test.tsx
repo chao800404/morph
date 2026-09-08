@@ -102,6 +102,51 @@ describe("resolveStyleInspectorClassName", () => {
 });
 
 describe("code-authored text content", () => {
+  it("infers editable text fields from literal default props in legacy components", () => {
+    const onPropsChange = vi.fn();
+    render(
+      <EditorStyleInspector
+        view="content"
+        section={{
+          ...baseSection("custom", {}),
+          id: "src/components/Header.tsx",
+          componentRef: undefined,
+        }}
+        themeFiles={[
+          {
+            id: "header-source",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: "src/components/Header.tsx",
+            content: `export default function Header({ storeName = "Online Store" }) {
+              return <header>{storeName}</header>;
+            }`,
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-25T00:00:00.000Z",
+            updatedAt: "2026-08-25T00:00:00.000Z",
+          },
+        ]}
+        selection={selectionDescriptor({
+          sectionId: "src/components/Header.tsx",
+          sourceFilePath: "src/components/Header.tsx",
+          isSection: true,
+        })}
+        onPropsChange={onPropsChange}
+      />,
+    );
+
+    const storeName = screen.getByDisplayValue("Online Store");
+    expect(screen.getByText("Store Name")).toBeTruthy();
+    fireEvent.input(storeName, { target: { value: "Studio Store" } });
+    fireEvent.blur(storeName);
+    expect(onPropsChange).toHaveBeenCalledWith(
+      { storeName: "Studio Store" },
+      { skipPreviewSync: true },
+    );
+  });
+
   it("edits a selected label even before the section has an authored prop", () => {
     const onPreviewSelectionField = vi.fn();
     const onPropsChange = vi.fn();
