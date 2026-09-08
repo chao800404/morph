@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
+  deriveThemeLayoutSections,
   deriveThemeRouteSections,
   mergeDocumentWithRouteSections,
 } from "@/lib/storefront/compiler/theme-route-sections";
@@ -246,11 +247,38 @@ export function renderSafeThemeRoute(args: {
   if (routeSections.diagnostics.length > 0) {
     return routeFailure(routeSections.diagnostics.join("; "));
   }
-  const routeDocument = mergeDocumentWithRouteSections(
+  // The shell declares slots too, and it wraps whatever route matched. Merging
+  // only the route's would drop them from the resolved values, leaving the
+  // header rendered from its own prop defaults while the Document held the
+  // author's copy — the same silent divergence on the canvas as in production.
+  const layoutSections = deriveThemeLayoutSections(args.files);
+  if (layoutSections.diagnostics.length > 0) {
+    return routeFailure(layoutSections.diagnostics.join("; "));
+  }
+  const shellSections =
+    layoutSections.sections.length > 0
+      ? mergeDocumentWithRouteSections(args.document, layoutSections.sections, {
+          routeOwnsStructure: true,
+        }).sections
+      : [];
+  const pageDocument = mergeDocumentWithRouteSections(
     args.document,
     routeSections.sections,
     { routeOwnsStructure: routeSections.hasContentImport },
   );
+  const shellSlotIds = new Set(shellSections.map((section) => section.id));
+  const routeDocument = {
+    ...pageDocument,
+    // A document that already carried the shell's sections — the editor hands
+    // one over — must not have them counted twice, or the resolver would spend
+    // the header on the first match and leave the real one unresolved.
+    sections: [
+      ...shellSections,
+      ...pageDocument.sections.filter(
+        (section) => !shellSlotIds.has(section.id),
+      ),
+    ],
+  };
   const resolveComponent = createDocumentComponentResolver({
     files: args.files,
     document: routeDocument,

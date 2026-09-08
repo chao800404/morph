@@ -19,8 +19,17 @@ export type StorefrontContentPublicationItemType =
 export type StorefrontPageStatus = "draft" | "published" | "archived";
 export type StorefrontDomainStatus = "pending" | "active" | "failed";
 export type StorefrontCommentThreadStatus = "open" | "resolved" | "archived";
+/**
+ * `layout` is the shell every route renders inside, not a route of its own.
+ *
+ * Header and footer content belongs to every page at once, so it cannot live
+ * in a page's document without becoming one copy per page that drift apart.
+ * It is a template because it is a versioned, publishable content document
+ * like any other; it differs only in that no URL resolves to it and the
+ * runtime merges it into every path.
+ */
 export type StorefrontTemplateType =
-  "index" | "product" | "collection" | "page" | "blog";
+  "index" | "product" | "collection" | "page" | "blog" | "layout";
 
 export type StorefrontPageDocument = {
   version: 1;

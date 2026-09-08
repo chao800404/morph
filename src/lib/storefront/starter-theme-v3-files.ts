@@ -327,6 +327,91 @@ export default function Header({
 }
 `;
 
+/**
+ * Header shipped between the first starter and the content-fields rewrite.
+ *
+ * Recorded in both the shape Morph emitted it and the shape it takes once the
+ * `data-morph-*` markers are gone, because the editor stopped needing those
+ * attributes and workspaces on this generation hold one or the other. Matching
+ * is byte-exact, so a generation missing from this list is a workspace the
+ * Header upgrade can never reach — which is what left such a Theme with a
+ * single editable field while every section had its own.
+ */
+export const LEGACY_STARTER_THEME_HEADER_MARKED_SOURCE = `export type HeaderProps = {
+  storeName?: string;
+};
+
+export default function Header({ storeName = "Online Store" }: HeaderProps) {
+  return (
+    <header
+      data-morph-section="header"
+      data-morph-node="header-root"
+      className="flex h-16 items-center justify-between border-b border-neutral-200 bg-stone-50 px-5 sm:px-8"
+    >
+      <span
+        data-morph-node="header-brand"
+        data-morph-element="brand"
+        className="font-serif text-lg font-semibold tracking-tight"
+      >
+        {storeName}
+      </span>
+      <nav
+        data-morph-node="header-navigation"
+        data-morph-element="navigation"
+        className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
+        aria-label="Storefront navigation"
+      >
+        <a href="/collections/all" className="hover:text-neutral-950">Shop</a>
+        <a href="/pages/about" className="hover:text-neutral-950">About</a>
+        <a href="/blogs/journal" className="hover:text-neutral-950">Journal</a>
+      </nav>
+      <a
+        href="/cart"
+        data-morph-node="header-cart"
+        data-morph-element="action"
+        className="text-xs text-neutral-600 hover:text-neutral-950"
+      >
+        Cart (0)
+      </a>
+    </header>
+  );
+}
+`;
+
+/** The same generation after the `data-morph-*` markers were removed. */
+export const LEGACY_STARTER_THEME_HEADER_UNMARKED_SOURCE = `export type HeaderProps = {
+  storeName?: string;
+};
+
+export default function Header({ storeName = "Online Store" }: HeaderProps) {
+  return (
+    <header
+      className="flex h-16 items-center justify-between border-b border-neutral-200 bg-stone-50 px-5 sm:px-8"
+    >
+      <span
+        className="font-serif text-lg font-semibold tracking-tight"
+      >
+        {storeName}
+      </span>
+      <nav
+        className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
+        aria-label="Storefront navigation"
+      >
+        <a href="/collections/all" className="hover:text-neutral-950">Shop</a>
+        <a href="/pages/about" className="hover:text-neutral-950">About</a>
+        <a href="/blogs/journal" className="hover:text-neutral-950">Journal</a>
+      </nav>
+      <a
+        href="/cart"
+        className="text-xs text-neutral-600 hover:text-neutral-950"
+      >
+        Cart (0)
+      </a>
+    </header>
+  );
+}
+`;
+
 export const LEGACY_STARTER_THEME_FOOTER_SOURCE = `export default function Footer({ storeName = "Online Store" }: { storeName?: string }) {
   return (
     <footer className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]">
@@ -472,6 +557,106 @@ export default function Footer({
 }
 `;
 
+/** Footer of the same generation as the marked Header above. */
+export const LEGACY_STARTER_THEME_FOOTER_MARKED_SOURCE = `export type FooterProps = {
+  storeName?: string;
+  copyrightText?: string;
+};
+
+export default function Footer({
+  storeName = "Online Store",
+  copyrightText = "© Online Store",
+}: FooterProps) {
+  return (
+    <footer
+      data-morph-section="footer"
+      data-morph-node="footer-root"
+      className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]"
+    >
+      <div data-morph-node="footer-brand" data-morph-element="content">
+        <p className="font-serif text-3xl text-stone-100">{storeName}</p>
+        <p className="mt-4 max-w-xs text-sm leading-6 text-stone-500">
+          Objects with lasting character for thoughtful, everyday living.
+        </p>
+      </div>
+      <div
+        data-morph-node="footer-explore"
+        data-morph-element="navigation"
+        className="text-sm leading-8"
+      >
+        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Explore</p>
+        <a className="block hover:text-white" href="/collections/all">Shop all</a>
+        <a className="block hover:text-white" href="/pages/about">Our story</a>
+        <a className="block hover:text-white" href="/blogs/journal">Journal</a>
+      </div>
+      <div
+        data-morph-node="footer-help"
+        data-morph-element="navigation"
+        className="text-sm leading-8"
+      >
+        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Help</p>
+        <a className="block hover:text-white" href="/pages/contact">Contact</a>
+        <a className="block hover:text-white" href="/pages/shipping">Shipping</a>
+        <a className="block hover:text-white" href="/pages/returns">Returns</a>
+      </div>
+      <div
+        data-morph-node="footer-copyright"
+        data-morph-element="text"
+        className="border-t border-stone-800 pt-6 text-xs text-stone-600 sm:col-span-2 lg:col-span-3"
+      >
+        {copyrightText}
+      </div>
+    </footer>
+  );
+}
+`;
+
+/** The same generation after the `data-morph-*` markers were removed. */
+export const LEGACY_STARTER_THEME_FOOTER_UNMARKED_SOURCE = `export type FooterProps = {
+  storeName?: string;
+  copyrightText?: string;
+};
+
+export default function Footer({
+  storeName = "Online Store",
+  copyrightText = "© Online Store",
+}: FooterProps) {
+  return (
+    <footer
+      className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]"
+    >
+      <div>
+        <p className="font-serif text-3xl text-stone-100">{storeName}</p>
+        <p className="mt-4 max-w-xs text-sm leading-6 text-stone-500">
+          Objects with lasting character for thoughtful, everyday living.
+        </p>
+      </div>
+      <div
+        className="text-sm leading-8"
+      >
+        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Explore</p>
+        <a className="block hover:text-white" href="/collections/all">Shop all</a>
+        <a className="block hover:text-white" href="/pages/about">Our story</a>
+        <a className="block hover:text-white" href="/blogs/journal">Journal</a>
+      </div>
+      <div
+        className="text-sm leading-8"
+      >
+        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">Help</p>
+        <a className="block hover:text-white" href="/pages/contact">Contact</a>
+        <a className="block hover:text-white" href="/pages/shipping">Shipping</a>
+        <a className="block hover:text-white" href="/pages/returns">Returns</a>
+      </div>
+      <div
+        className="border-t border-stone-800 pt-6 text-xs text-stone-600 sm:col-span-2 lg:col-span-3"
+      >
+        {copyrightText}
+      </div>
+    </footer>
+  );
+}
+`;
+
 export const LEGACY_STARTER_THEME_INDEX_SOURCE = `import Header from "../components/Header";
 import Hero from "../components/Hero";
 import Footer from "../components/Footer";
@@ -516,9 +701,90 @@ export default function HomePage({
 }
 `;
 
-/** The v4 starter keeps the old page shell as a compatibility source while
- * making the real Theme contract a standard TanStack Start route tree. */
-export const STARTER_THEME_LAYOUT_SOURCE = STARTER_THEME_INDEX_SOURCE;
+/**
+ * Layout of the same generation, still carrying the `data-morph-*` markers.
+ * `STARTER_THEME_INDEX_SOURCE` is the same file once they were removed.
+ */
+export const LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE = `import type { ReactNode } from "react";
+import Header from "../components/Header";
+import Footer from "../components/Footer";
+
+export type HomePageProps = {
+  storeName?: string;
+  copyrightText?: string;
+  children?: ReactNode;
+};
+
+export default function HomePage({
+  storeName = "Online Store",
+  copyrightText = "© Online Store",
+  children,
+}: HomePageProps) {
+  return (
+    <div
+      data-morph-node="page-root"
+      className="min-h-screen bg-stone-50 text-neutral-950"
+    >
+      <Header storeName={storeName} />
+      {children}
+      <Footer storeName={storeName} copyrightText={copyrightText} />
+    </div>
+  );
+}
+`;
+
+/**
+ * The shell that let the two components own their defaults but gave the
+ * author nowhere to store an edit. Kept so it can be recognised and replaced.
+ */
+export const LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE = `import type { ReactNode } from "react";
+import Header from "../components/Header";
+import Footer from "../components/Footer";
+
+export type StorefrontLayoutProps = {
+  children?: ReactNode;
+};
+
+export default function StorefrontLayout({ children }: StorefrontLayoutProps) {
+  return (
+    <div className="min-h-screen bg-stone-50 text-neutral-950">
+      <Header />
+      {children}
+      <Footer />
+    </div>
+  );
+}
+`;
+
+/**
+ * The page shell every route renders inside.
+ *
+ * Header and footer content reaches the components the same way a section's
+ * does — through a slot the Document holds — so one editor, one store and one
+ * publish path serve all of it. The shell owning its own `storeName` came
+ * first and was worse twice over: the call-site attribute beat the default
+ * props the inspector patches, and source defaults cannot hold a list or a
+ * link at all.
+ */
+export const STARTER_THEME_LAYOUT_SOURCE = `import type { ReactNode } from "react";
+import { content } from "../morph/content";
+import Header from "../components/Header";
+import Footer from "../components/Footer";
+
+export type StorefrontLayoutProps = {
+  children?: ReactNode;
+};
+
+export default function StorefrontLayout({ children }: StorefrontLayoutProps) {
+  return (
+    <div className="min-h-screen bg-stone-50 text-neutral-950">
+      <Header {...content("starter-header")} />
+      {children}
+      <Footer {...content("starter-footer")} />
+    </div>
+  );
+}
+`;
 
 /**
  * Root route emitted before the Theme owned its own document shell.

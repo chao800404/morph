@@ -1,13 +1,19 @@
 import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
+  LEGACY_STARTER_THEME_FOOTER_MARKED_SOURCE,
+  LEGACY_STARTER_THEME_FOOTER_UNMARKED_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_HEADER_MARKED_SOURCE,
+  LEGACY_STARTER_THEME_HEADER_UNMARKED_SOURCE,
   LEGACY_STARTER_THEME_HERO_SOURCE,
   LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
+  LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
+  LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE,
@@ -18,6 +24,7 @@ import {
   STARTER_THEME_V4_NEW_FILES,
   STARTER_THEME_HEADER_SOURCE,
   STARTER_THEME_INDEX_SOURCE,
+  STARTER_THEME_LAYOUT_SOURCE,
   STARTER_THEME_HOME_ROUTE_SOURCE,
   STARTER_THEME_V3_NEW_FILES,
 } from "./starter-theme-v3-files";
@@ -361,6 +368,10 @@ export default function Principles({
               },
             },
           },
+          // `layout.*` predates route-owned sections and its prefix is the
+          // section type, so both would derive the type "layout". Kept for
+          // manifests that already reference them; the `.default` pair is what
+          // a slot resolves to.
           "layout.header": {
             name: "Header",
             source: "src/components/Header.tsx",
@@ -369,8 +380,26 @@ export default function Principles({
             name: "Footer",
             source: "src/components/Footer.tsx",
           },
+          "header.default": {
+            name: "Header",
+            source: "src/components/Header.tsx",
+            sectionType: "header",
+          },
+          "footer.default": {
+            name: "Footer",
+            source: "src/components/Footer.tsx",
+            sectionType: "footer",
+          },
         },
         sections: {
+          header: {
+            componentRef: "header.default",
+            source: "src/components/Header.tsx",
+          },
+          footer: {
+            componentRef: "footer.default",
+            source: "src/components/Footer.tsx",
+          },
           hero: {
             componentRef: "hero.default",
             source: "src/components/Hero.tsx",
@@ -560,6 +589,8 @@ const V3_COMPONENT_REFS = [
   "category-showcase.default",
   "image-with-text.default",
   "newsletter.default",
+  "header.default",
+  "footer.default",
 ] as const;
 
 const V3_SECTION_TYPES = [
@@ -567,6 +598,8 @@ const V3_SECTION_TYPES = [
   "category-showcase",
   "image-with-text",
   "newsletter",
+  "header",
+  "footer",
 ] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -786,39 +819,68 @@ export function createStarterThemeWorkspaceUpgrade(
     });
   }
 
-  const exactLegacyReplacements = [
+  // Every byte-set Morph has emitted at a path, so a workspace on any of them
+  // can still be upgraded. A generation left out of this list is not merely
+  // skipped once: matching is byte-exact, so that workspace can never receive
+  // the file again by any route the editor offers.
+  const exactLegacyReplacements: ReadonlyArray<{
+    readonly path: string;
+    readonly legacy: readonly string[];
+    readonly current: string;
+  }> = [
     {
       path: "src/components/Hero.tsx",
-      legacy: LEGACY_STARTER_THEME_HERO_SOURCE,
+      legacy: [LEGACY_STARTER_THEME_HERO_SOURCE],
       current: STARTER_THEME_FILES.find(
         (file) => file.path === "src/components/Hero.tsx",
       )!.content,
     },
     {
       path: "src/components/CategoryShowcase.tsx",
-      legacy: LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
+      legacy: [LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/CategoryShowcase.tsx",
       )!.content,
     },
     {
       path: "src/components/ImageWithText.tsx",
-      legacy: LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
+      legacy: [LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/ImageWithText.tsx",
       )!.content,
     },
     {
       path: "src/components/Header.tsx",
-      legacy: LEGACY_STARTER_THEME_HEADER_SOURCE,
+      legacy: [
+        LEGACY_STARTER_THEME_HEADER_SOURCE,
+        LEGACY_STARTER_THEME_HEADER_MARKED_SOURCE,
+        LEGACY_STARTER_THEME_HEADER_UNMARKED_SOURCE,
+      ],
       current: STARTER_THEME_HEADER_SOURCE,
     },
     {
       path: "src/components/Footer.tsx",
-      legacy: LEGACY_STARTER_THEME_FOOTER_SOURCE,
+      legacy: [
+        LEGACY_STARTER_THEME_FOOTER_SOURCE,
+        LEGACY_STARTER_THEME_FOOTER_MARKED_SOURCE,
+        LEGACY_STARTER_THEME_FOOTER_UNMARKED_SOURCE,
+      ],
       current: STARTER_THEME_FOOTER_SOURCE,
     },
-  ] as const;
+    {
+      // The shell that used to forward its own `storeName` and
+      // `copyrightText` into Header and Footer, overriding the default props
+      // the inspector patches. Both prior byte-sets are replaced by the shell
+      // that lets the two components own their content.
+      path: "src/layouts/StorefrontLayout.tsx",
+      legacy: [
+        LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
+        STARTER_THEME_INDEX_SOURCE,
+        LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
+      ],
+      current: STARTER_THEME_LAYOUT_SOURCE,
+    },
+  ];
 
   const documentLayoutReady = Boolean(
     existingLegacyPage &&
@@ -828,7 +890,7 @@ export function createStarterThemeWorkspaceUpgrade(
   for (const replacement of exactLegacyReplacements) {
     const existing = existingByPath.get(replacement.path);
     if (!existing) continue;
-    const isLegacy = existing.content === replacement.legacy;
+    const isLegacy = replacement.legacy.includes(existing.content);
     if (!isLegacy) continue;
     upgrades.push({
       path: replacement.path,

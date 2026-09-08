@@ -239,6 +239,15 @@ export const storefrontContentPublicationDal = {
     themeId: string;
     templateId: string;
     templateRevisionId: string;
+    /**
+     * Templates published in the same act as the target.
+     *
+     * The shell is on every page, so a release that carried a page's new
+     * content but the shell's old content would serve a header nobody chose.
+     * It has no URL to be opened and published on its own, so it travels with
+     * whatever page is being published.
+     */
+    alsoPublish?: ReadonlyArray<{ templateId: string; revisionId: string }>;
     createdBy?: string;
   }): Promise<StorefrontContentPublicationDraft> {
     const db = await getDb();
@@ -352,6 +361,11 @@ export const storefrontContentPublicationDal = {
       pageHandles.set(page.id, handle);
     }
 
+    const alsoPublish = new Map(
+      (data.alsoPublish ?? []).map(
+        (entry) => [entry.templateId, entry.revisionId] as const,
+      ),
+    );
     const publicationId = crypto.randomUUID();
     const now = new Date().toISOString();
     const items = [
@@ -364,7 +378,7 @@ export const storefrontContentPublicationDal = {
           revisionId:
             template.id === data.templateId
               ? templateRevision.id
-              : template.revisionId,
+              : (alsoPublish.get(template.id) ?? template.revisionId),
           createdAt: now,
           updatedAt: now,
         }))

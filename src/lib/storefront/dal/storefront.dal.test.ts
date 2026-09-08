@@ -25,7 +25,17 @@ vi.mock("./storefront-theme-file.dal", () => ({
 
 import { storefrontDal } from "./storefront.dal";
 
-function createExistingStorefrontDb() {
+/** Rows every `db.insert(...).values(...)` in one test was given. */
+function insertedRows(db: { insert: unknown }): unknown[] {
+  return (db.insert as ReturnType<typeof vi.fn>).mock.results.flatMap(
+    (result) =>
+      (
+        result.value as { values: ReturnType<typeof vi.fn> }
+      ).values.mock.calls.flatMap((call) => call[0]),
+  );
+}
+
+function createExistingStorefrontDb(options?: { layoutTemplate?: boolean }) {
   const results = [
     [{ id: "storefront-a", activeThemeId: "theme-a" }],
     [
@@ -44,6 +54,7 @@ function createExistingStorefrontDb() {
     ],
     [{ id: "home-template", document: createDefaultStorefrontHomeDocument() }],
     [{ id: "product-template" }],
+    ...(options?.layoutTemplate === false ? [[]] : [[{ id: "layout-template" }]]),
   ];
   const db = {
     select: vi.fn(() => {
@@ -54,6 +65,9 @@ function createExistingStorefrontDb() {
       };
       return chain;
     }),
+    insert: vi.fn(() => ({
+      values: vi.fn(async () => ({ meta: { changes: 1 } })),
+    })),
   };
   return db;
 }
@@ -64,6 +78,7 @@ function createLegacyStarterDb() {
     [{ metadata: { starterTemplateVersion: 2 } }],
     [{ id: "home-template", document: createDefaultStorefrontHomeDocument() }],
     [{ id: "product-template" }],
+    [{ id: "layout-template" }],
   ];
   const db = {
     select: vi.fn(() => {
@@ -74,6 +89,9 @@ function createLegacyStarterDb() {
       };
       return chain;
     }),
+    insert: vi.fn(() => ({
+      values: vi.fn(async () => ({ meta: { changes: 1 } })),
+    })),
     update: vi.fn(() => {
       const chain = {
         set: vi.fn(() => chain),
@@ -92,6 +110,20 @@ describe("storefrontDal starter workspace provisioning", () => {
     mocks.initStarterTheme.mockResolvedValue([]);
     mocks.getSourceGeneration.mockResolvedValue(4);
     mocks.saveFilesBatch.mockResolvedValue([]);
+  });
+
+  it("creates the shell template for a theme that predates it", async () => {
+    // No shell row comes back, which is every theme provisioned before header
+    // and footer content had a document of its own to live in.
+    const db = createExistingStorefrontDb({ layoutTemplate: false });
+    mocks.getDb.mockResolvedValue(db);
+    mocks.listFiles.mockResolvedValue([{ path: "src/routes/index.tsx" }]);
+
+    await storefrontDal.ensureDefault("sales-channel-a");
+
+    expect(insertedRows(db)).toContainEqual(
+      expect.objectContaining({ type: "layout" }),
+    );
   });
 
   it("initializes an existing Default theme when its source workspace is empty", async () => {

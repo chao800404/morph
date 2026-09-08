@@ -165,6 +165,7 @@ import {
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
 import { splitPageRoots } from "@/lib/storefront/editor/page-structure";
+import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
 import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
 import {
   setFieldPathValue,
@@ -1596,23 +1597,66 @@ export function VisualEditorShell({
     );
   }, [activeTemplate, search.routePath, themeRouteRegistry.routes]);
   /**
+   * Sections the shell declares, which every route renders inside.
+   *
+   * Derived from the same `content("slot")` contract a route uses, so a header
+   * is a section that happens to be on every page rather than a second kind of
+   * thing with its own editor. Their values are stored apart from any page,
+   * which is what makes an edit to one an edit to all of them.
+   */
+  const layoutSections = useMemo(
+    () => deriveThemeLayoutSections(effectiveThemeFiles).sections,
+    [effectiveThemeFiles],
+  );
+  const layoutTemplate = useMemo(
+    () => context.templates.find((template) => template.type === "layout"),
+    [context.templates],
+  );
+  const layoutSectionIds = useMemo(
+    () => new Set(layoutSections.map((section) => section.slotId)),
+    [layoutSections],
+  );
+  /**
    * Modules the layout supplies rather than this route.
    *
    * Editing one changes every page that uses the layout, which the panels have
    * to be able to say. Derived here so the tree and the inspector agree.
    */
   const sharedLayoutPaths = useMemo(() => {
+    // A shell section is shared by construction: it is declared once and every
+    // page renders it. Named by both its slot and its source so the tree and
+    // the inspector, which identify a row differently, both recognise it.
+    const shared = new Set<string>();
+    for (const section of layoutSections) {
+      shared.add(section.slotId);
+      shared.add(section.componentSourcePath);
+    }
     const nodes =
       previewStructure?.key === previewKey ? previewStructure.nodes : undefined;
-    if (!nodes || !activeThemeRoute) return new Set<string>();
-    return splitPageRoots({
+    if (!nodes || !activeThemeRoute) return shared;
+    // Only the page's own sections split the page. Counting the shell's would
+    // move every root after it into the "below the template" half.
+    const pageSectionIds = new Set(
+      (activeTemplate?.document.sections ?? [])
+        .map((section) => section.id)
+        .filter((sectionId) => !layoutSectionIds.has(sectionId)),
+    );
+    for (const sectionId of splitPageRoots({
       editableNodes: nodes,
-      templateSectionIds: new Set(
-        activeTemplate?.document.sections.map((section) => section.id) ?? [],
-      ),
+      templateSectionIds: pageSectionIds,
       routeSourcePath: activeThemeRoute.sourcePath,
-    }).shared;
-  }, [activeTemplate, activeThemeRoute, previewKey, previewStructure]);
+    }).shared) {
+      shared.add(sectionId);
+    }
+    return shared;
+  }, [
+    activeTemplate,
+    activeThemeRoute,
+    layoutSectionIds,
+    layoutSections,
+    previewKey,
+    previewStructure,
+  ]);
 
   const pendingThemeRoute = useMemo(
     () =>
@@ -1694,23 +1738,41 @@ export function VisualEditorShell({
   const routeBackedContext = useMemo<StorefrontThemeEditorDTO>(() => {
     const routeStructureIsAuthoritative =
       activeRouteStructure.hasContentImport || routeOwnsStructure;
-    if (
-      !activeTemplate ||
-      (activeRouteSections.length === 0 && !routeStructureIsAuthoritative)
-    ) {
+    if (!activeTemplate) return context;
+
+    // The canvas renders the page inside the shell, so the document handed to
+    // the preview has to carry both. The shell's values come from its own
+    // template — presenting them on the page would be the first step toward
+    // storing them there.
+    const shellSections = mergeDocumentWithRouteSections(
+      layoutTemplate?.document ?? { version: 1, sections: [] },
+      layoutSections,
+      { routeOwnsStructure: layoutSections.length > 0 },
+    ).sections;
+
+    const pageDocument =
+      activeRouteSections.length === 0 && !routeStructureIsAuthoritative
+        ? activeTemplate.document
+        : mergeDocumentWithRouteSections(
+            activeTemplate.document,
+            activeRouteSections,
+            { routeOwnsStructure: routeStructureIsAuthoritative },
+          );
+
+    if (shellSections.length === 0 && pageDocument === activeTemplate.document) {
       return context;
     }
+
     return {
       ...context,
       templates: context.templates.map((template) =>
         template.id === activeTemplate.id
           ? {
               ...template,
-              document: mergeDocumentWithRouteSections(
-                template.document,
-                activeRouteSections,
-                { routeOwnsStructure: routeStructureIsAuthoritative },
-              ),
+              document: {
+                ...pageDocument,
+                sections: [...shellSections, ...pageDocument.sections],
+              },
             }
           : template,
       ),
@@ -1719,9 +1781,26 @@ export function VisualEditorShell({
     activeRouteSections,
     activeRouteStructure.hasContentImport,
     activeTemplate,
+    layoutSections,
+    layoutTemplate?.document,
     routeOwnsStructure,
     context,
   ]);
+  /**
+   * The template that stores a section's values.
+   *
+   * A shell section is on the canvas of whichever page is open, but writing it
+   * into that page's document would make "All pages" a lie the moment a second
+   * page was edited.
+   */
+  const templateIdForSection = useCallback(
+    (sectionId: string): string | null =>
+      (layoutSectionIds.has(sectionId)
+        ? layoutTemplate?.id
+        : activeTemplate?.id) ?? null,
+    [activeTemplate?.id, layoutSectionIds, layoutTemplate?.id],
+  );
+
   const routeSectionOptions = useMemo(
     () => listThemeRouteSectionOptions(effectiveThemeFiles),
     [effectiveThemeFiles],
@@ -2635,6 +2714,9 @@ export function VisualEditorShell({
 
       // 1. Flush any pending debounced props saves and await queued template mutations
       await flushTemplatePendingProps(activeTemplate.id);
+      // The shell is published with whatever page is being published, so its
+      // pending edits have to be committed in the same breath.
+      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
 
       const publishDraftRevisionId =
         templateDraftRevisionIdRef.current.get(activeTemplate.id) ??
@@ -2770,6 +2852,7 @@ export function VisualEditorShell({
       context.theme.id,
       handleUnifiedSaveFile,
       monacoDirtyFiles,
+      layoutTemplate,
       publishMutation,
       themeFilesQuery,
       updatePropsMutation,
@@ -4110,6 +4193,7 @@ export function VisualEditorShell({
         };
       }
       if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
 
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === activeThemeRoute.sourcePath,
@@ -4178,6 +4262,7 @@ export function VisualEditorShell({
       activeThemeRoute,
       effectiveThemeFiles,
       flushTemplatePendingProps,
+      layoutTemplate,
       handleUnifiedSaveFile,
       onSearchChange,
       search.section,
@@ -4219,12 +4304,15 @@ export function VisualEditorShell({
    */
   const sectionPropsSnapshot = useCallback(
     (sectionId: string): Record<string, unknown> => {
-      const section = activeTemplate?.document.sections.find(
+      const owner = layoutSectionIds.has(sectionId)
+        ? layoutTemplate
+        : activeTemplate;
+      const section = owner?.document.sections.find(
         (candidate) => candidate.id === sectionId,
       );
       return { ...((section?.props ?? {}) as Record<string, unknown>) };
     },
-    [activeTemplate],
+    [activeTemplate, layoutSectionIds, layoutTemplate],
   );
 
   const handleSectionPropsChange = useCallback(
@@ -4239,8 +4327,8 @@ export function VisualEditorShell({
         syncPreviewSectionProps(sectionId, previewProps);
       }
 
-      if (!activeTemplate) return;
-      const templateId = activeTemplate.id;
+      const templateId = templateIdForSection(sectionId);
+      if (!templateId) return;
       const key = `${templateId}:${sectionId}`;
 
       // 2. Debounced per-section timer (does NOT cancel edits on other sections)
@@ -4272,11 +4360,11 @@ export function VisualEditorShell({
       pendingPropsTimersRef.current.set(key, timer);
     },
     [
-      activeTemplate,
       commitSectionPending,
       sectionPropsSnapshot,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
+      templateIdForSection,
       updatePropsMutation,
     ],
   );
@@ -4566,6 +4654,7 @@ export function VisualEditorShell({
         throw new Error("The active template has no source-authored route.");
       }
       if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === activeThemeRoute.sourcePath,
       );
@@ -4587,6 +4676,7 @@ export function VisualEditorShell({
       activeThemeRoute,
       effectiveThemeFiles,
       flushTemplatePendingProps,
+      layoutTemplate,
       handleUnifiedSaveFile,
     ],
   );
@@ -4625,6 +4715,7 @@ export function VisualEditorShell({
         throw new Error("The active template has no source-authored route.");
       }
       if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === activeThemeRoute.sourcePath,
       );
@@ -4658,6 +4749,7 @@ export function VisualEditorShell({
       activeThemeRoute,
       effectiveThemeFiles,
       flushTemplatePendingProps,
+      layoutTemplate,
       handleUnifiedSaveFile,
       onSearchChange,
     ],

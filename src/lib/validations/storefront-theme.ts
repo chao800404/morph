@@ -48,7 +48,7 @@ export const updateStorefrontThemeSectionPropsInputSchema =
 
 export const storefrontThemeEditorSearchSchema = z.object({
   template: z
-    .enum(["index", "product", "collection", "page", "blog"])
+    .enum(["index", "product", "collection", "page", "blog", "layout"])
     .catch("index"),
   templateId: z.uuid().optional().catch(undefined),
   viewport: z.enum(["desktop", "tablet", "mobile"]).catch("desktop"),

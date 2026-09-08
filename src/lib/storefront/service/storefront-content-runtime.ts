@@ -107,14 +107,16 @@ export async function resolveStorefrontContent(args: {
   if (!args.publicationId) return { slots: {}, hiddenSlots: [] };
 
   const templateType = templateTypeForPath(args.pathname);
-  if (!templateType) return { slots: {}, hiddenSlots: [] };
 
   // `/pages/<handle>` names a specific Page. Resolving it as the generic page
   // *template* made every Page render the same content, which is why two
   // published Pages were indistinguishable.
   const pageHandle = pageHandleForPath(args.pathname);
-  const document =
-    pageHandle && args.ports.getPublishedPageDocument
+  // A path no template describes still renders inside the shell, so the
+  // absence of a page document is not the absence of content.
+  const document = !templateType
+    ? null
+    : pageHandle && args.ports.getPublishedPageDocument
       ? ((await args.ports.getPublishedPageDocument({
           publicationId: args.publicationId,
           handle: pageHandle,
@@ -129,7 +131,14 @@ export async function resolveStorefrontContent(args: {
           publicationId: args.publicationId,
           templateType,
         });
-  if (!document) return { slots: {}, hiddenSlots: [] };
+  // The shell every path renders inside carries its own document, so its
+  // header and footer are resolved for a route that has no document of its
+  // own as readily as for one that does.
+  const layoutDocument = await args.ports.getPublishedDocument({
+    publicationId: args.publicationId,
+    templateType: "layout",
+  });
+  if (!document && !layoutDocument) return { slots: {}, hiddenSlots: [] };
 
   const slots: Record<string, Record<string, unknown>> = {};
   // Named rather than omitted. A slot that is simply absent is indistinguishable
@@ -139,11 +148,17 @@ export async function resolveStorefrontContent(args: {
   // starter copy instead of the author's.
   const hiddenSlots: string[] = [];
   let count = 0;
-  for (const section of document.sections ?? []) {
+  // The shell is read first so a page that declares the same slot id wins:
+  // the more specific document is the one the author was looking at.
+  for (const section of [
+    ...(layoutDocument?.sections ?? []),
+    ...(document?.sections ?? []),
+  ]) {
     if (count >= MAX_THEME_CONTENT_SLOTS) break;
     if (!isValidThemeContentSlotId(section?.id)) continue;
     if (section.enabled === false) {
-      hiddenSlots.push(section.id);
+      if (!hiddenSlots.includes(section.id)) hiddenSlots.push(section.id);
+      delete slots[section.id];
       continue;
     }
     const props = section.props;
@@ -159,5 +174,10 @@ export async function resolveStorefrontContent(args: {
     count += 1;
   }
 
-  return { slots, hiddenSlots };
+  return {
+    slots,
+    // A page may re-enable a slot the shell hid, so the name is dropped rather
+    // than left standing beside the values that now exist for it.
+    hiddenSlots: hiddenSlots.filter((slotId) => !(slotId in slots)),
+  };
 }

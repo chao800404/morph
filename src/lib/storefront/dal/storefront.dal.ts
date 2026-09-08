@@ -13,6 +13,7 @@ import type {
 import { storefrontPreferencesSchema } from "@/lib/validations/storefront";
 import {
   createDefaultStorefrontHomeDocument,
+  createDefaultStorefrontLayoutDocument,
   isUpgradeableStarterHomeDocument,
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
@@ -24,6 +25,7 @@ export const DEFAULT_STOREFRONT_THEME_ID =
   "00000000-0000-4000-8000-000000000003";
 const DEFAULT_HOME_TEMPLATE_ID = "00000000-0000-4000-8000-000000000004";
 const DEFAULT_PRODUCT_TEMPLATE_ID = "00000000-0000-4000-8000-000000000005";
+const DEFAULT_LAYOUT_TEMPLATE_ID = "00000000-0000-4000-8000-000000000006";
 const INITIAL_SALES_CHANNEL_ID = "00000000-0000-4000-8000-000000000001";
 
 const EMPTY_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
@@ -71,6 +73,18 @@ async function ensureStarterHomeDocument(
     )
     .limit(1);
 
+  const [layoutTemplate] = await db
+    .select({ id: storefrontThemeTemplates.id })
+    .from(storefrontThemeTemplates)
+    .where(
+      and(
+        eq(storefrontThemeTemplates.themeId, themeId),
+        eq(storefrontThemeTemplates.type, "layout"),
+        isNull(storefrontThemeTemplates.deletedAt),
+      ),
+    )
+    .limit(1);
+
   const now = new Date().toISOString();
 
   if (!homeTemplate) {
@@ -92,6 +106,21 @@ async function ensureStarterHomeDocument(
       type: "product",
       name: "Default product",
       document: EMPTY_DOCUMENT,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  // Seeded with what the shell components declare as their own defaults, so
+  // adopting the document changes nothing on the page. Only created when it is
+  // absent: an existing one holds authored content.
+  if (!layoutTemplate) {
+    await db.insert(storefrontThemeTemplates).values({
+      id: crypto.randomUUID(),
+      themeId,
+      type: "layout" as const,
+      name: "Shell",
+      document: createDefaultStorefrontLayoutDocument(),
       createdAt: now,
       updatedAt: now,
     });
@@ -325,6 +354,9 @@ export const storefrontDal = {
     const productTemplateId = isInitialStorefront
       ? DEFAULT_PRODUCT_TEMPLATE_ID
       : crypto.randomUUID();
+    const layoutTemplateId = isInitialStorefront
+      ? DEFAULT_LAYOUT_TEMPLATE_ID
+      : crypto.randomUUID();
     await db
       .insert(storefronts)
       .values({
@@ -369,6 +401,15 @@ export const storefrontDal = {
           type: "product",
           name: "Default product",
           document: EMPTY_DOCUMENT,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: layoutTemplateId,
+          themeId,
+          type: "layout",
+          name: "Shell",
+          document: createDefaultStorefrontLayoutDocument(),
           createdAt: now,
           updatedAt: now,
         },

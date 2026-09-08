@@ -17,8 +17,17 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  *     reaches the rendered component.
  * 15: image content is stored as `{ image: { src, alt } }` and untouched
  *     Starter component sources are upgraded to consume the grouped value.
+ * 16: the layout shell stops forwarding its own `storeName` and
+ *     `copyrightText` into Header and Footer, so the default props the
+ *     inspector patches are what render; Header and Footer generations that
+ *     the byte-exact catalog previously could not match are upgraded to the
+ *     sources that declare their full `contentFields`.
+ * 17: header and footer content moves out of the component source and into a
+ *     `layout` template document, which the shell reads through the same
+ *     `content("slot")` contract a route uses and the runtime merges into
+ *     every path.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 15;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 17;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 
@@ -194,6 +203,69 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
           body: "New objects, maker stories, and thoughtful ideas for the home—sent occasionally.",
           placeholder: "Email address",
           actionLabel: "Subscribe",
+        },
+      },
+    ],
+  };
+}
+
+/** Slot the layout shell reads its header content from. */
+export const STOREFRONT_LAYOUT_HEADER_SLOT_ID = "starter-header";
+
+/** Slot the layout shell reads its footer content from. */
+export const STOREFRONT_LAYOUT_FOOTER_SLOT_ID = "starter-footer";
+
+/**
+ * Content of the shell every route renders inside.
+ *
+ * Seeded with what the components declare as their own defaults so adopting
+ * the document changes nothing on the page: the values move from the source to
+ * the Document, and the rendered result is byte-identical until an author
+ * edits one. Held apart from the page documents because it belongs to every
+ * path at once — the same reason the editor labels these rows "All pages".
+ */
+export function createDefaultStorefrontLayoutDocument(): StorefrontPageDocument {
+  return {
+    version: 1,
+    sections: [
+      {
+        id: STOREFRONT_LAYOUT_HEADER_SLOT_ID,
+        type: "header",
+        componentRef: "layout.header",
+        enabled: true,
+        props: {
+          storeName: "Online Store",
+          navItems: [
+            { label: "Shop", link: { href: "/collections/all" } },
+            { label: "About", link: { href: "/pages/about" } },
+            { label: "Journal", link: { href: "/blogs/journal" } },
+          ],
+          cartLabel: "Cart (0)",
+          cartLink: { href: "/cart" },
+        },
+      },
+      {
+        id: STOREFRONT_LAYOUT_FOOTER_SLOT_ID,
+        type: "footer",
+        componentRef: "layout.footer",
+        enabled: true,
+        props: {
+          storeName: "Online Store",
+          copyrightText: "© Online Store",
+          tagline:
+            "Objects with lasting character for thoughtful, everyday living.",
+          exploreHeading: "Explore",
+          exploreItems: [
+            { label: "Shop all", link: { href: "/collections/all" } },
+            { label: "Our story", link: { href: "/pages/about" } },
+            { label: "Journal", link: { href: "/blogs/journal" } },
+          ],
+          helpHeading: "Help",
+          helpItems: [
+            { label: "Contact", link: { href: "/pages/contact" } },
+            { label: "Shipping", link: { href: "/pages/shipping" } },
+            { label: "Returns", link: { href: "/pages/returns" } },
+          ],
         },
       },
     ],

@@ -330,6 +330,64 @@ export function deriveThemeRouteSections(
   };
 }
 
+/**
+ * Path of the shell every route renders inside, as the manifest declares it.
+ *
+ * Read here rather than imported from the AST transformer so this module keeps
+ * its single dependency on a file list.
+ */
+function readDocumentLayoutPath(
+  files: readonly ThemeSourceFile[],
+): string | null {
+  const manifest = readManifestContent(files);
+  if (!manifest) return null;
+  try {
+    const parsed: unknown = JSON.parse(manifest);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return null;
+    }
+    const documentLayout = (parsed as Record<string, unknown>).documentLayout;
+    if (
+      typeof documentLayout !== "object" ||
+      documentLayout === null ||
+      Array.isArray(documentLayout)
+    ) {
+      return null;
+    }
+    const source = (documentLayout as Record<string, unknown>).source;
+    if (typeof source !== "string" || source.trim() === "") return null;
+    const normalized = normalizePath(source);
+    return files.some((file) => normalizePath(file.path) === normalized)
+      ? normalized
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sections the layout shell declares, which every route renders.
+ *
+ * Structurally identical to a route's sections — the same `content("slot")`
+ * call, read out of a different file — because a header is a section that
+ * happens to be on every page. Keeping the two derivations one function is
+ * what lets the header be edited, stored, published and served by exactly the
+ * machinery a section already uses.
+ */
+export function deriveThemeLayoutSections(
+  files: readonly ThemeSourceFile[],
+): ThemeRouteSectionResult {
+  const layoutPath = readDocumentLayoutPath(files);
+  if (!layoutPath) {
+    return { sections: [], diagnostics: [], hasContentImport: false };
+  }
+  return deriveThemeRouteSections(files, layoutPath);
+}
+
 /** Components the route author may add as editable sections. */
 /**
  * Components that exist only to render one row of a repeated field.

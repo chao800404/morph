@@ -184,6 +184,9 @@ describe("starter Principles theme source", () => {
       }),
     );
     expect(Object.keys(manifest.sections)).toEqual([
+      // The shell's two sections come first: they wrap every page.
+      "header",
+      "footer",
       "hero",
       "editorial-intro",
       "category-showcase",

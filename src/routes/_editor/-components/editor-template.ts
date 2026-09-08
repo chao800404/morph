@@ -9,6 +9,8 @@ const templatePaths: Record<EditorTemplate["type"], string> = {
   collection: "/collections/:handle",
   page: "/pages/:handle",
   blog: "/blogs/:handle",
+  // No URL resolves to the layout; it is the shell every path renders inside.
+  layout: "All pages",
 };
 
 /** Map a source-authored URL to the template document used for its content. */

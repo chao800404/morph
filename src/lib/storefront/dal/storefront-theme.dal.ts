@@ -933,9 +933,52 @@ export const storefrontThemeDal = {
         ? JSON.parse(revision.document)
         : revision.document,
     );
+
+    // The shell wraps every page and has no URL of its own, so it can never be
+    // the template a publish targets. Left behind, its edits would sit in a
+    // draft forever while the dashboard reported the site as published.
+    const [shell] = await db
+      .select({
+        id: storefrontThemeTemplates.id,
+        draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+        publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+        document: storefrontThemeTemplateRevisions.document,
+      })
+      .from(storefrontThemeTemplates)
+      .innerJoin(
+        storefrontThemeTemplateRevisions,
+        eq(
+          storefrontThemeTemplateRevisions.id,
+          storefrontThemeTemplates.draftRevisionId,
+        ),
+      )
+      .where(
+        and(
+          eq(storefrontThemeTemplates.themeId, data.themeId),
+          eq(storefrontThemeTemplates.type, "layout"),
+          isNull(storefrontThemeTemplates.deletedAt),
+        ),
+      )
+      .limit(1);
+    const pendingShell =
+      shell &&
+      shell.id !== data.templateId &&
+      shell.draftRevisionId &&
+      shell.draftRevisionId !== shell.publishedRevisionId
+        ? {
+            id: shell.id,
+            revisionId: shell.draftRevisionId,
+            document: storefrontPageDocumentSchema.parse(
+              typeof shell.document === "string"
+                ? JSON.parse(shell.document)
+                : shell.document,
+            ),
+          }
+        : null;
+
     const now = new Date().toISOString();
     const templateUnchanged =
-      template.draftRevisionId === template.publishedRevisionId;
+      template.draftRevisionId === template.publishedRevisionId && !pendingShell;
     const sourceUnchanged =
       template.publishedSourceRevisionId === sourceRevisionId;
     // Whether the Worker actually received this build, not just whether D1
@@ -965,6 +1008,9 @@ export const storefrontThemeDal = {
           themeId: data.themeId,
           templateId: data.templateId,
           templateRevisionId: data.expectedDraftRevisionId,
+          alsoPublish: pendingShell
+            ? [{ templateId: pendingShell.id, revisionId: pendingShell.revisionId }]
+            : undefined,
           createdBy: data.createdBy,
         });
 
@@ -1011,7 +1057,7 @@ export const storefrontThemeDal = {
       );
     }
 
-    if (!templateUnchanged) {
+    if (template.draftRevisionId !== template.publishedRevisionId) {
       statements.push(
         env.DATABASE.prepare(
           `
@@ -1038,6 +1084,36 @@ export const storefrontThemeDal = {
           WHERE id = ?2 AND template_id = ?3
         `,
         ).bind(now, data.expectedDraftRevisionId, data.templateId),
+      );
+    }
+
+    if (pendingShell) {
+      statements.push(
+        env.DATABASE.prepare(
+          `
+          UPDATE storefront_theme_templates
+          SET document = ?1, published_revision_id = ?2, draft_generation = draft_generation + 1, updated_at = ?3
+          WHERE id = ?4
+            AND theme_id = ?5
+            AND draft_revision_id = ?2
+            AND deleted_at IS NULL
+        `,
+        ).bind(
+          JSON.stringify(pendingShell.document),
+          pendingShell.revisionId,
+          now,
+          pendingShell.id,
+          data.themeId,
+        ),
+      );
+      statements.push(
+        env.DATABASE.prepare(
+          `
+          UPDATE storefront_theme_template_revisions
+          SET published_at = ?1
+          WHERE id = ?2 AND template_id = ?3
+        `,
+        ).bind(now, pendingShell.revisionId, pendingShell.id),
       );
     }
 

@@ -37,8 +37,17 @@ describe("resolveStorefrontContent", () => {
     ],
   };
 
-  const ports = (doc: unknown = document) => ({
-    getPublishedDocument: vi.fn(async () => doc as never),
+  // Keyed by template type the way the real port is: the shell is a document
+  // of its own, so a fake that answers every type with the same document
+  // would merge a page's sections into itself.
+  const ports = (
+    doc: unknown = document,
+    layoutDoc: unknown = null,
+  ) => ({
+    getPublishedDocument: vi.fn(
+      async ({ templateType }: { templateType: string }) =>
+        (templateType === "layout" ? layoutDoc : doc) as never,
+    ),
   });
 
   it("returns each enabled section's props keyed by slot", async () => {
@@ -102,7 +111,107 @@ describe("resolveStorefrontContent", () => {
       ports: p,
     });
     expect(result.slots).toEqual({});
-    expect(p.getPublishedDocument).not.toHaveBeenCalled();
+    // The shell still applies to a path no template describes, so it is the
+    // only document read for one.
+    expect(p.getPublishedDocument).toHaveBeenCalledTimes(1);
+    expect(p.getPublishedDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ templateType: "layout" }),
+    );
+  });
+
+  describe("the shell every path renders inside", () => {
+    const layout = {
+      sections: [
+        {
+          id: "starter-header",
+          enabled: true,
+          props: { storeName: "Published Store" },
+        },
+      ],
+    };
+
+    it("serves the shell's slots beside the page's", async () => {
+      const result = await resolveStorefrontContent({
+        publicationId: "pub_1",
+        pathname: "/",
+        ports: ports(document, layout),
+      });
+
+      expect(result.slots["starter-header"]).toEqual({
+        storeName: "Published Store",
+      });
+      expect(result.slots["starter-hero"]).toEqual({ heading: "Published" });
+    });
+
+    it("serves the shell on a path no template describes", async () => {
+      const result = await resolveStorefrontContent({
+        publicationId: "pub_1",
+        pathname: "/about",
+        ports: ports(document, layout),
+      });
+
+      expect(result.slots).toEqual({
+        "starter-header": { storeName: "Published Store" },
+      });
+    });
+
+    it("lets a page override a slot the shell also declares", async () => {
+      const result = await resolveStorefrontContent({
+        publicationId: "pub_1",
+        pathname: "/",
+        ports: ports(
+          {
+            sections: [
+              {
+                id: "starter-header",
+                enabled: true,
+                props: { storeName: "This page only" },
+              },
+            ],
+          },
+          layout,
+        ),
+      });
+
+      expect(result.slots["starter-header"]).toEqual({
+        storeName: "This page only",
+      });
+    });
+
+    it("names a hidden shell section once, not once per document", async () => {
+      const result = await resolveStorefrontContent({
+        publicationId: "pub_1",
+        pathname: "/",
+        ports: ports(document, {
+          sections: [{ id: "starter-header", enabled: false, props: {} }],
+        }),
+      });
+
+      expect(result.hiddenSlots).toEqual(["starter-header", "starter-promo"]);
+      expect(result.slots["starter-header"]).toBeUndefined();
+    });
+
+    it("lets a page re-enable a section the shell hid", async () => {
+      const result = await resolveStorefrontContent({
+        publicationId: "pub_1",
+        pathname: "/",
+        ports: ports(
+          {
+            sections: [
+              {
+                id: "starter-header",
+                enabled: true,
+                props: { storeName: "Back" },
+              },
+            ],
+          },
+          { sections: [{ id: "starter-header", enabled: false, props: {} }] },
+        ),
+      });
+
+      expect(result.hiddenSlots).toEqual([]);
+      expect(result.slots["starter-header"]).toEqual({ storeName: "Back" });
+    });
   });
 
   it("tolerates a missing or malformed document", async () => {

@@ -901,6 +901,35 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    */
   const contentOrderKey = (...keys: string[]) =>
     keys.find((key) => contentFieldOrder.has(key)) ?? keys[0] ?? "";
+  /**
+   * The array row a selected node belongs to, and what that row declares.
+   *
+   * An element inside a row carries a single field marker, so selecting a
+   * navigation link offered its label and nothing else — while the row the
+   * component declares also holds the destination that same anchor renders.
+   * The marker says which element was clicked; the declaration says what the
+   * row contains, and the declaration is what the panel has to show.
+   */
+  const selectedArrayRow = useMemo(() => {
+    if (!isSelectedNode || !activeFieldPath) return null;
+    const [fieldKey, rawIndex, ...rest] = activeFieldPath.split(".");
+    if (!fieldKey || rest.length === 0) return null;
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || index < 0) return null;
+    const definition = resolvedContentFields[fieldKey];
+    if (!definition || definition.type !== "array") return null;
+    const rowFields = arrayRowFields(definition);
+    if (!rowFields) return null;
+    return { fieldKey, index, rowKeys: new Set(Object.keys(rowFields)) };
+  }, [activeFieldPath, isSelectedNode, resolvedContentFields]);
+  /**
+   * True when the selected row already renders the marked field, so the
+   * hand-written control for that key must stand down rather than render a
+   * second, differently-bound copy of it.
+   */
+  const selectedFieldOwnedByArrayRow = Boolean(
+    selectedField && selectedArrayRow?.rowKeys.has(selectedField),
+  );
   const isDeclaredContentField = (fieldKey: string) =>
     Boolean(resolvedContentFields[fieldKey]);
   const declaredContentFieldLabel = (fieldKey: string, fallback: string) =>
@@ -1920,7 +1949,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     .filter(
                       ([fieldKey]) =>
                         !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
-                        (!isSelectedNode || selectedField === fieldKey),
+                        (!isSelectedNode ||
+                          selectedField === fieldKey ||
+                          selectedArrayRow?.fieldKey === fieldKey),
                     )
                     .map(([fieldKey, definition]) => ({
                       key: fieldKey,
@@ -1964,10 +1995,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         }
 
                         if (definition.type === "array") {
+                          // A selected row's marker points inside the list, so
+                          // resolving the list the same way would address
+                          // `navItems.1.navItems` and read nothing. The list is
+                          // the container of the selection, not a sibling of it.
+                          const listValue =
+                            selectedArrayRow?.fieldKey === fieldKey
+                              ? (props[fieldKey] ?? value)
+                              : value;
                           const rows: Record<string, unknown>[] = Array.isArray(
-                            value,
+                            listValue,
                           )
-                            ? (value as Record<string, unknown>[])
+                            ? (listValue as Record<string, unknown>[])
                             : [];
                           const resolvedRowFields = arrayRowFields(definition);
                           // A list whose row shape never resolved is shown as such
@@ -1991,6 +2030,21 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                           const minRows = definition.minRows ?? 0;
                           const maxRows =
                             definition.maxRows ?? MAX_ARRAY_CONTENT_FIELD_ROWS;
+                          // Selecting one entry on the canvas asks about that
+                          // entry. Listing every sibling beside it would make
+                          // the panel answer a question nobody asked, and the
+                          // controls for two rows read identically.
+                          const scopedRowIndex =
+                            selectedArrayRow?.fieldKey === fieldKey
+                              ? selectedArrayRow.index
+                              : null;
+                          const visibleRows = rows
+                            .map((row, index) => ({ row, index }))
+                            .filter(
+                              ({ index }) =>
+                                scopedRowIndex === null ||
+                                index === scopedRowIndex,
+                            );
                           return (
                             <div key={fieldKey} className="space-y-2">
                               <div className="flex items-center justify-between">
@@ -2003,7 +2057,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                   {label}
                                 </span>
                                 <span className={inspectorFieldHintClassName}>
-                                  {rows.length}
+                                  {scopedRowIndex === null
+                                    ? rows.length
+                                    : `${scopedRowIndex + 1} / ${rows.length}`}
                                 </span>
                               </div>
                               {rows.length === 0 ? (
@@ -2016,7 +2072,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                   No entries yet.
                                 </p>
                               ) : null}
-                              {rows.map((row, index) => (
+                              {visibleRows.map(({ row, index }) => (
                                 <div
                                   key={
                                     typeof row?.id === "string"
@@ -2238,25 +2294,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                   })}
                                 </div>
                               ))}
-                              <button
-                                type="button"
-                                disabled={disabled || rows.length >= maxRows}
-                                onClick={() =>
-                                  mutateArrayRows((current) =>
-                                    addArrayRowAtFieldPath(
-                                      current,
-                                      fieldKey,
-                                      definition,
-                                      {
-                                        createId: createMorphItemId,
-                                      },
-                                    ),
-                                  )
-                                }
-                                className="w-full rounded-lg border border-dashed py-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-                              >
-                                Add entry
-                              </button>
+                              {scopedRowIndex === null ? (
+                                <button
+                                  type="button"
+                                  disabled={disabled || rows.length >= maxRows}
+                                  onClick={() =>
+                                    mutateArrayRows((current) =>
+                                      addArrayRowAtFieldPath(
+                                        current,
+                                        fieldKey,
+                                        definition,
+                                        {
+                                          createId: createMorphItemId,
+                                        },
+                                      ),
+                                    )
+                                  }
+                                  className="w-full rounded-lg border border-dashed py-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+                                >
+                                  Add entry
+                                </button>
+                              ) : null}
                               {definition.description ? (
                                 <p
                                   className={cn(
@@ -2482,6 +2540,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   {
                     key: contentOrderKey("label"),
                     node: showField("label") &&
+                      !selectedFieldOwnedByArrayRow &&
                       ("label" in props ||
                         descendantFieldKeys.has("label") ||
                         isDeclaredContentField("label") ||
