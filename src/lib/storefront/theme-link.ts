@@ -149,12 +149,19 @@ export function normalizeThemeLinkValue(value: unknown): ThemeLinkValue {
     return { href: "", target: "_self" };
   }
   const source = value as Record<string, unknown>;
+  const title = readString(source, "title");
+  const ariaLabel = readString(source, "ariaLabel");
+  // Absent optional parts are left out rather than set to `undefined`. A link
+  // is stored as content, and content has to be JSON: a key whose value is
+  // `undefined` matches nothing in the document schema, so the write was
+  // refused — and the same check runs on the preview bridge, which silently
+  // dropped the update instead, leaving the canvas showing the old link.
   return {
     href: readString(source, "href") ?? "",
     target: normalizeThemeLinkTarget(source.target),
     nofollow: source.nofollow === true,
-    title: readString(source, "title"),
-    ariaLabel: readString(source, "ariaLabel"),
+    ...(title === undefined ? {} : { title }),
+    ...(ariaLabel === undefined ? {} : { ariaLabel }),
     download: source.download === true,
   };
 }

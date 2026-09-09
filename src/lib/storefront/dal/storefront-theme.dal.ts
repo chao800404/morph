@@ -529,10 +529,17 @@ export const storefrontThemeDal = {
       },
     });
     const themeCapabilities = themeCapabilityState.capabilities;
+    // A stored ref that resolves to no capability is worse than no ref at all:
+    // the filter below answers "nothing is allowed here" and the write becomes
+    // an erasure. Section types are how a Theme names its components, so fall
+    // back to that rather than treating an unknown ref as a verdict.
+    const storedComponentRef = targetSection.componentRef ?? null;
+    const sectionTypeComponentRef =
+      themeCapabilityState.sectionComponentRefs[targetSection.type] ?? null;
     const resolvedComponentRef =
-      targetSection.componentRef ??
-      themeCapabilityState.sectionComponentRefs[targetSection.type] ??
-      null;
+      storedComponentRef && themeCapabilities[storedComponentRef]
+        ? storedComponentRef
+        : (sectionTypeComponentRef ?? storedComponentRef);
 
     const { enabled: propEnabled, ...restProps } = data.props;
     // Asset references are resolved against the library before anything is
@@ -558,11 +565,6 @@ export const storefrontThemeDal = {
       resolvedComponentRef,
       themeCapabilities,
     );
-    const existingProps =
-      (targetSection.props as Record<string, unknown>) ?? {};
-    const themeCapability = resolvedComponentRef
-      ? themeCapabilities[resolvedComponentRef]
-      : null;
     // Existing props are carried through unvalidated and unfiltered.
     //
     // `contentFields` is an authoring allowlist, not the complete runtime prop
@@ -573,14 +575,15 @@ export const storefrontThemeDal = {
     // every section still holding older content permanently uneditable,
     // including the very field that needed correcting. Only the incoming value
     // is validated, by `filterSectionContentProps` above.
-    const cleanExistingProps = themeCapability
-      ? existingProps
-      : filterSectionContentProps(
-          targetSection.type,
-          existingProps,
-          resolvedComponentRef,
-          themeCapabilities,
-        );
+    //
+    // This used to hold only when the component's capability resolved, and to
+    // re-filter the stored props otherwise — which returns `{}` for a ref the
+    // manifest does not know. Editing one word of a header then deleted its
+    // navigation, its cart link and everything else it held. Validation
+    // belongs to what the client sent; what is already stored was validated
+    // when it was written.
+    const cleanExistingProps =
+      (targetSection.props as Record<string, unknown>) ?? {};
 
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,

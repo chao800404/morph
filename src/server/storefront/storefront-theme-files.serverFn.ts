@@ -1,4 +1,5 @@
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
+import { resolveThemeRollbackPlan } from "@/lib/storefront/editor/theme-rollback-plan";
 import { buildFileTree } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import {
   themeRevisionStore,
@@ -14,6 +15,7 @@ import {
   listThemeFilesInputSchema,
   listThemeRevisionsInputSchema,
   previewStarterThemeWorkspaceInputSchema,
+  previewThemeRollbackInputSchema,
   rollbackThemeRevisionInputSchema,
   saveThemeFileInputSchema,
   saveThemeFilesBatchInputSchema,
@@ -464,6 +466,56 @@ export const listStorefrontThemeRevisions = createServerFn({ method: "POST" })
         error,
         "LIST_FAILED",
         "Failed to list theme revisions",
+      );
+    }
+  });
+
+/**
+ * What rolling back to a revision would do, before anything is written.
+ *
+ * Rollback replaces the whole workspace, so an author has to be able to see
+ * which files it restores and which it deletes. Only paths are returned: the
+ * question is which files change, and shipping every file's content to answer
+ * it would send the whole theme twice.
+ */
+export const previewStorefrontThemeRollback = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(previewThemeRollbackInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    // A rejected precondition is a client error the caller already
+    // renders. Letting the ZodError escape the validator instead would
+    // reach the browser as an opaque 500 with the reason stripped.
+    if (!input.success) return input;
+    const data = input.data;
+    try {
+      const [current, sourceGeneration, target] = await Promise.all([
+        themeSourceStore.listFiles(data.storefrontId, data.themeId),
+        themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
+        themeRevisionStore.materializeRevisionByNumber(
+          data.storefrontId,
+          data.themeId,
+          data.revisionNumber,
+        ),
+      ]);
+      if (sourceGeneration === null) {
+        throw new Error("Theme not found or does not belong to storefront");
+      }
+      const plan = resolveThemeRollbackPlan({ current, target: target.snapshot });
+      return ok("Theme rollback plan ready", {
+        // Carried back so the apply can be refused if the workspace moved
+        // between seeing this plan and agreeing to it.
+        sourceGeneration,
+        revisionNumber: data.revisionNumber,
+        ...plan,
+      });
+    } catch (error) {
+      return failure(
+        "Preview theme rollback error",
+        error,
+        "ROLLBACK_PREVIEW_FAILED",
+        "Failed to prepare the rollback plan",
       );
     }
   });

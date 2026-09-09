@@ -18,6 +18,18 @@ type EmptyTextLineCandidate = Readonly<{
   content: string;
   inlineHeight: string;
   inlineMaxHeight: string;
+  /**
+   * Whether this element is bound to a content field the author can clear.
+   *
+   * The tag list below was a proxy for "this element's content is its text",
+   * and it only ever listed the tags a starter happened to use. A store name
+   * in a `<span>` and a menu entry in an `<a>` are just as clearable and just
+   * as invisible once cleared — and an element with no height cannot be
+   * clicked, so the author could empty a field and then never reach it again.
+   */
+  isContentField?: boolean;
+  /** Whether the element renders anything other than its own text. */
+  hasElementChildren?: boolean;
 }>;
 
 export type PreviewEmptyTextElementCandidate = Readonly<{
@@ -39,8 +51,13 @@ function isExplicitCssZero(value: string): boolean {
 export function shouldReservePreviewEmptyTextLine(
   input: EmptyTextLineCandidate,
 ): boolean {
+  // A field-bound element earns a line only when text is all it renders. An
+  // anchor around an image has no text either, and giving that one a blank
+  // line would add height to something already perfectly visible.
+  const rendersTextAlone =
+    input.isContentField === true && input.hasElementChildren !== true;
   return (
-    TEXT_SELECTION_KINDS.has(input.kind) &&
+    (TEXT_SELECTION_KINDS.has(input.kind) || rendersTextAlone) &&
     input.content.trim().length === 0 &&
     !isExplicitCssZero(input.inlineHeight) &&
     !isExplicitCssZero(input.inlineMaxHeight)
@@ -64,6 +81,8 @@ export function syncPreviewEmptyTextLines(
         content: element.textContent ?? "",
         inlineHeight: element.style.height,
         inlineMaxHeight: element.style.maxHeight,
+        isContentField: element.hasAttribute("data-storefront-field"),
+        hasElementChildren: element.childElementCount > 0,
       }),
   }));
   let changed = false;

@@ -38,10 +38,17 @@ export function resolveEditorTemplate(
   context: StorefrontThemeEditorDTO,
   search: StorefrontThemeEditorSearch,
 ) {
+  // The shell is not a page. It is stored as a template because it is a
+  // versioned content document, but no URL resolves to it, so opening the
+  // editor "on" it would present the header as the content of the page on the
+  // canvas — and route every page edit into the wrong document.
+  const pages = context.templates.filter(
+    (template) => template.type !== "layout",
+  );
   return (
-    context.templates.find((template) => template.id === search.templateId) ??
-    context.templates.find((template) => template.type === search.template) ??
-    context.templates[0]
+    pages.find((template) => template.id === search.templateId) ??
+    pages.find((template) => template.type === search.template) ??
+    pages[0]
   );
 }
 

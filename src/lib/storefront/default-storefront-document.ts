@@ -231,7 +231,7 @@ export function createDefaultStorefrontLayoutDocument(): StorefrontPageDocument 
       {
         id: STOREFRONT_LAYOUT_HEADER_SLOT_ID,
         type: "header",
-        componentRef: "layout.header",
+        componentRef: "header.default",
         enabled: true,
         props: {
           storeName: "Online Store",
@@ -247,7 +247,7 @@ export function createDefaultStorefrontLayoutDocument(): StorefrontPageDocument 
       {
         id: STOREFRONT_LAYOUT_FOOTER_SLOT_ID,
         type: "footer",
-        componentRef: "layout.footer",
+        componentRef: "footer.default",
         enabled: true,
         props: {
           storeName: "Online Store",

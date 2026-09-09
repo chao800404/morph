@@ -39,6 +39,16 @@ export type ComponentElementMeta = {
 
 export type ParsedComponentMeta = {
   defaultProps: Record<string, string>;
+  /**
+   * Every default the component declares, including the structured ones.
+   *
+   * `defaultProps` holds only strings because its callers substitute it into
+   * string positions. A list or a link default has no string form, so the
+   * Inspector showed an empty list beside a page that visibly rendered the
+   * component's own entries — and the author's first edit then wrote that
+   * emptiness into the Document.
+   */
+  defaultPropValues: Record<string, unknown>;
   elements: Record<string, ComponentElementMeta>;
   nodeMap: Record<string, ComponentElementMeta>;
   /** Every element keyed by `"line:column"` of its opening tag. */
@@ -300,6 +310,75 @@ const parsedComponentSourceCache = new Map<
 >();
 const MAX_PARSED_COMPONENT_SOURCE_CACHE_ENTRIES = 100;
 
+/** How deep a default may nest before it stops being worth reading statically. */
+const MAX_DEFAULT_LITERAL_DEPTH = 6;
+
+/**
+ * A declared default's value, when the source states it outright.
+ *
+ * Only literals are read: anything computed would have to be executed, and a
+ * default the editor cannot state exactly is one it must not present as the
+ * stored value. Failure is reported rather than defaulted so a caller can tell
+ * "no default" from "a default of undefined".
+ */
+function staticLiteralValue(
+  node: any,
+  depth = 0,
+): { ok: true; value: unknown } | { ok: false } {
+  if (!node || depth > MAX_DEFAULT_LITERAL_DEPTH) return { ok: false };
+  switch (node.type) {
+    case "StringLiteral":
+    case "BooleanLiteral":
+    case "NumericLiteral":
+      return { ok: true, value: node.value };
+    case "NullLiteral":
+      return { ok: true, value: null };
+    case "TemplateLiteral":
+      return node.quasis?.length === 1 && node.expressions?.length === 0
+        ? { ok: true, value: node.quasis[0].value.raw }
+        : { ok: false };
+    case "UnaryExpression":
+      if (node.operator !== "-") return { ok: false };
+      const operand = staticLiteralValue(node.argument, depth + 1);
+      return operand.ok && typeof operand.value === "number"
+        ? { ok: true, value: -operand.value }
+        : { ok: false };
+    case "TSAsExpression":
+    case "TSSatisfiesExpression":
+      return staticLiteralValue(node.expression, depth + 1);
+    case "ArrayExpression": {
+      const items: unknown[] = [];
+      for (const element of node.elements ?? []) {
+        const item = staticLiteralValue(element, depth + 1);
+        if (!item.ok) return { ok: false };
+        items.push(item.value);
+      }
+      return { ok: true, value: items };
+    }
+    case "ObjectExpression": {
+      const object: Record<string, unknown> = {};
+      for (const property of node.properties ?? []) {
+        if (property?.type !== "ObjectProperty" || property.computed) {
+          return { ok: false };
+        }
+        const key =
+          property.key?.type === "Identifier"
+            ? property.key.name
+            : property.key?.type === "StringLiteral"
+              ? property.key.value
+              : null;
+        if (typeof key !== "string") return { ok: false };
+        const value = staticLiteralValue(property.value, depth + 1);
+        if (!value.ok) return { ok: false };
+        object[key] = value.value;
+      }
+      return { ok: true, value: object };
+    }
+    default:
+      return { ok: false };
+  }
+}
+
 export function parseComponentSource(
   sourceCode: string,
   sourceIdentity = "",
@@ -313,6 +392,7 @@ export function parseComponentSource(
   if (cached?.sourceCode === sourceCode) return cached.parsed;
 
   const defaultProps: Record<string, string> = {};
+  const defaultPropValues: Record<string, unknown> = {};
   const elements: Record<string, ComponentElementMeta> = {};
   const nodeMap: Record<string, ComponentElementMeta> = {};
   const locationMap: Record<string, ComponentElementMeta> = {};
@@ -356,6 +436,8 @@ export function parseComponentSource(
         ) {
           defaultProps[propName] = node.right.quasis[0].value.raw;
         }
+        const literal = staticLiteralValue(node.right);
+        if (literal.ok) defaultPropValues[propName] = literal.value;
       }
 
       // 2. Extract JSX element with data-morph-element or data-morph-node
@@ -510,6 +592,7 @@ export function parseComponentSource(
 
   const parsed = {
     defaultProps,
+    defaultPropValues,
     elements,
     nodeMap,
     locationMap,

@@ -12,6 +12,11 @@ import type {
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 import { CloudflareR2ThemeSourceBlobStore } from "./cloudflare-r2-theme-source-blob-store";
+import {
+  parseRevisionTimestamp,
+  shouldRecordThemeRevision,
+  type ThemeRevisionReason,
+} from "@/lib/storefront/editor/theme-revision-policy";
 import { persistThemeSourceRevisionBlobs } from "./theme-source-revision-manifest";
 import type {
   ThemeSourceBlobStore,
@@ -93,6 +98,32 @@ async function manifestForWorkspaceMutation(args: {
 }
 
 /**
+ * Whether this mutation should leave a revision behind.
+ *
+ * Decided here rather than taken from the caller: history is what makes a
+ * deletion survivable, and a client that never asked for a revision would
+ * leave a workspace with no way back. `createRevision: true` still forces one
+ * — a rename or an upgrade knows it is a landmark — but declining is not the
+ * caller's to decide.
+ */
+async function shouldRecordRevision(args: {
+  storefrontId: string;
+  themeId: string;
+  reason: ThemeRevisionReason;
+}): Promise<boolean> {
+  if (args.reason !== "save") return true;
+  const lastRevisionAt = await storefrontThemeFileDal.getLatestRevisionAt(
+    args.storefrontId,
+    args.themeId,
+  );
+  return shouldRecordThemeRevision({
+    reason: "save",
+    now: Date.now(),
+    lastRevisionAt: parseRevisionTimestamp(lastRevisionAt),
+  });
+}
+
+/**
  * Current D1-backed implementation of the mutable theme workspace boundary.
  *
  * This intentionally delegates to the existing DAL so source-generation and
@@ -106,7 +137,12 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
   getWorkspaceSnapshot: (...args) => storefrontThemeFileDal.listFiles(...args),
   getFileByPath: (...args) => storefrontThemeFileDal.getFileByPath(...args),
   async saveFile(storefrontId, themeId, path, content, mimeType, options) {
-    const sourceManifest = options.createRevision
+    const createRevision = await shouldRecordRevision({
+      storefrontId,
+      themeId,
+      reason: options.createRevision ? "explicit" : "save",
+    });
+    const sourceManifest = createRevision
       ? await manifestForWorkspaceMutation({
           storefrontId,
           themeId,
@@ -120,26 +156,76 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
       path,
       content,
       mimeType,
-      { ...options, sourceManifest },
+      { ...options, createRevision, sourceManifest },
     );
   },
   async saveFilesBatch(storefrontId, themeId, files, options) {
-    const sourceManifest =
-      options.createRevision &&
-      (files.length > 0 || (options.deletions?.length ?? 0) > 0)
-        ? await manifestForWorkspaceMutation({
-            storefrontId,
-            themeId,
-            files,
-            deletions: options.deletions ?? [],
-          })
-        : undefined;
+    const changesSomething =
+      files.length > 0 || (options.deletions?.length ?? 0) > 0;
+    const createRevision =
+      changesSomething &&
+      (await shouldRecordRevision({
+        storefrontId,
+        themeId,
+        // A batch that removes anything is a deletion, whatever else it does.
+        reason: (options.deletions?.length ?? 0) > 0
+          ? "delete"
+          : options.createRevision
+            ? "explicit"
+            : "save",
+      }));
+    const sourceManifest = createRevision
+      ? await manifestForWorkspaceMutation({
+          storefrontId,
+          themeId,
+          files,
+          deletions: options.deletions ?? [],
+        })
+      : undefined;
     return storefrontThemeFileDal.saveFilesBatch(storefrontId, themeId, files, {
       ...options,
+      createRevision,
       sourceManifest,
     });
   },
-  deleteFile: (...args) => storefrontThemeFileDal.deleteFile(...args),
+  async deleteFile(
+    storefrontId,
+    themeId,
+    path,
+    expectedFileId,
+    expectedVersion,
+    options,
+  ) {
+    // The workspace as it stands, with the file still in it: that is the state
+    // worth returning to, and the only one that can bring the file back.
+    let sourceManifest: ThemeSourceRevisionManifest | undefined;
+    try {
+      sourceManifest = await manifestForWorkspaceMutation({
+        storefrontId,
+        themeId,
+        files: [],
+        deletions: [],
+      });
+    } catch {
+      // A workspace that cannot be snapshotted — no R2 binding, or already
+      // empty — must not block the deletion itself. The delete is what the
+      // author asked for; the history is what this layer adds on top.
+      sourceManifest = undefined;
+    }
+    return storefrontThemeFileDal.deleteFile(
+      storefrontId,
+      themeId,
+      path,
+      expectedFileId,
+      expectedVersion,
+      {
+        ...options,
+        createRevision: sourceManifest !== undefined,
+        revisionMessage: `Before deleting ${path}`,
+        sourceManifest,
+      },
+    );
+  },
   getSourceGeneration: (...args) =>
     storefrontThemeFileDal.getSourceGeneration(...args),
 };
@@ -292,12 +378,7 @@ export function createD1ThemeRevisionStore(
       return materializeR2SourceRevision(revision, blobStore);
     },
     listRevisions: (...args) => storefrontThemeFileDal.listRevisions(...args),
-    async rollbackToRevision(
-      storefrontId,
-      themeId,
-      revisionNumber,
-      rollbackOptions,
-    ) {
+    async materializeRevisionByNumber(storefrontId, themeId, revisionNumber) {
       const target = await storefrontThemeFileDal.findRevisionByNumber(
         storefrontId,
         themeId,
@@ -311,9 +392,23 @@ export function createD1ThemeRevisionStore(
           "R2_BUCKET_UNAVAILABLE: This source revision references immutable R2 blobs, but the source blob storage binding is not configured.",
         );
       }
-      const targetSnapshot = target.sourceManifest
+      return target.sourceManifest
         ? await materializeR2SourceRevision(target, blobStore!)
         : target;
+    },
+    async rollbackToRevision(
+      storefrontId,
+      themeId,
+      revisionNumber,
+      rollbackOptions,
+    ) {
+      // Read through the same call the preview uses, so what an author agreed
+      // to and what is applied cannot describe two different revisions.
+      const target = await this.materializeRevisionByNumber(
+        storefrontId,
+        themeId,
+        revisionNumber,
+      );
       return storefrontThemeFileDal.rollbackToRevision(
         storefrontId,
         themeId,
@@ -321,7 +416,7 @@ export function createD1ThemeRevisionStore(
         {
           ...rollbackOptions,
           sourceManifest: target.sourceManifest ?? undefined,
-          sourceSnapshot: targetSnapshot.snapshot,
+          sourceSnapshot: target.snapshot,
         },
       );
     },

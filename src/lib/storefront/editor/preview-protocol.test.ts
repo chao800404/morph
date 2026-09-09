@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyPreviewSectionProps,
   parseEditorToPreviewEvent,
   parseEditorToPreviewMessage,
   parsePreviewToEditorEvent,
@@ -804,5 +805,57 @@ describe("stable identity on a structure node", () => {
     expect(
       parsePreviewToEditorMessage(withIdentity("x".repeat(201))),
     ).toBeNull();
+  });
+});
+
+describe("applying a live content edit to the previewed page", () => {
+  const document = {
+    version: 1 as const,
+    sections: [
+      { id: "starter-header", enabled: true, props: { storeName: "Old" } },
+      { id: "starter-hero", enabled: true, props: { heading: "Hi" } },
+    ],
+  };
+
+  it("merges the new props into the named section", () => {
+    const applied = applyPreviewSectionProps(document, {
+      sectionId: "starter-header",
+      props: { storeName: "New" },
+    });
+
+    expect(applied.matched).toBe(true);
+    expect(applied.document.sections[0]?.props).toEqual({ storeName: "New" });
+  });
+
+  it("leaves the other sections alone", () => {
+    const applied = applyPreviewSectionProps(document, {
+      sectionId: "starter-header",
+      props: { storeName: "New" },
+    });
+
+    expect(applied.document.sections[1]).toBe(document.sections[1]);
+  });
+
+  it("reports an edit addressed to a section this page does not hold", () => {
+    // A `map` that matches nothing looks exactly like one that matched and
+    // changed nothing, which is how a header edit came to update the panel and
+    // not the canvas with nothing reporting a problem.
+    const applied = applyPreviewSectionProps(document, {
+      sectionId: "starter-footer",
+      props: { storeName: "New" },
+    });
+
+    expect(applied.matched).toBe(false);
+    expect(applied.document).toBe(document);
+  });
+
+  it("carries a visibility change without props", () => {
+    const applied = applyPreviewSectionProps(document, {
+      sectionId: "starter-hero",
+      enabled: false,
+    });
+
+    expect(applied.document.sections[1]?.enabled).toBe(false);
+    expect(applied.document.sections[1]?.props).toEqual({ heading: "Hi" });
   });
 });

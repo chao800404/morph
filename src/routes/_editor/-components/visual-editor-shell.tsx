@@ -41,7 +41,6 @@ import {
   addThemeRouteSection,
   deriveThemeRouteSections,
   listThemeRouteSectionOptions,
-  mergeDocumentWithRouteSections,
   removeThemeRouteSection,
   reorderThemeRouteSections,
   type ThemeRouteSectionOption,
@@ -165,6 +164,8 @@ import {
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
 import { splitPageRoots } from "@/lib/storefront/editor/page-structure";
+import { resolveEditorSectionModel } from "@/lib/storefront/editor/editor-section-model";
+import { resolveTemplateDraftGeneration } from "@/lib/storefront/editor/template-draft-generation";
 import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
 import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
 import {
@@ -987,10 +988,11 @@ export function VisualEditorShell({
       const nextPromise = currentQueue
         .catch(() => {})
         .then(async () => {
-          const expectedDraftGeneration =
-            templateDraftGenerationRef.current.get(templateId) ??
-            activeTemplate?.draftGeneration ??
-            1;
+          const expectedDraftGeneration = resolveTemplateDraftGeneration({
+            templateId,
+            observed: templateDraftGenerationRef.current,
+            templates: context.templates,
+          });
           const result = await op(expectedDraftGeneration);
           if (result?.success && result.data) {
             if (typeof result.data.draftGeneration === "number") {
@@ -1011,7 +1013,7 @@ export function VisualEditorShell({
       templateMutationQueueRef.current.set(templateId, nextPromise);
       return nextPromise;
     },
-    [activeTemplate?.draftGeneration],
+    [context.templates],
   );
 
   const contentChangeRef = useRef<
@@ -1596,68 +1598,6 @@ export function VisualEditorShell({
       ) ?? null
     );
   }, [activeTemplate, search.routePath, themeRouteRegistry.routes]);
-  /**
-   * Sections the shell declares, which every route renders inside.
-   *
-   * Derived from the same `content("slot")` contract a route uses, so a header
-   * is a section that happens to be on every page rather than a second kind of
-   * thing with its own editor. Their values are stored apart from any page,
-   * which is what makes an edit to one an edit to all of them.
-   */
-  const layoutSections = useMemo(
-    () => deriveThemeLayoutSections(effectiveThemeFiles).sections,
-    [effectiveThemeFiles],
-  );
-  const layoutTemplate = useMemo(
-    () => context.templates.find((template) => template.type === "layout"),
-    [context.templates],
-  );
-  const layoutSectionIds = useMemo(
-    () => new Set(layoutSections.map((section) => section.slotId)),
-    [layoutSections],
-  );
-  /**
-   * Modules the layout supplies rather than this route.
-   *
-   * Editing one changes every page that uses the layout, which the panels have
-   * to be able to say. Derived here so the tree and the inspector agree.
-   */
-  const sharedLayoutPaths = useMemo(() => {
-    // A shell section is shared by construction: it is declared once and every
-    // page renders it. Named by both its slot and its source so the tree and
-    // the inspector, which identify a row differently, both recognise it.
-    const shared = new Set<string>();
-    for (const section of layoutSections) {
-      shared.add(section.slotId);
-      shared.add(section.componentSourcePath);
-    }
-    const nodes =
-      previewStructure?.key === previewKey ? previewStructure.nodes : undefined;
-    if (!nodes || !activeThemeRoute) return shared;
-    // Only the page's own sections split the page. Counting the shell's would
-    // move every root after it into the "below the template" half.
-    const pageSectionIds = new Set(
-      (activeTemplate?.document.sections ?? [])
-        .map((section) => section.id)
-        .filter((sectionId) => !layoutSectionIds.has(sectionId)),
-    );
-    for (const sectionId of splitPageRoots({
-      editableNodes: nodes,
-      templateSectionIds: pageSectionIds,
-      routeSourcePath: activeThemeRoute.sourcePath,
-    }).shared) {
-      shared.add(sectionId);
-    }
-    return shared;
-  }, [
-    activeTemplate,
-    activeThemeRoute,
-    layoutSectionIds,
-    layoutSections,
-    previewKey,
-    previewStructure,
-  ]);
-
   const pendingThemeRoute = useMemo(
     () =>
       pendingRoutePath
@@ -1735,57 +1675,47 @@ export function VisualEditorShell({
     activeThemeRoute?.kind === "route" &&
     activeThemeRoute.path === search.routePath,
   );
-  const routeBackedContext = useMemo<StorefrontThemeEditorDTO>(() => {
-    const routeStructureIsAuthoritative =
-      activeRouteStructure.hasContentImport || routeOwnsStructure;
-    if (!activeTemplate) return context;
-
-    // The canvas renders the page inside the shell, so the document handed to
-    // the preview has to carry both. The shell's values come from its own
-    // template — presenting them on the page would be the first step toward
-    // storing them there.
-    const shellSections = mergeDocumentWithRouteSections(
-      layoutTemplate?.document ?? { version: 1, sections: [] },
+  /**
+   * Sections the shell declares, which every route renders inside.
+   *
+   * Derived from the same `content("slot")` contract a route uses, so a header
+   * is a section that happens to be on every page rather than a second kind of
+   * thing with its own editor.
+   */
+  const layoutSections = useMemo(
+    () => deriveThemeLayoutSections(effectiveThemeFiles).sections,
+    [effectiveThemeFiles],
+  );
+  const layoutTemplate = useMemo(
+    () => context.templates.find((template) => template.type === "layout"),
+    [context.templates],
+  );
+  /**
+   * What is on this page and which document stores each part.
+   *
+   * One derivation, read by the tree, the inspector, the write path and the
+   * undo snapshot alike. Working it out separately in each of them is how they
+   * came to disagree about where a header edit belongs.
+   */
+  const sectionModel = useMemo(
+    () =>
+      resolveEditorSectionModel({
+        pageTemplate: activeTemplate,
+        shellTemplate: layoutTemplate,
+        pageSections: activeRouteSections,
+        pageOwnsStructure:
+          activeRouteStructure.hasContentImport || routeOwnsStructure,
+        shellSections: layoutSections,
+      }),
+    [
+      activeRouteSections,
+      activeRouteStructure.hasContentImport,
+      activeTemplate,
       layoutSections,
-      { routeOwnsStructure: layoutSections.length > 0 },
-    ).sections;
-
-    const pageDocument =
-      activeRouteSections.length === 0 && !routeStructureIsAuthoritative
-        ? activeTemplate.document
-        : mergeDocumentWithRouteSections(
-            activeTemplate.document,
-            activeRouteSections,
-            { routeOwnsStructure: routeStructureIsAuthoritative },
-          );
-
-    if (shellSections.length === 0 && pageDocument === activeTemplate.document) {
-      return context;
-    }
-
-    return {
-      ...context,
-      templates: context.templates.map((template) =>
-        template.id === activeTemplate.id
-          ? {
-              ...template,
-              document: {
-                ...pageDocument,
-                sections: [...shellSections, ...pageDocument.sections],
-              },
-            }
-          : template,
-      ),
-    };
-  }, [
-    activeRouteSections,
-    activeRouteStructure.hasContentImport,
-    activeTemplate,
-    layoutSections,
-    layoutTemplate?.document,
-    routeOwnsStructure,
-    context,
-  ]);
+      layoutTemplate,
+      routeOwnsStructure,
+    ],
+  );
   /**
    * The template that stores a section's values.
    *
@@ -1795,11 +1725,58 @@ export function VisualEditorShell({
    */
   const templateIdForSection = useCallback(
     (sectionId: string): string | null =>
-      (layoutSectionIds.has(sectionId)
-        ? layoutTemplate?.id
-        : activeTemplate?.id) ?? null,
-    [activeTemplate?.id, layoutSectionIds, layoutTemplate?.id],
+      sectionModel.bindings.get(sectionId)?.templateId ?? null,
+    [sectionModel],
   );
+
+  const routeBackedContext = useMemo<StorefrontThemeEditorDTO>(() => {
+    if (!activeTemplate) return context;
+    if (sectionModel.document.sections === activeTemplate.document.sections) {
+      return context;
+    }
+    return {
+      ...context,
+      templates: context.templates.map((template) =>
+        template.id === activeTemplate.id
+          ? { ...template, document: sectionModel.document }
+          : template,
+      ),
+    };
+  }, [activeTemplate, context, sectionModel]);
+
+  /**
+   * Modules the layout supplies rather than this route.
+   *
+   * Editing one changes every page that uses the layout, which the panels have
+   * to be able to say. Derived here so the tree and the inspector agree.
+   */
+  const sharedLayoutPaths = useMemo(() => {
+    // A shell section is shared by construction: it is declared once and every
+    // page renders it. Named by both its slot and its source so the tree and
+    // the inspector, which identify a row differently, both recognise it.
+    const shared = new Set([
+      ...sectionModel.sharedSectionIds,
+      ...sectionModel.sharedSourcePaths,
+    ]);
+    const nodes =
+      previewStructure?.key === previewKey ? previewStructure.nodes : undefined;
+    if (!nodes || !activeThemeRoute) return shared;
+    // Only the page's own sections split the page. Counting the shell's would
+    // move every root after it into the "below the template" half.
+    const pageSectionIds = new Set(
+      [...sectionModel.bindings.values()]
+        .filter((binding) => binding.owner === "page")
+        .map((binding) => binding.sectionId),
+    );
+    for (const sectionId of splitPageRoots({
+      editableNodes: nodes,
+      templateSectionIds: pageSectionIds,
+      routeSourcePath: activeThemeRoute.sourcePath,
+    }).shared) {
+      shared.add(sectionId);
+    }
+    return shared;
+  }, [activeThemeRoute, previewKey, previewStructure, sectionModel]);
 
   const routeSectionOptions = useMemo(
     () => listThemeRouteSectionOptions(effectiveThemeFiles),
@@ -4304,15 +4281,16 @@ export function VisualEditorShell({
    */
   const sectionPropsSnapshot = useCallback(
     (sectionId: string): Record<string, unknown> => {
-      const owner = layoutSectionIds.has(sectionId)
-        ? layoutTemplate
-        : activeTemplate;
+      const owner =
+        sectionModel.bindings.get(sectionId)?.owner === "shell"
+          ? layoutTemplate
+          : activeTemplate;
       const section = owner?.document.sections.find(
         (candidate) => candidate.id === sectionId,
       );
       return { ...((section?.props ?? {}) as Record<string, unknown>) };
     },
-    [activeTemplate, layoutSectionIds, layoutTemplate],
+    [activeTemplate, layoutTemplate, sectionModel],
   );
 
   const handleSectionPropsChange = useCallback(

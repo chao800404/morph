@@ -27,7 +27,14 @@ const navSource = `export const contentFields = {
   },
 } as const;
 
-export default function Nav({ heading = "Menu", navItems = [] }) {
+export default function Nav({
+  heading = "Menu",
+  navItems = [
+    { label: "Shop", link: { href: "/collections/all" } },
+    { label: "About", link: { href: "/pages/about" } },
+    { label: "Journal", link: { href: "/blogs/journal" } },
+  ],
+}) {
   return (
     <nav>
       {navItems.map((item, index) => (
@@ -138,6 +145,67 @@ describe("selecting one entry of a repeated field", () => {
         ],
       }),
     );
+  });
+
+  it("keeps the rows beside the one edited when none are stored yet", () => {
+    // The entries on screen come from the component's declared defaults, not
+    // from the Document. Writing only the edited row would send a list of one
+    // and delete the rest — while they were still visible on the canvas.
+    const onPropsChange = vi.fn();
+    render(
+      <EditorStyleInspector
+        view="content"
+        section={
+          {
+            id: "section-1",
+            type: "nav",
+            componentRef: "nav.default",
+            enabled: true,
+            props: {},
+          } as TestSection
+        }
+        themeFiles={themeFiles}
+        selection={rowSelection()}
+        onPropsChange={onPropsChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("External URL"));
+    fireEvent.blur(screen.getByLabelText("Destination path or URL"), {
+      target: { value: "/pages/contact" },
+    });
+
+    const written = onPropsChange.mock.calls.at(-1)?.[0] as {
+      navItems: unknown[];
+    };
+    expect(Array.isArray(written.navItems)).toBe(true);
+    expect(written.navItems).toHaveLength(3);
+  });
+
+  it("writes a link the store can actually hold", () => {
+    // The link normaliser used to fill absent optional parts in as
+    // `undefined`. Content is stored as JSON, so those keys matched nothing in
+    // the schema: the save was refused, and the preview bridge — which runs
+    // the same check — dropped the update without a word, leaving the canvas
+    // showing the old link.
+    const { onPropsChange } = renderInspector(rowSelection());
+
+    fireEvent.click(screen.getByText("External URL"));
+    fireEvent.blur(screen.getByLabelText("Destination path or URL"), {
+      target: { value: "/pages/contact" },
+    });
+
+    const written = onPropsChange.mock.calls.at(-1)?.[0];
+    const hasUndefined = (value: unknown): boolean => {
+      if (Array.isArray(value)) return value.some(hasUndefined);
+      if (value && typeof value === "object") {
+        return Object.values(value as Record<string, unknown>).some(
+          (item) => item === undefined || hasUndefined(item),
+        );
+      }
+      return false;
+    };
+    expect(hasUndefined(written)).toBe(false);
   });
 
   it("shows the selected row rather than every sibling", () => {

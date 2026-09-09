@@ -31,4 +31,26 @@ describe("selection taxonomy", () => {
     expect(getFieldPathValue(next, "items.0.title")).toBe("One");
     expect(source.items[1].title).toBe("Two");
   });
+
+  it("creates a list, not a record, for a numeric segment", () => {
+    // A repeated field with no stored value has nothing to clone from. Making
+    // an object produced `{"0": …}`, which the server refuses as not matching
+    // a list — the only way to reach it was editing a row of a field whose
+    // entries were still coming from the component's own defaults.
+    expect(setFieldPathValue({}, "items.0.label", "Shop")).toEqual({
+      items: [{ label: "Shop" }],
+    });
+  });
+
+  it("keeps writing into an existing list as a list", () => {
+    expect(
+      setFieldPathValue({ items: [{ label: "a" }, { label: "b" }] }, "items.1.label", "c"),
+    ).toEqual({ items: [{ label: "a" }, { label: "c" }] });
+  });
+
+  it("still creates a record for a named segment", () => {
+    expect(setFieldPathValue({}, "link.href", "/cart")).toEqual({
+      link: { href: "/cart" },
+    });
+  });
 });

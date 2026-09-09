@@ -293,21 +293,34 @@ export function getFieldPathValue(
 export function setFieldPathValue<T>(value: T, path: string, next: unknown): T {
   const segments = path.split(".");
   if (!segments.length || !path) return next as T;
-  const clone = (input: unknown): unknown =>
+  const isIndex = (segment: string | undefined) =>
+    segment !== undefined && /^\d+$/.test(segment);
+  /**
+   * Copies a container, creating one when nothing is there yet.
+   *
+   * The segment that follows decides the shape of what is created: a numeric
+   * one addresses a list. Creating an object for it produced `{"0": {…}}`,
+   * which reads back as a record keyed by "0" rather than a list — the server
+   * then refused the write as not matching the declared field, and the only
+   * way to hit it was editing a repeated field that had no stored value yet.
+   */
+  const clone = (input: unknown, nextSegment?: string): unknown =>
     Array.isArray(input)
       ? [...input]
       : input && typeof input === "object"
         ? { ...(input as Record<string, unknown>) }
-        : {};
-  const root = clone(value) as Record<string, unknown> & unknown[];
+        : isIndex(nextSegment)
+          ? []
+          : {};
+  const root = clone(value, segments[0]) as Record<string, unknown> & unknown[];
   let cursor: Record<string, unknown> & unknown[] = root;
   segments.forEach((segment, index) => {
-    const key = /^\d+$/.test(segment) ? Number(segment) : segment;
+    const key = isIndex(segment) ? Number(segment) : segment;
     if (index === segments.length - 1) {
       cursor[key] = next;
       return;
     }
-    const child = clone(cursor[key]);
+    const child = clone(cursor[key], segments[index + 1]);
     cursor[key] = child;
     cursor = child as Record<string, unknown> & unknown[];
   });

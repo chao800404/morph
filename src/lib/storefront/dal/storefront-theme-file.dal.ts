@@ -764,6 +764,33 @@ export const storefrontThemeFileDal = {
     return Object.assign(resultFiles, { sourceGeneration });
   },
 
+  /**
+   * When the newest source revision was taken, or null when there is none.
+   *
+   * Read on its own rather than through `listRevisions` because the throttle
+   * only needs one timestamp, and listing would pull every revision's snapshot
+   * to answer it.
+   */
+  async getLatestRevisionAt(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<string | null> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return null;
+    const row = await env.DATABASE.prepare(
+      `
+      SELECT created_at AS createdAt
+      FROM storefront_theme_revisions
+      WHERE storefront_id = ?1 AND theme_id = ?2 AND deleted_at IS NULL
+      ORDER BY revision_number DESC
+      LIMIT 1
+    `,
+    )
+      .bind(storefrontId, themeId)
+      .first<{ createdAt: string | null }>();
+    return row?.createdAt ?? null;
+  },
+
   async deleteFile(
     storefrontId: string,
     themeId: string,
@@ -772,6 +799,18 @@ export const storefrontThemeFileDal = {
     expectedVersion: number,
     options: {
       expectedSourceGeneration: number;
+      /**
+       * Record the workspace as it stands before the file is removed.
+       *
+       * Taken before rather than after, because the state worth returning to
+       * is the one that still has the file. The revision insert is ordered
+       * ahead of the delete in the same atomic batch so a snapshot taken from
+       * D1 sees it too.
+       */
+      createRevision?: boolean;
+      revisionMessage?: string;
+      createdBy?: string;
+      sourceManifest?: ThemeSourceRevisionManifest;
     },
   ): Promise<boolean> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
@@ -802,6 +841,21 @@ export const storefrontThemeFileDal = {
         ) THEN 1 ELSE json('') END AS ok
       `,
       ).bind(storefrontId, themeId, path, expectedFileId, expectedVersion),
+      ...(options.createRevision
+        ? [
+            prepareRevisionInsert({
+              storefrontId,
+              themeId,
+              revisionId: crypto.randomUUID(),
+              message: options.revisionMessage ?? `Before deleting ${path}`,
+              source: "manual",
+              createdBy: options.createdBy,
+              now,
+              sourceGeneration: options.expectedSourceGeneration,
+              sourceManifest: options.sourceManifest,
+            }),
+          ]
+        : []),
       env.DATABASE.prepare(
         `
         UPDATE storefront_theme_files

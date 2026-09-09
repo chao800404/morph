@@ -42,6 +42,47 @@ export function parsePreviewSectionProps(
   return value;
 }
 
+/**
+ * Applies one live content edit to the previewed document.
+ *
+ * Reports whether the section was found rather than only returning a document.
+ * A `map` that matches nothing is indistinguishable from one that matched and
+ * changed nothing, so an edit addressed to a section the preview does not hold
+ * was dropped in silence — the canvas kept the old content while the panel
+ * showed the new, and nothing anywhere said so.
+ */
+export function applyPreviewSectionProps<
+  TDocument extends {
+    sections: readonly {
+      id: string;
+      enabled?: boolean;
+      props?: Record<string, unknown> | null;
+    }[];
+  },
+>(
+  document: TDocument,
+  update: {
+    sectionId: string;
+    props?: PreviewSectionProps;
+    enabled?: boolean;
+  },
+): { document: TDocument; matched: boolean } {
+  let matched = false;
+  const sections = document.sections.map((section) => {
+    if (section.id !== update.sectionId) return section;
+    matched = true;
+    return {
+      ...section,
+      enabled:
+        typeof update.enabled === "boolean" ? update.enabled : section.enabled,
+      props: { ...(section.props ?? {}), ...(update.props ?? {}) },
+    };
+  });
+  return matched
+    ? { document: { ...document, sections }, matched }
+    : { document, matched };
+}
+
 export type PreviewThemeFile = {
   path: string;
   content: string;

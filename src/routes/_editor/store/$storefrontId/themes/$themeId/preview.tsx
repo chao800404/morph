@@ -5,10 +5,11 @@ import {
 import { shouldDeferUndoShortcut } from "@/lib/storefront/editor/editor-history";
 import { StorefrontPreview } from "@/components/storefront/storefront-preview";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { resolveEditorSectionModel } from "@/lib/storefront/editor/editor-section-model";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
+  deriveThemeLayoutSections,
   deriveThemeRouteSections,
-  mergeDocumentWithRouteSections,
 } from "@/lib/storefront/compiler/theme-route-sections";
 import { storefrontThemePreviewSearchSchema } from "@/lib/validations/storefront-theme";
 import { useQuery } from "@tanstack/react-query";
@@ -57,8 +58,10 @@ import {
   selectionStylePreviewNeedsOverlayUpdate,
 } from "@/lib/storefront/editor/selection-style-preview";
 import {
+  applyPreviewSectionProps,
   parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
+  type PreviewSectionProps,
   type PreviewEditableNode,
   type PreviewSelectionRestoreTarget,
   type PreviewStyleSnapshot,
@@ -648,29 +651,58 @@ function ReadyStorefrontPreview({
     styleRevision,
     acknowledgeStyleRevision,
   } = usePreviewThemeFiles(context.storefront.id, context.theme.id);
+  const layoutTemplate = context.templates.find(
+    (candidate) => candidate.type === "layout",
+  );
+  /**
+   * What this page is made of, composed exactly as the editor composes it.
+   *
+   * The shell's sections have to be present by name, not merely rendered: the
+   * editor pushes a live edit as "these are the new props for section X", and
+   * a document without X to update drops the message silently. The header then
+   * kept showing its old content while the panel showed the new, with nothing
+   * anywhere reporting a problem.
+   */
   const routeDocument = useMemo(() => {
-    if (!template?.document || !activeRoutePath) return template?.document;
+    if (!template?.document) return template?.document;
     const registry = buildThemeRouteRegistry(renderThemeFiles);
-    if (!registry.valid) return template.document;
-    const route = registry.routes.find(
-      (candidate) =>
-        candidate.kind === "route" && candidate.path === activeRoutePath,
+    const route =
+      activeRoutePath && registry.valid
+        ? registry.routes.find(
+            (candidate) =>
+              candidate.kind === "route" && candidate.path === activeRoutePath,
+          )
+        : undefined;
+    const derived = route
+      ? deriveThemeRouteSections(renderThemeFiles, route.sourcePath)
+      : null;
+    // A route whose slots cannot be read leaves its stored sections standing,
+    // which is what a theme that never adopted slots relies on.
+    const pageOwnsStructure = Boolean(
+      derived &&
+        derived.diagnostics.length === 0 &&
+        (derived.sections.length > 0 || derived.hasContentImport) &&
+        derived.hasContentImport,
     );
-    if (!route) return template.document;
-    const derived = deriveThemeRouteSections(
-      renderThemeFiles,
-      route.sourcePath,
-    );
-    if (
-      derived.diagnostics.length > 0 ||
-      (derived.sections.length === 0 && !derived.hasContentImport)
-    ) {
-      return template.document;
-    }
-    return mergeDocumentWithRouteSections(template.document, derived.sections, {
-      routeOwnsStructure: derived.hasContentImport,
-    });
-  }, [activeRoutePath, renderThemeFiles, template?.document]);
+    const pageSections =
+      derived && derived.diagnostics.length === 0 ? derived.sections : [];
+    const shell = deriveThemeLayoutSections(renderThemeFiles);
+    return resolveEditorSectionModel({
+      pageTemplate: { id: template.id, document: template.document },
+      shellTemplate: layoutTemplate
+        ? { id: layoutTemplate.id, document: layoutTemplate.document }
+        : undefined,
+      pageSections,
+      pageOwnsStructure,
+      shellSections: shell.diagnostics.length === 0 ? shell.sections : [],
+    }).document;
+  }, [
+    activeRoutePath,
+    layoutTemplate,
+    renderThemeFiles,
+    template?.document,
+    template?.id,
+  ]);
   const previewDocument = usePreviewDocument(routeDocument);
 
   // Source may render immediately because transient inline styles bridge the
@@ -867,21 +899,20 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
 
         setPreviewDocument((current) => {
           if (!current) return current;
-          return {
-            ...current,
-            sections: current.sections.map((section) => {
-              if (section.id !== sectionId) return section;
-              return {
-                ...section,
-                enabled:
-                  typeof enabled === "boolean" ? enabled : section.enabled,
-                props: {
-                  ...section.props,
-                  ...(props ?? {}),
-                },
-              };
-            }),
-          };
+          const applied = applyPreviewSectionProps(current, {
+            sectionId,
+            props: props as PreviewSectionProps | undefined,
+            enabled: typeof enabled === "boolean" ? enabled : undefined,
+          });
+          if (!applied.matched) {
+            // The editor and the preview disagree about what is on this page.
+            // Saying so is the difference between a bug that is found and one
+            // that presents as "the canvas just does not update".
+            console.warn(
+              `[morph] Live content update for section "${sectionId}" was dropped: the previewed page has no such section.`,
+            );
+          }
+          return applied.document;
         });
       }
     };

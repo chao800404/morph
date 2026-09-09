@@ -169,6 +169,19 @@ export interface ThemeRevisionStore {
     pagination: Pagination;
   }>;
 
+  /**
+   * One revision by its number, with its file contents actually present.
+   *
+   * Shared by the rollback preview and the rollback itself: describing a
+   * rollback with one read and performing it with another is how a preview
+   * comes to promise something the apply does not do.
+   */
+  materializeRevisionByNumber(
+    storefrontId: string,
+    themeId: string,
+    revisionNumber: number,
+  ): Promise<StorefrontThemeRevisionDTO>;
+
   rollbackToRevision(
     storefrontId: string,
     themeId: string,

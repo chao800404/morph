@@ -143,6 +143,7 @@ import {
   type ThemeContentFieldDefinition,
 } from "@/lib/storefront/theme-content-capabilities";
 import { toast } from "sonner";
+import { toStorableContentProps } from "@/lib/storefront/editor/content-write-value";
 import {
   addArrayRowAtFieldPath,
   createMorphItemId,
@@ -175,6 +176,16 @@ type EditorStyleInspectorProps = {
    */
   sharedLayoutPaths?: ReadonlySet<string>;
   section: EditorSection;
+  /**
+   * Where an edit to this section's content is written.
+   *
+   * `document` is a stored section: any value the component declares can be
+   * saved. `source` is a component the editor found on the canvas with no
+   * section behind it, so the only place to put a value is the component's own
+   * default props — which hold string literals and nothing else. Offering a
+   * list or a link there renders controls whose every keystroke is discarded.
+   */
+  contentStore?: "document" | "source";
   themeFiles?: StorefrontThemeFileDTO[];
   selection?: EditorSelectionDescriptor | null;
   /**
@@ -602,6 +613,7 @@ function sameContentValue(a: unknown, b: unknown): boolean {
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   resourceKey = "",
   section,
+  contentStore = "document",
   themeFiles,
   selection,
   editableNodes,
@@ -879,6 +891,30 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       ]),
     ) as Record<string, ThemeContentFieldDefinition>;
   }, [parsedMeta?.defaultProps, themeContentCapability?.fields]);
+  /**
+   * Whether a field can be saved where this section's content is stored.
+   *
+   * A section-backed component can hold anything the Document can hold. A
+   * component the editor found on the canvas with no section behind it is
+   * written by rewriting its default props in the source, and that patch
+   * replaces one literal with one string — a list or a link has no literal to
+   * become. Rendering those controls anyway is how a header offered a
+   * navigation editor that dropped every entry.
+   */
+  const isWritableContentField = (
+    definition: ThemeContentFieldDefinition,
+  ): boolean =>
+    contentStore === "document" ||
+    definition.type === "text" ||
+    definition.type === "textarea" ||
+    definition.type === "url" ||
+    definition.type === "select";
+  const unwritableContentFields =
+    contentStore === "source"
+      ? Object.entries(resolvedContentFields).filter(
+          ([, definition]) => !isWritableContentField(definition),
+        )
+      : [];
   const declaredContentFields = Object.entries(resolvedContentFields);
   /**
    * Where each content control belongs in the panel.
@@ -946,9 +982,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const contentFieldDisplayValue = (fieldKey: string): unknown => {
     const value = selectedFieldValue(fieldKey);
     if (value !== undefined) return value;
-    return isDeclaredContentField(fieldKey)
-      ? (parsedMeta?.defaultProps[fieldKey] ?? "")
-      : undefined;
+    if (!isDeclaredContentField(fieldKey)) return undefined;
+    // What the component itself renders when the Document holds nothing for
+    // it. Falling back to the empty string for every type showed a list field
+    // as "no entries" beside a page rendering the component's own — and the
+    // first edit then saved that emptiness.
+    const declared = parsedMeta?.defaultPropValues[fieldKey];
+    if (declared !== undefined) return declared;
+    return parsedMeta?.defaultProps[fieldKey] ?? "";
   };
   const hasDirectContentField = DIRECT_CONTENT_FIELD_KEYS.some(
     (fieldKey) =>
@@ -1727,9 +1768,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       const targetPath = activeFieldPath?.endsWith("." + field)
         ? activeFieldPath
         : descendantPath;
-      const next = targetPath
-        ? setFieldPathValue(currentProps, targetPath, value)
-        : { ...currentProps, [field]: value };
+      const next = toStorableContentProps(
+        targetPath
+          ? setFieldPathValue(currentProps, targetPath, value)
+          : { ...currentProps, [field]: value },
+      );
       localPropsRef.current = next;
       setLocalProps(next);
       if (options) {
@@ -1764,16 +1807,36 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         toast.warning(message);
         return;
       }
-      localPropsRef.current = result.value;
-      setLocalProps(result.value);
-      onPropsChange(result.value);
+      const next = toStorableContentProps(result.value);
+      localPropsRef.current = next;
+      setLocalProps(next);
+      onPropsChange(next);
     },
     [onPropsChange],
   );
 
   const handleNestedFieldChange = useCallback(
-    (path: string, value: unknown) => {
-      const next = setFieldPathValue(localPropsRef.current, path, value);
+    (
+      path: string,
+      value: unknown,
+      /**
+       * The whole field as the panel is showing it, for a field the Document
+       * has no value for yet.
+       *
+       * Every content write sends the entire props object, so writing one row
+       * of a list that is not stored would send a list containing only that
+       * row — the other rows are on screen because the component declares them
+       * as defaults, not because anything holds them. Editing the first menu
+       * entry would then delete the rest.
+       */
+      seed?: { key: string; value: unknown },
+    ) => {
+      const current = localPropsRef.current;
+      const base =
+        seed && current[seed.key] === undefined
+          ? { ...current, [seed.key]: seed.value }
+          : current;
+      const next = toStorableContentProps(setFieldPathValue(base, path, value));
       localPropsRef.current = next;
       setLocalProps(next);
       onPropsChange(next);
@@ -1920,6 +1983,19 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </InspectorGroup>
       )}
 
+      {view === "content" && unwritableContentFields.length > 0 ? (
+        <div className="rounded-xl border border-dashed p-3">
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {unwritableContentFields
+              .map(([fieldKey, definition]) => definition.label ?? fieldKey)
+              .join(", ")}{" "}
+            {unwritableContentFields.length === 1 ? "is" : "are"} edited in
+            code. This component is not part of a page's stored content, so
+            only its plain text fields can be saved here.
+          </p>
+        </div>
+      ) : null}
+
       {view === "content" && !hasEditableContent ? (
         <div className="rounded-xl border border-dashed p-4 text-center">
           <p className="text-xs text-muted-foreground">
@@ -1947,8 +2023,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 [
                   ...declaredContentFields
                     .filter(
-                      ([fieldKey]) =>
+                      ([fieldKey, definition]) =>
                         !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
+                        isWritableContentField(definition) &&
                         (!isSelectedNode ||
                           selectedField === fieldKey ||
                           selectedArrayRow?.fieldKey === fieldKey),
@@ -2045,6 +2122,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                 scopedRowIndex === null ||
                                 index === scopedRowIndex,
                             );
+                          // The list as shown, which for a field the Document
+                          // has no value for is the component's own declared
+                          // entries. Editing one row must carry the others.
+                          const rowSeed = { key: fieldKey, value: rows };
                           return (
                             <div key={fieldKey} className="space-y-2">
                               <div className="flex items-center justify-between">
@@ -2151,6 +2232,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                             handleNestedFieldChange(
                                               `${fieldKey}.${index}.${rowKey}`,
                                               next,
+                                              rowSeed,
                                             )
                                           }
                                         />
@@ -2206,6 +2288,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                                         groupedImage?.src ?? "",
                                                       alt: next,
                                                     },
+                                                    rowSeed,
                                                   )
                                               : undefined
                                           }
@@ -2226,6 +2309,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                                     next,
                                                   )
                                                 : next,
+                                              rowSeed,
                                             )
                                           }
                                         />
@@ -2247,6 +2331,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                               handleNestedFieldChange(
                                                 `${fieldKey}.${index}.${rowKey}`,
                                                 event.currentTarget.value,
+                                                rowSeed,
                                               )
                                             }
                                             disabled={disabled}
@@ -2279,6 +2364,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                                       event.currentTarget.value,
                                                     )
                                                   : event.currentTarget.value,
+                                                rowSeed,
                                               )
                                             }
                                             disabled={disabled}

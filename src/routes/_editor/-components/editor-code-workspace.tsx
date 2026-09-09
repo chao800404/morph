@@ -48,6 +48,7 @@ import type {
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import {
   applyStarterThemeWorkspace,
+  rollbackStorefrontThemeRevision,
   deleteStorefrontThemeFile,
   previewStarterThemeWorkspace,
   saveStorefrontThemeFile,
@@ -61,7 +62,7 @@ import {
   useDraggable,
   useDroppable,
 } from "@dnd-kit/react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   Braces,
@@ -85,6 +86,7 @@ import {
   FolderOpen,
   LoaderCircle,
   Paintbrush,
+  History,
   Package,
   PackagePlus,
   Save,
@@ -134,6 +136,7 @@ import {
   type EditorCodeSearchMatch,
   type EditorCodeSearchOptions,
 } from "./editor-code-search";
+import { EditorCodeHistoryPanel } from "./editor-code-history-panel";
 import { EditorCodeSearchPanel } from "./editor-code-search-panel";
 import {
   EditorCodeStatusPanel,
@@ -396,7 +399,12 @@ const EditorCodeWorkspaceContent = forwardRef<
   const [newFolderName, setNewFolderName] = useState("");
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
-  const [sideView, setSideView] = useState<"explorer" | "search">("explorer");
+  const [sideView, setSideView] = useState<
+    "explorer" | "search" | "history"
+  >("explorer");
+  const [selectedRevisionNumber, setSelectedRevisionNumber] = useState<
+    number | null
+  >(null);
   const [commandCenterMode, setCommandCenterMode] = useState<
     "closed" | "files" | "commands"
   >("closed");
@@ -1046,6 +1054,70 @@ const EditorCodeWorkspaceContent = forwardRef<
         error instanceof Error
           ? error.message
           : "Failed to prepare the starter theme",
+      );
+    },
+  });
+
+  /**
+   * The workspace's source history, and what one entry would restore.
+   *
+   * Both are read only while the panel is open: history is a place someone
+   * goes deliberately, and the plan describes the workspace as it stands, so
+   * holding a stale one would offer a rollback that no longer matches.
+   */
+  const revisionsQuery = useQuery({
+    ...storefrontThemeFileQueries.revisions(storefrontId, themeId),
+    enabled: sideView === "history",
+  });
+  const rollbackPreviewQuery = useQuery({
+    ...storefrontThemeFileQueries.rollbackPreview(
+      storefrontId,
+      themeId,
+      selectedRevisionNumber ?? 0,
+    ),
+    enabled: sideView === "history" && selectedRevisionNumber !== null,
+  });
+  /**
+   * Rollback replaces every file, so an unsaved edit would be destroyed
+   * without ever having been recorded anywhere. Saving first is the only way
+   * back from that, so it is a precondition rather than a warning.
+   */
+  const rollbackBlockedReason =
+    dirtyPaths.length > 0
+      ? `Save your open changes first — ${dirtyPaths.length === 1 ? "1 file has" : `${dirtyPaths.length} files have`} unsaved edits that a restore would discard.`
+      : null;
+  const rollbackMutation = useMutation({
+    mutationFn: async (revisionNumber: number) => {
+      const expectedSourceGeneration = rollbackPreviewQuery.data?.sourceGeneration;
+      if (expectedSourceGeneration === undefined) {
+        throw new Error("Reopen this version: its restore plan is out of date.");
+      }
+      const result = await rollbackStorefrontThemeRevision({
+        data: {
+          storefrontId,
+          themeId,
+          revisionNumber,
+          expectedSourceGeneration,
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      return result.data;
+    },
+    onSuccess: async (data) => {
+      // The workspace is now whatever the revision held, so every local draft
+      // for it is stale by definition. Reloading is what makes the editor and
+      // the store agree again.
+      setSelectedRevisionNumber(null);
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.all(),
+      });
+      toast.success(
+        `Restored ${data.files.length === 1 ? "1 file" : `${data.files.length} files`}. Build a preview before publishing.`,
+      );
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to restore the version",
       );
     },
   });
@@ -2763,6 +2835,19 @@ const EditorCodeWorkspaceContent = forwardRef<
         </button>
         <button
           type="button"
+          className={cn(
+            "relative flex size-9 items-center justify-center text-muted-foreground hover:text-foreground",
+            sideView === "history" &&
+              "text-foreground before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:bg-primary",
+          )}
+          aria-label="History"
+          title="History"
+          onClick={() => setSideView("history")}
+        >
+          <History className="size-5" />
+        </button>
+        <button
+          type="button"
           className="mt-auto flex size-9 items-center justify-center text-muted-foreground hover:text-foreground"
           aria-label="Command Palette"
           title="Command Palette (Ctrl+Shift+P)"
@@ -2781,7 +2866,11 @@ const EditorCodeWorkspaceContent = forwardRef<
           <div className="flex items-center gap-1.5 min-w-0">
             <Code2 className="size-3.5 text-primary shrink-0" />
             <span className="uppercase tracking-wider text-[11px] font-semibold text-foreground/80 truncate">
-              {sideView === "explorer" ? "Explorer" : "Search"}
+              {sideView === "explorer"
+                ? "Explorer"
+                : sideView === "search"
+                  ? "Search"
+                  : "History"}
             </span>
             {sideView === "explorer" ? (
               <span className="rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground shrink-0 leading-none">
@@ -2850,7 +2939,31 @@ const EditorCodeWorkspaceContent = forwardRef<
             </div>
           ) : null}
         </div>
-        {sideView === "search" ? (
+        {sideView === "history" ? (
+          <EditorCodeHistoryPanel
+            revisions={revisionsQuery.data?.revisions ?? []}
+            isLoading={revisionsQuery.isLoading}
+            error={
+              revisionsQuery.error instanceof Error
+                ? revisionsQuery.error.message
+                : null
+            }
+            selectedRevisionNumber={selectedRevisionNumber}
+            onSelectRevision={setSelectedRevisionNumber}
+            plan={rollbackPreviewQuery.data ?? null}
+            isPlanLoading={rollbackPreviewQuery.isLoading}
+            planError={
+              rollbackPreviewQuery.error instanceof Error
+                ? rollbackPreviewQuery.error.message
+                : null
+            }
+            onRollback={(revisionNumber) =>
+              rollbackMutation.mutate(revisionNumber)
+            }
+            isRollingBack={rollbackMutation.isPending}
+            blockedReason={rollbackBlockedReason}
+          />
+        ) : sideView === "search" ? (
           <EditorCodeSearchPanel
             files={searchFiles}
             onOpenMatch={(match: EditorCodeSearchMatch) =>

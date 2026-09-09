@@ -228,9 +228,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
    * to inspect and restyle it. Content fields stay empty because there is no
    * Document slot to write values into yet.
    */
+  const storedSection = selectionSection ?? documentSection;
   const selectedSection: typeof documentSection =
-    selectionSection ??
-    documentSection ??
+    storedSection ??
     (selection?.sectionId
       ? ({
           id: selection.sectionId,
@@ -239,6 +239,12 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           props: {},
         } as NonNullable<typeof documentSection>)
       : undefined);
+  /**
+   * A stand-in carries no values because none are stored for it. Saying so
+   * lets the Inspector offer only what the source patcher can write, instead
+   * of rendering a list editor over an empty object and discarding the edits.
+   */
+  const contentStore = storedSection ? "document" : "source";
 
   const [isStylesPreRendered, setIsStylesPreRendered] = useState(false);
   const isInspectorTab = tab === "styles" || tab === "content";
@@ -445,6 +451,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}`}
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
+              contentStore={contentStore}
               themeFiles={themeFiles}
               selection={selection}
               editableNodes={editableNodes}

@@ -2,6 +2,7 @@ import {
   getStorefrontThemeFile,
   listStorefrontThemeFiles,
   listStorefrontThemeRevisions,
+  previewStorefrontThemeRollback,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import { queryOptions } from "@tanstack/react-query";
 
@@ -62,6 +63,37 @@ export const storefrontThemeFileQueries = {
             limit,
             offset: (page - 1) * limit,
           },
+        });
+        if (!result.success) throw new Error(result.message);
+        return result.data;
+      },
+    }),
+
+  /**
+   * What rolling back to one revision would change.
+   *
+   * Keyed by revision so switching between two in the list does not refetch
+   * the one already looked at, and never cached across a workspace edit: the
+   * plan describes the workspace as it is right now.
+   */
+  rollbackPreview: (
+    storefrontId: string,
+    themeId: string,
+    revisionNumber: number,
+  ) =>
+    queryOptions({
+      queryKey: [
+        "storefront-theme-files",
+        storefrontId,
+        themeId,
+        "rollback-preview",
+        revisionNumber,
+      ] as const,
+      staleTime: 0,
+      gcTime: 0,
+      queryFn: async () => {
+        const result = await previewStorefrontThemeRollback({
+          data: { storefrontId, themeId, revisionNumber },
         });
         if (!result.success) throw new Error(result.message);
         return result.data;
