@@ -529,17 +529,25 @@ export const storefrontThemeDal = {
       },
     });
     const themeCapabilities = themeCapabilityState.capabilities;
-    // A stored ref that resolves to no capability is worse than no ref at all:
-    // the filter below answers "nothing is allowed here" and the write becomes
-    // an erasure. Section types are how a Theme names its components, so fall
-    // back to that rather than treating an unknown ref as a verdict.
+    // No ref and an unrecognised ref are different questions.
+    //
+    // A section written before refs existed names nothing, and the section type
+    // is how a Theme names its components, so that is a safe answer. A section
+    // that names `hero.unregistered-custom` has been answered already: this
+    // Theme has no such component, and resolving it to `hero.default` would
+    // check the incoming values against a component the document never named.
+    // So an unrecognised ref is refused rather than reinterpreted.
+    //
+    // This used to fall back in both cases, because an unresolved ref makes
+    // the filter below answer "nothing is allowed here" and turned a partial
+    // edit into an erasure. That erasure came from running the *stored* props
+    // through the same filter, which the guard below now prevents — the
+    // fallback was treating a symptom, and hid a real mismatch while doing it.
     const storedComponentRef = targetSection.componentRef ?? null;
-    const sectionTypeComponentRef =
-      themeCapabilityState.sectionComponentRefs[targetSection.type] ?? null;
     const resolvedComponentRef =
-      storedComponentRef && themeCapabilities[storedComponentRef]
-        ? storedComponentRef
-        : (sectionTypeComponentRef ?? storedComponentRef);
+      storedComponentRef ??
+      themeCapabilityState.sectionComponentRefs[targetSection.type] ??
+      null;
 
     const { enabled: propEnabled, ...restProps } = data.props;
     // Asset references are resolved against the library before anything is
@@ -981,7 +989,8 @@ export const storefrontThemeDal = {
 
     const now = new Date().toISOString();
     const templateUnchanged =
-      template.draftRevisionId === template.publishedRevisionId && !pendingShell;
+      template.draftRevisionId === template.publishedRevisionId &&
+      !pendingShell;
     const sourceUnchanged =
       template.publishedSourceRevisionId === sourceRevisionId;
     // Whether the Worker actually received this build, not just whether D1
@@ -1012,7 +1021,12 @@ export const storefrontThemeDal = {
           templateId: data.templateId,
           templateRevisionId: data.expectedDraftRevisionId,
           alsoPublish: pendingShell
-            ? [{ templateId: pendingShell.id, revisionId: pendingShell.revisionId }]
+            ? [
+                {
+                  templateId: pendingShell.id,
+                  revisionId: pendingShell.revisionId,
+                },
+              ]
             : undefined,
           createdBy: data.createdBy,
         });

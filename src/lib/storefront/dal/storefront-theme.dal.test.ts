@@ -1101,7 +1101,19 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
     expect(Object.keys(props)).toHaveLength(0);
   });
 
-  it("strictly rejects unrecognized componentRef on known section type (does not fall back to sectionType default)", async () => {
+  /**
+   * An unrecognised ref refuses the write without erasing what is stored.
+   *
+   * This used to assert that the section's props came back empty, which read
+   * as one rule and was really two: refuse the incoming values, *and* drop the
+   * ones already there. The first is the fail-closed boundary worth keeping —
+   * a ref this Theme does not know cannot validate anything, so nothing the
+   * client sent may be trusted. The second was an erasure: editing one word of
+   * a section whose ref had drifted deleted everything else it held. Stored
+   * content was validated when it was written and is not the client's claim to
+   * re-check, so it stays.
+   */
+  it("refuses incoming props for an unrecognized componentRef without erasing stored ones", async () => {
     sqlite.exec(`
       INSERT INTO storefront_theme_templates
         (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
@@ -1130,8 +1142,16 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
 
     expect(result).not.toBeNull();
     const props = result?.document.sections[0].props as any;
-    // Unregistered componentRef strictly returns {} (no fallback to hero.default)
-    expect(Object.keys(props)).toHaveLength(0);
+    // Nothing the client sent got through: not the field the component would
+    // have declared, and not the one it never would have.
+    expect(props.heading).toBe("Existing Heading");
+    expect(props.customProp).toBeUndefined();
+    expect(Object.keys(props)).toEqual(["heading"]);
+    // And the ref is still the one the document named — not resolved to
+    // `hero.default` behind the author's back.
+    expect(result?.document.sections[0].componentRef).toBe(
+      "hero.unregistered-custom",
+    );
   });
 
   it("preserves ALL starter template section content props across partial updates without data loss", async () => {

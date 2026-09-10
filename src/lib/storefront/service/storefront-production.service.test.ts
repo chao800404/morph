@@ -1,3 +1,14 @@
+// @vitest-environment node
+/**
+ * Runs outside jsdom on purpose.
+ *
+ * These are runtime transports: they build one `Request` from another, which
+ * copies the source's `AbortSignal`. Under jsdom the page gets jsdom's
+ * `AbortSignal` while `Request` still comes from undici, and undici rejects a
+ * signal it does not recognise — so `new Request(target, request)` throws for
+ * a reason that exists nowhere but the test environment. Workers have one
+ * realm and no DOM, and nothing here touches a document.
+ */
 import { describe, expect, it, vi } from "vitest";
 import { StorefrontProductionService } from "./storefront-production.service";
 import {

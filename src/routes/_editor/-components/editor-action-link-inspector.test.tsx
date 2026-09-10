@@ -547,3 +547,31 @@ describe("unified action fields", () => {
     );
   });
 });
+
+describe("choosing a page of this store", () => {
+  /**
+   * The picker used to be a field labelled "Page", and a test asserted that
+   * label. Both destination controls were then merged into one, so the picker
+   * now lives under the This store / External URL switch and that label is
+   * gone — and with it the only coverage the capability had. Assert the
+   * behaviour instead: a router-bound link must still be able to point at a
+   * real route, and must not be handed a free-text box for an address the
+   * router cannot take.
+   */
+  it("offers the store's routes to a router-bound destination", () => {
+    renderInspector(
+      { actionLabel: "Go", actionHref: "/about" },
+      routerHeroSource,
+    );
+
+    expect(screen.queryByText("No pages yet")).toBeNull();
+    expect(
+      screen.getByText(/can only point at a page of this store/),
+    ).toBeTruthy();
+    // The current destination is shown as the chosen route, not typed in.
+    expect(screen.getByText("/about")).toBeTruthy();
+    expect(
+      screen.queryByRole("textbox", { name: "Action Button path or URL" }),
+    ).toBeNull();
+  });
+});
