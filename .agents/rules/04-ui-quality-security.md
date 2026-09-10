@@ -231,6 +231,26 @@ GitHub CI / local validation 若尚未實際執行或無法取得結果，必須
 - 任何 production state migration 都要有 rollback。
 - 不可為了新架構直接丟棄既有 published storefront state。
 
+### 26.0 內容形狀的 migration 要寫成腳本
+
+改動元件宣告的欄位形狀（例如把平坦的 `actionHref` 收斂成一個 `link` 欄位）時，既有
+Document 不會自己跟上。元件讀不到舊鍵，就渲染預設值 —— **內容還在，只是沒有人在看它**，
+畫面上看起來像資料不見了，資料庫裡卻好端端的。
+
+- 這類遷移要寫成 `scripts/` 下可重複執行的腳本，不可只在開發機用手動 SQL 改一次。
+  `.wrangler/state/` 不在版控裡：換一台機器、重建資料庫，手動改的東西就沒了，
+  staging 與正式環境也永遠不會拿到。
+- 腳本必須 **idempotent**：已經是新形狀的文件原樣跳過，重跑不產生任何寫入。
+- **必須同時處理 draft revision。** Template 的 `document` 欄位不是編輯器與 runtime 實際
+  讀的東西 —— 它們讀 `draft_revision_id` 指向的 revision。只改 `document` 欄位，資料表看
+  起來對了，畫面卻還是舊的，而且沒有任何錯誤訊息。
+- Revision 不可竄改。需要遷移時**寫一筆新的 revision** 並移動 draft 指標，舊的原樣保留 ——
+  這同時就是 rollback 路徑。
+- 遠端資料庫無法直接開成 sqlite，腳本應能輸出 SQL 供
+  `wrangler d1 execute DATABASE --remote --file` 套用。
+
+現行實例：`pnpm migrate:content-links`（`scripts/migrate-content-link-fields.mjs`）。
+
 ### 26.1 Morph 目前的主要收斂方向
 
 目前新 storefront 工作應優先朝以下架構收斂：
