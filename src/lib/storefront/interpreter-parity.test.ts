@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import * as reactRouter from "@tanstack/react-router";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -53,7 +54,26 @@ const files = Array.from(
   ).values(),
 );
 
-const { loadModule, preloadPackages } = createThemeModuleLoader(files);
+// Handed the harness's own router rather than letting the loader resolve one:
+// `<Link>` reads the router from React context, and a second copy of the
+// library would leave that context empty however the provider is set up.
+const { loadModule, preloadPackages } = createThemeModuleLoader(files, {
+  packages: { "@tanstack/react-router": reactRouter },
+});
+
+/**
+ * Builds a router from a tree assembled at runtime.
+ *
+ * The router's generic types are written for a route tree the build generates
+ * and register into the library's own module declaration. This tree is put
+ * together here from the Theme's exported options instead, so the constructor
+ * is called through an untyped view rather than reshaping the test around
+ * codegen it does not use.
+ */
+const buildRuntimeRouter = createRouter as unknown as (options: {
+  routeTree: unknown;
+  history: unknown;
+}) => { load: () => Promise<void> };
 
 /**
  * Renders a component the way the build does: real TSX, real React.
@@ -61,17 +81,27 @@ const { loadModule, preloadPackages } = createThemeModuleLoader(files);
  * Compiled in process rather than through a temp directory so the comparison
  * has no filesystem or bundler state of its own to go stale.
  */
-function renderWithReact(
+async function renderWithReact(
   sourcePath: string,
   props: Record<string, unknown>,
-): string {
+): Promise<string> {
+  const Component = loadModule(sourcePath).default as React.ComponentType<
+    Record<string, unknown>
+  >;
+  // Rendered inside a router, because a component is free to use one. A theme
+  // that sends an in-store destination through `<Link>` is doing the ordinary
+  // thing, and a harness that could not render that would simply stop covering
+  // the components most worth covering.
+  const rootRoute = createRootRoute({
+    component: () => createElement(Component, props),
+  });
+  const router = buildRuntimeRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await router.load();
   return renderToStaticMarkup(
-    createElement(
-      loadModule(sourcePath).default as React.ComponentType<
-        Record<string, unknown>
-      >,
-      props,
-    ),
+    createElement(RouterProvider as never, { router } as never),
   );
 }
 
@@ -111,8 +141,8 @@ describe("interpreter and React render the same DOM", () => {
     const label = sourcePath.split("/").pop();
     const propsLabel = Object.keys(props).length ? " with props" : " with defaults";
 
-    it(`${label}${propsLabel}`, () => {
-      const fromReact = normalize(renderWithReact(sourcePath, props));
+    it(`${label}${propsLabel}`, async () => {
+      const fromReact = normalize(await renderWithReact(sourcePath, props));
       const fromInterpreter = normalize(
         renderWithInterpreter(sourcePath, props),
       );
@@ -126,20 +156,6 @@ describe("interpreter and React render the same DOM", () => {
     });
   }
 });
-
-/**
- * Builds a router from a tree assembled at runtime.
- *
- * The router's generic types are written for a route tree the build generates
- * and register into the library's own module declaration. This tree is put
- * together here from the Theme's exported options instead, so the constructor
- * is called through an untyped view rather than reshaping the test around
- * codegen it does not use.
- */
-const buildRuntimeRouter = createRouter as unknown as (options: {
-  routeTree: unknown;
-  history: unknown;
-}) => { load: () => Promise<void> };
 
 describe("interpreter and the real router agree about a whole route", () => {
   /**

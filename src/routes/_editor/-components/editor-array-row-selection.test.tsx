@@ -95,7 +95,10 @@ function rowSelection(): EditorSelectionDescriptor {
   } as EditorSelectionDescriptor;
 }
 
-function renderInspector(selection: EditorSelectionDescriptor) {
+function renderInspector(
+  selection: EditorSelectionDescriptor,
+  extra?: { onSwitchThemeLinkElement?: ReturnType<typeof vi.fn> },
+) {
   const onPropsChange = vi.fn();
   render(
     <EditorStyleInspector
@@ -112,6 +115,7 @@ function renderInspector(selection: EditorSelectionDescriptor) {
       themeFiles={themeFiles}
       selection={selection}
       onPropsChange={onPropsChange}
+      onSwitchThemeLinkElement={extra?.onSwitchThemeLinkElement}
     />,
   );
   return { onPropsChange };
@@ -123,13 +127,15 @@ describe("selecting one entry of a repeated field", () => {
 
     expect(screen.getByText("Label")).toBeTruthy();
     expect(screen.getByText("Destination")).toBeTruthy();
-    expect(screen.getByLabelText("Link destination mode")).toBeTruthy();
+    // The row's anchor is recognised, so the destination is a free address
+    // rather than the picker shown when the binding cannot be read.
+    expect(screen.getByLabelText("Destination path or URL")).toBeTruthy();
+    expect(screen.queryByLabelText("Link destination mode")).toBeNull();
   });
 
   it("writes the destination onto the selected row", () => {
     const { onPropsChange } = renderInspector(rowSelection());
 
-    fireEvent.click(screen.getByText("External URL"));
     fireEvent.blur(screen.getByLabelText("Destination path or URL"), {
       target: { value: "/pages/contact" },
     });
@@ -170,7 +176,6 @@ describe("selecting one entry of a repeated field", () => {
       />,
     );
 
-    fireEvent.click(screen.getByText("External URL"));
     fireEvent.blur(screen.getByLabelText("Destination path or URL"), {
       target: { value: "/pages/contact" },
     });
@@ -190,7 +195,6 @@ describe("selecting one entry of a repeated field", () => {
     // showing the old link.
     const { onPropsChange } = renderInspector(rowSelection());
 
-    fireEvent.click(screen.getByText("External URL"));
     fireEvent.blur(screen.getByLabelText("Destination path or URL"), {
       target: { value: "/pages/contact" },
     });
@@ -208,6 +212,37 @@ describe("selecting one entry of a repeated field", () => {
     expect(hasUndefined(written)).toBe(false);
   });
 
+  it("offers the switch between an anchor and a router Link", () => {
+    // "In store" and "External" are not two ways of typing an address: one is
+    // `<Link to>`, which resolves against this Theme's routes, and the other
+    // is `<a href>`, which takes anything. Choosing between them rewrites the
+    // element, so the control has to reach the source — the picker shown when
+    // the binding cannot be read only changes which input appears.
+    const onSwitchThemeLinkElement = vi.fn();
+    renderInspector(rowSelection(), { onSwitchThemeLinkElement });
+
+    expect(screen.getByLabelText("Link destination kind")).toBeTruthy();
+    fireEvent.click(screen.getByText("In store"));
+
+    expect(onSwitchThemeLinkElement).toHaveBeenCalledWith(
+      "src/components/Nav.tsx",
+      "link",
+      "router",
+    );
+  });
+
+  it("scopes to one entry when the platform annotated only the row", () => {
+    // With no markers of the author's own, the platform names the first
+    // element in the map after the row it stands for — `navItems.1`, with no
+    // field. That is still a selection of one entry, and treating it as a
+    // selection of the whole list offered every row at once.
+    renderInspector({ ...rowSelection(), fieldKey: null, fieldPath: "navItems.1" } as EditorSelectionDescriptor);
+
+    expect(screen.getByText("2 / 2")).toBeTruthy();
+    expect(screen.getByDisplayValue("About")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Shop")).toBeNull();
+  });
+
   it("shows the selected row rather than every sibling", () => {
     renderInspector(rowSelection());
 
@@ -220,6 +255,29 @@ describe("selecting one entry of a repeated field", () => {
     expect(labelInputs).not.toContain("Shop");
     expect(screen.getByText("2 / 2")).toBeTruthy();
     expect(screen.queryByText("Add entry")).toBeNull();
+  });
+
+  it("offers the whole list when the container holding it is selected", () => {
+    // Selecting the `<nav>` marks no field of its own. The panel used to fall
+    // back to the one hand-written control a descendant's marker happened to
+    // match — a single "Label" standing in for a list of two.
+    renderInspector({
+      ...rowSelection(),
+      kind: "navigation",
+      tagName: "nav",
+      fieldKey: null,
+      fieldPath: null,
+      descendantFields: [
+        { fieldKey: "label", fieldPath: "navItems.0.label", sectionId: null },
+        { fieldKey: "label", fieldPath: "navItems.1.label", sectionId: null },
+      ],
+    } as EditorSelectionDescriptor);
+
+    expect(screen.getByText("Navigation")).toBeTruthy();
+    expect(screen.getByDisplayValue("Shop")).toBeTruthy();
+    expect(screen.getByDisplayValue("About")).toBeTruthy();
+    // One control per entry, not one standing for all of them.
+    expect(screen.getAllByText("Destination")).toHaveLength(2);
   });
 
   it("still lists every entry when the component itself is selected", () => {

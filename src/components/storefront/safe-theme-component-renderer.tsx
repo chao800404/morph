@@ -637,7 +637,19 @@ function evaluateExpression(
       if (node.operator === "!") return !value;
       if (node.operator === "-") return -Number(value);
       if (node.operator === "+") return Number(value);
-      return undefined;
+      // `typeof` is how a component asks what shape a prop arrived in — a
+      // field promoted from one type to another can hold either — so a theme
+      // reaches for it as soon as one component serves two shapes.
+      if (node.operator === "typeof") return typeof value;
+      if (node.operator === "void") return undefined;
+      // The same reasoning as the binary operators below: returning
+      // `undefined` for an operator this does not implement makes
+      // `typeof x === "string"` false for a string, and the branch it guarded
+      // silently becomes the other one. The build would take the other branch,
+      // so the preview would be wrong about a page that renders correctly.
+      throw new SafeThemeRuntimeError(
+        `The ${node.operator} operator is not supported by the safe Design preview.`,
+      );
     }
     case "BinaryExpression": {
       const left = evaluateExpression(node.left, env, context);
@@ -1334,6 +1346,33 @@ function themeSourceLocationOf(
   return `${filePath}:${line}:${column + 1}`;
 }
 
+/**
+ * Reattaches a `key` written on a component element, and keeps it off the props.
+ *
+ * A host element keeps its key for free: `createElement` reads one out of the
+ * props it is handed. A component does not — the interpreter renders it to a
+ * node here and returns that node — so a key the author wrote on the call site
+ * would be dropped, and a mapped list would render without keys. React also
+ * never passes `key` through to a component, so forwarding it as a prop would
+ * let it reach a spread and, from there, the DOM.
+ */
+function componentPropsWithoutKey(
+  props: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!("key" in props)) return props;
+  const { key: _key, ...rest } = props;
+  return rest;
+}
+
+function withJsxKey(
+  props: Record<string, unknown>,
+  node: ReactNode,
+): ReactNode {
+  const key = props.key;
+  if (key === undefined || key === null || !isValidElement(node)) return node;
+  return cloneElement(node, { key: String(key) });
+}
+
 function renderJsxElement(
   node: any,
   env: Record<string, unknown>,
@@ -1421,15 +1460,18 @@ function renderJsxElement(
 
   const localFunction = env[`__component:${name}`];
   if (localFunction) {
-    return renderFunctionComponent(
-      localFunction,
-      { ...props, children },
-      env,
-      context,
-      String(env.__sourcePath ?? ""),
-      name,
-      slotSection ?? undefined,
-      itemFieldPaths,
+    return withJsxKey(
+      props,
+      renderFunctionComponent(
+        localFunction,
+        { ...componentPropsWithoutKey(props), children },
+        env,
+        context,
+        String(env.__sourcePath ?? ""),
+        name,
+        slotSection ?? undefined,
+        itemFieldPaths,
+      ),
     );
   }
 
@@ -1445,14 +1487,17 @@ function renderJsxElement(
       `Component <${name}> is not a local Theme Workspace component.`,
     );
   }
-  return renderModuleComponent(
-    imported.path,
-    imported.imported,
-    { ...props, children },
-    context,
-    slotSection ?? undefined,
-    readArrayItemContext(env),
-    itemFieldPaths,
+  return withJsxKey(
+    props,
+    renderModuleComponent(
+      imported.path,
+      imported.imported,
+      { ...componentPropsWithoutKey(props), children },
+      context,
+      slotSection ?? undefined,
+      readArrayItemContext(env),
+      itemFieldPaths,
+    ),
   );
 }
 

@@ -46,6 +46,8 @@ import {
 } from "@/lib/storefront/ast/tailwind-token-engine";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
+  isThemeLinkFieldBound,
+  resolveLinkFieldKeysForRenderedField,
   patchThemeLinkBinding,
   resolveThemeLinkBinding,
   type ThemeLinkBinding,
@@ -732,6 +734,19 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       themeFiles,
       section.componentRef ?? undefined,
     );
+  /**
+   * The component the section is made of, whatever element was clicked.
+   *
+   * `componentPath` follows the selection, which for an element rendered by a
+   * shared component is that component's file. A question about how this
+   * section binds one of its own fields has to be asked of the section's
+   * component: the shared one has never heard of the field.
+   */
+  const sectionComponentPath = getComponentFilePath(
+    section.type,
+    themeFiles,
+    section.componentRef ?? undefined,
+  );
   const activeSourceLocation = selection?.sourceLocation ?? null;
   // Shared with the AST patch and the live preview so the Inspector never
   // enables a control the patch cannot apply, and never disables one it could.
@@ -831,13 +846,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   };
 
   const componentFile = themeFiles?.find((f) => f.path === componentPath);
+  const sectionComponentSource = themeFiles?.find(
+    (file) => file.path === sectionComponentPath,
+  )?.content;
   const legacyActionLinkBinding = useMemo(
-    () => resolveLegacyActionLinkBinding(componentFile?.content),
-    [componentFile?.content],
+    () => resolveLegacyActionLinkBinding(sectionComponentSource),
+    [sectionComponentSource],
+  );
+  /**
+   * Whether the destination reaches anything at all.
+   *
+   * A component that hands the field to another component has bound it; which
+   * element results is that component's decision, not something to warn about
+   * or offer to rewrite here.
+   */
+  const actionLinkIsBound = useMemo(
+    () => isThemeLinkFieldBound(sectionComponentSource, "actionHref"),
+    [sectionComponentSource],
   );
   const canRepairLegacyActionLink = useMemo(
-    () => canRepairLegacyActionLinkBinding(componentFile?.content),
-    [componentFile?.content],
+    () => canRepairLegacyActionLinkBinding(sectionComponentSource),
+    [sectionComponentSource],
   );
   const parsedMeta = useMemo(
     () =>
@@ -865,9 +894,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     return (
       (section.componentRef ? capabilities[section.componentRef] : null) ??
       (componentPath ? capabilities[componentPath] : null) ??
+      // Last, the section's own component. `componentPath` follows the
+      // selection, so clicking a button rendered by a shared link component
+      // asks that shared file what this section may edit — and it declares
+      // nothing, because the fields belong to the section's component. Without
+      // this the panel fell back to guessing fields from default props and the
+      // declared link never appeared.
+      (sectionComponentPath ? capabilities[sectionComponentPath] : null) ??
       null
     );
-  }, [componentPath, section.componentRef, themeFiles]);
+  }, [componentPath, sectionComponentPath, section.componentRef, themeFiles]);
   const resolvedContentFields = useMemo<
     Record<string, ThemeContentFieldDefinition>
   >(() => {
@@ -948,8 +984,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    */
   const selectedArrayRow = useMemo(() => {
     if (!isSelectedNode || !activeFieldPath) return null;
-    const [fieldKey, rawIndex, ...rest] = activeFieldPath.split(".");
-    if (!fieldKey || rest.length === 0) return null;
+    // `items.2.label` names a field inside a row; `items.2` names the row
+    // itself, which is what the platform annotates when the author writes no
+    // markers of their own. Both are a selection of one entry, and refusing the
+    // shorter one made an unmarked list offer every row at once.
+    const [fieldKey, rawIndex] = activeFieldPath.split(".");
+    if (!fieldKey || rawIndex === undefined) return null;
     const index = Number(rawIndex);
     if (!Number.isInteger(index) || index < 0) return null;
     const definition = resolvedContentFields[fieldKey];
@@ -963,11 +1003,121 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    * hand-written control for that key must stand down rather than render a
    * second, differently-bound copy of it.
    */
-  const selectedFieldOwnedByArrayRow = Boolean(
-    selectedField && selectedArrayRow?.rowKeys.has(selectedField),
-  );
+  /**
+   * Declared fields the selection reaches through the elements beneath it.
+   *
+   * Selecting a container — the `<nav>` around a menu — marks no field of its
+   * own, so nothing declared passed the filter and the panel fell back to the
+   * one hand-written control a descendant's marker happened to match: a single
+   * "Label" standing for a list of three. The path a descendant carries names
+   * the field it belongs to, so the list itself is what to offer.
+   */
+  const descendantRootFieldKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const binding of descendantFields) {
+      const root = binding.fieldPath?.split(".")[0] ?? binding.fieldKey;
+      if (root) keys.add(root);
+    }
+    return keys;
+  }, [descendantFields]);
+  /**
+   * Row keys already rendered by a list this panel is showing.
+   *
+   * Those rows carry their own controls, so the hand-written control for the
+   * same key has to stand down rather than render a second, differently-bound
+   * copy beside them.
+   */
+  const rowKeysCoveredByArrays = useMemo(() => {
+    const keys = new Set<string>(selectedArrayRow?.rowKeys ?? []);
+    for (const fieldKey of descendantRootFieldKeys) {
+      const definition = resolvedContentFields[fieldKey];
+      if (!definition || definition.type !== "array") continue;
+      for (const rowKey of Object.keys(arrayRowFields(definition) ?? {})) {
+        keys.add(rowKey);
+      }
+    }
+    return keys;
+  }, [descendantRootFieldKeys, resolvedContentFields, selectedArrayRow]);
   const isDeclaredContentField = (fieldKey: string) =>
     Boolean(resolvedContentFields[fieldKey]);
+  /**
+   * A declared action link supersedes stale scalar destinations retained in
+   * older Documents. Keep those values intact, but expose only fields the
+   * current component declares. Its label uses the standard text control.
+   */
+  const hasLegacyActionHrefField =
+    isDeclaredContentField("actionHref") ||
+    (!isDeclaredContentField("action") &&
+      (Object.prototype.hasOwnProperty.call(props, "actionHref") ||
+        descendantFieldKeys.has("actionHref")));
+  /**
+   * The declared link fields that belong to whatever the author has selected.
+   *
+   * Selecting a button's label should still show where the button goes, and
+   * the two are related by structure rather than by name: they meet on one JSX
+   * element, one as its content and one as the destination it was handed. This
+   * asks the source that question, so a component naming its pair `ctaLabel`
+   * and `ctaLink` is answered as well as one naming it `actionLabel` and
+   * `action`.
+   */
+  const selectedElementLinkFieldKeys = useMemo(() => {
+    const linkKeys = Object.entries(resolvedContentFields)
+      .filter(([, definition]) => definition.type === "link")
+      .map(([fieldKey]) => fieldKey);
+    if (linkKeys.length === 0) return new Set<string>();
+    // The selection is not always the field itself. Clicking the wrapper
+    // around a button selects a container that binds nothing and reports the
+    // button's label as a descendant, so asking only about `selectedField`
+    // gave up exactly where the panel is showing that label and owes the
+    // author its destination.
+    const renderedKeys = new Set<string>(descendantFieldKeys);
+    if (selectedField) renderedKeys.add(selectedField);
+    const found = new Set<string>();
+    for (const renderedKey of renderedKeys) {
+      for (const linkKey of resolveLinkFieldKeysForRenderedField(
+        sectionComponentSource,
+        renderedKey,
+        linkKeys,
+      )) {
+        found.add(linkKey);
+      }
+    }
+    return found;
+  }, [
+    descendantFieldKeys,
+    resolvedContentFields,
+    sectionComponentSource,
+    selectedField,
+  ]);
+  /**
+   * The declared fields this panel is drawing right now.
+   *
+   * Named once because two lists need the same answer: the declared list draws
+   * these, and the descendant list must not draw them a second time. While the
+   * rule lived inline in one of them, selecting a container gave the author two
+   * identical boxes for one field and nothing to say which counted.
+   */
+  const declaredFieldKeysRendered = new Set(
+    declaredContentFields
+      .filter(
+        ([fieldKey, definition]) =>
+          !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
+          isWritableContentField(definition) &&
+          (!isSelectedNode ||
+            selectedField === fieldKey ||
+            selectedArrayRow?.fieldKey === fieldKey ||
+            // The selected element's own key counts as well. Selecting a
+            // button reports the element as `action` while the field under the
+            // cursor is its label, so the destination field — the whole reason
+            // the button is a link — was filtered out of the panel exactly
+            // when it was being edited.
+            activeElementKey === fieldKey ||
+            (definition.type === "link" &&
+              selectedElementLinkFieldKeys.has(fieldKey)) ||
+            descendantRootFieldKeys.has(fieldKey)),
+      )
+      .map(([fieldKey]) => fieldKey),
+  );
   const declaredContentFieldLabel = (fieldKey: string, fallback: string) =>
     resolvedContentFields[fieldKey]?.label ?? fallback;
   const declaredContentFieldMaxLength = (fieldKey: string) => {
@@ -1852,6 +2002,30 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     [handleFieldChange],
   );
 
+  const actionLabelInput = (
+    <Input
+      key={contentFieldInputKey("actionLabel")}
+      defaultValue={String(selectedFieldValue("actionLabel") ?? "")}
+      onInput={(e) =>
+        onPreviewSelectionField?.(
+          "actionLabel",
+          nestedFieldPath("actionLabel"),
+          e.currentTarget.value,
+        )
+      }
+      onBlur={(e) =>
+        handleTextFieldBlur(
+          "actionLabel",
+          selectedFieldValue("actionLabel"),
+          e.currentTarget.value,
+        )
+      }
+      disabled={disabled}
+      placeholder="Button text"
+      className="h-7 text-xs"
+    />
+  );
+
   return (
     <div className="min-w-0 space-y-3 p-3 text-xs">
       {/* Component Header & Code Bridge */}
@@ -1990,8 +2164,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               .map(([fieldKey, definition]) => definition.label ?? fieldKey)
               .join(", ")}{" "}
             {unwritableContentFields.length === 1 ? "is" : "are"} edited in
-            code. This component is not part of a page's stored content, so
-            only its plain text fields can be saved here.
+            code. This component is not part of a page's stored content, so only
+            its plain text fields can be saved here.
           </p>
         </div>
       ) : null}
@@ -2022,13 +2196,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               {orderContentBlocks(
                 [
                   ...declaredContentFields
-                    .filter(
-                      ([fieldKey, definition]) =>
-                        !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
-                        isWritableContentField(definition) &&
-                        (!isSelectedNode ||
-                          selectedField === fieldKey ||
-                          selectedArrayRow?.fieldKey === fieldKey),
+                    .filter(([fieldKey]) =>
+                      declaredFieldKeysRendered.has(fieldKey),
                     )
                     .map(([fieldKey, definition]) => ({
                       key: fieldKey,
@@ -2626,7 +2795,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   {
                     key: contentOrderKey("label"),
                     node: showField("label") &&
-                      !selectedFieldOwnedByArrayRow &&
+                      !rowKeysCoveredByArrays.has("label") &&
                       ("label" in props ||
                         descendantFieldKeys.has("label") ||
                         isDeclaredContentField("label") ||
@@ -2788,44 +2957,68 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       ),
                   },
                   {
-                    key: contentOrderKey("actionLabel", "actionHref", "action"),
-                    node: showField("actionLabel", "actionHref", "action") &&
+                    key: contentOrderKey("actionLabel", "actionHref"),
+                    node:
+                      showField("actionLabel", "actionHref") &&
                       ("actionLabel" in props ||
-                        descendantFieldKeys.has("actionLabel")) && (
-                        <div
-                          className={cn(
-                            inspectorContentCardClassName,
+                        descendantFieldKeys.has("actionLabel")) &&
+                      (hasLegacyActionHrefField ? (
+                        <InspectorLinkField
+                          key={`${contentFieldInputKey("actionLabel")}:${contentFieldInputKey("actionHref")}`}
+                          label="Action Button"
+                          value={{
+                            href: String(
+                              selectedFieldValue("actionHref") ?? "",
+                            ),
+                            target: normalizeThemeLinkTarget(
+                              selectedFieldValue("actionTarget"),
+                            ),
+                          }}
+                          pages={internalLinkPages}
+                          binding={legacyActionLinkBinding}
+                          disabled={disabled}
+                          isFocused={
                             activeFieldKey === "actionLabel" ||
-                              activeFieldKey === "actionHref" ||
-                              activeElementKey === "action"
-                              ? "border-primary/40 bg-primary/5 ring-1 ring-primary/30"
-                              : "bg-muted/20",
-                          )}
-                        >
-                          {/* Header carries the destination switch the way Media Image
-                      carries its position select: the card's one mode control
-                      sits beside the title, not inside the field grid. */}
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                              <Link className="size-3 text-muted-foreground" />
-                              <span>Action Button</span>
-                            </span>
-                            {legacyActionLinkBinding !== "unknown" ? (
-                              <LinkDestinationKindSwitch
-                                binding={legacyActionLinkBinding}
-                                disabled={disabled || !componentPath}
-                                onSwitch={(target) => {
-                                  if (!componentPath) return;
-                                  void onSwitchThemeLinkElement?.(
-                                    componentPath,
+                            activeFieldKey === "actionHref" ||
+                            activeElementKey === "action"
+                          }
+                          showAdvancedOptions={false}
+                          showTarget={
+                            hasLegacyActionHrefField &&
+                            legacyActionLinkBinding !== "unknown"
+                          }
+                          onChange={(next) => {
+                            if (
+                              next.href !==
+                              String(selectedFieldValue("actionHref") ?? "")
+                            ) {
+                              handleTextFieldBlur(
+                                "actionHref",
+                                selectedFieldValue("actionHref"),
+                                next.href,
+                              );
+                            }
+                            if (
+                              next.target !==
+                              normalizeThemeLinkTarget(
+                                selectedFieldValue("actionTarget"),
+                              )
+                            ) {
+                              handleFieldChange("actionTarget", next.target);
+                            }
+                          }}
+                          onSwitchBinding={
+                            sectionComponentPath && onSwitchThemeLinkElement
+                              ? (target) => {
+                                  void onSwitchThemeLinkElement(
+                                    sectionComponentPath,
                                     "actionHref",
                                     target,
                                   );
-                                }}
-                              />
-                            ) : null}
-                          </div>
-                          <div className="space-y-2">
+                                }
+                              : undefined
+                          }
+                          labelControl={
                             <div
                               className={inspectorFieldControlGroupClassName}
                             >
@@ -2837,31 +3030,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                               >
                                 Label
                               </label>
-                              <Input
-                                key={contentFieldInputKey("actionLabel")}
-                                defaultValue={String(
-                                  selectedFieldValue("actionLabel") ?? "",
-                                )}
-                                onInput={(e) =>
-                                  onPreviewSelectionField?.(
-                                    "actionLabel",
-                                    nestedFieldPath("actionLabel"),
-                                    e.currentTarget.value,
-                                  )
-                                }
-                                onBlur={(e) =>
-                                  handleTextFieldBlur(
-                                    "actionLabel",
-                                    selectedFieldValue("actionLabel"),
-                                    e.currentTarget.value,
-                                  )
-                                }
-                                disabled={disabled}
-                                placeholder="Button text"
-                                className="h-7 text-xs"
-                              />
+                              {actionLabelInput}
                             </div>
-                            {legacyActionLinkBinding === "unknown" ? (
+                          }
+                          destinationOverride={
+                            legacyActionLinkBinding === "unknown" &&
+                            !actionLinkIsBound ? (
                               <div className="rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 p-2 text-[10px] leading-relaxed text-muted-foreground">
                                 <p className="font-medium text-foreground">
                                   Link destination is not connected to the
@@ -2880,7 +3054,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                   ) to enable the correct control here.
                                 </p>
                                 <div className="mt-1.5 flex flex-wrap gap-1">
-                                  {componentPath &&
+                                  {sectionComponentPath &&
                                   canRepairLegacyActionLink &&
                                   onRepairThemeLinkBinding ? (
                                     <Button
@@ -2890,7 +3064,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                       className="h-6 px-1.5 text-[10px]"
                                       onClick={() =>
                                         void onRepairThemeLinkBinding(
-                                          componentPath,
+                                          sectionComponentPath,
                                           "actionHref",
                                         )
                                       }
@@ -2899,14 +3073,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                       Connect actionHref
                                     </Button>
                                   ) : null}
-                                  {componentPath && onJumpToCode ? (
+                                  {sectionComponentPath && onJumpToCode ? (
                                     <Button
                                       type="button"
                                       variant="ghost"
                                       size="xs"
                                       className="h-6 px-1.5 text-[10px]"
                                       onClick={() =>
-                                        onJumpToCode(componentPath)
+                                        onJumpToCode(sectionComponentPath)
                                       }
                                     >
                                       <Code2 className="mr-1 size-3" />
@@ -2915,131 +3089,20 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                   ) : null}
                                 </div>
                               </div>
-                            ) : legacyActionLinkBinding === "router" ? (
-                              <div
-                                className={inspectorFieldControlGroupClassName}
-                              >
-                                <label
-                                  className={cn(
-                                    inspectorFieldLabelClassName,
-                                    "text-muted-foreground",
-                                  )}
-                                >
-                                  Page
-                                </label>
-                                <Select
-                                  value={
-                                    internalLinkPages.some(
-                                      (page) =>
-                                        page.path ===
-                                        String(
-                                          selectedFieldValue("actionHref") ??
-                                            "",
-                                        ),
-                                    )
-                                      ? String(selectedFieldValue("actionHref"))
-                                      : ""
-                                  }
-                                  onValueChange={(value) =>
-                                    handleFieldChange("actionHref", value)
-                                  }
-                                  disabled={
-                                    disabled || internalLinkPages.length === 0
-                                  }
-                                >
-                                  <InspectorSelectTrigger className="h-7 w-full">
-                                    <SelectValue
-                                      placeholder={
-                                        internalLinkPages.length === 0
-                                          ? "No pages yet"
-                                          : "Choose a page"
-                                      }
-                                    />
-                                  </InspectorSelectTrigger>
-                                  <InspectorSelectContent>
-                                    {internalLinkPages.map((page) => (
-                                      <InspectorSelectItem
-                                        key={page.path}
-                                        value={page.path}
-                                      >
-                                        {page.label}
-                                      </InspectorSelectItem>
-                                    ))}
-                                  </InspectorSelectContent>
-                                </Select>
-                              </div>
-                            ) : (
-                              <div
-                                className={inspectorFieldControlGroupClassName}
-                              >
-                                <label
-                                  className={cn(
-                                    inspectorFieldLabelClassName,
-                                    "text-muted-foreground",
-                                  )}
-                                >
-                                  Link path / URL
-                                </label>
-                                <Input
-                                  key={contentFieldInputKey("actionHref")}
-                                  defaultValue={String(
-                                    selectedFieldValue("actionHref") ?? "",
-                                  )}
-                                  onBlur={(e) =>
-                                    handleTextFieldBlur(
-                                      "actionHref",
-                                      selectedFieldValue("actionHref"),
-                                      e.currentTarget.value,
-                                    )
-                                  }
-                                  disabled={disabled}
-                                  placeholder="/about or https://example.com"
-                                  className="h-7 text-xs font-mono"
-                                  aria-label="Action Button path or URL"
-                                />
-                              </div>
-                            )}
-                          </div>
-
-                          {legacyActionLinkBinding !== "unknown" ? (
-                            <div>
-                              <div
-                                className={inspectorFieldControlGroupClassName}
-                              >
-                                <label
-                                  className={cn(
-                                    inspectorFieldLabelClassName,
-                                    "text-muted-foreground",
-                                  )}
-                                >
-                                  Open in
-                                </label>
-                                <Select
-                                  value={normalizeThemeLinkTarget(
-                                    selectedFieldValue("actionTarget"),
-                                  )}
-                                  onValueChange={(value) =>
-                                    handleFieldChange("actionTarget", value)
-                                  }
-                                  disabled={disabled}
-                                >
-                                  <InspectorSelectTrigger className="h-7 w-full">
-                                    <SelectValue placeholder="Same tab" />
-                                  </InspectorSelectTrigger>
-                                  <InspectorSelectContent>
-                                    <InspectorSelectItem value="_self">
-                                      Same tab
-                                    </InspectorSelectItem>
-                                    <InspectorSelectItem value="_blank">
-                                      New tab
-                                    </InspectorSelectItem>
-                                  </InspectorSelectContent>
-                                </Select>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      ),
+                            ) : undefined
+                          }
+                        />
+                      ) : (
+                        <InspectorField
+                          label={declaredContentFieldLabel(
+                            "actionLabel",
+                            "Action Button",
+                          )}
+                          isFocused={activeFieldKey === "actionLabel"}
+                        >
+                          {actionLabelInput}
+                        </InspectorField>
+                      )),
                   },
                   {
                     key: contentOrderKey("image", "imageSrc", "imageAlt"),
@@ -3224,7 +3287,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 descendantFields
                   .filter(
                     (binding) =>
-                      !SPECIALIZED_CONTENT_FIELD_KEYS.has(binding.fieldKey),
+                      !SPECIALIZED_CONTENT_FIELD_KEYS.has(binding.fieldKey) &&
+                      // Not one the declared list has already drawn. Selecting
+                      // a container reports its fields as descendants while
+                      // the declaration renders the same names, so an author
+                      // was handed two identical boxes for one field and no
+                      // way to tell which one counted.
+                      !declaredFieldKeysRendered.has(binding.fieldKey),
                   )
                   .map((binding) => {
                     const value = binding.fieldPath
@@ -4524,6 +4593,10 @@ function InspectorLinkField({
   isFocused,
   onChange,
   onSwitchBinding,
+  labelControl,
+  destinationOverride,
+  showTarget = true,
+  showAdvancedOptions = true,
 }: {
   label: string;
   description?: string;
@@ -4534,6 +4607,12 @@ function InspectorLinkField({
   disabled?: boolean;
   isFocused?: boolean;
   onChange: (next: ThemeLinkValue) => void;
+  labelControl?: React.ReactNode;
+  /** An unavailable destination replaces controls while preserving binding guards. */
+  destinationOverride?: React.ReactNode;
+  showTarget?: boolean;
+  /** Scalar legacy fields cannot persist structured link metadata. */
+  showAdvancedOptions?: boolean;
   /** Rewrites the element between `<Link>` and `<a>`. */
   onSwitchBinding?: (target: "router" | "anchor") => void;
 }) {
@@ -4553,6 +4632,7 @@ function InspectorLinkField({
       : binding === "anchor"
         ? "external"
         : fallbackMode;
+  const showDestination = destinationOverride === undefined;
   const showModeToggle = binding === "unknown";
   const patch = (changes: Partial<ThemeLinkValue>) =>
     onChange({ ...value, ...changes });
@@ -4571,7 +4651,7 @@ function InspectorLinkField({
           <Link className="size-3 text-muted-foreground" />
           <span>{label}</span>
         </span>
-        {showModeToggle ? (
+        {showDestination && showModeToggle ? (
           <InspectorSegmentedSwitch
             value={mode}
             options={[
@@ -4584,7 +4664,7 @@ function InspectorLinkField({
               setFallbackMode(next as "internal" | "external")
             }
           />
-        ) : onSwitchBinding ? (
+        ) : showDestination && onSwitchBinding ? (
           <LinkDestinationKindSwitch
             binding={binding}
             disabled={disabled}
@@ -4593,14 +4673,18 @@ function InspectorLinkField({
         ) : null}
       </div>
 
-      {!onSwitchBinding && binding === "router" ? (
+      {labelControl}
+
+      {showDestination && !onSwitchBinding && binding === "router" ? (
         <p className="text-[10px] leading-relaxed text-muted-foreground">
           This link is rendered by the router, so it can only point at a page of
           this store.
         </p>
       ) : null}
 
-      {mode === "internal" ? (
+      {!showDestination ? (
+        destinationOverride
+      ) : mode === "internal" ? (
         <Select
           value={
             pages.some((page) => page.path === value.href) ? value.href : ""
@@ -4634,86 +4718,107 @@ function InspectorLinkField({
         />
       )}
 
-      <div className="grid grid-cols-2 gap-2">
-        <div className={inspectorFieldControlGroupClassName}>
-          <label
-            className={cn(
-              inspectorFieldLabelClassName,
-              "text-muted-foreground",
-            )}
-          >
-            Open in
-          </label>
-          <Select
-            value={normalizeThemeLinkTarget(value.target)}
-            onValueChange={(next) =>
-              patch({ target: next === "_blank" ? "_blank" : "_self" })
-            }
-            disabled={disabled}
-          >
-            <InspectorSelectTrigger className="h-7 w-full">
-              <SelectValue placeholder="Same tab" />
-            </InspectorSelectTrigger>
-            <InspectorSelectContent>
-              <InspectorSelectItem value="_self">Same tab</InspectorSelectItem>
-              <InspectorSelectItem value="_blank">New tab</InspectorSelectItem>
-            </InspectorSelectContent>
-          </Select>
-        </div>
-        <div className={inspectorFieldControlGroupClassName}>
-          <label
-            className={cn(
-              inspectorFieldLabelClassName,
-              "text-muted-foreground",
-            )}
-          >
-            Tooltip
-          </label>
-          <Input
-            defaultValue={value.title ?? ""}
-            onBlur={(event) => patch({ title: event.currentTarget.value })}
-            disabled={disabled}
-            placeholder="title"
-            className="h-7 text-xs"
-            aria-label={`${label} tooltip`}
-          />
-        </div>
-      </div>
-
-      <div className={inspectorFieldControlGroupClassName}>
-        <label
-          className={cn(inspectorFieldLabelClassName, "text-muted-foreground")}
+      {showDestination && (showTarget || showAdvancedOptions) ? (
+        <div
+          className={showAdvancedOptions ? "grid grid-cols-2 gap-2" : undefined}
         >
-          Accessible name
-        </label>
-        <Input
-          defaultValue={value.ariaLabel ?? ""}
-          onBlur={(event) => patch({ ariaLabel: event.currentTarget.value })}
-          disabled={disabled}
-          placeholder="Describes the link when its text does not"
-          className="h-7 text-xs"
-          aria-label={`${label} accessible name`}
-        />
-      </div>
+          {showTarget ? (
+            <div className={inspectorFieldControlGroupClassName}>
+              <label
+                className={cn(
+                  inspectorFieldLabelClassName,
+                  "text-muted-foreground",
+                )}
+              >
+                Open in
+              </label>
+              <Select
+                value={normalizeThemeLinkTarget(value.target)}
+                onValueChange={(next) =>
+                  patch({ target: next === "_blank" ? "_blank" : "_self" })
+                }
+                disabled={disabled}
+              >
+                <InspectorSelectTrigger className="h-7 w-full">
+                  <SelectValue placeholder="Same tab" />
+                </InspectorSelectTrigger>
+                <InspectorSelectContent>
+                  <InspectorSelectItem value="_self">
+                    Same tab
+                  </InspectorSelectItem>
+                  <InspectorSelectItem value="_blank">
+                    New tab
+                  </InspectorSelectItem>
+                </InspectorSelectContent>
+              </Select>
+            </div>
+          ) : null}
+          {showAdvancedOptions ? (
+            <div className={inspectorFieldControlGroupClassName}>
+              <label
+                className={cn(
+                  inspectorFieldLabelClassName,
+                  "text-muted-foreground",
+                )}
+              >
+                Tooltip
+              </label>
+              <Input
+                defaultValue={value.title ?? ""}
+                onBlur={(event) => patch({ title: event.currentTarget.value })}
+                disabled={disabled}
+                placeholder="title"
+                className="h-7 text-xs"
+                aria-label={`${label} tooltip`}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
-      {/* rel="noopener noreferrer" is added automatically for a new tab, so
+      {showDestination && showAdvancedOptions ? (
+        <>
+          <div className={inspectorFieldControlGroupClassName}>
+            <label
+              className={cn(
+                inspectorFieldLabelClassName,
+                "text-muted-foreground",
+              )}
+            >
+              Accessible name
+            </label>
+            <Input
+              defaultValue={value.ariaLabel ?? ""}
+              onBlur={(event) =>
+                patch({ ariaLabel: event.currentTarget.value })
+              }
+              disabled={disabled}
+              placeholder="Describes the link when its text does not"
+              className="h-7 text-xs"
+              aria-label={`${label} accessible name`}
+            />
+          </div>
+
+          {/* rel="noopener noreferrer" is added automatically for a new tab, so
           nofollow is the only part of rel an author decides. */}
-      <InspectorToggleField
-        label="Tell search engines not to follow (nofollow)"
-        checked={value.nofollow === true}
-        disabled={disabled}
-        onCheckedChange={(next) => patch({ nofollow: next })}
-      />
+          <InspectorToggleField
+            label="Tell search engines not to follow (nofollow)"
+            checked={value.nofollow === true}
+            disabled={disabled}
+            onCheckedChange={(next) => patch({ nofollow: next })}
+          />
 
-      {/* Browsers ignore download across origins, so it is only offered for a
+          {/* Browsers ignore download across origins, so it is only offered for a
           destination inside this store. */}
-      {!isExternal ? (
-        <InspectorToggleField
-          label="Download instead of opening"
-          checked={value.download === true}
-          disabled={disabled}
-          onCheckedChange={(next) => patch({ download: next })}
-        />
+          {!isExternal ? (
+            <InspectorToggleField
+              label="Download instead of opening"
+              checked={value.download === true}
+              disabled={disabled}
+              onCheckedChange={(next) => patch({ download: next })}
+            />
+          ) : null}
+        </>
       ) : null}
 
       {description ? (

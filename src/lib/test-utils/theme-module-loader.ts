@@ -9,6 +9,32 @@ export type ThemeSourceFile = { path: string; content: string };
 /** Attributes the editor injects for its own use; the build never emits them. */
 const EDITOR_ATTRIBUTE = /\s(?:data-(?:morph|storefront|tsd)-[a-z-]+)="[^"]*"/g;
 
+/** One tag's attributes, in the order they were written. */
+const TAG_WITH_ATTRIBUTES =
+  /<([a-zA-Z][^\s/>]*)((?:\s+[^\s=/>]+(?:=(?:"[^"]*"|'[^']*'|[^\s>]+))?)+)(\s*\/?)>/g;
+const ATTRIBUTE = /[^\s=/>]+(?:=(?:"[^"]*"|'[^']*'|[^\s>]+))?/g;
+
+/**
+ * Orders each tag's attributes so two renderers can be compared by meaning.
+ *
+ * Attribute order carries nothing in HTML, and the two paths have no reason to
+ * agree on it: a component that computes an attribute and then spreads the
+ * rest emits them in one order, and one that spreads first emits the other.
+ * Comparing the text literally reported that as a divergence — a real
+ * difference would have looked exactly the same, so the check was reporting
+ * noise at the precise place it was meant to be trusted.
+ */
+function withSortedAttributes(html: string): string {
+  return html.replace(
+    TAG_WITH_ATTRIBUTES,
+    (whole, tag: string, attributes: string, tail: string) => {
+      const parts = attributes.match(ATTRIBUTE);
+      if (!parts) return whole;
+      return `<${tag} ${[...parts].sort().join(" ")}${tail}>`;
+    },
+  );
+}
+
 /**
  * Reduces rendered markup to what both paths are expected to agree on.
  *
@@ -17,12 +43,14 @@ const EDITOR_ATTRIBUTE = /\s(?:data-(?:morph|storefront|tsd)-[a-z-]+)="[^"]*"/g;
  * to. Everything else is compared literally.
  */
 export function normalizeThemeMarkup(html: string): string {
-  return html
-    .replace(/<link[^>]*>|<meta[^>]*>|<title>[\s\S]*?<\/title>/g, "")
-    .replace(EDITOR_ATTRIBUTE, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  return withSortedAttributes(
+    html
+      .replace(/<link[^>]*>|<meta[^>]*>|<title>[\s\S]*?<\/title>/g, "")
+      .replace(EDITOR_ATTRIBUTE, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
 }
 
 /**
@@ -32,11 +60,28 @@ export function normalizeThemeMarkup(html: string): string {
  * filesystem and cache state of their own, and a parity check has to be able to
  * blame the interpreter rather than the harness.
  */
-export function createThemeModuleLoader(files: readonly ThemeSourceFile[]) {
+export function createThemeModuleLoader(
+  files: readonly ThemeSourceFile[],
+  options?: {
+    /**
+     * Packages the harness hands over rather than resolving itself.
+     *
+     * Resolving a package independently produces a second copy of it, and a
+     * library whose API is React context — the router is — then hands the
+     * Theme a context the harness's own provider never fills. `<Link>` read a
+     * null router and threw, so a component using one could not be compared at
+     * all. Passing the harness's own instance in makes them the same module by
+     * construction rather than by hoping two resolutions agree.
+     */
+    packages?: Readonly<Record<string, unknown>>;
+  },
+) {
   const hostRequire = createRequire(import.meta.url);
   const approved = new Set(DEFAULT_APPROVED_DEPENDENCIES);
   const cache = new Map<string, Record<string, unknown>>();
-  const preloaded = new Map<string, unknown>();
+  const preloaded = new Map<string, unknown>(
+    Object.entries(options?.packages ?? {}),
+  );
 
   /** Imports ESM-only approved packages so the loader can hand them over. */
   async function preloadPackages(ids: readonly string[]) {

@@ -2,6 +2,11 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "morph-attached",
+      "url": "http://localhost:3000",
+      "port": 3000
+    },
+    {
       "name": "morph",
       "runtimeExecutable": "node",
       "runtimeArgs": [
@@ -10,7 +15,8 @@
         "--port",
         "3000"
       ],
-      "port": 3000
+      "port": 3000,
+      "autoPort": false
     }
   ]
 }

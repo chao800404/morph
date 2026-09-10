@@ -110,8 +110,15 @@ function renderInspector(
     filePath: string,
     fieldKey: string,
   ) => Promise<boolean> | boolean,
+  /** Extra workspace files, and the file the selected element came from. */
+  extra?: {
+    files?: { path: string; content: string; mimeType: string }[];
+    selectionSourceFilePath?: string;
+    selection?: Partial<EditorSelectionDescriptor>;
+  },
 ) {
   const onPropsChange = vi.fn();
+  const onPreviewSelectionField = vi.fn();
   const themeFiles = componentSource
     ? ([
         ...routeFiles,
@@ -126,13 +133,20 @@ function renderInspector(
     <EditorStyleInspector
       view="content"
       section={heroSection(props as TestSection["props"])}
-      themeFiles={themeFiles}
-      selection={actionSelection()}
+      themeFiles={
+        [...(themeFiles as never[]), ...(extra?.files ?? [])] as never
+      }
+      selection={{
+        ...actionSelection(),
+        sourceFilePath: extra?.selectionSourceFilePath ?? null,
+        ...extra?.selection,
+      }}
       onPropsChange={onPropsChange}
+      onPreviewSelectionField={onPreviewSelectionField}
       onRepairThemeLinkBinding={onRepairThemeLinkBinding}
     />,
   );
-  return { onPropsChange };
+  return { onPropsChange, onPreviewSelectionField };
 }
 
 describe("resolveInternalLinkPages", () => {
@@ -161,7 +175,7 @@ describe("Action Button link controls", () => {
       routerHeroSource,
     );
 
-    for (const label of ["Label", "Page", "Open in"]) {
+    for (const label of ["Label", "Open in"]) {
       const labelElement = screen.getByText(label);
       expect(labelElement.tagName).toBe("LABEL");
       expect(labelElement.parentElement?.className).toContain("space-y-1");
@@ -384,5 +398,152 @@ describe("switching a link between in-store and external", () => {
     expect(
       screen.getByText("In store").closest("button")?.hasAttribute("disabled"),
     ).toBe(false);
+  });
+});
+
+describe("a destination handed to a shared link component", () => {
+  /**
+   * The component decides the element from the address, so there is no
+   * element here to switch and nothing to repair — but the field is bound,
+   * and saying otherwise sends an author to fix working code.
+   */
+  const viaComponent = `import ThemeLink from "../morph/link";
+
+export const contentFields = {
+  actionLabel: { type: "text", label: "Action label" },
+  actionHref: { type: "url", label: "Action link" },
+} as const;
+
+export default function Hero({ actionLabel = "Go", actionHref = "/products" }) {
+  return <ThemeLink link={actionHref}>{actionLabel}</ThemeLink>;
+}`;
+
+  it("does not report the link as disconnected", () => {
+    renderInspector({}, viaComponent);
+
+    expect(
+      screen.queryByText(/not connected to the editable field/),
+    ).toBeNull();
+  });
+
+  it("does not offer to rewrite the component", () => {
+    renderInspector({}, viaComponent);
+
+    expect(
+      screen.queryByRole("button", { name: /Connect actionHref/ }),
+    ).toBeNull();
+  });
+
+  it("asks the section's component even when the element came from another file", () => {
+    // Clicking the anchor selects the shared component's file, which has never
+    // heard of `actionHref`. Asking it whether the section binds the field
+    // gets "no" every time, for every section that uses a shared component.
+    renderInspector({}, viaComponent, undefined, {
+      files: [
+        {
+          path: "src/morph/link.tsx",
+          content:
+            "export default function ThemeLink({ link, ...rest }) {\n  return <a href={link} {...rest} />;\n}",
+          mimeType: "text/typescript",
+        },
+      ],
+      selectionSourceFilePath: "src/morph/link.tsx",
+    });
+
+    expect(
+      screen.queryByText(/not connected to the editable field/),
+    ).toBeNull();
+  });
+});
+
+describe("unified action fields", () => {
+  it("uses the shared destination mode control for a scalar shared-component link", () => {
+    const { onPropsChange } = renderInspector(
+      { actionLabel: "Go", actionHref: "/about" },
+      `import ThemeLink from "../morph/link";
+       export default function Hero({ actionLabel, actionHref }) {
+         return <ThemeLink link={actionHref}>{actionLabel}</ThemeLink>;
+       }`,
+    );
+    expect(screen.getByText("This store")).toBeTruthy();
+    fireEvent.click(screen.getByText("External URL"));
+    fireEvent.blur(
+      screen.getByRole("textbox", { name: "Action Button path or URL" }),
+      {
+        target: { value: "https://example.com" },
+      },
+    );
+    expect(onPropsChange).toHaveBeenLastCalledWith({
+      actionLabel: "Go",
+      actionHref: "https://example.com",
+    });
+    expect(screen.queryByText("Tooltip")).toBeNull();
+  });
+
+  it("shows the declared action beside its selected label while ignoring stale scalar destinations", () => {
+    const { onPropsChange, onPreviewSelectionField } = renderInspector(
+      {
+        actionLabel: "Go",
+        actionHref: "/obsolete",
+        action: { href: "/about" },
+      },
+      `import ThemeLink from "../morph/link";
+       export const contentFields = {
+         actionLabel: { type: "text", label: "Action label" },
+         action: { type: "link", label: "Action link" },
+       };
+       export default function Hero({ actionLabel, action }) {
+         return <ThemeLink link={action}>{actionLabel}</ThemeLink>;
+       }`,
+      undefined,
+      {
+        selection: {
+          kind: "text",
+          tagName: "a",
+          elementKey: "heading",
+          fieldKey: "actionLabel",
+          fieldPath: "actionLabel",
+          descendantFields: [],
+        },
+        selectionSourceFilePath: "src/morph/link.tsx",
+        files: [
+          {
+            path: "src/morph/link.tsx",
+            content:
+              "export default function ThemeLink({link, children}) { return <a href={link.href}>{children}</a>; }",
+            mimeType: "text/typescript",
+          },
+        ],
+      },
+    );
+    expect(screen.getByText("Action link")).toBeTruthy();
+    expect(screen.queryByText("Action Button")).toBeNull();
+    expect(screen.queryByDisplayValue("/obsolete")).toBeNull();
+    const label = screen.getByDisplayValue("Go");
+    expect(label.closest('[data-slot="inspector-content-field"]')).toBeTruthy();
+    fireEvent.input(label, { target: { value: "Explore" } });
+    expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "actionLabel",
+      null,
+      "Explore",
+    );
+    expect(onPropsChange).not.toHaveBeenCalled();
+    fireEvent.blur(label);
+    expect(onPropsChange).toHaveBeenLastCalledWith({
+      actionLabel: "Explore",
+      actionHref: "/obsolete",
+      action: { href: "/about" },
+    });
+    fireEvent.click(screen.getByText("External URL"));
+    fireEvent.blur(
+      screen.getByRole("textbox", { name: "Action link path or URL" }),
+      { target: { value: "https://example.com" } },
+    );
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        actionHref: "/obsolete",
+        action: expect.objectContaining({ href: "https://example.com" }),
+      }),
+    );
   });
 });

@@ -26,8 +26,15 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  *     `layout` template document, which the shell reads through the same
  *     `content("slot")` contract a route uses and the runtime merges into
  *     every path.
+ * 18: the starter stops writing its own `data-storefront-field` markers, which
+ *     the renderer derives, and routes every destination through a shared
+ *     `src/morph/link.tsx` so each entry picks `<Link>` or `<a>` from its own
+ *     address instead of the whole list sharing one element.
+ * 19: `src/morph/content-fields.ts` states the shape a `contentFields`
+ *     declaration has to take, so a mistake in one is reported where it is
+ *     written rather than becoming a field that never appears.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 17;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 19;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

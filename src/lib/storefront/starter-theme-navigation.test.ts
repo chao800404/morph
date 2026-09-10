@@ -6,6 +6,7 @@ import { resolveThemeLinksInSlotValues } from "./theme-link";
 import {
   STARTER_THEME_FOOTER_SOURCE,
   STARTER_THEME_HEADER_SOURCE,
+  STARTER_THEME_LINK_MODULE_SOURCE,
 } from "./starter-theme-v3-files";
 
 /**
@@ -20,7 +21,16 @@ function render(
   props: Record<string, unknown> = {},
 ) {
   const result = renderSafeThemeComponent({
-    files: [{ path, content: source }],
+    // The shared destination component travels with the starter, so a render
+    // of one component in isolation still has to be given the module it
+    // imports — the same way the build resolves it.
+    files: [
+      { path, content: source },
+      {
+        path: "src/morph/link.tsx",
+        content: STARTER_THEME_LINK_MODULE_SOURCE,
+      },
+    ],
     sourcePath: path,
     componentName,
     props: resolveThemeLinksInSlotValues(props),

@@ -243,7 +243,14 @@ export const LEGACY_STARTER_THEME_HEADER_SOURCE = `export default function Heade
 }
 `;
 
-export const STARTER_THEME_HEADER_SOURCE = `export type HeaderLink = {
+/**
+ * Header of the generation that wrote its own field markers.
+ *
+ * Every `data-storefront-field` in it is one the platform now derives, so the
+ * attributes said nothing the renderer could not work out — while making the
+ * component look as though the editor required bookkeeping from its author.
+ */
+export const LEGACY_STARTER_THEME_HEADER_FIELD_MARKED_SOURCE = `export type HeaderLink = {
   href?: string;
   target?: "_self" | "_blank";
   rel?: string;
@@ -322,6 +329,302 @@ export default function Header({
       >
         {cartLabel}
       </a>
+    </header>
+  );
+}
+`;
+
+/**
+ * The shape a component's `contentFields` declaration has to take.
+ *
+ * Shipped as a type rather than left to documentation because the declaration
+ * is validated where the workspace is read, not where it is written: a
+ * mistyped key becomes a field that never appears, with nothing said at the
+ * place that caused it. Declaring it against this puts the error under the
+ * author's cursor instead.
+ */
+export const STARTER_THEME_CONTENT_FIELDS_TYPES_SOURCE = `/**
+ * The shape of a component's \`contentFields\` declaration.
+ *
+ * A component states what an author may edit by exporting \`contentFields\`. The
+ * platform validates that declaration when it reads the workspace, so a typo
+ * in it becomes a field that silently never appears rather than an error where
+ * it was written. Declaring the shape here moves that feedback into the editor:
+ *
+ * \`\`\`ts
+ * export const contentFields = {
+ *   heading: { type: "text", label: "Heading" },
+ * } as const satisfies ThemeContentFields;
+ * \`\`\`
+ *
+ * \`as const\` first, \`satisfies\` second: the assertion keeps the literal types
+ * the component's own props can be derived from, and the check confirms the
+ * shape without widening what was written.
+ */
+
+/** Text shown beside the control, and the hint under it. */
+type Described = Readonly<{
+  label?: string;
+  description?: string;
+}>;
+
+/** A single line of text. */
+export type ThemeTextContentField = Described &
+  Readonly<{ type: "text"; maxLength?: number }>;
+
+/** Several lines of text. */
+export type ThemeTextareaContentField = Described &
+  Readonly<{ type: "textarea"; maxLength?: number }>;
+
+/**
+ * A bare address, stored as the string the author typed.
+ *
+ * Prefer \`link\` for anything rendered as a link: it carries the target and the
+ * rel alongside the address, which a plain string cannot.
+ */
+export type ThemeUrlContentField = Described &
+  Readonly<{ type: "url"; maxLength?: number }>;
+
+/**
+ * A destination, with how to open it.
+ *
+ * One field rather than separate \`href\`, \`target\` and \`title\` keys: they are
+ * one decision and are edited together, so a repeated row can hold a whole
+ * link instead of coordinating several sibling keys.
+ */
+export type ThemeLinkContentField = Described & Readonly<{ type: "link" }>;
+
+/** Where a media field may take its value from. */
+type MediaSource = Readonly<{
+  /** Allow an address typed by the author. Defaults to true. */
+  allowExternal?: boolean;
+  /** Allow a file chosen from the store's library. Defaults to true. */
+  allowAsset?: boolean;
+}>;
+
+export type ThemeImageContentField = Described &
+  MediaSource &
+  Readonly<{ type: "image" }>;
+
+export type ThemeVideoContentField = Described &
+  MediaSource &
+  Readonly<{ type: "video" }>;
+
+export type ThemeNumberContentField = Described &
+  Readonly<{
+    type: "number";
+    min?: number;
+    max?: number;
+    /** Must be greater than zero. */
+    step?: number;
+  }>;
+
+export type ThemeBooleanContentField = Described & Readonly<{ type: "boolean" }>;
+
+/** One choice offered by a \`select\`. Values must be unique within the field. */
+export type ThemeSelectOption = Readonly<{ label: string; value: string }>;
+
+export type ThemeSelectContentField = Described &
+  Readonly<{ type: "select"; options: readonly ThemeSelectOption[] }>;
+
+/**
+ * Every field a repeated row may contain.
+ *
+ * A row may not itself contain a list. A list of lists cannot be presented so
+ * that an author can tell which level they are editing, and nesting for layout
+ * belongs in the component's TSX rather than in its content shape.
+ */
+export type ThemeScalarContentField =
+  | ThemeTextContentField
+  | ThemeTextareaContentField
+  | ThemeUrlContentField
+  | ThemeLinkContentField
+  | ThemeImageContentField
+  | ThemeVideoContentField
+  | ThemeNumberContentField
+  | ThemeBooleanContentField
+  | ThemeSelectContentField;
+
+type ArrayBounds = Readonly<{
+  minRows?: number;
+  /** At most 200. */
+  maxRows?: number;
+}>;
+
+/**
+ * A repeated group of fields — a menu, a list of cards, a set of FAQ entries.
+ *
+ * The row shape comes from exactly one place: \`fields\` when the row is written
+ * in this same file, or \`of\` when it is a component of its own. Accepting both
+ * would leave which one wins to be discovered by experiment.
+ */
+export type ThemeArrayContentField = Described &
+  ArrayBounds &
+  Readonly<{
+    type: "array";
+    /** Row shape declared here, keyed by field name. */
+    fields: Readonly<Record<string, ThemeScalarContentField>>;
+    of?: never;
+  }>;
+
+export type ThemeArrayOfComponentContentField = Described &
+  ArrayBounds &
+  Readonly<{
+    type: "array";
+    /** Relative path to the component that renders one row, e.g. \`"./Card"\`. */
+    of: string;
+    fields?: never;
+  }>;
+
+/** Any field a component may declare. */
+export type ThemeContentField =
+  | ThemeScalarContentField
+  | ThemeArrayContentField
+  | ThemeArrayOfComponentContentField;
+
+/**
+ * A whole \`contentFields\` declaration.
+ *
+ * Keys are the component's own prop names: a field named \`heading\` edits the
+ * \`heading\` prop, and nothing has to be registered anywhere for the two to
+ * meet. A name must start with a letter and hold only letters, digits and
+ * underscores.
+ */
+export type ThemeContentFields = Readonly<Record<string, ThemeContentField>>;
+`;
+
+/**
+ * The destination component every starter link goes through.
+ *
+ * Kept out of `components/` because it is not a section: nothing renders it as
+ * a slot, and offering it in the section picker would present a link as a
+ * thing a page can be built from.
+ */
+export const STARTER_THEME_LINK_MODULE_SOURCE = `import type { AnchorHTMLAttributes } from "react";
+import { Link } from "@tanstack/react-router";
+
+/** A destination as the editor's link field stores it. */
+export type ThemeLinkDestination = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+/**
+ * Everything an anchor accepts, minus the three parts the destination owns.
+ *
+ * The component decides the element, so it decides how the address reaches it:
+ * one of the two branches has no href at all. Leaving those three out of the
+ * props is what stops a caller setting one directly and quietly disagreeing
+ * with the destination beside it. Everything else — className, aria, a data
+ * attribute the editor wants to override — is forwarded untouched.
+ */
+export type ThemeLinkProps = Omit<
+  AnchorHTMLAttributes<HTMLAnchorElement>,
+  "href" | "target" | "rel"
+> & {
+  link?: ThemeLinkDestination;
+  [dataAttribute: \`data-\${string}\`]: unknown;
+};
+
+/**
+ * One destination, rendered with whichever element it actually needs.
+ *
+ * An address that leaves this store cannot go through the router, and a page
+ * of this store should not force a full reload. The choice is per destination,
+ * so it belongs to the value rather than to the markup — writing it once here
+ * means every menu, button and footer link decides it the same way.
+ *
+ * Everything else it is given is forwarded untouched, so the editor's field
+ * markers, the className and any aria attribute reach the real element.
+ */
+export default function ThemeLink({ link, children, ...rest }: ThemeLinkProps) {
+  const destination = link ?? {};
+  const href = destination.href ?? "";
+  const isExternal = href.startsWith("http://") || href.startsWith("https://");
+
+  return isExternal ? (
+    <a href={href} target={destination.target} rel={destination.rel} {...rest}>
+      {children}
+    </a>
+  ) : (
+    <Link to={href} {...rest}>
+      {children}
+    </Link>
+  );
+}
+`;
+
+export const STARTER_THEME_HEADER_SOURCE = `import type { ThemeContentFields } from "../morph/content-fields";
+import ThemeLink from "../morph/link";
+
+export type HeaderLink = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+export type HeaderNavItem = {
+  label?: string;
+  link?: HeaderLink;
+};
+
+export type HeaderProps = {
+  storeName?: string;
+  navItems?: HeaderNavItem[];
+  cartLabel?: string;
+  cartLink?: HeaderLink;
+};
+
+export const contentFields = {
+  storeName: { type: "text", label: "Store name", maxLength: 80 },
+  navItems: {
+    type: "array",
+    label: "Navigation",
+    fields: {
+      label: { type: "text", label: "Label", maxLength: 40 },
+      link: { type: "link", label: "Destination" },
+    },
+  },
+  cartLabel: { type: "text", label: "Cart label", maxLength: 40 },
+  cartLink: { type: "link", label: "Cart link" },
+} as const satisfies ThemeContentFields;
+
+export default function Header({
+  storeName = "Online Store",
+  navItems = [
+    { label: "Shop", link: { href: "/collections/all" } },
+    { label: "About", link: { href: "/pages/about" } },
+    { label: "Journal", link: { href: "/blogs/journal" } },
+  ],
+  cartLabel = "Cart (0)",
+  cartLink = { href: "/cart" },
+}: HeaderProps) {
+  return (
+    <header
+      className="flex h-16 items-center justify-between border-b border-neutral-200 bg-stone-50 px-5 sm:px-8"
+    >
+      <span className="font-serif text-lg font-semibold tracking-tight">
+        {storeName}
+      </span>
+      <nav
+        className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
+        aria-label="Storefront navigation"
+      >
+        {navItems.map((item) => (
+          <span key={item.label}>
+            <ThemeLink link={item.link} className="hover:text-neutral-950">
+              {item.label}
+            </ThemeLink>
+          </span>
+        ))}
+      </nav>
+      <ThemeLink
+        link={cartLink}
+        className="text-xs text-neutral-600 hover:text-neutral-950"
+      >
+        {cartLabel}
+      </ThemeLink>
     </header>
   );
 }
@@ -1331,6 +1634,16 @@ export const STARTER_THEME_V4_NEW_FILES = [
 ] as const;
 
 export const STARTER_THEME_V3_NEW_FILES = [
+  {
+    path: "src/morph/content-fields.ts",
+    mimeType: "text/typescript",
+    content: STARTER_THEME_CONTENT_FIELDS_TYPES_SOURCE,
+  },
+  {
+    path: "src/morph/link.tsx",
+    mimeType: "text/typescript",
+    content: STARTER_THEME_LINK_MODULE_SOURCE,
+  },
   {
     path: "src/components/EditorialIntro.tsx",
     mimeType: "text/typescript",

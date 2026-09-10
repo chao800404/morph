@@ -121,5 +121,14 @@ export function renderThemeRouterLink(
   }
   const safeHref = sanitizeThemeLinkHref(target);
   if (safeHref !== undefined) anchorProps.href = safeHref;
-  return createElement("a", anchorProps, children);
+  // Spread rather than pass the array through: the interpreter hands a
+  // component its children as one value, so `<Link><div/><div/></Link>` arrives
+  // as a two-element array. Passed along whole it becomes a single array child
+  // — a list, in React's eyes, whose entries were never given keys — and every
+  // link with more than one child in it warns.
+  return createElement(
+    "a",
+    anchorProps,
+    ...(Array.isArray(children) ? children : [children]),
+  );
 }

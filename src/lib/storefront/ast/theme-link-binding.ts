@@ -25,7 +25,18 @@ function expressionMentions(node: any, name: string, depth = 0): boolean {
     case "Identifier":
       return node.name === name;
     case "MemberExpression":
-      return expressionMentions(node.object, name, depth + 1);
+      // The property counts, not only the root identifier. A destination
+      // rendered inside a repeated field arrives as `item.link.href`, where
+      // the field's name is a property and the root is the row variable — so
+      // matching the root alone found nothing, the binding read as `unknown`,
+      // and the panel fell back to a picker that switches which input is shown
+      // instead of the one that rewrites `<a>` into `<Link>`.
+      return (
+        (node.computed !== true &&
+          node.property?.type === "Identifier" &&
+          node.property.name === name) ||
+        expressionMentions(node.object, name, depth + 1)
+      );
     case "LogicalExpression":
     case "BinaryExpression":
       return (
@@ -63,7 +74,11 @@ function walk(node: any, visit: (node: any) => void, depth = 0): void {
   }
   if (typeof node.type === "string") visit(node);
   for (const key of Object.keys(node)) {
-    if (key === "loc" || key === "leadingComments" || key === "trailingComments") {
+    if (
+      key === "loc" ||
+      key === "leadingComments" ||
+      key === "trailingComments"
+    ) {
       continue;
     }
     walk(node[key], visit, depth + 1);
@@ -98,9 +113,12 @@ export function resolveThemeLinkBinding(
     return "unknown";
   }
 
-  let binding: ThemeLinkBinding = "unknown";
+  // Every element the field reaches, not the first one found. A theme may
+  // choose the element per row — a `<Link>` for a page of this store and an
+  // `<a>` for an address that leaves it — and answering with whichever came
+  // first would state one of them as the answer for all.
+  const bindings = new Set<Exclude<ThemeLinkBinding, "unknown">>();
   walk(ast.program, (node) => {
-    if (binding !== "unknown") return;
     if (node.type !== "JSXOpeningElement") return;
     const tag = elementName(node);
     for (const attribute of node.attributes ?? []) {
@@ -116,12 +134,127 @@ export function resolveThemeLinkBinding(
       // `to` is the router's; `href` on a lowercase tag is a real anchor. A
       // capitalised component taking `href` is a wrapper around one, so it is
       // read the same way.
-      binding = attributeName === "to" ? "router" : "anchor";
-      if (tag === "a") binding = "anchor";
+      bindings.add(attributeName === "to" && tag !== "a" ? "router" : "anchor");
       return;
     }
   });
-  return binding;
+  // Disagreement is not a tie to break: the source decides per element, so the
+  // panel has no single element to switch and must say so rather than offer a
+  // control that would rewrite only one branch.
+  return bindings.size === 1 ? [...bindings][0]! : "unknown";
+}
+
+/**
+ * Whether a destination field reaches anything that renders it.
+ *
+ * `resolveThemeLinkBinding` answers *which* element renders a destination, and
+ * says `unknown` both when nothing does and when a component in between
+ * decides. Those two look identical to it and are opposites to an author: one
+ * is a link that goes nowhere, the other is a link whose element is simply
+ * chosen somewhere else. Reporting the second as the first told authors their
+ * working link was broken and offered to "repair" it by rewriting the
+ * component that was already doing the right thing.
+ */
+export function isThemeLinkFieldBound(
+  sourceCode: string | null | undefined,
+  fieldKey: string,
+): boolean {
+  if (typeof sourceCode !== "string" || sourceCode.length > MAX_SOURCE_BYTES) {
+    return false;
+  }
+  if (!sourceCode.includes(fieldKey)) return false;
+
+  let ast;
+  try {
+    ast = parseAst(sourceCode);
+  } catch {
+    return false;
+  }
+
+  let bound = false;
+  walk(ast, (node) => {
+    if (bound) return;
+    if (node.type !== "JSXOpeningElement") return;
+    for (const attribute of node.attributes ?? []) {
+      // Any attribute, not only `to` and `href`: a component names the prop
+      // it takes a destination on, and the platform does not own that name.
+      if (
+        attribute?.type === "JSXAttribute" &&
+        expressionMentions(attribute.value, fieldKey)
+      ) {
+        bound = true;
+        return;
+      }
+    }
+  });
+  return bound;
+}
+
+/**
+ * Which of `candidateKeys` a component binds on the element that renders
+ * `renderedFieldKey`.
+ *
+ * The panel needs this to answer one question: the author has selected a
+ * button's label — where does that button go? Pairing the names (`actionLabel`
+ * with `action`) answers it for one spelling and no other, so a component
+ * naming them `ctaLabel` and `ctaLink` walks into the same wall. The source
+ * already states the relationship: the two fields meet on one JSX element, one
+ * as its content and one as the destination it was handed. Reading that is the
+ * general answer, and it needs no agreement about names.
+ *
+ * "Renders" means the field appears in the element's children or in one of its
+ * attributes, so `<ThemeLink link={cta}>{ctaLabel}</ThemeLink>` and
+ * `<ThemeLink link={cta} label={ctaLabel} />` both resolve.
+ */
+export function resolveLinkFieldKeysForRenderedField(
+  sourceCode: string | null | undefined,
+  renderedFieldKey: string,
+  candidateKeys: readonly string[],
+): string[] {
+  if (
+    typeof sourceCode !== "string" ||
+    sourceCode.length > MAX_SOURCE_BYTES ||
+    candidateKeys.length === 0 ||
+    !sourceCode.includes(renderedFieldKey)
+  ) {
+    return [];
+  }
+
+  let ast;
+  try {
+    ast = parseAst(sourceCode);
+  } catch {
+    return [];
+  }
+
+  const found = new Set<string>();
+  walk(ast, (node) => {
+    if (node.type !== "JSXElement") return;
+    const attributes = node.openingElement?.attributes ?? [];
+
+    const rendersField =
+      (node.children ?? []).some((child: any) =>
+        child?.type === "JSXExpressionContainer"
+          ? expressionMentions(child.expression, renderedFieldKey)
+          : false,
+      ) ||
+      attributes.some(
+        (attribute: any) =>
+          attribute?.type === "JSXAttribute" &&
+          expressionMentions(attribute.value, renderedFieldKey),
+      );
+    if (!rendersField) return;
+
+    for (const attribute of attributes) {
+      if (attribute?.type !== "JSXAttribute") continue;
+      for (const key of candidateKeys) {
+        // A field is not the destination of the element it is the content of.
+        if (key === renderedFieldKey) continue;
+        if (expressionMentions(attribute.value, key)) found.add(key);
+      }
+    }
+  });
+  return [...found];
 }
 
 const ROUTER_MODULE = "@tanstack/react-router";
@@ -137,10 +270,7 @@ type LinkElementSite = {
   binding: ThemeLinkBinding;
 };
 
-function findLinkElementSites(
-  ast: any,
-  fieldKey: string,
-): LinkElementSite[] {
+function findLinkElementSites(ast: any, fieldKey: string): LinkElementSite[] {
   const sites: LinkElementSite[] = [];
   walk(ast.program, (node) => {
     if (node.type !== "JSXElement") return;
