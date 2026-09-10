@@ -772,11 +772,20 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // Restricted to this section: a selected parent can span several components,
   // and two instances of one component expose the same field names. Editing
   // through an unfiltered list would write to whichever instance came first.
-  const descendantFields = (selection?.descendantFields ?? []).filter(
-    (binding) => binding.sectionId === null || binding.sectionId === section.id,
+  const descendantFields = useMemo(
+    () =>
+      (selection?.descendantFields ?? []).filter(
+        (binding) =>
+          binding.sectionId === null || binding.sectionId === section.id,
+      ),
+    [section.id, selection?.descendantFields],
   );
-  const descendantFieldKeys = new Set(
-    descendantFields.map((binding) => binding.fieldKey),
+  // Memoized because a `useMemo` downstream lists this among its dependencies,
+  // and a Set rebuilt on every render is a new value every time — which made
+  // that memo re-parse the component's source on each render, defeating it.
+  const descendantFieldKeys = useMemo(
+    () => new Set(descendantFields.map((binding) => binding.fieldKey)),
+    [descendantFields],
   );
   const showField = (...keys: string[]) =>
     !isSelectedNode ||
