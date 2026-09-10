@@ -1,5 +1,14 @@
 # Morph Backend、Data 與 Routing 規則
 
+## 本檔鐵則
+
+1. **授權一律在 server 判定**，不可用 UI 隱藏、disabled button 或 client state 代替。（§13）
+2. **DAL／Service／Storage 邊界不得穿透**：route 不直接碰 storage，service 不自己寫 SQL。（§14）
+3. **D1 有 binding parameter 上限**，大量寫入要分批；`LIKE`／`GLOB` 的行為與一般 SQL 不同。（§15）
+4. **Commerce module 邊界**：交易資料不經由 content mutation 寫入。（§16）
+
+---
+
 ## 12. Dashboard Routing 與 CMS Navigation
 
 `src/routes/` 使用 TanStack Router file-based routing。

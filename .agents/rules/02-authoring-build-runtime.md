@@ -1,5 +1,24 @@
 # Morph Authoring、Build 與 Runtime 規則
 
+## 本檔鐵則
+
+這幾條每一條都對應過真實事故，先讀這裡。
+
+1. **`contentFields` 是可寫欄位 allowlist，不是完整 runtime props schema。**
+   Partial edit 不得刪除 Document 中既有的非 editable props —— 曾經改一個字就刪掉整個
+   header 的導覽列與購物車連結。（§5.3.2）
+2. **未知 `componentRef`、未宣告欄位必須 fail closed。**
+   但「拒絕」針對的是**傳入的值**，不是既有的值：已存的內容在寫入當下驗證過了，不重驗、
+   更不清空。也不得把認不得的 ref 悄悄解析成別的元件。（§5.3.2）
+3. **Inspector 不得為特定欄位名稱寫死控制項而蓋過元件的宣告。**
+   欄位之間的關係問 AST，不比對名字。（§5.3.2）
+4. **共用區塊（Header／Footer）的內容走 layout slot**，不得寫死在 layout 的 TSX 裡，
+   layout 也不得轉送 props 蓋掉 Document 的值。（§6.4）
+5. **解釋器遇到不支援的語法必須明確拒絕**，不得回傳 `undefined` 當作答案。（§8.1）
+6. **AST patch 只在 transformer 能證明安全時進行**，禁止用 regex 當通用 TSX parser。（§5.4）
+
+---
+
 ## 5. Visual Editor = Source Code 的 GUI
 
 Visual Editor 是獨立 authoring surface，正式 route 目前使用：
@@ -85,7 +104,18 @@ Customer Theme 若要讓 code-authored component props 可由 Design Mode 編輯
 - `contentFields` 是可寫欄位 allowlist，不是完整 runtime props schema。Content mutation 只能新增或修改已宣告欄位，但不得因 partial edit 刪除 Document 中既有的非 editable reference／assembly props。
 - 未知 `componentRef`、未宣告欄位、錯誤型別、超過限制或不安全 URL 必須 fail closed；presentation class、任意 object 或 executable value 不得藉由 content mutation 寫入 Document。
 - Capability 變更與 content mutation 的競態必須由 server-side source generation guard 處理；不可只靠 Inspector 當下看到的 manifest。
-- 第一版支援的 bounded control type 為 `text`、`textarea`、`url`、`number`、`boolean` 與有限 `select`。需要 asset／commerce reference picker 時應擴充正式 reference field contract，不得先用任意字串假裝完成關聯能力。
+- 支援的 bounded control type 以 workspace 的 `src/morph/content-fields.ts`（`ThemeContentFields`
+  型別）為準，不在本文件重列。**這裡曾經抄過一份清單，然後就過期了** —— 規則寫著只支援六種
+  control type，實際上早已多出 `link`、`image`、`video` 與 `array`。可被型別檢查的事實不用
+  markdown 維護；規則只負責說明邊界，清單交給型別。
+- 需要 asset／commerce reference picker 時應擴充正式 reference field contract，不得先用任意
+  字串假裝完成關聯能力。
+- 連結欄位一律宣告為 `type: "link"`，並由共用的 `ThemeLink` 渲染。連結有 href、target 與 rel
+  三個一起被編輯的部分，拆成 `actionHref` 這類平坦字串鍵，會讓重複列無法各自帶一個完整連結，
+  也逼每個元件自己決定該用 `<a>` 還是 router `<Link>`。該判斷屬於值而不是 markup，只寫一次。
+- Inspector 不得為特定欄位名稱寫死控制項而蓋過元件的宣告。硬編碼的 `actionHref` 卡片曾經攔截
+  宣告的 `action`，讓作者在一個沒有任何程式碼會讀的 prop 上打字。欄位之間的關係要問 AST
+  （哪些欄位畫在同一個 JSX 元素上），不是比對欄位名字。
 
 ### 5.4 AST 安全邊界
 
@@ -319,6 +349,21 @@ Rendered Storefront
 
 不得把所有 page content bake 進 theme build，否則改一句文案都會要求重新 build。
 
+### 6.4 Layout slot：每頁共用的內容
+
+Header、Footer 這類每頁共用的區塊，其**內容**與一般 section 走完全相同的一條路，差別只在
+存在哪一份 Document：
+
+- 頁面自己的 section 存在該頁的 template document（`index`、`product` …）。
+- 每頁共用的區塊存在 `layout` template document，由 layout 以 `content("<slot-id>")` 宣告 slot。
+
+`componentRef` 使用與其他 section 相同的命名規則（section type + `.default`，例如
+`header.default`），不另立 `layout.*` 這種平行命名。
+
+**不得把共用區塊的內容寫死在 layout 的 TSX 裡。** 這樣做的內容從未進入 Document，Inspector
+因此永遠讀不到欄位，作者只能改程式碼；而 layout 若同時又轉送 props 給元件，還會蓋掉 Document
+的值 —— 資料存進去了，畫面卻永遠是預設值，兩邊都看不出哪裡錯。
+
 ---
 
 ## 7. Theme Build Plane
@@ -450,6 +495,11 @@ Morph 可以同時存在兩種 Preview，但用途必須清楚。
 可以使用 browser compiler、dev runtime 或其他低延遲方式。
 
 它不是 production proof。
+
+**解釋器遇到不支援的語法必須明確拒絕，不得回傳 `undefined` 當作答案。** 沉默是最危險的
+回答：`typeof` 曾經回傳 `undefined`，於是 `typeof v === "string"` 對字串為假，它守著的分支
+靜靜換成了另一邊 —— 預覽渲染出沒有 href 的連結，真實建置卻是對的，而且沒有任何地方報錯。
+解釋器與真實 React 的差異要靠 parity 測試守住，不是靠肉眼看預覽。
 
 ### 8.2 Immutable Build Preview
 

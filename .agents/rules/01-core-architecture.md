@@ -11,6 +11,21 @@
 3. 以**單一架構收斂**為目標修正，不可建立第二套平行 framework。
 4. 不可為了讓局部功能先跑而繞過 authorization、revision、build、release、OCC 或 production safety boundary。
 
+## 本檔鐵則
+
+違反這幾條的代價最高，先讀這裡，細節在下方各節。
+
+1. **SSOT 不得混淆**：TSX 只管 presentation，Document 只管 content 與組裝，Commerce module
+   只管交易資料。任何一邊代管另一邊的資料，都會變成兩個真相。（§2）
+2. **Workspace 是 mutable，Revision 是 immutable**：build 與 release 只讀 revision，
+   不讀工作區。（§4.2）
+3. **並行寫入一律走 OCC**：檔案用 `version`、template 用 `draft_generation`、theme 用
+   `sourceGeneration`；每個 template 有自己的 generation，不可共用同一個值。（§4.3）
+4. **不建立平行架構**：route registry、query key、auth helper、DTO、storage backend、
+   publish path 一律延伸既有的。（§3）
+5. **不手動修改 generated files**，不在未被明確要求時做 production deploy 或 remote
+   migration。（§3）
+
 ---
 
 ## 1. Morph 的產品與架構定位
