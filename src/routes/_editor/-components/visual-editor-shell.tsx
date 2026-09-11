@@ -241,6 +241,7 @@ import {
   snapCanvasScaleTowardDefault,
   type CanvasTransform,
 } from "./editor-canvas-geometry";
+import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 
 const loadEditorCodeWorkspace = () =>
@@ -1779,8 +1780,9 @@ export function VisualEditorShell({
   );
 
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
-  const saveQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
-  const fileRevisionRef = useRef<Map<string, number>>(new Map());
+  // Ordering and supersession live in `theme-file-save-queue`, where both rules
+  // can be stated as tests instead of reproduced by typing quickly.
+  const saveQueueRef = useRef(createThemeFileSaveQueue());
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const {
     parseMessage: parseLivePreviewMessage,
@@ -2039,171 +2041,162 @@ export function VisualEditorShell({
     > => {
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
-      const previousPromise =
-        saveQueueRef.current.get(themeOpKey) ?? Promise.resolve();
 
-      const nextPromise = previousPromise
-        .catch(() => {})
-        .then(
-          async (): Promise<
-            | { status: "saved"; file: StorefrontThemeFileDTO }
-            | { status: "superseded" }
-            | { status: "source-conflict" }
-          > => {
-            const latestQueuedRevision =
-              fileRevisionRef.current.get(fileOpKey) ?? 0;
-            if (targetRevision < latestQueuedRevision) {
-              return { status: "superseded" };
+      return saveQueueRef.current.enqueue({
+        queueKey: themeOpKey,
+        fileKey: fileOpKey,
+        revision: targetRevision,
+        superseded: () => ({ status: "superseded" }) as const,
+        task: async (): Promise<
+          | { status: "saved"; file: StorefrontThemeFileDTO }
+          | { status: "superseded" }
+          | { status: "source-conflict" }
+        > => {
+          const current = useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            )[filePath];
+          if (!current)
+            throw new Error(`Workspace file "${filePath}" is missing`);
+          if (current.conflict)
+            throw new Error("File has an unresolved conflict.");
+
+          markWorkspaceSaving(filePath, workspaceScope);
+
+          try {
+            const acceptedGeneration = useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope);
+
+            const res = await saveStorefrontThemeFile({
+              data: {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                path: filePath,
+                content: contentToSave,
+                ...themeFileWritePrecondition(current),
+                expectedSourceGeneration: acceptedGeneration,
+              },
+            });
+
+            if (!res.success) {
+              if (res.error === "SOURCE_GENERATION_CONFLICT") {
+                useThemeWorkspaceStore
+                  .getState()
+                  .markDirty(filePath, workspaceScope);
+                await queryClient.invalidateQueries({
+                  queryKey: storefrontThemeFileQueries.tree(
+                    context.storefront.id,
+                    context.theme.id,
+                  ).queryKey,
+                });
+                toast.error("Remote source changes detected in this theme.", {
+                  action: {
+                    label: "Accept Remote",
+                    onClick: () => {
+                      useThemeWorkspaceStore
+                        .getState()
+                        .acceptRemoteGeneration(undefined, workspaceScope);
+                      toast.success(
+                        "Remote source generation accepted. You can now save your local changes.",
+                      );
+                    },
+                  },
+                });
+                return { status: "source-conflict" };
+              }
+
+              if (
+                res.error === "FILE_VERSION_CONFLICT" ||
+                res.error === "VERSION_CONFLICT"
+              ) {
+                const latestRes = await getStorefrontThemeFile({
+                  data: {
+                    storefrontId: context.storefront.id,
+                    themeId: context.theme.id,
+                    path: filePath,
+                  },
+                }).catch(() => null);
+
+                if (latestRes?.success && latestRes.data) {
+                  markWorkspaceConflict(
+                    filePath,
+                    {
+                      kind: current.serverExists ? "modified" : "created",
+                      remoteExists: true,
+                      remoteFileId: latestRes.data.id,
+                      remoteVersion: latestRes.data.version,
+                      remoteContent: latestRes.data.content,
+                    },
+                    workspaceScope,
+                  );
+                } else {
+                  markWorkspaceConflict(
+                    filePath,
+                    {
+                      kind: "deleted",
+                      remoteExists: false,
+                      remoteFileId: null,
+                      remoteVersion: null,
+                      remoteContent: null,
+                    },
+                    workspaceScope,
+                  );
+                }
+              }
+              throw new Error(res.message);
             }
 
-            const current = useThemeWorkspaceStore
+            markWorkspaceSaved(res.data, workspaceScope);
+            queryClient.setQueryData(
+              storefrontThemeFileQueries.tree(
+                context.storefront.id,
+                context.theme.id,
+              ).queryKey,
+              (old: any) => {
+                if (!old?.files) return old;
+                const exists = old.files.some(
+                  (file: any) => file.path === filePath,
+                );
+                return {
+                  ...old,
+                  sourceGeneration:
+                    res.data.sourceGeneration ?? old.sourceGeneration,
+                  files: exists
+                    ? old.files.map((file: any) =>
+                        file.path === filePath
+                          ? { ...file, ...res.data }
+                          : file,
+                      )
+                    : [...old.files, res.data],
+                };
+              },
+            );
+
+            return { status: "saved", file: res.data };
+          } catch (error) {
+            const afterError = useThemeWorkspaceStore
               .getState()
               .getWorkspaceFiles(
                 workspaceScope.storefrontId,
                 workspaceScope.themeId,
               )[filePath];
-            if (!current)
-              throw new Error(`Workspace file "${filePath}" is missing`);
-            if (current.conflict)
-              throw new Error("File has an unresolved conflict.");
-
-            markWorkspaceSaving(filePath, workspaceScope);
-
-            try {
-              const acceptedGeneration = useThemeWorkspaceStore
-                .getState()
-                .getAcceptedSourceGeneration(workspaceScope);
-
-              const res = await saveStorefrontThemeFile({
-                data: {
-                  storefrontId: context.storefront.id,
-                  themeId: context.theme.id,
-                  path: filePath,
-                  content: contentToSave,
-                  ...themeFileWritePrecondition(current),
-                  expectedSourceGeneration: acceptedGeneration,
-                },
-              });
-
-              if (!res.success) {
-                if (res.error === "SOURCE_GENERATION_CONFLICT") {
-                  useThemeWorkspaceStore
-                    .getState()
-                    .markDirty(filePath, workspaceScope);
-                  await queryClient.invalidateQueries({
-                    queryKey: storefrontThemeFileQueries.tree(
-                      context.storefront.id,
-                      context.theme.id,
-                    ).queryKey,
-                  });
-                  toast.error("Remote source changes detected in this theme.", {
-                    action: {
-                      label: "Accept Remote",
-                      onClick: () => {
-                        useThemeWorkspaceStore
-                          .getState()
-                          .acceptRemoteGeneration(undefined, workspaceScope);
-                        toast.success(
-                          "Remote source generation accepted. You can now save your local changes.",
-                        );
-                      },
-                    },
-                  });
-                  return { status: "source-conflict" };
-                }
-
-                if (
-                  res.error === "FILE_VERSION_CONFLICT" ||
-                  res.error === "VERSION_CONFLICT"
-                ) {
-                  const latestRes = await getStorefrontThemeFile({
-                    data: {
-                      storefrontId: context.storefront.id,
-                      themeId: context.theme.id,
-                      path: filePath,
-                    },
-                  }).catch(() => null);
-
-                  if (latestRes?.success && latestRes.data) {
-                    markWorkspaceConflict(
-                      filePath,
-                      {
-                        kind: current.serverExists ? "modified" : "created",
-                        remoteExists: true,
-                        remoteFileId: latestRes.data.id,
-                        remoteVersion: latestRes.data.version,
-                        remoteContent: latestRes.data.content,
-                      },
-                      workspaceScope,
-                    );
-                  } else {
-                    markWorkspaceConflict(
-                      filePath,
-                      {
-                        kind: "deleted",
-                        remoteExists: false,
-                        remoteFileId: null,
-                        remoteVersion: null,
-                        remoteContent: null,
-                      },
-                      workspaceScope,
-                    );
-                  }
-                }
-                throw new Error(res.message);
-              }
-
-              markWorkspaceSaved(res.data, workspaceScope);
-              queryClient.setQueryData(
-                storefrontThemeFileQueries.tree(
-                  context.storefront.id,
-                  context.theme.id,
-                ).queryKey,
-                (old: any) => {
-                  if (!old?.files) return old;
-                  const exists = old.files.some(
-                    (file: any) => file.path === filePath,
-                  );
-                  return {
-                    ...old,
-                    sourceGeneration:
-                      res.data.sourceGeneration ?? old.sourceGeneration,
-                    files: exists
-                      ? old.files.map((file: any) =>
-                          file.path === filePath
-                            ? { ...file, ...res.data }
-                            : file,
-                        )
-                      : [...old.files, res.data],
-                  };
-                },
+            if (
+              afterError?.saveState !== "conflict" &&
+              afterError?.saveState !== "dirty"
+            ) {
+              markWorkspaceError(
+                filePath,
+                error instanceof Error ? error.message : "Save failed",
+                workspaceScope,
               );
-
-              return { status: "saved", file: res.data };
-            } catch (error) {
-              const afterError = useThemeWorkspaceStore
-                .getState()
-                .getWorkspaceFiles(
-                  workspaceScope.storefrontId,
-                  workspaceScope.themeId,
-                )[filePath];
-              if (
-                afterError?.saveState !== "conflict" &&
-                afterError?.saveState !== "dirty"
-              ) {
-                markWorkspaceError(
-                  filePath,
-                  error instanceof Error ? error.message : "Save failed",
-                  workspaceScope,
-                );
-              }
-              throw error;
             }
-          },
-        );
-
-      saveQueueRef.current.set(themeOpKey, nextPromise);
-      return nextPromise;
+            throw error;
+          }
+        },
+      });
     },
     [
       context.storefront.id,
@@ -2299,8 +2292,7 @@ export function VisualEditorShell({
         { preserveCanvasPosition: options?.preserveCanvasPosition },
       );
 
-      const nextRevision = (fileRevisionRef.current.get(opKey) ?? 0) + 1;
-      fileRevisionRef.current.set(opKey, nextRevision);
+      const nextRevision = saveQueueRef.current.claimRevision(opKey);
 
       const result = await saveThemeFileSequentially(
         filePath,
@@ -2657,7 +2649,7 @@ export function VisualEditorShell({
       }
 
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
-      const pendingThemeSave = saveQueueRef.current.get(themeOpKey);
+      const pendingThemeSave = saveQueueRef.current.pending(themeOpKey);
       if (pendingThemeSave) {
         await pendingThemeSave.catch(() => null);
       }
@@ -2997,8 +2989,7 @@ export function VisualEditorShell({
         history.discardScope(themeFileHistoryScope(relatedPath));
         updateWorkspaceLocal(relatedPath, relatedNext, workspaceScope);
         const operationKey = getScopedOpKey(relatedPath);
-        const revision = (fileRevisionRef.current.get(operationKey) ?? 0) + 1;
-        fileRevisionRef.current.set(operationKey, revision);
+        const revision = saveQueueRef.current.claimRevision(operationKey);
         const pendingTimer = pendingSaveTimersRef.current.get(operationKey);
         if (pendingTimer) clearTimeout(pendingTimer);
         pendingSaveTimersRef.current.set(
@@ -3178,8 +3169,7 @@ export function VisualEditorShell({
           clearTimeout(existingTimer);
         }
 
-        const nextRevision = (fileRevisionRef.current.get(opKey) ?? 0) + 1;
-        fileRevisionRef.current.set(opKey, nextRevision);
+        const nextRevision = saveQueueRef.current.claimRevision(opKey);
 
         // Recorded against the same write path the edit used, so reversing it
         // inherits the version checks, debouncing and preview sync rather than
