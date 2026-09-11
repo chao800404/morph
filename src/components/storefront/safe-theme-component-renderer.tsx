@@ -1603,6 +1603,28 @@ function missingComponentPlaceholder(
   );
 }
 
+/**
+ * The props a component may be given, with injection narrowed to what it named.
+ *
+ * Declared props still lose to what the caller actually passed: a value stored
+ * in the Document is the author's, and a runtime default must not quietly
+ * outrank it.
+ */
+function withDeclaredInjectedProps(
+  fn: any,
+  props: Record<string, unknown>,
+  injected: Record<string, unknown>,
+): Record<string, unknown> {
+  const injectedKeys = Object.keys(injected);
+  if (injectedKeys.length === 0) return props;
+  const declared = readDeclaredPropNames(fn);
+  const allowed: Record<string, unknown> = {};
+  for (const key of injectedKeys) {
+    if (declared.has(key)) allowed[key] = injected[key];
+  }
+  return Object.keys(allowed).length === 0 ? props : { ...allowed, ...props };
+}
+
 function renderModuleComponent(
   sourcePath: string,
   exportName: string,
@@ -1618,9 +1640,9 @@ function renderModuleComponent(
     props,
   });
   if (override && !override.render) return null;
-  const resolvedProps = override
-    ? { ...context.injectedProps, ...props, ...override.props }
-    : { ...context.injectedProps, ...props };
+  // Injection is applied per component below, once its declared props are
+  // known. Merging it here gave it to everything.
+  const resolvedProps = override ? { ...props, ...override.props } : props;
   const resolvedSection = override?.section ?? section;
 
   if (context.componentStack.length >= MAX_COMPONENT_DEPTH) {
@@ -1734,7 +1756,15 @@ function renderModuleComponent(
     }
     return renderFunctionComponent(
       fn,
-      resolvedProps,
+      // Injected props reach a component only if it named them.
+      //
+      // The runtime offers a few values — the store's name, a generated
+      // copyright — for a component that wants them. Handing them to every
+      // component instead put them in the rest props of ones that never asked,
+      // and anything spreading its rest onto an element (every link in the
+      // starter) wrote them into the DOM. What a component declares is the
+      // list of what it can be given.
+      withDeclaredInjectedProps(fn, resolvedProps, context.injectedProps),
       env,
       context,
       sourcePath,
