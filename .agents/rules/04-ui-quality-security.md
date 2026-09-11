@@ -23,6 +23,30 @@
 - 主題切換應避免全頁 transition 造成閃色 / 漸變。
 - 需要新的共用 interaction 時優先在 shared primitive 擴充，而不是單頁 copy。
 
+### 19.0 拆分編輯器大檔的判準
+
+`visual-editor-shell.tsx` 很大，但**行數不是問題本身**。拆錯地方會讓它更難讀。
+
+已經抽出去的（不要重複做）：
+
+- `use-panel-resize.ts` — 面板寬度
+- `use-editor-history.ts` — undo／redo
+- `use-live-preview-message-bridge.ts` — iframe 通訊
+- `use-editor-canvas-transform.ts` + `editor-canvas-geometry.ts` — 平移縮放
+- `theme-file-save-queue.ts` — 存檔的順序與過期判定
+
+**判準：一段程式碼值得抽出，當它同時滿足兩件事** —— 界線清楚（少數幾個輸入、不共用可變 ref），
+以及**抽出後驗證得了**（能寫成單元測試，或能在編輯器裡實際操作確認）。
+
+不該抽的（已量測過，理由記在這裡以免重新發現）：
+
+- **save／style／history 那組**：彼此共用 `fileRevisionRef`、`pendingSaveTimersRef`、`history`
+  與 workspace store，依賴陣列各有 8–9 項。抽成 hook 要注入近十個依賴，那是把糾纏換個位置，
+  閱讀成本反而上升。要改善它，**先補測試**（純邏輯抽成模組並測試），不要先搬家。
+- **build／publish**：界線其實乾淨，但唯一的端到端覆蓋在 `E2E_ALLOW_PUBLISH` 閘門後面
+  （會建立 release 並把 production 切過去）。不可為了驗證自己的重構而開啟那個閘門；
+  沒有驗證手段時，重構的風險由使用者承擔而不是由你。
+
 ### 19.1 Resizable panel
 
 會持久化寬度的 Editor / Dashboard panel：
