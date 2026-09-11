@@ -94,11 +94,11 @@ test.describe("editor responsiveness", () => {
     // labelled by the field it fills, so three menu rows all read "Label" and
     // a selection that moved between them looked like one that never landed.
     const selectedNode = async () =>
-      (await page
+      await page
         .locator("[data-editor-tree-node-selected='true']")
-        .first()
-        .getAttribute("data-editor-tree-node-id")
-        .catch(() => null)) ?? "";
+        .evaluateAll(
+          (rows) => rows[0]?.getAttribute("data-editor-tree-node-id") ?? "",
+        );
 
     const samples: number[] = [];
     let previous = await selectedNode();

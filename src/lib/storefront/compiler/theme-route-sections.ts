@@ -556,11 +556,20 @@ export function reorderThemeRouteSections(
   if (currentIds.every((id, index) => id === orderedSlotIds[index])) {
     return { code: source, changed: false };
   }
-  const parent = parsed.sections[0]?.parent;
+  const parentOf = buildParentMap(parsed.ast);
+  const movable = new Map(
+    parsed.sections.map((section) => [
+      section.slotId,
+      resolveMovableSection(section, parentOf),
+    ]),
+  );
+  const parent = movable.get(parsed.sections[0]!.slotId)?.parent;
   if (
     !parent ||
     parent.type !== "JSXElement" ||
-    parsed.sections.some((section) => section.parent !== parent)
+    parsed.sections.some(
+      (section) => movable.get(section.slotId)?.parent !== parent,
+    )
   ) {
     return {
       code: source,
@@ -569,9 +578,12 @@ export function reorderThemeRouteSections(
         "Only section components that are direct JSX siblings can be reordered.",
     };
   }
-  const sorted = [...parsed.sections].sort(
-    (a, b) => a.node.start - b.node.start,
-  );
+  const sorted = [...parsed.sections]
+    .map((section) => ({
+      slotId: section.slotId,
+      node: movable.get(section.slotId)!.node,
+    }))
+    .sort((a, b) => a.node.start - b.node.start);
   for (let index = 0; index < sorted.length - 1; index += 1) {
     const between = source.slice(
       sorted[index]!.node.end,
@@ -605,6 +617,47 @@ export function reorderThemeRouteSections(
     code: replaceRange(source, first.node.start, last.node.end, replacement),
     changed: true,
   };
+}
+
+/**
+ * The node that actually moves when a section is reordered.
+ *
+ * A section is rarely a bare child of its parent element. The editor writes
+ * visibility as a guard around it — `{!isSectionHidden("id") && <Hero />}` —
+ * and the starter ships that shape, so the `<Hero />` element's parent is a
+ * logical expression rather than the `<main>` it appears in. Reordering the
+ * elements alone would leave each guard behind, matched to whatever section
+ * landed in its place; refusing instead is what the home page did, out of the
+ * box, for every store.
+ *
+ * So the unit is the outermost wrapper that exists only to hold this section:
+ * a logical expression whose right side it is, inside an expression container.
+ * Anything looser is left alone, because moving it would move code that is not
+ * the section's.
+ */
+function resolveMovableSection(
+  section: PositionedSection,
+  parentOf: Map<unknown, unknown>,
+): { node: any; parent: any } {
+  let node: any = section.node;
+  let parent: any = parentOf.get(node) ?? section.parent;
+  while (parent) {
+    const climbs =
+      (parent.type === "LogicalExpression" && parent.right === node) ||
+      (parent.type === "JSXExpressionContainer" && parent.expression === node);
+    if (!climbs) break;
+    node = parent;
+    parent = parentOf.get(parent) ?? null;
+  }
+  return { node, parent };
+}
+
+function buildParentMap(ast: unknown): Map<unknown, unknown> {
+  const parents = new Map<unknown, unknown>();
+  walkWithParent(ast, null, (node, parent) => {
+    if (parent) parents.set(node, parent);
+  });
+  return parents;
 }
 
 /** Removes one route-owned section while preserving the surrounding source. */
