@@ -500,7 +500,15 @@ export type ThemeContentFields = Readonly<Record<string, ThemeContentField>>;
  * a slot, and offering it in the section picker would present a link as a
  * thing a page can be built from.
  */
-export const STARTER_THEME_LINK_MODULE_SOURCE = `import type { AnchorHTMLAttributes } from "react";
+/**
+ * The link component before it took responsibility for `rel`.
+ *
+ * It forwarded whatever `rel` the destination carried, which left every
+ * component that offered a new tab to remember `noopener` on its own — and
+ * the two starters that did remember were the reason the rule was invisible
+ * everywhere else.
+ */
+export const LEGACY_STARTER_THEME_LINK_MODULE_SOURCE = `import type { AnchorHTMLAttributes } from "react";
 import { Link } from "@tanstack/react-router";
 
 /** A destination as the editor's link field stores it. */
@@ -549,6 +557,78 @@ export default function ThemeLink({ link, children, ...rest }: ThemeLinkProps) {
     </a>
   ) : (
     <Link to={href} {...rest}>
+      {children}
+    </Link>
+  );
+}
+`;
+
+export const STARTER_THEME_LINK_MODULE_SOURCE = `import type { AnchorHTMLAttributes } from "react";
+import { Link } from "@tanstack/react-router";
+
+/** A destination as the editor's link field stores it. */
+export type ThemeLinkDestination = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+/**
+ * Everything an anchor accepts, minus the three parts the destination owns.
+ *
+ * The component decides the element, so it decides how the address reaches it:
+ * one of the two branches has no href at all. Leaving those three out of the
+ * props is what stops a caller setting one directly and quietly disagreeing
+ * with the destination beside it. Everything else — className, aria, a data
+ * attribute the editor wants to override — is forwarded untouched.
+ */
+export type ThemeLinkProps = Omit<
+  AnchorHTMLAttributes<HTMLAnchorElement>,
+  "href" | "target" | "rel"
+> & {
+  link?: ThemeLinkDestination | string;
+  [dataAttribute: \`data-\${string}\`]: unknown;
+};
+
+/**
+ * One destination, rendered with whichever element it actually needs.
+ *
+ * An address that leaves this store cannot go through the router, and a page
+ * of this store should not force a full reload. The choice is per destination,
+ * so it belongs to the value rather than to the markup — writing it once here
+ * means every menu, button and footer link decides it the same way.
+ *
+ * Everything else it is given is forwarded untouched, so the editor's field
+ * markers, the className and any aria attribute reach the real element.
+ */
+export default function ThemeLink({ link, children, ...rest }: ThemeLinkProps) {
+  const destination = typeof link === "string" ? { href: link } : (link ?? {});
+  const href = destination.href ?? "";
+  const isExternal = href.startsWith("http://") || href.startsWith("https://");
+  // A bare fragment is a position on this page, not a route. Handing it to the
+  // router turns "jump to this section" into a navigation to a path that does
+  // not exist, and an empty destination has nowhere to navigate at all.
+  const isFragment = href === "" || href.startsWith("#");
+  // The rel arrives already worked out: Morph derives it from the target and
+  // the destination before the value reaches a component, so shipping an
+  // unprotected new tab cannot depend on every theme remembering to add it.
+  // Computing it a second time here appended a duplicate.
+  return isExternal || isFragment ? (
+    <a
+      href={href}
+      target={destination.target}
+      rel={destination.rel}
+      {...rest}
+    >
+      {children}
+    </a>
+  ) : (
+    <Link
+      to={href}
+      target={destination.target}
+      rel={destination.rel}
+      {...rest}
+    >
       {children}
     </Link>
   );
@@ -741,7 +821,15 @@ export const LEGACY_STARTER_THEME_FOOTER_SOURCE = `export default function Foote
 }
 `;
 
-export const STARTER_THEME_FOOTER_SOURCE = `export type FooterLink = {
+/**
+ * The footer before its links went through `ThemeLink`.
+ *
+ * It wrote each anchor by hand and read `item.link.href` directly, so a row
+ * whose destination had been cleared took the whole footer down with it, and
+ * every entry left the store through a plain `<a>` even when it pointed at a
+ * page of this store.
+ */
+export const LEGACY_STARTER_THEME_FOOTER_MARKED_LINK_SOURCE = `export type FooterLink = {
   href?: string;
   target?: "_self" | "_blank";
   rel?: string;
@@ -853,6 +941,115 @@ export default function Footer({
         data-storefront-field="copyrightText"
         className="border-t border-stone-800 pt-6 text-xs text-stone-600 sm:col-span-2 lg:col-span-3"
       >
+        {copyrightText}
+      </div>
+    </footer>
+  );
+}
+`;
+
+export const STARTER_THEME_FOOTER_SOURCE = `import type { ThemeContentFields } from "../morph/content-fields";
+import ThemeLink from "../morph/link";
+
+export type FooterLink = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+export type FooterNavItem = {
+  label?: string;
+  link?: FooterLink | string;
+};
+
+export type FooterProps = {
+  storeName?: string;
+  copyrightText?: string;
+  tagline?: string;
+  exploreHeading?: string;
+  exploreItems?: FooterNavItem[];
+  helpHeading?: string;
+  helpItems?: FooterNavItem[];
+};
+
+export const contentFields = {
+  storeName: { type: "text", label: "Store name", maxLength: 80 },
+  copyrightText: { type: "text", label: "Copyright text", maxLength: 120 },
+  tagline: { type: "textarea", label: "Tagline", maxLength: 200 },
+  exploreHeading: { type: "text", label: "Explore heading", maxLength: 40 },
+  exploreItems: {
+    type: "array",
+    label: "Explore links",
+    fields: {
+      label: { type: "text", label: "Label", maxLength: 40 },
+      link: { type: "link", label: "Destination" },
+    },
+  },
+  helpHeading: { type: "text", label: "Help heading", maxLength: 40 },
+  helpItems: {
+    type: "array",
+    label: "Help links",
+    fields: {
+      label: { type: "text", label: "Label", maxLength: 40 },
+      link: { type: "link", label: "Destination" },
+    },
+  },
+} as const satisfies ThemeContentFields;
+
+export default function Footer({
+  storeName = "Online Store",
+  copyrightText = "© Online Store",
+  tagline = "Objects with lasting character for thoughtful, everyday living.",
+  exploreHeading = "Explore",
+  exploreItems = [
+    { label: "Shop all", link: { href: "/collections/all" } },
+    { label: "Our story", link: { href: "/pages/about" } },
+    { label: "Journal", link: { href: "/blogs/journal" } },
+  ],
+  helpHeading = "Help",
+  helpItems = [
+    { label: "Contact", link: { href: "/pages/contact" } },
+    { label: "Shipping", link: { href: "/pages/shipping" } },
+    { label: "Returns", link: { href: "/pages/returns" } },
+  ],
+}: FooterProps) {
+  return (
+    <footer className="grid gap-12 bg-stone-950 px-[clamp(1.75rem,6vw,6rem)] py-16 text-stone-300 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.75fr_0.75fr]">
+      <div>
+        <p className="font-serif text-3xl text-stone-100">{storeName}</p>
+        <p className="mt-4 max-w-xs text-sm leading-6 text-stone-500">
+          {tagline}
+        </p>
+      </div>
+      <div className="text-sm leading-8">
+        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">
+          {exploreHeading}
+        </p>
+        {exploreItems.map((item, index) => (
+          <ThemeLink
+            key={index}
+            link={item.link}
+            className="block hover:text-white"
+          >
+            {item.label}
+          </ThemeLink>
+        ))}
+      </div>
+      <div className="text-sm leading-8">
+        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">
+          {helpHeading}
+        </p>
+        {helpItems.map((item, index) => (
+          <ThemeLink
+            key={index}
+            link={item.link}
+            className="block hover:text-white"
+          >
+            {item.label}
+          </ThemeLink>
+        ))}
+      </div>
+      <div className="border-t border-stone-800 pt-6 text-xs text-stone-600 sm:col-span-2 lg:col-span-3">
         {copyrightText}
       </div>
     </footer>
@@ -1633,66 +1830,14 @@ export const STARTER_THEME_V4_NEW_FILES = [
   },
 ] as const;
 
-export const STARTER_THEME_V3_NEW_FILES = [
-  {
-    path: "src/morph/content-fields.ts",
-    mimeType: "text/typescript",
-    content: STARTER_THEME_CONTENT_FIELDS_TYPES_SOURCE,
-  },
-  {
-    path: "src/morph/link.tsx",
-    mimeType: "text/typescript",
-    content: STARTER_THEME_LINK_MODULE_SOURCE,
-  },
-  {
-    path: "src/components/EditorialIntro.tsx",
-    mimeType: "text/typescript",
-    content: `export type EditorialIntroProps = {
-  label?: string;
-  heading?: string;
-  body?: string;
-};
-
-export default function EditorialIntro({
-  label = "About",
-  heading = "Fewer things. Better chosen.",
-  body = "Crafted with intention for long-lasting quality.",
-}: EditorialIntroProps) {
-  return (
-    <section
-      className="bg-stone-50 px-[clamp(1.75rem,7vw,7rem)] py-[clamp(6rem,12vw,11rem)]"
-    >
-      <div className="grid gap-10 border-t border-stone-300 pt-8 lg:grid-cols-[0.55fr_1.45fr]">
-        <p
-          data-storefront-field="label"
-          className="text-xs font-medium uppercase tracking-[0.22em] text-stone-500"
-        >
-          {label}
-        </p>
-        <div>
-          <h2
-            data-storefront-field="heading"
-            className="max-w-4xl font-serif text-[clamp(3rem,6vw,6.5rem)] leading-[0.92] tracking-[-0.045em] text-stone-950"
-          >
-            {heading}
-          </h2>
-          <p
-            data-storefront-field="body"
-            className="ml-auto mt-10 max-w-xl text-lg leading-8 text-stone-600"
-          >
-            {body}
-          </p>
-        </div>
-      </div>
-    </section>
-  );
-}
-`,
-  },
-  {
-    path: "src/components/CategoryShowcase.tsx",
-    mimeType: "text/typescript",
-    content: `export type CategoryShowcaseItem = {
+/**
+ * The card grid before a row's destination became one `link` field.
+ *
+ * Each row held a bare `href` string, so a row could not carry the target
+ * and rel that belong to the same decision, and the anchor was written by
+ * hand rather than left to `ThemeLink`.
+ */
+export const LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_URL_FIELD_SOURCE = `export type CategoryShowcaseItem = {
   title?: string;
   caption?: string;
   href?: string;
@@ -1785,12 +1930,15 @@ export default function CategoryShowcase({
     </section>
   );
 }
-`,
-  },
-  {
-    path: "src/components/ImageWithText.tsx",
-    mimeType: "text/typescript",
-    content: `export type ImageWithTextProps = {
+`;
+
+/**
+ * The split section before its destination became one `link` field.
+ *
+ * It carried `actionHref` and `actionTarget` as separate props and derived
+ * `rel` itself, which is the duplication `ThemeLink` now holds once.
+ */
+export const LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_URL_FIELD_SOURCE = `export type ImageWithTextProps = {
   eyebrow?: string;
   heading?: string;
   body?: string;
@@ -1882,7 +2030,266 @@ export default function ImageWithText({
     </section>
   );
 }
+`;
+
+export const STARTER_THEME_V3_NEW_FILES = [
+  {
+    path: "src/morph/content-fields.ts",
+    mimeType: "text/typescript",
+    content: STARTER_THEME_CONTENT_FIELDS_TYPES_SOURCE,
+  },
+  {
+    path: "src/morph/link.tsx",
+    mimeType: "text/typescript",
+    content: STARTER_THEME_LINK_MODULE_SOURCE,
+  },
+  {
+    path: "src/components/EditorialIntro.tsx",
+    mimeType: "text/typescript",
+    content: `export type EditorialIntroProps = {
+  label?: string;
+  heading?: string;
+  body?: string;
+};
+
+export default function EditorialIntro({
+  label = "About",
+  heading = "Fewer things. Better chosen.",
+  body = "Crafted with intention for long-lasting quality.",
+}: EditorialIntroProps) {
+  return (
+    <section
+      className="bg-stone-50 px-[clamp(1.75rem,7vw,7rem)] py-[clamp(6rem,12vw,11rem)]"
+    >
+      <div className="grid gap-10 border-t border-stone-300 pt-8 lg:grid-cols-[0.55fr_1.45fr]">
+        <p
+          data-storefront-field="label"
+          className="text-xs font-medium uppercase tracking-[0.22em] text-stone-500"
+        >
+          {label}
+        </p>
+        <div>
+          <h2
+            data-storefront-field="heading"
+            className="max-w-4xl font-serif text-[clamp(3rem,6vw,6.5rem)] leading-[0.92] tracking-[-0.045em] text-stone-950"
+          >
+            {heading}
+          </h2>
+          <p
+            data-storefront-field="body"
+            className="ml-auto mt-10 max-w-xl text-lg leading-8 text-stone-600"
+          >
+            {body}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
 `,
+  },
+  {
+    path: "src/components/CategoryShowcase.tsx",
+    mimeType: "text/typescript",
+    content: `import type { ThemeContentFields } from "../morph/content-fields";
+import ThemeLink from "../morph/link";
+
+export type CategoryShowcaseLink = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+export type CategoryShowcaseItem = {
+  title?: string;
+  caption?: string;
+  link?: CategoryShowcaseLink | string;
+  image?: { src?: string; alt?: string };
+  /** Read-only compatibility for documents created before image was grouped. */
+  imageSrc?: string;
+  imageAlt?: string;
+  imagePosition?: string;
+};
+
+export type CategoryShowcaseProps = {
+  heading?: string;
+  items?: CategoryShowcaseItem[];
+};
+
+export const contentFields = {
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  items: {
+    type: "array",
+    label: "Collections",
+    fields: {
+      title: { type: "text", label: "Title", maxLength: 150 },
+      caption: { type: "textarea", label: "Caption", maxLength: 300 },
+      link: { type: "link", label: "Destination" },
+      image: { type: "image", label: "Image" },
+      imagePosition: { type: "text", label: "Image position", maxLength: 100 },
+    },
+  },
+} as const satisfies ThemeContentFields;
+
+export default function CategoryShowcase({
+  heading = "Shop by collection",
+  items = [],
+}: CategoryShowcaseProps) {
+  return (
+    <section
+      className="bg-stone-900 px-[clamp(1.25rem,4vw,4rem)] py-[clamp(5rem,9vw,9rem)] text-stone-100"
+    >
+      <div className="mb-12 flex items-end justify-between border-b border-stone-700 pb-6">
+        <h2
+          data-storefront-field="heading"
+          className="font-serif text-[clamp(2.5rem,5vw,5rem)] tracking-[-0.04em]"
+        >
+          {heading}
+        </h2>
+        <span className="hidden text-xs uppercase tracking-[0.2em] text-stone-400 sm:block">
+          The collection
+        </span>
+      </div>
+      <div
+        className="grid gap-4 lg:grid-cols-3"
+      >
+        {items.map((item, index) => (
+          <ThemeLink
+            key={index}
+            link={item.link}
+            data-storefront-field-path={\`items.\${index}\`}
+            className="group block border-t border-stone-700 pt-4 lg:border-t-0 lg:pt-0"
+          >
+            <div className="aspect-[4/5] overflow-hidden bg-stone-800">
+              <img
+                data-storefront-field="image"
+                data-storefront-field-path={\`items.\${index}.image\`}
+                src={item.image?.src ?? item.imageSrc ?? "/static/storefront/theme-preview-default.png"}
+                alt={item.image?.alt ?? item.imageAlt ?? "Collection item"}
+                style={{ objectPosition: item.imagePosition ?? "center" }}
+                className="size-full object-cover opacity-80 transition-transform duration-500 ease-out group-hover:scale-[1.025]"
+              />
+            </div>
+            <div className="flex gap-5 py-5">
+              <span className="pt-1 text-xs text-stone-500">{index + 1}</span>
+              <div>
+                <h3
+                  data-storefront-field-path={\`items.\${index}.title\`}
+                  className="font-serif text-2xl"
+                >
+                  {item.title ?? "Collection"}
+                </h3>
+                <p
+                  data-storefront-field-path={\`items.\${index}.caption\`}
+                  className="mt-2 max-w-xs text-sm leading-6 text-stone-400"
+                >
+                  {item.caption ?? ""}
+                </p>
+              </div>
+            </div>
+          </ThemeLink>
+        ))}
+      </div>
+    </section>
+  );
+}`,
+  },
+  {
+    path: "src/components/ImageWithText.tsx",
+    mimeType: "text/typescript",
+    content: `import type { ThemeContentFields } from "../morph/content-fields";
+import ThemeLink from "../morph/link";
+
+export type ImageWithTextLink = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+export type ImageWithTextProps = {
+  eyebrow?: string;
+  heading?: string;
+  body?: string;
+  actionLabel?: string;
+  action?: ImageWithTextLink | string;
+  image?: { src?: string; alt?: string };
+  /** Read-only compatibility for documents created before image was grouped. */
+  imageSrc?: string;
+  imageAlt?: string;
+  imagePosition?: string;
+};
+
+export const contentFields = {
+  eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  body: { type: "textarea", label: "Body", maxLength: 700 },
+  actionLabel: { type: "text", label: "Action label", maxLength: 100 },
+  action: { type: "link", label: "Action link" },
+  image: { type: "image", label: "Image" },
+} as const satisfies ThemeContentFields;
+
+export default function ImageWithText({
+  eyebrow = "",
+  heading = "Story",
+  body = "",
+  actionLabel = "Explore",
+  action = { href: "#" },
+  image,
+  imageSrc,
+  imageAlt,
+  imagePosition = "center",
+}: ImageWithTextProps) {
+  const displayImage = image ?? {
+    src: imageSrc ?? "/static/storefront/theme-preview-default.png",
+    alt: imageAlt ?? "Image with text",
+  };
+  return (
+    <section
+      className="grid bg-[#d8d0c3] lg:grid-cols-2"
+    >
+      <div
+        className="min-h-[32rem] overflow-hidden lg:min-h-[52rem]"
+      >
+        <img
+          data-storefront-field="image"
+          src={displayImage.src}
+          alt={displayImage.alt}
+          style={{ objectPosition: imagePosition }}
+          className="size-full scale-110 object-cover"
+        />
+      </div>
+      <div className="flex items-center px-[clamp(2rem,7vw,7rem)] py-20">
+        <div className="max-w-xl">
+          <p
+            data-storefront-field="eyebrow"
+            className="text-xs font-medium uppercase tracking-[0.22em] text-stone-600"
+          >
+            {eyebrow}
+          </p>
+          <h2
+            data-storefront-field="heading"
+            className="mt-5 font-serif text-[clamp(3rem,5vw,5.5rem)] leading-[0.94] tracking-[-0.045em] text-stone-950"
+          >
+            {heading}
+          </h2>
+          <p
+            data-storefront-field="body"
+            className="mt-7 text-base leading-7 text-stone-700"
+          >
+            {body}
+          </p>
+          <ThemeLink
+            link={action}
+            data-storefront-field="actionLabel"
+            className="mt-9 inline-flex border-b border-current pb-1 text-sm font-medium"
+          >
+            {actionLabel}
+          </ThemeLink>
+        </div>
+      </div>
+    </section>
+  );
+}`,
   },
   {
     path: "src/components/Newsletter.tsx",

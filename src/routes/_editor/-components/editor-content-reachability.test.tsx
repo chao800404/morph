@@ -30,7 +30,10 @@ const platform: File[] = [
       sections: {},
     }),
   },
-  { path: "src/morph/content.ts", content: "export function content(){return {};}" },
+  {
+    path: "src/morph/content.ts",
+    content: "export function content(){return {};}",
+  },
   {
     path: "src/routes/__root.tsx",
     content: `import { Outlet, createRootRoute } from "@tanstack/react-router";
@@ -107,10 +110,11 @@ function declaredFields(files: File[], routePath: string) {
  * binding still fails instead of being explained away.
  */
 const SECTION_LEVEL_ONLY_FIELDS = new Set([
-  "actionHref",
-  // Whether the link opens a new tab is behaviour, not content: it changes no
-  // rendered text, so it is edited alongside the URL in the section panel.
-  "actionTarget",
+  // The destination of a button, now one `link` field carrying the address,
+  // the target and the rel together. It replaced the `actionHref` and
+  // `actionTarget` pair that used to sit here: where the link goes and whether
+  // it opens a new tab are one decision, and neither renders any text.
+  "action",
   "imageAlt",
 ]);
 
@@ -236,8 +240,18 @@ export function HomeRoute() {
     const reachable = reachableFields(files, {
       version: 1,
       sections: [
-        { id: "promo-a", type: "promo", enabled: true, props: { heading: "A" } },
-        { id: "promo-b", type: "promo", enabled: true, props: { heading: "B" } },
+        {
+          id: "promo-a",
+          type: "promo",
+          enabled: true,
+          props: { heading: "A" },
+        },
+        {
+          id: "promo-b",
+          type: "promo",
+          enabled: true,
+          props: { heading: "B" },
+        },
       ],
     });
 

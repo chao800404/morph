@@ -2,6 +2,7 @@ import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_MARKED_SOURCE,
+  LEGACY_STARTER_THEME_FOOTER_MARKED_LINK_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_UNMARKED_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_FIELD_MARKED_SOURCE,
@@ -28,68 +29,22 @@ import {
   STARTER_THEME_LAYOUT_SOURCE,
   STARTER_THEME_HOME_ROUTE_SOURCE,
   STARTER_THEME_V3_NEW_FILES,
+  LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_URL_FIELD_SOURCE,
+  LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_URL_FIELD_SOURCE,
+  LEGACY_STARTER_THEME_LINK_MODULE_SOURCE,
 } from "./starter-theme-v3-files";
 import {
   THEME_START_BUILD_DEPENDENCIES,
   THEME_START_RUNTIME_DEPENDENCIES,
 } from "./compiler/theme-start-toolchain";
 
-export const STARTER_THEME_FILES: Array<{
-  path: string;
-  content: string;
-  mimeType: string;
-  isEntry?: boolean;
-}> = [
-  {
-    path: "package.json",
-    mimeType: "application/json",
-    content: JSON.stringify(
-      {
-        name: "morph-storefront-theme",
-        version: "1.0.0",
-        private: true,
-        type: "module",
-        scripts: {
-          dev: "vite dev",
-          build: "vite build",
-        },
-        dependencies: {
-          ...THEME_START_RUNTIME_DEPENDENCIES,
-          "lucide-react": "^0.475.0",
-          clsx: "^2.1.1",
-          "tailwind-merge": "^3.0.1",
-        },
-        devDependencies: THEME_START_BUILD_DEPENDENCIES,
-      },
-      null,
-      2,
-    ),
-  },
-  {
-    path: "src/styles/global.css",
-    mimeType: "text/css",
-    content: `@import "tailwindcss";
-
-:root {
-  --color-brand-primary: #1c1917;
-  --color-brand-accent: #78716c;
-  --font-serif: Georgia, Cambria, "Times New Roman", Times, serif;
-}
-
-body {
-  margin: 0;
-  padding: 0;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #1c1917;
-  background-color: #fafaf9;
-}
-
-`,
-  },
-  {
-    path: "src/components/Hero.tsx",
-    mimeType: "text/typescript",
-    content: `export type HeroProps = {
+/**
+ * The hero before its destination became one `link` field.
+ *
+ * Same shape as the split section it sat above: `actionHref` plus
+ * `actionTarget`, with the `noopener` rule written out a second time.
+ */
+export const LEGACY_STARTER_THEME_HERO_URL_FIELD_SOURCE = `export type HeroProps = {
   eyebrow?: string;
   heading?: string;
   description?: string;
@@ -176,7 +131,151 @@ export default function Hero({
     </section>
   );
 }
+`;
+
+export const STARTER_THEME_FILES: Array<{
+  path: string;
+  content: string;
+  mimeType: string;
+  isEntry?: boolean;
+}> = [
+  {
+    path: "package.json",
+    mimeType: "application/json",
+    content: JSON.stringify(
+      {
+        name: "morph-storefront-theme",
+        version: "1.0.0",
+        private: true,
+        type: "module",
+        scripts: {
+          dev: "vite dev",
+          build: "vite build",
+        },
+        dependencies: {
+          ...THEME_START_RUNTIME_DEPENDENCIES,
+          "lucide-react": "^0.475.0",
+          clsx: "^2.1.1",
+          "tailwind-merge": "^3.0.1",
+        },
+        devDependencies: THEME_START_BUILD_DEPENDENCIES,
+      },
+      null,
+      2,
+    ),
+  },
+  {
+    path: "src/styles/global.css",
+    mimeType: "text/css",
+    content: `@import "tailwindcss";
+
+:root {
+  --color-brand-primary: #1c1917;
+  --color-brand-accent: #78716c;
+  --font-serif: Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #1c1917;
+  background-color: #fafaf9;
+}
+
 `,
+  },
+  {
+    path: "src/components/Hero.tsx",
+    mimeType: "text/typescript",
+    content: `import type { ThemeContentFields } from "../morph/content-fields";
+import ThemeLink from "../morph/link";
+
+export type HeroLink = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+export type HeroProps = {
+  eyebrow?: string;
+  heading?: string;
+  description?: string;
+  actionLabel?: string;
+  action?: HeroLink | string;
+  image?: { src?: string; alt?: string };
+  /** Read-only compatibility for documents created before image was grouped. */
+  imageSrc?: string;
+  imageAlt?: string;
+};
+
+export const contentFields = {
+  eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  description: { type: "textarea", label: "Description", maxLength: 500 },
+  actionLabel: { type: "text", label: "Action label", maxLength: 100 },
+  action: { type: "link", label: "Action link" },
+  image: { type: "image", label: "Image" },
+} as const satisfies ThemeContentFields;
+
+export default function Hero({
+  eyebrow = "New collection",
+  heading = "Objects for everyday rituals.",
+  description = "Quiet essentials, thoughtfully made for the spaces you call home.",
+  actionLabel = "Explore the collection",
+  action = { href: "/collections/new" },
+  image,
+  imageSrc,
+  imageAlt,
+}: HeroProps) {
+  const displayImage = image ?? {
+    src: imageSrc ?? "/static/storefront/theme-preview-default.png",
+    alt: imageAlt ?? "A neutral collection of ceramic objects",
+  };
+  return (
+    <section
+      className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]"
+    >
+      <div className="flex items-center px-[clamp(1.75rem,6vw,6rem)] py-20">
+        <div className="max-w-xl">
+          <p
+            className="text-xs font-medium uppercase tracking-[0.24em] text-stone-500"
+          >
+            {eyebrow}
+          </p>
+          <h1
+            className="mt-6 font-serif text-[clamp(3.25rem,7vw,7rem)] leading-[0.88] tracking-[-0.055em] text-stone-950"
+          >
+            {heading}
+          </h1>
+          <p
+            className="mt-7 max-w-md text-base leading-7 text-stone-600"
+          >
+            {description}
+          </p>
+          <div className="mt-8">
+            <ThemeLink
+              link={action}
+              className="inline-flex items-center justify-center rounded-md bg-stone-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-stone-800"
+            >
+              {actionLabel}
+            </ThemeLink>
+          </div>
+        </div>
+      </div>
+      <div
+        className="min-h-[30rem] overflow-hidden lg:min-h-0"
+      >
+        <img
+          data-storefront-field="image"
+          src={displayImage.src}
+          alt={displayImage.alt}
+          className="size-full object-cover"
+        />
+      </div>
+    </section>
+  );
+}`,
   },
   {
     path: "src/components/Header.tsx",
@@ -831,23 +930,42 @@ export function createStarterThemeWorkspaceUpgrade(
   }> = [
     {
       path: "src/components/Hero.tsx",
-      legacy: [LEGACY_STARTER_THEME_HERO_SOURCE],
+      legacy: [
+        LEGACY_STARTER_THEME_HERO_SOURCE,
+        LEGACY_STARTER_THEME_HERO_URL_FIELD_SOURCE,
+      ],
       current: STARTER_THEME_FILES.find(
         (file) => file.path === "src/components/Hero.tsx",
       )!.content,
     },
     {
       path: "src/components/CategoryShowcase.tsx",
-      legacy: [LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE],
+      legacy: [
+        LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
+        LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_URL_FIELD_SOURCE,
+      ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/CategoryShowcase.tsx",
       )!.content,
     },
     {
       path: "src/components/ImageWithText.tsx",
-      legacy: [LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE],
+      legacy: [
+        LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
+        LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_URL_FIELD_SOURCE,
+      ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/ImageWithText.tsx",
+      )!.content,
+    },
+    {
+      // `STARTER_THEME_V3_NEW_FILES` only creates a file that is missing, so a
+      // workspace that already had this module could never be given a fixed
+      // one. It is listed here so the `rel` correction actually reaches them.
+      path: "src/morph/link.tsx",
+      legacy: [LEGACY_STARTER_THEME_LINK_MODULE_SOURCE],
+      current: STARTER_THEME_V3_NEW_FILES.find(
+        (file) => file.path === "src/morph/link.tsx",
       )!.content,
     },
     {
@@ -866,6 +984,7 @@ export function createStarterThemeWorkspaceUpgrade(
         LEGACY_STARTER_THEME_FOOTER_SOURCE,
         LEGACY_STARTER_THEME_FOOTER_MARKED_SOURCE,
         LEGACY_STARTER_THEME_FOOTER_UNMARKED_SOURCE,
+        LEGACY_STARTER_THEME_FOOTER_MARKED_LINK_SOURCE,
       ],
       current: STARTER_THEME_FOOTER_SOURCE,
     },
