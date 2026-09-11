@@ -1,15 +1,13 @@
 // @vitest-environment node
 /**
- * Which identity markers a component still has to write by hand.
+ * Which identity markers a component has to write by hand: none.
  *
- * Almost none. The interpreter runs a component's `map()` itself, so it knows
- * which row it is on and derives `items.2.title` without being told. The rule
- * against hand-written `data-*` rests on that being true, so it is worth an
- * assertion rather than a memory.
- *
- * The exception is a binding the inference cannot follow to a single field —
- * an image whose source is a fallback chain. That marker earns its place, and
- * this test says which one it is so nobody removes it as tidying.
+ * The interpreter runs a component's `map()` itself, so it knows which row it
+ * is on and derives `items.2.title` unasked. The rule against hand-written
+ * `data-*` rests on that being true of every binding a starter uses, which is
+ * worth an assertion rather than a memory — the last exception was a grouped
+ * image read through a fallback chain, and it only survived because the
+ * inference stopped at optional chaining.
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -77,21 +75,22 @@ describe("row identity in the starter", () => {
     expect(paths).toContain("items.0.caption");
   });
 
-  it("keeps the one marker the inference cannot replace", () => {
-    // The image's source is `item.image?.src ?? item.imageSrc ?? "…"`, which
-    // names no single field, so nothing can be inferred from it.
-    const withMarker = pathsFor("src/components/CategoryShowcase.tsx");
-    expect(withMarker).toContain("items.0.image");
-
-    const source = files.find(
-      (file) => file.path === "src/components/CategoryShowcase.tsx",
-    )!.content;
-    const without = pathsFor(
-      "src/components/CategoryShowcase.tsx",
-      source.replace(/\s*data-storefront-field-path=\{`[^`]*`\}/g, ""),
+  it("derives a grouped value read through a fallback chain", () => {
+    // `item.image?.src ?? item.imageSrc ?? "…"`. The field is `image`: the
+    // first step off the row, with the rest reaching inside the value it
+    // holds and the fallbacks describing what to show when it is empty.
+    expect(pathsFor("src/components/CategoryShowcase.tsx")).toContain(
+      "items.0.image",
     );
-    expect(without).not.toContain("items.0.image");
-    // And removing it costs nothing else, which is why the other three went.
-    expect(without).toContain("items.0.title");
+  });
+
+  it("writes no identity markers at all", () => {
+    for (const file of files) {
+      if (!file.path.startsWith("src/components/")) continue;
+      expect(
+        file.content,
+        `${file.path} writes an identity marker the inference can produce`,
+      ).not.toContain("data-storefront-field-path");
+    }
   });
 });

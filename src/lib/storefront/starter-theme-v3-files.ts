@@ -2273,7 +2273,6 @@ export default function CategoryShowcase({
             <div className="aspect-[4/5] overflow-hidden bg-stone-800">
               <img
                 data-storefront-field="image"
-                data-storefront-field-path={\`items.\${index}.image\`}
                 src={item.image?.src ?? item.imageSrc ?? "/static/storefront/theme-preview-default.png"}
                 alt={item.image?.alt ?? item.imageAlt ?? "Collection item"}
                 style={{ objectPosition: item.imagePosition ?? "center" }}

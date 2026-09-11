@@ -513,9 +513,15 @@ function evaluateCall(
         );
       }
       const arrayPath = expressionPath(node.callee.object);
+      // What this array's rows are allowed to hold, from the component's own
+      // declaration. A row that predates a field still has to offer it, or a
+      // grouped `image` stays invisible until something writes one — which is
+      // the same "declared before stored" rule the component's own props get.
+      const declaredRowFields = readDeclaredRowFieldNames(env, arrayPath);
       return receiver.map((item, index) => {
         const mapEnv = Object.create(env) as Record<string, unknown>;
         mapEnv.__morphArrayPath = arrayPath;
+        mapEnv.__morphArrayFieldNames = declaredRowFields;
         mapEnv.__morphArrayIndex = index;
         mapEnv.__morphArrayItem = item;
         // Name the callback gave the item, so `{item.title}` can be read back
@@ -969,6 +975,59 @@ function applyArrayItemContext(
  * `null` there is deliberate: the Inspector must not offer to edit a field it
  * cannot write back unambiguously.
  */
+/**
+ * The field a member chain off the repeated row belongs to.
+ *
+ * `item.image?.src` is the `image` field being read into, not a field called
+ * `src`. Walking to the base and taking the first step back out is what makes
+ * a grouped value editable without the component announcing itself.
+ */
+function readRowFieldName(
+  expression: any,
+  itemVariableName: string | null,
+): string | null {
+  const steps: string[] = [];
+  let node: any = expression;
+  while (
+    node?.type === "MemberExpression" ||
+    node?.type === "OptionalMemberExpression"
+  ) {
+    // A computed step names nothing readable: `item[key]` depends on a value
+    // this cannot see, and guessing would bind the element to the wrong field.
+    if (node.computed === true || node.property?.type !== "Identifier") {
+      return null;
+    }
+    steps.unshift(node.property.name);
+    node = node.object;
+  }
+  if (node?.type !== "Identifier" || steps.length === 0) return null;
+  // Off the row, the first step is the field. Anywhere else the expression
+  // names a local value, which is not a field at all.
+  return node.name === itemVariableName ? (steps[0] ?? null) : null;
+}
+
+/**
+ * The field names a component declares for the rows of one array field.
+ *
+ * Read from the component's own `contentFields`, which the interpreter has
+ * already evaluated as an ordinary module value. Without it a row is judged
+ * only by the keys it happens to carry, so a field added to the declaration is
+ * unreachable in every row written before it existed.
+ */
+function readDeclaredRowFieldNames(
+  env: Record<string, unknown>,
+  arrayPath: string | null,
+): ReadonlySet<string> | null {
+  if (!arrayPath) return null;
+  const declaration = env.contentFields;
+  if (!declaration || typeof declaration !== "object") return null;
+  const field = (declaration as Record<string, unknown>)[arrayPath];
+  if (!field || typeof field !== "object") return null;
+  const fields = (field as { fields?: unknown }).fields;
+  if (!fields || typeof fields !== "object") return null;
+  return new Set(Object.keys(fields as Record<string, unknown>));
+}
+
 function inferBoundPropName(
   expression: any,
   itemVariableName: string | null,
@@ -977,16 +1036,14 @@ function inferBoundPropName(
   switch (expression.type) {
     case "Identifier":
       return expression.name === itemVariableName ? null : expression.name;
+    // `item.title`, and also `item.image.src` or `item.image?.src`: the field
+    // is the first step off the row, and the rest is reaching inside the value
+    // it holds. Optional chaining is the same expression with a different node
+    // type, and treating it as unrecognised is why a grouped image had to be
+    // labelled by hand.
     case "MemberExpression":
-      if (
-        expression.computed !== true &&
-        expression.object?.type === "Identifier" &&
-        expression.object.name === itemVariableName &&
-        expression.property?.type === "Identifier"
-      ) {
-        return expression.property.name;
-      }
-      return null;
+    case "OptionalMemberExpression":
+      return readRowFieldName(expression, itemVariableName);
     // `{item.title ?? ""}` and `{value || "fallback"}`: the left side is the
     // stored value and the right side is only what shows when it is missing.
     case "LogicalExpression":
@@ -1048,6 +1105,10 @@ function inferElementFieldKey(
     env.__morphDeclaredProps instanceof Set
       ? (env.__morphDeclaredProps as ReadonlySet<string>)
       : null;
+  const declaredRowFields =
+    env.__morphArrayFieldNames instanceof Set
+      ? (env.__morphArrayFieldNames as ReadonlySet<string>)
+      : null;
   if (scopes.length === 0 && !mappedPaths && !declaredProps) return null;
   const accept = (name: string | null) => {
     if (!name || BLOCKED_PROPERTIES.has(name)) return null;
@@ -1055,6 +1116,7 @@ function inferElementFieldKey(
     // Declared before stored: a component that has never been edited has no
     // values yet, and would otherwise never become editable.
     if (declaredProps?.has(name)) return name;
+    if (inMap && declaredRowFields?.has(name)) return name;
     return scopes.some((scope) => name in scope) ? name : null;
   };
 
