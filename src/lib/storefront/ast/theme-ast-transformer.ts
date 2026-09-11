@@ -34,6 +34,10 @@ export type ComponentElementMeta = {
     start: number;
     end: number;
     isExpression: boolean;
+    patchTarget?: {
+      start: number;
+      end: number;
+    };
   };
 };
 
@@ -460,7 +464,7 @@ export function parseComponentSource(
         let morphElementName: string | null = null;
         let className = "";
         let classNameOffsets:
-          { start: number; end: number; isExpression: boolean } | undefined;
+          ComponentElementMeta["classNameOffsets"] | undefined;
 
         for (const attr of openingElement.attributes) {
           if (
@@ -504,14 +508,70 @@ export function parseComponentSource(
                   isExpression: false,
                 };
               } else if (attr.value.type === "JSXExpressionContainer") {
-                className =
-                  readStaticClassNameExpression(attr.value.expression) ??
-                  sourceCode.slice(attr.value.start ?? 0, attr.value.end ?? 0);
-                classNameOffsets = {
-                  start: attr.value.start ?? 0,
-                  end: attr.value.end ?? 0,
-                  isExpression: true,
-                };
+                const expr = attr.value.expression;
+                if (expr && expr.type === "StringLiteral") {
+                  className = expr.value;
+                  classNameOffsets = {
+                    start: expr.start ?? 0,
+                    end: expr.end ?? 0,
+                    isExpression: false,
+                    patchTarget: {
+                      start: expr.start ?? 0,
+                      end: expr.end ?? 0,
+                    },
+                  };
+                } else if (
+                  expr &&
+                  expr.type === "CallExpression" &&
+                  expr.callee?.type === "Identifier" &&
+                  expr.callee.name === "cn"
+                ) {
+                  const staticCn = readStaticCnClassName(expr);
+                  const hasInstanceLookup = expr.arguments.some((arg) =>
+                    isMorphInstanceClassLookup(arg),
+                  );
+                  if (
+                    staticCn !== null &&
+                    !hasInstanceLookup &&
+                    expr.arguments.length > 0 &&
+                    expr.arguments[0]?.type === "StringLiteral"
+                  ) {
+                    className = staticCn;
+                    classNameOffsets = {
+                      start: expr.arguments[0].start ?? 0,
+                      end: expr.arguments[0].end ?? 0,
+                      isExpression: false,
+                      patchTarget: {
+                        start: expr.arguments[0].start ?? 0,
+                        end: expr.arguments[0].end ?? 0,
+                      },
+                    };
+                  } else {
+                    className =
+                      readStaticClassNameExpression(expr) ??
+                      sourceCode.slice(
+                        attr.value.start ?? 0,
+                        attr.value.end ?? 0,
+                      );
+                    classNameOffsets = {
+                      start: attr.value.start ?? 0,
+                      end: attr.value.end ?? 0,
+                      isExpression: true,
+                    };
+                  }
+                } else {
+                  className =
+                    readStaticClassNameExpression(attr.value.expression) ??
+                    sourceCode.slice(
+                      attr.value.start ?? 0,
+                      attr.value.end ?? 0,
+                    );
+                  classNameOffsets = {
+                    start: attr.value.start ?? 0,
+                    end: attr.value.end ?? 0,
+                    isExpression: true,
+                  };
+                }
               }
             }
           }
@@ -1027,7 +1087,11 @@ export function patchElementClassNameResult(
   }
 
   if (element.classNameOffsets && !element.classNameOffsets.isExpression) {
-    const { start, end } = element.classNameOffsets;
+    const start =
+      element.classNameOffsets.patchTarget?.start ??
+      element.classNameOffsets.start;
+    const end =
+      element.classNameOffsets.patchTarget?.end ?? element.classNameOffsets.end;
     const nextClasses = updater(element.className);
     const replacement = JSON.stringify(nextClasses);
     return {

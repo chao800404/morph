@@ -59,3 +59,19 @@ They edit the theme they run against — a colour, a section order — and put i
 back through the editor's own undo. A run that fails partway can leave an edit
 behind; the last assertion in each test is the restoration, so a failure there
 is telling you the workspace still needs a look.
+
+## Custom component persistence
+
+`authored-content.spec.ts` requires `E2E_SCRATCH_EDITOR_PATH` in addition to the
+login configuration. Point it at a dedicated test theme using the `MyBanner`
+source, route and infrastructure from
+`src/lib/storefront/authored-from-scratch.test.tsx`, with a Document slot whose
+id is `my-banner` and componentRef is `src/components/MyBanner.tsx`. Do not
+register that component in the manifest. Use a short initial title so the heading
+is visible in the canvas.
+
+The test edits Title and text color through the Inspector, reloads the page to
+check persistence, then restores the original visible values. It creates draft
+revisions; use a disposable test theme. It does not delete existing components,
+provision the fixture, or publish. Missing configuration skips the test and is
+not evidence that the flow passed.

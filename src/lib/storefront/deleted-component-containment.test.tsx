@@ -101,6 +101,8 @@ describe("a component the Theme never had", () => {
     } as never);
 
     expect(result.success).toBe(false);
-    expect(result.diagnostics.join(" ")).toContain("not a local Theme");
+    // The message names the module, so the author knows which import to remove.
+    expect(result.diagnostics.join(" ")).toContain("Chart");
+    expect(result.diagnostics.join(" ")).toContain("some-package");
   });
 });

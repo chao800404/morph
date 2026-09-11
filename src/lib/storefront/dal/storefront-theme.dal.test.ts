@@ -1,3 +1,7 @@
+import { createElement } from "react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { EditorStyleInspector } from "@/routes/_editor/-components/editor-style-inspector";
+import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import Database from "better-sqlite3";
 import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
@@ -1380,8 +1384,8 @@ describe("publish build resolution", () => {
 });
 
 describe("co-located content field declarations", () => {
-  const seedSection = (props: string) => {
-    const doc = `{"version":1,"sections":[{"id":"promo-1","type":"promo","componentRef":"promo.default","enabled":true,"props":${props}}]}`;
+  const seedSection = (props: string, componentRef = "promo.default") => {
+    const doc = `{"version":1,"sections":[{"id":"promo-1","type":"promo","componentRef":"${componentRef}","enabled":true,"props":${props}}]}`;
     sqlite.exec(`
       INSERT INTO storefront_theme_templates
         (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
@@ -1410,6 +1414,112 @@ describe("co-located content field declarations", () => {
 
   const MANIFEST_WITHOUT_FIELDS = JSON.stringify({
     components: { "promo.default": { source: "src/components/Promo.tsx" } },
+  });
+
+  it("saves an unregistered component through the Inspector and reloads its immutable draft", async () => {
+    const source = `export const contentFields = {
+      headline: { type: "text", label: "Headline" },
+      cta: { type: "link", label: "Destination" },
+    } as const;
+    export default function Promo({ headline = "Original", cta = { href: "/" } }) {
+      return <section className="p-4"><h2>{headline}</h2><a href={cta.href}>Go</a></section>;
+    }`;
+    seedThemeFiles(source, "{}");
+    seedSection(
+      '{"headline":"Original","cta":{"href":"https://old.example"},"retained":"assembly"}',
+      "src/components/Promo.tsx",
+    );
+    const load = () => {
+      const row = sqlite
+        .prepare(
+          `SELECT r.document, t.draft_generation AS generation
+        FROM storefront_theme_templates t JOIN storefront_theme_template_revisions r
+        ON r.id = t.draft_revision_id WHERE t.id = 'template-p'`,
+        )
+        .get() as { document: string; generation: number };
+      return {
+        document: JSON.parse(row.document) as StorefrontPageDocument,
+        generation: row.generation,
+      };
+    };
+    const original = load();
+    let generation = original.generation;
+    let pending: Promise<unknown> = Promise.resolve();
+    const themeFiles = [
+      {
+        id: "promo-source",
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        path: "src/components/Promo.tsx",
+        content: source,
+        mimeType: "text/typescript",
+        isEntry: false,
+        version: 1,
+        createdAt: "now",
+        updatedAt: "now",
+      },
+    ];
+    const mount = () =>
+      render(
+        createElement(EditorStyleInspector, {
+          view: "content",
+          section: load().document.sections[0],
+          themeFiles,
+          onPropsChange: (props) => {
+            pending = storefrontThemeDal
+              .updateSectionProps({
+                storefrontId: "storefront-a",
+                themeId: "theme-a",
+                templateId: "template-p",
+                sectionId: "promo-1",
+                props,
+                expectedDraftGeneration: generation,
+                createdBy: "user-1",
+              })
+              .then((result) => {
+                expect(result).not.toBeNull();
+                generation = load().generation;
+              });
+          },
+        }),
+      );
+    try {
+      mount();
+      fireEvent.input(screen.getByDisplayValue("Original"), {
+        target: { value: "Saved title" },
+      });
+      await pending;
+      fireEvent.blur(screen.getByLabelText("Destination path or URL"), {
+        target: { value: "https://new.example" },
+      });
+      await pending;
+      cleanup();
+      mount();
+      expect(screen.getByDisplayValue("Saved title")).toBeTruthy();
+      expect(screen.getByDisplayValue("https://new.example")).toBeTruthy();
+      expect(load().document.sections[0].props.retained).toBe("assembly");
+      expect(load().generation).toBe(original.generation + 2);
+      const old = sqlite
+        .prepare(
+          "SELECT document FROM storefront_theme_template_revisions WHERE version = 1 AND template_id = 'template-p'",
+        )
+        .get() as { document: string };
+      expect(JSON.parse(old.document)).toEqual(original.document);
+      await expect(
+        storefrontThemeDal.updateSectionProps({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "template-p",
+          sectionId: "promo-1",
+          props: { headline: "stale" },
+          expectedDraftGeneration: original.generation,
+          createdBy: "user-1",
+        }),
+      ).rejects.toThrow();
+      expect(load().document.sections[0].props.headline).toBe("Saved title");
+    } finally {
+      cleanup();
+    }
   });
 
   it("accepts values for fields a component declares in its own source", async () => {

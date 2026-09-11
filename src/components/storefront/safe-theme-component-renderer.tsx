@@ -12,6 +12,7 @@ import {
   TANSTACK_ROUTER_MODULE,
   renderThemeRouterLink,
 } from "./safe-theme-router-link";
+import * as LucideIcons from "lucide-react";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
   THEME_CONTENT_CONTEXT_KEY,
@@ -1490,8 +1491,20 @@ function renderJsxElement(
     return createElement(builtin, { ...props, children });
   }
   if (!imported) {
+    // Still refused, and deliberately.
+    //
+    // A local file the author deleted is contained further down, where the
+    // import resolves to a path the workspace no longer holds: that is an edit
+    // they can undo, so it renders a gap. This is the other case — a component
+    // the Theme never had — and a placeholder here would say the preview is
+    // merely behind, when what the Theme actually did is reach for something
+    // the sandbox will not run. A real build refuses it too; the preview
+    // saying otherwise is the divergence, not the protection.
+    const foreignModule = env[`__foreign:${name}`];
     throw new SafeThemeRuntimeError(
-      `Component <${name}> is not a local Theme Workspace component.`,
+      typeof foreignModule === "string"
+        ? `Component <${name}> comes from "${foreignModule}", which the Design preview does not run. Remove the import or replace it with a Theme component.`
+        : `Component <${name}> is not a local Theme Workspace component.`,
     );
   }
   return withJsxKey(
@@ -1708,6 +1721,23 @@ function renderModuleComponent(
         };
         continue;
       }
+      if (imported.source === "lucide-react") {
+        const icon = (LucideIcons as Record<string, unknown>)[
+          imported.imported
+        ];
+        if (
+          typeof icon === "function" ||
+          (typeof icon === "object" && icon !== null)
+        ) {
+          env[`__builtin:${name}`] = (iconProps: Record<string, unknown>) =>
+            createElement(icon as any, iconProps);
+          continue;
+        }
+      }
+      // Remembered so the refusal below can name the module the component came
+      // from. "<Chart> is not a local component" tells an author nothing about
+      // which import to remove.
+      env[`__foreign:${name}`] = imported.source;
       const builtin =
         context.builtinComponents[imported.source]?.[imported.imported];
       if (builtin) {

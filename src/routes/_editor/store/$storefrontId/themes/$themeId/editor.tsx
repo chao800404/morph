@@ -4,8 +4,8 @@ import {
 } from "@/lib/validations/storefront-theme";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect } from "react";
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
+import { useCallback, useEffect, useRef } from "react";
 import { VisualEditorPending } from "../../../../-components/visual-editor-pending";
 import { VisualEditorShell } from "../../../../-components/visual-editor-shell";
 import { normalizeEditorTemplateSearch } from "../../../../-components/editor-template";
@@ -16,6 +16,18 @@ export const Route = createFileRoute(
   "/_editor/store/$storefrontId/themes/$themeId/editor",
 )({
   validateSearch: storefrontThemeEditorSearchSchema,
+  // Keep shareable editor URLs focused on state that cannot be inferred from
+  // the current editor. The search validator still accepts these values, so
+  // existing bookmarks continue to work and are canonicalized on entry.
+  search: {
+    middlewares: [
+      stripSearchParams({
+        template: "index",
+        viewport: "desktop",
+        routePath: "/",
+      }),
+    ],
+  },
   loader: async ({ context, params }) => {
     const detailQuery = storefrontThemeQueries.detail(
       params.storefrontId,
@@ -117,6 +129,7 @@ function ReadyVisualEditorRoute({
   const shouldNormalizeSearch = normalizedSearch !== search;
   const normalizedTemplateId = normalizedSearch.templateId;
   const normalizedTemplateType = normalizedSearch.template;
+  const didCanonicalizeSearch = useRef(false);
 
   useEffect(() => {
     if (!shouldNormalizeSearch) return;
@@ -130,6 +143,14 @@ function ReadyVisualEditorRoute({
     onSearchChange,
     shouldNormalizeSearch,
   ]);
+
+  useEffect(() => {
+    if (shouldNormalizeSearch || didCanonicalizeSearch.current) return;
+    didCanonicalizeSearch.current = true;
+    // The route search middleware removes default-valued keys. Running one
+    // replace on entry also shortens legacy links that already contain them.
+    onSearchChange({});
+  }, [onSearchChange, shouldNormalizeSearch]);
 
   return (
     <VisualEditorShell

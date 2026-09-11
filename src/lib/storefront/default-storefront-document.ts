@@ -33,8 +33,10 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  * 19: `src/morph/content-fields.ts` states the shape a `contentFields`
  *     declaration has to take, so a mistake in one is reported where it is
  *     written rather than becoming a field that never appears.
+ * 20: remove redundant manifest contentFields for untouched Starter components
+ *     that already declare their fields in source; retain authored fallbacks.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 19;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 20;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

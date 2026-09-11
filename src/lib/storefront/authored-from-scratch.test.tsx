@@ -7,6 +7,10 @@
  * the panel, styles they can change, and edits that save. Nothing here is
  * registered in `morph.theme.json` — a co-located `contentFields` declaration
  * is meant to be enough on its own, and this is the test of that claim.
+ *
+ * These are source/renderer contracts, not browser or authenticated HTTP save
+ * tests. Inspector persistence is covered separately in storefront-theme.dal.test.ts
+ * and browser content/style reloads in e2e/authored-content.spec.ts.
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -157,7 +161,7 @@ describe("a component the author wrote, registered nowhere", () => {
     }
   });
 
-  it("accepts an edit from the panel, and still refuses an undeclared one", () => {
+  it("filters declared content values and excludes undeclared keys", () => {
     const { capabilities } = resolveThemeContentCapabilitiesFromFiles(
       files as never,
     );
@@ -172,7 +176,7 @@ describe("a component the author wrote, registered nowhere", () => {
     expect(Object.keys(kept)).toEqual(["title", "cta"]);
   });
 
-  it("refuses the write when the stored ref names no component", () => {
+  it("allows no incoming fields when the ref names no component", () => {
     // The fail-closed boundary is unchanged by any of this: a ref this Theme
     // cannot resolve validates nothing, so nothing the client sent gets in.
     const { capabilities } = resolveThemeContentCapabilitiesFromFiles(
@@ -189,7 +193,7 @@ describe("a component the author wrote, registered nowhere", () => {
     ).toEqual({});
   });
 
-  it("lets the style panel change a class", () => {
+  it("patches a static class using its inferred source position", () => {
     const parsed = parseComponentSource(MY_BANNER, SOURCE_PATH);
     // The preview identifies an unmarked element by its source position, which
     // is exactly what `data-morph-loc` carries back.
@@ -208,7 +212,7 @@ describe("a component the author wrote, registered nowhere", () => {
     expect(patched.code).toContain("bg-stone-100");
   });
 
-  it("lets the panel rewrite a default when no override is stored", () => {
+  it("patches a source default independently of stored overrides", () => {
     const patched = patchComponentDefaultProp(
       MY_BANNER,
       "title",

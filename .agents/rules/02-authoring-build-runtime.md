@@ -86,7 +86,7 @@ React / TSX / CSS / Tailwind Theme Source 是 Code Mode、Live Preview、Visual 
 
 - 使用者可以在既有 Theme Workspace 中新增合法 component、JSX structure 與 interaction；只要通過 path、dependency、compiler 與 sandbox policy，就必須由既有 source → preview → revision → build pipeline 處理，不得要求先建立另一份 presentation schema。
 - Live Preview 必須反映實際 Theme Source 或由它直接推導的 compiled output。Compatibility／專用 renderer 不得靜默遺失 source 中帶有 `data-morph-*` 的 element、nesting、`className` 或 metadata；暫時仍需 renderer adapter 時，必須透過共用 source mapping 與 contract test 證明 round-trip，不得逐元件硬編碼第二份 UI。
-- 希望由 Design Mode 修改的 JSX node 必須提供靜態、同檔唯一的 `data-morph-node`；`data-morph-element` 只描述 `container`、`heading`、`image`、`action` 等語意，不可取代穩定 node identity。
+- Design Mode 可透過解釋器產生的唯一 source position 定位未標記 JSX node，不要求手寫 `data-*`。作者也可提供靜態、同檔唯一的 `data-morph-node` 作為穩定識別；`data-morph-element` 只描述語意，不可取代 node identity。重複 instance 仍須符合下方的 identity 規則。
 - 無法由 AST 證明可安全改寫的 dynamic expression、computed structure 或 runtime-only node 可以正常 build / preview，但 Inspector 必須明確顯示 code-only／unsupported，或回報 bounded diagnostic；不得猜測後覆寫 source。
 - Repeater 的 Design identity 必須同時包含 source node identity、持久 item／instance identity 與完整 field path；不得用 array index 或單一 `data-morph-node` 假裝能唯一識別所有 runtime instance。
 - Code Save 只能更新 mutable draft workspace 與 Live Preview；Immutable Build Preview 必須來自 frozen source revision，Production 只能由明確授權的 Publish／release activation 更新。

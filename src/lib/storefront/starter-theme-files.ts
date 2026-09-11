@@ -1,3 +1,4 @@
+import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
 import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
@@ -386,59 +387,21 @@ export default function Principles({
             name: "Hero",
             source: "src/components/Hero.tsx",
             sectionType: "hero",
-            contentFields: {
-              eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
-              heading: { type: "text", label: "Heading", maxLength: 200 },
-              description: {
-                type: "textarea",
-                label: "Description",
-                maxLength: 500,
-              },
-              actionLabel: {
-                type: "text",
-                label: "Action label",
-                maxLength: 100,
-              },
-              actionHref: { type: "url", label: "Action link" },
-              actionTarget: { type: "text", label: "Open in" },
-              image: { type: "image", label: "Image" },
-            },
           },
           "editorial-intro.default": {
             name: "Editorial intro",
             source: "src/components/EditorialIntro.tsx",
             sectionType: "editorial-intro",
-            contentFields: {
-              label: { type: "text", label: "Label", maxLength: 100 },
-              heading: { type: "text", label: "Heading", maxLength: 200 },
-              body: { type: "textarea", label: "Body", maxLength: 700 },
-            },
           },
           "category-showcase.default": {
             name: "Category showcase",
             source: "src/components/CategoryShowcase.tsx",
             sectionType: "category-showcase",
-            contentFields: {
-              heading: { type: "text", label: "Heading", maxLength: 200 },
-            },
           },
           "image-with-text.default": {
             name: "Image with text",
             source: "src/components/ImageWithText.tsx",
             sectionType: "image-with-text",
-            contentFields: {
-              eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
-              heading: { type: "text", label: "Heading", maxLength: 200 },
-              body: { type: "textarea", label: "Body", maxLength: 700 },
-              actionLabel: {
-                type: "text",
-                label: "Action label",
-                maxLength: 100,
-              },
-              actionHref: { type: "url", label: "Action link" },
-              actionTarget: { type: "text", label: "Open in" },
-              image: { type: "image", label: "Image" },
-            },
           },
           "principles.default": {
             name: "Principles",
@@ -452,21 +415,6 @@ export default function Principles({
             name: "Newsletter",
             source: "src/components/Newsletter.tsx",
             sectionType: "newsletter",
-            contentFields: {
-              eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
-              heading: { type: "text", label: "Heading", maxLength: 200 },
-              body: { type: "textarea", label: "Body", maxLength: 500 },
-              placeholder: {
-                type: "text",
-                label: "Placeholder",
-                maxLength: 100,
-              },
-              actionLabel: {
-                type: "text",
-                label: "Action label",
-                maxLength: 100,
-              },
-            },
           },
           // `layout.*` predates route-owned sections and its prefix is the
           // section type, so both would derive the type "layout". Kept for
@@ -1057,6 +1005,22 @@ export function createStarterThemeWorkspaceUpgrade(
       const target = targetSections[sectionType];
       if (target === undefined) continue;
       existingSections[sectionType] = target;
+      changed = true;
+    }
+
+    // Remove redundant fallback declarations only for untouched starter source.
+    // Authored components and manifest-only capabilities retain their fallback.
+    for (const [ref, config] of Object.entries(existingComponents)) {
+      if (!isRecord(config) || !("contentFields" in config)) continue;
+      const target = targetComponents[ref];
+      if (!isRecord(target) || typeof target.source !== "string") continue;
+      if (config.source !== target.source) continue;
+      const source = existingByPath.get(target.source)?.content;
+      const starterSource = targetByPath.get(target.source)?.content;
+      if (!source || source !== starterSource) continue;
+      if (parseColocatedContentFields(source).declaration !== "valid") continue;
+      const { contentFields: _fallback, ...metadata } = config;
+      existingComponents[ref] = metadata;
       changed = true;
     }
 
