@@ -78,43 +78,54 @@ async function usableTargets(page: Page, wanted: number) {
 }
 
 test.describe("editor responsiveness", () => {
-  test("selecting on the canvas reaches the tree promptly", async ({ page }) => {
+  test("selecting on the canvas reaches the tree promptly", async ({
+    page,
+  }) => {
     await openEditor(page);
     const points = await usableTargets(page, 3);
-    expect(points.length, "no canvas targets were reachable").toBeGreaterThan(1);
+    expect(points.length, "no canvas targets were reachable").toBeGreaterThan(
+      1,
+    );
 
     // Read without waiting: `innerText` on a missing element waits for it to
     // appear, which would measure the timeout rather than the interaction.
-    const selectedLabel = async () =>
-      (
-        await page
-          .locator('[data-editor-tree-node-selected="true"]')
-          .allInnerTexts()
-      )[0] ?? "";
+    //
+    // By node id rather than by text. Every entry of a repeated field is
+    // labelled by the field it fills, so three menu rows all read "Label" and
+    // a selection that moved between them looked like one that never landed.
+    const selectedNode = async () =>
+      (await page
+        .locator("[data-editor-tree-node-selected='true']")
+        .first()
+        .getAttribute("data-editor-tree-node-id")
+        .catch(() => null)) ?? "";
 
     const samples: number[] = [];
-    let previous = await selectedLabel();
+    let previous = await selectedNode();
     for (const point of points) {
       const started = Date.now();
       await page.mouse.click(point.x, point.y);
-      await expect.poll(selectedLabel, { timeout: 15_000 }).not.toBe(previous);
+      await expect.poll(selectedNode, { timeout: 15_000 }).not.toBe(previous);
       samples.push(Date.now() - started);
-      previous = await selectedLabel();
+      previous = await selectedNode();
     }
 
-    console.log("[canvas click -> tree selection]", samples, "median", median(samples));
+    console.log(
+      "[canvas click -> tree selection]",
+      samples,
+      "median",
+      median(samples),
+    );
     expect(median(samples)).toBeLessThan(2_500);
   });
 
-  // Known regression, recorded rather than hidden. With three samples this
-  // passed by landing on the cheap rows; measured honestly the median is
-  // ~720ms against a 600ms ceiling, and the baseline this ceiling was drawn
-  // from was ~150ms. It is not the page-structure rows -- removing them
-  // measured the same -- so the cost is in what a selection re-renders, which
-  // is its own piece of work. `fail` keeps the gate meaningful: the suite stays
-  // green, and the day this starts passing the test says so instead of
-  // quietly agreeing.
-  test.fail("selecting in the tree marks the row promptly", async ({ page }) => {
+  // Was `test.fail` for a regression measured at ~720ms against this 600ms
+  // ceiling. It passes again -- ~360ms on the run that removed the annotation
+  // -- after the Inspector stopped re-parsing a component's source on every
+  // render, which a memo had been defeating by listing a Set rebuilt each
+  // time. Kept as an ordinary gate so the next regression fails rather than
+  // being recorded.
+  test("selecting in the tree marks the row promptly", async ({ page }) => {
     await openEditor(page);
     const rows = page.locator(
       '[data-sidebar="menu-item"] button:has([data-editor-tree-icon="section"])',
@@ -139,14 +150,21 @@ test.describe("editor responsiveness", () => {
       if (index > 0) samples.push(Date.now() - started);
     }
 
-    console.log("[tree row click -> active]", samples, "median", median(samples));
+    console.log(
+      "[tree row click -> active]",
+      samples,
+      "median",
+      median(samples),
+    );
     // Around 150ms once the row stopped waiting for the canvas to confirm;
     // the old behaviour measured about 950ms. The ceiling sits between the two
     // with room for a slow run, not tight against the good number.
     expect(median(samples)).toBeLessThan(600);
   });
 
-  test("switching between Design and Code stays immediate", async ({ page }) => {
+  test("switching between Design and Code stays immediate", async ({
+    page,
+  }) => {
     const codeOnlyRequests: string[] = [];
     const codeOnlyResponses: string[] = [];
     const isCodeOnlyAsset = (url: string) =>

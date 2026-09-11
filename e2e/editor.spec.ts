@@ -212,7 +212,13 @@ test.describe("visual editor", () => {
     ).not.toBeNull();
     await expect(colorInput).toBeVisible();
 
-    const selected = previewFrame(page).locator(`[data-morph-loc="${clicked}"]`);
+    // The editor marks what it selected, which is the only handle that names
+    // one element. `data-morph-loc` is a source position, and a node inside a
+    // `map()` renders it once per row — three nav links share the header's,
+    // so re-finding the clicked element by it matches all three.
+    const selected = previewFrame(page).locator(
+      '[data-storefront-editor-selected="true"]',
+    );
     const colorOf = () =>
       selected.evaluate((element) => getComputedStyle(element).color);
     const original = await colorOf();
@@ -269,20 +275,20 @@ test.describe("visual editor", () => {
       await settleAfterWrite(page);
 
       await undo.click();
-      await expect.poll(() => sectionOrder(page), { timeout: 20_000 }).toEqual(
-        afterFirst,
-      );
+      await expect
+        .poll(() => sectionOrder(page), { timeout: 20_000 })
+        .toEqual(afterFirst);
       await undo.click();
-      await expect.poll(() => sectionOrder(page), { timeout: 20_000 }).toEqual(
-        original,
-      );
+      await expect
+        .poll(() => sectionOrder(page), { timeout: 20_000 })
+        .toEqual(original);
     } finally {
       await undoEverything(page);
     }
 
-    await expect.poll(() => sectionOrder(page), { timeout: 20_000 }).toEqual(
-      original,
-    );
+    await expect
+      .poll(() => sectionOrder(page), { timeout: 20_000 })
+      .toEqual(original);
   });
 });
 
@@ -309,6 +315,20 @@ function sectionRows(page: Page) {
   // labels are the theme author's words and the page row sits in the same list.
   return page.locator(
     '[data-sidebar="menu-item"] button:has([data-editor-tree-icon="section"])',
+  );
+}
+
+/**
+ * The rows a drag can actually move.
+ *
+ * Header and Footer are the shell's, shared by every page, and are kept out of
+ * the sortable list on purpose — dragging one was never going to reorder
+ * anything. They read like any other section row, so a test that takes "the
+ * first two rows" was dragging the header and reporting reordering as broken.
+ */
+function sortableSectionRows(page: Page) {
+  return page.locator(
+    '[data-editor-tree-sortable="true"] button:has([data-editor-tree-icon="section"])',
   );
 }
 
@@ -350,8 +370,8 @@ async function dragSection(page: Page, fromIndex: number, toIndex: number) {
   // difference is knowable, and a genuinely dead drag still fails loudly.
   const before = await sectionOrder(page);
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const from = await sectionRows(page).nth(fromIndex).boundingBox();
-    const to = await sectionRows(page).nth(toIndex).boundingBox();
+    const from = await sortableSectionRows(page).nth(fromIndex).boundingBox();
+    const to = await sortableSectionRows(page).nth(toIndex).boundingBox();
     if (!from || !to) throw new Error("section rows are not laid out");
 
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
@@ -362,7 +382,7 @@ async function dragSection(page: Page, fromIndex: number, toIndex: number) {
       { steps: 5 },
     );
 
-    const started = await sectionRows(page)
+    const started = await sortableSectionRows(page)
       .nth(fromIndex)
       .getAttribute("aria-grabbed")
       .then((value) => value === "true")

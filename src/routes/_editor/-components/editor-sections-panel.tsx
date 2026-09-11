@@ -280,7 +280,15 @@ function SortableSectionRow({
     disabled,
   });
   return (
-    <SidebarMenuItem ref={ref} className={cn(isDragging && "opacity-40")}>
+    <SidebarMenuItem
+      ref={ref}
+      // Says this row can be reordered. The shell's rows look the same and
+      // carry the same icon, but they are deliberately outside the sortable
+      // list, so nothing else in the tree distinguishes a row you can drag
+      // from one you cannot.
+      data-editor-tree-sortable={disabled ? undefined : "true"}
+      className={cn(isDragging && "opacity-40")}
+    >
       <Collapsible open={expanded} onOpenChange={onToggleExpanded}>
         <ContextMenu>
           <ContextMenuTrigger asChild>
@@ -500,6 +508,11 @@ function EditableNodeRow({
   const NodeIcon = icon.component;
   return (
     <SidebarMenuSubItem
+      // Which node this row is, not just whether it is selected. Two rows can
+      // read the same — every entry of a repeated field is labelled by the
+      // field it fills — so text names a row only when the page happens not to
+      // repeat anything.
+      data-editor-tree-node-id={node.id}
       data-editor-tree-node-selected={selected ? "true" : undefined}
       isActive={selected}
       className="h-auto min-h-8 gap-0 overflow-visible pl-0 data-[active=false]:hover:bg-transparent! [&>div:first-child]:hidden"
