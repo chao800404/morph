@@ -2622,6 +2622,24 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     };
 
     const handleClick = (event: MouseEvent) => {
+      // The gap a deleted component leaves behind is the one element here that
+      // is not content to select: it is a report, and its only useful action is
+      // getting the file back. Handled before selection so it works even while
+      // selection is switched off.
+      const missing =
+        event.target instanceof Element
+          ? event.target.closest("[data-morph-missing-component]")
+          : null;
+      const missingPath = missing?.getAttribute("data-morph-missing-component");
+      if (missingPath) {
+        event.preventDefault();
+        event.stopPropagation();
+        postPreviewToEditorMessage({
+          type: "morph:storefront-preview-open-file-history",
+          path: missingPath,
+        });
+        return;
+      }
       if (
         inlineTextEdit &&
         event.target instanceof Node &&

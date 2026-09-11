@@ -859,3 +859,50 @@ describe("applying a live content edit to the previewed page", () => {
     expect(applied.document.sections[1]?.props).toEqual({ heading: "Hi" });
   });
 });
+
+describe("opening a deleted file's history from the canvas", () => {
+  /**
+   * The gap a deleted component leaves is rendered inside the preview, and the
+   * history that undoes the deletion lives in the editor. This message is the
+   * only thing joining them, and a type the validator does not know is dropped
+   * whole and in silence — so the click would simply do nothing.
+   */
+  it("accepts a bounded path", () => {
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-open-file-history",
+        path: "src/components/Footer.tsx",
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-open-file-history",
+      path: "src/components/Footer.tsx",
+    });
+  });
+
+  it("refuses an empty path", () => {
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-open-file-history",
+        path: "",
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses a path long enough to be an attack rather than a file", () => {
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-open-file-history",
+        path: "a".repeat(1_001),
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses a path that is not a string", () => {
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-open-file-history",
+        path: { toString: () => "src/components/Footer.tsx" },
+      }),
+    ).toBeNull();
+  });
+});

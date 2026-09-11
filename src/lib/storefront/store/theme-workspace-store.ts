@@ -64,8 +64,20 @@ export interface ThemeWorkspaceStore {
   observedGenerations: Record<string, number>;
   generations: Record<string, number>;
   files: Record<string, ThemeWorkspaceFileState>;
+  /**
+   * A file whose history the author asked to see, from somewhere that cannot
+   * open it itself.
+   *
+   * The gap a deleted component leaves is rendered inside the preview iframe,
+   * and the history lives in the Code workspace's side panel. `requestedAt`
+   * makes two requests for the same file distinct, so asking twice reopens it
+   * rather than appearing to do nothing.
+   */
+  fileHistoryRequest: { path: string; requestedAt: number } | null;
 
   setActiveWorkspace: (storefrontId: string, themeId: string) => void;
+  requestFileHistory: (path: string) => void;
+  clearFileHistoryRequest: () => void;
   hydrateFromQuery: (
     storefrontId: string,
     themeId: string,
@@ -190,12 +202,19 @@ function getTargetWorkspace(
 export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
   (set, get) => ({
     activeWorkspaceKey: null,
+    fileHistoryRequest: null,
     workspaces: {},
     acceptedGenerations: {},
     observedGenerations: {},
     generations: {},
     files: {},
 
+    requestFileHistory: (path: string) => {
+      set({ fileHistoryRequest: { path, requestedAt: Date.now() } });
+    },
+    clearFileHistoryRequest: () => {
+      set({ fileHistoryRequest: null });
+    },
     setActiveWorkspace: (storefrontId: string, themeId: string) => {
       const key = toWorkspaceKey(storefrontId, themeId);
       set((state) => {

@@ -320,6 +320,17 @@ export type PreviewToEditorMessage =
     }
   | PreviewSelectionMessage
   | {
+      /**
+       * The gap left by a component whose file was deleted, clicked.
+       *
+       * Deleting is allowed and recoverable, but the way back lived in a panel
+       * the author had to know to open. The gap is where they are already
+       * looking, so it carries the route to its own undo.
+       */
+      type: "morph:storefront-preview-open-file-history";
+      path: string;
+    }
+  | {
       type: "morph:storefront-preview-commit-inline-text";
       sectionId: string;
       fieldKey: string;
@@ -916,6 +927,12 @@ export function parsePreviewToEditorMessage(
         sectionComputedStyle: value.sectionComputedStyle,
       };
     }
+    case "morph:storefront-preview-open-file-history":
+      // Bounded like every other path on this channel: the preview is
+      // untrusted input, and this one reaches a file lookup.
+      return isBoundedString(value.path, 1_000) && value.path.length > 0
+        ? { type: value.type, path: value.path }
+        : null;
     case "morph:storefront-preview-commit-inline-text":
       return isBoundedString(value.sectionId, 100) &&
         value.sectionId.length > 0 &&

@@ -399,12 +399,19 @@ const EditorCodeWorkspaceContent = forwardRef<
   const [newFolderName, setNewFolderName] = useState("");
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
-  const [sideView, setSideView] = useState<
-    "explorer" | "search" | "history"
-  >("explorer");
+  const [sideView, setSideView] = useState<"explorer" | "search" | "history">(
+    "explorer",
+  );
   const [selectedRevisionNumber, setSelectedRevisionNumber] = useState<
     number | null
   >(null);
+  // Opening the history for a file the author asked about from the canvas.
+  // Picking the revision as well as the panel matters: the list is long and
+  // the entry that still has the file is the whole reason they clicked.
+  const fileHistoryRequest = useThemeWorkspaceStore(
+    (state) => state.fileHistoryRequest,
+  );
+  const handledFileHistoryRequestRef = useRef<number | null>(null);
   const [commandCenterMode, setCommandCenterMode] = useState<
     "closed" | "files" | "commands"
   >("closed");
@@ -1069,6 +1076,29 @@ const EditorCodeWorkspaceContent = forwardRef<
     ...storefrontThemeFileQueries.revisions(storefrontId, themeId),
     enabled: sideView === "history",
   });
+  // Two steps, because the list only exists once the panel is open: show the
+  // history, then pick the revision recorded just before that file went.
+  useEffect(() => {
+    const request = fileHistoryRequest;
+    if (!request) return;
+    if (handledFileHistoryRequestRef.current === request.requestedAt) return;
+    if (sideView !== "history") {
+      setSideView("history");
+      return;
+    }
+    const revisions = revisionsQuery.data?.revisions;
+    if (!revisions) return;
+    handledFileHistoryRequestRef.current = request.requestedAt;
+    const marker = `Before deleting ${request.path}`;
+    const match = revisions.find(
+      (revision) => (revision.message ?? "") === marker,
+    );
+    // Without a match the panel still opens: the author is where the answer
+    // is, which beats a click that appears to do nothing.
+    if (match) setSelectedRevisionNumber(match.revisionNumber);
+    useThemeWorkspaceStore.getState().clearFileHistoryRequest();
+  }, [fileHistoryRequest, revisionsQuery.data, sideView]);
+
   const rollbackPreviewQuery = useQuery({
     ...storefrontThemeFileQueries.rollbackPreview(
       storefrontId,
@@ -1088,9 +1118,12 @@ const EditorCodeWorkspaceContent = forwardRef<
       : null;
   const rollbackMutation = useMutation({
     mutationFn: async (revisionNumber: number) => {
-      const expectedSourceGeneration = rollbackPreviewQuery.data?.sourceGeneration;
+      const expectedSourceGeneration =
+        rollbackPreviewQuery.data?.sourceGeneration;
       if (expectedSourceGeneration === undefined) {
-        throw new Error("Reopen this version: its restore plan is out of date.");
+        throw new Error(
+          "Reopen this version: its restore plan is out of date.",
+        );
       }
       const result = await rollbackStorefrontThemeRevision({
         data: {
@@ -1117,7 +1150,9 @@ const EditorCodeWorkspaceContent = forwardRef<
     },
     onError: (error) => {
       toast.error(
-        error instanceof Error ? error.message : "Failed to restore the version",
+        error instanceof Error
+          ? error.message
+          : "Failed to restore the version",
       );
     },
   });
@@ -3374,9 +3409,9 @@ const EditorCodeWorkspaceContent = forwardRef<
               {pendingConfirmation?.kind === "close-file"
                 ? `Close “${pendingConfirmation.path}” and discard its unsaved changes?`
                 : pendingConfirmation?.kind === "delete-folder"
-                  ? `Delete “${pendingConfirmation.path}” and its ${pendingConfirmation.fileCount} file${pendingConfirmation.fileCount === 1 ? "" : "s"}? This cannot be undone.`
+                  ? `Removes “${pendingConfirmation.path}” and its ${pendingConfirmation.fileCount} file${pendingConfirmation.fileCount === 1 ? "" : "s"} from the workspace. Anything still importing them renders a gap until they are back. Restore this from the file history.`
                   : pendingConfirmation
-                    ? `Delete “${pendingConfirmation.path}”? This cannot be undone.`
+                    ? `Removes “${pendingConfirmation.path}” from the workspace. Anything still importing it renders a gap until it is back. Restore this from the file history.`
                     : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>

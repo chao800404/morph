@@ -3715,6 +3715,16 @@ export function VisualEditorShell({
         return;
       }
 
+      if (message.type === "morph:storefront-preview-open-file-history") {
+        reportAuthenticatedUserActivity();
+        // The gap is in the canvas; the history is in the Code workspace. Both
+        // moves belong to one click, or the author lands in Code with no idea
+        // why they are there.
+        setEditorMode("code");
+        useThemeWorkspaceStore.getState().requestFileHistory(message.path);
+        return;
+      }
+
       if (message.type === "morph:storefront-preview-commit-inline-text") {
         reportAuthenticatedUserActivity();
         inlineTextCommitHandlerRef.current(message);

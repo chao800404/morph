@@ -60,6 +60,8 @@ describe("a deleted component", () => {
     // deleted the file is the one who has to read it.
     expect(markup).toContain("was deleted");
     expect(markup).toContain("history");
+    // And it is the way back, not just a label.
+    expect(markup).toContain("cursor:pointer");
   });
 
   it("contains a module shared by every component", () => {

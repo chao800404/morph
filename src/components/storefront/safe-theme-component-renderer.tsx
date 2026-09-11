@@ -1586,6 +1586,8 @@ function missingComponentPlaceholder(
         ? { "data-morph-section": section.sectionId }
         : {}),
       role: "note",
+      // Looks like what it is: something to click. The preview turns a click
+      // here into the file's history rather than a selection.
       style: {
         padding: "24px",
         margin: "0",
@@ -1593,9 +1595,11 @@ function missingComponentPlaceholder(
         opacity: 0.7,
         font: "500 13px/1.6 ui-sans-serif, system-ui, sans-serif",
         textAlign: "center",
+        cursor: "pointer",
       },
+      title: `Open the file history for ${sourcePath}`,
     },
-    `<${componentName}> is missing: ${sourcePath} was deleted. Restore it from the file history to bring this section back.`,
+    `<${componentName}> is missing: ${sourcePath} was deleted. Click here to open its history and restore it.`,
   );
 }
 
