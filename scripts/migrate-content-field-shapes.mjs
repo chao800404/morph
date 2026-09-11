@@ -65,6 +65,18 @@ const ROW_LINK_KEYS = {
   href: { field: "link", siblings: { target: "target", rel: "rel" } },
 };
 
+/**
+ * Fields that gather several flat keys into one value.
+ *
+ * A media field holds the file and its alternative text together, because they
+ * are chosen together and a picture with someone else's description is worse
+ * than one with none. Stored flat, the pair could drift apart — and a component
+ * that has moved to the grouped shape reads nothing at all from the old keys.
+ */
+const GROUPED_FIELDS = {
+  image: { type: "image", parts: { src: "imageSrc", alt: "imageAlt" } },
+};
+
 function locateDatabase() {
   if (!existsSync(D1_DIR)) {
     console.error(
@@ -102,9 +114,9 @@ function toLinkValue(value) {
  * read. Skipping a component that could have been migrated is a re-run;
  * migrating one that should not have been is data the author has to rebuild.
  */
-function declaresLinkIn(text, fieldKey) {
+function declaresTypeIn(text, fieldKey, type) {
   return new RegExp(
-    `\\b${fieldKey}\\s*:\\s*\\{[^}]*type\\s*:\\s*["']link["']`,
+    `\\b${fieldKey}\\s*:\\s*\\{[^}]*type\\s*:\\s*["']${type}["']`,
   ).test(text);
 }
 
@@ -115,9 +127,44 @@ function declarationOf(source) {
   return start === -1 ? null : source.slice(start);
 }
 
-function declaresLinkField(source, fieldKey) {
+function declaresField(source, fieldKey, type) {
   const declaration = declarationOf(source);
-  return declaration ? declaresLinkIn(declaration, fieldKey) : false;
+  return declaration ? declaresTypeIn(declaration, fieldKey, type) : false;
+}
+
+/**
+ * Gathers the flat keys of a grouped field into the field itself.
+ *
+ * Only the parts that are present move. An `imageAlt` with no `imageSrc` beside
+ * it is still the author's alternative text, and dropping it because its
+ * partner is missing would lose something nobody asked to lose.
+ */
+function migrateGroup(container, fieldKey, spec, label, changes) {
+  const present = Object.entries(spec.parts).filter(
+    ([, flatKey]) => flatKey in container,
+  );
+  if (present.length === 0) return;
+
+  if (fieldKey in container) {
+    for (const [, flatKey] of present) delete container[flatKey];
+    changes.push(
+      `${label}: dropped orphaned flat keys (${fieldKey} already set)`,
+    );
+    return;
+  }
+
+  const grouped = {};
+  const moved = [];
+  for (const [part, flatKey] of present) {
+    const value = container[flatKey];
+    delete container[flatKey];
+    if (value === null || value === undefined || value === "") continue;
+    grouped[part] = value;
+    moved.push(flatKey);
+  }
+  if (moved.length === 0) return;
+  container[fieldKey] = grouped;
+  changes.push(`${label}: ${moved.join(" + ")} → ${fieldKey}`);
 }
 
 /**
@@ -174,7 +221,7 @@ function migrateDocument(document, sourceForSection) {
 
     for (const [from, spec] of Object.entries(SCALAR_LINK_KEYS)) {
       if (!(from in props)) continue;
-      if (!declaresLinkField(source, spec.field)) {
+      if (!declaresField(source, spec.field, "link")) {
         skipped.push(
           `${id}: ${from} kept — the component declares no "${spec.field}" link field`,
         );
@@ -183,19 +230,34 @@ function migrateDocument(document, sourceForSection) {
       migrateKey(props, from, spec, id, changes);
     }
 
+    for (const [fieldKey, spec] of Object.entries(GROUPED_FIELDS)) {
+      if (!declaresField(source, fieldKey, spec.type)) continue;
+      migrateGroup(props, fieldKey, spec, id, changes);
+    }
+
     for (const [propKey, value] of Object.entries(props)) {
       if (!Array.isArray(value)) continue;
       value.forEach((row, index) => {
         if (row === null || typeof row !== "object") return;
         for (const [from, spec] of Object.entries(ROW_LINK_KEYS)) {
           if (!(from in row)) continue;
-          if (!declaresRowLinkField(source, propKey, spec.field)) {
+          if (!declaresRowField(source, propKey, spec.field, "link")) {
             skipped.push(
               `${id}.${propKey}[${index}]: ${from} kept — the row declares no "${spec.field}" link field`,
             );
             continue;
           }
           migrateKey(row, from, spec, `${id}.${propKey}[${index}]`, changes);
+        }
+        for (const [fieldKey, spec] of Object.entries(GROUPED_FIELDS)) {
+          if (!declaresRowField(source, propKey, fieldKey, spec.type)) continue;
+          migrateGroup(
+            row,
+            fieldKey,
+            spec,
+            `${id}.${propKey}[${index}]`,
+            changes,
+          );
         }
       });
     }
@@ -210,7 +272,7 @@ function migrateDocument(document, sourceForSection) {
  * Scoped to that array's own `fields` block, so a link declared elsewhere in
  * the component cannot vouch for a row that has none.
  */
-function declaresRowLinkField(source, arrayKey, fieldKey) {
+function declaresRowField(source, arrayKey, fieldKey, type) {
   const declaration = declarationOf(source);
   if (!declaration) return false;
   const arrayAt = declaration.search(new RegExp(`\\b${arrayKey}\\s*:\\s*\\{`));
@@ -220,7 +282,7 @@ function declaresRowLinkField(source, arrayKey, fieldKey) {
   // Searches the slice directly: handing it back to `declaresLinkField` would
   // look for the word `contentFields` inside a slice that starts after it, and
   // answer "not declared" for every row link there is.
-  return declaresLinkIn(declaration.slice(fieldsAt), fieldKey);
+  return declaresTypeIn(declaration.slice(fieldsAt), fieldKey, type);
 }
 
 /**

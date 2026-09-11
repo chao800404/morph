@@ -297,7 +297,7 @@ Document 不會自己跟上。元件讀不到舊鍵，就渲染預設值 —— 
 - 遠端資料庫無法直接開成 sqlite，腳本應能輸出 SQL 供
   `wrangler d1 execute DATABASE --remote --file` 套用。
 
-現行實例：`pnpm migrate:content-links`（`scripts/migrate-content-link-fields.mjs`）。
+現行實例：`pnpm migrate:content-shapes`（`scripts/migrate-content-field-shapes.mjs`）。
 
 ### 26.1 Morph 目前的主要收斂方向
 
