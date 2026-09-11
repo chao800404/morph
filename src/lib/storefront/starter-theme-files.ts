@@ -1,5 +1,6 @@
 import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
 import {
+  LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SOURCE,
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_MARKED_SOURCE,
@@ -891,6 +892,7 @@ export function createStarterThemeWorkspaceUpgrade(
       legacy: [
         LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
         LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_URL_FIELD_SOURCE,
+        LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SOURCE,
       ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/CategoryShowcase.tsx",

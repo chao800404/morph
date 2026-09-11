@@ -2032,6 +2032,117 @@ export default function ImageWithText({
 }
 `;
 
+/**
+ * The card grid while it still spelled out the row paths it now infers.
+ *
+ * Three of its four markers named what the interpreter already derives: it
+ * runs the `map()` itself, so it knows which row it is on. The fourth stays,
+ * because the image's source is a fallback chain rather than one field.
+ */
+export const LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SOURCE = `import type { ThemeContentFields } from "../morph/content-fields";
+import ThemeLink from "../morph/link";
+
+export type CategoryShowcaseLink = {
+  href?: string;
+  target?: "_self" | "_blank";
+  rel?: string;
+};
+
+export type CategoryShowcaseItem = {
+  title?: string;
+  caption?: string;
+  link?: CategoryShowcaseLink | string;
+  image?: { src?: string; alt?: string };
+  /** Read-only compatibility for documents created before image was grouped. */
+  imageSrc?: string;
+  imageAlt?: string;
+  imagePosition?: string;
+};
+
+export type CategoryShowcaseProps = {
+  heading?: string;
+  items?: CategoryShowcaseItem[];
+};
+
+export const contentFields = {
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  items: {
+    type: "array",
+    label: "Collections",
+    fields: {
+      title: { type: "text", label: "Title", maxLength: 150 },
+      caption: { type: "textarea", label: "Caption", maxLength: 300 },
+      link: { type: "link", label: "Destination" },
+      image: { type: "image", label: "Image" },
+      imagePosition: { type: "text", label: "Image position", maxLength: 100 },
+    },
+  },
+} as const satisfies ThemeContentFields;
+
+export default function CategoryShowcase({
+  heading = "Shop by collection",
+  items = [],
+}: CategoryShowcaseProps) {
+  return (
+    <section
+      className="bg-stone-900 px-[clamp(1.25rem,4vw,4rem)] py-[clamp(5rem,9vw,9rem)] text-stone-100"
+    >
+      <div className="mb-12 flex items-end justify-between border-b border-stone-700 pb-6">
+        <h2
+          data-storefront-field="heading"
+          className="font-serif text-[clamp(2.5rem,5vw,5rem)] tracking-[-0.04em]"
+        >
+          {heading}
+        </h2>
+        <span className="hidden text-xs uppercase tracking-[0.2em] text-stone-400 sm:block">
+          The collection
+        </span>
+      </div>
+      <div
+        className="grid gap-4 lg:grid-cols-3"
+      >
+        {items.map((item, index) => (
+          <ThemeLink
+            key={index}
+            link={item.link}
+            data-storefront-field-path={\`items.\${index}\`}
+            className="group block border-t border-stone-700 pt-4 lg:border-t-0 lg:pt-0"
+          >
+            <div className="aspect-[4/5] overflow-hidden bg-stone-800">
+              <img
+                data-storefront-field="image"
+                data-storefront-field-path={\`items.\${index}.image\`}
+                src={item.image?.src ?? item.imageSrc ?? "/static/storefront/theme-preview-default.png"}
+                alt={item.image?.alt ?? item.imageAlt ?? "Collection item"}
+                style={{ objectPosition: item.imagePosition ?? "center" }}
+                className="size-full object-cover opacity-80 transition-transform duration-500 ease-out group-hover:scale-[1.025]"
+              />
+            </div>
+            <div className="flex gap-5 py-5">
+              <span className="pt-1 text-xs text-stone-500">{index + 1}</span>
+              <div>
+                <h3
+                  data-storefront-field-path={\`items.\${index}.title\`}
+                  className="font-serif text-2xl"
+                >
+                  {item.title ?? "Collection"}
+                </h3>
+                <p
+                  data-storefront-field-path={\`items.\${index}.caption\`}
+                  className="mt-2 max-w-xs text-sm leading-6 text-stone-400"
+                >
+                  {item.caption ?? ""}
+                </p>
+              </div>
+            </div>
+          </ThemeLink>
+        ))}
+      </div>
+    </section>
+  );
+}
+`;
+
 export const STARTER_THEME_V3_NEW_FILES = [
   {
     path: "src/morph/content-fields.ts",
@@ -2157,7 +2268,6 @@ export default function CategoryShowcase({
           <ThemeLink
             key={index}
             link={item.link}
-            data-storefront-field-path={\`items.\${index}\`}
             className="group block border-t border-stone-700 pt-4 lg:border-t-0 lg:pt-0"
           >
             <div className="aspect-[4/5] overflow-hidden bg-stone-800">
@@ -2174,13 +2284,11 @@ export default function CategoryShowcase({
               <span className="pt-1 text-xs text-stone-500">{index + 1}</span>
               <div>
                 <h3
-                  data-storefront-field-path={\`items.\${index}.title\`}
                   className="font-serif text-2xl"
                 >
                   {item.title ?? "Collection"}
                 </h3>
                 <p
-                  data-storefront-field-path={\`items.\${index}.caption\`}
                   className="mt-2 max-w-xs text-sm leading-6 text-stone-400"
                 >
                   {item.caption ?? ""}
