@@ -15,6 +15,17 @@ export type ThemeRouteSection = Readonly<{
   componentName: string;
   componentSourcePath: string;
   routeSourcePath: string;
+  /**
+   * Set when the route imports this slot's component from a file the workspace
+   * no longer has.
+   *
+   * Deleting a file is a real edit and stays allowed, but one deleted file used
+   * to take every page down with it: the slot stopped resolving, the route
+   * reported a diagnostic, and nothing rendered at all — including the panel
+   * the author would use to put the file back. Marking the slot instead keeps
+   * the failure the size of the thing that failed.
+   */
+  missingComponentSourcePath?: string;
 }>;
 
 export type ThemeRouteSectionResult = Readonly<{
@@ -99,10 +110,13 @@ function resolveLocalImport(
   sourcePath: string,
   specifier: string,
   filePaths: ReadonlySet<string>,
-): string | null {
+): string | { missing: string } | null {
   if (!specifier.startsWith(".")) return null;
   const base = normalizePath(`${dirname(sourcePath)}/${specifier}`);
   if (!base.startsWith("src/")) return null;
+  // Remembered before the file check so a relative import of a file that is
+  // gone can be told apart from something that was never a local module.
+  const localBase = base;
   for (const extension of SOURCE_EXTENSIONS) {
     const candidate = `${base}${extension}`;
     if (filePaths.has(candidate)) return candidate;
@@ -116,7 +130,7 @@ function resolveLocalImport(
     const candidate = `${base}${extension}`;
     if (filePaths.has(candidate)) return candidate;
   }
-  return null;
+  return { missing: `${localBase}.tsx` };
 }
 
 function kebabCase(value: string): string {
@@ -231,7 +245,10 @@ function parsePositionedSections(
   }
 
   const filePaths = new Set(files.map((file) => normalizePath(file.path)));
-  const imports = new Map<string, { imported: string; sourcePath: string }>();
+  const imports = new Map<
+    string,
+    { imported: string; sourcePath: string; missing?: string }
+  >();
   for (const statement of ast.program.body ?? []) {
     if (statement?.type !== "ImportDeclaration") continue;
     const resolved = resolveLocalImport(
@@ -240,6 +257,9 @@ function parsePositionedSections(
       filePaths,
     );
     if (!resolved) continue;
+    const missing = typeof resolved === "string" ? undefined : resolved.missing;
+    const sourcePath =
+      typeof resolved === "string" ? resolved : resolved.missing;
     for (const specifier of statement.specifiers ?? []) {
       if (specifier?.local?.type !== "Identifier") continue;
       const imported =
@@ -247,7 +267,7 @@ function parsePositionedSections(
           ? "default"
           : (specifier.imported?.name ?? specifier.imported?.value);
       if (typeof imported === "string") {
-        imports.set(specifier.local.name, { imported, sourcePath: resolved });
+        imports.set(specifier.local.name, { imported, sourcePath, missing });
       }
     }
   }
@@ -279,6 +299,25 @@ function parsePositionedSections(
       diagnostics.push(
         `${normalizedRoutePath}: content slot "${slotId}" must feed a directly imported local component.`,
       );
+      return;
+    }
+    // The slot is wired correctly; the file it points at is simply not here.
+    // That is a deletion the author can undo, so it is carried as a marked
+    // section rather than a diagnostic that blanks the page they would undo it
+    // from.
+    if (imported.missing) {
+      seenSlots.add(slotId);
+      sections.push({
+        slotId,
+        sectionType: kebabCase(componentName),
+        componentRef: imported.missing,
+        componentName,
+        componentSourcePath: imported.missing,
+        routeSourcePath: normalizedRoutePath,
+        missingComponentSourcePath: imported.missing,
+        node,
+        parent,
+      });
       return;
     }
     if (seenSlots.has(slotId)) {

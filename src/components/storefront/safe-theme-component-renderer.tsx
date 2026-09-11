@@ -132,6 +132,8 @@ function resolveLocalImport(
   importer: string,
   specifier: string,
 ): string | null {
+  // Callers treat a returned path as "this is ours"; `renderModuleComponent`
+  // is what discovers the file is absent and stands a placeholder in for it.
   if (!specifier.startsWith(".")) return null;
   const base = normalizePath(`${dirname(importer)}/${specifier}`);
   const candidates = [
@@ -143,7 +145,12 @@ function resolveLocalImport(
     `${base}/index.tsx`,
     `${base}/index.ts`,
   ];
-  return candidates.find((candidate) => files.has(candidate)) ?? null;
+  const found = candidates.find((candidate) => files.has(candidate));
+  if (found) return found;
+  // A relative specifier that matches no file is a deleted module, not a
+  // foreign one. Returning the path it would have had lets the caller render a
+  // gap where the component was instead of refusing the whole tree.
+  return `${base}.tsx`;
 }
 
 function parseModule(path: string, source: string): ModuleRecord {
@@ -1557,6 +1564,41 @@ function renderFunctionComponent(
   return annotateComponentRoot(node, sourcePath, componentName, section);
 }
 
+/**
+ * Stands in for a component whose file the workspace no longer has.
+ *
+ * Deleting a file is a real edit and stays allowed. What must not follow is a
+ * blank page: one missing component used to abort the whole render, including
+ * the surrounding chrome an author would use to put the file back. A visible
+ * gap the author can see and click is both the honest report and the way out.
+ */
+function missingComponentPlaceholder(
+  componentName: string,
+  sourcePath: string,
+  section?: SafeThemeSectionIdentity,
+): ReactNode {
+  return createElement(
+    "div",
+    {
+      "data-morph-missing-component": sourcePath,
+      "data-morph-component": componentName,
+      ...(section?.sectionId
+        ? { "data-morph-section": section.sectionId }
+        : {}),
+      role: "note",
+      style: {
+        padding: "24px",
+        margin: "0",
+        border: "1px dashed currentColor",
+        opacity: 0.7,
+        font: "500 13px/1.6 ui-sans-serif, system-ui, sans-serif",
+        textAlign: "center",
+      },
+    },
+    `<${componentName}> is missing: ${sourcePath} was deleted. Restore it from the file history to bring this section back.`,
+  );
+}
+
 function renderModuleComponent(
   sourcePath: string,
   exportName: string,
@@ -1584,8 +1626,15 @@ function renderModuleComponent(
   }
   const file = context.files.get(sourcePath);
   if (!file) {
-    throw new SafeThemeRuntimeError(
-      `Theme component source "${sourcePath}" is unavailable.`,
+    // The import names a local module, so this is a file that was deleted
+    // rather than a component the Theme never had. Contained, not fatal.
+    return missingComponentPlaceholder(
+      sourcePath
+        .split("/")
+        .pop()
+        ?.replace(/\.[jt]sx?$/, "") ?? exportName,
+      sourcePath,
+      resolvedSection,
     );
   }
   const cycleKey = `${sourcePath}#${exportName}`;
