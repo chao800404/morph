@@ -225,6 +225,23 @@ import {
   useLivePreviewMessageBridge,
   useStableLivePreviewSession,
 } from "./use-live-preview-message-bridge";
+import {
+  CANVAS_SCALE_STEP,
+  CANVAS_TOP_INSET,
+  MAX_CANVAS_SCALE,
+  MAX_PREVIEW_WIDTH,
+  MIN_CANVAS_SCALE,
+  MIN_PREVIEW_WIDTH,
+  PREVIEW_WIDTH_STEP,
+  clampCanvasScale,
+  clampPreviewWidth,
+  initialCanvasTransform,
+  normalizeWheelDelta,
+  resolvePreviewViewport,
+  snapCanvasScaleTowardDefault,
+  type CanvasTransform,
+} from "./editor-canvas-geometry";
+import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 
 const loadEditorCodeWorkspace = () =>
   import("./editor-code-workspace").then((module) => ({
@@ -469,20 +486,6 @@ const PREVIEW_REMEASURE_DELAY_MS = 500;
 // it does not execute the user's JavaScript bundle. Switching this to
 // "user-code" intentionally fails closed until an isolated origin is configured.
 const LIVE_PREVIEW_EXECUTION_MODE = "compatibility-renderer" as const;
-const MIN_CANVAS_SCALE = 0.25;
-const MAX_CANVAS_SCALE = 2;
-const CANVAS_SCALE_STEP = 0.1;
-const CANVAS_DEFAULT_SCALE = 1;
-const CANVAS_DEFAULT_SCALE_SNAP_THRESHOLD = 0.02;
-const MIN_PREVIEW_WIDTH = 320;
-const MAX_PREVIEW_WIDTH = 1920;
-const PREVIEW_WIDTH_STEP = 16;
-const TABLET_PREVIEW_WIDTH = 768;
-const DESKTOP_PREVIEW_WIDTH = 1024;
-const CANVAS_TOP_INSET = 48;
-const CANVAS_BOTTOM_INSET = 80;
-const CANVAS_VERTICAL_OVERSCROLL = 200;
-const CANVAS_SCROLL_COMMIT_DELAY_MS = 120;
 
 /**
  * Result of one build attempt.
@@ -497,84 +500,8 @@ type BuildAttempt = {
   sourceGeneration?: number;
 };
 
-type CanvasTransform = {
-  x: number;
-  y: number;
-  scale: number;
-};
-
 const EMPTY_THEME_FILES: StorefrontThemeFileDTO[] = [];
 const EMPTY_THEME_TREE: StorefrontThemeFileTreeNode[] = [];
-
-const initialCanvasTransform: CanvasTransform = {
-  x: 0,
-  y: 0,
-  scale: 1,
-};
-
-function clampCanvasScale(scale: number) {
-  return Math.min(MAX_CANVAS_SCALE, Math.max(MIN_CANVAS_SCALE, scale));
-}
-
-function snapCanvasScaleTowardDefault(currentScale: number, nextScale: number) {
-  if (currentScale === CANVAS_DEFAULT_SCALE) return nextScale;
-
-  const isMovingTowardDefault =
-    (currentScale < CANVAS_DEFAULT_SCALE && nextScale > currentScale) ||
-    (currentScale > CANVAS_DEFAULT_SCALE && nextScale < currentScale);
-  const crossedDefault =
-    (currentScale < CANVAS_DEFAULT_SCALE &&
-      nextScale >= CANVAS_DEFAULT_SCALE) ||
-    (currentScale > CANVAS_DEFAULT_SCALE && nextScale <= CANVAS_DEFAULT_SCALE);
-  const isWithinSnapThreshold =
-    Math.abs(nextScale - CANVAS_DEFAULT_SCALE) <=
-    CANVAS_DEFAULT_SCALE_SNAP_THRESHOLD;
-
-  return isMovingTowardDefault && (crossedDefault || isWithinSnapThreshold)
-    ? CANVAS_DEFAULT_SCALE
-    : nextScale;
-}
-
-function clampPreviewWidth(width: number) {
-  return Math.min(MAX_PREVIEW_WIDTH, Math.max(MIN_PREVIEW_WIDTH, width));
-}
-
-function resolvePreviewViewport(width: number) {
-  if (width >= DESKTOP_PREVIEW_WIDTH) return "desktop" as const;
-  if (width >= TABLET_PREVIEW_WIDTH) return "tablet" as const;
-  return "mobile" as const;
-}
-
-function clampCanvasTransform(
-  transform: CanvasTransform,
-  viewportHeight: number,
-  contentHeight: number,
-) {
-  const minimumY =
-    Math.min(
-      0,
-      viewportHeight -
-        CANVAS_TOP_INSET -
-        CANVAS_BOTTOM_INSET -
-        contentHeight * transform.scale,
-    ) - CANVAS_VERTICAL_OVERSCROLL;
-  const maximumY = CANVAS_VERTICAL_OVERSCROLL;
-
-  return {
-    ...transform,
-    y: Math.min(maximumY, Math.max(minimumY, transform.y)),
-  };
-}
-
-function normalizeWheelDelta(
-  deltaY: number,
-  deltaMode: number,
-  viewportHeight: number,
-) {
-  if (deltaMode === 1) return deltaY * 16;
-  if (deltaMode === 2) return deltaY * viewportHeight;
-  return deltaY;
-}
 
 const DEFAULT_LEFT_PANEL_WIDTH = 260;
 const MIN_LEFT_PANEL_WIDTH = 220;
@@ -665,9 +592,6 @@ export function VisualEditorShell({
     key: string;
     nodes: readonly PreviewEditableNode[];
   } | null>(null);
-  const [canvasTransform, setCanvasTransform] = useState<CanvasTransform>(
-    initialCanvasTransform,
-  );
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [spacingOverlayMode, setSpacingOverlayMode] =
     useState<PreviewSpacingOverlayMode>("off");
@@ -3338,13 +3262,17 @@ export function VisualEditorShell({
     }
   }, [normalWidthSessionKey]);
 
-  const canvasViewportRef = useRef<HTMLDivElement>(null);
   const previewWidthRef = useRef(previewWidth);
   const previewFrameHeightRef = useRef(previewFrameHeight);
-  const canvasTransformRef = useRef(canvasTransform);
-  const canvasRenderFrameRef = useRef(0);
-  const canvasTransformCommitTimerRef = useRef(0);
-  const canvasViewportHeightRef = useRef(0);
+  const {
+    transform: canvasTransform,
+    transformRef: canvasTransformRef,
+    viewportRef: canvasViewportRef,
+    viewportHeightRef: canvasViewportHeightRef,
+    renderFrameRef: canvasRenderFrameRef,
+    commitTimerRef: canvasTransformCommitTimerRef,
+    schedule: scheduleCanvasTransform,
+  } = useEditorCanvasTransform({ previewWidthRef, previewFrameHeightRef });
   const previewRemeasureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -3369,87 +3297,6 @@ export function VisualEditorShell({
     edge: "left" | "right";
     scale: number;
   } | null>(null);
-
-  const applyCanvasTransformToDom = useCallback(
-    (transform: CanvasTransform) => {
-      const viewport = canvasViewportRef.current;
-      if (!viewport) return;
-
-      viewport.style.setProperty("--morph-canvas-x", `${transform.x}px`);
-      viewport.style.setProperty("--morph-canvas-y", `${transform.y}px`);
-      viewport.style.setProperty(
-        "--morph-canvas-scale",
-        String(transform.scale),
-      );
-      viewport.style.setProperty(
-        "--morph-canvas-half-width",
-        `${(previewWidthRef.current * transform.scale) / 2}px`,
-      );
-      viewport.style.setProperty(
-        "--morph-canvas-scaled-height",
-        `${previewFrameHeightRef.current * transform.scale}px`,
-      );
-    },
-    [],
-  );
-
-  const scheduleCanvasTransformCommit = useCallback(() => {
-    if (canvasTransformCommitTimerRef.current !== 0) {
-      window.clearTimeout(canvasTransformCommitTimerRef.current);
-    }
-    canvasTransformCommitTimerRef.current = window.setTimeout(() => {
-      canvasTransformCommitTimerRef.current = 0;
-      const current = canvasTransformRef.current;
-      setCanvasTransform((previous) =>
-        previous.x === current.x &&
-        previous.y === current.y &&
-        previous.scale === current.scale
-          ? previous
-          : current,
-      );
-    }, CANVAS_SCROLL_COMMIT_DELAY_MS);
-  }, []);
-
-  const scheduleCanvasTransform = useCallback(
-    (
-      action: CanvasTransform | ((current: CanvasTransform) => CanvasTransform),
-    ) => {
-      const current = canvasTransformRef.current;
-      const requested = typeof action === "function" ? action(current) : action;
-      const viewportHeight =
-        canvasViewportHeightRef.current ||
-        canvasViewportRef.current?.clientHeight ||
-        0;
-      const next =
-        viewportHeight > 0
-          ? clampCanvasTransform(
-              requested,
-              viewportHeight,
-              previewFrameHeightRef.current,
-            )
-          : requested;
-      const didChange = !(
-        next.x === current.x &&
-        next.y === current.y &&
-        next.scale === current.scale
-      );
-      if (!didChange) return;
-
-      canvasTransformRef.current = next;
-      if (canvasTransformCommitTimerRef.current !== 0) {
-        window.clearTimeout(canvasTransformCommitTimerRef.current);
-        canvasTransformCommitTimerRef.current = 0;
-      }
-      if (canvasRenderFrameRef.current !== 0) return;
-
-      canvasRenderFrameRef.current = requestAnimationFrame(() => {
-        canvasRenderFrameRef.current = 0;
-        applyCanvasTransformToDom(canvasTransformRef.current);
-        scheduleCanvasTransformCommit();
-      });
-    },
-    [applyCanvasTransformToDom, scheduleCanvasTransformCommit],
-  );
 
   // The iframe keeps its current dimensions while the preview settles. Theme
   // viewport units resolve against the separate viewport-height token inside
