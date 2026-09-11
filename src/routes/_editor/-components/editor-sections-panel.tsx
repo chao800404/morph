@@ -126,6 +126,13 @@ export type EditorSectionsPanelProps = {
    * the tree never briefly shows a different page.
    */
   routeStructurePending?: boolean;
+  /**
+   * Sections the layout owns, which every page renders.
+   *
+   * They appear in this page's document so the tree can show them, but they
+   * belong to another one, and only the page's own sections can be reordered.
+   */
+  sharedSectionIds?: ReadonlySet<string>;
   themeRoutes?: readonly ThemeRouteRecord[];
   /** Warm a route before navigation commits. */
   onPrefetchThemeRoute?: (route: ThemeRouteRecord) => void;
@@ -627,6 +634,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onSelectEditableNode,
   activeRoute = null,
   routeStructurePending = false,
+  sharedSectionIds,
   themeRoutes = [],
   onPrefetchThemeRoute,
   onOpenThemeRoute,
@@ -644,13 +652,22 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   // Memoised because an effect below syncs state from this array by identity:
   // returning a fresh `[]` each render sets state on every render, which is an
   // infinite loop rather than an empty tree.
-  const sourceSections = useMemo(
-    () =>
-      templateAppliesToRoute(activeTemplate, search.routePath)
-        ? (activeTemplate?.document.sections ?? NO_SECTIONS)
-        : NO_SECTIONS,
-    [activeTemplate, search.routePath],
-  );
+  const sourceSections = useMemo(() => {
+    if (!templateAppliesToRoute(activeTemplate, search.routePath)) {
+      return NO_SECTIONS;
+    }
+    const all = activeTemplate?.document.sections ?? NO_SECTIONS;
+    // The shell's sections are in this document so the tree can show them,
+    // but they are not this page's to order: reordering rewrites the route
+    // file, and the route does not declare the layout's slots. Leaving them
+    // in the sortable list meant dragging Header sent the route a slot id it
+    // had never heard of, which came back as a failed save and looked like
+    // the drag doing nothing. Out of this list they render as page roots,
+    // which is what they are.
+    if (!sharedSectionIds?.size) return all;
+    const own = all.filter((section) => !sharedSectionIds.has(section.id));
+    return own.length === all.length ? all : own;
+  }, [activeTemplate, search.routePath, sharedSectionIds]);
   const [sections, setSections] = useState(sourceSections);
   const sectionsRef = useRef(sourceSections);
   const dragStartSectionsRef = useRef<EditorSection[] | null>(null);

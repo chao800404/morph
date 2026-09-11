@@ -6157,6 +6157,7 @@ export function VisualEditorShell({
           onToggleSectionEnabled={handleSectionToggleEnabled}
           activeRoute={activeThemeRoute}
           routeStructurePending={routeStructurePending}
+          sharedSectionIds={sectionModel.sharedSectionIds}
           editableNodes={
             previewStructure?.key === previewKey
               ? previewStructure.nodes
