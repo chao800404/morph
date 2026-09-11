@@ -278,7 +278,11 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(parsed.diagnostics.length).toBeGreaterThan(0);
   });
 
-  it("detects dynamic className expressions and returns editable=false", () => {
+  it("edits the static classes in a cn() that also carries a condition", () => {
+    // This used to assert editable=false. That was the limitation rather than
+    // the rule: the condition is the component's logic and is left untouched,
+    // but the literal beside it is ordinary styling, and refusing it sent
+    // authors into Code mode to change a font size.
     const dynamicCode = `
       export default function DynamicHero() {
         return (
@@ -293,6 +297,21 @@ describe("theme-ast-transformer (TSX AST)", () => {
     `;
     const res = patchElementClassNameResult(dynamicCode, "heading", (prev) =>
       prev.replace("text-6xl", "text-9xl"),
+    );
+    expect(res.editable).toBe(true);
+    expect(res.code).toContain('cn("text-9xl", isBig && "text-8xl")');
+  });
+
+  it("still refuses a className with no static classes of its own", () => {
+    const dynamicCode = `
+      export default function DynamicHero() {
+        return <h1 data-morph-element="heading" className={cn(base, "text-6xl")}>Hello</h1>;
+      }
+    `;
+    const res = patchElementClassNameResult(
+      dynamicCode,
+      "heading",
+      (prev) => `${prev} tracking-tight`,
     );
     expect(res.editable).toBe(false);
     expect(res.reason).toBe("dynamic-classname");

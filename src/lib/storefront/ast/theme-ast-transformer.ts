@@ -105,6 +105,57 @@ function readStaticCnClassName(expression: Node): string | null {
     .join(" ");
 }
 
+/**
+ * The part of a `cn(...)` call the style panel may own, if any.
+ *
+ * A conditional argument is the component's logic, not the author's classes:
+ * it may or may not apply, and nothing the panel writes could honour that. But
+ * the leading string literal beside it is ordinary styling, and refusing the
+ * whole call because of its neighbour is what sent authors to Code mode for a
+ * font size.
+ *
+ * So the panel owns a contiguous run of leading string literals and nothing
+ * else. The run matters: when every argument is a literal the panel shows them
+ * joined, and writing that back into only the first one duplicated the rest —
+ * `cn("p-4", "bg-white")` became `cn("p-4 bg-white rounded", "bg-white")`.
+ * Replacing the whole run collapses it to one literal instead.
+ */
+function readEditableCnClassName(
+  expression: Node,
+): { className: string; start: number; end: number } | null {
+  if (
+    expression?.type !== "CallExpression" ||
+    expression.callee?.type !== "Identifier" ||
+    expression.callee.name !== "cn"
+  ) {
+    return null;
+  }
+  const args = expression.arguments;
+  // An instance lookup is generated, and rewriting around it would detach a
+  // row's own styling from the row.
+  if (args.some((argument: Node) => isMorphInstanceClassLookup(argument))) {
+    return null;
+  }
+
+  let last = -1;
+  while (last + 1 < args.length && args[last + 1]?.type === "StringLiteral") {
+    last += 1;
+  }
+  if (last < 0) return null;
+
+  const literals = args.slice(0, last + 1);
+  return {
+    className: literals
+      .map((argument: Node) =>
+        String((argument as { value?: unknown }).value ?? "").trim(),
+      )
+      .filter(Boolean)
+      .join(" "),
+    start: literals[0].start ?? 0,
+    end: literals[last].end ?? 0,
+  };
+}
+
 function readStaticClassNameExpression(expression: Node): string | null {
   const cnClassName = readStaticCnClassName(expression);
   if (cnClassName !== null) return cnClassName;
@@ -526,24 +577,16 @@ export function parseComponentSource(
                   expr.callee?.type === "Identifier" &&
                   expr.callee.name === "cn"
                 ) {
-                  const staticCn = readStaticCnClassName(expr);
-                  const hasInstanceLookup = expr.arguments.some((arg) =>
-                    isMorphInstanceClassLookup(arg),
-                  );
-                  if (
-                    staticCn !== null &&
-                    !hasInstanceLookup &&
-                    expr.arguments.length > 0 &&
-                    expr.arguments[0]?.type === "StringLiteral"
-                  ) {
-                    className = staticCn;
+                  const editable = readEditableCnClassName(expr);
+                  if (editable) {
+                    className = editable.className;
                     classNameOffsets = {
-                      start: expr.arguments[0].start ?? 0,
-                      end: expr.arguments[0].end ?? 0,
+                      start: editable.start,
+                      end: editable.end,
                       isExpression: false,
                       patchTarget: {
-                        start: expr.arguments[0].start ?? 0,
-                        end: expr.arguments[0].end ?? 0,
+                        start: editable.start,
+                        end: editable.end,
                       },
                     };
                   } else {
