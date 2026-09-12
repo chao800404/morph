@@ -24,6 +24,25 @@ export function shouldRevealPreviewForStyleAck(
   );
 }
 
+export function shouldConfirmPreviewStyleRevision(input: {
+  confirmationPreviewKey: string;
+  currentPreviewKey: string | null;
+  initialPreviewKey: string | null;
+  revision: number;
+  latestRequested: number;
+  initialPreviewRevision: number | null;
+}): boolean {
+  return (
+    input.confirmationPreviewKey === input.currentPreviewKey &&
+    input.confirmationPreviewKey === input.initialPreviewKey &&
+    shouldRevealPreviewForStyleAck(
+      input.revision,
+      input.latestRequested,
+      input.initialPreviewRevision,
+    )
+  );
+}
+
 export function isPreviewHandshakePending(
   previewKey: string | null,
   loadedPreviewKey: string | null,

@@ -3,6 +3,7 @@ import {
   isPreviewHandshakePending,
   isLatestStyleRevision,
   shouldAcceptStyleAck,
+  shouldConfirmPreviewStyleRevision,
   shouldRevealPreviewForStyleAck,
 } from "./style-revision";
 
@@ -21,6 +22,31 @@ describe("style revision protocol", () => {
     expect(shouldRevealPreviewForStyleAck(5, 5, 6)).toBe(false);
     expect(shouldRevealPreviewForStyleAck(5, 5, 5)).toBe(true);
     expect(shouldRevealPreviewForStyleAck(7, 7, 5)).toBe(true);
+  });
+
+  it("ties a confirmation to the preview that requested it", () => {
+    const current = {
+      confirmationPreviewKey: "preview-2",
+      currentPreviewKey: "preview-2",
+      initialPreviewKey: "preview-2",
+      revision: 7,
+      latestRequested: 7,
+      initialPreviewRevision: 7,
+    };
+
+    expect(shouldConfirmPreviewStyleRevision(current)).toBe(true);
+    expect(
+      shouldConfirmPreviewStyleRevision({
+        ...current,
+        confirmationPreviewKey: "preview-1",
+      }),
+    ).toBe(false);
+    expect(
+      shouldConfirmPreviewStyleRevision({
+        ...current,
+        initialPreviewKey: "preview-1",
+      }),
+    ).toBe(false);
   });
 
   it("stops the loading state after either acknowledgement or failure", () => {

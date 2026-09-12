@@ -219,7 +219,7 @@ import {
 import {
   isLatestStyleRevision,
   isPreviewHandshakePending,
-  shouldRevealPreviewForStyleAck,
+  shouldConfirmPreviewStyleRevision,
 } from "./style-revision";
 import {
   useLivePreviewMessageBridge,
@@ -1104,6 +1104,8 @@ export function VisualEditorShell({
   previewSourceOriginRef.current = previewSource?.origin ?? null;
   previewSourceKindRef.current = previewSource?.kind ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
+  const previewKeyRef = useRef(previewKey);
+  previewKeyRef.current = previewKey;
   const isPreviewLoading = isPreviewHandshakePending(
     previewKey,
     loadedPreviewKey,
@@ -1948,26 +1950,59 @@ export function VisualEditorShell({
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
-  /**
-   * Records that a Theme source revision is the one now on screen.
-   *
-   * Reached two ways, and both are statements of fact rather than hope: the
-   * preview says a hot update landed, or the server says the container
-   * already held exactly this source and no update was coming.
-   */
-  const confirmPreviewStyleRevisionRef = useRef<
-    ((styleRevision: number) => void) | null
-  >(null);
+  const confirmPreviewStyleRevision = useCallback(
+    (confirmation: { previewKey: string; styleRevision: number }) => {
+      const initialPreviewSync = initialPreviewSyncRef.current;
+      if (
+        !shouldConfirmPreviewStyleRevision({
+          confirmationPreviewKey: confirmation.previewKey,
+          currentPreviewKey: previewKeyRef.current,
+          initialPreviewKey: initialPreviewSync?.key ?? null,
+          revision: confirmation.styleRevision,
+          latestRequested: latestStyleRevisionRef.current,
+          initialPreviewRevision: initialPreviewSync?.styleRevision ?? null,
+        })
+      ) {
+        return;
+      }
+      setLoadedPreviewKey(confirmation.previewKey);
+      setPreviewLoadFailure((current) =>
+        current?.key === confirmation.previewKey ? null : current,
+      );
+      latestAppliedStyleRevisionRef.current = confirmation.styleRevision;
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-request-selection-style",
+        styleRevision: confirmation.styleRevision,
+      });
+    },
+    [postEditorToPreviewMessage],
+  );
   const postPreviewThemeFiles = useCallback(
     (
       files: Array<{ path: string; content: string }>,
       options?: {
         renderDocument?: boolean;
         preserveCanvasPosition?: boolean;
+        initialSync?: {
+          key: string;
+          readySequence: number;
+          filesFingerprint: string;
+        };
       },
     ) => {
       const styleRevision = latestStyleRevisionRef.current + 1;
       latestStyleRevisionRef.current = styleRevision;
+      const targetPreviewKey =
+        options?.initialSync?.key ?? previewKeyRef.current;
+      if (options?.initialSync) {
+        // Register the request before starting the async write. A no-op write
+        // can resolve immediately, and its truthful confirmation
+        // must not outrun the record it is checked against.
+        initialPreviewSyncRef.current = {
+          ...options.initialSync,
+          styleRevision,
+        };
+      }
       // A preview server takes files through its own filesystem, because that
       // is what Vite is watching: written there, the page updates itself by
       // hot module replacement instead of reloading, which is what keeps an
@@ -1990,9 +2025,12 @@ export function VisualEditorShell({
           if (
             result?.success === true &&
             result.data.changed.length === 0 &&
-            confirmPreviewStyleRevisionRef.current
+            targetPreviewKey
           ) {
-            confirmPreviewStyleRevisionRef.current(styleRevision);
+            confirmPreviewStyleRevision({
+              previewKey: targetPreviewKey,
+              styleRevision,
+            });
           }
         });
       }
@@ -2007,7 +2045,7 @@ export function VisualEditorShell({
       schedulePreviewRemeasureRef.current();
       return styleRevision;
     },
-    [context.storefront.id, context.theme.id],
+    [confirmPreviewStyleRevision, context.storefront.id, context.theme.id],
   );
   useEffect(() => {
     if (
@@ -2023,18 +2061,19 @@ export function VisualEditorShell({
       return;
     }
 
-    const styleRevision = postPreviewThemeFiles(
+    postPreviewThemeFiles(
       previewThemeFiles.map((file) => ({
         path: file.path,
         content: file.content,
       })),
+      {
+        initialSync: {
+          key: previewKey,
+          readySequence: previewFrameReady.sequence,
+          filesFingerprint: previewFilesFingerprint,
+        },
+      },
     );
-    initialPreviewSyncRef.current = {
-      key: previewKey,
-      readySequence: previewFrameReady.sequence,
-      styleRevision,
-      filesFingerprint: previewFilesFingerprint,
-    };
   }, [
     postPreviewThemeFiles,
     previewFilesFingerprint,
@@ -3346,10 +3385,6 @@ export function VisualEditorShell({
   const previewRemeasureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const previewKeyRef = useRef(previewKey);
-  useEffect(() => {
-    previewKeyRef.current = previewKey;
-  }, [previewKey]);
   const previewWidthRenderFrameRef = useRef(0);
   const lastPreviewWheelActivityAtRef = useRef(0);
   const panOriginRef = useRef<{
@@ -3598,29 +3633,6 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey) return;
 
-    confirmPreviewStyleRevisionRef.current = (styleRevision: number) => {
-      const initialPreviewSync = initialPreviewSyncRef.current;
-      if (
-        initialPreviewSync?.key !== previewKey ||
-        !shouldRevealPreviewForStyleAck(
-          styleRevision,
-          latestStyleRevisionRef.current,
-          initialPreviewSync.styleRevision,
-        )
-      ) {
-        return;
-      }
-      setLoadedPreviewKey(previewKey);
-      setPreviewLoadFailure((current) =>
-        current?.key === previewKey ? null : current,
-      );
-      latestAppliedStyleRevisionRef.current = styleRevision;
-      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-        type: "morph:storefront-preview-request-selection-style",
-        styleRevision,
-      });
-    };
-
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (!message) {
@@ -3702,18 +3714,23 @@ export function VisualEditorShell({
         return;
       }
       if (message.type === "morph:storefront-preview-theme-files-applied") {
-        confirmPreviewStyleRevisionRef.current?.(message.styleRevision);
+        confirmPreviewStyleRevision({
+          previewKey,
+          styleRevision: message.styleRevision,
+        });
         return;
       }
       if (message.type === "morph:storefront-preview-theme-files-failed") {
         const initialPreviewSync = initialPreviewSyncRef.current;
         if (
-          initialPreviewSync?.key !== previewKey ||
-          !shouldRevealPreviewForStyleAck(
-            message.styleRevision,
-            latestStyleRevisionRef.current,
-            initialPreviewSync.styleRevision,
-          )
+          !shouldConfirmPreviewStyleRevision({
+            confirmationPreviewKey: previewKey,
+            currentPreviewKey: previewKeyRef.current,
+            initialPreviewKey: initialPreviewSync?.key ?? null,
+            revision: message.styleRevision,
+            latestRequested: latestStyleRevisionRef.current,
+            initialPreviewRevision: initialPreviewSync?.styleRevision ?? null,
+          })
         ) {
           return;
         }
@@ -3827,6 +3844,7 @@ export function VisualEditorShell({
   }, [
     activeTemplate,
     activeRouteSections,
+    confirmPreviewStyleRevision,
     handleSwapThemeFileSiblings,
     handleUpdateThemeFileStyle,
     isSelectionMode,
