@@ -28,6 +28,7 @@ const OUT = join(
 const MODULES = [
   "spacing-overlay",
   "selection-taxonomy",
+  "selection-content-value",
   "preview-protocol",
   "preview-dom",
 ];
@@ -74,12 +75,24 @@ const files = MODULES.map((name) => {
   };
 });
 
+// Every import that survives has to resolve inside the copied set, whether it
+// points at Morph by alias or at a sibling this list happens not to carry.
+// Checking only the aliased ones let a new relative dependency through, and
+// the container was the first thing to notice.
+const copied = new Set(MODULES);
 const unresolved = files.flatMap((file) =>
-  [...file.content.matchAll(/from "(@\/[^"]+)"/g)].map((match) => match[1]),
+  [...file.content.matchAll(/from "([^"]+)"/g)]
+    .map((match) => match[1])
+    .filter(
+      (specifier) =>
+        specifier.startsWith("@/") ||
+        (specifier.startsWith("./") && !copied.has(specifier.slice(2))),
+    )
+    .map((specifier) => `${file.path} -> ${specifier}`),
 );
 if (unresolved.length > 0) {
   throw new Error(
-    `generate-preview-bridge-sources: ${unresolved.join(", ")} would not resolve inside a Theme workspace. Erase the type or move the value into the copied set.`,
+    `generate-preview-bridge-sources: these would not resolve inside a Theme workspace:\n  ${unresolved.join("\n  ")}\nAdd the module to MODULES, or erase the type if it is only a type.`,
   );
 }
 

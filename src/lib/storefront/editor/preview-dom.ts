@@ -2,6 +2,7 @@ import {
   selectionKindFromElement,
   type EditableDescendantField,
 } from "./selection-taxonomy";
+import { readSelectionContentValue } from "./selection-content-value";
 import type {
   PreviewEditableNode,
   PreviewSelectionRestoreTarget,
@@ -412,3 +413,345 @@ export function closestPreviewFieldElement(
 ): HTMLElement | null {
   return element.closest<HTMLElement>("[data-storefront-field]");
 }
+
+export type SelectableInfo = {
+  element: HTMLElement;
+  section: HTMLElement | null;
+  /** `file:line:column`, when the element carries a compiled position. */
+  sourceLocation?: string | null;
+  sectionId: string | null;
+  type: string;
+  label: string;
+  elementKey: string | null;
+  fieldKey: string | null;
+  field: string | null;
+  fieldPath: string | null;
+  descendantFields: EditableDescendantField[];
+  tagName: string;
+  role: string | null;
+  inputType: string | null;
+};
+
+export const getComponentDisplayName = (type: string): string => {
+  switch (type.toLowerCase()) {
+    case "hero":
+      return "Hero Section";
+    case "editorial-intro":
+      return "Editorial Intro";
+    case "category-showcase":
+      return "Category Showcase";
+    case "image-with-text":
+      return "Image With Text";
+    case "principles":
+      return "Principles Section";
+    case "newsletter":
+      return "Newsletter Section";
+    case "heading":
+      return "Heading";
+    case "eyebrow":
+      return "Eyebrow";
+    case "description":
+    case "body":
+      return "Body Text";
+    case "button":
+      return "Button";
+    case "image":
+      return "Image";
+    case "input":
+      return "Input Field";
+    case "collection-item":
+      return "Collection Item";
+    case "principle-item":
+      return "Principle Card";
+    case "title":
+      return "Title";
+    case "caption":
+      return "Caption";
+    case "label":
+    case "badge":
+      return "Label";
+    default:
+      return type.charAt(0).toUpperCase() + type.slice(1);
+  }
+};
+
+export const selectionKindOf = (item: SelectableInfo) =>
+  selectionKindFromElement({
+    component: item.type,
+    morphElement: item.elementKey,
+    tagName: item.tagName,
+    role: item.role,
+    inputType: item.inputType,
+    isSection: item.element === item.section,
+  });
+
+export const selectionMetadata = (item: SelectableInfo) => {
+  const sourceElement = item.element.closest<HTMLElement>(
+    "[data-morph-source-file]",
+  );
+  const kind = selectionKindOf(item);
+  return {
+    kind,
+    sourceFilePath:
+      sourceElement?.dataset.morphSourceFile ??
+      item.section?.dataset.morphSourceFile ??
+      null,
+    tagName: item.tagName,
+    role: item.role,
+    inputType: item.inputType,
+    fieldPath: item.fieldPath,
+    contentValue:
+      item.descendantFields.length === 0 && item.fieldKey
+        ? readSelectionContentValue(item.element)
+        : null,
+  };
+};
+
+export const resolveSelectable = (
+  target: EventTarget | null,
+): SelectableInfo | null => {
+  if (!(target instanceof HTMLElement)) return null;
+
+  // 0. A content field is more precise than an ancestor AST marker. Some
+  // rendered fields (notably action labels) intentionally have no source
+  // location of their own, so resolving the ancestor first would make the
+  // inspector show the container instead of the actual field.
+  const fieldEl = closestPreviewFieldElement(target);
+  if (fieldEl) {
+    const sectionEl = closestPreviewSectionRoot(fieldEl);
+    const descendantFields = collectEditableDescendantFields(fieldEl);
+    const fieldKey =
+      descendantFields.length > 0
+        ? null
+        : (fieldEl.dataset.storefrontField ?? null);
+    const fieldPath = fieldEl.dataset.storefrontFieldPath ?? fieldKey;
+    const elementKey = fieldEl.dataset.morphElement ?? null;
+    const selectableType =
+      fieldEl.dataset.storefrontComponent ??
+      elementKey ??
+      fieldEl.tagName.toLowerCase();
+
+    return {
+      element: fieldEl,
+      section: sectionEl,
+      sourceLocation: fieldEl.dataset.morphLoc ?? null,
+      sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
+      type: selectableType,
+      label: getComponentDisplayName(selectableType),
+      elementKey,
+      fieldKey,
+      field: fieldKey,
+      fieldPath,
+      descendantFields,
+      tagName: fieldEl.tagName.toLowerCase(),
+      role: fieldEl.getAttribute("role"),
+      inputType: fieldEl instanceof HTMLInputElement ? fieldEl.type : null,
+    };
+  }
+
+  // 1. Prefer the nearest AST-backed Morph identity annotation.
+  const morphEl = target.closest<HTMLElement>(
+    // Compile-time source positions make an element identifiable even when
+    // the author wrote no markers, so they select like any other element.
+    "[data-morph-node], [data-morph-element], [data-morph-loc]",
+  );
+  if (morphEl) {
+    const sectionEl = closestPreviewSectionRoot(morphEl);
+    const nodeId = morphEl.dataset.morphNode ?? null;
+    const elementKey = morphEl.dataset.morphElement ?? null;
+    const descendantFields = collectEditableDescendantFields(morphEl);
+    const fieldKey =
+      descendantFields.length > 0
+        ? null
+        : (morphEl.dataset.storefrontField ??
+          (elementKey
+            ? elementKey === "action"
+              ? "actionLabel"
+              : elementKey === "image"
+                ? "imageSrc"
+                : elementKey
+            : null));
+    const fieldPath = morphEl.dataset.storefrontFieldPath ?? fieldKey;
+    const selectableType =
+      elementKey ?? nodeId ?? morphEl.tagName.toLowerCase();
+
+    return {
+      element: morphEl,
+      section: sectionEl,
+      sourceLocation: morphEl.dataset.morphLoc ?? null,
+      sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
+      type: selectableType,
+      label: getComponentDisplayName(selectableType),
+      elementKey,
+      fieldKey,
+      field: fieldKey,
+      fieldPath,
+      descendantFields,
+      tagName: morphEl.tagName.toLowerCase(),
+      role: morphEl.getAttribute("role"),
+      inputType: morphEl instanceof HTMLInputElement ? morphEl.type : null,
+    };
+  }
+
+  // 2. Prioritize explicit component annotation
+  const componentEl = target.closest<HTMLElement>(
+    "[data-storefront-component]",
+  );
+  if (componentEl) {
+    const sectionEl = closestPreviewSectionRoot(componentEl);
+    const compType =
+      componentEl.dataset.storefrontComponent ??
+      componentEl.tagName.toLowerCase();
+    const fieldKey = componentEl.dataset.storefrontField ?? null;
+    const fieldPath = componentEl.dataset.storefrontFieldPath ?? fieldKey;
+    const elementKey =
+      componentEl.dataset.morphElement ??
+      (compType === "heading" ||
+      compType === "eyebrow" ||
+      compType === "description" ||
+      compType === "action" ||
+      compType === "image"
+        ? compType
+        : null);
+    const descendantFields = collectEditableDescendantFields(componentEl);
+
+    return {
+      element: componentEl,
+      section: sectionEl,
+      sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
+      type: compType,
+      label: getComponentDisplayName(compType),
+      elementKey,
+      fieldKey,
+      field: fieldKey ?? elementKey,
+      fieldPath,
+      descendantFields,
+      tagName: componentEl.tagName.toLowerCase(),
+      role: componentEl.getAttribute("role"),
+      inputType:
+        componentEl instanceof HTMLInputElement ? componentEl.type : null,
+    };
+  }
+
+  // 3. Standard interactive & typography sub-elements
+  const elementEl = target.closest<HTMLElement>(
+    "h1, h2, h3, h4, h5, h6, p, blockquote, code, pre, img, picture, svg, video, audio, canvas, iframe, embed, map, a, button, nav, details, summary, form, fieldset, input, textarea, select, option, ul, ol, li, table, thead, tbody, tfoot, tr, td, th, hr, article",
+  );
+  if (elementEl) {
+    const sectionEl = closestPreviewSectionRoot(elementEl);
+    const tag = elementEl.tagName.toLowerCase();
+    const compType = tag.startsWith("h")
+      ? "heading"
+      : tag === "blockquote"
+        ? "blockquote"
+        : tag === "code" || tag === "pre"
+          ? "code"
+          : tag === "img"
+            ? "image"
+            : tag === "picture"
+              ? "picture"
+              : tag === "svg"
+                ? "svg"
+                : tag === "video"
+                  ? "video"
+                  : tag === "audio"
+                    ? "audio"
+                    : tag === "canvas"
+                      ? "canvas"
+                      : tag === "iframe"
+                        ? "iframe"
+                        : tag === "embed"
+                          ? "embed"
+                          : tag === "nav"
+                            ? "navigation"
+                            : tag === "form"
+                              ? "form"
+                              : tag === "fieldset"
+                                ? "fieldset"
+                                : tag === "textarea"
+                                  ? "textarea"
+                                  : tag === "select"
+                                    ? "select"
+                                    : tag === "option"
+                                      ? "option"
+                                      : tag === "input"
+                                        ? elementEl instanceof
+                                            HTMLInputElement &&
+                                          elementEl.type === "checkbox"
+                                          ? "checkbox"
+                                          : elementEl instanceof
+                                                HTMLInputElement &&
+                                              elementEl.type === "radio"
+                                            ? "radio"
+                                            : "input"
+                                        : tag === "ul" || tag === "ol"
+                                          ? "list"
+                                          : tag === "li"
+                                            ? "list-item"
+                                            : tag === "table"
+                                              ? "table"
+                                              : tag === "tr"
+                                                ? "table-row"
+                                                : tag === "td" || tag === "th"
+                                                  ? "table-cell"
+                                                  : tag === "hr"
+                                                    ? "divider"
+                                                    : tag === "a" ||
+                                                        tag === "button"
+                                                      ? "action"
+                                                      : tag === "p"
+                                                        ? "description"
+                                                        : tag === "article"
+                                                          ? "card"
+                                                          : tag;
+
+    const fieldKey =
+      elementEl.dataset.storefrontField ??
+      (compType === "action"
+        ? "actionLabel"
+        : compType === "image"
+          ? "imageSrc"
+          : compType);
+    const fieldPath = elementEl.dataset.storefrontFieldPath ?? fieldKey;
+    const descendantFields = collectEditableDescendantFields(elementEl);
+
+    return {
+      element: elementEl,
+      section: sectionEl,
+      sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
+      type: compType,
+      label: getComponentDisplayName(compType),
+      elementKey: compType,
+      fieldKey,
+      field: fieldKey,
+      fieldPath,
+      descendantFields,
+      tagName: tag,
+      role: elementEl.getAttribute("role"),
+      inputType: elementEl instanceof HTMLInputElement ? elementEl.type : null,
+    };
+  }
+
+  // 4. Fallback to outer Section
+  const section = target.closest<HTMLElement>("[data-storefront-section-id]");
+  if (section) {
+    const secType = section.dataset.storefrontSectionType ?? "section";
+    return {
+      element: section,
+      section,
+      sectionId: section.dataset.storefrontSectionId ?? null,
+      type: secType,
+      label: getComponentDisplayName(secType),
+      elementKey: null,
+      fieldKey: null,
+      field: null,
+      fieldPath: null,
+      descendantFields: collectEditableDescendantFields(section),
+      tagName: section.tagName.toLowerCase(),
+      role: section.getAttribute("role"),
+      inputType: null,
+    };
+  }
+
+  return null;
+};
