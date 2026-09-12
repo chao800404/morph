@@ -59,11 +59,58 @@ export function withPreviewChannel(
   return url.toString();
 }
 
+/**
+ * Reaches a preview server that a browser cannot reach as addressed.
+ *
+ * A container always mints an `https://…` address, which is right where the
+ * Worker sits behind TLS and wrong on a machine where it does not. The
+ * rewrite is not gated on a development flag, because the conditions are the
+ * definition: an editor served over plain http from loopback, previewing a
+ * host under `.localhost`, which RFC 6761 reserves for the local machine.
+ * A deployment cannot satisfy both — its editor is not on loopback — so
+ * nothing about how it is reached depends on a build-time switch being right.
+ *
+ * Confidentiality is why the address is otherwise required to be https: it
+ * carries the token that authorises the preview. Loopback traffic never
+ * reaches a network for that to matter on.
+ */
+function reachableFromLoopback(
+  previewUrl: string,
+  editorOrigin: string,
+): string {
+  let preview: URL;
+  let editor: URL;
+  try {
+    preview = new URL(previewUrl);
+    editor = new URL(editorOrigin);
+  } catch {
+    return previewUrl;
+  }
+
+  const editorIsLoopbackHttp =
+    editor.protocol === "http:" &&
+    (editor.hostname === "localhost" ||
+      editor.hostname === "127.0.0.1" ||
+      editor.hostname.endsWith(".localhost"));
+  if (!editorIsLoopbackHttp || !preview.hostname.endsWith(".localhost")) {
+    return previewUrl;
+  }
+
+  // Same host, because that is what the Worker routes on; the editor's own
+  // scheme and port, because that is where the Worker is actually listening.
+  preview.protocol = editor.protocol;
+  preview.port = editor.port;
+  return preview.toString();
+}
+
 export function resolveLivePreviewSource(
   input: ResolveLivePreviewSourceInput,
 ): LivePreviewSource {
   if (input.executionMode === "user-code" && input.previewServerUrl) {
-    const url = withPreviewChannel(input.previewServerUrl, input);
+    const url = withPreviewChannel(
+      reachableFromLoopback(input.previewServerUrl, input.editorOrigin),
+      input,
+    );
     return {
       kind: "preview-server",
       url,
