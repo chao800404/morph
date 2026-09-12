@@ -167,3 +167,81 @@ export default function Hero({ heading, items = [] }) {
     ).not.toThrow();
   });
 });
+
+describe("giving the editor a section to find", () => {
+  const ROUTE = `import CategoryShowcase from "../components/CategoryShowcase";
+import Hero from "../components/Hero";
+import { content, isSectionHidden } from "../morph/content";
+
+export default function HomeRoute() {
+  return (
+    <main>
+      {!isSectionHidden("starter-hero") && <Hero {...content("starter-hero")} />}
+      {!isSectionHidden("starter-categories") && (
+        <CategoryShowcase {...content("starter-categories")} />
+      )}
+    </main>
+  );
+}
+`;
+
+  const runRoute = (source = ROUTE) =>
+    injectPreviewBindings([{ path: "src/routes/index.tsx", content: source }]);
+
+  it("wraps each section in something the page cannot see", () => {
+    const out = runRoute().files[0]!.content;
+    expect(out).toContain(
+      '<div data-storefront-section-id="starter-hero" style={{ display: "contents" }}>',
+    );
+    expect(out).toContain(
+      '<div data-storefront-section-id="starter-categories" style={{ display: "contents" }}>',
+    );
+    expect(out.match(/<\/div>/g)).toHaveLength(2);
+  });
+
+  it("reads the slot id from where it is actually known", () => {
+    // A component cannot say which section it is — the same one can be placed
+    // twice — so the answer only exists where its content is handed to it.
+    expect(runRoute().sections["src/routes/index.tsx"]).toEqual([
+      "starter-hero",
+      "starter-categories",
+    ]);
+  });
+
+  it("still produces valid syntax around a guarded section", async () => {
+    const { parse } = await import("@babel/parser");
+    expect(() =>
+      parse(runRoute().files[0]!.content, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("says so when the spacing will differ from the build", () => {
+    // `display: contents` leaves the wrapper in the tree, so a rule counting
+    // children matches it instead. The symptom gives no hint of the cause.
+    const warned = runRoute(
+      ROUTE.replace("<main>", '<main className="space-y-8">'),
+    );
+    expect(warned.warnings[0]?.message).toContain("space-y");
+    expect(warned.warnings[0]?.path).toBe("src/routes/index.tsx");
+  });
+
+  it("stays quiet when nothing counts children", () => {
+    expect(runRoute().warnings).toEqual([]);
+  });
+
+  it("wraps nothing where no section is rendered", () => {
+    const result = injectPreviewBindings([
+      {
+        path: "src/components/Hero.tsx",
+        content: `export default function Hero() { return <h1>hi</h1>; }\n`,
+      },
+    ]);
+    expect(result.files[0]!.content).not.toContain(
+      "data-storefront-section-id",
+    );
+    expect(result.warnings).toEqual([]);
+  });
+});

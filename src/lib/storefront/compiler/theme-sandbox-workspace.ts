@@ -80,6 +80,10 @@ export type PrepareThemeWorkspaceResult =
       hoistedContentFields: readonly string[];
       /** Elements given editor identity per file, preview only. */
       annotatedElements: Readonly<Record<string, number>>;
+      /** Content slots given a section wrapper, per file. */
+      previewSections: Readonly<Record<string, readonly string[]>>;
+      /** Preview behaviour that will differ from the build, and why. */
+      previewWarnings: ReadonlyArray<{ path: string; message: string }>;
     }>
   | Readonly<{
       ok: false;
@@ -562,5 +566,7 @@ sourcemap: false,
     routeRegistry,
     hoistedContentFields: hoist?.hoisted ?? [],
     annotatedElements: bindings?.annotated ?? {},
+    previewSections: bindings?.sections ?? {},
+    previewWarnings: bindings?.warnings ?? [],
   };
 }

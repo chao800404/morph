@@ -26,6 +26,18 @@ import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme
 const FIELD_ATTRIBUTE = "data-storefront-field";
 const FIELD_PATH_ATTRIBUTE = "data-storefront-field-path";
 const ITEM_ID_ATTRIBUTE = "data-storefront-item-id";
+const SECTION_ID_ATTRIBUTE = "data-storefront-section-id";
+
+/**
+ * Utilities that space children by counting them, and so notice a wrapper.
+ *
+ * `display: contents` takes the wrapper out of layout but not out of the
+ * tree, so a rule written as `> * + *` starts matching the wrapper instead of
+ * the section inside it and the spacing disappears. Worth saying out loud
+ * where sections are arranged, because the symptom — gaps gone, nothing else
+ * different — gives no hint of the cause.
+ */
+const CHILD_COUNTING_UTILITIES = /\b(space-[xy]-|divide-[xy])/;
 
 /** Attributes whose bound expression identifies the element's content. */
 const CONTENT_BEARING_ATTRIBUTES = ["src", "href", "to"];
@@ -36,7 +48,11 @@ export type PreviewBindingsResult = Readonly<{
   files: ReadonlyArray<{ path: string; content: string }>;
   /** How many elements each file gained identity for, for verification. */
   annotated: Readonly<Record<string, number>>;
+  /** Slot ids given a section wrapper, per file. */
+  sections: Readonly<Record<string, readonly string[]>>;
   skipped: ReadonlyArray<{ path: string; reason: string }>;
+  /** Things that still work but will surprise the author. */
+  warnings: ReadonlyArray<{ path: string; message: string }>;
 }>;
 
 type Insertion = { at: number; text: string };
@@ -185,6 +201,32 @@ function declaredFields(source: string): {
   return { top, rows };
 }
 
+/**
+ * The content slot a component is rendered for, read at the call site.
+ *
+ * A component cannot say which section it is — the same one can be placed
+ * twice on a page — so the only place the answer exists is where its content
+ * is handed to it: `<Hero {...content("starter-hero")} />`.
+ */
+function readSectionSlotId(openingElement: any): string | null {
+  for (const attribute of openingElement?.attributes ?? []) {
+    if (attribute?.type !== "JSXSpreadAttribute") continue;
+    const call = attribute.argument;
+    if (
+      call?.type !== "CallExpression" ||
+      call.callee?.type !== "Identifier" ||
+      call.callee.name !== "content" ||
+      call.arguments?.length !== 1 ||
+      call.arguments[0]?.type !== "StringLiteral"
+    ) {
+      continue;
+    }
+    const slotId = call.arguments[0].value;
+    return typeof slotId === "string" && slotId.length > 0 ? slotId : null;
+  }
+  return null;
+}
+
 function escapeAttribute(value: string): string {
   return value.replace(/"/g, "&quot;");
 }
@@ -193,7 +235,9 @@ export function injectPreviewBindings(
   files: readonly PreviewBindingFile[],
 ): PreviewBindingsResult {
   const annotated: Record<string, number> = {};
+  const sections: Record<string, readonly string[]> = {};
   const skipped: Array<{ path: string; reason: string }> = [];
+  const warnings: Array<{ path: string; message: string }> = [];
 
   const out = files.map((file) => {
     if (!JSX_FILE.test(file.path)) return file;
@@ -213,6 +257,7 @@ export function injectPreviewBindings(
 
     const declared = declaredFields(file.content);
     const insertions: Insertion[] = [];
+    const slotIds: string[] = [];
     let count = 0;
 
     const visit = (node: any, arrayPath: string | null, scope: RowScope) => {
@@ -236,6 +281,21 @@ export function injectPreviewBindings(
 
       if (node.type === "JSXElement") {
         const opening = node.openingElement;
+
+        // A section is wrapped rather than marked, because the mark belongs on
+        // a component's element and an attribute put there becomes a prop the
+        // component is free to ignore — it would never reach the page. The
+        // wrapper is taken out of layout so the page looks the same.
+        const slotId = readSectionSlotId(opening);
+        if (slotId && node.start != null && node.end != null) {
+          slotIds.push(slotId);
+          insertions.push({
+            at: node.start,
+            text: `<div ${SECTION_ID_ATTRIBUTE}="${escapeAttribute(slotId)}" style={{ display: "contents" }}>`,
+          });
+          insertions.push({ at: node.end, text: "</div>" });
+        }
+
         if (isHostElement(opening?.name)) {
           const parts: string[] = [];
           const position = opening.name.loc?.start;
@@ -296,6 +356,16 @@ export function injectPreviewBindings(
     };
 
     visit(ast.program.body, null, { item: null, index: null });
+
+    if (slotIds.length > 0 && CHILD_COUNTING_UTILITIES.test(file.content)) {
+      warnings.push({
+        path: file.path,
+        message:
+          "Sections here are spaced by a utility that counts children (space-y, space-x or divide). The Live Preview wraps each section, which such a rule notices, so the gaps will be missing in the preview but present in the build. Give each section its own padding instead — which also keeps the spacing correct when one is hidden or reordered.",
+      });
+    }
+
+    sections[file.path] = slotIds;
     if (insertions.length === 0) return file;
 
     // Applied last-first so an earlier offset is never shifted by a later one.
@@ -311,5 +381,5 @@ export function injectPreviewBindings(
     return { path: file.path, content };
   });
 
-  return { files: out, annotated, skipped };
+  return { files: out, annotated, sections, skipped, warnings };
 }

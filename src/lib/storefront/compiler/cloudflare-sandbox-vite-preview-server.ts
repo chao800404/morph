@@ -90,6 +90,8 @@ export type StartPreviewServerResult =
       readyMs: number;
       /** Modules whose `contentFields` export was lifted for Fast Refresh. */
       hoistedContentFields: readonly string[];
+      /** Preview behaviour that will differ from the build, and why. */
+      warnings: ReadonlyArray<{ path: string; message: string }>;
       logs: readonly string[];
     }>
   | Readonly<{
@@ -244,6 +246,7 @@ export class CloudflareSandboxVitePreviewServer {
         processId: process.id,
         readyMs: Date.now() - startedAt,
         hoistedContentFields: prepared.hoistedContentFields,
+        warnings: prepared.previewWarnings,
         logs,
       };
     } catch (error) {
