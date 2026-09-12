@@ -14,11 +14,19 @@ import type {
 } from "./theme-build-runner.types";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
+import {
+  previewDevInfrastructureGuardSource,
+  THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES,
+  THEME_PREVIEW_FS_ALLOW_ROOTS,
+} from "./theme-preview-dev-server";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
-import { readThemePathAliases, renderThemeViteAliases } from "./theme-path-aliases";
+import {
+  readThemePathAliases,
+  renderThemeViteAliases,
+} from "./theme-path-aliases";
 
 export type CloudflareSandboxExecResult = {
   exitCode?: number;
@@ -439,10 +447,12 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       });
       routeRegistry = bootstrap.routeRegistry;
 
-      const pathAliasConfig = readThemePathAliases(input.files.map((file) => ({
-        path: file.path,
-        content: typeof file.content === "string" ? file.content : "",
-      })));
+      const pathAliasConfig = readThemePathAliases(
+        input.files.map((file) => ({
+          path: file.path,
+          content: typeof file.content === "string" ? file.content : "",
+        })),
+      );
       if (pathAliasConfig.diagnostics.length > 0) {
         const errors: ThemeBuildDiagnostic[] = pathAliasConfig.diagnostics.map(
           (diagnostic) => ({
@@ -454,7 +464,8 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
             code: diagnostic.code,
           }),
         );
-        const firstError = errors[0]?.message ?? "Theme path alias configuration is invalid.";
+        const firstError =
+          errors[0]?.message ?? "Theme path alias configuration is invalid.";
         addLog("error", firstError);
         return {
           success: false,
@@ -472,8 +483,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         collectThemeImportProtectionDiagnosticsForBuild(
           input.files.map((file) => ({
             path: file.path,
-            content:
-              typeof file.content === "string" ? file.content : "",
+            content: typeof file.content === "string" ? file.content : "",
           })),
           {
             entry: input.entry,
@@ -491,7 +501,8 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
             code: diagnostic.code,
           }),
         );
-        const firstError = errors[0]?.message ?? "Theme import protection failed.";
+        const firstError =
+          errors[0]?.message ?? "Theme import protection failed.";
         addLog("error", firstError);
         return {
           success: false,
@@ -614,7 +625,9 @@ const themeAliases = themeAliasDefinitions.map(({ key, target, wildcard }) => ({
   replacement: target,
 }));
 const themeBaseUrlRoot = path.resolve("/workspace", ${JSON.stringify(pathAliasConfig.baseUrl)});
-const themeBaseUrlPlugin = ${pathAliasConfig.baseUrl ? `{
+const themeBaseUrlPlugin = ${
+        pathAliasConfig.baseUrl
+          ? `{
   name: "morph-theme-base-url",
   enforce: "pre",
   resolveId(source) {
@@ -629,15 +642,30 @@ const themeBaseUrlPlugin = ${pathAliasConfig.baseUrl ? `{
     ];
     return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
   },
-}` : `null`};
+}`
+          : `null`
+      };
 const hasStartRuntime = ${routeRegistry ? "true" : "false"};
 const isStartRuntimeBuild =
   hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
 
+// Vite's own HMR client and Refresh runtime, which only a dev server asks for.
+// Allowed while serving the Live Preview and refused during a build, so the
+// containment rule a build enforces is never relaxed by this file.
+const isPreviewDevInfrastructure = ${previewDevInfrastructureGuardSource()};
+let viteCommand = null;
+
 const dependencyEnforcerPlugin = {
   name: "morph-dependency-enforcer",
   enforce: "pre",
+  configResolved(config) {
+    viteCommand = config.command;
+  },
   resolveId(source, importer) {
+    if (viteCommand === "serve" && isPreviewDevInfrastructure(source)) {
+      return null;
+    }
+
     if (importer && importer.includes("/node_modules/")) {
       return null;
     }
@@ -749,6 +777,20 @@ export default defineConfig({
       ],
   resolve: {
     alias: themeAliases,
+  },
+  // Keep these off esbuild's pre-bundling path so the preview's server-API
+  // stubs, which are Rollup plugins, are what answers for them.
+  optimizeDeps: {
+    exclude: ${JSON.stringify(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES)},
+  },
+  // Which files a dev server may read off disk. Unset, Vite guesses a root;
+  // the Live Preview states it instead, so nothing outside the workspace and
+  // the pinned toolchain is reachable over HTTP.
+  server: {
+    fs: {
+      strict: true,
+      allow: ${JSON.stringify(THEME_PREVIEW_FS_ALLOW_ROOTS)},
+    },
   },
   build: {
     outDir: isStartRuntimeBuild

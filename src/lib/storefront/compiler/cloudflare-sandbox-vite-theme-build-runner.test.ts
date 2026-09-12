@@ -7,6 +7,7 @@ import {
   type CloudflareSandboxSession,
 } from "./cloudflare-sandbox-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
+import { THEME_PREVIEW_FS_ALLOW_ROOTS } from "./theme-preview-dev-server";
 
 describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
   it("rejects CMS-selected packages that are not in the pinned sandbox toolchain", () => {
@@ -587,5 +588,86 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     }
     // Preflight prevented reading file bodies
     expect(mock.session.readFile).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Runs the enforcer the runner actually writes into the container, rather
+   * than matching its text. A string assertion would still pass if the gate
+   * were inverted, and this plugin is the containment boundary.
+   */
+  const loadGeneratedEnforcer = async (command: "build" | "serve") => {
+    const mock = createMockSandbox();
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: { getSandbox: async () => mock.session },
+      sandboxBinding: {},
+    });
+    await runner.run(
+      createInput([
+        {
+          path: "src/pages/index.tsx",
+          content: "export default () => null;",
+          isEntry: true,
+        },
+      ]),
+    );
+    const config = String(mock.writtenFiles.get("/workspace/vite.config.ts"));
+    const start = config.indexOf("const approvedSet");
+    const end = config.indexOf("export default defineConfig(");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const factory = new Function(
+      "path",
+      "fs",
+      `${config.slice(start, end)}
+       dependencyEnforcerPlugin.configResolved({ command: ${JSON.stringify(command)} });
+       return dependencyEnforcerPlugin;`,
+    );
+    return factory(await import("node:path"), await import("node:fs"));
+  };
+
+  const VITE_DEV_CLIENT =
+    "/@fs/opt/morph-toolchain/node_modules/vite/dist/client/client.mjs";
+
+  it("serves Vite's own dev client so the Live Preview can run at all", async () => {
+    const enforcer = await loadGeneratedEnforcer("serve");
+    expect(enforcer.resolveId(VITE_DEV_CLIENT, "/workspace/index.html")).toBe(
+      null,
+    );
+  });
+
+  it("keeps refusing that same path during a build", async () => {
+    const enforcer = await loadGeneratedEnforcer("build");
+    expect(() =>
+      enforcer.resolveId(VITE_DEV_CLIENT, "/workspace/index.html"),
+    ).toThrow("UNAPPROVED_DEPENDENCY_PATH");
+  });
+
+  it("bounds what a dev server may read off disk to the workspace and the toolchain", async () => {
+    // `/@fs/` is a dev-server URL, so the enforcer is the wrong layer to judge
+    // it: the real question is which files Vite will read. Vite answers that
+    // with server.fs, and left unset it guesses a root. The config states it.
+    const mock = createMockSandbox();
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: { getSandbox: async () => mock.session },
+      sandboxBinding: {},
+    });
+    await runner.run(
+      createInput([
+        {
+          path: "src/pages/index.tsx",
+          content: "export default () => null;",
+          isEntry: true,
+        },
+      ]),
+    );
+    const config = String(mock.writtenFiles.get("/workspace/vite.config.ts"));
+    expect(config).toContain("strict: true");
+    expect(config).toContain(
+      `allow: ${JSON.stringify(THEME_PREVIEW_FS_ALLOW_ROOTS)}`,
+    );
+    expect(THEME_PREVIEW_FS_ALLOW_ROOTS).toEqual([
+      "/workspace",
+      "/opt/morph-toolchain/node_modules",
+    ]);
   });
 });
