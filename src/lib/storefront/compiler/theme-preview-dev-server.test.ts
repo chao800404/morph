@@ -59,12 +59,18 @@ describe("preview dev infrastructure allowance", () => {
     expect(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES).toContain(
       "@tanstack/react-start/server",
     );
+    // The packages that actually import node:async_hooks, rather than only
+    // the entry point a Theme names.
+    expect(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES).toContain(
+      "@tanstack/start-storage-context",
+    );
+    expect(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES).toContain(
+      "@tanstack/start-server-core",
+    );
   });
 
   it("keeps Theme assets and HMR out of the outer Morph Vite namespace", () => {
-    expect(THEME_PREVIEW_SERVER_BASE_PATH).toBe(
-      "/__morph-theme-preview__/",
-    );
+    expect(THEME_PREVIEW_SERVER_BASE_PATH).toBe("/__morph-theme-preview__/");
     expect(THEME_PREVIEW_SERVER_HMR_PATH).toBe("hmr");
   });
 });
