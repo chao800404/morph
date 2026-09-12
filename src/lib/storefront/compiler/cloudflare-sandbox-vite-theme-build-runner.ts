@@ -12,21 +12,12 @@ import type {
   ThemeBuildRunnerLog,
   ThemeBuildRunnerResult,
 } from "./theme-build-runner.types";
-import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
-import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
-import {
-  previewDevInfrastructureGuardSource,
-  THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES,
-  THEME_PREVIEW_FS_ALLOW_ROOTS,
-} from "./theme-preview-dev-server";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
-import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
-import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
 import {
-  readThemePathAliases,
-  renderThemeViteAliases,
-} from "./theme-path-aliases";
+  prepareThemeSandboxWorkspace,
+  PINNED_SANDBOX_DEPENDENCIES,
+} from "./theme-sandbox-workspace";
 
 export type CloudflareSandboxExecResult = {
   exitCode?: number;
@@ -174,19 +165,10 @@ async function fileContentToUint8Array(content: unknown): Promise<Uint8Array> {
   return new Uint8Array(0);
 }
 
-/**
- * Pinned exact toolchain versions for deterministic sandbox builds. The
- * generator derives this root-package map from cms.config.ts and the same
- * manifest is copied into Dockerfile.sandbox at image-build time.
- */
-export const PINNED_SANDBOX_DEPENDENCIES: Readonly<Record<string, string>> =
-  GENERATED_SANDBOX_DEPENDENCY_VERSIONS;
+export { PINNED_SANDBOX_DEPENDENCIES };
 
 function packageRoot(specifier: string): string {
-  if (specifier.startsWith("@")) {
-    return specifier.split("/").slice(0, 2).join("/");
-  }
-  return specifier.split("/")[0] ?? specifier;
+  return themePackageRoot(specifier);
 }
 
 /**
@@ -414,402 +396,29 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         throw new Error("Failed to initialize Cloudflare Sandbox session");
       }
 
-      const workspaceRoot = "/workspace";
-      await sandbox.mkdir(workspaceRoot, { recursive: true });
-
-      // Write virtual files into container workspace
-      let hasCustomIndexHtml = false;
-      const cssFiles: string[] = [];
-      let routeRegistry: ReturnType<
-        typeof createThemeBuildBootstrap
-      >["routeRegistry"] = null;
-
-      for (const file of input.files) {
-        const fullPath = `${workspaceRoot}/${file.path.replace(/\\/g, "/")}`;
-        const dirPath = fullPath.substring(0, fullPath.lastIndexOf("/"));
-        if (dirPath) {
-          await sandbox.mkdir(dirPath, { recursive: true });
-        }
-        await sandbox.writeFile(fullPath, file.content);
-
-        if (file.path === "index.html") {
-          hasCustomIndexHtml = true;
-        }
-        if (file.path.endsWith(".css")) {
-          cssFiles.push(file.path);
-        }
-      }
-
-      const bootstrap = createThemeBuildBootstrap({
+      const prepared = await prepareThemeSandboxWorkspace({
+        session: sandbox,
         files: input.files,
         entry: input.entry,
-        cssFiles,
+        buildId: input.buildId,
+        dependencies: input.dependencies,
+        approvedDependencies: this.approvedDependencies,
+        mode: "build",
       });
-      routeRegistry = bootstrap.routeRegistry;
-
-      const pathAliasConfig = readThemePathAliases(
-        input.files.map((file) => ({
-          path: file.path,
-          content: typeof file.content === "string" ? file.content : "",
-        })),
-      );
-      if (pathAliasConfig.diagnostics.length > 0) {
-        const errors: ThemeBuildDiagnostic[] = pathAliasConfig.diagnostics.map(
-          (diagnostic) => ({
-            severity: "error",
-            message: diagnostic.message,
-            file: diagnostic.filePath,
-            line: diagnostic.line,
-            column: diagnostic.column,
-            code: diagnostic.code,
-          }),
-        );
-        const firstError =
-          errors[0]?.message ?? "Theme path alias configuration is invalid.";
-        addLog("error", firstError);
+      if (!prepared.ok) {
+        addLog("error", prepared.errorMessage);
         return {
           success: false,
-          errorMessage: firstError,
+          errorMessage: prepared.errorMessage,
           diagnosticsJson: {
-            stage: "path-aliases",
-            errors,
+            stage: prepared.stage,
+            errors: prepared.errors,
           },
           logs,
           durationMs: Date.now() - startTime,
         };
       }
-
-      const importProtectionDiagnostics =
-        collectThemeImportProtectionDiagnosticsForBuild(
-          input.files.map((file) => ({
-            path: file.path,
-            content: typeof file.content === "string" ? file.content : "",
-          })),
-          {
-            entry: input.entry,
-            hasStartRuntime: Boolean(routeRegistry),
-          },
-        );
-      if (importProtectionDiagnostics.length > 0) {
-        const errors: ThemeBuildDiagnostic[] = importProtectionDiagnostics.map(
-          (diagnostic) => ({
-            severity: "error",
-            message: diagnostic.message,
-            file: diagnostic.filePath,
-            line: diagnostic.line,
-            column: diagnostic.column,
-            code: diagnostic.code,
-          }),
-        );
-        const firstError =
-          errors[0]?.message ?? "Theme import protection failed.";
-        addLog("error", firstError);
-        return {
-          success: false,
-          errorMessage: firstError,
-          diagnosticsJson: {
-            stage: "import-protection",
-            errors,
-          },
-          logs,
-          durationMs: Date.now() - startTime,
-        };
-      }
-      if (hasCustomIndexHtml && routeRegistry) {
-        throw new Error(
-          "CUSTOM_INDEX_HTML_UNSUPPORTED: TanStack Start Theme routes use the platform-owned preview document.",
-        );
-      }
-
-      if (routeRegistry) {
-        const routerFile = input.files.find(
-          (file) => file.path.replace(/\\/g, "/") === "src/router.tsx",
-        );
-        if (!routerFile) {
-          throw new Error(
-            "MISSING_START_ROUTER: TanStack Start Theme requires src/router.tsx exporting getRouter().",
-          );
-        }
-        await sandbox.writeFile(
-          `${workspaceRoot}/wrangler.json`,
-          JSON.stringify(
-            {
-              name: `morph-theme-${input.buildId}`
-                .toLowerCase()
-                .replace(/[^a-z0-9-]/g, "-")
-                .slice(0, 63),
-              compatibility_date: "2025-09-02",
-              compatibility_flags: ["nodejs_compat"],
-              main: "@tanstack/react-start/server-entry",
-            },
-            null,
-            2,
-          ),
-        );
-      }
-
-      // Generate bootstrap entry and index.html if needed
-      if (!hasCustomIndexHtml) {
-        const bootstrapPath = `${workspaceRoot}/__entry.tsx`;
-        await sandbox.writeFile(bootstrapPath, bootstrap.content);
-
-        const indexPath = `${workspaceRoot}/index.html`;
-        const indexHtml = `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Storefront Theme</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/__entry.tsx"></script>
-  </body>
-</html>
-`;
-        await sandbox.writeFile(indexPath, indexHtml);
-      }
-
-      // Write controlled package.json with exact pinned dependencies (deterministic toolchain)
-      const dependenciesObj: Record<string, string> = {};
-      for (const dep of this.approvedDependencies) {
-        const root = packageRoot(dep);
-        const version =
-          PINNED_SANDBOX_DEPENDENCIES[dep] ?? PINNED_SANDBOX_DEPENDENCIES[root];
-        if (version) dependenciesObj[root] = version;
-      }
-      // The selected map is frozen into the build input by the server.  It is
-      // still checked against the platform allowlist before reaching here;
-      // keeping it explicit in package.json makes the artifact reproducible
-      // and lets a newly-approved package be used after the sandbox image is
-      // rebuilt from cms.config.
-      for (const [specifier, version] of Object.entries(
-        input.dependencies ?? {},
-      )) {
-        dependenciesObj[themePackageRoot(specifier)] = version;
-      }
-      const packageJson = JSON.stringify(
-        {
-          name: "storefront-theme-build",
-          private: true,
-          type: "module",
-          dependencies: dependenciesObj,
-        },
-        null,
-        2,
-      );
-      await sandbox.writeFile(`${workspaceRoot}/package.json`, packageJson);
-
-      // Write controlled vite.config.ts with Morph dependency enforcer AND workspace path containment inside container
-      const approvedArrayJson = JSON.stringify(
-        Array.from(this.approvedDependencies),
-      );
-      const themeAliasDefinitionsJson = renderThemeViteAliases(
-        pathAliasConfig,
-        workspaceRoot,
-      );
-      const viteConfigContent = `
-import path from "node:path";
-import fs from "node:fs";
-import { defineConfig } from "vite";
-import { cloudflare } from "@cloudflare/vite-plugin";
-import tailwindcss from "@tailwindcss/vite";
-import { tanstackStart } from "@tanstack/react-start/plugin/vite";
-import viteReact from "@vitejs/plugin-react";
-
-const approvedSet = new Set(${approvedArrayJson});
-const themeAliasDefinitions = ${themeAliasDefinitionsJson};
-const escapeAliasRegex = (value) => value.replace(/[\\^$.*+?()[\\]{}|]/g, "\\\\$&");
-const themeAliases = themeAliasDefinitions.map(({ key, target, wildcard }) => ({
-  find: wildcard ? key : new RegExp("^" + escapeAliasRegex(key) + "$"),
-  replacement: target,
-}));
-const themeBaseUrlRoot = path.resolve("/workspace", ${JSON.stringify(pathAliasConfig.baseUrl)});
-const themeBaseUrlPlugin = ${
-        pathAliasConfig.baseUrl
-          ? `{
-  name: "morph-theme-base-url",
-  enforce: "pre",
-  resolveId(source) {
-    if (source.startsWith(".") || source.startsWith("/")) return null;
-    const candidateRoot = path.resolve(themeBaseUrlRoot, source);
-    const relative = path.relative("/workspace", candidateRoot);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
-    const candidates = [
-      candidateRoot,
-      ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map((extension) => candidateRoot + extension),
-      ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map((extension) => candidateRoot + "/index" + extension),
-    ];
-    return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
-  },
-}`
-          : `null`
-      };
-const hasStartRuntime = ${routeRegistry ? "true" : "false"};
-const isStartRuntimeBuild =
-  hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
-
-// Vite's own HMR client and Refresh runtime, which only a dev server asks for.
-// Allowed while serving the Live Preview and refused during a build, so the
-// containment rule a build enforces is never relaxed by this file.
-const isPreviewDevInfrastructure = ${previewDevInfrastructureGuardSource()};
-let viteCommand = null;
-
-const dependencyEnforcerPlugin = {
-  name: "morph-dependency-enforcer",
-  enforce: "pre",
-  configResolved(config) {
-    viteCommand = config.command;
-  },
-  resolveId(source, importer) {
-    if (viteCommand === "serve" && isPreviewDevInfrastructure(source)) {
-      return null;
-    }
-
-    if (importer && importer.includes("/node_modules/")) {
-      return null;
-    }
-
-    // Enforce /workspace filesystem containment for relative and absolute imports
-    if (
-      source.startsWith("./") ||
-      source.startsWith("../") ||
-      source.startsWith("/") ||
-      path.isAbsolute(source)
-    ) {
-      let resolved;
-      if (source.startsWith("/")) {
-        resolved = path.resolve("/workspace", source.slice(1));
-      } else if (path.isAbsolute(source)) {
-        resolved = path.resolve(source);
-      } else {
-        const importerDir = importer ? path.dirname(importer) : "/workspace";
-        resolved = path.resolve(importerDir, source);
-      }
-
-      const rel = path.relative("/workspace", resolved);
-      const normalizedResolved = resolved.replace(/\\\\/g, "/");
-
-      if (rel.startsWith("..") || !normalizedResolved.startsWith("/workspace")) {
-        throw new Error(
-          'WORKSPACE_PATH_ESCAPE: Import "' + source + '" resolves outside workspace root: "' + resolved + '"'
-        );
-      }
-
-      if (normalizedResolved.includes("/node_modules")) {
-        const normalizedImporter = typeof importer === "string"
-          ? importer.replace(/\\\\/g, "/")
-          : "";
-        if (!normalizedImporter.startsWith("/workspace")) {
-          return null;
-        }
-        throw new Error(
-          'UNAPPROVED_DEPENDENCY_PATH: Direct filesystem imports from node_modules are forbidden in theme source files. Use approved bare module specifiers instead (attempted: "' + source + '").'
-        );
-      }
-
-      return null;
-    }
-
-
-    if (typeof source === "string" && source.startsWith("\\0")) {
-      return null;
-    }
-
-    if (
-      typeof source === "string" &&
-      (source.startsWith("virtual:") || source.startsWith("cloudflare:"))
-    ) {
-      const normalizedImporter = typeof importer === "string"
-        ? importer.replace(/\\\\/g, "/")
-        : "";
-      if (
-        !normalizedImporter ||
-        normalizedImporter.startsWith("\\0") ||
-        normalizedImporter.includes("/node_modules/") ||
-        normalizedImporter.startsWith("virtual:")
-      ) {
-        return null;
-      }
-    }
-
-    if (themeAliasDefinitions.some(({ key, wildcard }) =>
-      wildcard ? source === key || source.startsWith(key + "/") : source === key
-    )) {
-      return null;
-    }
-
-    const basePkg = source.startsWith("@")
-      ? source.split("/").slice(0, 2).join("/")
-      : source.split("/")[0];
-
-    if (!approvedSet.has(source) && !approvedSet.has(basePkg)) {
-      throw new Error(
-        "UNAPPROVED_DEPENDENCY: Theme imports unapproved module \\"" + source + "\\". Approved dependencies: " + Array.from(approvedSet).join(", ")
-      );
-    }
-    return null;
-  }
-};
-
-export default defineConfig({
-  root: "${workspaceRoot}",
-  base: isStartRuntimeBuild ? "/" : "./",
-  plugins: isStartRuntimeBuild
-    ? [
-        cloudflare({ viteEnvironment: { name: "ssr" } }),
-        tailwindcss(),
-        tanstackStart(),
-        viteReact(),
-        ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
-        dependencyEnforcerPlugin,
-      ]
-    : [
-        // Preview is client-only and has no Start plugin, so the Start server
-        // module and the Node builtin its storage context imports cannot
-        // resolve. Stubbed here as well as in the in-process runner, from one
-        // shared definition.
-        ${themePreviewServerStubPluginSource()},
-        tailwindcss(),
-        viteReact(),
-        ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
-        dependencyEnforcerPlugin,
-      ],
-  resolve: {
-    alias: themeAliases,
-  },
-  // Keep these off esbuild's pre-bundling path so the preview's server-API
-  // stubs, which are Rollup plugins, are what answers for them.
-  optimizeDeps: {
-    exclude: ${JSON.stringify(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES)},
-  },
-  // Which files a dev server may read off disk. Unset, Vite guesses a root;
-  // the Live Preview states it instead, so nothing outside the workspace and
-  // the pinned toolchain is reachable over HTTP.
-  server: {
-    fs: {
-      strict: true,
-      allow: ${JSON.stringify(THEME_PREVIEW_FS_ALLOW_ROOTS)},
-    },
-  },
-  build: {
-    outDir: isStartRuntimeBuild
-      ? "${workspaceRoot}/dist/runtime"
-      : hasStartRuntime
-        ? "${workspaceRoot}/dist/preview"
-        : "${workspaceRoot}/dist",
-    emptyOutDir: true,
-    minify: true,
-    cssMinify: true,
-    sourcemap: false,
-  },
-});
-
-`;
-      await sandbox.writeFile(
-        `${workspaceRoot}/vite.config.ts`,
-        viteConfigContent,
-      );
+      const { workspaceRoot, routeRegistry } = prepared;
 
       if (routeRegistry) {
         addLog(
