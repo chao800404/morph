@@ -1,7 +1,4 @@
-import {
-  domElementMatchesTarget,
-  sourceLocationKey,
-} from "@/lib/storefront/ast/element-target";
+import { domElementMatchesTarget } from "@/lib/storefront/ast/element-target";
 import { shouldDeferUndoShortcut } from "@/lib/storefront/editor/editor-history";
 import { StorefrontPreview } from "@/components/storefront/storefront-preview";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
@@ -55,7 +52,11 @@ import {
   type PreviewSectionProps,
   type PreviewSelectionRestoreTarget,
 } from "@/lib/storefront/editor/preview-protocol";
-import { parseArrayItemFieldPath } from "@/lib/storefront/editor/reorder-array-items";
+import {
+  isCompatibleReorderTarget,
+  reorderCommitFor,
+  reorderIdentity,
+} from "@/lib/storefront/editor/preview-reorder-identity";
 import { startPreviewHeightReporter } from "@/lib/storefront/editor/preview-height-reporter";
 import {
   PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE,
@@ -979,119 +980,6 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     const finishInlineTextEdit = (commit: boolean) =>
       inlineEditor.finish(commit);
 
-    const sourceFilePathFor = (element: HTMLElement) =>
-      element.closest<HTMLElement>("[data-morph-source-file]")?.dataset
-        .morphSourceFile ??
-      element.closest<HTMLElement>("[data-storefront-section-id]")?.dataset
-        .morphSourceFile ??
-      null;
-
-    /**
-     * `line:column` of an element, when nothing else in the same source file
-     * renders from that position. A JSX element inside `map()` renders once per
-     * item and shares one position, which is precisely the ambiguity that must
-     * not be reordered through source.
-     */
-    const uniqueSourceLocationKey = (element: HTMLElement) => {
-      const sourceLocation = element.dataset.morphLoc;
-      if (!sourceLocation) return null;
-      const key = sourceLocationKey(sourceLocation);
-      if (!key) return null;
-      const scope =
-        element.closest<HTMLElement>("[data-storefront-section-id]") ??
-        document;
-      const matches = scope.querySelectorAll<HTMLElement>(
-        `[data-morph-loc="${CSS.escape(sourceLocation)}"]`,
-      );
-      return matches.length === 1 ? key : null;
-    };
-
-    const isUniqueMorphNode = (element: HTMLElement, nodeId: string) => {
-      const sourcePath = sourceFilePathFor(element);
-      if (!sourcePath) return false;
-      const scope =
-        element.closest<HTMLElement>("[data-storefront-section-id]") ??
-        document;
-      return (
-        Array.from(
-          scope.querySelectorAll<HTMLElement>(
-            `[data-morph-node="${CSS.escape(nodeId)}"]`,
-          ),
-        ).filter((candidate) => sourceFilePathFor(candidate) === sourcePath)
-          .length === 1
-      );
-    };
-
-    const reorderIdentity = (element: HTMLElement) => {
-      const nodeId = element.dataset.morphNode;
-      const fieldPath = element.dataset.storefrontFieldPath;
-      const arrayItem = fieldPath ? parseArrayItemFieldPath(fieldPath) : null;
-      const parent = element.parentElement;
-      const section = element.closest<HTMLElement>(
-        "[data-storefront-section-id]",
-      );
-      const sectionId = section?.dataset.storefrontSectionId;
-      const sourceFilePath = sourceFilePathFor(element);
-      if (!parent || !sectionId || !sourceFilePath) return null;
-      // A section root belongs to the route's section list, not to the JSX
-      // siblings inside one component, so it reorders through the same path the
-      // sidebar uses rather than through a source-file rewrite.
-      if (element === section) {
-        return {
-          kind: "section" as const,
-          nodeId: sectionId,
-          fieldPath: null,
-          arrayPath: null,
-          parent,
-          sectionId,
-          sourceFilePath,
-        };
-      }
-      if (arrayItem && fieldPath) {
-        return {
-          kind: "array" as const,
-          nodeId: null,
-          fieldPath,
-          arrayPath: arrayItem.arrayPath,
-          parent,
-          sectionId,
-          sourceFilePath,
-        };
-      }
-      // An unmarked element is reordered by its source position instead. The
-      // transformer accepts either, so a component with no authored markers is
-      // still draggable — but the position must resolve to one element in this
-      // file, exactly as a marker must.
-      const targetKey =
-        nodeId && isUniqueMorphNode(element, nodeId)
-          ? nodeId
-          : uniqueSourceLocationKey(element);
-      if (!targetKey) return null;
-      return {
-        kind: "source" as const,
-        nodeId: targetKey,
-        fieldPath: null,
-        arrayPath: null,
-        parent,
-        sectionId,
-        sourceFilePath,
-      };
-    };
-
-    const isCompatibleReorderTarget = (
-      identity: NonNullable<ReturnType<typeof reorderIdentity>>,
-      gesture: NonNullable<typeof reorderGesture>,
-    ) =>
-      identity.kind === gesture.kind &&
-      identity.parent === gesture.parent &&
-      // Two sections are exchangeable precisely because they are different
-      // sections; everything else has to stay within one section and one file.
-      (identity.kind === "section"
-        ? identity.sectionId !== gesture.sectionId
-        : identity.sectionId === gesture.sectionId &&
-          identity.sourceFilePath === gesture.sourceFilePath) &&
-      (identity.kind !== "array" || identity.arrayPath === gesture.arrayPath);
-
     const clearDragPreview = () => {
       dragPreviewElement?.remove();
       dragPreviewElement = null;
@@ -1734,39 +1622,8 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       syncSelectedDraggable();
       positionOverlays();
 
-      if (
-        gesture.kind === "array" &&
-        gesture.draggedFieldPath &&
-        target.identity.fieldPath
-      ) {
-        postPreviewToEditorMessage({
-          type: "morph:storefront-preview-commit-array-item-reorder",
-          sectionId: gesture.sectionId,
-          draggedFieldPath: gesture.draggedFieldPath,
-          targetFieldPath: target.identity.fieldPath,
-        });
-      } else if (
-        gesture.kind === "section" &&
-        target.identity.kind === "section"
-      ) {
-        postPreviewToEditorMessage({
-          type: "morph:storefront-preview-commit-section-reorder",
-          draggedSectionId: gesture.sectionId,
-          targetSectionId: target.identity.sectionId,
-        });
-      } else if (
-        gesture.draggedNodeId &&
-        target.identity.kind === "source" &&
-        target.identity.nodeId
-      ) {
-        postPreviewToEditorMessage({
-          type: "morph:storefront-preview-commit-sibling-reorder",
-          sectionId: gesture.sectionId,
-          sourceFilePath: gesture.sourceFilePath,
-          draggedNodeId: gesture.draggedNodeId,
-          targetNodeId: target.identity.nodeId,
-        });
-      }
+      const commit = reorderCommitFor(gesture, target.identity);
+      if (commit) postPreviewToEditorMessage(commit);
     };
 
     const stopDragAutoScroll = () => {
