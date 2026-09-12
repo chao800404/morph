@@ -220,6 +220,7 @@ import {
   isLatestStyleRevision,
   isPreviewHandshakePending,
   shouldConfirmPreviewStyleRevision,
+  shouldWaitForPreviewFrame,
 } from "./style-revision";
 import {
   useLivePreviewMessageBridge,
@@ -488,6 +489,15 @@ const PREVIEW_HEARTBEAT_INTERVAL_MS = 5_000;
 const PREVIEW_HEARTBEAT_TIMEOUT_MS = 15_000;
 const PREVIEW_LIVENESS_FAILURE_MESSAGE =
   "Live Preview stopped responding. Its sandbox port may have expired. Retry Preview to reconnect.";
+/**
+ * How long a frame may take to announce itself before it is called
+ * unreachable. Generous, because this covers a cold dev server compiling the
+ * Theme for the first time — but finite, because the alternative is a canvas
+ * that spins forever at a sandbox that was never going to answer.
+ */
+const PREVIEW_FRAME_LOAD_TIMEOUT_MS = 45_000;
+const PREVIEW_UNREACHABLE_FAILURE_MESSAGE =
+  "Live Preview never finished loading. Its sandbox may be unreachable. Retry Preview to reconnect.";
 // Which preview this deployment runs. "user-code" executes the Theme's own
 // JavaScript and so needs an origin of its own; anything else, including an
 // unset variable, is the compatibility renderer that parses Theme source.
@@ -1143,6 +1153,32 @@ export function VisualEditorShell({
 
     return () => window.clearTimeout(timeout);
   }, [loadedPreviewKey, previewFrameReady?.key, previewKey]);
+  useEffect(() => {
+    // The frame that never loads at all. Every other timer here waits for
+    // something this one cannot assume has happened: the confirmation timeout
+    // starts at readiness, and the heartbeat starts at confirmation. Only this
+    // watches the gap between giving a frame an address and hearing from it.
+    if (
+      !shouldWaitForPreviewFrame(
+        previewKey,
+        previewFrameReady?.key ?? null,
+        previewLoadFailure?.key ?? null,
+      ) ||
+      !previewKey
+    ) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setPreviewLoadFailure((current) =>
+        current?.key === previewKey
+          ? current
+          : { key: previewKey, message: PREVIEW_UNREACHABLE_FAILURE_MESSAGE },
+      );
+    }, PREVIEW_FRAME_LOAD_TIMEOUT_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [previewFrameReady?.key, previewKey, previewLoadFailure?.key]);
   const previewFrameHeight =
     previewContentSize?.key === previewKey
       ? previewContentSize.height
@@ -3807,6 +3843,15 @@ export function VisualEditorShell({
           key: previewKey,
           sequence: current?.key === previewKey ? current.sequence + 1 : 1,
         }));
+        // A frame that arrives late answers the only question that notice
+        // asked. Cleared by message, so a slower sandbox than the timeout
+        // allows for corrects itself instead of needing a retry.
+        setPreviewLoadFailure((current) =>
+          current?.key === previewKey &&
+          current.message === PREVIEW_UNREACHABLE_FAILURE_MESSAGE
+            ? null
+            : current,
+        );
         return;
       }
       if (message.type === "morph:storefront-preview-structure") {

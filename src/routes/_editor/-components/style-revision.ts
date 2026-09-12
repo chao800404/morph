@@ -54,3 +54,27 @@ export function isPreviewHandshakePending(
     failedPreviewKey !== previewKey
   );
 }
+
+/**
+ * Whether a preview frame is still owed its first sign of life.
+ *
+ * A frame that has an address but has never announced itself is the one state
+ * nothing else watches: the confirmation timeout only starts once the frame is
+ * ready, and the heartbeat only starts once the source has been confirmed. A
+ * sandbox that is unreachable when the frame loads reaches neither, so without
+ * this the canvas waits on a document that is never going to arrive.
+ *
+ * A frame that already failed is not waited on again — it has an answer, and
+ * reporting a second one would only overwrite the more specific first.
+ */
+export function shouldWaitForPreviewFrame(
+  previewKey: string | null,
+  readyPreviewKey: string | null,
+  failedPreviewKey: string | null,
+): boolean {
+  return (
+    previewKey !== null &&
+    readyPreviewKey !== previewKey &&
+    failedPreviewKey !== previewKey
+  );
+}
