@@ -155,7 +155,9 @@ export default function Hero({ actionHref }) {
     const result = patchThemeLinkElement(source, "actionHref", "anchor");
 
     expect(result.editable).toBe(true);
-    expect(result.code).toContain('<a href={actionHref} className="btn">Go</a>');
+    expect(result.code).toContain(
+      '<a href={actionHref} className="btn">Go</a>',
+    );
   });
 
   it("turns an anchor into a router Link and adds the import", () => {
@@ -239,11 +241,13 @@ export default function Hero({ action }) {
   return <><a href={actionHref}>A</a><a href={actionHref}>B</a></>;
 }`;
 
-    expect(patchThemeLinkElement(source, "actionHref", "router")).toMatchObject({
-      code: source,
-      editable: false,
-      reason: "ambiguous",
-    });
+    expect(patchThemeLinkElement(source, "actionHref", "router")).toMatchObject(
+      {
+        code: source,
+        editable: false,
+        reason: "ambiguous",
+      },
+    );
   });
 
   it("reports when the field reaches no link at all", () => {
@@ -251,9 +255,11 @@ export default function Hero({ action }) {
   return <Link to="/aboutus">Go</Link>;
 }`;
 
-    expect(patchThemeLinkElement(source, "actionHref", "anchor")).toMatchObject({
-      editable: false,
-      reason: "not-found",
-    });
+    expect(patchThemeLinkElement(source, "actionHref", "anchor")).toMatchObject(
+      {
+        editable: false,
+        reason: "not-found",
+      },
+    );
   });
 });

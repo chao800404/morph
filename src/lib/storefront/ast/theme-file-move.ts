@@ -36,7 +36,10 @@ export type ThemeFileMoveResult =
 const IMPLICIT_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
 
 function parseModule(source: string) {
-  return parse(source, { sourceType: "module", plugins: ["jsx", "typescript"] });
+  return parse(source, {
+    sourceType: "module",
+    plugins: ["jsx", "typescript"],
+  });
 }
 
 /** Directory part of a path, without a trailing slash. */
@@ -73,7 +76,11 @@ export function relativeSpecifier(
   const from = fromDirectory ? fromDirectory.split("/") : [];
   const to = target.split("/");
   let shared = 0;
-  while (shared < from.length && shared < to.length && from[shared] === to[shared]) {
+  while (
+    shared < from.length &&
+    shared < to.length &&
+    from[shared] === to[shared]
+  ) {
     shared += 1;
   }
   const up = from.length - shared;
@@ -148,8 +155,7 @@ function readSpecifierSites(source: string): SpecifierSite[] {
         node.type === "ExportAllDeclaration") &&
       node.source?.type === "StringLiteral";
     const isDynamic =
-      node.type === "ImportExpression" &&
-      node.source?.type === "StringLiteral";
+      node.type === "ImportExpression" && node.source?.type === "StringLiteral";
     if (isStatic || isDynamic) {
       const literal = node.source;
       sites.push({
@@ -194,7 +200,8 @@ export function rewriteThemeRouteFactoryPath(
   routeId: string,
 ): { content: string; changed: boolean } | { error: string } {
   const ast = parseModule(source);
-  let routeArgument: { start: number; end: number; value: string } | null = null;
+  let routeArgument: { start: number; end: number; value: string } | null =
+    null;
   let dynamicRouteArgument = false;
 
   const visit = (node: any) => {
@@ -218,7 +225,7 @@ export function rewriteThemeRouteFactoryPath(
           value:
             argument.type === "StringLiteral"
               ? argument.value
-              : argument.quasis?.[0]?.value?.cooked ?? "",
+              : (argument.quasis?.[0]?.value?.cooked ?? ""),
         };
       } else if (argument) {
         dynamicRouteArgument = true;
@@ -365,7 +372,8 @@ export function planThemeFileMove(
         // Nothing moved on either end: the specifier already says what it means.
         if (nextTarget === target && destination === file.path) continue;
 
-        const hadExtension = site.value !== withoutImplicitExtension(site.value);
+        const hadExtension =
+          site.value !== withoutImplicitExtension(site.value);
         const specifier = relativeSpecifier(
           directoryOf(destination),
           hadExtension ? nextTarget : withoutImplicitExtension(nextTarget),

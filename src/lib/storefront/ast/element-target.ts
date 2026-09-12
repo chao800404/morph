@@ -66,7 +66,11 @@ export function resolveElementMeta(
   targetKey: string,
 ): ComponentElementMeta | undefined {
   if (!parsed) return undefined;
-  return parsed.nodeMap[targetKey] ?? parsed.elements[targetKey] ?? parsed.locationMap[targetKey];
+  return (
+    parsed.nodeMap[targetKey] ??
+    parsed.elements[targetKey] ??
+    parsed.locationMap[targetKey]
+  );
 }
 
 /**

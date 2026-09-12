@@ -13,6 +13,7 @@ import {
   renderThemeViteAliases,
 } from "./theme-path-aliases";
 import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
+import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
 import type { ThemeBuildDiagnostic } from "./theme-build-runner.types";
 
 /**
@@ -72,6 +73,8 @@ export type PrepareThemeWorkspaceResult =
       >["routeRegistry"];
       /** Modules whose `contentFields` export was lifted, preview only. */
       hoistedContentFields: readonly string[];
+      /** Elements given editor identity per file, preview only. */
+      annotatedElements: Readonly<Record<string, number>>;
     }>
   | Readonly<{
       ok: false;
@@ -104,11 +107,31 @@ export async function prepareThemeSandboxWorkspace({
   approvedDependencies,
   mode,
 }: PrepareThemeWorkspaceInput): Promise<PrepareThemeWorkspaceResult> {
-  // Only text modules can be rewritten, and only the preview asks for it.
+  // Identity is written before the declaration is lifted, and the lift moves
+  // no byte: injection reads `contentFields` to know which names are really
+  // fields, and that reading only works while the module still exports it.
+  // Run the other way round, every row field would be judged undeclared and
+  // nothing repeated would be editable.
+  const bindings =
+    mode === "preview-server"
+      ? injectPreviewBindings(
+          requestedFiles.map((file) => ({
+            path: file.path,
+            content: typeof file.content === "string" ? file.content : "",
+          })),
+        )
+      : null;
+  const boundFiles: readonly ThemeWorkspaceFile[] = requestedFiles.map(
+    (file, index) =>
+      typeof file.content === "string" && bindings
+        ? { path: file.path, content: bindings.files[index]!.content }
+        : file,
+  );
+
   const hoist =
     mode === "preview-server"
       ? hoistColocatedContentFieldsForPreview(
-          requestedFiles.map((file) => ({
+          boundFiles.map((file) => ({
             path: file.path,
             content: typeof file.content === "string" ? file.content : "",
           })),
@@ -120,7 +143,7 @@ export async function prepareThemeSandboxWorkspace({
       hoist!.files.find((file) => file.path === path)!.content,
     ]),
   );
-  const files: readonly ThemeWorkspaceFile[] = requestedFiles.map((file) =>
+  const files: readonly ThemeWorkspaceFile[] = boundFiles.map((file) =>
     hoistedByPath.has(file.path)
       ? { path: file.path, content: hoistedByPath.get(file.path)! }
       : file,
@@ -512,5 +535,6 @@ sourcemap: false,
     workspaceRoot,
     routeRegistry,
     hoistedContentFields: hoist?.hoisted ?? [],
+    annotatedElements: bindings?.annotated ?? {},
   };
 }

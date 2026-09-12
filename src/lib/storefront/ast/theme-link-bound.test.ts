@@ -51,9 +51,9 @@ describe("whether a destination field reaches anything", () => {
   });
 
   it("tolerates a file it cannot parse", () => {
-    expect(isThemeLinkFieldBound("export default function ( {", "actionHref")).toBe(
-      false,
-    );
+    expect(
+      isThemeLinkFieldBound("export default function ( {", "actionHref"),
+    ).toBe(false);
     expect(isThemeLinkFieldBound(null, "actionHref")).toBe(false);
   });
 });

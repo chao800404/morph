@@ -109,4 +109,3 @@ describe("domElementMatchesTarget", () => {
     ).toBe(false);
   });
 });
-

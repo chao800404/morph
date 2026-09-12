@@ -45,7 +45,9 @@ function parseAst(sourceCode: string) {
  * values could not be shown in the editor before the Theme runs, so it is
  * refused rather than partially understood.
  */
-function readStaticLiteral(node: any): { ok: true; value: unknown } | { ok: false } {
+function readStaticLiteral(
+  node: any,
+): { ok: true; value: unknown } | { ok: false } {
   if (!node) return { ok: false };
   switch (node.type) {
     case "StringLiteral":

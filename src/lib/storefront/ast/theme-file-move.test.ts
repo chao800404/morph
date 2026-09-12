@@ -33,8 +33,14 @@ export default function Hero() {
   return <section className={cn("hero")}><Card /></section>;
 }`,
   },
-  { path: "src/components/Card.tsx", content: `export default function Card() {\n  return <div />;\n}` },
-  { path: "src/lib/cn.ts", content: `export const cn = (...parts: string[]) => parts.join(" ");` },
+  {
+    path: "src/components/Card.tsx",
+    content: `export default function Card() {\n  return <div />;\n}`,
+  },
+  {
+    path: "src/lib/cn.ts",
+    content: `export const cn = (...parts: string[]) => parts.join(" ");`,
+  },
 ];
 
 function contentAt(result: ReturnType<typeof planThemeFileMove>, path: string) {
@@ -57,7 +63,11 @@ describe("relative path arithmetic", () => {
   it("resolves a specifier to the file a bundler would pick", () => {
     const paths = new Set(files.map((file) => file.path));
     expect(
-      resolveSpecifierToFile("src/routes/index.tsx", "../components/Hero", paths),
+      resolveSpecifierToFile(
+        "src/routes/index.tsx",
+        "../components/Hero",
+        paths,
+      ),
     ).toBe("src/components/Hero.tsx");
     expect(
       resolveSpecifierToFile("src/components/Hero.tsx", "./Card", paths),
@@ -112,7 +122,9 @@ describe("planThemeFileMove", () => {
     ]);
 
     // Hero and Card stay siblings, so the specifier between them is unchanged.
-    expect(contentAt(result, "src/components/ui/Hero.tsx")).toContain('"./Card"');
+    expect(contentAt(result, "src/components/ui/Hero.tsx")).toContain(
+      '"./Card"',
+    );
     expect(contentAt(result, "src/routes/index.tsx")).toContain(
       '"../components/ui/Card"',
     );
@@ -124,7 +136,10 @@ describe("planThemeFileMove", () => {
         path: "src/routes/index.tsx",
         content: `import Hero from "../components/Hero.tsx";`,
       },
-      { path: "src/components/Hero.tsx", content: "export default function Hero() { return null; }" },
+      {
+        path: "src/components/Hero.tsx",
+        content: "export default function Hero() { return null; }",
+      },
     ];
     const result = planThemeFileMove(withExtension, [
       { from: "src/components/Hero.tsx", to: "src/ui/Hero.tsx" },
@@ -138,7 +153,10 @@ describe("planThemeFileMove", () => {
   it("follows a folder specifier to its index file", () => {
     const withIndex: ThemeSourceFile[] = [
       { path: "src/routes/index.tsx", content: `import Button from "../ui";` },
-      { path: "src/ui/index.tsx", content: "export default function Button() { return null; }" },
+      {
+        path: "src/ui/index.tsx",
+        content: "export default function Button() { return null; }",
+      },
     ];
     const result = planThemeFileMove(withIndex, [
       { from: "src/ui/index.tsx", to: "src/components/ui/index.tsx" },
@@ -160,7 +178,10 @@ describe("planThemeFileMove", () => {
   it("refuses when a file cannot be parsed, rather than writing half a rewrite", () => {
     const broken = [
       ...files,
-      { path: "src/components/Broken.tsx", content: "export default function ( {" },
+      {
+        path: "src/components/Broken.tsx",
+        content: "export default function ( {",
+      },
     ];
     const result = planThemeFileMove(broken, [
       { from: "src/components/Hero.tsx", to: "src/ui/Hero.tsx" },
@@ -285,18 +306,18 @@ describe("planDropMoves", () => {
   });
 
   it("treats a drop on the folder something already lives in as nothing", () => {
-    expect(planDropMoves(paths, "src/components/Hero.tsx", "src/components")).toEqual(
-      [],
-    );
+    expect(
+      planDropMoves(paths, "src/components/Hero.tsx", "src/components"),
+    ).toEqual([]);
   });
 
   it("refuses to drop a folder inside itself or its own descendant", () => {
     // Every path under it would have to move under a path that is itself
     // moving, which has no stable answer.
-    expect(planDropMoves(paths, "src/components", "src/components")).toEqual([]);
-    expect(
-      planDropMoves(paths, "src", "src/components"),
-    ).toEqual([]);
+    expect(planDropMoves(paths, "src/components", "src/components")).toEqual(
+      [],
+    );
+    expect(planDropMoves(paths, "src", "src/components")).toEqual([]);
   });
 
   it("moves to the root when dropped outside every folder", () => {
@@ -305,4 +326,3 @@ describe("planDropMoves", () => {
     ]);
   });
 });
-

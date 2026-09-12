@@ -118,12 +118,9 @@ const PADDING_X_PATTERN = /^px-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const PADDING_Y_PATTERN = /^py-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const MARGIN_ALL_PATTERN = /^(?:m-auto|-?m-(?:\d+(?:\.\d+)?|\[.+\]))$/;
 const MARGIN_TOP_PATTERN = /^(?:mt-auto|-?mt-(?:\d+(?:\.\d+)?|\[.+\]))$/;
-const MARGIN_BOTTOM_PATTERN =
-  /^(?:mb-auto|-?mb-(?:\d+(?:\.\d+)?|\[.+\]))$/;
-const MARGIN_LEFT_PATTERN =
-  /^(?:ml-auto|-?ml-(?:\d+(?:\.\d+)?|\[.+\]))$/;
-const MARGIN_RIGHT_PATTERN =
-  /^(?:mr-auto|-?mr-(?:\d+(?:\.\d+)?|\[.+\]))$/;
+const MARGIN_BOTTOM_PATTERN = /^(?:mb-auto|-?mb-(?:\d+(?:\.\d+)?|\[.+\]))$/;
+const MARGIN_LEFT_PATTERN = /^(?:ml-auto|-?ml-(?:\d+(?:\.\d+)?|\[.+\]))$/;
+const MARGIN_RIGHT_PATTERN = /^(?:mr-auto|-?mr-(?:\d+(?:\.\d+)?|\[.+\]))$/;
 const MARGIN_X_PATTERN = /^(?:mx-auto|-?mx-(?:\d+(?:\.\d+)?|\[.+\]))$/;
 const MARGIN_Y_PATTERN = /^(?:my-auto|-?my-(?:\d+(?:\.\d+)?|\[.+\]))$/;
 const BORDER_RADIUS_PATTERN =
