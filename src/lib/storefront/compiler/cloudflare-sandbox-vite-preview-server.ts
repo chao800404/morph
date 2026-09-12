@@ -5,6 +5,7 @@ import {
 } from "./theme-sandbox-workspace";
 import { SANDBOX_TOOLCHAIN_ROOT } from "./theme-preview-dev-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
+import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
 
 /**
  * Runs a Theme's Live Preview as a real Vite dev server inside a sandbox
@@ -75,10 +76,10 @@ export type StartPreviewServerInput = Readonly<{
   files: readonly ThemeWorkspaceFile[];
   entry: string;
   dependencies?: Readonly<Record<string, string>>;
-  /** Host the preview URL is built on. Must not be the editor's own host. */
+  /** Host the preview URL is built on. Must not be platform surface. */
   previewHostname: string;
-  /** Host the editor is served from, so same-origin can be refused. */
-  editorHostname: string;
+  /** Worker vars, so every platform hostname can be refused, not just one. */
+  env: Record<string, unknown> | undefined;
 }>;
 
 export type StartPreviewServerResult =
@@ -108,17 +109,6 @@ export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
   sleepAfter?: string | number;
   maxLogLines?: number;
 }>;
-
-/**
- * Normalises a host for comparison.
- *
- * A preview served from the editor's own origin would hand Theme code the
- * editor's cookies, so the check has to survive the ways the same host can be
- * written down rather than only catching an exact string match.
- */
-function normalizeHost(value: string): string {
-  return value.trim().toLowerCase().replace(/\.$/, "");
-}
 
 export class CloudflareSandboxVitePreviewServer {
   private readonly sandboxBinding?: unknown;
@@ -160,28 +150,21 @@ export class CloudflareSandboxVitePreviewServer {
       if (logs.length < this.maxLogLines) logs.push(line);
     };
 
-    const previewHost = normalizeHost(input.previewHostname ?? "");
-    const editorHost = normalizeHost(input.editorHostname ?? "");
-    if (!previewHost) {
-      // Fail closed. A missing preview host must never quietly become "serve
-      // it from wherever the editor lives".
+    // One rule, shared with the editor side that later frames the URL. A
+    // preview on any platform host would put Theme code in Morph's cookie jar.
+    const host = resolveThemePreviewServerHost({
+      configuredPreviewHostname: input.previewHostname,
+      env: input.env,
+    });
+    if (!host.enabled) {
       return {
         ok: false,
         stage: "preview-origin",
-        errorMessage:
-          "PREVIEW_HOST_UNCONFIGURED: A Live Preview server needs its own host, and none is configured.",
+        errorMessage: `${host.reason}: A Live Preview that runs Theme JavaScript needs its own host, separate from every Morph hostname.`,
         logs,
       };
     }
-    if (previewHost === editorHost) {
-      return {
-        ok: false,
-        stage: "preview-origin",
-        errorMessage:
-          "SAME_ORIGIN_USER_CODE_PREVIEW: A Live Preview that runs Theme JavaScript cannot share an origin with the editor.",
-        logs,
-      };
-    }
+    const previewHost = host.hostname;
 
     let session: PreviewServerSession | null = null;
     try {

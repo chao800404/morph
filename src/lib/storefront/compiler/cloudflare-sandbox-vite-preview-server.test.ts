@@ -123,7 +123,7 @@ const startWith = (
     files: THEME,
     entry: "src/pages/index.tsx",
     previewHostname: "preview.example.com",
-    editorHostname: "admin.example.com",
+    env: { PUBLIC_URL: "https://admin.example.com" },
     ...overrides,
   });
 };
@@ -163,16 +163,15 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     expect(harness.envs[0]).toEqual({ NODE_ENV: "development" });
   });
 
-  it("refuses to serve user code from the editor's own origin", async () => {
+  it("refuses to serve user code from any Morph host, however it is written", async () => {
     const harness = createSession("ready");
     const result = await startWith(harness, {
       previewHostname: "Admin.Example.com.",
-      editorHostname: "admin.example.com",
     });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.errorMessage).toContain("SAME_ORIGIN_USER_CODE_PREVIEW");
+    expect(result.errorMessage).toContain("PLATFORM_PREVIEW_HOST");
     expect(harness.commands).toEqual([]);
   });
 
@@ -182,7 +181,7 @@ describe("CloudflareSandboxVitePreviewServer", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.errorMessage).toContain("PREVIEW_HOST_UNCONFIGURED");
+    expect(result.errorMessage).toContain("MISSING_PREVIEW_HOST");
     expect(harness.commands).toEqual([]);
   });
 
