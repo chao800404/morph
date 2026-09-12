@@ -103,3 +103,48 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(result.ok && result.annotatedElements).toEqual({});
   });
 });
+
+describe("what a build is given", () => {
+  it("ships none of the editor's attributes, including hand-written ones", async () => {
+    const { card, result } = await prepare("build");
+    expect(card).not.toContain("data-storefront-field");
+    expect(card).not.toContain("data-morph-loc");
+    expect(result.ok && result.strippedEditorMarkers).toEqual({});
+  });
+
+  it("strips a marker the author wrote, and keeps their own attributes", async () => {
+    const written = new Map<string, string>();
+    const result = await prepareThemeSandboxWorkspace({
+      session: {
+        async mkdir() {},
+        async writeFile(path, content) {
+          written.set(path, String(content));
+        },
+      },
+      files: [
+        {
+          path: "src/components/Marked.tsx",
+          content: `export default function Marked({ heading }) {
+  return <h1 data-storefront-field="heading" data-analytics-id="cta">{heading}</h1>;
+}
+`,
+        },
+        {
+          path: "src/pages/index.tsx",
+          content: `import Marked from "../components/Marked";\nexport default () => <Marked />;\n`,
+        },
+      ],
+      entry: "src/pages/index.tsx",
+      buildId: "strip-test",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "build",
+    });
+
+    const marked = written.get("/workspace/src/components/Marked.tsx") ?? "";
+    expect(marked).not.toContain("data-storefront-field");
+    expect(marked).toContain('data-analytics-id="cta"');
+    expect(result.ok && result.strippedEditorMarkers).toEqual({
+      "src/components/Marked.tsx": 1,
+    });
+  });
+});

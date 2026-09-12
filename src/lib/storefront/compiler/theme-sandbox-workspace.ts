@@ -14,6 +14,7 @@ import {
 } from "./theme-path-aliases";
 import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
 import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
+import { stripEditorMarkers } from "@/lib/storefront/ast/strip-editor-markers";
 import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.generated";
 import {
   themePreviewBridgeEntrySource,
@@ -82,6 +83,8 @@ export type PrepareThemeWorkspaceResult =
       annotatedElements: Readonly<Record<string, number>>;
       /** Content slots given a section wrapper, per file. */
       previewSections: Readonly<Record<string, readonly string[]>>;
+      /** Editor attributes removed per file, build only. */
+      strippedEditorMarkers: Readonly<Record<string, number>>;
       /** Preview behaviour that will differ from the build, and why. */
       previewWarnings: ReadonlyArray<{ path: string; message: string }>;
     }>
@@ -116,6 +119,25 @@ export async function prepareThemeSandboxWorkspace({
   approvedDependencies,
   mode,
 }: PrepareThemeWorkspaceInput): Promise<PrepareThemeWorkspaceResult> {
+  // A build ships none of the editor's attributes. The Theme's stored source
+  // keeps them — that is where a hand-written marker is doing its job — but a
+  // shopper has no use for them, and they describe the Theme's own source on
+  // every page.
+  const textFiles = requestedFiles.map((file) => ({
+    path: file.path,
+    content: typeof file.content === "string" ? file.content : "",
+  }));
+  const strip = mode === "build" ? stripEditorMarkers(textFiles) : null;
+  const strippedByPath = new Map(
+    (strip?.files ?? []).map((file) => [file.path, file.content]),
+  );
+  const sourceFiles: readonly ThemeWorkspaceFile[] = requestedFiles.map(
+    (file) =>
+      typeof file.content === "string" && strippedByPath.has(file.path)
+        ? { path: file.path, content: strippedByPath.get(file.path)! }
+        : file,
+  );
+
   // Identity is written before the declaration is lifted, and the lift moves
   // no byte: injection reads `contentFields` to know which names are really
   // fields, and that reading only works while the module still exports it.
@@ -124,13 +146,13 @@ export async function prepareThemeSandboxWorkspace({
   const bindings =
     mode === "preview-server"
       ? injectPreviewBindings(
-          requestedFiles.map((file) => ({
+          sourceFiles.map((file) => ({
             path: file.path,
             content: typeof file.content === "string" ? file.content : "",
           })),
         )
       : null;
-  const boundFiles: readonly ThemeWorkspaceFile[] = requestedFiles.map(
+  const boundFiles: readonly ThemeWorkspaceFile[] = sourceFiles.map(
     (file, index) =>
       typeof file.content === "string" && bindings
         ? { path: file.path, content: bindings.files[index]!.content }
@@ -567,6 +589,7 @@ sourcemap: false,
     hoistedContentFields: hoist?.hoisted ?? [],
     annotatedElements: bindings?.annotated ?? {},
     previewSections: bindings?.sections ?? {},
+    strippedEditorMarkers: strip?.stripped ?? {},
     previewWarnings: bindings?.warnings ?? [],
   };
 }
