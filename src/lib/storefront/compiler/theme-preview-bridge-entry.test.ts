@@ -196,3 +196,24 @@ describe("dragging something into a new position", () => {
     expect(BRIDGE).toContain('document.addEventListener("dragend"');
   });
 });
+
+describe("changing which page the editor is showing", () => {
+  it("navigates the Theme's own router rather than reloading the page", () => {
+    expect(BRIDGE).toContain("window.__morphPreviewRouter");
+    expect(BRIDGE).toContain(
+      'router.navigate({ to: message.routePath ?? "/" })',
+    );
+  });
+
+  it("does nothing when no router was handed over", () => {
+    // Staying put beats reloading the page out from under an edit.
+    expect(BRIDGE).toContain("if (router) {");
+  });
+
+  it("drops selection and re-reads the page it lands on", () => {
+    // A different route is a different set of elements entirely.
+    const routing = BRIDGE.slice(BRIDGE.indexOf("__morphPreviewRouter"));
+    expect(routing).toContain("selectedItem = null;");
+    expect(routing).toContain("reportStructure");
+  });
+});

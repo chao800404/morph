@@ -133,6 +133,15 @@ export function createThemeBuildBootstrap(args: {
   files: readonly ThemeCompilerFile[];
   entry: string;
   cssFiles: readonly string[];
+  /**
+   * Hand the router to the preview bridge.
+   *
+   * The editor changes which page is shown by asking the preview to, and a
+   * real Theme owns its own router — so the entry Morph generates is the one
+   * place that can pass it along. A build sets this false and the Theme is
+   * reachable only through its own links, as a shopper reaches it.
+   */
+  exposeRouterForPreview?: boolean;
 }): ThemeBuildBootstrap {
   const cssImports = args.cssFiles
     .map((css) => `import "./${css.replace(/\\/g, "/")}";`)
@@ -307,7 +316,9 @@ const router = createRouter({
   routeTree,
   history: createMemoryHistory({ initialEntries: ["/"] }),
 });
-const container = document.getElementById("root");
+${
+  args.exposeRouterForPreview ? "window.__morphPreviewRouter = router;\n" : ""
+}const container = document.getElementById("root");
 if (container) {
   createRoot(container).render(React.createElement(RouterProvider, { router }));
 }

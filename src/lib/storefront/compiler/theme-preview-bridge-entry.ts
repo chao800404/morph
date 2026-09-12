@@ -366,6 +366,23 @@ if (channel) {
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
     }
+    if (message?.type === "morph:storefront-preview-set-route") {
+      // A real Theme owns its router, so the entry Morph generates hands it
+      // over. Without one there is nothing to navigate and the page simply
+      // stays where it is, which is better than reloading it out from under
+      // an edit in progress.
+      const router = window.__morphPreviewRouter;
+      if (router) {
+        inlineEditor.finish(true);
+        selectedItem = null;
+        hoveredItem = null;
+        syncDragHandle();
+        drawOverlays();
+        void router.navigate({ to: message.routePath ?? "/" });
+        // The page it lands on is a different set of elements entirely.
+        window.setTimeout(reportStructure, 0);
+      }
+    }
     if (message?.type === "morph:storefront-preview-set-selection-mode") {
       selectionEnabled = message.enabled;
       // Leaving select mode drops the highlight with it: a ring left behind

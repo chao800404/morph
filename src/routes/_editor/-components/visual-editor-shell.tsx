@@ -152,10 +152,8 @@ import {
   hasInlineTextDocumentTarget,
   isInlineTextEditCandidate,
 } from "@/lib/storefront/editor/inline-text-edit";
-import {
-  buildLivePreviewUrl,
-  resolveLivePreviewSecurity,
-} from "@/lib/storefront/editor/live-preview-security";
+import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
+import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
 import {
   parsePreviewSectionProps,
   type PreviewEditableNode,
@@ -1008,14 +1006,17 @@ export function VisualEditorShell({
       .VITE_STOREFRONT_LIVE_PREVIEW_ORIGIN,
     executionMode: LIVE_PREVIEW_EXECUTION_MODE,
   });
+  const previewSourceOriginRef = useRef<string | null>(null);
   const livePreviewWorkspaceKey = `${context.storefront.id}:${context.theme.id}`;
   const stablePreviewSession = useStableLivePreviewSession(
     livePreviewWorkspaceKey,
     context.previewChannel?.sessionId ?? "",
   );
   const livePreviewChannel = {
+    // The origin messages are posted to has to be the one actually framed: a
+    // preview server answers from its own host, not from Morph's.
     targetOrigin: livePreviewSecurity.enabled
-      ? livePreviewSecurity.previewOrigin
+      ? (previewSourceOriginRef.current ?? livePreviewSecurity.previewOrigin)
       : (context.previewChannel?.editorOrigin ?? ""),
     previewSession: stablePreviewSession,
   };
@@ -1047,10 +1048,11 @@ export function VisualEditorShell({
       routePath: search.routePath,
     };
   }
-  const previewUrl =
+  const previewSource =
     activeTemplate && livePreviewSecurity.enabled
-      ? buildLivePreviewUrl({
-          previewOrigin: livePreviewSecurity.previewOrigin,
+      ? resolveLivePreviewSource({
+          executionMode: LIVE_PREVIEW_EXECUTION_MODE,
+          compatibilityOrigin: livePreviewSecurity.previewOrigin,
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
           templateId:
@@ -1059,8 +1061,14 @@ export function VisualEditorShell({
           viewportHeight: DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
           editorOrigin: context.previewChannel?.editorOrigin ?? "",
           previewSession: stablePreviewSession,
+          // Filled in once a preview server is running for this Theme. Until
+          // then the compatibility preview is what the editor frames, so an
+          // editor never waits on a container to show a page.
+          previewServerUrl: null,
         })
       : null;
+  const previewUrl = previewSource?.url ?? null;
+  previewSourceOriginRef.current = previewSource?.origin ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
   const isPreviewLoading = isPreviewHandshakePending(
     previewKey,

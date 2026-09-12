@@ -213,6 +213,7 @@ export async function prepareThemeSandboxWorkspace({
     })),
     entry: entry,
     cssFiles,
+    exposeRouterForPreview: mode === "preview-server",
   });
   routeRegistry = bootstrap.routeRegistry;
 
