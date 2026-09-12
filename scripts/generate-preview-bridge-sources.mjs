@@ -36,6 +36,8 @@ const MODULES = [
   "preview-empty-text-layout",
   "selection-overlay-geometry",
   "preview-selection-overlays",
+  "inline-text-edit",
+  "inline-text-editor",
 ];
 
 /**

@@ -131,3 +131,31 @@ describe("showing what is selected and what is under the pointer", () => {
     expect(clearing).toContain("selectedItem = null;");
   });
 });
+
+describe("editing text in the page it is rendered on", () => {
+  it("uses the same editor the compatibility renderer does", () => {
+    expect(BRIDGE).toContain("createInlineTextEditor({");
+    expect(BRIDGE).toContain('from "./preview/inline-text-editor"');
+  });
+
+  it("opens on a double click, before the click handler takes the event", () => {
+    // Editing needs the caret the browser is about to place, which a
+    // preventDefault on the click would have thrown away.
+    const dbl = BRIDGE.indexOf('"dblclick"');
+    const click = BRIDGE.indexOf('"click"');
+    expect(dbl).toBeGreaterThan(-1);
+    expect(dbl).toBeLessThan(click);
+  });
+
+  it("leaves a click inside the text being edited alone", () => {
+    // Taking it would end the edit on the first click into it.
+    expect(BRIDGE).toContain("const editing = inlineEditor.editingElement();");
+    expect(BRIDGE).toContain("editing.contains(event.target)");
+  });
+
+  it("sends what was typed through the commit message", () => {
+    expect(BRIDGE).toContain(
+      '{ type: "morph:storefront-preview-commit-inline-text", ...commit }',
+    );
+  });
+});

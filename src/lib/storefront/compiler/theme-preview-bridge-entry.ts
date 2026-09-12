@@ -28,6 +28,7 @@ import {
 } from "./preview/preview-dom";
 import { startPreviewHeightReporter } from "./preview/preview-height-reporter";
 import { createPreviewSelectionOverlays } from "./preview/preview-selection-overlays";
+import { createInlineTextEditor } from "./preview/inline-text-editor";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
@@ -42,6 +43,18 @@ let selectedItem = null;
 let hoveredItem = null;
 
 const overlays = channel ? createPreviewSelectionOverlays() : null;
+
+const inlineEditor = createInlineTextEditor({
+  onCommit: (commit) => {
+    if (!channel) return;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-commit-inline-text", ...commit },
+      channel,
+    );
+  },
+  // Typing changes how much room the text takes, so the rings follow it.
+  onLayoutChanged: () => drawOverlays(),
+});
 
 const toOverlayItem = (item) =>
   item
@@ -144,10 +157,43 @@ if (channel) {
 
   // Capture, so a Theme that stops its own clicks cannot make an element
   // unselectable. Selecting is the editor's, not the Theme's, to decide.
+  // A double click on selected text edits it in place. Checked before the
+  // click handler takes the event away, since editing needs the caret the
+  // browser is about to place.
+  window.addEventListener(
+    "dblclick",
+    (event) => {
+      if (!selectionEnabled) return;
+      const item = resolveSelectable(event.target);
+      if (!item?.sectionId) return;
+      if (
+        inlineEditor.begin(
+          { ...item, kind: selectionKindOf(item) },
+          { selectionEnabled },
+        )
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    { capture: true },
+  );
+
   window.addEventListener(
     "click",
     (event) => {
       if (!selectionEnabled) return;
+      // A click inside the text being edited is the caret moving, not a new
+      // selection: taking it would end the edit on the first click.
+      const editing = inlineEditor.editingElement();
+      if (
+        editing &&
+        event.target instanceof Node &&
+        editing.contains(event.target)
+      ) {
+        return;
+      }
+      inlineEditor.finish(true);
       // Capture and stop, so a Theme's own link or handler cannot make an
       // element unselectable. What a click means is the editor's to decide.
       event.preventDefault();
