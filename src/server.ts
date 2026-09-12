@@ -118,9 +118,37 @@ async function isStorefrontHost(request: Request): Promise<boolean> {
   );
 }
 
+/**
+ * Carries a Live Preview request into the container serving it.
+ *
+ * Loaded on demand, and tolerant of not being available: a deployment with no
+ * Sandbox binding has no preview servers either, and ordinary traffic must
+ * not fail because of a subsystem it never uses.
+ */
+async function proxyPreviewRequest(request: Request): Promise<Response | null> {
+  try {
+    const { proxyToSandbox } = await import("@cloudflare/sandbox");
+    const { env } = await import("cloudflare:workers");
+    return await proxyToSandbox(request, env as never);
+  } catch {
+    return null;
+  }
+}
+
 export default {
   async fetch(...args: Parameters<StartRequestHandler>): Promise<Response> {
     const request = args[0];
+
+    // A Live Preview server answers on its own hostname, and this is what
+    // carries those requests into the container. It returns null for
+    // everything else, so ordinary traffic falls through untouched.
+    //
+    // Ahead of the storefront check on purpose: a preview hostname resolved
+    // as a storefront would be looked up as a shop nobody owns, and answered
+    // with a 404 that says nothing about why the preview went blank.
+    const previewResponse = await proxyPreviewRequest(request);
+    if (previewResponse) return previewResponse;
+
     if (await isStorefrontHost(request)) {
       return handleStorefrontRequest(request);
     }
