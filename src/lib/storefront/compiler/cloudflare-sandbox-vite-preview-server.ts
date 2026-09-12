@@ -57,6 +57,10 @@ export type PreviewServerSession = ThemeWorkspaceWriter &
       port: number,
       options: { hostname: string; name?: string; token?: string },
     ): Promise<{ url: string }>;
+    /** Processes already running in this container, if it can say. */
+    listProcesses?(): Promise<
+      ReadonlyArray<{ id?: string; command?: string; status?: string }>
+    >;
     killProcess?(id?: string): Promise<void>;
     unexposePort?(port: number): Promise<void>;
     setSleepAfter?(value: string | number): Promise<void>;
@@ -105,7 +109,14 @@ export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
   sandboxBinding?: unknown;
   sandboxProvider?: PreviewServerProvider;
   approvedDependencies?: readonly string[];
-  /** How long to wait for Vite to report itself ready. */
+  /**
+   * How long to wait for Vite to report itself ready.
+   *
+   * A cold container measured 38s on a first local run — the image boots, the
+   * workspace is written a file at a time, and dependencies are optimised
+   * before anything is served. The default leaves room for a slower machine
+   * rather than tearing down a server that was about to work.
+   */
   readyTimeoutMs?: number;
   /** Idle time after which the container may be reclaimed. */
   sleepAfter?: string | number;
@@ -126,7 +137,7 @@ export class CloudflareSandboxVitePreviewServer {
     this.approvedDependencies = new Set(
       options.approvedDependencies ?? DEFAULT_APPROVED_DEPENDENCIES,
     );
-    this.readyTimeoutMs = options.readyTimeoutMs ?? 60_000;
+    this.readyTimeoutMs = options.readyTimeoutMs ?? 180_000;
     this.sleepAfter = options.sleepAfter ?? "10m";
     this.maxLogLines = options.maxLogLines ?? 200;
   }
@@ -200,6 +211,29 @@ export class CloudflareSandboxVitePreviewServer {
 
       if (session.setSleepAfter) {
         await session.setSleepAfter(this.sleepAfter);
+      }
+
+      // Asking twice for the same preview must not start a second server.
+      // The port is pinned, so a second one cannot bind it and would sit there
+      // until the timeout — and tearing down on that timeout would take the
+      // working one with it, which is how the first end-to-end run lost a
+      // container that was serving perfectly well.
+      const running = await session.listProcesses?.().catch(() => []);
+      const alreadyServing = (running ?? []).find(
+        (process) =>
+          process.command?.includes(VITE_BIN) &&
+          (process.status === "running" || process.status === "starting"),
+      );
+      if (alreadyServing) {
+        return {
+          ok: true,
+          url: exposed.url,
+          processId: alreadyServing.id,
+          readyMs: 0,
+          hoistedContentFields: prepared.hoistedContentFields,
+          warnings: prepared.previewWarnings,
+          logs,
+        };
       }
 
       const startedAt = Date.now();

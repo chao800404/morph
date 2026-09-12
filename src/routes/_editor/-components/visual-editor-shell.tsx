@@ -488,6 +488,15 @@ const PREVIEW_REMEASURE_DELAY_MS = 500;
 // Which preview this deployment runs. "user-code" executes the Theme's own
 // JavaScript and so needs an origin of its own; anything else, including an
 // unset variable, is the compatibility renderer that parses Theme source.
+/** The origin of a URL, or null when it is not one this can read. */
+function safeOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
 const LIVE_PREVIEW_EXECUTION_MODE = readLivePreviewExecutionMode(
   import.meta.env.VITE_LIVE_PREVIEW_EXECUTION_MODE,
 );
@@ -1006,12 +1015,6 @@ export function VisualEditorShell({
     [activeTemplate?.id, commitSectionPending],
   );
 
-  const livePreviewSecurity = resolveLivePreviewSecurity({
-    editorOrigin: context.previewChannel?.editorOrigin ?? "",
-    configuredPreviewOrigin: import.meta.env
-      .VITE_STOREFRONT_LIVE_PREVIEW_ORIGIN,
-    executionMode: LIVE_PREVIEW_EXECUTION_MODE,
-  });
   const previewSourceOriginRef = useRef<string | null>(null);
   // Only asked for when this deployment runs Theme JavaScript: starting one
   // runs a container, and an editor that is not going to frame it should not
@@ -1025,6 +1028,25 @@ export function VisualEditorShell({
   );
   const previewServerUrl =
     previewServer.data?.success === true ? previewServer.data.data.url : null;
+  // Security follows the preview that is actually framed, not the mode this
+  // deployment configured. A deployment set to run Theme JavaScript still
+  // shows the compatibility renderer while its container starts, and that one
+  // executes nothing of the Theme's, so holding it to the cross-origin rule
+  // would disable the preview outright for the entire startup.
+  const previewServerOrigin = previewServerUrl
+    ? safeOrigin(previewServerUrl)
+    : null;
+  const livePreviewSecurity = resolveLivePreviewSecurity({
+    editorOrigin: context.previewChannel?.editorOrigin ?? "",
+    // A preview server's origin is not configured anywhere: it exists once a
+    // container answers. It still goes through the same check, which is what
+    // refuses one that turned out to share the editor's origin.
+    configuredPreviewOrigin:
+      previewServerOrigin ??
+      import.meta.env.VITE_STOREFRONT_LIVE_PREVIEW_ORIGIN,
+    executionMode: previewServerOrigin ? "user-code" : "compatibility-renderer",
+  });
+
   const livePreviewWorkspaceKey = `${context.storefront.id}:${context.theme.id}`;
   const stablePreviewSession = useStableLivePreviewSession(
     livePreviewWorkspaceKey,
@@ -1069,7 +1091,9 @@ export function VisualEditorShell({
   const previewSource =
     activeTemplate && livePreviewSecurity.enabled
       ? resolveLivePreviewSource({
-          executionMode: LIVE_PREVIEW_EXECUTION_MODE,
+          executionMode: previewServerOrigin
+            ? "user-code"
+            : "compatibility-renderer",
           compatibilityOrigin: livePreviewSecurity.previewOrigin,
           storefrontId: context.storefront.id,
           themeId: context.theme.id,

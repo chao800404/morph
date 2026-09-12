@@ -250,3 +250,55 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     expect(harness.destroyed).toBe(1);
   });
 });
+
+describe("asking twice for the same preview", () => {
+  const withRunningVite = (harness: Harness) => {
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => [
+        {
+          id: "already-running",
+          command:
+            "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+          status: "running",
+        },
+      ];
+    return harness;
+  };
+
+  it("reuses the server already running rather than starting a second", async () => {
+    // The port is pinned, so a second one cannot bind it: it would sit there
+    // until the timeout, and tearing down on that timeout would take the
+    // working one with it.
+    const harness = withRunningVite(createSession("silent"));
+    const result = await startWith(harness, {}, { readyTimeoutMs: 50 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.processId).toBe("already-running");
+    expect(harness.commands).toEqual([]);
+    expect(harness.destroyed).toBe(0);
+  });
+
+  it("still starts one when the container has none", async () => {
+    const harness = createSession("ready");
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => [{ id: "other", command: "sleep 1", status: "running" }];
+
+    const result = await startWith(harness);
+    expect(result.ok).toBe(true);
+    expect(harness.commands).toHaveLength(1);
+  });
+
+  it("starts one when the container cannot say what it is running", async () => {
+    // An older container that does not answer must not leave the editor
+    // without a preview.
+    const harness = createSession("ready");
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => {
+        throw new Error("unsupported");
+      };
+
+    expect((await startWith(harness)).ok).toBe(true);
+    expect(harness.commands).toHaveLength(1);
+  });
+});

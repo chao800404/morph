@@ -2,21 +2,19 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "morph-attached",
-      "url": "http://localhost:3000",
+      "name": "dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
       "port": 3000
     },
     {
-      "name": "morph",
-      "runtimeExecutable": "node",
+      "name": "dev (live preview: user-code)",
+      "runtimeExecutable": "sh",
       "runtimeArgs": [
-        "node_modules/vite/bin/vite.js",
-        "dev",
-        "--port",
-        "3000"
+        "-c",
+        "VITE_LIVE_PREVIEW_EXECUTION_MODE=user-code pnpm dev"
       ],
-      "port": 3000,
-      "autoPort": false
+      "port": 3000
     }
   ]
 }
