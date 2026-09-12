@@ -31,13 +31,7 @@ import {
   useThemeCompiler,
 } from "@/lib/storefront/compiler/use-theme-compiler";
 import { createSelectionOverlaySettler } from "@/lib/storefront/editor/selection-overlay-settler";
-import {
-  isSelectionOverlayTextFallbackCandidate,
-  selectionOverlayGeometry,
-  type SelectionOverlayBounds,
-  INLINE_EDIT_OUTSET_PX,
-  outsetOverlayBounds,
-} from "@/lib/storefront/editor/selection-overlay-geometry";
+import { createPreviewSelectionOverlays } from "@/lib/storefront/editor/preview-selection-overlays";
 import {
   buildSpacingOverlayStrips,
   cssPixelValue,
@@ -595,128 +589,17 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     `;
     document.head.appendChild(style);
 
-    // 1. Persistent Selected Overlay (Solid 2px border, Glow ring, Bold badge)
-    const selectedOverlay = document.createElement("div");
-    selectedOverlay.setAttribute("aria-hidden", "true");
-    Object.assign(selectedOverlay.style, {
-      position: "fixed",
-      zIndex: "2147483646",
-      display: "none",
-      pointerEvents: "none",
-      border: "2px solid hsl(217 91% 60%)",
-      boxShadow: "0 0 0 3px hsl(217 91% 60% / 0.18)",
-      boxSizing: "border-box",
-      borderRadius: "3px",
-    });
-
-    const selectedLabel = document.createElement("span");
-    Object.assign(selectedLabel.style, {
-      position: "absolute",
-      left: "-2px",
-      bottom: "100%",
-      display: "inline-flex",
-      alignItems: "baseline",
-      gap: "5px",
-      padding: "3px 7px",
-      borderRadius: "4px 4px 0 0",
-      background: "hsl(217 91% 60%)",
-      color: "white",
-      font: "600 11px/1.2 ui-sans-serif, system-ui, sans-serif",
-      letterSpacing: "0.01em",
-      whiteSpace: "nowrap",
-    });
-    const selectedLabelName = document.createElement("span");
-    const selectedLabelTag = document.createElement("span");
-    const selectedDragHandle = document.createElement("span");
-    selectedDragHandle.dataset.storefrontEditorDragHandle = "true";
-    selectedDragHandle.draggable = true;
-    selectedDragHandle.title = "Drag to reorder";
-    Object.assign(selectedDragHandle.style, {
-      display: "none",
-      gridTemplateColumns: "repeat(2, 2px)",
-      gridAutoRows: "2px",
-      gap: "2px",
-      alignSelf: "center",
-      flex: "0 0 auto",
-      width: "14px",
-      height: "14px",
-      margin: "-2px 0 -2px -3px",
-      padding: "2px 3px",
-      border: "0",
-      borderRadius: "3px",
-      background: "transparent",
-      color: "inherit",
-      pointerEvents: "auto",
-    });
-    for (let index = 0; index < 6; index += 1) {
-      const dot = document.createElement("span");
-      Object.assign(dot.style, {
-        width: "2px",
-        height: "2px",
-        borderRadius: "999px",
-        background: "currentColor",
-        opacity: "0.78",
-        pointerEvents: "none",
-      });
-      selectedDragHandle.appendChild(dot);
-    }
-    Object.assign(selectedLabelTag.style, {
-      fontFamily:
-        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-      fontSize: "0.86em",
-      fontWeight: "500",
-      opacity: "0.72",
-    });
-    selectedLabel.appendChild(selectedDragHandle);
-    selectedLabel.appendChild(selectedLabelName);
-    selectedLabel.appendChild(selectedLabelTag);
-    selectedOverlay.appendChild(selectedLabel);
-
-    document.body.appendChild(selectedOverlay);
-
-    // 2. Hover Overlay (1.5px dashed border, Light blue transparent mask, Subtle badge)
-    const hoverOverlay = document.createElement("div");
-    hoverOverlay.setAttribute("aria-hidden", "true");
-    Object.assign(hoverOverlay.style, {
-      position: "fixed",
-      zIndex: "2147483645",
-      display: "none",
-      pointerEvents: "none",
-      border: "1.5px dashed hsl(217 91% 60% / 0.85)",
-      background: "hsl(217 91% 60% / 0.08)",
-      boxSizing: "border-box",
-      borderRadius: "3px",
-    });
-
-    const hoverLabel = document.createElement("span");
-    Object.assign(hoverLabel.style, {
-      position: "absolute",
-      left: "-1.5px",
-      bottom: "100%",
-      display: "inline-flex",
-      alignItems: "baseline",
-      gap: "4px",
-      padding: "2px 6px",
-      borderRadius: "3px 3px 0 0",
-      background: "hsl(217 91% 60% / 0.85)",
-      color: "white",
-      font: "500 10px/1.2 ui-sans-serif, system-ui, sans-serif",
-      letterSpacing: "0.01em",
-      whiteSpace: "nowrap",
-    });
-    const hoverLabelName = document.createElement("span");
-    const hoverLabelTag = document.createElement("span");
-    Object.assign(hoverLabelTag.style, {
-      fontFamily:
-        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-      fontSize: "0.86em",
-      fontWeight: "500",
-      opacity: "0.68",
-    });
-    hoverLabel.appendChild(hoverLabelName);
-    hoverLabel.appendChild(hoverLabelTag);
-    hoverOverlay.appendChild(hoverLabel);
-    document.body.appendChild(hoverOverlay);
+    const overlays = createPreviewSelectionOverlays();
+    const selectedDragHandle = overlays.dragHandle;
+    const toOverlayItem = (item: SelectableInfo | null) =>
+      item
+        ? {
+            element: item.element,
+            label: item.label,
+            tagName: item.tagName,
+            kind: selectionKindOf(item),
+          }
+        : null;
 
     const spacingOverlayLayer = document.createElement("div");
     spacingOverlayLayer.setAttribute("aria-hidden", "true");
@@ -1062,15 +945,6 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
           label.textContent = `${isMargin ? "M" : "P"} ${measurement.side.charAt(0).toUpperCase()} ${formatSpacingOverlayValue(measurement.value)}`;
         });
       });
-    };
-
-    const updateOverlayLabel = (
-      nameElement: HTMLElement,
-      tagElement: HTMLElement,
-      item: SelectableInfo,
-    ) => {
-      nameElement.textContent = item.label;
-      tagElement.textContent = `<${item.tagName}>`;
     };
 
     const emptyTextCandidateSelector = [
@@ -1637,99 +1511,13 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
 
     const positionOverlays = () => {
       const spacingMeasurements = measureSpacingOverlays();
-      if (!selectionEnabled) {
-        hoverOverlay.style.display = "none";
-        selectedOverlay.style.display = "none";
-        renderSpacingOverlays(spacingMeasurements);
-        return;
-      }
-
-      // Measure every target before mutating either overlay. Keeping the reads
-      // together avoids a selected-overlay write forcing the following hover
-      // measurement to synchronously recalculate layout.
-      const selectedElementForOverlay = selectedItem?.element ?? null;
-      const selectedRawBounds =
-        selectedElementForOverlay &&
-        !overlaySettler?.isFrozen() &&
-        document.body.contains(selectedElementForOverlay)
-          ? selectedElementForOverlay.getBoundingClientRect()
-          : null;
-      const hoverElementForOverlay = hoveredItem?.element ?? null;
-      const hoverRawBounds =
-        hoverElementForOverlay &&
-        document.body.contains(hoverElementForOverlay) &&
-        hoverElementForOverlay !== selectedElementForOverlay
-          ? hoverElementForOverlay.getBoundingClientRect()
-          : null;
-
-      const resolveOverlayGeometry = (
-        item: SelectableInfo | null,
-        element: HTMLElement | null,
-        bounds: SelectionOverlayBounds | null,
-      ) => {
-        if (!item || !element || !bounds) return null;
-        const candidate = {
-          bounds,
-          kind: selectionKindOf(item),
-          content: element.textContent ?? "",
-          inlineHeight: element.style.height,
-          inlineMaxHeight: element.style.maxHeight,
-        };
-        if (!isSelectionOverlayTextFallbackCandidate(candidate)) return bounds;
-        const computed = window.getComputedStyle(element);
-        return selectionOverlayGeometry({
-          ...candidate,
-          lineHeight: computed.lineHeight,
-          fontSize: computed.fontSize,
-          display: computed.display,
-        });
-      };
-      const selectedBounds = resolveOverlayGeometry(
-        selectedItem,
-        selectedElementForOverlay,
-        selectedRawBounds,
-      );
-      const hoverBounds = resolveOverlayGeometry(
-        hoveredItem,
-        hoverElementForOverlay,
-        hoverRawBounds,
-      );
-
-      // Keep the last stable selected geometry while live authoring replaces
-      // the selected DOM node. The settled pass below rebinds its identity and
-      // measures the final element once.
-      if (selectedItem && overlaySettler?.isFrozen()) {
-        selectedOverlay.style.display = "block";
-        updateOverlayLabel(selectedLabelName, selectedLabelTag, selectedItem);
-      } else if (selectedItem && selectedBounds) {
-        const ring = outsetOverlayBounds(
-          selectedBounds,
-          inlineTextEdit?.element === selectedElementForOverlay
-            ? INLINE_EDIT_OUTSET_PX
-            : undefined,
-        );
-        selectedOverlay.style.display = "block";
-        selectedOverlay.style.left = `${ring.left}px`;
-        selectedOverlay.style.top = `${ring.top}px`;
-        selectedOverlay.style.width = `${ring.width}px`;
-        selectedOverlay.style.height = `${ring.height}px`;
-        updateOverlayLabel(selectedLabelName, selectedLabelTag, selectedItem);
-      } else {
-        selectedOverlay.style.display = "none";
-      }
-
-      // 2. Position Hover Overlay (dashed + mask, hidden if hovering over selected item)
-      if (hoveredItem && hoverBounds) {
-        const ring = outsetOverlayBounds(hoverBounds);
-        hoverOverlay.style.display = "block";
-        hoverOverlay.style.left = `${ring.left}px`;
-        hoverOverlay.style.top = `${ring.top}px`;
-        hoverOverlay.style.width = `${ring.width}px`;
-        hoverOverlay.style.height = `${ring.height}px`;
-        updateOverlayLabel(hoverLabelName, hoverLabelTag, hoveredItem);
-      } else {
-        hoverOverlay.style.display = "none";
-      }
+      overlays.position({
+        enabled: selectionEnabled,
+        selected: toOverlayItem(selectedItem),
+        hovered: toOverlayItem(hoveredItem),
+        selectedFrozen: Boolean(overlaySettler?.isFrozen()),
+        inlineEditing: inlineTextEdit?.element === selectedItem?.element,
+      });
       renderSpacingOverlays(spacingMeasurements);
     };
 
@@ -2088,7 +1876,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         targetFieldPath: null,
       };
       hoveredItem = null;
-      hoverOverlay.style.display = "none";
+      positionOverlays();
       showReorderCandidates();
       event.dataTransfer?.setData(
         "text/plain",
@@ -2731,8 +2519,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       );
       clearReorderFeedback();
       style.remove();
-      hoverOverlay.remove();
-      selectedOverlay.remove();
+      overlays.dispose();
       reorderTargetOverlay.remove();
       reorderCandidateLayer.remove();
       clearSpacingOverlays();

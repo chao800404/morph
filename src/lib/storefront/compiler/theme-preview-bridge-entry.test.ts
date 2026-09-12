@@ -105,3 +105,29 @@ describe("reporting how tall the preview is", () => {
     expect(BRIDGE).toContain('from "./preview/preview-height-reporter"');
   });
 });
+
+describe("showing what is selected and what is under the pointer", () => {
+  it("draws with the same controller the compatibility renderer uses", () => {
+    expect(BRIDGE).toContain("createPreviewSelectionOverlays()");
+    expect(BRIDGE).toContain('from "./preview/preview-selection-overlays"');
+  });
+
+  it("redraws only when the pointer reaches a different element", () => {
+    // pointermove fires on every pixel, and the geometry it would otherwise
+    // recompute is the expensive part.
+    expect(BRIDGE).toContain(
+      "if (item?.element === hoveredItem?.element) return;",
+    );
+  });
+
+  it("follows the page, because the rings are in viewport coordinates", () => {
+    expect(BRIDGE).toContain('for (const moved of ["scroll", "resize"])');
+  });
+
+  it("drops the highlight when select mode ends", () => {
+    // A ring left behind would point at something no longer clickable.
+    const clearing = BRIDGE.slice(BRIDGE.indexOf("if (!selectionEnabled) {"));
+    expect(clearing).toContain("hoveredItem = null;");
+    expect(clearing).toContain("selectedItem = null;");
+  });
+});

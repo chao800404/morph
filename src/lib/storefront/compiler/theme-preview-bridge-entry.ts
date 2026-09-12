@@ -27,6 +27,7 @@ import {
   selectionStyleSnapshot,
 } from "./preview/preview-dom";
 import { startPreviewHeightReporter } from "./preview/preview-height-reporter";
+import { createPreviewSelectionOverlays } from "./preview/preview-selection-overlays";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
@@ -37,6 +38,30 @@ const channel = readPreviewRuntimeChannel(window.location.href);
 // select mode the click belongs to the editor instead, which is the only way
 // to reach an element inside a link without leaving the page.
 let selectionEnabled = false;
+let selectedItem = null;
+let hoveredItem = null;
+
+const overlays = channel ? createPreviewSelectionOverlays() : null;
+
+const toOverlayItem = (item) =>
+  item
+    ? {
+        element: item.element,
+        label: item.label,
+        tagName: item.tagName,
+        kind: selectionKindOf(item),
+      }
+    : null;
+
+function drawOverlays() {
+  overlays?.position({
+    enabled: selectionEnabled,
+    selected: toOverlayItem(selectedItem),
+    hovered: toOverlayItem(hoveredItem),
+    selectedFrozen: false,
+    inlineEditing: false,
+  });
+}
 
 function reportStructure() {
   if (!channel) return;
@@ -60,6 +85,8 @@ function reportSelection(target) {
   if (!channel) return;
   const item = resolveSelectable(target);
   if (!item?.sectionId) return;
+  selectedItem = item;
+  drawOverlays();
 
   const styleOf = (element) =>
     element ? selectionStyleSnapshot(window.getComputedStyle(element)) : null;
@@ -130,6 +157,34 @@ if (channel) {
     { capture: true },
   );
 
+  // Pointer rather than mouse, so a pen or touch highlights the same way.
+  window.addEventListener(
+    "pointermove",
+    (event) => {
+      if (!selectionEnabled) return;
+      const item = resolveSelectable(event.target);
+      // Redraw only when the answer changed: this runs on every pixel of
+      // movement, and the geometry it would otherwise recompute is the
+      // expensive part.
+      if (item?.element === hoveredItem?.element) return;
+      hoveredItem = item?.sectionId ? item : null;
+      drawOverlays();
+    },
+    { capture: true, passive: true },
+  );
+
+  window.addEventListener("pointerleave", () => {
+    if (!hoveredItem) return;
+    hoveredItem = null;
+    drawOverlays();
+  });
+
+  // The rings are drawn in viewport coordinates, so anything that moves the
+  // page moves what they should be around.
+  for (const moved of ["scroll", "resize"]) {
+    window.addEventListener(moved, () => drawOverlays(), { passive: true });
+  }
+
   window.addEventListener("message", (event) => {
     // Origin, source, session and schema are all checked in here. Anything
     // that fails any of them is not a message as far as this page cares.
@@ -139,6 +194,13 @@ if (channel) {
     }
     if (message?.type === "morph:storefront-preview-set-selection-mode") {
       selectionEnabled = message.enabled;
+      // Leaving select mode drops the highlight with it: a ring left behind
+      // would point at something the author can no longer click.
+      if (!selectionEnabled) {
+        hoveredItem = null;
+        selectedItem = null;
+      }
+      drawOverlays();
     }
   });
 

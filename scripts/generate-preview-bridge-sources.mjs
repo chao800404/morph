@@ -33,6 +33,9 @@ const MODULES = [
   "preview-sizing-css",
   "preview-height-reporter",
   "preview-dom",
+  "preview-empty-text-layout",
+  "selection-overlay-geometry",
+  "preview-selection-overlays",
 ];
 
 /**
