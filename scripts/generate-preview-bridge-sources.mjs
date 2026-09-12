@@ -30,6 +30,8 @@ const MODULES = [
   "selection-taxonomy",
   "selection-content-value",
   "preview-protocol",
+  "preview-sizing-css",
+  "preview-height-reporter",
   "preview-dom",
 ];
 

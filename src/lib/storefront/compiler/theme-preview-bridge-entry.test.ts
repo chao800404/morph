@@ -89,3 +89,19 @@ describe("the protocol copied in beside it", () => {
     }
   });
 });
+
+describe("reporting how tall the preview is", () => {
+  it("measures the Theme's own mount, because there is no Morph wrapper", () => {
+    expect(BRIDGE).toContain("startPreviewHeightReporter({");
+    expect(BRIDGE).toContain(
+      'document.getElementById("root") ?? document.body',
+    );
+  });
+
+  it("uses the same reporter the compatibility renderer does", () => {
+    // Waiting for the height to hold still, waiting for fonts and images,
+    // resolving the root per measurement: none of it is obvious, and a second
+    // implementation would get a different one of them wrong.
+    expect(BRIDGE).toContain('from "./preview/preview-height-reporter"');
+  });
+});

@@ -26,6 +26,7 @@ import {
   selectionMetadata,
   selectionStyleSnapshot,
 } from "./preview/preview-dom";
+import { startPreviewHeightReporter } from "./preview/preview-height-reporter";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
@@ -106,6 +107,14 @@ function reportReady() {
 }
 
 if (channel) {
+  // A Theme mounts itself; there is no Morph wrapper to measure. The mount
+  // point is the whole page, and body is the fallback for a Theme that
+  // renders somewhere else entirely.
+  startPreviewHeightReporter({
+    resolveRoot: () => document.getElementById("root") ?? document.body,
+  });
+
+
   // Capture, so a Theme that stops its own clicks cannot make an element
   // unselectable. Selecting is the editor's, not the Theme's, to decide.
   window.addEventListener(
