@@ -6,15 +6,6 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["dev"],
       "port": 3000
-    },
-    {
-      "name": "dev (live preview: user-code)",
-      "runtimeExecutable": "sh",
-      "runtimeArgs": [
-        "-c",
-        "VITE_LIVE_PREVIEW_EXECUTION_MODE=user-code pnpm dev"
-      ],
-      "port": 3000
     }
   ]
 }

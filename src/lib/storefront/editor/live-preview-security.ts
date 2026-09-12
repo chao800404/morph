@@ -110,20 +110,3 @@ export function buildLivePreviewUrl({
   url.searchParams.set("previewSession", previewSession);
   return url.toString();
 }
-
-/**
- * Which preview this deployment runs, read from its configuration.
- *
- * Anything other than an explicit, exact `user-code` is the compatibility
- * preview — a typo, an empty string, a value that arrived as `undefined`
- * because the variable was never set. Running a Theme's own JavaScript is a
- * thing a deployment says yes to, and there is no spelling of "yes" worth
- * guessing at.
- */
-export function readLivePreviewExecutionMode(
-  configured: string | undefined,
-): LivePreviewExecutionMode {
-  return configured?.trim() === "user-code"
-    ? "user-code"
-    : "compatibility-renderer";
-}

@@ -152,10 +152,7 @@ import {
   hasInlineTextDocumentTarget,
   isInlineTextEditCandidate,
 } from "@/lib/storefront/editor/inline-text-edit";
-import {
-  readLivePreviewExecutionMode,
-  resolveLivePreviewSecurity,
-} from "@/lib/storefront/editor/live-preview-security";
+import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { applyThemePreviewFiles } from "@/server/storefront/storefront-theme-preview-server.serverFn";
@@ -497,10 +494,6 @@ function safeOrigin(url: string): string | null {
     return null;
   }
 }
-
-const LIVE_PREVIEW_EXECUTION_MODE = readLivePreviewExecutionMode(
-  import.meta.env.VITE_LIVE_PREVIEW_EXECUTION_MODE,
-);
 
 /**
  * Result of one build attempt.
@@ -1018,15 +1011,11 @@ export function VisualEditorShell({
 
   const previewSourceOriginRef = useRef<string | null>(null);
   const previewSourceKindRef = useRef<string | null>(null);
-  // Only asked for when this deployment runs Theme JavaScript: starting one
-  // runs a container, and an editor that is not going to frame it should not
-  // be paying for it.
+  // Whether this deployment runs Theme JavaScript is the server's answer, not
+  // a second switch here that has to agree with the first. It refuses before
+  // touching a container, so asking costs nothing when the answer is no.
   const previewServer = useQuery(
-    themePreviewServerQueries.forTheme(
-      context.storefront.id,
-      context.theme.id,
-      LIVE_PREVIEW_EXECUTION_MODE === "user-code",
-    ),
+    themePreviewServerQueries.forTheme(context.storefront.id, context.theme.id),
   );
   const previewServerUrl =
     previewServer.data?.success === true ? previewServer.data.data.url : null;

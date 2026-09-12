@@ -102,11 +102,9 @@
     // JavaScript, so it must be a host of its own: anything that shares a
     // cookie jar with the CMS is refused, and with nothing set here the
     // Live Preview stays on the compatibility renderer instead.
-    // "THEME_PREVIEW_HOSTNAME": "preview.example.com",
-    // Set VITE_LIVE_PREVIEW_EXECUTION_MODE=user-code in the build environment
-    // to frame that server instead of the compatibility renderer. Both are
-    // needed: without the hostname the server refuses to start, and without
-    // this the editor never asks for one.
+    "THEME_PREVIEW_HOSTNAME": "preview.localhost",
+    // This is the only switch: set it and the editor frames a real React
+    // preview, leave it unset and it stays on the compatibility renderer.
   },
 
   // Secrets are configured outside source control:
