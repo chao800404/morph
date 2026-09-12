@@ -14,6 +14,11 @@ import {
 } from "./theme-path-aliases";
 import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
 import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
+import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.generated";
+import {
+  themePreviewBridgeEntrySource,
+  THEME_PREVIEW_BRIDGE_PATH,
+} from "./theme-preview-bridge-entry";
 import type { ThemeBuildDiagnostic } from "./theme-build-runner.types";
 
 /**
@@ -290,11 +295,32 @@ export async function prepareThemeSandboxWorkspace({
   </head>
   <body>
 <div id="root"></div>
-<script type="module" src="/__entry.tsx"></script>
+<script type="module" src="/__entry.tsx"></script>${
+      mode === "preview-server"
+        ? `\n<script type="module" src="/${THEME_PREVIEW_BRIDGE_PATH}"></script>`
+        : ""
+    }
   </body>
 </html>
 `;
     await session.writeFile(indexPath, indexHtml);
+  }
+
+  if (mode === "preview-server") {
+    // The container holds no Morph code, so the protocol the bridge speaks
+    // travels with the Theme. Written under src/morph/preview/ rather than
+    // beside the author's components, so it is obvious this is platform code
+    // and not something they wrote.
+    for (const module of GENERATED_PREVIEW_BRIDGE_SOURCES) {
+      await session.writeFile(
+        `${workspaceRoot}/${module.path}`,
+        module.content,
+      );
+    }
+    await session.writeFile(
+      `${workspaceRoot}/${THEME_PREVIEW_BRIDGE_PATH}`,
+      themePreviewBridgeEntrySource(),
+    );
   }
 
   // Write controlled package.json with exact pinned dependencies (deterministic toolchain)
