@@ -6,6 +6,9 @@ import { idSchema } from "@/lib/validations/commerce";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import { CloudflareSandboxVitePreviewServer } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
+import { refuseThemeWorkspacePath } from "@/lib/storefront/compiler/theme-workspace-path";
+import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
+import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
 import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-preview-session-id";
 import {
   resolveThemePreviewServerHost,
@@ -129,4 +132,81 @@ export const stopThemePreviewServer = createServerFn({ method: "POST" })
     await server.stop(previewId).catch(() => {});
 
     return ok("Live Preview server stopped", { previewId });
+  });
+
+const applyThemePreviewFilesInputSchema = themePreviewServerInputSchema.extend({
+  files: z
+    .array(
+      z.object({
+        path: z.string().min(1).max(1024),
+        content: z.string().max(2_000_000),
+      }),
+    )
+    .min(1)
+    .max(200),
+});
+
+/**
+ * Writes edited Theme files into the container already serving the preview.
+ *
+ * Updates reach a real preview as files, not as a message: Vite is watching
+ * that workspace, so writing them is what makes the page update, and it
+ * updates by hot module replacement rather than by reloading — which is the
+ * whole reason for running a real Theme, since a reload would throw away the
+ * state the author is looking at.
+ *
+ * The bridge confirms afterwards, when the page has actually updated. Nothing
+ * here reports success on the author's behalf: this says the files were
+ * written, which is a different claim from the preview showing them.
+ */
+export const applyThemePreviewFiles = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(applyThemePreviewFilesInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    const { storefrontId, themeId, files } = input.data;
+
+    for (const file of files) {
+      const refusal = refuseThemeWorkspacePath(file.path);
+      if (refusal) {
+        return fail(refusal, { error: "RESERVED_THEME_PATH" });
+      }
+    }
+
+    // The same two passes the workspace was laid out with. A file written
+    // without them would lose its editor identity the moment it was saved,
+    // and the preview would quietly stop being selectable.
+    const hoisted = hoistColocatedContentFieldsForPreview(
+      injectPreviewBindings(files).files,
+    ).files;
+
+    const previewId = await deriveThemePreviewSessionId({
+      storefrontId,
+      themeId,
+      userId: context.user.id,
+    });
+
+    try {
+      const { getSandbox } = await import("@cloudflare/sandbox");
+      const sandbox = getSandbox(
+        (env as unknown as PreviewEnv).Sandbox as never,
+        previewId,
+      ) as unknown as {
+        writeFile(path: string, content: string): Promise<void>;
+      };
+      for (const file of hoisted) {
+        await sandbox.writeFile(`/workspace/${file.path}`, file.content);
+      }
+    } catch (error) {
+      return fail("Could not update the Live Preview server.", {
+        error: error instanceof Error ? error.message : "WRITE_FAILED",
+      });
+    }
+
+    return ok("Live Preview files written", {
+      previewId,
+      written: hoisted.map((file) => file.path),
+    });
   });

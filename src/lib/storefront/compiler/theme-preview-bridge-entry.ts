@@ -161,6 +161,40 @@ function reportSelection(target) {
 
 let gesture = null;
 
+/**
+ * The Theme source revision the editor is waiting to see rendered.
+ *
+ * Confirmed only once Vite says the page has actually taken the update, never
+ * on receiving the message. Morph writes the files into the container and the
+ * page updates itself; saying "applied" any earlier would be reporting
+ * someone else's work as done.
+ */
+let pendingStyleRevision = null;
+
+if (import.meta.hot) {
+  import.meta.hot.on("vite:afterUpdate", () => {
+    if (pendingStyleRevision === null || !channel) return;
+    const styleRevision = pendingStyleRevision;
+    pendingStyleRevision = null;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-theme-files-applied", styleRevision },
+      channel,
+    );
+    // The update changed the page, so what is on it has changed with it.
+    reportStructure();
+  });
+
+  import.meta.hot.on("vite:error", () => {
+    if (pendingStyleRevision === null || !channel) return;
+    const styleRevision = pendingStyleRevision;
+    pendingStyleRevision = null;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-theme-files-failed", styleRevision },
+      channel,
+    );
+  });
+}
+
 /** The sibling of the dragged element that a pointer is currently over. */
 function dropTargetUnder(target) {
   if (!gesture || !(target instanceof HTMLElement)) return null;
@@ -365,6 +399,12 @@ if (channel) {
     const message = parseEditorToPreviewWindowEvent(event);
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
+    }
+    if (message?.type === "morph:storefront-preview-update-theme-files") {
+      // The files themselves are not taken from here: Morph writes them into
+      // the container, which is what Vite is watching. This only records the
+      // revision to confirm once the page has taken them.
+      pendingStyleRevision = message.styleRevision;
     }
     if (message?.type === "morph:storefront-preview-set-route") {
       // A real Theme owns its router, so the entry Morph generates hands it

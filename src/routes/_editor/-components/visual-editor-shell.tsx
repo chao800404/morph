@@ -158,6 +158,7 @@ import {
 } from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
+import { applyThemePreviewFiles } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import {
   parsePreviewSectionProps,
   type PreviewEditableNode,
@@ -1016,6 +1017,7 @@ export function VisualEditorShell({
   );
 
   const previewSourceOriginRef = useRef<string | null>(null);
+  const previewSourceKindRef = useRef<string | null>(null);
   // Only asked for when this deployment runs Theme JavaScript: starting one
   // runs a container, and an editor that is not going to frame it should not
   // be paying for it.
@@ -1111,6 +1113,7 @@ export function VisualEditorShell({
       : null;
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
+  previewSourceKindRef.current = previewSource?.kind ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
   const isPreviewLoading = isPreviewHandshakePending(
     previewKey,
@@ -1966,6 +1969,21 @@ export function VisualEditorShell({
     ) => {
       const styleRevision = latestStyleRevisionRef.current + 1;
       latestStyleRevisionRef.current = styleRevision;
+      // A preview server takes files through its own filesystem, because that
+      // is what Vite is watching: written there, the page updates itself by
+      // hot module replacement instead of reloading, which is what keeps an
+      // author's place — an open menu, a scroll position, a half-typed field.
+      // The message still goes, carrying the revision the preview confirms
+      // once the update has actually landed.
+      if (previewSourceKindRef.current === "preview-server") {
+        void applyThemePreviewFiles({
+          data: {
+            storefrontId: context.storefront.id,
+            themeId: context.theme.id,
+            files,
+          },
+        });
+      }
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-theme-files",
         files,
@@ -1977,7 +1995,7 @@ export function VisualEditorShell({
       schedulePreviewRemeasureRef.current();
       return styleRevision;
     },
-    [],
+    [context.storefront.id, context.theme.id],
   );
   useEffect(() => {
     if (

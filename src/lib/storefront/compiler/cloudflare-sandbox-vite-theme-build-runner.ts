@@ -12,7 +12,7 @@ import type {
   ThemeBuildRunnerLog,
   ThemeBuildRunnerResult,
 } from "./theme-build-runner.types";
-import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
+import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePackageRoot } from "./theme-dependency-policy";
 import {
   prepareThemeSandboxWorkspace,
@@ -303,53 +303,18 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       };
     }
 
-    // Guard 3: Validate Path Containment and Reserved Paths on all virtual files
+    // Guard 3: Path containment and reserved paths, by the same rule a Live
+    // Preview update is held to.
     for (const file of input.files) {
-      const normalized = file.path.replace(/\\/g, "/");
-      const segments = normalized.split("/");
-      if (
-        segments.some((segment) => segment.toLowerCase() === "node_modules")
-      ) {
-        const msg = `RESERVED_THEME_PATH: Theme files cannot be created inside node_modules: "${file.path}"`;
-        addLog("error", msg);
+      const refusal = refuseThemeWorkspacePath(file.path);
+      if (refusal) {
+        addLog("error", refusal);
         return {
           success: false,
-          errorMessage: msg,
+          errorMessage: refusal,
           diagnosticsJson: {
             stage: "security-containment",
-            errors: [{ severity: "error", message: msg }],
-          },
-          logs,
-          durationMs: Date.now() - startTime,
-        };
-      }
-      if (isPlatformOwnedThemeBuildPath(normalized)) {
-        const msg = `RESERVED_THEME_BUILD_PATH: Theme source cannot replace platform-owned build file "${file.path}"`;
-        addLog("error", msg);
-        return {
-          success: false,
-          errorMessage: msg,
-          diagnosticsJson: {
-            stage: "security-containment",
-            errors: [{ severity: "error", message: msg }],
-          },
-          logs,
-          durationMs: Date.now() - startTime,
-        };
-      }
-      if (
-        normalized.startsWith("../") ||
-        normalized.includes("/../") ||
-        normalized.startsWith("/")
-      ) {
-        const msg = `WORKSPACE_PATH_ESCAPE: File path "${file.path}" escapes sandbox workspace root`;
-        addLog("error", msg);
-        return {
-          success: false,
-          errorMessage: msg,
-          diagnosticsJson: {
-            stage: "security-containment",
-            errors: [{ severity: "error", message: msg }],
+            errors: [{ severity: "error", message: refusal }],
           },
           logs,
           durationMs: Date.now() - startTime,

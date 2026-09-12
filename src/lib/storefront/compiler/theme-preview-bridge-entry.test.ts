@@ -217,3 +217,34 @@ describe("changing which page the editor is showing", () => {
     expect(routing).toContain("reportStructure");
   });
 });
+
+describe("confirming the Theme source the editor is waiting on", () => {
+  it("confirms only once the page has taken the update", () => {
+    // Morph writes the files into the container and the page updates itself.
+    // Saying "applied" on receiving the message would report someone else's
+    // work as done, and the editor would trust a preview showing the old one.
+    expect(BRIDGE).toContain('import.meta.hot.on("vite:afterUpdate"');
+    const onMessage = BRIDGE.slice(
+      BRIDGE.indexOf("morph:storefront-preview-update-theme-files"),
+    );
+    expect(onMessage).toContain(
+      "pendingStyleRevision = message.styleRevision;",
+    );
+    expect(onMessage).not.toContain("theme-files-applied");
+  });
+
+  it("says so when the update failed instead of leaving the editor waiting", () => {
+    expect(BRIDGE).toContain('import.meta.hot.on("vite:error"');
+    expect(BRIDGE).toContain("morph:storefront-preview-theme-files-failed");
+  });
+
+  it("re-reads the page, because the update changed what is on it", () => {
+    const afterUpdate = BRIDGE.slice(BRIDGE.indexOf('"vite:afterUpdate"'));
+    expect(afterUpdate.slice(0, 600)).toContain("reportStructure()");
+  });
+
+  it("confirms each revision once", () => {
+    const afterUpdate = BRIDGE.slice(BRIDGE.indexOf('"vite:afterUpdate"'));
+    expect(afterUpdate).toContain("pendingStyleRevision = null;");
+  });
+});
