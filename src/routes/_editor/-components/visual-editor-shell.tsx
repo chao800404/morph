@@ -1948,6 +1948,16 @@ export function VisualEditorShell({
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
+  /**
+   * Records that a Theme source revision is the one now on screen.
+   *
+   * Reached two ways, and both are statements of fact rather than hope: the
+   * preview says a hot update landed, or the server says the container
+   * already held exactly this source and no update was coming.
+   */
+  const confirmPreviewStyleRevisionRef = useRef<
+    ((styleRevision: number) => void) | null
+  >(null);
   const postPreviewThemeFiles = useCallback(
     (
       files: Array<{ path: string; content: string }>,
@@ -1971,6 +1981,19 @@ export function VisualEditorShell({
             themeId: context.theme.id,
             files,
           },
+        }).then((result) => {
+          // Nothing to update means nothing to wait for. The container was
+          // started from this source, so the page is already showing it, and
+          // no hot update is coming to say so. Confirming here is reporting
+          // what the server checked, not assuming it — the alternative is an
+          // editor that waits forever for an event that cannot arrive.
+          if (
+            result?.success === true &&
+            result.data.changed.length === 0 &&
+            confirmPreviewStyleRevisionRef.current
+          ) {
+            confirmPreviewStyleRevisionRef.current(styleRevision);
+          }
         });
       }
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -3575,6 +3598,29 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey) return;
 
+    confirmPreviewStyleRevisionRef.current = (styleRevision: number) => {
+      const initialPreviewSync = initialPreviewSyncRef.current;
+      if (
+        initialPreviewSync?.key !== previewKey ||
+        !shouldRevealPreviewForStyleAck(
+          styleRevision,
+          latestStyleRevisionRef.current,
+          initialPreviewSync.styleRevision,
+        )
+      ) {
+        return;
+      }
+      setLoadedPreviewKey(previewKey);
+      setPreviewLoadFailure((current) =>
+        current?.key === previewKey ? null : current,
+      );
+      latestAppliedStyleRevisionRef.current = styleRevision;
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-request-selection-style",
+        styleRevision,
+      });
+    };
+
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (!message) {
@@ -3655,10 +3701,11 @@ export function VisualEditorShell({
         setPreviewStructure({ key: previewKey, nodes: message.nodes });
         return;
       }
-      if (
-        message.type === "morph:storefront-preview-theme-files-applied" ||
-        message.type === "morph:storefront-preview-theme-files-failed"
-      ) {
+      if (message.type === "morph:storefront-preview-theme-files-applied") {
+        confirmPreviewStyleRevisionRef.current?.(message.styleRevision);
+        return;
+      }
+      if (message.type === "morph:storefront-preview-theme-files-failed") {
         const initialPreviewSync = initialPreviewSyncRef.current;
         if (
           initialPreviewSync?.key !== previewKey ||
@@ -3671,21 +3718,10 @@ export function VisualEditorShell({
           return;
         }
         setLoadedPreviewKey(previewKey);
-        if (message.type === "morph:storefront-preview-theme-files-failed") {
-          setPreviewLoadFailure({
-            key: previewKey,
-            message:
-              "Live Preview could not apply the current Theme source. Check the Theme compile diagnostic, then retry.",
-          });
-          return;
-        }
-        setPreviewLoadFailure((current) =>
-          current?.key === previewKey ? null : current,
-        );
-        latestAppliedStyleRevisionRef.current = message.styleRevision;
-        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-          type: "morph:storefront-preview-request-selection-style",
-          styleRevision: message.styleRevision,
+        setPreviewLoadFailure({
+          key: previewKey,
+          message:
+            "Live Preview could not apply the current Theme source. Check the Theme compile diagnostic, then retry.",
         });
         return;
       }

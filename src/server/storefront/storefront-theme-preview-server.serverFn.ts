@@ -134,6 +134,43 @@ export const stopThemePreviewServer = createServerFn({ method: "POST" })
     return ok("Live Preview server stopped", { previewId });
   });
 
+/**
+ * Whether the container already holds exactly this content.
+ *
+ * Read before writing, so a save that changes nothing is not turned into a
+ * rebuild. It also lets the editor tell the difference between "the preview
+ * has not caught up yet" and "the preview was already showing this", which is
+ * the difference between waiting and being finished.
+ *
+ * Unreadable means unknown, and unknown is treated as different: writing a
+ * file that was already correct is wasteful, and skipping one that was not
+ * would leave the author looking at the wrong page.
+ */
+async function fileMatches(
+  sandbox: {
+    readFile?(
+      path: string,
+      options?: { encoding?: string },
+    ): Promise<{ content?: unknown } | string>;
+  },
+  path: string,
+  content: string,
+): Promise<boolean> {
+  if (!sandbox.readFile) return false;
+  try {
+    const result = await sandbox.readFile(path, { encoding: "utf-8" });
+    const existing =
+      typeof result === "string"
+        ? result
+        : typeof result?.content === "string"
+          ? result.content
+          : null;
+    return existing === content;
+  } catch {
+    return false;
+  }
+}
+
 const applyThemePreviewFilesInputSchema = themePreviewServerInputSchema.extend({
   files: z
     .array(
@@ -188,6 +225,9 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
       userId: context.user.id,
     });
 
+    const changed: string[] = [];
+    const unchanged: string[] = [];
+
     try {
       const { getSandbox } = await import("@cloudflare/sandbox");
       const sandbox = getSandbox(
@@ -195,9 +235,22 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
         previewId,
       ) as unknown as {
         writeFile(path: string, content: string): Promise<void>;
+        readFile?(
+          path: string,
+          options?: { encoding?: string },
+        ): Promise<{ content?: unknown } | string>;
       };
       for (const file of hoisted) {
-        await sandbox.writeFile(`/workspace/${file.path}`, file.content);
+        const target = `/workspace/${file.path}`;
+        // Written only when it would differ. Vite rebuilds on every write,
+        // even one that changes nothing, and a rebuild the author did not ask
+        // for costs them the state they were looking at.
+        if (await fileMatches(sandbox, target, file.content)) {
+          unchanged.push(file.path);
+          continue;
+        }
+        await sandbox.writeFile(target, file.content);
+        changed.push(file.path);
       }
     } catch (error) {
       return fail("Could not update the Live Preview server.", {
@@ -207,6 +260,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
 
     return ok("Live Preview files written", {
       previewId,
-      written: hoisted.map((file) => file.path),
+      changed,
+      unchanged,
     });
   });
