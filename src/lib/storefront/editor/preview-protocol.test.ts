@@ -56,6 +56,29 @@ const styleSnapshot: PreviewStyleSnapshot = {
 };
 
 describe("preview protocol", () => {
+  it("accepts bounded preview liveness probes and responses", () => {
+    const ping = {
+      type: "morph:storefront-preview-ping",
+      heartbeatId: 7,
+    } as const;
+    const pong = {
+      type: "morph:storefront-preview-pong",
+      heartbeatId: 7,
+    } as const;
+
+    expect(parseEditorToPreviewMessage(ping)).toEqual(ping);
+    expect(parsePreviewToEditorMessage(pong)).toEqual(pong);
+    expect(
+      parseEditorToPreviewMessage({ ...ping, heartbeatId: -1 }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...pong,
+        heartbeatId: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).toBeNull();
+  });
+
   it("accepts a bounded theme workspace update", () => {
     expect(
       parseEditorToPreviewMessage({

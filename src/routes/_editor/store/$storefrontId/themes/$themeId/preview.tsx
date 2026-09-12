@@ -408,6 +408,14 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
       const message = parseEditorToPreviewWindowEvent(event);
       if (!message) return;
 
+      if (message.type === "morph:storefront-preview-ping") {
+        postPreviewToEditorMessage({
+          type: "morph:storefront-preview-pong",
+          heartbeatId: message.heartbeatId,
+        });
+        return;
+      }
+
       if (
         message.type === "morph:storefront-preview-update-theme-files" &&
         Array.isArray(message.files)

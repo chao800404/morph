@@ -483,6 +483,11 @@ const previewDefaultHeights = {
 const DEFAULT_PREVIEW_VIEWPORT_HEIGHT = previewDefaultHeights.desktop;
 /** Settling time before re-measuring, so a burst of edits measures once. */
 const PREVIEW_REMEASURE_DELAY_MS = 500;
+/** A ready iframe must keep answering while its sandbox port is alive. */
+const PREVIEW_HEARTBEAT_INTERVAL_MS = 5_000;
+const PREVIEW_HEARTBEAT_TIMEOUT_MS = 15_000;
+const PREVIEW_LIVENESS_FAILURE_MESSAGE =
+  "Live Preview stopped responding. Its sandbox port may have expired. Retry Preview to reconnect.";
 // Which preview this deployment runs. "user-code" executes the Theme's own
 // JavaScript and so needs an origin of its own; anything else, including an
 // unset variable, is the compatibility renderer that parses Theme source.
@@ -1828,6 +1833,13 @@ export function VisualEditorShell({
   // can be stated as tests instead of reproduced by typing quickly.
   const saveQueueRef = useRef(createThemeFileSaveQueue());
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
+  const previewHeartbeatRef = useRef<{
+    key: string;
+    nextId: number;
+    lastSentAt: number;
+    lastPongAt: number;
+    failed: boolean;
+  } | null>(null);
   const {
     parseMessage: parseLivePreviewMessage,
     postMessage: postEditorToPreviewMessage,
@@ -2080,6 +2092,74 @@ export function VisualEditorShell({
     previewFrameReady,
     previewKey,
     previewThemeFiles,
+  ]);
+
+  useEffect(() => {
+    if (
+      !previewKey ||
+      loadedPreviewKey !== previewKey ||
+      previewFrameReady?.key !== previewKey
+    ) {
+      previewHeartbeatRef.current = null;
+      return;
+    }
+
+    const heartbeat = {
+      key: previewKey,
+      nextId: 0,
+      lastSentAt: 0,
+      // Give the first probe the same grace period as every later probe. The
+      // source acknowledgement already proved this document was alive once;
+      // this timer only watches what happens after that point.
+      lastPongAt: Date.now(),
+      failed: false,
+    };
+    previewHeartbeatRef.current = heartbeat;
+
+    const sendHeartbeat = () => {
+      if (previewHeartbeatRef.current !== heartbeat) return;
+      heartbeat.nextId += 1;
+      heartbeat.lastSentAt = Date.now();
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-ping",
+        heartbeatId: heartbeat.nextId,
+      });
+    };
+
+    const checkHeartbeat = () => {
+      if (previewHeartbeatRef.current !== heartbeat || heartbeat.failed) return;
+      if (
+        heartbeat.lastSentAt > heartbeat.lastPongAt &&
+        Date.now() - heartbeat.lastPongAt >= PREVIEW_HEARTBEAT_TIMEOUT_MS
+      ) {
+        heartbeat.failed = true;
+        setPreviewLoadFailure((current) =>
+          current?.key === previewKey
+            ? current
+            : { key: previewKey, message: PREVIEW_LIVENESS_FAILURE_MESSAGE },
+        );
+      }
+    };
+
+    sendHeartbeat();
+    const heartbeatTimer = window.setInterval(
+      sendHeartbeat,
+      PREVIEW_HEARTBEAT_INTERVAL_MS,
+    );
+    const checkTimer = window.setInterval(checkHeartbeat, 1_000);
+
+    return () => {
+      window.clearInterval(heartbeatTimer);
+      window.clearInterval(checkTimer);
+      if (previewHeartbeatRef.current === heartbeat) {
+        previewHeartbeatRef.current = null;
+      }
+    };
+  }, [
+    loadedPreviewKey,
+    postEditorToPreviewMessage,
+    previewFrameReady?.key,
+    previewKey,
   ]);
 
   const getScopedOpKey = useCallback(
@@ -3652,6 +3732,26 @@ export function VisualEditorShell({
             (event.data as { type: string }).type,
           );
         }
+        return;
+      }
+
+      if (message.type === "morph:storefront-preview-pong") {
+        const heartbeat = previewHeartbeatRef.current;
+        if (
+          !heartbeat ||
+          heartbeat.key !== previewKeyRef.current ||
+          message.heartbeatId > heartbeat.nextId
+        ) {
+          return;
+        }
+        heartbeat.lastPongAt = Date.now();
+        heartbeat.failed = false;
+        setPreviewLoadFailure((current) =>
+          current?.key === heartbeat.key &&
+          current.message === PREVIEW_LIVENESS_FAILURE_MESSAGE
+            ? null
+            : current,
+        );
         return;
       }
 

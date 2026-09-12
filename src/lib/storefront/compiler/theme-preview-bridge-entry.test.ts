@@ -10,6 +10,12 @@ import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.gener
 const BRIDGE = themePreviewBridgeEntrySource();
 
 describe("the script a Live Preview page runs for the editor", () => {
+  it("answers liveness probes from the editor", () => {
+    expect(BRIDGE).toContain('"morph:storefront-preview-ping"');
+    expect(BRIDGE).toContain('"morph:storefront-preview-pong"');
+    expect(BRIDGE).toContain("heartbeatId: message.heartbeatId");
+  });
+
   it("is something a Theme workspace can actually load", () => {
     expect(() =>
       parse(BRIDGE, { sourceType: "module", plugins: ["typescript"] }),

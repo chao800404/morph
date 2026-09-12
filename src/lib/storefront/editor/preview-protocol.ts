@@ -177,6 +177,15 @@ export type PreviewEditableNode = Readonly<{
 
 export type EditorToPreviewMessage =
   | {
+      /**
+       * Liveness probe for a preview that was ready once but may have lost its
+       * sandbox port. The response is deliberately a separate message rather
+       * than reusing `ready`, so readiness remains tied to document startup.
+       */
+      type: "morph:storefront-preview-ping";
+      heartbeatId: number;
+    }
+  | {
       type: "morph:storefront-preview-request-size";
       /** Monotonically increasing request identity used to reject stale layout. */
       measurementRevision: number;
@@ -287,6 +296,10 @@ export type PreviewSelectionMessage = {
 
 export type PreviewToEditorMessage =
   | { type: "morph:storefront-preview-ready" }
+  | {
+      type: "morph:storefront-preview-pong";
+      heartbeatId: number;
+    }
   | {
       /**
        * An undo shortcut pressed while focus was inside the preview.
@@ -666,6 +679,10 @@ export function parseEditorToPreviewMessage(
   if (!isRecord(value) || typeof value.type !== "string") return null;
 
   switch (value.type) {
+    case "morph:storefront-preview-ping":
+      return isSafeRevision(value.heartbeatId)
+        ? { type: value.type, heartbeatId: value.heartbeatId }
+        : null;
     case "morph:storefront-preview-request-size":
       return isSafeRevision(value.measurementRevision)
         ? {
@@ -832,6 +849,10 @@ export function parsePreviewToEditorMessage(
     case "morph:storefront-preview-ready":
     case "morph:storefront-preview-reset-canvas":
       return { type: value.type };
+    case "morph:storefront-preview-pong":
+      return isSafeRevision(value.heartbeatId)
+        ? { type: value.type, heartbeatId: value.heartbeatId }
+        : null;
     case "morph:storefront-preview-history-shortcut":
       return value.direction === "undo" || value.direction === "redo"
         ? { type: value.type, direction: value.direction }

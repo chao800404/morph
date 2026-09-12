@@ -397,6 +397,16 @@ if (channel) {
     // Origin, source, session and schema are all checked in here. Anything
     // that fails any of them is not a message as far as this page cares.
     const message = parseEditorToPreviewWindowEvent(event);
+    if (message?.type === "morph:storefront-preview-ping") {
+      postPreviewToEditorMessage(
+        {
+          type: "morph:storefront-preview-pong",
+          heartbeatId: message.heartbeatId,
+        },
+        channel,
+      );
+      return;
+    }
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
     }
