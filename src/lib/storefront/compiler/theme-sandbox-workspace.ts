@@ -4,6 +4,8 @@ import {
   previewDevInfrastructureGuardSource,
   THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES,
   THEME_PREVIEW_FS_ALLOW_ROOTS,
+  THEME_PREVIEW_SERVER_BASE_PATH,
+  THEME_PREVIEW_SERVER_HMR_PATH,
 } from "./theme-preview-dev-server";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
@@ -422,6 +424,7 @@ return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
       : `null`
   };
 const hasStartRuntime = ${routeRegistry ? "true" : "false"};
+const isLivePreview = ${mode === "preview-server" ? "true" : "false"};
 const isStartRuntimeBuild =
   hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
 
@@ -530,7 +533,11 @@ return null;
 
 export default defineConfig({
   root: "${workspaceRoot}",
-  base: isStartRuntimeBuild ? "/" : "./",
+  base: isStartRuntimeBuild
+? "/"
+: isLivePreview
+  ? ${JSON.stringify(THEME_PREVIEW_SERVER_BASE_PATH)}
+  : "./",
   plugins: isStartRuntimeBuild
 ? [
     cloudflare({ viteEnvironment: { name: "ssr" } }),
@@ -567,6 +574,9 @@ fs: {
   strict: true,
   allow: ${JSON.stringify(THEME_PREVIEW_FS_ALLOW_ROOTS)},
 },
+hmr: isLivePreview
+  ? { path: ${JSON.stringify(THEME_PREVIEW_SERVER_HMR_PATH)} }
+  : undefined,
   },
   build: {
 outDir: isStartRuntimeBuild

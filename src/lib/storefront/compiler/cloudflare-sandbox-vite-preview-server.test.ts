@@ -16,12 +16,13 @@ type Harness = {
   killed: Array<string | undefined>;
   destroyed: number;
   sleepAfter: Array<string | number>;
+  waitedPorts: Array<{ port: number; path?: string }>;
   emit: (line: string) => void;
   exit: () => void;
 };
 
 const createSession = (
-  behaviour: "ready" | "silent" | "exit" = "ready",
+  behaviour: "ready" | "log-ready" | "silent" | "exit" = "ready",
 ): Harness => {
   const written = new Map<string, string>();
   const commands: string[] = [];
@@ -30,6 +31,7 @@ const createSession = (
   const unexposed: number[] = [];
   const killed: Array<string | undefined> = [];
   const sleepAfter: Array<string | number> = [];
+  const waitedPorts: Array<{ port: number; path?: string }> = [];
   let destroyed = 0;
   let onOutput: ((s: "stdout" | "stderr", d: string) => void) | undefined;
   let onExit: ((code: number | null) => void) | undefined;
@@ -44,7 +46,7 @@ const createSession = (
       envs.push(options?.env);
       onOutput = options?.onOutput;
       onExit = options?.onExit;
-      if (behaviour === "ready") {
+      if (behaviour === "log-ready") {
         queueMicrotask(() =>
           onOutput?.("stdout", "  VITE v7.3.5  ready in 3118 ms\n"),
         );
@@ -52,7 +54,24 @@ const createSession = (
       if (behaviour === "exit") {
         queueMicrotask(() => onExit?.(1));
       }
-      return { id: "proc-1" };
+      return {
+        id: "proc-1",
+        ...(behaviour === "log-ready"
+          ? {}
+          : {
+              waitForPort: async (
+                port: number,
+                options?: { path?: string },
+              ) => {
+                waitedPorts.push({ port, path: options?.path });
+                if (behaviour === "ready") return;
+                if (behaviour === "exit") {
+                  throw new Error("Process exited before the port was ready.");
+                }
+                await new Promise(() => {});
+              },
+            }),
+      };
     },
     async exposePort(port, options) {
       exposed.push({ port, hostname: options.hostname });
@@ -81,6 +100,7 @@ const createSession = (
     unexposed,
     killed,
     sleepAfter,
+    waitedPorts,
     get destroyed() {
       return destroyed;
     },
@@ -136,12 +156,25 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.url).toBe(
-      `https://${THEME_PREVIEW_SERVER_PORT}-sbx-tok.preview.example.com`,
+      `https://${THEME_PREVIEW_SERVER_PORT}-sbx-tok.preview.example.com/__morph-theme-preview__/`,
     );
     expect(harness.exposed).toEqual([
       { port: THEME_PREVIEW_SERVER_PORT, hostname: "preview.example.com" },
     ]);
     expect(harness.destroyed).toBe(0);
+    expect(harness.waitedPorts).toEqual([
+      {
+        port: THEME_PREVIEW_SERVER_PORT,
+        path: "/__morph-theme-preview__/",
+      },
+    ]);
+  });
+
+  it("falls back to the Vite log marker for providers without a port check", async () => {
+    const harness = createSession("log-ready");
+
+    expect((await startWith(harness)).ok).toBe(true);
+    expect(harness.waitedPorts).toEqual([]);
   });
 
   it("pins the port so the exposed URL cannot point at nothing", async () => {

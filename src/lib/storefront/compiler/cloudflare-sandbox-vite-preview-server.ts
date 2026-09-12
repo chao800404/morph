@@ -3,7 +3,10 @@ import {
   type ThemeWorkspaceFile,
   type ThemeWorkspaceWriter,
 } from "./theme-sandbox-workspace";
-import { SANDBOX_TOOLCHAIN_ROOT } from "./theme-preview-dev-server";
+import {
+  SANDBOX_TOOLCHAIN_ROOT,
+  THEME_PREVIEW_SERVER_BASE_PATH,
+} from "./theme-preview-dev-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
 
@@ -29,16 +32,46 @@ export const THEME_PREVIEW_SERVER_PORT = 5173;
 
 const VITE_BIN = `${SANDBOX_TOOLCHAIN_ROOT}/node_modules/.bin/vite`;
 
-/**
- * Line Vite prints once it can serve requests.
- *
- * Readiness is read from the server's own output rather than by polling the
- * exposed URL: a poll cannot tell "not started yet" apart from "started and
- * broken", and the second needs the logs anyway.
- */
+/** Line Vite prints once it can serve requests. Kept as a compatibility path. */
 const READY_MARKER = "ready in";
 
-export type PreviewServerProcess = Readonly<{ id?: string }>;
+export type PreviewServerProcess = Readonly<{
+  id?: string;
+  /**
+   * Cloudflare Sandbox's process-aware readiness check.
+   *
+   * It checks the port from inside the container and stops waiting if this
+   * process exits. Older providers may not expose it, so log readiness remains
+   * as a compatibility path rather than a second source of truth.
+   */
+  waitForPort?(
+    port: number,
+    options?: { path?: string; statusMin?: number; statusMax?: number },
+  ): Promise<void>;
+}>;
+
+function withReadyTimeout(
+  ready: Promise<"ready" | "exited">,
+  timeoutMs: number,
+): Promise<"ready" | "exited" | "timeout"> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (outcome: "ready" | "exited" | "timeout") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
+    void ready.then(finish, () => finish("exited"));
+  });
+}
+
+function withPreviewServerBase(exposedUrl: string): string {
+  const url = new URL(exposedUrl);
+  url.pathname = THEME_PREVIEW_SERVER_BASE_PATH;
+  return url.toString();
+}
 
 /**
  * The sandbox surface a preview server needs, beyond writing its workspace.
@@ -208,6 +241,7 @@ export class CloudflareSandboxVitePreviewServer {
         hostname: previewHost,
         name: "live-preview",
       });
+      const previewUrl = withPreviewServerBase(exposed.url);
 
       if (session.setSleepAfter) {
         await session.setSleepAfter(this.sleepAfter);
@@ -227,7 +261,7 @@ export class CloudflareSandboxVitePreviewServer {
       if (alreadyServing) {
         return {
           ok: true,
-          url: exposed.url,
+          url: previewUrl,
           processId: alreadyServing.id,
           readyMs: 0,
           hoistedContentFields: prepared.hoistedContentFields,
@@ -237,10 +271,9 @@ export class CloudflareSandboxVitePreviewServer {
       }
 
       const startedAt = Date.now();
-      let resolveReady: (value: "ready" | "exited") => void;
-      const ready = new Promise<"ready" | "exited" | "timeout">((resolve) => {
-        resolveReady = resolve;
-        setTimeout(() => resolve("timeout"), this.readyTimeoutMs);
+      let resolveLogOrExit: (value: "ready" | "exited") => void;
+      const logOrExit = new Promise<"ready" | "exited">((resolve) => {
+        resolveLogOrExit = resolve;
       });
 
       const process = await session.startProcess(
@@ -253,13 +286,36 @@ export class CloudflareSandboxVitePreviewServer {
           env: { NODE_ENV: "development" },
           onOutput: (_stream, data) => {
             addLog(data);
-            if (data.includes(READY_MARKER)) resolveReady("ready");
+            if (data.includes(READY_MARKER)) resolveLogOrExit("ready");
           },
-          onExit: () => resolveReady("exited"),
+          onExit: () => resolveLogOrExit("exited"),
         },
       );
 
-      const outcome = await ready;
+      // The live Sandbox API does not guarantee that background-process
+      // output callbacks are delivered while this Worker request is waiting.
+      // The process object does provide a process-aware port check, which is
+      // also the thing we actually need to know: can this Vite process serve
+      // the page? Keep the output marker only for older providers and tests.
+      const portReady = process.waitForPort
+        ? process
+            .waitForPort(THEME_PREVIEW_SERVER_PORT, {
+              path: THEME_PREVIEW_SERVER_BASE_PATH,
+            })
+            .then(() => "ready" as const)
+            .catch((error) => {
+              addLog(
+                error instanceof Error
+                  ? error.message
+                  : "Preview server port check failed.",
+              );
+              return "exited" as const;
+            })
+        : null;
+      const outcome = await withReadyTimeout(
+        portReady ? Promise.race([portReady, logOrExit]) : logOrExit,
+        this.readyTimeoutMs,
+      );
       if (outcome !== "ready") {
         await session.killProcess?.(process.id);
         await session.destroy();
@@ -276,7 +332,7 @@ export class CloudflareSandboxVitePreviewServer {
 
       return {
         ok: true,
-        url: exposed.url,
+        url: previewUrl,
         processId: process.id,
         readyMs: Date.now() - startedAt,
         hoistedContentFields: prepared.hoistedContentFields,

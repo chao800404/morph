@@ -7,6 +7,25 @@
 export const SANDBOX_TOOLCHAIN_ROOT = "/opt/morph-toolchain";
 
 /**
+ * URL namespace owned by the Theme's Vite server.
+ *
+ * In local development the Morph app and the exposed container both enter
+ * through the same outer Vite process on port 3000. A root-relative Vite URL
+ * such as `/node_modules/.vite/deps/react.js` is otherwise consumed by that
+ * outer server before the hostname-aware Worker proxy can see it. The result
+ * is a page from the Theme server importing React from Morph's optimizer.
+ * Keeping every Theme dev asset under one prefix lets the outer server pass
+ * the request through to the preview-host proxy as intended.
+ */
+export const THEME_PREVIEW_SERVER_BASE_PATH = "/__morph-theme-preview__/";
+
+/**
+ * HMR path relative to the preview base. Vite prefixes `server.hmr.path` with
+ * `base`, so passing the full namespace here would duplicate it.
+ */
+export const THEME_PREVIEW_SERVER_HMR_PATH = "hmr";
+
+/**
  * Module specifiers Vite's own dev server asks for, which a build never does.
  *
  * A dev server injects its HMR client and the React Refresh runtime into the

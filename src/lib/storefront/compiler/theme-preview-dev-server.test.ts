@@ -5,6 +5,8 @@ import {
   previewDevInfrastructureGuardSource,
   SANDBOX_TOOLCHAIN_ROOT,
   THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES,
+  THEME_PREVIEW_SERVER_BASE_PATH,
+  THEME_PREVIEW_SERVER_HMR_PATH,
 } from "./theme-preview-dev-server";
 
 const compileGuard = (): ((source: string) => boolean) =>
@@ -57,5 +59,12 @@ describe("preview dev infrastructure allowance", () => {
     expect(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES).toContain(
       "@tanstack/react-start/server",
     );
+  });
+
+  it("keeps Theme assets and HMR out of the outer Morph Vite namespace", () => {
+    expect(THEME_PREVIEW_SERVER_BASE_PATH).toBe(
+      "/__morph-theme-preview__/",
+    );
+    expect(THEME_PREVIEW_SERVER_HMR_PATH).toBe("hmr");
   });
 });

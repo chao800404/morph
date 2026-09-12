@@ -50,6 +50,7 @@ const prepare = async (mode: "build" | "preview-server") => {
   return {
     result,
     card: written.get("/workspace/src/components/Card.tsx") ?? "",
+    viteConfig: written.get("/workspace/vite.config.ts") ?? "",
   };
 };
 
@@ -92,8 +93,16 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(card).toContain('data-storefront-field="heading"');
   });
 
+  it("serves preview assets and HMR from the preview-only URL namespace", async () => {
+    const { viteConfig } = await prepare("preview-server");
+
+    expect(viteConfig).toContain('const isLivePreview = true');
+    expect(viteConfig).toContain('"/__morph-theme-preview__/"');
+    expect(viteConfig).toContain('? { path: "hmr" }');
+  });
+
   it("leaves a build with the Theme exactly as the author wrote it", async () => {
-    const { card, result } = await prepare("build");
+    const { card, result, viteConfig } = await prepare("build");
 
     expect(card).toBe(CARD);
     expect(card).toContain("export const contentFields");
@@ -101,6 +110,7 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(card).not.toContain("data-storefront-field");
     expect(result.ok && result.hoistedContentFields).toEqual([]);
     expect(result.ok && result.annotatedElements).toEqual({});
+    expect(viteConfig).toContain("const isLivePreview = false");
   });
 });
 
