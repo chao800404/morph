@@ -6,7 +6,10 @@ import { idSchema } from "@/lib/validations/commerce";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import { CloudflareSandboxVitePreviewServer } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
-import { refuseThemeWorkspacePath } from "@/lib/storefront/compiler/theme-workspace-path";
+import {
+  isWorkspaceGeneratedThemePath,
+  refuseThemeWorkspacePath,
+} from "@/lib/storefront/compiler/theme-workspace-path";
 import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
 import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
 import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-preview-session-id";
@@ -227,6 +230,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
 
     const changed: string[] = [];
     const unchanged: string[] = [];
+    const skipped: string[] = [];
 
     try {
       const { getSandbox } = await import("@cloudflare/sandbox");
@@ -241,6 +245,14 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
         ): Promise<{ content?: unknown } | string>;
       };
       for (const file of hoisted) {
+        // Left as the container generated it. Reported separately from
+        // "unchanged", because the two are different facts: one says the
+        // container already holds what the editor sent, the other says the
+        // editor never owned that file here.
+        if (isWorkspaceGeneratedThemePath(file.path)) {
+          skipped.push(file.path);
+          continue;
+        }
         const target = `/workspace/${file.path}`;
         // Written only when it would differ. Vite rebuilds on every write,
         // even one that changes nothing, and a rebuild the author did not ask
@@ -262,5 +274,6 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
       previewId,
       changed,
       unchanged,
+      skipped,
     });
   });

@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { refuseThemeWorkspacePath } from "./theme-workspace-path";
+import {
+  isWorkspaceGeneratedThemePath,
+  refuseThemeWorkspacePath,
+} from "./theme-workspace-path";
 
 describe("what may be written into a container workspace", () => {
   it("accepts an ordinary Theme file", () => {
@@ -47,5 +50,31 @@ describe("what may be written into a container workspace", () => {
     expect(refuseThemeWorkspacePath("src\\node_modules\\evil.js")).toContain(
       "RESERVED_THEME_PATH",
     );
+  });
+});
+
+describe("what a running preview may write over", () => {
+  it("leaves the manifest the container generated for itself", () => {
+    // The workspace pins package.json to the toolchain it installed, so the
+    // authored copy can never match it. Writing it would report a change on
+    // every sync that no hot update could ever confirm.
+    expect(isWorkspaceGeneratedThemePath("package.json")).toBe(true);
+  });
+
+  it("does not claim a Theme's own files", () => {
+    for (const path of [
+      "src/components/Hero.tsx",
+      "src/package.json",
+      "package.json.bak",
+      "theme/package.json",
+    ]) {
+      expect(isWorkspaceGeneratedThemePath(path)).toBe(false);
+    }
+  });
+
+  it("is not a refusal", () => {
+    // A Theme is right to carry package.json, and the editor is right to send
+    // it; it is simply not the copy the container is serving.
+    expect(refuseThemeWorkspacePath("package.json")).toBeNull();
   });
 });

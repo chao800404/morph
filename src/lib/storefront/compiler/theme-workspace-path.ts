@@ -37,3 +37,25 @@ export function refuseThemeWorkspacePath(path: string): string | null {
 
   return null;
 }
+
+/**
+ * Whether the container writes this file for itself.
+ *
+ * `package.json` belongs to the Theme — the author writes it, and it is
+ * stored and versioned with the Theme — but the workspace replaces it on the
+ * way in with a manifest pinned to the toolchain the container actually has
+ * installed. So the copy on disk is never the copy the editor holds, and it
+ * is not supposed to be.
+ *
+ * A running preview therefore has to leave it alone. Writing the authored one
+ * would swap the dependency manifest out from under Vite, and because the two
+ * can never agree, every sync would report a file it had changed — a change
+ * no hot update can arrive to confirm, since `package.json` is in no module
+ * graph. The editor would then wait for an acknowledgement that cannot come.
+ *
+ * Not a refusal: the editor is right to send it, and a Theme is right to
+ * carry it. It simply is not the file the container is serving.
+ */
+export function isWorkspaceGeneratedThemePath(path: string): boolean {
+  return path.replace(/\\/g, "/") === "package.json";
+}
