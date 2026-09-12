@@ -1,5 +1,5 @@
-import { parseArrayItemFieldPath } from "./reorder-array-items";
-import { sourceLocationKey } from "@/lib/storefront/ast/element-target";
+import { parseArrayItemFieldPath } from "./array-item-field-path";
+import { sourceLocationKey } from "@/lib/storefront/ast/source-location-key";
 
 /**
  * What a dragged element is, and what it may be dropped onto.

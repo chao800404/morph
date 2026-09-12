@@ -1,3 +1,5 @@
+export { sourceLocationKey } from "./source-location-key";
+import { sourceLocationKey } from "./source-location-key";
 import type {
   ComponentElementMeta,
   ParsedComponentMeta,
@@ -27,15 +29,6 @@ export const DEFAULT_ELEMENT_TARGET_KEY = "heading";
  * The AST indexes elements by position within one file, while the DOM attribute
  * carries the file as well, so the two are not interchangeable.
  */
-export function sourceLocationKey(
-  sourceLocation: string | null | undefined,
-): string | null {
-  if (typeof sourceLocation !== "string") return null;
-  const parts = sourceLocation.split(":");
-  if (parts.length < 3) return null;
-  const key = parts.slice(-2).join(":");
-  return /^\d+:\d+$/.test(key) ? key : null;
-}
 
 /**
  * Key the AST patch resolves an element by.

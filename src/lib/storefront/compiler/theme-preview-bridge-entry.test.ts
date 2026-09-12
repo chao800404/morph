@@ -159,3 +159,40 @@ describe("editing text in the page it is rendered on", () => {
     );
   });
 });
+
+describe("dragging something into a new position", () => {
+  it("decides what a drop means with the rule the editor shares", () => {
+    expect(BRIDGE).toContain('from "./preview/preview-reorder-identity"');
+    expect(BRIDGE).toContain("reorderCommitFor(held, target.identity)");
+  });
+
+  it("starts only from the handle on the selection ring", () => {
+    // A Theme's own draggable content keeps behaving as it does on the real
+    // storefront.
+    expect(BRIDGE).toContain(
+      "event.target.closest('[data-storefront-editor-drag-handle=\"true\"]')",
+    );
+  });
+
+  it("shows the handle only on something that can actually move", () => {
+    // Its absence answers "why can I not drag this", rather than a drag that
+    // starts and then quietly does nothing.
+    expect(BRIDGE).toContain("function syncDragHandle()");
+    expect(BRIDGE).toContain("reorderIdentity(selectedItem.element)");
+  });
+
+  it("accepts a drop only over a compatible sibling", () => {
+    // The browser cancels a drop unless the default is prevented over it, so
+    // refusing to prevent is how an incompatible target says no.
+    expect(BRIDGE).toContain("if (!dropTargetUnder(event.target)) return;");
+  });
+
+  it("shows the new order at once, and tells the editor separately", () => {
+    expect(BRIDGE).toContain('document.createComment("morph-reorder")');
+    expect(BRIDGE).toContain("postPreviewToEditorMessage(commit, channel)");
+  });
+
+  it("ends the gesture even when the drop never happens", () => {
+    expect(BRIDGE).toContain('document.addEventListener("dragend"');
+  });
+});

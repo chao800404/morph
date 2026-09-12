@@ -5,36 +5,11 @@ import {
   type ThemeContentFieldDefinition,
 } from "../theme-content-capabilities";
 import { getFieldPathValue, setFieldPathValue } from "./selection-taxonomy";
-
-type ArrayItemPath = {
-  arrayPath: string;
-  index: number;
-};
-
-const UNSAFE_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
-
-export function parseArrayItemFieldPath(
-  fieldPath: string,
-): ArrayItemPath | null {
-  const segments = fieldPath.split(".");
-  if (segments.length < 2 || segments.length > 50) return null;
-
-  const indexSegment = segments.at(-1);
-  const arraySegments = segments.slice(0, -1);
-  if (
-    !indexSegment ||
-    !/^\d+$/.test(indexSegment) ||
-    arraySegments.some(
-      (segment) => !segment || UNSAFE_PATH_SEGMENTS.has(segment),
-    )
-  ) {
-    return null;
-  }
-
-  const index = Number(indexSegment);
-  if (!Number.isSafeInteger(index)) return null;
-  return { arrayPath: arraySegments.join("."), index };
-}
+export {
+  parseArrayItemFieldPath,
+  type ArrayItemPath,
+} from "./array-item-field-path";
+import { parseArrayItemFieldPath } from "./array-item-field-path";
 
 export type SwapArrayItemsResult<T> =
   | { editable: true; value: T }

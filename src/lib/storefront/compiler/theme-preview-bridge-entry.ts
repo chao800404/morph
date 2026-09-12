@@ -29,6 +29,11 @@ import {
 import { startPreviewHeightReporter } from "./preview/preview-height-reporter";
 import { createPreviewSelectionOverlays } from "./preview/preview-selection-overlays";
 import { createInlineTextEditor } from "./preview/inline-text-editor";
+import {
+  isCompatibleReorderTarget,
+  reorderCommitFor,
+  reorderIdentity,
+} from "./preview/preview-reorder-identity";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
@@ -66,6 +71,22 @@ const toOverlayItem = (item) =>
       }
     : null;
 
+/**
+ * The handle only appears on something that can actually move, so its absence
+ * is the answer to "why can I not drag this" rather than a drag that starts
+ * and then quietly does nothing.
+ */
+function syncDragHandle() {
+  const movable =
+    selectionEnabled && selectedItem
+      ? reorderIdentity(selectedItem.element)
+      : null;
+  overlays?.setDragHandle(
+    Boolean(movable),
+    movable ? \`Drag \${selectedItem.label} to reorder\` : undefined,
+  );
+}
+
 function drawOverlays() {
   overlays?.position({
     enabled: selectionEnabled,
@@ -99,6 +120,7 @@ function reportSelection(target) {
   const item = resolveSelectable(target);
   if (!item?.sectionId) return;
   selectedItem = item;
+  syncDragHandle();
   drawOverlays();
 
   const styleOf = (element) =>
@@ -135,6 +157,29 @@ function reportSelection(target) {
     },
     channel,
   );
+}
+
+let gesture = null;
+
+/** The sibling of the dragged element that a pointer is currently over. */
+function dropTargetUnder(target) {
+  if (!gesture || !(target instanceof HTMLElement)) return null;
+  let candidate = target;
+  while (candidate && candidate.parentElement !== gesture.parent) {
+    candidate = candidate.parentElement;
+  }
+  if (!candidate || candidate === gesture.dragged) return null;
+  const identity = reorderIdentity(candidate);
+  if (!identity || !isCompatibleReorderTarget(identity, gesture)) return null;
+  return { element: candidate, identity };
+}
+
+function endGesture() {
+  gesture = null;
+  document.documentElement.removeAttribute(
+    "data-storefront-editor-reordering",
+  );
+  drawOverlays();
 }
 
 function reportReady() {
@@ -231,6 +276,89 @@ if (channel) {
     window.addEventListener(moved, () => drawOverlays(), { passive: true });
   }
 
+  // Dragging starts from the handle on the selection ring and nowhere else,
+  // so a Theme's own draggable content still behaves as it does on the real
+  // storefront.
+  document.addEventListener(
+    "dragstart",
+    (event) => {
+      if (!selectionEnabled || !selectedItem || inlineEditor.editingElement()) {
+        return;
+      }
+      const fromHandle =
+        event.target instanceof Element &&
+        event.target.closest('[data-storefront-editor-drag-handle="true"]');
+      const identity = fromHandle
+        ? reorderIdentity(selectedItem.element)
+        : null;
+      if (!identity) return;
+
+      gesture = {
+        kind: identity.kind,
+        dragged: selectedItem.element,
+        parent: identity.parent,
+        sectionId: identity.sectionId,
+        sourceFilePath: identity.sourceFilePath,
+        arrayPath: identity.arrayPath,
+        draggedNodeId: identity.nodeId,
+        draggedFieldPath: identity.fieldPath,
+      };
+      document.documentElement.setAttribute(
+        "data-storefront-editor-reordering",
+        "true",
+      );
+      hoveredItem = null;
+      drawOverlays();
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData(
+          "text/plain",
+          identity.fieldPath ?? identity.nodeId ?? "",
+        );
+      }
+    },
+    { capture: true },
+  );
+
+  document.addEventListener("dragover", (event) => {
+    if (!gesture) return;
+    // Only a compatible sibling is a drop target, and the browser cancels the
+    // drop unless the default is prevented over one.
+    if (!dropTargetUnder(event.target)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  });
+
+  document.addEventListener("drop", (event) => {
+    if (!gesture) return;
+    event.preventDefault();
+    const held = gesture;
+    const target = dropTargetUnder(event.target);
+    endGesture();
+    if (!target || !channel) return;
+
+    // Swap the two nodes so the page shows the new order at once. The editor
+    // is told separately, and its own re-render is what makes it durable.
+    const marker = document.createComment("morph-reorder");
+    held.dragged.replaceWith(marker);
+    target.element.replaceWith(held.dragged);
+    marker.replaceWith(target.element);
+    if (held.kind === "array" && held.draggedFieldPath && target.identity.fieldPath) {
+      held.dragged.dataset.storefrontFieldPath = target.identity.fieldPath;
+      target.element.dataset.storefrontFieldPath = held.draggedFieldPath;
+    }
+    selectedItem = resolveSelectable(held.dragged);
+    syncDragHandle();
+    drawOverlays();
+
+    const commit = reorderCommitFor(held, target.identity);
+    if (commit) postPreviewToEditorMessage(commit, channel);
+  });
+
+  document.addEventListener("dragend", () => {
+    if (gesture) endGesture();
+  });
+
   window.addEventListener("message", (event) => {
     // Origin, source, session and schema are all checked in here. Anything
     // that fails any of them is not a message as far as this page cares.
@@ -246,6 +374,7 @@ if (channel) {
         hoveredItem = null;
         selectedItem = null;
       }
+      syncDragHandle();
       drawOverlays();
     }
   });

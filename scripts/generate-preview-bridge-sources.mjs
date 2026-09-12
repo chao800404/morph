@@ -19,6 +19,16 @@ import { join } from "node:path";
 
 const ROOT = process.cwd();
 const EDITOR = "src/lib/storefront/editor";
+
+/**
+ * Modules the bridge needs from outside the editor directory.
+ *
+ * Copied flat into the same folder, so a relative import between copies
+ * resolves whatever the module's own home is.
+ */
+const ELSEWHERE = {
+  "source-location-key": "src/lib/storefront/ast/source-location-key.ts",
+};
 const OUT = join(
   ROOT,
   "src/lib/storefront/compiler/preview-bridge-sources.generated.ts",
@@ -38,6 +48,9 @@ const MODULES = [
   "preview-selection-overlays",
   "inline-text-edit",
   "inline-text-editor",
+  "array-item-field-path",
+  "source-location-key",
+  "preview-reorder-identity",
 ];
 
 /**
@@ -48,6 +61,11 @@ const ERASED_TYPES = {
   "@/db/storefront.schema": { StorefrontPageDocument: "any" },
   "@/db/json": { JsonValue: "unknown" },
   "./inspector-modules": { InspectorOverride: "unknown" },
+};
+
+/** Aliased imports that are values, and therefore have to be copied too. */
+const REWRITTEN_IMPORTS = {
+  "@/lib/storefront/ast/source-location-key": "./source-location-key",
 };
 
 const TYPE_IMPORT = /^import type \{([^}]*)\} from "([^"]+)";$/gm;
@@ -74,12 +92,13 @@ function eraseExternalTypes(source, modulePath) {
 }
 
 const files = MODULES.map((name) => {
-  const path = `${EDITOR}/${name}.ts`;
+  const path = ELSEWHERE[name] ?? `${EDITOR}/${name}.ts`;
   const source = readFileSync(join(ROOT, path), "utf8");
-  return {
-    path: `src/morph/preview/${name}.ts`,
-    content: eraseExternalTypes(source, path),
-  };
+  let content = eraseExternalTypes(source, path);
+  for (const [from, to] of Object.entries(REWRITTEN_IMPORTS)) {
+    content = content.replaceAll(`from "${from}"`, `from "${to}"`);
+  }
+  return { path: `src/morph/preview/${name}.ts`, content };
 });
 
 // Every import that survives has to resolve inside the copied set, whether it
@@ -93,7 +112,10 @@ const unresolved = files.flatMap((file) =>
     .filter(
       (specifier) =>
         specifier.startsWith("@/") ||
-        (specifier.startsWith("./") && !copied.has(specifier.slice(2))),
+        // Any relative import, not just a sibling: a "../" one slipped past
+        // an earlier version of this check and the container found it.
+        (specifier.startsWith(".") &&
+          !copied.has(specifier.replace(/^\.\/?/, ""))),
     )
     .map((specifier) => `${file.path} -> ${specifier}`),
 );
