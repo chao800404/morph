@@ -98,6 +98,11 @@
     // "MORPH_CMS_HOSTNAME": "shop.example.com",
     // "MORPH_PLATFORM_HOSTNAMES": "staging.example.com,admin.example.com",
     "SANDBOX_TRANSPORT": "rpc",
+    // Hostname the Live Preview dev server is reached on. It runs Theme
+    // JavaScript, so it must be a host of its own: anything that shares a
+    // cookie jar with the CMS is refused, and with nothing set here the
+    // Live Preview stays on the compatibility renderer instead.
+    // "THEME_PREVIEW_HOSTNAME": "preview.example.com",
   },
 
   // Secrets are configured outside source control:
