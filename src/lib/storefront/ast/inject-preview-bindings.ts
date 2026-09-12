@@ -27,6 +27,7 @@ const FIELD_ATTRIBUTE = "data-storefront-field";
 const FIELD_PATH_ATTRIBUTE = "data-storefront-field-path";
 const ITEM_ID_ATTRIBUTE = "data-storefront-item-id";
 const SECTION_ID_ATTRIBUTE = "data-storefront-section-id";
+const SOURCE_FILE_ATTRIBUTE = "data-morph-source-file";
 
 /**
  * Utilities that space children by counting them, and so notice a wrapper.
@@ -122,8 +123,31 @@ function fieldForElement(node: any, rowItem: string | null): string | null {
   return null;
 }
 
+/**
+ * The JSX element a `.map()` callback returns, which is the row itself.
+ *
+ * A row is what reordering moves, and it is addressed by a path ending at its
+ * index — `items.2`, not `items.2.title`, which names a value inside it.
+ */
+function readRowElement(callback: any): any {
+  const body = callback?.body;
+  if (body?.type === "JSXElement") return body;
+  if (body?.type !== "BlockStatement") return null;
+  for (const statement of body.body ?? []) {
+    if (
+      statement.type === "ReturnStatement" &&
+      statement.argument?.type === "JSXElement"
+    ) {
+      return statement.argument;
+    }
+  }
+  return null;
+}
+
 /** `items.map((item, index) => …)` — the array path and the two binding names. */
-function readMapCall(node: any): { arrayPath: string; scope: RowScope } | null {
+function readMapCall(
+  node: any,
+): { arrayPath: string; rowElement: any; scope: RowScope } | null {
   if (
     node.type !== "CallExpression" &&
     node.type !== "OptionalCallExpression"
@@ -167,6 +191,7 @@ function readMapCall(node: any): { arrayPath: string; scope: RowScope } | null {
   const [itemParam, indexParam] = callback.params ?? [];
   return {
     arrayPath: steps.join("."),
+    rowElement: readRowElement(callback),
     scope: {
       item: itemParam?.type === "Identifier" ? itemParam.name : null,
       index: indexParam?.type === "Identifier" ? indexParam.name : null,
@@ -260,21 +285,54 @@ export function injectPreviewBindings(
     const slotIds: string[] = [];
     let count = 0;
 
-    const visit = (node: any, arrayPath: string | null, scope: RowScope) => {
+    const visit = (
+      node: any,
+      arrayPath: string | null,
+      scope: RowScope,
+      insideJsx = false,
+    ) => {
       if (!node || typeof node !== "object") return;
       if (Array.isArray(node)) {
-        for (const child of node) visit(child, arrayPath, scope);
+        for (const child of node) visit(child, arrayPath, scope, insideJsx);
         return;
       }
       if (typeof node.type !== "string") return;
 
       const mapCall = readMapCall(node);
       if (mapCall) {
+        const row = mapCall.rowElement;
+        const rowIndex = mapCall.scope.index;
+        if (row && rowIndex && row.start != null && row.end != null) {
+          const path = `${mapCall.arrayPath}.\${${rowIndex}}`;
+          const attributes =
+            ` ${FIELD_ATTRIBUTE}="${escapeAttribute(mapCall.arrayPath)}"` +
+            ` ${FIELD_PATH_ATTRIBUTE}={\`${path}\`}` +
+            (mapCall.scope.item
+              ? ` ${ITEM_ID_ATTRIBUTE}={${mapCall.scope.item}?.id}`
+              : "");
+          if (isHostElement(row.openingElement?.name)) {
+            if (!hasAttribute(row.openingElement, FIELD_PATH_ATTRIBUTE)) {
+              insertions.push({
+                at: row.openingElement.name.end,
+                text: attributes,
+              });
+            }
+          } else {
+            // The row is a component, and an attribute put on one becomes a
+            // prop it is free to ignore — it would never reach the page. Same
+            // answer as a section: wrap it in something taken out of layout.
+            insertions.push({
+              at: row.start,
+              text: `<div${attributes} style={{ display: "contents" }}>`,
+            });
+            insertions.push({ at: row.end, text: "</div>" });
+          }
+        }
         // Rows of an array field are addressed by the array they came from,
         // so the callback body is walked with that path in hand.
         for (const [key, value] of Object.entries(node)) {
           if (key === "loc" || key === "leadingComments") continue;
-          visit(value, mapCall.arrayPath, mapCall.scope);
+          visit(value, mapCall.arrayPath, mapCall.scope, insideJsx);
         }
         return;
       }
@@ -298,6 +356,15 @@ export function injectPreviewBindings(
 
         if (isHostElement(opening?.name)) {
           const parts: string[] = [];
+          // Which file a reorder among these siblings would rewrite. The
+          // outermost element of a file is where that answer changes, so it
+          // is the one place worth stating it — everything below finds it by
+          // looking up, exactly as the interpreter's own marking is found.
+          if (!insideJsx && !hasAttribute(opening, SOURCE_FILE_ATTRIBUTE)) {
+            parts.push(
+              ` ${SOURCE_FILE_ATTRIBUTE}="${escapeAttribute(file.path)}"`,
+            );
+          }
           const position = opening.name.loc?.start;
           if (
             position &&
@@ -351,7 +418,7 @@ export function injectPreviewBindings(
 
       for (const [key, value] of Object.entries(node)) {
         if (key === "loc" || key === "leadingComments") continue;
-        visit(value, arrayPath, scope);
+        visit(value, arrayPath, scope, insideJsx || node.type === "JSXElement");
       }
     };
 

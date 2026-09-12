@@ -245,3 +245,97 @@ export default function HomeRoute() {
     expect(result.warnings).toEqual([]);
   });
 });
+
+describe("marking the row a reorder actually moves", () => {
+  const DECLARED = `export const contentFields = {
+  items: { type: "array", fields: { title: { type: "text" } } },
+} as const;
+`;
+
+  it("addresses the row by a path ending at its index", () => {
+    // `items.2` is the row; `items.2.title` is a value inside it. Reordering
+    // moves the first and would make no sense applied to the second.
+    const out = run(`${DECLARED}
+export default function List({ items = [] }) {
+  return <ul>{items.map((item, index) => <li key={item.id}>{item.title}</li>)}</ul>;
+}
+`);
+    expect(out).toContain("data-storefront-field-path={`items.${index}`}");
+    expect(out).toContain('data-storefront-field="items"');
+  });
+
+  it("wraps the row when the loop returns a component", () => {
+    // An attribute on a component becomes a prop it is free to ignore, so it
+    // would never reach the page — the same reason a section is wrapped.
+    const out = run(`${DECLARED}
+export default function List({ items = [] }) {
+  return <ul>{items.map((item, index) => <Card key={item.id} title={item.title} />)}</ul>;
+}
+`);
+    expect(out).toContain(
+      'data-storefront-field-path={`items.${index}`} data-storefront-item-id={item?.id} style={{ display: "contents" }}>',
+    );
+    expect(out).toContain("<Card");
+  });
+
+  it("finds the row through a block body as well as an arrow", () => {
+    const out = run(`${DECLARED}
+export default function List({ items = [] }) {
+  return (
+    <ul>
+      {items.map((item, index) => {
+        const label = item.title;
+        return <li key={item.id}>{label}</li>;
+      })}
+    </ul>
+  );
+}
+`);
+    expect(out).toContain("data-storefront-field-path={`items.${index}`}");
+  });
+
+  it("marks no row when the loop never named its index", () => {
+    const out = run(`${DECLARED}
+export default function List({ items = [] }) {
+  return <ul>{items.map((item) => <li key={item.id}>{item.title}</li>)}</ul>;
+}
+`);
+    expect(out).not.toContain("data-storefront-field-path");
+  });
+
+  it("still produces valid syntax around a wrapped component row", async () => {
+    const { parse } = await import("@babel/parser");
+    const out = run(`${DECLARED}
+export default function List({ items = [] }) {
+  return <ul>{items.map((item, i) => <Card key={item.id} title={item.title} />)}</ul>;
+}
+`);
+    expect(() =>
+      parse(out, { sourceType: "module", plugins: ["jsx", "typescript"] }),
+    ).not.toThrow();
+  });
+});
+
+describe("saying which file a reorder would rewrite", () => {
+  it("marks the outermost element of a file, and only that one", () => {
+    const out = run(`export default function Hero() {
+  return (
+    <section>
+      <div><h1>hi</h1></div>
+    </section>
+  );
+}
+`);
+    expect(out.match(/data-morph-source-file/g)).toHaveLength(1);
+    expect(out).toContain(
+      '<section data-morph-source-file="src/components/Hero.tsx"',
+    );
+  });
+
+  it("marks each root when a file returns more than one", () => {
+    const out = run(`export function A() { return <p>a</p>; }
+export function B() { return <p>b</p>; }
+`);
+    expect(out.match(/data-morph-source-file/g)).toHaveLength(2);
+  });
+});
