@@ -152,8 +152,12 @@ import {
   hasInlineTextDocumentTarget,
   isInlineTextEditCandidate,
 } from "@/lib/storefront/editor/inline-text-edit";
-import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
+import {
+  readLivePreviewExecutionMode,
+  resolveLivePreviewSecurity,
+} from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
+import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
   parsePreviewSectionProps,
   type PreviewEditableNode,
@@ -481,10 +485,12 @@ const previewDefaultHeights = {
 const DEFAULT_PREVIEW_VIEWPORT_HEIGHT = previewDefaultHeights.desktop;
 /** Settling time before re-measuring, so a burst of edits measures once. */
 const PREVIEW_REMEASURE_DELAY_MS = 500;
-// The current Live Preview parses Theme Source into the compatibility renderer;
-// it does not execute the user's JavaScript bundle. Switching this to
-// "user-code" intentionally fails closed until an isolated origin is configured.
-const LIVE_PREVIEW_EXECUTION_MODE = "compatibility-renderer" as const;
+// Which preview this deployment runs. "user-code" executes the Theme's own
+// JavaScript and so needs an origin of its own; anything else, including an
+// unset variable, is the compatibility renderer that parses Theme source.
+const LIVE_PREVIEW_EXECUTION_MODE = readLivePreviewExecutionMode(
+  import.meta.env.VITE_LIVE_PREVIEW_EXECUTION_MODE,
+);
 
 /**
  * Result of one build attempt.
@@ -1007,6 +1013,18 @@ export function VisualEditorShell({
     executionMode: LIVE_PREVIEW_EXECUTION_MODE,
   });
   const previewSourceOriginRef = useRef<string | null>(null);
+  // Only asked for when this deployment runs Theme JavaScript: starting one
+  // runs a container, and an editor that is not going to frame it should not
+  // be paying for it.
+  const previewServer = useQuery(
+    themePreviewServerQueries.forTheme(
+      context.storefront.id,
+      context.theme.id,
+      LIVE_PREVIEW_EXECUTION_MODE === "user-code",
+    ),
+  );
+  const previewServerUrl =
+    previewServer.data?.success === true ? previewServer.data.data.url : null;
   const livePreviewWorkspaceKey = `${context.storefront.id}:${context.theme.id}`;
   const stablePreviewSession = useStableLivePreviewSession(
     livePreviewWorkspaceKey,
@@ -1061,10 +1079,10 @@ export function VisualEditorShell({
           viewportHeight: DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
           editorOrigin: context.previewChannel?.editorOrigin ?? "",
           previewSession: stablePreviewSession,
-          // Filled in once a preview server is running for this Theme. Until
-          // then the compatibility preview is what the editor frames, so an
-          // editor never waits on a container to show a page.
-          previewServerUrl: null,
+          // Null while one is starting, and if starting failed. Either way
+          // the compatibility preview is what gets framed, so an editor never
+          // waits on a container — or loses its preview — to show a page.
+          previewServerUrl,
         })
       : null;
   const previewUrl = previewSource?.url ?? null;

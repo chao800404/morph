@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLivePreviewUrl,
+  readLivePreviewExecutionMode,
   resolveLivePreviewSecurity,
 } from "./live-preview-security";
 
@@ -80,5 +81,30 @@ describe("live preview security", () => {
     expect(url.searchParams.get("previewSession")).toBe(
       "22222222-2222-4222-8222-222222222222",
     );
+  });
+});
+
+describe("reading which preview a deployment runs", () => {
+  it("runs Theme JavaScript only when a deployment says exactly that", () => {
+    expect(readLivePreviewExecutionMode("user-code")).toBe("user-code");
+    expect(readLivePreviewExecutionMode("  user-code  ")).toBe("user-code");
+  });
+
+  it("treats everything else as the compatibility preview", () => {
+    // There is no spelling of "yes" worth guessing at.
+    for (const value of [
+      undefined,
+      "",
+      "   ",
+      "usercode",
+      "user_code",
+      "User-Code",
+      "true",
+      "1",
+    ]) {
+      expect(readLivePreviewExecutionMode(value)).toBe(
+        "compatibility-renderer",
+      );
+    }
   });
 });
