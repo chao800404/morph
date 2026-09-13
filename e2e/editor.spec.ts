@@ -177,6 +177,32 @@ test.describe("visual editor", () => {
     ).toHaveCount(1, { timeout: 15_000 });
   });
 
+  test("selecting a deep field expands the tree to its selected row", async ({
+    page,
+  }) => {
+    await openEditor(page);
+    await enableSelection(page);
+
+    const image = previewFrame(page).locator(
+      '[data-storefront-section-id="starter-hero"] [data-storefront-field="imageSrc"]',
+    );
+    await expect(image).toHaveCount(1);
+    expect(await clickExposedElement(page, image)).not.toBeNull();
+
+    // The field sits below two collapsed layout nodes. Seeing its own row is
+    // evidence that the post-React structure arrived and every ancestor was
+    // expanded; a selected canvas ring by itself does not prove either one.
+    const selected = page.locator(
+      '[data-editor-tree-node-selected="true"]',
+    );
+    await expect(selected).toHaveCount(1, { timeout: 15_000 });
+    await expect(selected).toBeVisible();
+    await expect(selected).toHaveAttribute(
+      "data-editor-tree-node-id",
+      "starter-hero:field:imageSrc",
+    );
+  });
+
   test("the preview frame is as tall as the rendered page, not taller", async ({
     page,
   }) => {

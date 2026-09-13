@@ -38,6 +38,18 @@ describe("the script a Live Preview page runs for the editor", () => {
     );
   });
 
+  it("reports structure after React commits the real preview DOM", () => {
+    // The bridge is a sibling module script, so load/ready can run before
+    // React's first commit and truthfully report an empty tree. DOM commits
+    // must schedule a fresh, coalesced snapshot for deep canvas selection.
+    expect(BRIDGE).toContain("new MutationObserver(scheduleStructureReport)");
+    expect(BRIDGE).toContain("childList: true");
+    expect(BRIDGE).toContain("structureReportFrame !== null");
+    expect(BRIDGE).not.toContain(
+      'attributeFilter: [\n      "data-storefront-editor-selected"',
+    );
+  });
+
   it("says on the document which tool the pointer is", () => {
     // The editor's cursors are CSS reacting to these, and the browser tests
     // wait on the first one to know the tool actually reached the preview.

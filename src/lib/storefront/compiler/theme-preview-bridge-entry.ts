@@ -175,6 +175,17 @@ let gesture = null;
  */
 let pendingStyleRevision = null;
 
+/** Coalesces a React commit into one structure snapshot on the next frame. */
+let structureReportFrame = null;
+
+function scheduleStructureReport() {
+  if (!channel || structureReportFrame !== null) return;
+  structureReportFrame = window.requestAnimationFrame(() => {
+    structureReportFrame = null;
+    reportStructure();
+  });
+}
+
 /**
  * How many times selection has moved, counting both sides.
  *
@@ -246,6 +257,32 @@ if (channel) {
   startPreviewHeightReporter({
     resolveRoot: () => document.getElementById("root") ?? document.body,
   });
+
+  // The bridge and the Theme are sibling module scripts. React may commit
+  // after the bridge's load callback, so the first structure snapshots can
+  // truthfully be empty even though the page appears a moment later. Watch
+  // the DOM React owns and report once after each structural commit. Editor
+  // selection attributes are deliberately absent from the filter, avoiding
+  // a feedback loop when a selected element is highlighted.
+  const previewStructureRoot =
+    document.querySelector("[data-storefront-preview-root]") ?? document.body;
+  const structureObserver = new MutationObserver(scheduleStructureReport);
+  structureObserver.observe(previewStructureRoot, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: [
+      "data-storefront-section-id",
+      "data-storefront-field",
+      "data-storefront-field-path",
+      "data-storefront-item-id",
+      "data-storefront-component",
+      "data-morph-loc",
+      "data-morph-node",
+      "data-morph-element",
+    ],
+  });
+  scheduleStructureReport();
 
 
   // Capture, so a Theme that stops its own clicks cannot make an element
