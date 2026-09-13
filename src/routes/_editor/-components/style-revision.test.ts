@@ -4,6 +4,7 @@ import {
   shouldAcceptStyleAck,
   shouldConfirmPreviewStyleRevision,
   shouldRevealPreviewForStyleAck,
+  shouldStartInitialPreviewSync,
 } from "./style-revision";
 
 describe("style revision protocol", () => {
@@ -46,5 +47,24 @@ describe("style revision protocol", () => {
         initialPreviewKey: "preview-1",
       }),
     ).toBe(false);
+  });
+
+  it("starts one initial source sync per iframe document", () => {
+    const current = { key: "preview-2", readySequence: 3 };
+
+    expect(shouldStartInitialPreviewSync(current, null)).toBe(true);
+    expect(shouldStartInitialPreviewSync(current, current)).toBe(false);
+    expect(
+      shouldStartInitialPreviewSync(current, {
+        key: current.key,
+        readySequence: 2,
+      }),
+    ).toBe(true);
+    expect(
+      shouldStartInitialPreviewSync(current, {
+        key: "preview-1",
+        readySequence: current.readySequence,
+      }),
+    ).toBe(true);
   });
 });

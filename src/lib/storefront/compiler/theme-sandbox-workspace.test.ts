@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { prepareThemeSandboxWorkspace } from "./theme-sandbox-workspace";
+import {
+  materializeThemeSandboxWorkspace,
+  prepareThemeSandboxWorkspace,
+} from "./theme-sandbox-workspace";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 
 const CARD = `import type { ThemeContentFields } from "../morph/content-fields";
@@ -55,6 +58,117 @@ const prepare = async (mode: "build" | "preview-server") => {
 };
 
 describe("laying out the workspace a Theme is served from", () => {
+  it("removes regular files left by an older workspace plan", async () => {
+    const deleted: string[] = [];
+    const written: string[] = [];
+    await materializeThemeSandboxWorkspace(
+      {
+        async mkdir() {},
+        async writeFile(path) {
+          written.push(path);
+        },
+        async listFiles() {
+          return {
+            success: true,
+            files: [
+              {
+                absolutePath: "/workspace/src/routes/index.tsx",
+                type: "file" as const,
+              },
+              {
+                absolutePath: "/workspace/src/routes/deleted.tsx",
+                type: "file" as const,
+              },
+              {
+                absolutePath: "/workspace/.morph-preview-workspace.sha256",
+                type: "file" as const,
+              },
+              {
+                absolutePath: "/workspace/node_modules",
+                type: "symlink" as const,
+              },
+              {
+                absolutePath: "/workspace/node_modules/.vite/deps/react.js",
+                type: "file" as const,
+              },
+            ],
+          };
+        },
+        async deleteFile(path) {
+          deleted.push(path);
+        },
+      },
+      [
+        {
+          path: "/workspace/src/routes/index.tsx",
+          content: "export default function Page() {}",
+        },
+      ],
+    );
+
+    expect(deleted).toEqual(["/workspace/src/routes/deleted.tsx"]);
+    expect(written).toEqual(["/workspace/src/routes/index.tsx"]);
+  });
+
+  it("refuses to materialize when it cannot see what is already there", async () => {
+    // Reconciliation is the only thing standing between a warm sandbox and a
+    // deleted component that still satisfies an old import. A listing that
+    // failed says nothing about what is on disk, and carrying on would write
+    // the new plan over an unknown workspace while reporting success.
+    const deleted: string[] = [];
+    const written: string[] = [];
+
+    await expect(
+      materializeThemeSandboxWorkspace(
+        {
+          async mkdir() {},
+          async writeFile(path) {
+            written.push(path);
+          },
+          async listFiles() {
+            return { success: false, files: [] };
+          },
+          async deleteFile(path) {
+            deleted.push(path);
+          },
+        },
+        [
+          {
+            path: "/workspace/src/routes/index.tsx",
+            content: "export default function Page() {}",
+          },
+        ],
+      ),
+    ).rejects.toThrow(/existing Theme preview workspace/i);
+
+    expect(deleted).toEqual([]);
+    expect(written).toEqual([]);
+  });
+
+  it("materializes for a writer that cannot reconcile at all", async () => {
+    // A build lays out a fresh container, so it has no prior plan to remove
+    // and no reason to carry the two calls that would do it. Requiring them
+    // would make the build path fail on a capability it does not need.
+    const written: string[] = [];
+
+    await materializeThemeSandboxWorkspace(
+      {
+        async mkdir() {},
+        async writeFile(path) {
+          written.push(path);
+        },
+      },
+      [
+        {
+          path: "/workspace/src/routes/index.tsx",
+          content: "export default function Page() {}",
+        },
+      ],
+    );
+
+    expect(written).toEqual(["/workspace/src/routes/index.tsx"]);
+  });
+
   it("creates each directory once and bounds independent file writes", async () => {
     const directories: string[] = [];
     const written: string[] = [];

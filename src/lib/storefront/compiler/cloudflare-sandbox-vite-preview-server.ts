@@ -33,8 +33,7 @@ import { THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH } from "./theme-works
 export const THEME_PREVIEW_SERVER_PORT = 5173;
 
 /** Platform-owned marker written only after a complete workspace succeeds. */
-export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH =
-  `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
+export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH = `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
 
 const VITE_BIN = `${SANDBOX_TOOLCHAIN_ROOT}/node_modules/.bin/vite`;
 
@@ -303,6 +302,12 @@ export class CloudflareSandboxVitePreviewServer {
             () => session!.writeFile(path, content),
             "write",
           ),
+        ...(session.listFiles
+          ? { listFiles: (path, options) => session!.listFiles!(path, options) }
+          : {}),
+        ...(session.deleteFile
+          ? { deleteFile: (path) => session!.deleteFile!(path) }
+          : {}),
       };
 
       const workspaceStartedAt = Date.now();

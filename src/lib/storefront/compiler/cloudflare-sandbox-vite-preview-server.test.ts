@@ -11,6 +11,7 @@ type Harness = {
   session: PreviewServerSession;
   written: Map<string, string>;
   writePaths: string[];
+  deletedPaths: string[];
   commands: string[];
   envs: Array<Record<string, string> | undefined>;
   exposed: Array<{ port: number; hostname: string }>;
@@ -28,6 +29,7 @@ const createSession = (
 ): Harness => {
   const written = new Map<string, string>();
   const writePaths: string[] = [];
+  const deletedPaths: string[] = [];
   const commands: string[] = [];
   const envs: Array<Record<string, string> | undefined> = [];
   const exposed: Array<{ port: number; hostname: string }> = [];
@@ -48,6 +50,19 @@ const createSession = (
     async readFile(path) {
       if (!written.has(path)) throw new Error("ENOENT");
       return { content: written.get(path)! };
+    },
+    async listFiles() {
+      return {
+        success: true,
+        files: Array.from(written.keys(), (absolutePath) => ({
+          absolutePath,
+          type: "file" as const,
+        })),
+      };
+    },
+    async deleteFile(path) {
+      deletedPaths.push(path);
+      written.delete(path);
     },
     async startProcess(command, options) {
       commands.push(command);
@@ -103,6 +118,7 @@ const createSession = (
     session,
     written,
     writePaths,
+    deletedPaths,
     commands,
     envs,
     exposed,
@@ -243,6 +259,20 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     const served = harness.written.get("/workspace/src/components/Hero.tsx");
     expect(served).not.toContain("export const contentFields");
     expect(served).toContain("const contentFields");
+  });
+
+  it("removes a source file left by an older preview plan", async () => {
+    const harness = createSession("ready");
+    harness.written.set(
+      "/workspace/src/routes/deleted.tsx",
+      "export default function Deleted() {}",
+    );
+
+    expect((await startWith(harness)).ok).toBe(true);
+    expect(harness.deletedPaths).toContain("/workspace/src/routes/deleted.tsx");
+    expect(harness.written.has("/workspace/src/routes/deleted.tsx")).toBe(
+      false,
+    );
   });
 
   it("tears the container down when Vite never becomes ready", async () => {

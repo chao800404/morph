@@ -42,3 +42,13 @@ export function shouldConfirmPreviewStyleRevision(input: {
     )
   );
 }
+
+export function shouldStartInitialPreviewSync(
+  current: { key: string; readySequence: number },
+  previous: { key: string; readySequence: number } | null,
+): boolean {
+  return (
+    previous?.key !== current.key ||
+    previous.readySequence !== current.readySequence
+  );
+}

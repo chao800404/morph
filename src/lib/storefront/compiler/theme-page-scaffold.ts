@@ -166,6 +166,15 @@ export function planThemePageDeletion(input: {
       reason: "The root route holds every page and cannot be deleted.",
     };
   }
+  // The storefront root is the canonical landing address. Allowing it to be
+  // removed leaves `/` as a 404, and the editor's safe destination after
+  // deleting the active page would itself no longer exist.
+  if (parsed.fullPath === "/") {
+    return {
+      ok: false,
+      reason: "The home page is required and cannot be deleted.",
+    };
+  }
   if (
     !input.files.some((file) => file.path.replace(/\\/g, "/") === sourcePath)
   ) {

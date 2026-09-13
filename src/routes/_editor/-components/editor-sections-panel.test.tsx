@@ -168,6 +168,21 @@ describe("EditorSectionsPanel pages", () => {
       expect(onOpenThemeRoute).toHaveBeenCalledWith(routes[2]),
     );
   });
+
+  it("offers page deletion without offering to remove the home page", () => {
+    const onDeletePage = vi.fn().mockResolvedValue({ ok: true });
+    renderPanel(vi.fn(), vi.fn(), {
+      themeRoutes: routes,
+      onDeletePage,
+    });
+
+    expect(screen.queryByRole("button", { name: "Delete page /" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Delete page /about" }));
+    expect(screen.getByText("Delete page “/about”?")).toBeTruthy();
+    expect(
+      screen.getByText(/restored from the file history in Code mode/i),
+    ).toBeTruthy();
+  });
 });
 
 describe("EditorSectionsPanel visibility controls", () => {

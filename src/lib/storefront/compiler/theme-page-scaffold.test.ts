@@ -137,6 +137,18 @@ describe("planning the removal of a page", () => {
     });
   });
 
+  it("refuses the home page", () => {
+    expect(
+      planThemePageDeletion({
+        sourcePath: "src/routes/index.tsx",
+        files: themeFiles,
+      }),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("home page"),
+    });
+  });
+
   it("refuses a file that is not a page", () => {
     expect(
       planThemePageDeletion({
@@ -163,8 +175,8 @@ describe("planning the removal of a page", () => {
     // the one most likely to go by accident.
     expect(
       planThemePageDeletion({
-        sourcePath: "src/routes/index.tsx",
-        files: [themeFiles[0]!, themeFiles[1]!],
+        sourcePath: "src/routes/about.tsx",
+        files: [themeFiles[0]!, themeFiles[2]!],
       }),
     ).toMatchObject({
       ok: false,

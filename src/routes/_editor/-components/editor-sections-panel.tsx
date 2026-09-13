@@ -1077,7 +1077,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                         >
                           <Code2 aria-hidden="true" />
                         </SidebarMenuAction>
-                        {onDeletePage ? (
+                        {onDeletePage && route.path !== "/" ? (
                           <SidebarMenuAction
                             type="button"
                             aria-label={`Delete page ${route.path}`}
@@ -1299,7 +1299,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
               <AlertDialogDescription>
                 This removes {pageToDelete?.sourcePath ?? "the route source"}{" "}
                 and the address it answered on. A revision is saved first, so it
-                can be restored from the release history.
+                can be restored from the file history in Code mode.
               </AlertDialogDescription>
             </AlertDialogHeader>
             {pageDeleteError ? (

@@ -230,6 +230,7 @@ import {
 import {
   isLatestStyleRevision,
   shouldConfirmPreviewStyleRevision,
+  shouldStartInitialPreviewSync,
 } from "./style-revision";
 import {
   useLivePreviewMessageBridge,
@@ -622,7 +623,6 @@ export function VisualEditorShell({
     key: string;
     readySequence: number;
     styleRevision: number;
-    filesFingerprint: string;
   } | null>(null);
   const [previewContentSize, setPreviewContentSize] = useState<{
     key: string;
@@ -1997,13 +1997,6 @@ export function VisualEditorShell({
   // unsaved local content without recreating the iframe.
   const previewThemeFiles =
     activeWorkspaceKey === workspaceKey ? effectiveThemeFiles : themeFiles;
-  const previewFilesFingerprint = useMemo(
-    () =>
-      previewThemeFiles
-        .map((file) => `${file.path}\u0000${file.content}`)
-        .join("\u0001"),
-    [previewThemeFiles],
-  );
 
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   // Ordering and supersession live in `theme-file-save-queue`, where both rules
@@ -2176,7 +2169,6 @@ export function VisualEditorShell({
         initialSync?: {
           key: string;
           readySequence: number;
-          filesFingerprint: string;
         };
       },
     ) => {
@@ -2259,11 +2251,10 @@ export function VisualEditorShell({
       !previewKey ||
       previewFrameReady?.key !== previewKey ||
       previewThemeFiles.length === 0 ||
-      (initialPreviewSyncRef.current?.key === previewKey &&
-        initialPreviewSyncRef.current.readySequence ===
-          previewFrameReady.sequence &&
-        initialPreviewSyncRef.current.filesFingerprint ===
-          previewFilesFingerprint)
+      !shouldStartInitialPreviewSync(
+        { key: previewKey, readySequence: previewFrameReady.sequence },
+        initialPreviewSyncRef.current,
+      )
     ) {
       return;
     }
@@ -2277,17 +2268,10 @@ export function VisualEditorShell({
         initialSync: {
           key: previewKey,
           readySequence: previewFrameReady.sequence,
-          filesFingerprint: previewFilesFingerprint,
         },
       },
     );
-  }, [
-    postPreviewThemeFiles,
-    previewFilesFingerprint,
-    previewFrameReady,
-    previewKey,
-    previewThemeFiles,
-  ]);
+  }, [postPreviewThemeFiles, previewFrameReady, previewKey, previewThemeFiles]);
 
   useEffect(() => {
     previewHeartbeatRef.current = null;
@@ -4532,6 +4516,12 @@ export function VisualEditorShell({
               "Could not delete the section because the source changed remotely.",
           };
         }
+        // A route object captures its component when the preview route tree is
+        // assembled. Updating the route module alone is therefore not enough
+        // to guarantee that TanStack Router adopts a structural edit. Replan
+        // the real React preview from the saved source so the section that
+        // disappeared from the file also disappears from the canvas.
+        dispatchPreviewLifecycle({ type: "manual-recovery" });
       } catch (error) {
         return {
           success: false,
@@ -4967,7 +4957,16 @@ export function VisualEditorShell({
       );
       if (result.diagnostic) throw new Error(result.diagnostic);
       if (!result.changed) return { success: true };
-      await handleUnifiedSaveFile(activeThemeRoute.sourcePath, result.code);
+      const saved = await handleUnifiedSaveFile(
+        activeThemeRoute.sourcePath,
+        result.code,
+      );
+      if (saved === null) {
+        throw new Error(
+          "Could not reorder sections because the source changed remotely.",
+        );
+      }
+      dispatchPreviewLifecycle({ type: "manual-recovery" });
       return { success: true };
     },
     [
@@ -5039,7 +5038,19 @@ export function VisualEditorShell({
       });
       if (result.diagnostic) throw new Error(result.diagnostic);
       if (!result.changed) return;
-      await handleUnifiedSaveFile(activeThemeRoute.sourcePath, result.code);
+      const saved = await handleUnifiedSaveFile(
+        activeThemeRoute.sourcePath,
+        result.code,
+      );
+      if (saved === null) {
+        throw new Error(
+          "Could not add the section because the source changed remotely.",
+        );
+      }
+      // Adding a section changes the route component itself. Restart through
+      // the existing lifecycle owner so the generated route tree and the
+      // component captured by it are rebuilt from the landed source.
+      dispatchPreviewLifecycle({ type: "manual-recovery" });
       onSearchChange({ section: slotId });
     },
     [

@@ -15,6 +15,133 @@ test.skip(
 );
 
 test.describe("visual editor", () => {
+  test("a page can be created, populated, and removed without a source conflict", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await openEditor(page);
+    const routePath = `/e2e-page-${Date.now().toString(36)}`;
+    const routeButton = page.getByRole("button", {
+      name: routePath,
+      exact: true,
+    });
+
+    const removeTestPages = async () => {
+      const deleteButtons = page.getByRole("button", {
+        name: /^Delete page \/e2e-page-/,
+      });
+      while ((await deleteButtons.count()) > 0) {
+        const button = deleteButtons.first();
+        const label = await button.getAttribute("aria-label");
+        const previousFrame = await page
+          .locator("iframe")
+          .first()
+          .elementHandle();
+        // Sidebar actions sit above the page row only while it is hovered, and
+        // its larger preview button owns the same hit area. Invoke the action
+        // element itself so cleanup exercises its handler without selecting
+        // the page row instead.
+        await button.evaluate((element) =>
+          (element as HTMLButtonElement).click(),
+        );
+        const confirmation = page.getByRole("alertdialog");
+        await expect(confirmation).toBeVisible();
+        await confirmation
+          .getByRole("button", { name: "Delete page", exact: true })
+          .click();
+        if (label) {
+          await expect(
+            page.getByRole("button", { name: label, exact: true }),
+          ).toHaveCount(0, { timeout: 20_000 });
+        }
+        // Deletion rebuilds the route plan. Let that recovery finish before
+        // deleting another disposable page or ending the browser session;
+        // otherwise the request can be cancelled while the old file still
+        // exists in the warm sandbox.
+        if (previousFrame) {
+          await expect
+            .poll(() =>
+              previousFrame.evaluate((element) => element.isConnected),
+            )
+            .toBe(false);
+        }
+        await expect(page.getByText("Loading React preview…")).toHaveCount(0, {
+          timeout: 45_000,
+        });
+        await expect(
+          previewFrame(page).locator("[data-storefront-section-id]").first(),
+        ).toBeAttached({ timeout: 45_000 });
+      }
+    };
+
+    try {
+      // A killed run can close the browser before `finally` gets time to use
+      // the UI. Clear any prior disposable route before making a new one.
+      await removeTestPages();
+      await page.getByRole("button", { name: "Add page", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await dialog.getByLabel("Path").fill(routePath);
+      await dialog
+        .getByRole("button", { name: "Add page", exact: true })
+        .click();
+
+      await expect(routeButton).toBeVisible({ timeout: 20_000 });
+      await expect(
+        page.getByText(/Remote source changes detected/i),
+      ).toHaveCount(0);
+      await expect(
+        previewFrame(page).locator("[data-storefront-section-id]").first(),
+      ).toBeAttached({ timeout: 45_000 });
+      await expect(page.getByText("Loading React preview…")).toHaveCount(0, {
+        timeout: 45_000,
+      });
+      const sectionsBeforeAdd = await previewFrame(page)
+        .locator("[data-storefront-section-id]")
+        .count();
+
+      const addSection = page.getByRole("button", {
+        name: "Add section",
+        exact: true,
+      });
+      await expect(addSection).toBeEnabled({ timeout: 20_000 });
+      await addSection.click();
+      const option = page.getByRole("menuitem").first();
+      const sectionType = (await option.innerText()).trim();
+      expect(sectionType).not.toBe("");
+      await option.click();
+
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("section"), {
+          timeout: 20_000,
+        })
+        .toBe(sectionType);
+      await expect
+        .poll(
+          () =>
+            previewFrame(page).locator("[data-storefront-section-id]").count(),
+          { timeout: 45_000 },
+        )
+        .toBeGreaterThan(sectionsBeforeAdd);
+
+      await removeTestPages();
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("routePath") ?? "/", {
+          timeout: 20_000,
+        })
+        .toBe("/");
+      await expect(
+        previewFrame(page).locator("[data-storefront-section-id]").first(),
+      ).toBeAttached({ timeout: 45_000 });
+      await expect(
+        page.getByText(/Remote source changes detected/i),
+      ).toHaveCount(0);
+    } finally {
+      // The suite runs against a real Theme. A failed assertion must not leave
+      // its disposable route in the author's Pages list.
+      await removeTestPages().catch(() => undefined);
+    }
+  });
+
   test("selecting a plain container on the canvas selects its tree row", async ({
     page,
   }) => {

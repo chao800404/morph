@@ -11,6 +11,7 @@ import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependenc
 import { themePackageRoot } from "./theme-dependency-policy";
 import { sha256 } from "./theme-compiler-hasher";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
+import { THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH } from "./theme-workspace-path";
 import {
   readThemePathAliases,
   renderThemeViteAliases,
@@ -45,6 +46,23 @@ import type { ThemeBuildDiagnostic } from "./theme-build-runner.types";
 export type ThemeWorkspaceWriter = {
   writeFile(filePath: string, content: string | Uint8Array): Promise<void>;
   mkdir(dirPath: string, options?: { recursive?: boolean }): Promise<void>;
+  /**
+   * Present on persistent Sandbox sessions. Together these let a complete
+   * materialization remove files that belonged to an older Theme plan.
+   * Fresh, one-shot build writers may omit them because they have no prior
+   * workspace to reconcile.
+   */
+  listFiles?(
+    dirPath: string,
+    options?: { recursive?: boolean; includeHidden?: boolean },
+  ): Promise<{
+    success: boolean;
+    files: ReadonlyArray<{
+      absolutePath: string;
+      type: "file" | "directory" | "symlink" | "other";
+    }>;
+  }>;
+  deleteFile?(filePath: string): Promise<unknown>;
 };
 
 export type ThemeWorkspaceFile = Readonly<{
@@ -671,6 +689,46 @@ export async function materializeThemeSandboxWorkspace(
 ): Promise<void> {
   const workspaceRoot = "/workspace";
   await session.mkdir(workspaceRoot, { recursive: true });
+
+  // A warm Sandbox persists between preview restarts. Writing the new plan on
+  // top of it is insufficient: a deleted component can still satisfy an old
+  // import, so the preview keeps rendering source the editor no longer owns.
+  // Reconcile regular files before writing and leave symlinks/directories
+  // alone — notably /workspace/node_modules, which points at the image's
+  // pinned toolchain. The fingerprint is committed by the preview server only
+  // after this whole materialization succeeds, so it is platform metadata and
+  // not part of the Theme file set.
+  if (session.listFiles && session.deleteFile) {
+    const listed = await session.listFiles(workspaceRoot, {
+      recursive: true,
+      includeHidden: true,
+    });
+    if (!listed.success) {
+      // Deliberately fatal. Continuing would write the new plan over a
+      // workspace nobody can describe, and the fingerprint committed
+      // afterwards would then promise a reconciliation that never happened.
+      throw new Error("Could not list the existing Theme preview workspace.");
+    }
+    const expectedPaths = new Set(workspaceFiles.map((file) => file.path));
+    const fingerprintPath = `${workspaceRoot}/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
+    const staleFiles = listed.files
+      .filter((entry) => entry.type === "file")
+      .map((entry) => entry.absolutePath.replace(/\\/g, "/"))
+      .filter(
+        (filePath) =>
+          filePath.startsWith(`${workspaceRoot}/`) &&
+          !filePath.includes("/../") &&
+          !filePath.startsWith(`${workspaceRoot}/node_modules/`) &&
+          filePath !== fingerprintPath &&
+          !expectedPaths.has(filePath),
+      );
+    await runWithConcurrency(
+      staleFiles,
+      WORKSPACE_WRITE_CONCURRENCY,
+      async (filePath) => session.deleteFile!(filePath).then(() => undefined),
+    );
+  }
+
   const directories = Array.from(
     new Set(
       workspaceFiles
