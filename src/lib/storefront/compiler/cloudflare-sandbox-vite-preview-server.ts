@@ -105,6 +105,15 @@ export type PreviewServerSession = ThemeWorkspaceWriter &
     >;
     killProcess?(id?: string): Promise<void>;
     unexposePort?(port: number): Promise<void>;
+    /**
+     * Preview URLs the active runtime can currently forward. Authorization
+     * that survives in Durable Object storage without the runtime behind it
+     * is omitted, which is what makes this the answer to whether an address
+     * still resolves.
+     */
+    getExposedPorts?(
+      hostname: string,
+    ): Promise<ReadonlyArray<{ url: string; port: number; status: string }>>;
     setSleepAfter?(value: string | number): Promise<void>;
     destroy(): Promise<void>;
   }>;
@@ -580,16 +589,46 @@ export class CloudflareSandboxVitePreviewServer {
    * proves the document is alive, never that the sandbox behind it is. This
    * asks the sandbox.
    */
-  async isServing(previewId: string): Promise<boolean> {
+  async isServing(input: {
+    previewId: string;
+    previewHostname: string;
+    /** The address the editor is framing, if it said which. */
+    expectedOrigin?: string | null;
+  }): Promise<boolean> {
     try {
-      const session = await this.acquire(previewId);
+      const session = await this.acquire(input.previewId);
       const running = await session.listProcesses?.();
       if (!running) return false;
-      return running.some(
+      const viteRunning = running.some(
         (process) =>
           process.command?.includes(VITE_BIN) &&
           (process.status === "running" || process.status === "starting"),
       );
+      if (!viteRunning) return false;
+
+      // A running dev server is not a reachable one. The exposed port can
+      // lapse while the process it pointed at keeps running, and asking only
+      // the process list would answer yes for a preview whose address now
+      // returns 410.
+      if (!session.getExposedPorts) return viteRunning;
+      const exposed = await session.getExposedPorts(input.previewHostname);
+      const active = exposed.filter(
+        (entry) =>
+          entry.port === THEME_PREVIEW_SERVER_PORT && entry.status === "active",
+      );
+      if (active.length === 0) return false;
+      if (!input.expectedOrigin) return true;
+
+      // Re-exposing mints a new address. The old one stops resolving even
+      // though a port is active again, so the question is not whether some
+      // preview is reachable but whether the one being framed is.
+      return active.some((entry) => {
+        try {
+          return new URL(entry.url).origin === input.expectedOrigin;
+        } catch {
+          return false;
+        }
+      });
     } catch {
       return false;
     }

@@ -34,6 +34,18 @@ const themePreviewServerInputSchema = z.object({
   themeId: idSchema("storefront theme"),
 });
 
+const touchThemePreviewServerInputSchema = themePreviewServerInputSchema.extend(
+  {
+    /**
+     * The origin the editor is currently framing.
+     *
+     * Checked rather than assumed: re-exposing a port mints a new address, so
+     * a preview can be reachable at an address the author is not looking at.
+     */
+    previewOrigin: z.string().url().max(2048),
+  },
+);
+
 type PreviewEnv = {
   THEME_PREVIEW_HOSTNAME?: string;
   Sandbox?: unknown;
@@ -150,15 +162,35 @@ export const stopThemePreviewServer = createServerFn({ method: "POST" })
  * died — the page stays loaded in the browser and keeps answering the
  * editor's heartbeat long after the container behind it has gone.
  *
+ * The answer is about the address the editor named, not about the container
+ * in general. A dev server can keep running behind an exposed port that has
+ * lapsed, and re-exposing mints a new address while the old one stops
+ * resolving; in both cases the process list says yes and the author is
+ * looking at a preview that returns 410.
+ *
  * An editor that closes simply stops calling, and the preview sleeps on its
  * own schedule. Nothing here pins a container awake for an author who left.
  */
 export const touchThemePreviewServer = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(themePreviewServerInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(touchThemePreviewServerInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     if (!input.success) return input;
-    const { storefrontId, themeId } = input.data;
+    const { storefrontId, themeId, previewOrigin } = input.data;
+    const previewEnv = env as unknown as PreviewEnv;
+
+    const host = resolveThemePreviewServerHost({
+      configuredPreviewHostname: previewEnv.THEME_PREVIEW_HOSTNAME,
+      env: env as unknown as Record<string, unknown>,
+    });
+    if (!host.enabled) {
+      return ok("Live Preview server checked", {
+        previewId: null,
+        serving: false,
+      });
+    }
 
     const previewId = await deriveThemePreviewSessionId({
       storefrontId,
@@ -166,13 +198,20 @@ export const touchThemePreviewServer = createServerFn({ method: "POST" })
       userId: context.user.id,
     });
     const server = new CloudflareSandboxVitePreviewServer({
-      sandboxBinding: (env as unknown as PreviewEnv).Sandbox,
+      sandboxBinding: previewEnv.Sandbox,
     });
-    const serving = await server.isServing(previewId);
+    const serving = await server.isServing({
+      previewId,
+      previewHostname: host.hostname,
+      expectedOrigin: previewOrigin,
+    });
 
     // Not a failure of this request: "the preview is gone" is an answer, and
     // the editor decides what to do about it.
-    return ok("Live Preview server checked", { previewId, serving });
+    return ok("Live Preview server checked", {
+      previewId: previewId as string | null,
+      serving,
+    });
   });
 
 /**

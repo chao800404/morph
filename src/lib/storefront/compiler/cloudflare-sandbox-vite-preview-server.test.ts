@@ -341,11 +341,79 @@ describe("checking on a preview someone is watching", () => {
     const harness = createSession("silent");
     (harness.session as { listProcesses?: unknown }).listProcesses =
       async () => [viteProcess("running")];
+    (harness.session as { getExposedPorts?: unknown }).getExposedPorts =
+      async () => [
+        {
+          url: `https://${THEME_PREVIEW_SERVER_PORT}-sbx-tok.preview.example.com`,
+          port: THEME_PREVIEW_SERVER_PORT,
+          status: "active",
+        },
+      ];
     const server = new CloudflareSandboxVitePreviewServer({
       sandboxProvider: { getSandbox: async () => harness.session },
     });
 
-    await expect(server.isServing("preview-1")).resolves.toBe(true);
+    await expect(
+      server.isServing({
+        previewId: "preview-1",
+        previewHostname: "preview.example.com",
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("reports a preview whose address has stopped resolving", async () => {
+    // The dev server outlives the exposed port. Asking the process list alone
+    // answers yes for a preview that now returns 410 to the author.
+    const harness = createSession("silent");
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => [viteProcess("running")];
+    (harness.session as { getExposedPorts?: unknown }).getExposedPorts =
+      async () => [];
+    const server = new CloudflareSandboxVitePreviewServer({
+      sandboxProvider: { getSandbox: async () => harness.session },
+    });
+
+    await expect(
+      server.isServing({
+        previewId: "preview-1",
+        previewHostname: "preview.example.com",
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("reports a preview reachable at an address the editor is not framing", async () => {
+    // Re-exposing mints a new address. A port is active again, but the URL the
+    // author's iframe holds is dead, and only the editor knows which it has.
+    const harness = createSession("silent");
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => [viteProcess("running")];
+    (harness.session as { getExposedPorts?: unknown }).getExposedPorts =
+      async () => [
+        {
+          url: `https://${THEME_PREVIEW_SERVER_PORT}-fresh-token.preview.example.com`,
+          port: THEME_PREVIEW_SERVER_PORT,
+          status: "active",
+        },
+      ];
+    const server = new CloudflareSandboxVitePreviewServer({
+      sandboxProvider: { getSandbox: async () => harness.session },
+    });
+
+    await expect(
+      server.isServing({
+        previewId: "preview-1",
+        previewHostname: "preview.example.com",
+        expectedOrigin: `https://${THEME_PREVIEW_SERVER_PORT}-stale-token.preview.example.com`,
+      }),
+    ).resolves.toBe(false);
+
+    await expect(
+      server.isServing({
+        previewId: "preview-1",
+        previewHostname: "preview.example.com",
+        expectedOrigin: `https://${THEME_PREVIEW_SERVER_PORT}-fresh-token.preview.example.com`,
+      }),
+    ).resolves.toBe(true);
   });
 
   it("reports a container that answers but no longer serves the Theme", async () => {
@@ -358,7 +426,12 @@ describe("checking on a preview someone is watching", () => {
       sandboxProvider: { getSandbox: async () => harness.session },
     });
 
-    await expect(server.isServing("preview-1")).resolves.toBe(false);
+    await expect(
+      server.isServing({
+        previewId: "preview-1",
+        previewHostname: "preview.example.com",
+      }),
+    ).resolves.toBe(false);
   });
 
   it("reports a sandbox that cannot be reached at all", async () => {
@@ -373,7 +446,12 @@ describe("checking on a preview someone is watching", () => {
       sandboxProvider: { getSandbox: async () => harness.session },
     });
 
-    await expect(server.isServing("preview-1")).resolves.toBe(false);
+    await expect(
+      server.isServing({
+        previewId: "preview-1",
+        previewHostname: "preview.example.com",
+      }),
+    ).resolves.toBe(false);
   });
 });
 

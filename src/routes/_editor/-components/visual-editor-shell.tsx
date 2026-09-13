@@ -2380,10 +2380,17 @@ export function VisualEditorShell({
     let cancelled = false;
 
     const renew = () => {
+      // The origin is part of the question. A dev server can keep running
+      // behind a lapsed port, and re-exposing mints a new address, so asking
+      // only whether the sandbox is busy would answer yes for a preview this
+      // iframe can no longer reach.
+      const previewOrigin = previewSourceOriginRef.current;
+      if (!previewOrigin) return;
       void touchThemePreviewServer({
         data: {
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
+          previewOrigin,
         },
       })
         .then((result) => {
