@@ -9,6 +9,7 @@ import {
 } from "./theme-preview-dev-server";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
+import { sha256 } from "./theme-compiler-hasher";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
 import {
   readThemePathAliases,
@@ -93,6 +94,16 @@ export type PrepareThemeWorkspaceInput = Readonly<{
   mode: ThemeWorkspaceMode;
 }>;
 
+export type PlanThemeWorkspaceInput = Omit<
+  PrepareThemeWorkspaceInput,
+  "session"
+>;
+
+export type ThemeWorkspacePlanFile = Readonly<{
+  path: string;
+  content: string | Uint8Array;
+}>;
+
 export type PrepareThemeWorkspaceResult =
   | Readonly<{
       ok: true;
@@ -110,6 +121,10 @@ export type PrepareThemeWorkspaceResult =
       strippedEditorMarkers: Readonly<Record<string, number>>;
       /** Preview behaviour that will differ from the build, and why. */
       previewWarnings: ReadonlyArray<{ path: string; message: string }>;
+      /** Exact final workspace bytes, before the cache marker is added. */
+      workspaceFiles: readonly ThemeWorkspacePlanFile[];
+      /** Changes whenever any generated or authored workspace byte changes. */
+      workspaceFingerprint: string;
     }>
   | Readonly<{
       ok: false;
@@ -133,15 +148,14 @@ function packageRoot(specifier: string): string {
   return specifier.split("/")[0] ?? specifier;
 }
 
-export async function prepareThemeSandboxWorkspace({
-  session,
+export function planThemeSandboxWorkspace({
   files: requestedFiles,
   entry,
   buildId,
   dependencies,
   approvedDependencies,
   mode,
-}: PrepareThemeWorkspaceInput): Promise<PrepareThemeWorkspaceResult> {
+}: PlanThemeWorkspaceInput): PrepareThemeWorkspaceResult {
   // A build ships none of the editor's attributes. The Theme's stored source
   // keeps them — that is where a hand-written marker is doing its job — but a
   // shopper has no use for them, and they describe the Theme's own source on
@@ -618,24 +632,25 @@ sourcemap: false,
 `;
   queueWorkspaceFile(`${workspaceRoot}/vite.config.ts`, viteConfigContent);
 
-  await session.mkdir(workspaceRoot, { recursive: true });
-  const directories = Array.from(
-    new Set(
-      Array.from(pendingWrites.keys(), (filePath) =>
-        filePath.substring(0, filePath.lastIndexOf("/")),
-      ).filter((dirPath) => dirPath && dirPath !== workspaceRoot),
-    ),
+  const workspaceFiles = Array.from(pendingWrites, ([path, content]) => ({
+    path,
+    content,
+  }));
+  const workspaceFingerprint = sha256(
+    JSON.stringify({
+      format: 1,
+      files: [...workspaceFiles]
+        .sort((left, right) => left.path.localeCompare(right.path))
+        .map((file) => ({
+          path: file.path,
+          content:
+            typeof file.content === "string"
+              ? { type: "text", value: file.content }
+              : { type: "bytes", value: Array.from(file.content) },
+        })),
+    }),
   );
-  await runWithConcurrency(
-    directories,
-    WORKSPACE_WRITE_CONCURRENCY,
-    async (dirPath) => session.mkdir(dirPath, { recursive: true }),
-  );
-  await runWithConcurrency(
-    Array.from(pendingWrites),
-    WORKSPACE_WRITE_CONCURRENCY,
-    async ([filePath, content]) => session.writeFile(filePath, content),
-  );
+
   return {
     ok: true,
     workspaceRoot,
@@ -645,5 +660,42 @@ sourcemap: false,
     previewSections: bindings?.sections ?? {},
     strippedEditorMarkers: strip?.stripped ?? {},
     previewWarnings: bindings?.warnings ?? [],
+    workspaceFiles,
+    workspaceFingerprint,
   };
+}
+
+export async function materializeThemeSandboxWorkspace(
+  session: ThemeWorkspaceWriter,
+  workspaceFiles: readonly ThemeWorkspacePlanFile[],
+): Promise<void> {
+  const workspaceRoot = "/workspace";
+  await session.mkdir(workspaceRoot, { recursive: true });
+  const directories = Array.from(
+    new Set(
+      workspaceFiles
+        .map((file) => file.path.substring(0, file.path.lastIndexOf("/")))
+        .filter((dirPath) => dirPath && dirPath !== workspaceRoot),
+    ),
+  );
+  await runWithConcurrency(
+    directories,
+    WORKSPACE_WRITE_CONCURRENCY,
+    async (dirPath) => session.mkdir(dirPath, { recursive: true }),
+  );
+  await runWithConcurrency(
+    workspaceFiles,
+    WORKSPACE_WRITE_CONCURRENCY,
+    async (file) => session.writeFile(file.path, file.content),
+  );
+}
+
+export async function prepareThemeSandboxWorkspace({
+  session,
+  ...input
+}: PrepareThemeWorkspaceInput): Promise<PrepareThemeWorkspaceResult> {
+  const plan = planThemeSandboxWorkspace(input);
+  if (!plan.ok) return plan;
+  await materializeThemeSandboxWorkspace(session, plan.workspaceFiles);
+  return plan;
 }

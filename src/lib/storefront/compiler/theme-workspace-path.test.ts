@@ -40,6 +40,9 @@ describe("what may be written into a container workspace", () => {
     expect(refuseThemeWorkspacePath("vite.config.ts")).toContain(
       "RESERVED_THEME_BUILD_PATH",
     );
+    expect(
+      refuseThemeWorkspacePath(".morph-preview-workspace.sha256"),
+    ).toContain("RESERVED_THEME_PREVIEW_PATH");
   });
 
   it("sees a backslash the same way it sees a slash", () => {

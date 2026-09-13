@@ -3,12 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CloudflareSandboxVitePreviewServer,
   THEME_PREVIEW_SERVER_PORT,
+  THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
   type PreviewServerSession,
 } from "./cloudflare-sandbox-vite-preview-server";
 
 type Harness = {
   session: PreviewServerSession;
   written: Map<string, string>;
+  writePaths: string[];
   commands: string[];
   envs: Array<Record<string, string> | undefined>;
   exposed: Array<{ port: number; hostname: string }>;
@@ -25,6 +27,7 @@ const createSession = (
   behaviour: "ready" | "log-ready" | "silent" | "exit" = "ready",
 ): Harness => {
   const written = new Map<string, string>();
+  const writePaths: string[] = [];
   const commands: string[] = [];
   const envs: Array<Record<string, string> | undefined> = [];
   const exposed: Array<{ port: number; hostname: string }> = [];
@@ -39,7 +42,12 @@ const createSession = (
   const session: PreviewServerSession = {
     async mkdir() {},
     async writeFile(path, content) {
+      writePaths.push(path);
       written.set(path, String(content));
+    },
+    async readFile(path) {
+      if (!written.has(path)) throw new Error("ENOENT");
+      return { content: written.get(path)! };
     },
     async startProcess(command, options) {
       commands.push(command);
@@ -94,6 +102,7 @@ const createSession = (
   return {
     session,
     written,
+    writePaths,
     commands,
     envs,
     exposed,
@@ -318,6 +327,89 @@ describe("asking twice for the same preview", () => {
     expect(result.timings.viteReadyMs).toBe(0);
     expect(harness.commands).toEqual([]);
     expect(harness.destroyed).toBe(0);
+  });
+
+  it("skips every workspace write when the successful plan fingerprint still matches", async () => {
+    const harness = createSession("ready");
+    const first = await startWith(harness);
+    expect(first.ok).toBe(true);
+    expect(harness.writePaths.at(-1)).toBe(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    );
+
+    withRunningVite(harness);
+    harness.writePaths.length = 0;
+    const second = await startWith(harness);
+
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.timings.workspaceReused).toBe(true);
+    expect(second.timings.workspaceMaterializeMs).toBe(0);
+    expect(second.timings.writeCalls).toBe(0);
+    expect(second.timings.readCalls).toBe(1);
+    expect(harness.writePaths).toEqual([]);
+    expect(harness.commands).toHaveLength(1);
+  });
+
+  it("materializes all files and commits a new marker when any planned byte changes", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    withRunningVite(harness);
+    const oldFingerprint = harness.written.get(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    );
+    harness.writePaths.length = 0;
+
+    const result = await startWith(harness, {
+      files: THEME.map((file) =>
+        file.path === "src/components/Hero.tsx"
+          ? { ...file, content: `${file.content}\n// changed` }
+          : file,
+      ),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.timings.workspaceReused).toBe(false);
+    expect(harness.writePaths).toContain("/workspace/src/components/Hero.tsx");
+    expect(harness.writePaths.at(-1)).toBe(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    );
+    expect(
+      harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH),
+    ).not.toBe(oldFingerprint);
+  });
+
+  it("starts Vite without rewriting a matching workspace when its process stopped", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    harness.writePaths.length = 0;
+
+    const result = await startWith(harness);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.timings.workspaceReused).toBe(true);
+    expect(harness.writePaths).toEqual([]);
+    expect(harness.commands).toHaveLength(2);
+  });
+
+  it("treats an unreadable fingerprint as a cache miss", async () => {
+    const harness = withRunningVite(createSession("silent"));
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      "not-a-valid-workspace-fingerprint",
+    );
+
+    const result = await startWith(harness);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.timings.workspaceReused).toBe(false);
+    expect(harness.writePaths).toContain("/workspace/src/pages/index.tsx");
+    expect(harness.writePaths.at(-1)).toBe(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    );
   });
 
   it("still starts one when the container has none", async () => {

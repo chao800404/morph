@@ -1,5 +1,8 @@
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 
+export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH =
+  ".morph-preview-workspace.sha256";
+
 /**
  * Whether a Theme file may be written into a container workspace.
  *
@@ -14,6 +17,10 @@ import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
  */
 export function refuseThemeWorkspacePath(path: string): string | null {
   const normalized = path.replace(/\\/g, "/");
+
+  if (normalized === THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH) {
+    return `RESERVED_THEME_PREVIEW_PATH: Theme source cannot replace platform-owned preview file "${path}"`;
+  }
 
   if (
     normalized

@@ -5,7 +5,10 @@ import { fail, ok, parseInput } from "@/lib/db/server-result";
 import { idSchema } from "@/lib/validations/commerce";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
-import { CloudflareSandboxVitePreviewServer } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
+import {
+  CloudflareSandboxVitePreviewServer,
+  THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+} from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
 import {
   isWorkspaceGeneratedThemePath,
   refuseThemeWorkspacePath,
@@ -232,6 +235,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
     const changed: string[] = [];
     const unchanged: string[] = [];
     const skipped: string[] = [];
+    let workspaceFingerprintInvalidated = false;
 
     try {
       const { getSandbox } = await import("@cloudflare/sandbox");
@@ -261,6 +265,17 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
         if (await fileMatches(sandbox, target, file.content)) {
           unchanged.push(file.path);
           continue;
+        }
+        // The marker describes the entire workspace, so invalidate it before
+        // the first incremental write. If this request stops halfway, the
+        // next start performs a complete sync instead of trusting a partial
+        // HMR update as the prior committed plan.
+        if (!workspaceFingerprintInvalidated) {
+          await sandbox.writeFile(
+            THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+            "dirty",
+          );
+          workspaceFingerprintInvalidated = true;
         }
         await sandbox.writeFile(target, file.content);
         changed.push(file.path);

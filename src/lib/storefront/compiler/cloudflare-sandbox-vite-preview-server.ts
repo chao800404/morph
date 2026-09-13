@@ -1,5 +1,6 @@
 import {
-  prepareThemeSandboxWorkspace,
+  materializeThemeSandboxWorkspace,
+  planThemeSandboxWorkspace,
   type ThemeWorkspaceFile,
   type ThemeWorkspaceWriter,
 } from "./theme-sandbox-workspace";
@@ -9,6 +10,7 @@ import {
 } from "./theme-preview-dev-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
+import { THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH } from "./theme-workspace-path";
 
 /**
  * Runs a Theme's Live Preview as a real Vite dev server inside a sandbox
@@ -29,6 +31,10 @@ import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-pr
 
 /** Port the dev server listens on inside the container. */
 export const THEME_PREVIEW_SERVER_PORT = 5173;
+
+/** Platform-owned marker written only after a complete workspace succeeds. */
+export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH =
+  `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
 
 const VITE_BIN = `${SANDBOX_TOOLCHAIN_ROOT}/node_modules/.bin/vite`;
 
@@ -78,6 +84,10 @@ function withPreviewServerBase(exposedUrl: string): string {
  */
 export type PreviewServerSession = ThemeWorkspaceWriter &
   Readonly<{
+    readFile?(
+      path: string,
+      options?: { encoding?: string },
+    ): Promise<{ content?: unknown } | string>;
     startProcess(
       command: string,
       options?: {
@@ -146,6 +156,14 @@ export type PreviewServerTimings = Readonly<{
   sandboxHandleMs: number;
   /** Wall time spent transforming and laying out the workspace. */
   workspaceMs: number;
+  /** Pure in-memory transform and validation time. */
+  workspacePlanMs: number;
+  /** Time spent reading the prior successful workspace marker. */
+  workspaceFingerprintReadMs: number;
+  /** Filesystem time used to materialize a changed workspace. */
+  workspaceMaterializeMs: number;
+  /** True when the complete workspace already matched and no source was written. */
+  workspaceReused: boolean;
   /** First filesystem call, where a sleeping container normally starts lazily. */
   firstFilesystemCallMs: number;
   mkdirCalls: number;
@@ -154,6 +172,8 @@ export type PreviewServerTimings = Readonly<{
   writeCalls: number;
   /** Sum of individual write durations; may exceed wall time when calls overlap. */
   writeCumulativeMs: number;
+  readCalls: number;
+  readCumulativeMs: number;
   exposePortMs: number;
   configureLifecycleMs: number;
   processLookupMs: number;
@@ -248,9 +268,11 @@ export class CloudflareSandboxVitePreviewServer {
       let mkdirCumulativeMs = 0;
       let writeCalls = 0;
       let writeCumulativeMs = 0;
+      let readCalls = 0;
+      let readCumulativeMs = 0;
       const recordFilesystemCall = async <T>(
         operation: () => Promise<T>,
-        kind: "mkdir" | "write",
+        kind: "mkdir" | "write" | "read",
       ): Promise<T> => {
         const startedAt = Date.now();
         try {
@@ -264,9 +286,12 @@ export class CloudflareSandboxVitePreviewServer {
           if (kind === "mkdir") {
             mkdirCalls += 1;
             mkdirCumulativeMs += durationMs;
-          } else {
+          } else if (kind === "write") {
             writeCalls += 1;
             writeCumulativeMs += durationMs;
+          } else {
+            readCalls += 1;
+            readCumulativeMs += durationMs;
           }
         }
       };
@@ -281,8 +306,8 @@ export class CloudflareSandboxVitePreviewServer {
       };
 
       const workspaceStartedAt = Date.now();
-      const prepared = await prepareThemeSandboxWorkspace({
-        session: measuredWriter,
+      const workspacePlanStartedAt = Date.now();
+      const prepared = planThemeSandboxWorkspace({
         files: input.files,
         entry: input.entry,
         buildId: input.previewId,
@@ -290,7 +315,7 @@ export class CloudflareSandboxVitePreviewServer {
         approvedDependencies: this.approvedDependencies,
         mode: "preview-server",
       });
-      const workspaceMs = Date.now() - workspaceStartedAt;
+      const workspacePlanMs = Date.now() - workspacePlanStartedAt;
       if (!prepared.ok) {
         await session.destroy();
         return {
@@ -300,6 +325,72 @@ export class CloudflareSandboxVitePreviewServer {
           logs,
         };
       }
+
+      // The marker says whether the container holds exactly the workspace
+      // this version of Morph just planned. Reading it first also remains the
+      // measured lazy-start boundary for a sleeping container.
+      const workspaceFingerprintReadStartedAt = Date.now();
+      let existingWorkspaceFingerprint: string | null = null;
+      if (session.readFile) {
+        try {
+          const value = await recordFilesystemCall(
+            () =>
+              session!.readFile!(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, {
+                encoding: "utf-8",
+              }),
+            "read",
+          );
+          const content =
+            typeof value === "string"
+              ? value
+              : typeof value.content === "string"
+                ? value.content
+                : null;
+          existingWorkspaceFingerprint = content?.trim() ?? null;
+        } catch {
+          existingWorkspaceFingerprint = null;
+        }
+      }
+      const workspaceFingerprintReadMs =
+        Date.now() - workspaceFingerprintReadStartedAt;
+      const workspaceReused =
+        existingWorkspaceFingerprint === prepared.workspaceFingerprint;
+
+      // Process state answers a separate question: whether the matching (or
+      // newly materialized) files already have a Vite server watching them.
+      const processLookupStartedAt = Date.now();
+      const running = await session.listProcesses?.().catch(() => []);
+      const processLookupMs = Date.now() - processLookupStartedAt;
+      const alreadyServing = (running ?? []).find(
+        (process) =>
+          process.command?.includes(VITE_BIN) &&
+          (process.status === "running" || process.status === "starting"),
+      );
+
+      let workspaceMaterializeMs = 0;
+      if (!workspaceReused) {
+        const workspaceMaterializeStartedAt = Date.now();
+        await materializeThemeSandboxWorkspace(
+          measuredWriter,
+          prepared.workspaceFiles,
+        );
+        workspaceMaterializeMs = Date.now() - workspaceMaterializeStartedAt;
+
+        // Commit the marker last. A failed or partial write can therefore
+        // never make a later request trust an incomplete workspace. Failure
+        // to write this cache hint does not make the valid workspace unusable.
+        await recordFilesystemCall(
+          () =>
+            session!.writeFile(
+              THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+              prepared.workspaceFingerprint,
+            ),
+          "write",
+        ).catch(() => {
+          addLog("Could not persist the Live Preview workspace fingerprint.");
+        });
+      }
+      const workspaceMs = Date.now() - workspaceStartedAt;
 
       // Authorize the URL before the server exists, so a process that becomes
       // ready immediately still has somewhere to be reached.
@@ -322,14 +413,6 @@ export class CloudflareSandboxVitePreviewServer {
       // until the timeout — and tearing down on that timeout would take the
       // working one with it, which is how the first end-to-end run lost a
       // container that was serving perfectly well.
-      const processLookupStartedAt = Date.now();
-      const running = await session.listProcesses?.().catch(() => []);
-      const processLookupMs = Date.now() - processLookupStartedAt;
-      const alreadyServing = (running ?? []).find(
-        (process) =>
-          process.command?.includes(VITE_BIN) &&
-          (process.status === "running" || process.status === "starting"),
-      );
       if (alreadyServing) {
         const totalMs = Date.now() - requestStartedAt;
         return {
@@ -341,11 +424,17 @@ export class CloudflareSandboxVitePreviewServer {
             totalMs,
             sandboxHandleMs,
             workspaceMs,
+            workspacePlanMs,
+            workspaceFingerprintReadMs,
+            workspaceMaterializeMs,
+            workspaceReused,
             firstFilesystemCallMs,
             mkdirCalls,
             mkdirCumulativeMs,
             writeCalls,
             writeCumulativeMs,
+            readCalls,
+            readCumulativeMs,
             exposePortMs,
             configureLifecycleMs,
             processLookupMs,
@@ -428,11 +517,17 @@ export class CloudflareSandboxVitePreviewServer {
           totalMs: Date.now() - requestStartedAt,
           sandboxHandleMs,
           workspaceMs,
+          workspacePlanMs,
+          workspaceFingerprintReadMs,
+          workspaceMaterializeMs,
+          workspaceReused,
           firstFilesystemCallMs,
           mkdirCalls,
           mkdirCumulativeMs,
           writeCalls,
           writeCumulativeMs,
+          readCalls,
+          readCumulativeMs,
           exposePortMs,
           configureLifecycleMs,
           processLookupMs,
