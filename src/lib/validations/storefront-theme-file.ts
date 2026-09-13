@@ -132,6 +132,15 @@ export const createThemePageInputSchema = z.object({
   themeId: z.string().min(1),
   /** The address the author typed, not a file path. */
   routePath: z.string().min(1).max(512),
+  /**
+   * The source the editor believes it is adding to.
+   *
+   * Required, because reading the current generation here instead would make
+   * every add succeed against whatever the theme had become — including a
+   * change the author never saw — and the editor would then be told it is up
+   * to date with source it is not holding.
+   */
+  expectedSourceGeneration: z.number().int().min(1),
 });
 
 export const deleteThemeFileInputSchema = z.object({

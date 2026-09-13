@@ -10,6 +10,7 @@ import {
   createThemeRevisionInputSchema,
   deleteThemeFileInputSchema,
   rollbackThemeRevisionInputSchema,
+  createThemePageInputSchema,
   saveThemeFileInputSchema,
   saveThemeFilesBatchInputSchema,
 } from "./storefront-theme-file";
@@ -315,7 +316,7 @@ describe("rollback theme revision input schema", () => {
 });
 
 describe("save and delete theme file schemas", () => {
-  it("requires expectedSourceGeneration on save, batch save, and delete", () => {
+  it("requires expectedSourceGeneration on save, batch save, delete, and add page", () => {
     const validSave = {
       storefrontId: "store-1",
       themeId: "theme-1",
@@ -387,6 +388,35 @@ describe("save and delete theme file schemas", () => {
         path: "src/pages/index.tsx",
         expectedFileId: crypto.randomUUID(),
         expectedVersion: 1,
+      }),
+    ).toThrow();
+
+    // Adding a page writes a file like any other edit. Reading the current
+    // generation on the server instead would let it be added on top of a
+    // change the author never saw, and the editor would then be told it is
+    // holding source that it is not.
+    const validAddPage = {
+      storefrontId: "store-1",
+      themeId: "theme-1",
+      routePath: "/about",
+      expectedSourceGeneration: 1,
+    };
+    expect(createThemePageInputSchema.parse(validAddPage)).toEqual(
+      validAddPage,
+    );
+
+    expect(() =>
+      createThemePageInputSchema.parse({
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        routePath: "/about",
+      }),
+    ).toThrow();
+    // Optional-with-a-default would be the same hole wearing a type.
+    expect(() =>
+      createThemePageInputSchema.parse({
+        ...validAddPage,
+        expectedSourceGeneration: undefined,
       }),
     ).toThrow();
   });

@@ -1826,29 +1826,41 @@ export function VisualEditorShell({
    */
   const handleAddPage = useCallback(
     async (routePath: string) => {
+      const expectedSourceGeneration = useThemeWorkspaceStore
+        .getState()
+        .getAcceptedSourceGeneration(workspaceScope);
       const result = await createStorefrontThemePage({
         data: {
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
           routePath,
+          expectedSourceGeneration,
         },
       });
       if (result?.success !== true) {
+        // A conflict is somebody else's work, not a bad path. Refreshing is
+        // what lets the author see it before deciding what to do, and is the
+        // one thing that must not happen quietly.
+        if (result?.error === "SOURCE_GENERATION_CONFLICT") {
+          await queryClient.invalidateQueries({
+            queryKey: storefrontThemeFileQueries.tree(
+              context.storefront.id,
+              context.theme.id,
+            ).queryKey,
+          });
+        }
         return {
           ok: false,
           reason: result?.message ?? "Could not add the page.",
         };
       }
-      // The author's own page is not a remote change. Without adopting the
-      // generation it produced, their next save is refused as a conflict with
-      // themselves.
+      // Adopting the generation this write produced is safe only because the
+      // write was held to the one the editor already had: nothing can have
+      // moved in between, so there is nothing here to swallow.
       if (result.data.sourceGeneration !== undefined) {
         useThemeWorkspaceStore
           .getState()
-          .acceptRemoteGeneration(result.data.sourceGeneration, {
-            storefrontId: context.storefront.id,
-            themeId: context.theme.id,
-          });
+          .acceptRemoteGeneration(result.data.sourceGeneration, workspaceScope);
       }
       await refetchThemeFiles();
       dispatchPreviewLifecycle({ type: "manual-recovery" });
@@ -1856,7 +1868,13 @@ export function VisualEditorShell({
       setPendingRoutePath(result.data.routePath);
       return { ok: true };
     },
-    [context.storefront.id, context.theme.id, refetchThemeFiles],
+    [
+      context.storefront.id,
+      context.theme.id,
+      queryClient,
+      refetchThemeFiles,
+      workspaceScope,
+    ],
   );
 
   const handleOpenThemeRoute = useCallback(

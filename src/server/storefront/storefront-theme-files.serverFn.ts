@@ -399,24 +399,23 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
  * The whole route table is rebuilt with the new file included before anything
  * is written. A page that would leave the Theme unable to describe its own
  * routes is refused while refusing still costs nothing.
+ *
+ * The generation is the caller's, never one read here. A page added against
+ * source the author has not seen would be accepted, and the editor would then
+ * treat itself as current while still holding the older copy of every other
+ * file — the next save of any of them would overwrite work it never showed.
  */
 export const createStorefrontThemePage = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(createThemePageInputSchema, data))
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     if (!input.success) return input;
-    const { storefrontId, themeId, routePath } = input.data;
+    const { storefrontId, themeId, routePath, expectedSourceGeneration } =
+      input.data;
 
-    const generation = await themeSourceStore.getSourceGeneration(
-      storefrontId,
-      themeId,
-    );
-    if (generation === null) {
-      return fail("This theme has no source to add a page to.", {
-        error: "THEME_SOURCE_MISSING",
-      });
-    }
-
+    // Read for planning, not for the write: the page has to be checked against
+    // the theme as it actually is, while the write is still held to what the
+    // author was looking at.
     const files = await themeSourceStore.listFiles(storefrontId, themeId);
     const plan = planNewThemePage({
       requestedPath: routePath,
@@ -447,7 +446,7 @@ export const createStorefrontThemePage = createServerFn({ method: "POST" })
         "text/tsx",
         {
           expectMissing: true,
-          expectedSourceGeneration: generation,
+          expectedSourceGeneration,
           createdBy: context.user?.id,
           createRevision: true,
           revisionMessage: `Add page ${plan.routePath}`,
@@ -455,6 +454,19 @@ export const createStorefrontThemePage = createServerFn({ method: "POST" })
       );
       sourceGeneration = saved.sourceGeneration;
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+      ) {
+        const latestGen = await themeSourceStore.getSourceGeneration(
+          storefrontId,
+          themeId,
+        );
+        return fail(
+          `Remote source changes detected (current generation: ${latestGen ?? "unknown"}): the theme working source was updated by another operation.`,
+          { error: "SOURCE_GENERATION_CONFLICT" },
+        );
+      }
       return failure(
         "createStorefrontThemePage",
         error,
