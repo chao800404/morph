@@ -16,6 +16,25 @@ describe("the script a Live Preview page runs for the editor", () => {
     expect(BRIDGE).toContain("heartbeatId: message.heartbeatId");
   });
 
+  it("forwards the wheel, because the editor cannot see it", () => {
+    // The preview fills the canvas. Once the pointer is over it the editor
+    // receives no wheel events of its own, so scrolling the storefront and
+    // Ctrl-zooming the canvas both depend on this being here — and it was
+    // implemented only in the renderer the editor no longer uses, which is
+    // how it went missing without a single test failing.
+    expect(BRIDGE).toContain('"morph:storefront-preview-wheel"');
+    expect(BRIDGE).toContain("ctrlKey: event.ctrlKey");
+  });
+
+  it("takes the wheel event rather than letting the browser zoom the page", () => {
+    // A wheel listener on window is passive by default and a passive listener
+    // cannot preventDefault, which would leave the browser zooming the preview
+    // document underneath a canvas that is trying to scale it.
+    const listener = BRIDGE.slice(BRIDGE.indexOf('"wheel"'));
+    expect(listener).toContain("event.preventDefault()");
+    expect(listener).toContain("{ passive: false }");
+  });
+
   it("is something a Theme workspace can actually load", () => {
     expect(() =>
       parse(BRIDGE, { sourceType: "module", plugins: ["typescript"] }),

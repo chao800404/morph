@@ -304,6 +304,70 @@ if (channel) {
     drawOverlays();
   });
 
+  // The preview fills the canvas, so once the pointer is over it the editor
+  // stops seeing wheel events at all: scrolling the storefront and zooming the
+  // canvas both have to be forwarded from in here. The editor owns the canvas
+  // transform and is the only side that knows where its visible region sits,
+  // so this reports the gesture and decides nothing.
+  let pendingWheel: {
+    deltaY: number;
+    deltaMode: number;
+    ctrlKey: boolean;
+    clientX: number;
+    clientY: number;
+  } | null = null;
+  let wheelPostFrame = 0;
+
+  const publishPendingWheel = () => {
+    wheelPostFrame = 0;
+    const wheel = pendingWheel;
+    pendingWheel = null;
+    if (!wheel || !channel) return;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-wheel", ...wheel },
+      channel,
+    );
+  };
+
+  window.addEventListener(
+    "wheel",
+    (event) => {
+      // Ctrl+wheel is the browser's own page zoom, and a bare wheel would
+      // scroll this document inside a frame the editor has sized to the whole
+      // page. Both have to be taken before the canvas can act on them.
+      event.preventDefault();
+
+      // A high-resolution trackpad emits wheel events far faster than the
+      // display refreshes, and the editor moves the canvas once per frame
+      // regardless. Sum the deltas and send one message per frame — but never
+      // across a change of modifier or unit, which would fold a zoom and a
+      // scroll into a single gesture.
+      if (
+        pendingWheel &&
+        (pendingWheel.ctrlKey !== event.ctrlKey ||
+          pendingWheel.deltaMode !== event.deltaMode)
+      ) {
+        publishPendingWheel();
+      }
+
+      pendingWheel = {
+        deltaY: (pendingWheel?.deltaY ?? 0) + event.deltaY,
+        deltaMode: event.deltaMode,
+        ctrlKey: event.ctrlKey,
+        // Zoom anchors on where the pointer is now; scrolling ignores these.
+        clientX: event.clientX,
+        clientY: event.clientY,
+      };
+      if (wheelPostFrame === 0) {
+        wheelPostFrame = requestAnimationFrame(publishPendingWheel);
+      }
+    },
+    // Explicitly not passive: a wheel listener on window defaults to passive,
+    // and a passive listener cannot preventDefault, which would leave the
+    // browser zooming the preview document underneath the canvas.
+    { passive: false },
+  );
+
   // The rings are drawn in viewport coordinates, so anything that moves the
   // page moves what they should be around.
   for (const moved of ["scroll", "resize"]) {
