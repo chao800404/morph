@@ -1,3 +1,5 @@
+import { PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE } from "@/lib/storefront/editor/preview-empty-text-layout";
+
 /**
  * The script a Live Preview page runs so the editor can find content in it.
  *
@@ -298,6 +300,53 @@ if (channel) {
     { capture: true, passive: true },
   );
 
+  // The editor's own cursors and the layout an empty line needs to stay
+  // clickable. Carried here rather than in the Theme, because it describes
+  // what the editor is doing to the page and must not survive into a build.
+  const editorStyle = document.createElement("style");
+  editorStyle.dataset.storefrontEditorSelection = "true";
+  editorStyle.textContent = \`
+    html[data-storefront-editor-selection-enabled] [data-storefront-section-id],
+    html[data-storefront-editor-selection-enabled] [data-storefront-component] {
+      cursor: pointer !important;
+    }
+    [data-storefront-editor-drag-handle="true"] {
+      cursor: grab !important;
+    }
+    html[data-storefront-editor-reordering="true"] [data-storefront-editor-drag-handle="true"] {
+      cursor: grabbing !important;
+    }
+    html[data-storefront-editor-pan-enabled],
+    html[data-storefront-editor-pan-enabled] body,
+    html[data-storefront-editor-pan-enabled] body * {
+      cursor: grab !important;
+      user-select: none !important;
+    }
+    html[data-storefront-editor-panning="true"],
+    html[data-storefront-editor-panning="true"] body,
+    html[data-storefront-editor-panning="true"] body * {
+      cursor: grabbing !important;
+    }
+    [${PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE}]::before {
+      content: "\\\\00a0";
+    }
+    [${PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE}][data-storefront-editor-inline-editing="true"]::before {
+      content: none;
+    }
+    [data-storefront-editor-inline-editing="true"] {
+      cursor: text !important;
+      user-select: text !important;
+      /* The editor already draws its own ring and badge around this element,
+         so the browser's focus outline is a second border on top of it — and
+         it follows the Theme's own border-radius, which is why it showed up
+         as a stray rounded line around a heading with rounded corners.
+         Focus stays visible; it is the editor drawing it rather than the UA. */
+      outline: none !important;
+      box-shadow: none !important;
+    }
+  \`;
+  document.head.appendChild(editorStyle);
+
   window.addEventListener("pointerleave", () => {
     if (!hoveredItem) return;
     hoveredItem = null;
@@ -499,6 +548,17 @@ if (channel) {
     }
     if (message?.type === "morph:storefront-preview-set-selection-mode") {
       selectionEnabled = message.enabled;
+      // What the pointer is for, said on the document so CSS can answer it.
+      // Selecting and panning are the two things a wheel-less pointer does
+      // here, and they are mutually exclusive.
+      document.documentElement.toggleAttribute(
+        "data-storefront-editor-selection-enabled",
+        selectionEnabled,
+      );
+      document.documentElement.toggleAttribute(
+        "data-storefront-editor-pan-enabled",
+        !selectionEnabled,
+      );
       // Leaving select mode drops the highlight with it: a ring left behind
       // would point at something the author can no longer click.
       if (!selectionEnabled) {

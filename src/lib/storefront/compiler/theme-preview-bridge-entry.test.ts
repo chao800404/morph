@@ -16,6 +16,23 @@ describe("the script a Live Preview page runs for the editor", () => {
     expect(BRIDGE).toContain("heartbeatId: message.heartbeatId");
   });
 
+  it("says on the document which tool the pointer is", () => {
+    // The editor's cursors are CSS reacting to these, and the browser tests
+    // wait on the first one to know the tool actually reached the preview.
+    // Both were implemented only in the renderer the editor no longer loads.
+    expect(BRIDGE).toContain('"data-storefront-editor-selection-enabled"');
+    expect(BRIDGE).toContain('"data-storefront-editor-pan-enabled"');
+  });
+
+  it("carries the editor's own cursors and empty-line layout", () => {
+    // Without the stylesheet nothing shows a section is selectable, and an
+    // empty text line collapses to no height, which is a line the author can
+    // see and cannot click into.
+    expect(BRIDGE).toContain("cursor: pointer !important");
+    expect(BRIDGE).toContain("cursor: grab !important");
+    expect(BRIDGE).toContain("data-storefront-editor-empty-text-line");
+  });
+
   it("forwards the wheel, because the editor cannot see it", () => {
     // The preview fills the canvas. Once the pointer is over it the editor
     // receives no wheel events of its own, so scrolling the storefront and
