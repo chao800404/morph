@@ -205,7 +205,6 @@ export const touchThemePreviewServer = createServerFn({ method: "POST" })
       previewHostname: host.hostname,
       expectedOrigin: previewOrigin,
     });
-
     // Not a failure of this request: "the preview is gone" is an answer, and
     // the editor decides what to do about it.
     return ok("Live Preview server checked", {

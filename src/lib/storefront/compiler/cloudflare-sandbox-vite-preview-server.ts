@@ -35,6 +35,16 @@ export const THEME_PREVIEW_SERVER_PORT = 5173;
 /** Platform-owned marker written only after a complete workspace succeeds. */
 export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH = `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
 
+/** The host of a URL, or null when it is not one this can read. */
+function safeHostname(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
 const VITE_BIN = `${SANDBOX_TOOLCHAIN_ROOT}/node_modules/.bin/vite`;
 
 /** Line Vite prints once it can serve requests. Kept as a compatibility path. */
@@ -606,29 +616,36 @@ export class CloudflareSandboxVitePreviewServer {
       );
       if (!viteRunning) return false;
 
-      // A running dev server is not a reachable one. The exposed port can
-      // lapse while the process it pointed at keeps running, and asking only
-      // the process list would answer yes for a preview whose address now
-      // returns 410.
-      if (!session.getExposedPorts) return viteRunning;
+      // A running dev server is not a reachable one: the address in front of
+      // it can be replaced while the process keeps running. What can be
+      // concluded from that, though, is narrower than it looks.
+      //
+      // An empty list is not evidence of absence. Measured against a local
+      // sandbox whose preview URL answered 200 throughout, this returns no
+      // entries at all — so treating empty as unreachable reconnects a working
+      // preview once per renewal, which is worse than the stale frame this
+      // was added to catch. Only a list that names other addresses and not
+      // this one proves anything, and that is the case it answers.
+      if (!session.getExposedPorts || !input.expectedOrigin) return viteRunning;
       const exposed = await session.getExposedPorts(input.previewHostname);
       const active = exposed.filter(
         (entry) =>
           entry.port === THEME_PREVIEW_SERVER_PORT && entry.status === "active",
       );
-      if (active.length === 0) return false;
-      if (!input.expectedOrigin) return true;
+      if (active.length === 0) return viteRunning;
 
       // Re-exposing mints a new address. The old one stops resolving even
       // though a port is active again, so the question is not whether some
       // preview is reachable but whether the one being framed is.
-      return active.some((entry) => {
-        try {
-          return new URL(entry.url).origin === input.expectedOrigin;
-        } catch {
-          return false;
-        }
-      });
+      //
+      // Compared by hostname, never by origin. A developer's editor reaches
+      // the sandbox through loopback, which rewrites the scheme and port of
+      // the URL it was given and leaves the host alone — so origins never
+      // match locally, while the host still carries the token that changes
+      // when a port is exposed again.
+      const expectedHost = safeHostname(input.expectedOrigin);
+      if (!expectedHost) return false;
+      return active.some((entry) => safeHostname(entry.url) === expectedHost);
     } catch {
       return false;
     }

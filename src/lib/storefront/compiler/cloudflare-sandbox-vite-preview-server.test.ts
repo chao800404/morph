@@ -361,9 +361,11 @@ describe("checking on a preview someone is watching", () => {
     ).resolves.toBe(true);
   });
 
-  it("reports a preview whose address has stopped resolving", async () => {
-    // The dev server outlives the exposed port. Asking the process list alone
-    // answers yes for a preview that now returns 410 to the author.
+  it("does not call a preview gone just because no address is listed", async () => {
+    // Measured against a local sandbox whose preview URL answered 200
+    // throughout: the runtime lists no forwardable ports at all. Reading that
+    // as unreachable reconnected a working preview once per renewal — worse
+    // than the stale frame the check exists for.
     const harness = createSession("silent");
     (harness.session as { listProcesses?: unknown }).listProcesses =
       async () => [viteProcess("running")];
@@ -376,9 +378,10 @@ describe("checking on a preview someone is watching", () => {
     await expect(
       server.isServing({
         previewId: "preview-1",
-        previewHostname: "preview.example.com",
+        previewHostname: "preview.localhost",
+        expectedOrigin: `http://${THEME_PREVIEW_SERVER_PORT}-sbx-tok.preview.localhost:3000`,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
   });
 
   it("reports a preview reachable at an address the editor is not framing", async () => {
