@@ -54,11 +54,18 @@ export function reduceLivePreviewLifecycle(
         recoveryId: state.recoveryId,
       };
     case "server-ready":
+      // A preview that already failed stays failed until something actually
+      // changes for it. The server query keeps holding its last successful
+      // answer, so this event arrives again on every render; treating it as
+      // news would restart the very frame that just gave up, clear the
+      // message explaining why, and take the retry away from the author
+      // before they could reach it.
       if (
         state.key === event.key &&
         (state.phase === "loading-frame" ||
           state.phase === "syncing-source" ||
-          state.phase === "ready")
+          state.phase === "ready" ||
+          state.phase === "failed")
       ) {
         return state;
       }

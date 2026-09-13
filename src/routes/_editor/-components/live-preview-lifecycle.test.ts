@@ -3,7 +3,23 @@ import {
   initialLivePreviewLifecycleState,
   livePreviewLifecycleLabel,
   reduceLivePreviewLifecycle,
+  type LivePreviewLifecycleEvent,
 } from "./live-preview-lifecycle";
+
+/** A preview that has spent its one automatic recovery and given up. */
+function failedAfterOneRecovery() {
+  const events: LivePreviewLifecycleEvent[] = [
+    { type: "server-ready", key: "preview-1" },
+    { type: "automatic-recovery", key: "preview-1", message: "Port expired" },
+    { type: "recovery-request-finished", recoveryId: 1 },
+    { type: "server-ready", key: "preview-2" },
+    { type: "automatic-recovery", key: "preview-2", message: "Gone again" },
+  ];
+  return events.reduce(
+    reduceLivePreviewLifecycle,
+    initialLivePreviewLifecycleState,
+  );
+}
 
 describe("Live Preview lifecycle", () => {
   it("moves through server, frame, source and ready in one state machine", () => {
@@ -76,6 +92,35 @@ describe("Live Preview lifecycle", () => {
       phase: "failed",
       message: "Port expired again",
     });
+  });
+
+  it("keeps a spent preview failed when the server repeats its last answer", () => {
+    // The preview server query holds its successful result for as long as the
+    // editor is open, so "the server is ready" arrives again on every render
+    // after a frame has given up. Acting on it would loop the author between
+    // loading and failing, and the retry would never stay on screen.
+    const failed = failedAfterOneRecovery();
+    expect(failed).toMatchObject({ phase: "failed", message: "Gone again" });
+
+    const repeated = reduceLivePreviewLifecycle(failed, {
+      type: "server-ready",
+      key: "preview-2",
+    });
+
+    expect(repeated).toBe(failed);
+  });
+
+  it("still starts a frame the server reports under a new address", () => {
+    // Only the answer that has not changed is ignored. A genuinely new
+    // preview must still take over, or a retry could never recover.
+    const failed = failedAfterOneRecovery();
+
+    expect(
+      reduceLivePreviewLifecycle(failed, {
+        type: "server-ready",
+        key: "preview-3",
+      }),
+    ).toMatchObject({ phase: "loading-frame", key: "preview-3", message: null });
   });
 
   it("ignores completion from an older recovery request", () => {
