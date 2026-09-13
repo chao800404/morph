@@ -299,6 +299,54 @@ describe("CloudflareSandboxVitePreviewServer", () => {
   });
 });
 
+describe("checking on a preview someone is watching", () => {
+  const viteProcess = (status: string) => ({
+    id: "vite",
+    command:
+      "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+    status,
+  });
+
+  it("reports a preview whose dev server is still up", async () => {
+    const harness = createSession("silent");
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => [viteProcess("running")];
+    const server = new CloudflareSandboxVitePreviewServer({
+      sandboxProvider: { getSandbox: async () => harness.session },
+    });
+
+    await expect(server.isServing("preview-1")).resolves.toBe(true);
+  });
+
+  it("reports a container that answers but no longer serves the Theme", async () => {
+    // The sandbox can outlive the dev server inside it, and a preview with no
+    // Vite is as gone as one with no container.
+    const harness = createSession("silent");
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => [viteProcess("exited")];
+    const server = new CloudflareSandboxVitePreviewServer({
+      sandboxProvider: { getSandbox: async () => harness.session },
+    });
+
+    await expect(server.isServing("preview-1")).resolves.toBe(false);
+  });
+
+  it("reports a sandbox that cannot be reached at all", async () => {
+    // This is the case the editor cannot see for itself: the preview page is
+    // still loaded in the browser and still answering its heartbeat.
+    const harness = createSession("silent");
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => {
+        throw new Error("container is gone");
+      };
+    const server = new CloudflareSandboxVitePreviewServer({
+      sandboxProvider: { getSandbox: async () => harness.session },
+    });
+
+    await expect(server.isServing("preview-1")).resolves.toBe(false);
+  });
+});
+
 describe("asking twice for the same preview", () => {
   const withRunningVite = (harness: Harness) => {
     (harness.session as { listProcesses?: unknown }).listProcesses =

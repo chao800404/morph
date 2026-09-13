@@ -556,6 +556,40 @@ export class CloudflareSandboxVitePreviewServer {
    * Revokes the URL before killing the process, so the window where the URL
    * resolves to something no longer being supervised stays closed.
    */
+  /**
+   * Whether the sandbox is still serving this preview, and a renewal of its
+   * idle deadline in the same breath.
+   *
+   * The container sleeps on an idle timer that only sandbox calls postpone.
+   * An open editor does not postpone it — the preview page holds its own
+   * connection, not one the sandbox counts — so a Theme left on screen while
+   * its author reads or steps away is put to sleep underneath them. Asking
+   * this question is itself the answer to that: the call renews the deadline,
+   * so a preview someone is still looking at stays alive, and an editor that
+   * stops asking lets it sleep on schedule rather than pinning it awake for
+   * nobody.
+   *
+   * The answer matters as much as the renewal. A dead sandbox leaves the
+   * already-loaded preview page running in the browser, still replying to the
+   * editor's heartbeat, so nothing on that side can notice: the heartbeat
+   * proves the document is alive, never that the sandbox behind it is. This
+   * asks the sandbox.
+   */
+  async isServing(previewId: string): Promise<boolean> {
+    try {
+      const session = await this.acquire(previewId);
+      const running = await session.listProcesses?.();
+      if (!running) return false;
+      return running.some(
+        (process) =>
+          process.command?.includes(VITE_BIN) &&
+          (process.status === "running" || process.status === "starting"),
+      );
+    } catch {
+      return false;
+    }
+  }
+
   async stop(previewId: string, processId?: string): Promise<void> {
     const session = await this.acquire(previewId);
     await session.unexposePort?.(THEME_PREVIEW_SERVER_PORT).catch(() => {});

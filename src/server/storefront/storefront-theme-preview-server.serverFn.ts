@@ -142,6 +142,40 @@ export const stopThemePreviewServer = createServerFn({ method: "POST" })
   });
 
 /**
+ * Keeps a preview someone is watching awake, and reports whether it still is.
+ *
+ * Called on a timer while the editor holds a healthy preview. Both halves
+ * matter: the call renews the sandbox's idle deadline, which an open preview
+ * page does not, and its answer is the only way to learn that the sandbox
+ * died — the page stays loaded in the browser and keeps answering the
+ * editor's heartbeat long after the container behind it has gone.
+ *
+ * An editor that closes simply stops calling, and the preview sleeps on its
+ * own schedule. Nothing here pins a container awake for an author who left.
+ */
+export const touchThemePreviewServer = createServerFn({ method: "POST" })
+  .validator((data: unknown) => parseInput(themePreviewServerInputSchema, data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    const { storefrontId, themeId } = input.data;
+
+    const previewId = await deriveThemePreviewSessionId({
+      storefrontId,
+      themeId,
+      userId: context.user.id,
+    });
+    const server = new CloudflareSandboxVitePreviewServer({
+      sandboxBinding: (env as unknown as PreviewEnv).Sandbox,
+    });
+    const serving = await server.isServing(previewId);
+
+    // Not a failure of this request: "the preview is gone" is an answer, and
+    // the editor decides what to do about it.
+    return ok("Live Preview server checked", { previewId, serving });
+  });
+
+/**
  * Whether the container already holds exactly this content.
  *
  * Read before writing, so a save that changes nothing is not turned into a

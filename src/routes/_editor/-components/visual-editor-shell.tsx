@@ -156,7 +156,10 @@ import {
 import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import { applyThemePreviewFiles } from "@/server/storefront/storefront-theme-preview-server.serverFn";
+import {
+  applyThemePreviewFiles,
+  touchThemePreviewServer,
+} from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import {
   parsePreviewSectionProps,
   type PreviewEditableNode,
@@ -489,6 +492,19 @@ const previewDefaultHeights = {
 const PREVIEW_REMEASURE_DELAY_MS = 500;
 /** A ready iframe must keep answering while its sandbox port is alive. */
 const PREVIEW_HEARTBEAT_INTERVAL_MS = 5_000;
+/**
+ * How often a watched preview is renewed at the sandbox.
+ *
+ * The container sleeps after ten minutes without a sandbox call, and the open
+ * preview page is not one. A minute leaves ample margin against that deadline
+ * while keeping the cost to one small call per minute per open editor — and
+ * since the same call is what reveals a sandbox that has died behind a page
+ * still answering the heartbeat, it also bounds how long a dead preview can
+ * pass for a live one.
+ */
+const PREVIEW_SANDBOX_RENEWAL_INTERVAL_MS = 60_000;
+const PREVIEW_SANDBOX_GONE_MESSAGE =
+  "Live Preview's sandbox is no longer running. Reconnecting…";
 const PREVIEW_HEARTBEAT_TIMEOUT_MS = 15_000;
 const PREVIEW_LIVENESS_FAILURE_MESSAGE =
   "Live Preview stopped responding after one automatic reconnect. Retry Preview to reconnect.";
@@ -2245,6 +2261,54 @@ export function VisualEditorShell({
     };
   }, [
     postEditorToPreviewMessage,
+    previewLifecycle.key,
+    previewLifecycle.phase,
+  ]);
+
+  useEffect(() => {
+    // Only while the author actually has a preview to keep. A failed or
+    // starting one has nothing to renew, and renewing for an editor nobody is
+    // watching is how a container gets pinned awake for no reason.
+    if (previewLifecycle.phase !== "ready" || !previewLifecycle.key) return;
+    const key = previewLifecycle.key;
+    let cancelled = false;
+
+    const renew = () => {
+      void touchThemePreviewServer({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+        },
+      })
+        .then((result) => {
+          if (cancelled) return;
+          // Only a definite "not serving" is acted on. A request that failed
+          // for its own reasons says nothing about the sandbox, and tearing
+          // down a working preview over a lost network call would be worse
+          // than the stale frame this is here to catch.
+          if (result?.success === true && result.data.serving === false) {
+            dispatchPreviewLifecycle({
+              type: "automatic-recovery",
+              key,
+              message: PREVIEW_SANDBOX_GONE_MESSAGE,
+              at: Date.now(),
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    const timer = window.setInterval(
+      renew,
+      PREVIEW_SANDBOX_RENEWAL_INTERVAL_MS,
+    );
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    context.storefront.id,
+    context.theme.id,
     previewLifecycle.key,
     previewLifecycle.phase,
   ]);
