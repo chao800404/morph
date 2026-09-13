@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   initialLivePreviewLifecycleState,
+  LIVE_PREVIEW_HEALTHY_EPISODE_MS,
   livePreviewLifecycleLabel,
   reduceLivePreviewLifecycle,
   type LivePreviewLifecycleEvent,
@@ -10,10 +11,10 @@ import {
 function failedAfterOneRecovery() {
   const events: LivePreviewLifecycleEvent[] = [
     { type: "server-ready", key: "preview-1" },
-    { type: "automatic-recovery", key: "preview-1", message: "Port expired" },
+    { type: "automatic-recovery", key: "preview-1", message: "Port expired", at: 0 },
     { type: "recovery-request-finished", recoveryId: 1 },
     { type: "server-ready", key: "preview-2" },
-    { type: "automatic-recovery", key: "preview-2", message: "Gone again" },
+    { type: "automatic-recovery", key: "preview-2", message: "Gone again", at: 0 },
   ];
   return events.reduce(
     reduceLivePreviewLifecycle,
@@ -34,6 +35,7 @@ describe("Live Preview lifecycle", () => {
     const ready = reduceLivePreviewLifecycle(source, {
       type: "source-confirmed",
       key: "preview-1",
+      at: 0,
     });
 
     expect(frame.phase).toBe("loading-frame");
@@ -54,6 +56,7 @@ describe("Live Preview lifecycle", () => {
       reduceLivePreviewLifecycle(current, {
         type: "source-confirmed",
         key: "preview-1",
+        at: 0,
       }),
     ).toBe(current);
   });
@@ -67,6 +70,7 @@ describe("Live Preview lifecycle", () => {
       type: "automatic-recovery",
       key: "preview-1",
       message: "Port expired",
+      at: 0,
     });
     const restarted = reduceLivePreviewLifecycle(reconnecting, {
       type: "recovery-request-finished",
@@ -80,6 +84,7 @@ describe("Live Preview lifecycle", () => {
       type: "automatic-recovery",
       key: "preview-2",
       message: "Port expired again",
+      at: 0,
     });
 
     expect(reconnecting).toMatchObject({
@@ -132,6 +137,7 @@ describe("Live Preview lifecycle", () => {
       type: "automatic-recovery",
       key: "preview-1",
       message: "Port expired",
+      at: 0,
     });
 
     expect(
@@ -158,6 +164,71 @@ describe("Live Preview lifecycle", () => {
       recoveryId: 1,
       message: null,
     });
+  });
+
+  /** A preview that recovered once and has been healthy since `readyAt`. */
+  function recoveredAndHealthySince(readyAt: number) {
+    const events: LivePreviewLifecycleEvent[] = [
+      { type: "server-ready", key: "preview-1" },
+      { type: "automatic-recovery", key: "preview-1", message: "Slept", at: 0 },
+      { type: "recovery-request-finished", recoveryId: 1 },
+      { type: "server-ready", key: "preview-2" },
+      { type: "frame-ready", key: "preview-2" },
+      { type: "source-confirmed", key: "preview-2", at: readyAt },
+    ];
+    return events.reduce(
+      reduceLivePreviewLifecycle,
+      initialLivePreviewLifecycleState,
+    );
+  }
+
+  it("reconnects again when the preview had been healthy for a while", () => {
+    // The container sleeps after ten minutes idle, so an author who steps away
+    // repeatedly meets this repeatedly. It is routine, and each occurrence
+    // deserves the same automatic recovery as the first.
+    const healthy = recoveredAndHealthySince(1_000);
+    expect(healthy).toMatchObject({ phase: "ready", readySince: 1_000 });
+
+    const recovering = reduceLivePreviewLifecycle(healthy, {
+      type: "automatic-recovery",
+      key: "preview-2",
+      message: "Slept again",
+      at: 1_000 + LIVE_PREVIEW_HEALTHY_EPISODE_MS,
+    });
+
+    expect(recovering).toMatchObject({
+      phase: "reconnecting",
+      automaticRecoveryAttempts: 1,
+    });
+  });
+
+  it("gives up on a preview that keeps dying right after it comes up", () => {
+    // Refilling the budget here would be a loop, and every turn of it wakes a
+    // container.
+    const flapping = recoveredAndHealthySince(1_000);
+
+    expect(
+      reduceLivePreviewLifecycle(flapping, {
+        type: "automatic-recovery",
+        key: "preview-2",
+        message: "Died immediately",
+        at: 1_000 + LIVE_PREVIEW_HEALTHY_EPISODE_MS - 1,
+      }),
+    ).toMatchObject({ phase: "failed", message: "Died immediately" });
+  });
+
+  it("dates the healthy period from becoming ready, not from the latest ack", () => {
+    // Each acknowledged style revision confirms the source again. Restarting
+    // the clock on every one would deny the budget to a preview that had in
+    // fact been healthy for the whole ten minutes.
+    const healthy = recoveredAndHealthySince(1_000);
+    const acknowledgedAgain = reduceLivePreviewLifecycle(healthy, {
+      type: "source-confirmed",
+      key: "preview-2",
+      at: 1_000 + LIVE_PREVIEW_HEALTHY_EPISODE_MS,
+    });
+
+    expect(acknowledgedAgain.readySince).toBe(1_000);
   });
 
   it("gives each waiting phase a user-facing label", () => {

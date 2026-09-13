@@ -13,7 +13,24 @@ export type LivePreviewLifecycleState = Readonly<{
   automaticRecoveryAttempts: number;
   recoveryId: number;
   message: string | null;
+  /** When the current uninterrupted healthy period began, if there is one. */
+  readySince: number | null;
 }>;
+
+/**
+ * How long a preview must have been healthy for its next failure to count as
+ * a new episode rather than a continuing one.
+ *
+ * The container sleeps after ten minutes idle, so an author who steps away
+ * comes back to a preview that has to be reconnected — routine, not a fault,
+ * and not something to spend a one-per-session budget on. A preview that dies
+ * seconds after coming up is the opposite: reconnecting it again would be a
+ * loop, and each turn of that loop wakes a container.
+ *
+ * A minute sits between the two by orders of magnitude, which is the only
+ * property this threshold needs.
+ */
+export const LIVE_PREVIEW_HEALTHY_EPISODE_MS = 60_000;
 
 export type LivePreviewLifecycleEvent =
   | Readonly<{ type: "reset" }>
@@ -21,9 +38,14 @@ export type LivePreviewLifecycleEvent =
   | Readonly<{ type: "server-failed"; message: string }>
   | Readonly<{ type: "frame-signal"; key: string }>
   | Readonly<{ type: "frame-ready"; key: string }>
-  | Readonly<{ type: "source-confirmed"; key: string }>
+  | Readonly<{ type: "source-confirmed"; key: string; at: number }>
   | Readonly<{ type: "source-failed"; key: string; message: string }>
-  | Readonly<{ type: "automatic-recovery"; key: string; message: string }>
+  | Readonly<{
+      type: "automatic-recovery";
+      key: string;
+      message: string;
+      at: number;
+    }>
   | Readonly<{ type: "recovery-request-finished"; recoveryId: number }>
   | Readonly<{ type: "manual-recovery" }>;
 
@@ -34,6 +56,7 @@ export const initialLivePreviewLifecycleState: LivePreviewLifecycleState = {
   automaticRecoveryAttempts: 0,
   recoveryId: 0,
   message: null,
+  readySince: null,
 };
 
 /**
@@ -89,6 +112,7 @@ export function reduceLivePreviewLifecycle(
         phase: "failed",
         key: null,
         message: event.message,
+        readySince: null,
       };
     case "frame-signal":
       if (state.key !== event.key || state.phase !== "loading-frame") {
@@ -99,6 +123,7 @@ export function reduceLivePreviewLifecycle(
         phase: "syncing-source",
         readySequence: 1,
         message: null,
+        readySince: null,
       };
     case "frame-ready":
       if (state.key !== event.key) return state;
@@ -107,30 +132,57 @@ export function reduceLivePreviewLifecycle(
         phase: "syncing-source",
         readySequence: state.readySequence + 1,
         message: null,
+        readySince: null,
       };
     case "source-confirmed":
       if (state.key !== event.key) return state;
-      return { ...state, phase: "ready", message: null };
+      return {
+        ...state,
+        phase: "ready",
+        message: null,
+        // Every acknowledged source revision confirms again, so the period is
+        // dated from becoming healthy, not from the latest proof of it.
+        readySince: state.phase === "ready" ? state.readySince : event.at,
+      };
     case "source-failed":
       if (state.key !== event.key) return state;
       if (state.phase === "failed" && state.message === event.message) {
         return state;
       }
-      return { ...state, phase: "failed", message: event.message };
-    case "automatic-recovery":
+      return {
+        ...state,
+        phase: "failed",
+        message: event.message,
+        readySince: null,
+      };
+    case "automatic-recovery": {
       if (state.key !== event.key) return state;
-      if (state.automaticRecoveryAttempts >= 1) {
-        return { ...state, phase: "failed", message: event.message };
+      // Judged now rather than on the way in, because how long the preview
+      // stayed healthy is only known once it stops being healthy.
+      const wasHealthyLongEnough =
+        state.readySince !== null &&
+        event.at - state.readySince >= LIVE_PREVIEW_HEALTHY_EPISODE_MS;
+      if (state.automaticRecoveryAttempts >= 1 && !wasHealthyLongEnough) {
+        return {
+          ...state,
+          phase: "failed",
+          message: event.message,
+          readySince: null,
+        };
       }
       return {
         ...state,
         phase: "reconnecting",
         key: null,
         readySequence: 0,
-        automaticRecoveryAttempts: state.automaticRecoveryAttempts + 1,
+        readySince: null,
+        automaticRecoveryAttempts: wasHealthyLongEnough
+          ? 1
+          : state.automaticRecoveryAttempts + 1,
         recoveryId: state.recoveryId + 1,
         message: event.message,
       };
+    }
     case "recovery-request-finished":
       if (
         state.phase !== "reconnecting" ||
@@ -149,6 +201,7 @@ export function reduceLivePreviewLifecycle(
         phase: "reconnecting",
         key: null,
         readySequence: 0,
+        readySince: null,
         automaticRecoveryAttempts: 0,
         recoveryId: state.recoveryId + 1,
         message: null,

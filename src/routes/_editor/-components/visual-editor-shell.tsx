@@ -2019,6 +2019,7 @@ export function VisualEditorShell({
       dispatchPreviewLifecycle({
         type: "source-confirmed",
         key: confirmation.previewKey,
+        at: Date.now(),
       });
       latestAppliedStyleRevisionRef.current = confirmation.styleRevision;
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -2088,6 +2089,7 @@ export function VisualEditorShell({
               key: targetPreviewKey,
               message:
                 "Live Preview could not update its sandbox after one automatic reconnect. Retry Preview.",
+              at: Date.now(),
             });
           }
         })
@@ -2098,6 +2100,7 @@ export function VisualEditorShell({
             key: targetPreviewKey,
             message:
               "Live Preview could not update its sandbox after one automatic reconnect. Retry Preview.",
+            at: Date.now(),
           });
         });
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -2168,6 +2171,7 @@ export function VisualEditorShell({
           type: "automatic-recovery",
           key,
           message: PREVIEW_UNREACHABLE_FAILURE_MESSAGE,
+          at: Date.now(),
         });
       }, PREVIEW_FRAME_LOAD_TIMEOUT_MS);
       return () => window.clearTimeout(timer);
@@ -2180,6 +2184,7 @@ export function VisualEditorShell({
           type: "automatic-recovery",
           key,
           message: PREVIEW_SOURCE_FAILURE_MESSAGE,
+          at: Date.now(),
         });
       }, PREVIEW_SOURCE_TIMEOUT_MS);
       return () => window.clearTimeout(timer);
@@ -2219,6 +2224,7 @@ export function VisualEditorShell({
           type: "automatic-recovery",
           key,
           message: PREVIEW_LIVENESS_FAILURE_MESSAGE,
+          at: Date.now(),
         });
       }
     };
