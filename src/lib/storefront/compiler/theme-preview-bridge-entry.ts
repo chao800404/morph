@@ -23,6 +23,8 @@ export function themePreviewBridgeEntrySource(): string {
 } from "./preview/preview-protocol";
 import {
   collectPreviewEditableNodes,
+  previewSectionSelector,
+  resolvePreviewSelectionRestoreElement,
   resolveSelectable,
   selectionKindOf,
   selectionMetadata,
@@ -30,12 +32,17 @@ import {
 } from "./preview/preview-dom";
 import { startPreviewHeightReporter } from "./preview/preview-height-reporter";
 import { createPreviewSelectionOverlays } from "./preview/preview-selection-overlays";
+import {
+  createSelectionStylePreview,
+  selectionStylePreviewNeedsOverlayUpdate,
+} from "./preview/selection-style-preview";
 import { createInlineTextEditor } from "./preview/inline-text-editor";
 import {
   isCompatibleReorderTarget,
   reorderCommitFor,
   reorderIdentity,
 } from "./preview/preview-reorder-identity";
+import { updatePreviewContent } from "./preview-content";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
@@ -48,7 +55,10 @@ const channel = readPreviewRuntimeChannel(window.location.href);
 let selectionEnabled = false;
 let selectedItem = null;
 let hoveredItem = null;
+let lastRestoreTarget = null;
+let selectedSectionId = null;
 
+const selectionStylePreview = createSelectionStylePreview();
 const overlays = channel ? createPreviewSelectionOverlays() : null;
 
 const inlineEditor = createInlineTextEditor({
@@ -110,22 +120,14 @@ function reportStructure() {
   );
 }
 
-/**
- * Describes what was clicked, in the shape the editor's Inspector reads.
- *
- * Assembled from the same resolution the compatibility renderer uses, so a
- * click lands on the same element and offers the same fields whichever
- * preview the author happens to be looking at.
- */
-function reportSelection(target) {
-  if (!channel) return;
-  const item = resolveSelectable(target);
-  if (!item?.sectionId) return;
-  selectionRevision += 1;
-  selectedItem = item;
-  syncDragHandle();
-  drawOverlays();
+function clearSelectionAttributes() {
+  if (selectedItem?.element) {
+    selectedItem.element.removeAttribute("data-storefront-editor-selected");
+  }
+}
 
+function sendSelectionReport(item) {
+  if (!channel || !item?.sectionId) return;
   const styleOf = (element) =>
     element ? selectionStyleSnapshot(window.getComputedStyle(element)) : null;
 
@@ -136,7 +138,10 @@ function reportSelection(target) {
       componentType: item.type,
       kind: selectionKindOf(item),
       sourceLocation: item.element.dataset.morphLoc ?? null,
-      nodeId: item.element.dataset.morphNode || undefined,
+      nodeId:
+        item.element.getAttribute("data-morph-node") ||
+        item.element.dataset.morphNode ||
+        undefined,
       elementKey: item.elementKey,
       fieldKey: item.fieldKey,
       // A container that holds editable children is selected as the
@@ -148,7 +153,7 @@ function reportSelection(target) {
           : (item.fieldKey ?? item.elementKey),
       descendantFields: item.descendantFields,
       ...selectionMetadata(item),
-      styleRevision: Number(
+      styleRevision: latestBridgeStyleRevision || Number(
         document.documentElement.dataset.storefrontStyleRevision ?? 0,
       ),
       selectionRevision,
@@ -163,6 +168,115 @@ function reportSelection(target) {
   );
 }
 
+function restoreSelectedSection() {
+  clearSelectionAttributes();
+  if (selectionEnabled && selectedSectionId) {
+    const sectionEl = document.querySelector(
+      previewSectionSelector(selectedSectionId),
+    );
+    if (sectionEl) {
+      selectedItem = resolveSelectable(sectionEl);
+      if (selectedItem?.element) {
+        selectedItem.element.setAttribute(
+          "data-storefront-editor-selected",
+          "true",
+        );
+      }
+    } else {
+      selectedItem = null;
+    }
+  } else {
+    selectedItem = null;
+  }
+  selectionStylePreview.clear();
+  syncDragHandle();
+  drawOverlays();
+}
+
+function restoreSelectedTarget(target) {
+  const previousTarget = lastRestoreTarget;
+  const targetChanged =
+    !previousTarget ||
+    previousTarget.sectionId !== target.sectionId ||
+    previousTarget.sourceLocation !== target.sourceLocation ||
+    previousTarget.nodeId !== target.nodeId ||
+    previousTarget.fieldPath !== target.fieldPath ||
+    previousTarget.elementKey !== target.elementKey ||
+    previousTarget.fieldKey !== target.fieldKey ||
+    previousTarget.isSection !== target.isSection;
+  if (targetChanged) selectionStylePreview.clear();
+  lastRestoreTarget = target;
+  clearSelectionAttributes();
+  selectedSectionId = target.sectionId;
+
+  const section = document.querySelector(
+    previewSectionSelector(target.sectionId),
+  );
+  if (!section) {
+    selectedItem = null;
+    syncDragHandle();
+    drawOverlays();
+    return;
+  }
+
+  const nextElement = resolvePreviewSelectionRestoreElement(section, target);
+  selectedItem = resolveSelectable(nextElement);
+  if (selectedItem) {
+    selectedItem = {
+      ...selectedItem,
+      fieldPath: target.fieldPath ?? selectedItem.fieldPath,
+      fieldKey: target.fieldKey ?? selectedItem.fieldKey,
+    };
+    if (selectedItem.element) {
+      selectedItem.element.setAttribute(
+        "data-storefront-editor-selected",
+        "true",
+      );
+    }
+  }
+  syncDragHandle();
+  drawOverlays();
+}
+
+function domElementMatchesTarget(element, targetKey, sourceLocation) {
+  if (element.dataset.morphNode === targetKey) return true;
+  if (element.dataset.morphElement === targetKey) return true;
+  return Boolean(sourceLocation) && element.dataset.morphLoc === sourceLocation;
+}
+
+/**
+ * Describes what was clicked, in the shape the editor's Inspector reads.
+ *
+ * Assembled from the same resolution the compatibility renderer uses, so a
+ * click lands on the same element and offers the same fields whichever
+ * preview the author happens to be looking at.
+ */
+function reportSelection(target) {
+  if (!channel) return;
+  const item = resolveSelectable(target);
+  if (!item?.sectionId) return;
+  selectionRevision += 1;
+  clearSelectionAttributes();
+  selectionStylePreview.clear();
+  selectedItem = item;
+  selectedSectionId = item.sectionId;
+  lastRestoreTarget = {
+    sectionId: item.sectionId,
+    sourceLocation: item.element.dataset.morphLoc ?? undefined,
+    nodeId: item.element.dataset.morphNode || undefined,
+    elementKey: item.elementKey || undefined,
+    fieldKey: item.fieldKey || undefined,
+    fieldPath: item.fieldPath || undefined,
+    isSection: item.element === item.section,
+  };
+  if (selectedItem.element) {
+    selectedItem.element.setAttribute("data-storefront-editor-selected", "true");
+  }
+  syncDragHandle();
+  drawOverlays();
+  sendSelectionReport(selectedItem);
+}
+
 let gesture = null;
 
 /**
@@ -174,6 +288,7 @@ let gesture = null;
  * someone else's work as done.
  */
 let pendingStyleRevision = null;
+let latestBridgeStyleRevision = 0;
 
 /** Coalesces a React commit into one structure snapshot on the next frame. */
 let structureReportFrame = null;
@@ -207,6 +322,12 @@ if (import.meta.hot) {
     );
     // The update changed the page, so what is on it has changed with it.
     reportStructure();
+    if (lastRestoreTarget) {
+      restoreSelectedTarget(lastRestoreTarget);
+      if (selectedItem?.element && selectionStylePreview.hasPending()) {
+        selectionStylePreview.carryTo(selectedItem.element);
+      }
+    }
   });
 
   import.meta.hot.on("vite:error", () => {
@@ -251,11 +372,32 @@ function reportReady() {
 }
 
 if (channel) {
+  const ensurePreviewRoot = () => {
+    const rootEl = document.getElementById("root") ?? document.body;
+    if (rootEl && !rootEl.hasAttribute("data-storefront-preview-root")) {
+      rootEl.setAttribute("data-storefront-preview-root", "true");
+    }
+  };
+  ensurePreviewRoot();
+
+  const initialViewportHeight = new URL(window.location.href).searchParams.get(
+    "viewportHeight",
+  );
+  if (initialViewportHeight) {
+    document.documentElement.style.setProperty(
+      "--storefront-preview-viewport-height",
+      \`\${Number(initialViewportHeight)}px\`,
+    );
+  }
+
   // A Theme mounts itself; there is no Morph wrapper to measure. The mount
   // point is the whole page, and body is the fallback for a Theme that
   // renders somewhere else entirely.
   startPreviewHeightReporter({
-    resolveRoot: () => document.getElementById("root") ?? document.body,
+    resolveRoot: () => {
+      ensurePreviewRoot();
+      return document.getElementById("root") ?? document.body;
+    },
   });
 
   // The bridge and the Theme are sibling module scripts. React may commit
@@ -555,6 +697,22 @@ if (channel) {
     if (gesture) endGesture();
   });
 
+  window.addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") {
+      return;
+    }
+    const target = event.target;
+    if (target && target.isContentEditable === true) return;
+    event.preventDefault();
+    postPreviewToEditorMessage(
+      {
+        type: "morph:storefront-preview-history-shortcut",
+        direction: event.shiftKey ? "redo" : "undo",
+      },
+      channel,
+    );
+  });
+
   window.addEventListener("message", (event) => {
     // Origin, source, session and schema are all checked in here. Anything
     // that fails any of them is not a message as far as this page cares.
@@ -577,15 +735,7 @@ if (channel) {
       // the container, which is what Vite is watching. This only records the
       // revision to confirm once the page has taken them.
       pendingStyleRevision = message.styleRevision;
-      // Stamped on the document because every answer this page sends back
-      // carries it, and the editor discards any answer that is not for the
-      // revision it last asked about. Left unset, every selection made on the
-      // canvas reported revision zero and was dropped as stale — the author
-      // clicked and nothing was selected.
-      //
-      // Recorded on arrival rather than once Vite has finished: a sync that
-      // changes no file produces no hot update to wait for, and the editor
-      // already treats that revision as the current one.
+      latestBridgeStyleRevision = Number(message.styleRevision);
       document.documentElement.dataset.storefrontStyleRevision = String(
         message.styleRevision,
       );
@@ -607,6 +757,50 @@ if (channel) {
         window.setTimeout(reportStructure, 0);
       }
     }
+    if (message?.type === "morph:storefront-preview-update-section-props") {
+      updatePreviewContent(message.sectionId, message.props, message.enabled);
+      const section = document.querySelector(
+        previewSectionSelector(message.sectionId),
+      );
+      if (section && typeof message.enabled === "boolean") {
+        section.toggleAttribute("hidden", !message.enabled);
+      }
+      reportStructure();
+      drawOverlays();
+      return;
+    }
+    if (message?.type === "morph:storefront-preview-set-section-order") {
+      const ordered = message.sectionIds
+        .map((sectionId) =>
+          document.querySelector(previewSectionSelector(sectionId)),
+        )
+        .filter(Boolean);
+      const parent = ordered[0]?.parentElement;
+      if (parent && ordered.every((section) => section.parentElement === parent)) {
+        for (const section of ordered) parent.appendChild(section);
+        reportStructure();
+        drawOverlays();
+      }
+      return;
+    }
+    if (message?.type === "morph:storefront-preview-set-viewport-height") {
+      const h = message.height;
+      if (typeof h === "number" && h >= 320 && h <= 2160) {
+        const heightValue = Math.round(h) + "px";
+        document.documentElement.style.setProperty(
+          "--storefront-preview-viewport-height",
+          heightValue,
+        );
+        const rootEl = document.querySelector("[data-storefront-preview-root]");
+        if (rootEl) {
+          rootEl.style.setProperty(
+            "--storefront-preview-viewport-height",
+            heightValue,
+          );
+        }
+      }
+      return;
+    }
     if (message?.type === "morph:storefront-preview-set-selection-mode") {
       // Taken forward, never back: the editor and this page each move the
       // count, and the higher of the two is the one both have seen.
@@ -615,6 +809,11 @@ if (channel) {
           selectionRevision,
           message.selectionRevision,
         );
+      }
+      if (!message.enabled) {
+        inlineEditor.finish(false);
+        selectionStylePreview.clear();
+        clearSelectionAttributes();
       }
       selectionEnabled = message.enabled;
       // What the pointer is for, said on the document so CSS can answer it.
@@ -636,6 +835,140 @@ if (channel) {
       }
       syncDragHandle();
       drawOverlays();
+      if (message.restoreTarget) {
+        restoreSelectedTarget(message.restoreTarget);
+      } else if (selectionEnabled) {
+        restoreSelectedSection();
+      }
+      return;
+    }
+    if (message?.type === "morph:storefront-preview-set-section") {
+      if (message.selectionRevision !== undefined) {
+        selectionRevision = Math.max(
+          selectionRevision,
+          message.selectionRevision,
+        );
+      }
+      lastRestoreTarget = message.restoreTarget ?? null;
+      selectedSectionId = message.sectionId;
+      if (selectionEnabled && message.restoreTarget) {
+        restoreSelectedTarget(message.restoreTarget);
+      } else if (selectionEnabled) {
+        restoreSelectedSection();
+      }
+      return;
+    }
+    if (
+      message?.type ===
+      "morph:storefront-preview-reset-selection-style-preview"
+    ) {
+      if (selectedItem?.element) {
+        selectionStylePreview.holdCurrentStyles(selectedItem.element);
+      }
+      return;
+    }
+    if (
+      message?.type === "morph:storefront-preview-update-selection-style" &&
+      selectedItem?.element
+    ) {
+      const targetKey = message.targetElement;
+      const scope = selectedItem.section ?? document;
+      const selectedElementMatchesTarget =
+        selectedItem.elementKey === targetKey ||
+        domElementMatchesTarget(
+          selectedItem.element,
+          targetKey,
+          message.sourceLocation,
+        );
+      const selectors = [
+        '[data-morph-node="' + CSS.escape(targetKey) + '"]',
+        '[data-morph-element="' + CSS.escape(targetKey) + '"]',
+        '[data-storefront-field="' + CSS.escape(targetKey) + '"]',
+      ];
+      if (message.sourceLocation) {
+        selectors.push('[data-morph-loc="' + CSS.escape(message.sourceLocation) + '"]');
+      }
+      const previewTarget =
+        targetKey === "section" || targetKey === "root"
+          ? (selectedItem.section ?? selectedItem.element)
+          : selectedElementMatchesTarget
+            ? selectedItem.element
+            : scope.querySelector(selectors.join(","));
+      if (!previewTarget) return;
+      const previewStyles = message.styles;
+      selectionStylePreview.apply(previewTarget, previewStyles);
+      if (selectionStylePreviewNeedsOverlayUpdate(previewStyles)) {
+        drawOverlays();
+      }
+      return;
+    }
+    if (message?.type === "morph:storefront-preview-request-selection-style") {
+      if (selectedItem?.sectionId) {
+        sendSelectionReport(selectedItem);
+      }
+      return;
+    }
+    if (
+      message?.type === "morph:storefront-preview-set-selection-field-path" &&
+      selectedItem?.sectionId === message.sectionId
+    ) {
+      selectedItem = {
+        ...selectedItem,
+        fieldPath: message.fieldPath,
+      };
+      return;
+    }
+    if (
+      message?.type === "morph:storefront-preview-update-selection-field" &&
+      selectedItem
+    ) {
+      const scope = selectedItem.section ?? document;
+      const fieldPath = message.fieldPath;
+      const groupedImagePath =
+        message.fieldKey === "image" && fieldPath?.endsWith(".alt")
+          ? fieldPath.slice(0, -4)
+          : null;
+      const target =
+        (fieldPath
+          ? scope.querySelector(
+              '[data-storefront-field-path="' + CSS.escape(fieldPath) + '"]',
+            )
+          : null) ??
+        (groupedImagePath
+          ? scope.querySelector(
+              '[data-storefront-field-path="' + CSS.escape(groupedImagePath) + '"]',
+            )
+          : null) ??
+        scope.querySelector(
+          '[data-storefront-field="' + CSS.escape(message.fieldKey) + '"]',
+        ) ??
+        (selectedItem.fieldKey === message.fieldKey
+          ? selectedItem.element
+          : null);
+      if (!target) return;
+      const mediaTarget =
+        message.fieldKey === "image" ||
+        message.fieldKey === "imageSrc" ||
+        message.fieldKey === "imageAlt"
+          ? target.matches("img,video,audio")
+            ? target
+            : (target.querySelector("img,video,audio") ?? target)
+          : target;
+      if (message.fieldKey === "image" && groupedImagePath) {
+        mediaTarget.setAttribute("alt", message.value);
+      } else if (message.fieldKey === "image") {
+        mediaTarget.setAttribute("src", message.value);
+      } else if (message.fieldKey === "imageSrc") {
+        mediaTarget.setAttribute("src", message.value);
+      } else if (message.fieldKey === "imageAlt") {
+        mediaTarget.setAttribute("alt", message.value);
+      } else if (message.fieldKey === "actionHref") {
+        target.setAttribute("href", message.value);
+      } else {
+        target.textContent = message.value;
+      }
+      drawOverlays();
+      return;
     }
   });
 

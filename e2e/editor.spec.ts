@@ -382,21 +382,28 @@ test.describe("visual editor", () => {
     await expect(undo).toBeDisabled();
 
     try {
+      console.log("[style-roundtrip] first write");
       await writeTextColor(page, "rgb(200, 30, 30)");
       await expect.poll(colorOf).toBe("rgb(200, 30, 30)");
+      console.log("[style-roundtrip] second write");
       await writeTextColor(page, "rgb(10, 90, 180)");
       await expect.poll(colorOf).toBe("rgb(10, 90, 180)");
 
+      console.log("[style-roundtrip] first undo");
       await undo.click();
       await expect.poll(colorOf).toBe("rgb(200, 30, 30)");
+      console.log("[style-roundtrip] second undo");
       await undo.click();
       await expect.poll(colorOf).toBe(original);
+      console.log("[style-roundtrip] restored");
     } finally {
+      console.log("[style-roundtrip] cleanup");
       // The theme file is real, so the test puts it back whether it passed or
       // not; a failed run must not leave the workspace edited.
       await undoEverything(page);
     }
 
+    console.log("[style-roundtrip] final assert");
     await expect.poll(colorOf).toBe(original);
   });
 
@@ -448,8 +455,46 @@ test.describe("visual editor", () => {
 /** Writes a colour through the Inspector the way a person would. */
 async function writeTextColor(page: Page, value: string) {
   const input = page.getByLabel("Text color value");
-  await input.fill(value);
+  await input.scrollIntoViewIfNeeded();
+  console.log(
+    "[writeTextColor] hit",
+    await input.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height / 2,
+      );
+      return {
+        rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+        disabled: (element as HTMLInputElement).disabled,
+        hit: hit?.outerHTML.slice(0, 300),
+      };
+    }),
+  );
+  console.log("[writeTextColor] fill", value);
+  const fill = input.fill(value).then(() => "done" as const);
+  const outcome = await Promise.race([
+    fill,
+    page.waitForTimeout(3_000).then(() => "timeout" as const),
+  ]);
+  console.log("[writeTextColor] outcome", outcome);
+  if (outcome === "timeout") {
+    console.log(
+      "[writeTextColor] inputs",
+      await page
+        .getByLabel("Text color value")
+        .evaluateAll((inputs) =>
+          inputs.map((input) => ({
+            value: (input as HTMLInputElement).value,
+            connected: input.isConnected,
+          })),
+        ),
+    );
+    throw new Error("fill hung");
+  }
+  console.log("[writeTextColor] press", value);
   await input.press("Enter");
+  console.log("[writeTextColor] done", value);
 }
 
 /** Presses undo until there is nothing left to reverse. */

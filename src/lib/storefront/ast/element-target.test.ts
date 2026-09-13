@@ -49,6 +49,23 @@ describe("resolveElementTargetKey", () => {
     ).toBe("10:7");
   });
 
+  it("skips a semantic field key that does not identify a parsed JSX element", () => {
+    const parsed = parseComponentSource(`export default function Hero({ description }) {
+  return <p className="text-sm">{description}</p>;
+}`);
+
+    expect(
+      resolveElementTargetKey(
+        {
+          elementKey: "fields.description",
+          // Column 10: two spaces, then `return `, then the element.
+          sourceLocation: "src/components/Hero.tsx:2:10",
+        },
+        parsed,
+      ),
+    ).toBe("2:10");
+  });
+
   it("falls back to the legacy default when nothing identifies the element", () => {
     expect(resolveElementTargetKey(null)).toBe(DEFAULT_ELEMENT_TARGET_KEY);
     expect(resolveElementTargetKey({})).toBe(DEFAULT_ELEMENT_TARGET_KEY);

@@ -354,7 +354,7 @@ function SortableSectionRow({
                   onToggleEnabled();
                 }}
                 className={cn(
-                  "top-1 right-1 size-5",
+                  "top-1 right-1 z-10 size-5",
                   section.enabled === false && "opacity-100",
                 )}
                 aria-label={

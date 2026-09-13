@@ -365,7 +365,12 @@ export function injectPreviewBindings(
               ` ${SOURCE_FILE_ATTRIBUTE}="${escapeAttribute(file.path)}"`,
             );
           }
-          const position = opening.name.loc?.start;
+          // The opening tag, not the tag name. One column to its right is a
+          // different element as far as the editor is concerned: the Inspector
+          // looks this value up in the parsed source to decide whether it can
+          // edit the element at all, and a position that resolves to nothing
+          // disables every style control on it.
+          const position = opening.loc?.start;
           if (
             position &&
             !hasAttribute(opening, MORPH_SOURCE_LOCATION_ATTRIBUTE)

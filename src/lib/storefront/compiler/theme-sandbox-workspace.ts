@@ -25,6 +25,12 @@ import {
   THEME_PREVIEW_BRIDGE_PATH,
 } from "./theme-preview-bridge-entry";
 import type { ThemeBuildDiagnostic } from "./theme-build-runner.types";
+import {
+  THEME_PREVIEW_CONTENT_MODULE_PATH,
+  themePreviewContentModuleSource,
+  themePreviewContentPluginSource,
+  type ThemePreviewContentSnapshot,
+} from "./theme-preview-content";
 
 /**
  * Lays out the container workspace a Theme is compiled or served from.
@@ -110,6 +116,8 @@ export type PrepareThemeWorkspaceInput = Readonly<{
   dependencies?: Readonly<Record<string, string>>;
   approvedDependencies: ReadonlySet<string>;
   mode: ThemeWorkspaceMode;
+  /** Render-only draft data, available solely to a preview workspace. */
+  previewContent?: ThemePreviewContentSnapshot;
 }>;
 
 export type PlanThemeWorkspaceInput = Omit<
@@ -173,6 +181,7 @@ export function planThemeSandboxWorkspace({
   dependencies,
   approvedDependencies,
   mode,
+  previewContent,
 }: PlanThemeWorkspaceInput): PrepareThemeWorkspaceResult {
   // A build ships none of the editor's attributes. The Theme's stored source
   // keeps them — that is where a hand-written marker is doing its job — but a
@@ -382,7 +391,7 @@ export function planThemeSandboxWorkspace({
 <title>Storefront Theme</title>
   </head>
   <body>
-<div id="root"></div>
+<div id="root"${mode === "preview-server" ? ' data-storefront-preview-root="true"' : ""}></div>
 <script type="module" src="/__entry.tsx"></script>${
       mode === "preview-server"
         ? `\n<script type="module" src="/${THEME_PREVIEW_BRIDGE_PATH}"></script>`
@@ -405,6 +414,12 @@ export function planThemeSandboxWorkspace({
     queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_BRIDGE_PATH}`,
       themePreviewBridgeEntrySource(),
+    );
+    queueWorkspaceFile(
+      `${workspaceRoot}/${THEME_PREVIEW_CONTENT_MODULE_PATH}`,
+      themePreviewContentModuleSource(
+        previewContent ?? { templates: {}, pages: {} },
+      ),
     );
   }
 
@@ -481,6 +496,13 @@ return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
   };
 const hasStartRuntime = ${routeRegistry ? "true" : "false"};
 const isLivePreview = ${mode === "preview-server" ? "true" : "false"};
+const previewContentPlugin = ${
+    mode === "preview-server"
+      ? themePreviewContentPluginSource(
+          previewContent ?? { templates: {}, pages: {} },
+        )
+      : "null"
+  };
 const isStartRuntimeBuild =
   hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
 
@@ -609,6 +631,7 @@ export default defineConfig({
     // resolve. Stubbed here as well as in the in-process runner, from one
     // shared definition.
     ${themePreviewServerStubPluginSource()},
+    ...(previewContentPlugin ? [previewContentPlugin] : []),
     tailwindcss(),
     viteReact(),
     ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),

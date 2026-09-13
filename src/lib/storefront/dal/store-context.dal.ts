@@ -132,6 +132,7 @@ export const storeContextDal = {
     }
 
     if (input.hostname) {
+      const normalized = normalizeHostname(input.hostname);
       const [domain] = await db
         .select({
           storefrontId: storefrontDomains.storefrontId,
@@ -144,7 +145,7 @@ export const storeContextDal = {
         )
         .where(
           and(
-            eq(storefrontDomains.hostname, normalizeHostname(input.hostname)),
+            eq(storefrontDomains.hostname, normalized),
             eq(storefrontDomains.status, "active"),
             isNull(storefrontDomains.deletedAt),
             isNull(storefronts.deletedAt),

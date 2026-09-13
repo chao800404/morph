@@ -107,6 +107,32 @@ function addConfiguredPlatformHostnames(
   }
 }
 
+export function isPreviewHostname(
+  rawHostname: string | null,
+  env?: Record<string, unknown>,
+): boolean {
+  if (!rawHostname) return false;
+  const normalized = normalizeStorefrontHostname(rawHostname);
+  if (!normalized) return false;
+  if (
+    normalized === "preview.localhost" ||
+    normalized.endsWith(".preview.localhost")
+  ) {
+    return true;
+  }
+  const configured =
+    typeof env?.THEME_PREVIEW_HOSTNAME === "string"
+      ? normalizeStorefrontHostname(env.THEME_PREVIEW_HOSTNAME)
+      : null;
+  if (
+    configured &&
+    (normalized === configured || normalized.endsWith("." + configured))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Decides whether a request belongs to the storefront plane.
  *
@@ -120,8 +146,9 @@ export function shouldRouteToStorefront(
   request: Request,
   env: Record<string, unknown> | undefined,
 ): boolean {
-  const platformHostnames = collectPlatformHostnames(env);
   const host = request.headers.get("host") ?? safeUrlHostname(request.url);
+  if (isPreviewHostname(host, env)) return false;
+  const platformHostnames = collectPlatformHostnames(env);
   return !isPlatformHostname(host, platformHostnames);
 }
 

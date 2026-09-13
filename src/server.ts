@@ -138,20 +138,20 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
 export default {
   async fetch(...args: Parameters<StartRequestHandler>): Promise<Response> {
     const request = args[0];
+    const url = new URL(request.url);
 
-    // A Live Preview server answers on its own hostname, and this is what
-    // carries those requests into the container. It returns null for
-    // everything else, so ordinary traffic falls through untouched.
-    //
-    // Ahead of the storefront check on purpose: a preview hostname resolved
-    // as a storefront would be looked up as a shop nobody owns, and answered
-    // with a 404 that says nothing about why the preview went blank.
-    const previewResponse = await proxyPreviewRequest(request);
-    if (previewResponse) return previewResponse;
+    // Store APIs are Morph-owned and bypass the Vite container. Preview
+    // content is different: the container receives an authenticated,
+    // render-only draft snapshot when it starts and owns that endpoint.
+    if (!url.pathname.startsWith("/api/store/")) {
+      const previewResponse = await proxyPreviewRequest(request);
+      if (previewResponse) return previewResponse;
+    }
 
     if (await isStorefrontHost(request)) {
       return handleStorefrontRequest(request);
     }
+
     const response = await (await getHandler())(...args);
 
     // h3 turns anything that escapes a handler into a 500 carrying no cause,

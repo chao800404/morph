@@ -748,13 +748,6 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     section.componentRef ?? undefined,
   );
   const activeSourceLocation = selection?.sourceLocation ?? null;
-  // Shared with the AST patch and the live preview so the Inspector never
-  // enables a control the patch cannot apply, and never disables one it could.
-  const targetElement = resolveElementTargetKey({
-    nodeId: activeNodeId,
-    elementKey: activeElementKey,
-    sourceLocation: activeSourceLocation,
-  });
   // Render the new resource before its uncontrolled fields mount.
   const props =
     contentResourceKey === lastContentResourceKeyRef.current
@@ -883,6 +876,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         ? parseComponentSource(componentFile.content, componentFile.path)
         : null,
     [componentFile?.content, componentFile?.path],
+  );
+  // Shared with the AST patch and the live preview so the Inspector never
+  // enables a control the patch cannot apply, and never disables one it could.
+  const targetElement = resolveElementTargetKey(
+    {
+      nodeId: activeNodeId,
+      elementKey: activeElementKey,
+      sourceLocation: activeSourceLocation,
+    },
+    parsedMeta,
   );
   const internalLinkPages = useMemo(
     () => resolveInternalLinkPages(themeFiles),

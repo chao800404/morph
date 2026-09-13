@@ -182,6 +182,29 @@ describe("reporting how tall the preview is", () => {
   });
 });
 
+describe("applying document changes to the real React preview", () => {
+  it("updates the preview content cache and hides the rendered section", () => {
+    expect(BRIDGE).toContain('from "./preview-content"');
+    const update = BRIDGE.slice(
+      BRIDGE.indexOf('"morph:storefront-preview-update-section-props"'),
+    );
+    expect(update).toContain("updatePreviewContent(");
+    expect(update).toContain(
+      'section.toggleAttribute("hidden", !message.enabled)',
+    );
+  });
+
+  it("moves only sibling sections when the document order changes", () => {
+    const reorder = BRIDGE.slice(
+      BRIDGE.indexOf('"morph:storefront-preview-set-section-order"'),
+    );
+    expect(reorder).toContain(
+      "ordered.every((section) => section.parentElement === parent)",
+    );
+    expect(reorder).toContain("parent.appendChild(section)");
+  });
+});
+
 describe("showing what is selected and what is under the pointer", () => {
   it("draws with the same controller the compatibility renderer uses", () => {
     expect(BRIDGE).toContain("createPreviewSelectionOverlays()");

@@ -39,13 +39,22 @@ export const DEFAULT_ELEMENT_TARGET_KEY = "heading";
  */
 export function resolveElementTargetKey(
   selection: ElementTargetSelection | null | undefined,
+  parsed?: ParsedComponentMeta | null,
 ): string {
-  return (
-    selection?.nodeId ||
-    selection?.elementKey ||
-    sourceLocationKey(selection?.sourceLocation) ||
-    DEFAULT_ELEMENT_TARGET_KEY
-  );
+  const candidates = [
+    selection?.nodeId,
+    selection?.elementKey,
+    sourceLocationKey(selection?.sourceLocation),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  if (parsed) {
+    const resolved = candidates.find((candidate) =>
+      resolveElementMeta(parsed, candidate),
+    );
+    if (resolved) return resolved;
+  }
+
+  return candidates[0] ?? DEFAULT_ELEMENT_TARGET_KEY;
 }
 
 /**

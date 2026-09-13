@@ -31,6 +31,18 @@ describe("createThemePreviewServerStubPlugin", () => {
     }
   });
 
+  it("stubs @tanstack/start-fn-stubs so createIsomorphicFn chooses client implementation in browser", async () => {
+    const code = loadStub("@tanstack/start-fn-stubs");
+    expect(code).toContain("export function createIsomorphicFn");
+    const module = await import(
+      /* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
+    );
+    const clientFn = () => "from-client";
+    const serverFn = () => "from-server";
+    const iso = module.createIsomorphicFn().client(clientFn).server(serverFn);
+    expect(iso()).toBe("from-client");
+  });
+
   it("leaves unrelated specifiers to the rest of the build", () => {
     const plugin = createThemePreviewServerStubPlugin();
 
@@ -76,6 +88,7 @@ describe("the same stub inside a container-generated config", () => {
       THEME_START_SERVER_SPECIFIER,
       "node:async_hooks",
       "async_hooks",
+      "@tanstack/start-fn-stubs",
       "react",
       "@tanstack/react-start",
     ]) {
@@ -90,7 +103,11 @@ describe("the same stub inside a container-generated config", () => {
     const inProcess = createThemePreviewServerStubPlugin();
     const emitted = emittedPlugin();
 
-    for (const specifier of [THEME_START_SERVER_SPECIFIER, "node:async_hooks"]) {
+    for (const specifier of [
+      THEME_START_SERVER_SPECIFIER,
+      "node:async_hooks",
+      "@tanstack/start-fn-stubs",
+    ]) {
       const id = inProcess.resolveId(specifier)!;
       expect(emitted.load(id)).toBe(inProcess.load(id));
     }

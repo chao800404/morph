@@ -30,7 +30,11 @@ export default function Hero({ heading }) {
     const out = run(
       `export default function Hero() {\n  return <p>hi</p>;\n}\n`,
     );
-    expect(out).toContain('data-morph-loc="src/components/Hero.tsx:2:11"');
+    // The `<`, not the tag name: the Inspector looks this value up in the
+    // parsed source, which keys elements by their opening tag. Anchoring one
+    // column to the right resolved to nothing and disabled every style
+    // control on every element the author had not marked by hand.
+    expect(out).toContain('data-morph-loc="src/components/Hero.tsx:2:10"');
   });
 
   it("addresses a repeated row by index, evaluated when React runs the loop", () => {

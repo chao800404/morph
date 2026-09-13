@@ -264,7 +264,9 @@ describe("laying out the workspace a Theme is served from", () => {
     // keyword in place rather than moving a byte.
     const lines = CARD.split("\n");
     const line = lines.findIndex((text) => text.includes("<h1>")) + 1;
-    const column = lines[line - 1]!.indexOf("<h1>") + 2;
+    // The `<` itself, one-based: the same position the parsed source keys the
+    // element by, which is what lets the Inspector look it up.
+    const column = lines[line - 1]!.indexOf("<h1>") + 1;
     expect(card).toContain(
       `data-morph-loc="src/components/Card.tsx:${line}:${column}"`,
     );
@@ -281,6 +283,45 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(viteConfig).toContain("const isLivePreview = true");
     expect(viteConfig).toContain('"/__morph-theme-preview__/"');
     expect(viteConfig).toContain('? { path: "hmr" }');
+  });
+
+  it("serves authenticated draft content from inside the preview workspace", async () => {
+    const written = new Map<string, string>();
+    const result = await prepareThemeSandboxWorkspace({
+      session: {
+        async mkdir() {},
+        async writeFile(path, content) {
+          written.set(path, String(content));
+        },
+      },
+      files: [
+        {
+          path: "src/pages/index.tsx",
+          content: "export default () => <main />;\n",
+        },
+      ],
+      entry: "src/pages/index.tsx",
+      buildId: "preview-content-test",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "preview-server",
+      previewContent: {
+        templates: {
+          index: {
+            slots: { hero: { heading: "Stored draft" } },
+            hiddenSlots: [],
+          },
+        },
+        pages: {},
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(written.get("/workspace/src/morph/preview-content.ts")).toContain(
+      'heading":"Stored draft',
+    );
+    expect(written.get("/workspace/vite.config.ts")).toContain(
+      'name: "morph-preview-content"',
+    );
   });
 
   it("leaves a build with the Theme exactly as the author wrote it", async () => {

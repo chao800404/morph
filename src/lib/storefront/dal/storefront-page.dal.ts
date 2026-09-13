@@ -14,6 +14,7 @@ import {
   toStorefrontPageRevisionDTO,
   toStorefrontPageSummaryDTO,
 } from "../mapper/storefront-page.mapper";
+import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 
 const activeStorefront = async () => {
   const db = await getDb();
@@ -28,6 +29,34 @@ const activeStorefront = async () => {
 
 export const storefrontPageDal = {
   activeStorefront,
+  async listDraftDocuments(storefrontId: string) {
+    const db = await getDb();
+    const rows = await db
+      .select({
+        handle: storefrontPages.handle,
+        document: storefrontPageRevisions.document,
+      })
+      .from(storefrontPages)
+      .innerJoin(
+        storefrontPageRevisions,
+        and(
+          eq(storefrontPageRevisions.id, storefrontPages.draftRevisionId),
+          eq(storefrontPageRevisions.pageId, storefrontPages.id),
+        ),
+      )
+      .where(
+        and(
+          eq(storefrontPages.storefrontId, storefrontId),
+          isNull(storefrontPages.deletedAt),
+        ),
+      )
+      .orderBy(asc(storefrontPages.handle));
+
+    return rows.map((row) => ({
+      handle: row.handle,
+      document: storefrontPageDocumentSchema.parse(row.document),
+    }));
+  },
   async listPage(options: {
     query?: string | null;
     sortBy: "title" | "createdAt" | "updatedAt";

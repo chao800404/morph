@@ -54,6 +54,15 @@ describe("catalog context fails closed", () => {
     ).toBeNull();
     expect(db.select).toHaveBeenCalledTimes(2);
   });
+  it("does not turn a loopback Host header into access to the first storefront", async () => {
+    const db = database([[]]);
+    mocks.getDb.mockResolvedValue(db);
+
+    expect(
+      await storeContextDal.resolveCatalog({ hostname: "preview.localhost" }),
+    ).toBeNull();
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
   it("rejects mismatched theme ownership before any storefront data read", async () => {
     const db = database([[]]);
     mocks.getDb.mockResolvedValue(db);

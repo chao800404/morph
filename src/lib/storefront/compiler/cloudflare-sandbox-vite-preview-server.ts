@@ -11,6 +11,7 @@ import {
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
 import { THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH } from "./theme-workspace-path";
+import type { ThemePreviewContentSnapshot } from "./theme-preview-content";
 
 /**
  * Runs a Theme's Live Preview as a real Vite dev server inside a sandbox
@@ -145,6 +146,8 @@ export type StartPreviewServerInput = Readonly<{
   previewHostname: string;
   /** Worker vars, so every platform hostname can be refused, not just one. */
   env: Record<string, unknown> | undefined;
+  /** Authenticated draft content reduced to render-only values. */
+  previewContent?: ThemePreviewContentSnapshot;
 }>;
 
 export type StartPreviewServerResult =
@@ -338,6 +341,7 @@ export class CloudflareSandboxVitePreviewServer {
         dependencies: input.dependencies,
         approvedDependencies: this.approvedDependencies,
         mode: "preview-server",
+        previewContent: input.previewContent,
       });
       const workspacePlanMs = Date.now() - workspacePlanStartedAt;
       if (!prepared.ok) {

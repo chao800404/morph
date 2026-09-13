@@ -5,6 +5,8 @@ import { fail, ok, parseInput } from "@/lib/db/server-result";
 import { idSchema } from "@/lib/validations/commerce";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
+import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
+import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import {
   CloudflareSandboxVitePreviewServer,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
@@ -20,6 +22,7 @@ import {
   resolveThemePreviewServerHost,
   validateExposedPreviewUrl,
 } from "@/lib/storefront/service/theme-preview-server-origin";
+import { createThemePreviewContentSnapshot } from "@/lib/storefront/compiler/theme-preview-content";
 
 /**
  * Starts and stops the dev server behind a Theme's Live Preview.
@@ -72,7 +75,17 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       );
     }
 
-    const files = await storefrontThemeFileDal.listFiles(storefrontId, themeId);
+    const editorContext = await storefrontThemeDal.findEditorContext(
+      storefrontId,
+      themeId,
+    );
+    if (!editorContext) {
+      return fail("Storefront theme not found", { error: "NOT_FOUND" });
+    }
+    const [files, pages] = await Promise.all([
+      storefrontThemeFileDal.listFiles(storefrontId, themeId),
+      storefrontPageDal.listDraftDocuments(storefrontId),
+    ]);
     if (files.length === 0) {
       return fail("This theme has no files to preview.", {
         error: "THEME_EMPTY",
@@ -90,6 +103,10 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       themeId,
       userId: context.user.id,
     });
+    const previewContent = await createThemePreviewContentSnapshot({
+      templates: editorContext.templates,
+      pages,
+    });
 
     const server = new CloudflareSandboxVitePreviewServer({
       sandboxBinding: previewEnv.Sandbox,
@@ -99,6 +116,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       files: files.map((file) => ({ path: file.path, content: file.content })),
       entry,
       previewHostname: host.hostname,
+      previewContent,
       env: env as unknown as Record<string, unknown>,
     });
     if (!started.ok) {

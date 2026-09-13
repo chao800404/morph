@@ -22,6 +22,10 @@ const NODE_ASYNC_HOOKS_SPECIFIERS = ["node:async_hooks", "async_hooks"];
 
 const ASYNC_HOOKS_VIRTUAL_ID = "\0morph-theme-preview-async-hooks-stub";
 
+export const START_FN_STUBS_SPECIFIER = "@tanstack/start-fn-stubs";
+
+const START_FN_STUBS_VIRTUAL_ID = "\0morph-theme-start-fn-stubs";
+
 /**
  * Single-threaded stand-in for `AsyncLocalStorage`.
  *
@@ -69,6 +73,36 @@ export default { AsyncLocalStorage, AsyncResource };
 `;
 
 /**
+ * Client-first stand-in for TanStack Start function stubs.
+ *
+ * In uncompiled client-only preview builds, the upstream stub's `.server()`
+ * would overwrite `clientImpl` and execute server code in the browser, calling
+ * `getRequest()` and throwing. Selecting `clientImpl` preserves browser data loading.
+ */
+const START_FN_STUBS_SOURCE = `function createRuntimeFn(fn, clientImpl, serverImpl) {
+  return Object.assign(fn, {
+    server: (nextServerImpl) => {
+      const active = clientImpl ?? nextServerImpl;
+      return createRuntimeFn(active, clientImpl, nextServerImpl);
+    },
+    client: (nextClientImpl) => {
+      return createRuntimeFn(nextClientImpl, nextClientImpl, serverImpl);
+    },
+  });
+}
+export function createIsomorphicFn() {
+  return createRuntimeFn(() => void 0);
+}
+export const createClientOnlyFn = (fn) => fn;
+export const createServerOnlyFn = (fn) => () => {
+  throw new Error(
+    "Theme preview cannot call server-only functions: server APIs run only in the deployed Theme Worker.",
+  );
+};
+export default { createIsomorphicFn, createClientOnlyFn, createServerOnlyFn };
+`;
+
+/**
  * Stub the preview build substitutes for the Start server module.
  *
  * Every export throws: the preview never calls them, and a silent no-op would
@@ -111,12 +145,21 @@ export function themePreviewServerStubPluginSource(): string {
     if (${JSON.stringify(NODE_ASYNC_HOOKS_SPECIFIERS)}.includes(source)) {
       return ${JSON.stringify(ASYNC_HOOKS_VIRTUAL_ID)};
     }
+    if (
+      source === ${JSON.stringify(START_FN_STUBS_SPECIFIER)} ||
+      source.startsWith(${JSON.stringify(START_FN_STUBS_SPECIFIER + "/")})
+    ) {
+      return ${JSON.stringify(START_FN_STUBS_VIRTUAL_ID)};
+    }
     return null;
   },
   load(id) {
     if (id === ${JSON.stringify(VIRTUAL_ID)}) return ${JSON.stringify(STUB_SOURCE)};
     if (id === ${JSON.stringify(ASYNC_HOOKS_VIRTUAL_ID)}) {
       return ${JSON.stringify(ASYNC_HOOKS_STUB_SOURCE)};
+    }
+    if (id === ${JSON.stringify(START_FN_STUBS_VIRTUAL_ID)}) {
+      return ${JSON.stringify(START_FN_STUBS_SOURCE)};
     }
     return null;
   },
@@ -137,11 +180,18 @@ export function createThemePreviewServerStubPlugin() {
       if (NODE_ASYNC_HOOKS_SPECIFIERS.includes(source)) {
         return ASYNC_HOOKS_VIRTUAL_ID;
       }
+      if (
+        source === START_FN_STUBS_SPECIFIER ||
+        source.startsWith(START_FN_STUBS_SPECIFIER + "/")
+      ) {
+        return START_FN_STUBS_VIRTUAL_ID;
+      }
       return null;
     },
     load(id: string) {
       if (id === VIRTUAL_ID) return STUB_SOURCE;
       if (id === ASYNC_HOOKS_VIRTUAL_ID) return ASYNC_HOOKS_STUB_SOURCE;
+      if (id === START_FN_STUBS_VIRTUAL_ID) return START_FN_STUBS_SOURCE;
       return null;
     },
   };

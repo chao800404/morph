@@ -3976,10 +3976,6 @@ export function VisualEditorShell({
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (!message) {
-        // A rejected message is dropped whole and the editor keeps whatever it
-        // accepted last. That silence is how a structure the validator refused
-        // went unnoticed while the panel kept rendering a Theme that no longer
-        // existed.
         if (
           import.meta.env.DEV &&
           typeof (event.data as { type?: unknown })?.type === "string" &&

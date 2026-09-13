@@ -91,6 +91,8 @@ export const THEME_PREVIEW_FS_ALLOW_ROOTS: readonly string[] = [
 export const THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES: readonly string[] = [
   "@tanstack/react-start",
   "@tanstack/react-start/server",
+  "@tanstack/start-client-core",
+  "@tanstack/start-fn-stubs",
   // The packages that actually reach for `node:async_hooks`. Listing only the
   // entry point a Theme imports was not enough: these are pulled in
   // transitively, pre-bundled on their own, and the stub never saw them — the
