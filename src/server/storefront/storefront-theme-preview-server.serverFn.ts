@@ -111,6 +111,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       url: url.url,
       origin: url.origin,
       readyMs: started.readyMs,
+      timings: started.timings,
       hoistedContentFields: started.hoistedContentFields,
     });
   });

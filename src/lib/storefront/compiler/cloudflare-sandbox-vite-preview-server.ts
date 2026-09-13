@@ -125,6 +125,7 @@ export type StartPreviewServerResult =
       url: string;
       processId: string | undefined;
       readyMs: number;
+      timings: PreviewServerTimings;
       /** Modules whose `contentFields` export was lifted for Fast Refresh. */
       hoistedContentFields: readonly string[];
       /** Preview behaviour that will differ from the build, and why. */
@@ -138,6 +139,28 @@ export type StartPreviewServerResult =
       logs: readonly string[];
     }>;
 
+export type PreviewServerTimings = Readonly<{
+  /** Entire server start request, including lazy container startup. */
+  totalMs: number;
+  /** Getting the Durable Object handle only; this does not start the container. */
+  sandboxHandleMs: number;
+  /** Wall time spent transforming and laying out the workspace. */
+  workspaceMs: number;
+  /** First filesystem call, where a sleeping container normally starts lazily. */
+  firstFilesystemCallMs: number;
+  mkdirCalls: number;
+  /** Sum of individual mkdir durations; may exceed wall time when calls overlap. */
+  mkdirCumulativeMs: number;
+  writeCalls: number;
+  /** Sum of individual write durations; may exceed wall time when calls overlap. */
+  writeCumulativeMs: number;
+  exposePortMs: number;
+  configureLifecycleMs: number;
+  processLookupMs: number;
+  viteReadyMs: number;
+  reusedProcess: boolean;
+}>;
+
 export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
   sandboxBinding?: unknown;
   sandboxProvider?: PreviewServerProvider;
@@ -145,10 +168,10 @@ export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
   /**
    * How long to wait for Vite to report itself ready.
    *
-   * A cold container measured 38s on a first local run — the image boots, the
-   * workspace is written a file at a time, and dependencies are optimised
-   * before anything is served. The default leaves room for a slower machine
-   * rather than tearing down a server that was about to work.
+   * The container starts lazily on the first filesystem operation, then the
+   * workspace is materialized and Vite becomes ready. Keep room for slow-tail
+   * starts rather than tearing down a server that was about to answer; the
+   * returned stage timings make local and deployed latency measurable.
    */
   readyTimeoutMs?: number;
   /** Idle time after which the container may be reclaimed. */
@@ -191,6 +214,7 @@ export class CloudflareSandboxVitePreviewServer {
   async start(
     input: StartPreviewServerInput,
   ): Promise<StartPreviewServerResult> {
+    const requestStartedAt = Date.now();
     const logs: string[] = [];
     const addLog = (line: string) => {
       if (logs.length < this.maxLogLines) logs.push(line);
@@ -214,10 +238,51 @@ export class CloudflareSandboxVitePreviewServer {
 
     let session: PreviewServerSession | null = null;
     try {
+      const sandboxHandleStartedAt = Date.now();
       session = await this.acquire(input.previewId);
+      const sandboxHandleMs = Date.now() - sandboxHandleStartedAt;
 
+      let firstFilesystemCallMs = 0;
+      let sawFilesystemCall = false;
+      let mkdirCalls = 0;
+      let mkdirCumulativeMs = 0;
+      let writeCalls = 0;
+      let writeCumulativeMs = 0;
+      const recordFilesystemCall = async <T>(
+        operation: () => Promise<T>,
+        kind: "mkdir" | "write",
+      ): Promise<T> => {
+        const startedAt = Date.now();
+        try {
+          return await operation();
+        } finally {
+          const durationMs = Date.now() - startedAt;
+          if (!sawFilesystemCall) {
+            sawFilesystemCall = true;
+            firstFilesystemCallMs = durationMs;
+          }
+          if (kind === "mkdir") {
+            mkdirCalls += 1;
+            mkdirCumulativeMs += durationMs;
+          } else {
+            writeCalls += 1;
+            writeCumulativeMs += durationMs;
+          }
+        }
+      };
+      const measuredWriter: ThemeWorkspaceWriter = {
+        mkdir: (path, options) =>
+          recordFilesystemCall(() => session!.mkdir(path, options), "mkdir"),
+        writeFile: (path, content) =>
+          recordFilesystemCall(
+            () => session!.writeFile(path, content),
+            "write",
+          ),
+      };
+
+      const workspaceStartedAt = Date.now();
       const prepared = await prepareThemeSandboxWorkspace({
-        session,
+        session: measuredWriter,
         files: input.files,
         entry: input.entry,
         buildId: input.previewId,
@@ -225,6 +290,7 @@ export class CloudflareSandboxVitePreviewServer {
         approvedDependencies: this.approvedDependencies,
         mode: "preview-server",
       });
+      const workspaceMs = Date.now() - workspaceStartedAt;
       if (!prepared.ok) {
         await session.destroy();
         return {
@@ -237,33 +303,55 @@ export class CloudflareSandboxVitePreviewServer {
 
       // Authorize the URL before the server exists, so a process that becomes
       // ready immediately still has somewhere to be reached.
+      const exposePortStartedAt = Date.now();
       const exposed = await session.exposePort(THEME_PREVIEW_SERVER_PORT, {
         hostname: previewHost,
         name: "live-preview",
       });
+      const exposePortMs = Date.now() - exposePortStartedAt;
       const previewUrl = withPreviewServerBase(exposed.url);
 
+      const configureLifecycleStartedAt = Date.now();
       if (session.setSleepAfter) {
         await session.setSleepAfter(this.sleepAfter);
       }
+      const configureLifecycleMs = Date.now() - configureLifecycleStartedAt;
 
       // Asking twice for the same preview must not start a second server.
       // The port is pinned, so a second one cannot bind it and would sit there
       // until the timeout — and tearing down on that timeout would take the
       // working one with it, which is how the first end-to-end run lost a
       // container that was serving perfectly well.
+      const processLookupStartedAt = Date.now();
       const running = await session.listProcesses?.().catch(() => []);
+      const processLookupMs = Date.now() - processLookupStartedAt;
       const alreadyServing = (running ?? []).find(
         (process) =>
           process.command?.includes(VITE_BIN) &&
           (process.status === "running" || process.status === "starting"),
       );
       if (alreadyServing) {
+        const totalMs = Date.now() - requestStartedAt;
         return {
           ok: true,
           url: previewUrl,
           processId: alreadyServing.id,
           readyMs: 0,
+          timings: {
+            totalMs,
+            sandboxHandleMs,
+            workspaceMs,
+            firstFilesystemCallMs,
+            mkdirCalls,
+            mkdirCumulativeMs,
+            writeCalls,
+            writeCumulativeMs,
+            exposePortMs,
+            configureLifecycleMs,
+            processLookupMs,
+            viteReadyMs: 0,
+            reusedProcess: true,
+          },
           hoistedContentFields: prepared.hoistedContentFields,
           warnings: prepared.previewWarnings,
           logs,
@@ -330,11 +418,27 @@ export class CloudflareSandboxVitePreviewServer {
         };
       }
 
+      const viteReadyMs = Date.now() - startedAt;
       return {
         ok: true,
         url: previewUrl,
         processId: process.id,
-        readyMs: Date.now() - startedAt,
+        readyMs: viteReadyMs,
+        timings: {
+          totalMs: Date.now() - requestStartedAt,
+          sandboxHandleMs,
+          workspaceMs,
+          firstFilesystemCallMs,
+          mkdirCalls,
+          mkdirCumulativeMs,
+          writeCalls,
+          writeCumulativeMs,
+          exposePortMs,
+          configureLifecycleMs,
+          processLookupMs,
+          viteReadyMs,
+          reusedProcess: false,
+        },
         hoistedContentFields: prepared.hoistedContentFields,
         warnings: prepared.previewWarnings,
         logs,

@@ -168,6 +168,12 @@ describe("CloudflareSandboxVitePreviewServer", () => {
         path: "/__morph-theme-preview__/",
       },
     ]);
+    expect(result.timings).toMatchObject({
+      reusedProcess: false,
+      mkdirCalls: expect.any(Number),
+      writeCalls: expect.any(Number),
+      viteReadyMs: expect.any(Number),
+    });
   });
 
   it("falls back to the Vite log marker for providers without a port check", async () => {
@@ -308,6 +314,8 @@ describe("asking twice for the same preview", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.processId).toBe("already-running");
+    expect(result.timings.reusedProcess).toBe(true);
+    expect(result.timings.viteReadyMs).toBe(0);
     expect(harness.commands).toEqual([]);
     expect(harness.destroyed).toBe(0);
   });

@@ -51,6 +51,27 @@ export type ThemeWorkspaceFile = Readonly<{
   content: string | Uint8Array;
 }>;
 
+const WORKSPACE_WRITE_CONCURRENCY = 8;
+
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  operation: (item: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++];
+      if (item !== undefined) await operation(item);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, async () =>
+      worker(),
+    ),
+  );
+}
+
 /**
  * Why the workspace is being written.
  *
@@ -183,7 +204,17 @@ export async function prepareThemeSandboxWorkspace({
   );
 
   const workspaceRoot = "/workspace";
-  await session.mkdir(workspaceRoot, { recursive: true });
+  // Assemble the complete workspace before touching the container. Besides
+  // avoiding a partially-written workspace when validation fails, this lets
+  // independent directory and file operations share a bounded number of
+  // Sandbox RPCs instead of paying one round trip at a time.
+  const pendingWrites = new Map<string, string | Uint8Array>();
+  const queueWorkspaceFile = (
+    filePath: string,
+    content: string | Uint8Array,
+  ) => {
+    pendingWrites.set(filePath, content);
+  };
 
   // Write virtual files into container workspace
   let hasCustomIndexHtml = false;
@@ -194,11 +225,7 @@ export async function prepareThemeSandboxWorkspace({
 
   for (const file of files) {
     const fullPath = `${workspaceRoot}/${file.path.replace(/\\/g, "/")}`;
-    const dirPath = fullPath.substring(0, fullPath.lastIndexOf("/"));
-    if (dirPath) {
-      await session.mkdir(dirPath, { recursive: true });
-    }
-    await session.writeFile(fullPath, file.content);
+    queueWorkspaceFile(fullPath, file.content);
 
     if (file.path === "index.html") {
       hasCustomIndexHtml = true;
@@ -291,7 +318,7 @@ export async function prepareThemeSandboxWorkspace({
         "MISSING_START_ROUTER: TanStack Start Theme requires src/router.tsx exporting getRouter().",
       );
     }
-    await session.writeFile(
+    queueWorkspaceFile(
       `${workspaceRoot}/wrangler.json`,
       JSON.stringify(
         {
@@ -312,7 +339,7 @@ export async function prepareThemeSandboxWorkspace({
   // Generate bootstrap entry and index.html if needed
   if (!hasCustomIndexHtml) {
     const bootstrapPath = `${workspaceRoot}/__entry.tsx`;
-    await session.writeFile(bootstrapPath, bootstrap.content);
+    queueWorkspaceFile(bootstrapPath, bootstrap.content);
 
     const indexPath = `${workspaceRoot}/index.html`;
     const indexHtml = `<!DOCTYPE html>
@@ -332,7 +359,7 @@ export async function prepareThemeSandboxWorkspace({
   </body>
 </html>
 `;
-    await session.writeFile(indexPath, indexHtml);
+    queueWorkspaceFile(indexPath, indexHtml);
   }
 
   if (mode === "preview-server") {
@@ -341,12 +368,9 @@ export async function prepareThemeSandboxWorkspace({
     // beside the author's components, so it is obvious this is platform code
     // and not something they wrote.
     for (const module of GENERATED_PREVIEW_BRIDGE_SOURCES) {
-      await session.writeFile(
-        `${workspaceRoot}/${module.path}`,
-        module.content,
-      );
+      queueWorkspaceFile(`${workspaceRoot}/${module.path}`, module.content);
     }
-    await session.writeFile(
+    queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_BRIDGE_PATH}`,
       themePreviewBridgeEntrySource(),
     );
@@ -378,7 +402,7 @@ export async function prepareThemeSandboxWorkspace({
     null,
     2,
   );
-  await session.writeFile(`${workspaceRoot}/package.json`, packageJson);
+  queueWorkspaceFile(`${workspaceRoot}/package.json`, packageJson);
 
   // Write controlled vite.config.ts with Morph dependency enforcer AND workspace path containment inside container
   const approvedArrayJson = JSON.stringify(Array.from(approvedDependencies));
@@ -592,7 +616,26 @@ sourcemap: false,
 });
 
 `;
-  await session.writeFile(`${workspaceRoot}/vite.config.ts`, viteConfigContent);
+  queueWorkspaceFile(`${workspaceRoot}/vite.config.ts`, viteConfigContent);
+
+  await session.mkdir(workspaceRoot, { recursive: true });
+  const directories = Array.from(
+    new Set(
+      Array.from(pendingWrites.keys(), (filePath) =>
+        filePath.substring(0, filePath.lastIndexOf("/")),
+      ).filter((dirPath) => dirPath && dirPath !== workspaceRoot),
+    ),
+  );
+  await runWithConcurrency(
+    directories,
+    WORKSPACE_WRITE_CONCURRENCY,
+    async (dirPath) => session.mkdir(dirPath, { recursive: true }),
+  );
+  await runWithConcurrency(
+    Array.from(pendingWrites),
+    WORKSPACE_WRITE_CONCURRENCY,
+    async ([filePath, content]) => session.writeFile(filePath, content),
+  );
   return {
     ok: true,
     workspaceRoot,

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { prepareThemeSandboxWorkspace } from "./theme-sandbox-workspace";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 
@@ -55,6 +55,74 @@ const prepare = async (mode: "build" | "preview-server") => {
 };
 
 describe("laying out the workspace a Theme is served from", () => {
+  it("creates each directory once and bounds independent file writes", async () => {
+    const directories: string[] = [];
+    const written: string[] = [];
+    let activeWrites = 0;
+    let maximumActiveWrites = 0;
+    const result = await prepareThemeSandboxWorkspace({
+      session: {
+        async mkdir(path) {
+          directories.push(path);
+        },
+        async writeFile(path) {
+          written.push(path);
+          activeWrites += 1;
+          maximumActiveWrites = Math.max(maximumActiveWrites, activeWrites);
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          activeWrites -= 1;
+        },
+      },
+      files: [
+        { path: "src/components/Card.tsx", content: CARD },
+        {
+          path: "src/components/SecondCard.tsx",
+          content: CARD.replace("Card", "SecondCard"),
+        },
+        {
+          path: "src/pages/index.tsx",
+          content: `import Card from "../components/Card";\nexport default () => <Card />;\n`,
+        },
+      ],
+      entry: "src/pages/index.tsx",
+      buildId: "concurrency-test",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "preview-server",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(new Set(directories).size).toBe(directories.length);
+    expect(new Set(written).size).toBe(written.length);
+    expect(maximumActiveWrites).toBeGreaterThan(1);
+    expect(maximumActiveWrites).toBeLessThanOrEqual(8);
+  });
+
+  it("validates the complete plan before it touches the workspace", async () => {
+    const mkdir = vi.fn(async () => {});
+    const writeFile = vi.fn(async () => {});
+    const result = await prepareThemeSandboxWorkspace({
+      session: { mkdir, writeFile },
+      files: [
+        {
+          path: "src/pages/index.tsx",
+          content: `export default () => <p>Invalid config</p>;\n`,
+        },
+        {
+          path: "tsconfig.json",
+          content: JSON.stringify({ extends: "@company/tsconfig" }),
+        },
+      ],
+      entry: "src/pages/index.tsx",
+      buildId: "invalid-plan-test",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "preview-server",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
   it("keeps a repeated row addressable even though the declaration is lifted", async () => {
     // The two passes disagree if they run the other way round: lifting the
     // declaration first leaves nothing exported to read, every row field is
@@ -96,7 +164,7 @@ describe("laying out the workspace a Theme is served from", () => {
   it("serves preview assets and HMR from the preview-only URL namespace", async () => {
     const { viteConfig } = await prepare("preview-server");
 
-    expect(viteConfig).toContain('const isLivePreview = true');
+    expect(viteConfig).toContain("const isLivePreview = true");
     expect(viteConfig).toContain('"/__morph-theme-preview__/"');
     expect(viteConfig).toContain('? { path: "hmr" }');
   });
