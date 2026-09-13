@@ -1,4 +1,5 @@
 import {
+  buildThemeRouteRegistry,
   parseThemeRouteSourcePath,
   themeRoutePathFromSourcePath,
 } from "./theme-route-registry";
@@ -133,4 +134,64 @@ export function planNewThemePage(input: {
     componentName,
     content: pageSource(parsed.fullPath, componentName),
   };
+}
+
+export type ThemePageDeletionPlan =
+  | Readonly<{ ok: true; sourcePath: string; routePath: string }>
+  | Readonly<{ ok: false; reason: string }>;
+
+/**
+ * Whether a page can be removed, and what removing it would take with it.
+ *
+ * Deleting a route file is deleting an address, and some of them hold the
+ * Theme up rather than serve a page. Checked before the write for the same
+ * reason a page is checked before it is created: a Theme left unable to
+ * describe its own routes is a broken storefront, and refusing here costs the
+ * author nothing but a message.
+ */
+export function planThemePageDeletion(input: {
+  sourcePath: string;
+  files: readonly { path: string; content: string }[];
+}): ThemePageDeletionPlan {
+  const sourcePath = input.sourcePath.replace(/\\/g, "/");
+  const parsed = parseThemeRouteSourcePath(sourcePath);
+  if (!parsed) {
+    return { ok: false, reason: `${sourcePath} is not a page.` };
+  }
+  // `__root` is the shell every page renders inside. Removing it is not
+  // removing a page; it is removing all of them at once.
+  if (parsed.routeType === "root") {
+    return {
+      ok: false,
+      reason: "The root route holds every page and cannot be deleted.",
+    };
+  }
+  if (
+    !input.files.some((file) => file.path.replace(/\\/g, "/") === sourcePath)
+  ) {
+    return { ok: false, reason: `${sourcePath} is not in this theme.` };
+  }
+
+  const remaining = input.files.filter(
+    (file) => file.path.replace(/\\/g, "/") !== sourcePath,
+  );
+  const registry = buildThemeRouteRegistry(remaining);
+  if (!registry.valid) {
+    return {
+      ok: false,
+      reason: `Deleting ${parsed.fullPath} would leave this theme's routes invalid.`,
+    };
+  }
+  // A Theme that serves nothing is not a Theme an author can publish, and the
+  // last page is the one most likely to be deleted by accident.
+  // The root is in the registry too, and it is not a page: counting it would
+  // let the last real page go while the theme still looked non-empty.
+  if (!registry.routes.some((record) => record.kind !== "root")) {
+    return {
+      ok: false,
+      reason: "This is the only page left. A theme needs at least one.",
+    };
+  }
+
+  return { ok: true, sourcePath, routePath: parsed.fullPath };
 }

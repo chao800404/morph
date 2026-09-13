@@ -143,6 +143,16 @@ export const createThemePageInputSchema = z.object({
   expectedSourceGeneration: z.number().int().min(1),
 });
 
+export const deleteThemePageInputSchema = z.object({
+  storefrontId: z.string().min(1),
+  themeId: z.string().min(1),
+  sourcePath: safeThemeFilePathSchema,
+  expectedFileId: z.string().uuid(),
+  expectedVersion: z.number().int().min(1),
+  /** The source the editor believes it is removing from. */
+  expectedSourceGeneration: z.number().int().min(1),
+});
+
 export const deleteThemeFileInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),

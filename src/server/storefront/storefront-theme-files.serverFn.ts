@@ -6,12 +6,16 @@ import {
   themeSourceStore,
 } from "@/lib/storefront/storage/theme-storage.server";
 import { createStarterThemeWorkspaceBootstrapPlan } from "@/lib/storefront/starter-theme-files";
-import { planNewThemePage } from "@/lib/storefront/compiler/theme-page-scaffold";
+import {
+  planNewThemePage,
+  planThemePageDeletion,
+} from "@/lib/storefront/compiler/theme-page-scaffold";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   applyStarterThemeWorkspaceInputSchema,
   createThemePageInputSchema,
   createThemeRevisionInputSchema,
+  deleteThemePageInputSchema,
   deleteThemeFileInputSchema,
   getThemeFileInputSchema,
   initStarterThemeFilesInputSchema,
@@ -482,6 +486,91 @@ export const createStorefrontThemePage = createServerFn({ method: "POST" })
       sourcePath: plan.sourcePath,
       routePath: plan.routePath,
       sourceGeneration,
+    });
+  });
+
+/**
+ * Removes a page and the address it answered on.
+ *
+ * Deleting a route file deletes a URL, and some route files hold the Theme up
+ * rather than serve a page. The whole route table is rebuilt without the file
+ * before anything is removed, so a deletion that would leave the Theme unable
+ * to describe its own routes — or with no page at all — is refused while
+ * refusing still costs nothing.
+ *
+ * A revision is written first. This is the one editor action that destroys
+ * work outright, and rollback is the only way back.
+ */
+export const deleteStorefrontThemePage = createServerFn({ method: "POST" })
+  .validator((data: unknown) => parseInput(deleteThemePageInputSchema, data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    const {
+      storefrontId,
+      themeId,
+      sourcePath,
+      expectedFileId,
+      expectedVersion,
+      expectedSourceGeneration,
+    } = input.data;
+
+    const files = await themeSourceStore.listFiles(storefrontId, themeId);
+    const plan = planThemePageDeletion({
+      sourcePath,
+      files: files.map((file) => ({ path: file.path, content: file.content })),
+    });
+    if (!plan.ok) {
+      return fail(plan.reason, { error: "PAGE_NOT_DELETABLE" });
+    }
+
+    try {
+      await themeRevisionStore.createRevision(storefrontId, themeId, {
+        message: `Delete page ${plan.routePath}`,
+        createdBy: context.user?.id,
+        expectedSourceGeneration,
+      });
+      const deleted = await themeSourceStore.deleteFile(
+        storefrontId,
+        themeId,
+        plan.sourcePath,
+        expectedFileId,
+        expectedVersion,
+        { expectedSourceGeneration },
+      );
+      if (!deleted) {
+        return fail("Could not delete the page.", { error: "DELETE_FAILED" });
+      }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+      ) {
+        const latestGen = await themeSourceStore.getSourceGeneration(
+          storefrontId,
+          themeId,
+        );
+        return fail(
+          `Remote source changes detected (current generation: ${latestGen ?? "unknown"}): the theme working source was updated by another operation.`,
+          { error: "SOURCE_GENERATION_CONFLICT" },
+        );
+      }
+      return failure(
+        "deleteStorefrontThemePage",
+        error,
+        "PAGE_DELETE_FAILED",
+        "Could not delete the page.",
+      );
+    }
+
+    const sourceGeneration = await themeSourceStore.getSourceGeneration(
+      storefrontId,
+      themeId,
+    );
+    return ok("Page deleted", {
+      sourcePath: plan.sourcePath,
+      routePath: plan.routePath,
+      sourceGeneration: sourceGeneration ?? expectedSourceGeneration + 1,
     });
   });
 

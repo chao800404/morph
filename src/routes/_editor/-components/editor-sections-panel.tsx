@@ -144,6 +144,7 @@ export type EditorSectionsPanelProps = {
   /** Explicit "show me the source" action on a page row. */
   onOpenThemeRouteCode?: (route: ThemeRouteRecord) => void;
   onAddPage?: (routePath: string) => Promise<AddPageResult>;
+  onDeletePage?: (route: ThemeRouteRecord) => Promise<AddPageResult>;
   sectionOptions?: readonly ThemeRouteSectionOption[];
   onAddSection?: (option: ThemeRouteSectionOption) => Promise<unknown>;
   onDeleteSection?: (
@@ -645,6 +646,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onOpenThemeRoute,
   onOpenThemeRouteCode,
   onAddPage,
+  onDeletePage,
   sectionOptions = [],
   onAddSection,
   onDeleteSection,
@@ -685,6 +687,11 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   );
   const [pagesExpanded, setPagesExpanded] = useState(true);
   const [addPageOpen, setAddPageOpen] = useState(false);
+  const [pageToDelete, setPageToDelete] = useState<ThemeRouteRecord | null>(
+    null,
+  );
+  const [pageDeletePending, setPageDeletePending] = useState(false);
+  const [pageDeleteError, setPageDeleteError] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] =
     useState<EditorDeleteCandidate | null>(null);
   const [isDeletePending, setIsDeletePending] = useState(false);
@@ -1065,11 +1072,25 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                           type="button"
                           aria-label={`Open ${route.sourcePath}`}
                           title={`Open ${route.sourcePath}`}
-                          className="opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/page:opacity-100 group-hover/page:opacity-100"
+                          className="right-8 opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/page:opacity-100 group-hover/page:opacity-100"
                           onClick={() => onOpenThemeRouteCode?.(route)}
                         >
                           <Code2 aria-hidden="true" />
                         </SidebarMenuAction>
+                        {onDeletePage ? (
+                          <SidebarMenuAction
+                            type="button"
+                            aria-label={`Delete page ${route.path}`}
+                            title={`Delete page ${route.path}`}
+                            className="opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/page:opacity-100 group-hover/page:opacity-100"
+                            onClick={() => {
+                              setPageDeleteError(null);
+                              setPageToDelete(route);
+                            }}
+                          >
+                            <Trash2 aria-hidden="true" />
+                          </SidebarMenuAction>
+                        ) : null}
                       </SidebarMenuItem>
                     ))}
                   </SidebarMenu>
@@ -1260,6 +1281,63 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
             onAddPage={onAddPage}
           />
         ) : null}
+
+        <AlertDialog
+          open={pageToDelete !== null}
+          onOpenChange={(open) => {
+            if (!open && !pageDeletePending) {
+              setPageToDelete(null);
+              setPageDeleteError(null);
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Delete page “{pageToDelete?.path ?? ""}”?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                This removes {pageToDelete?.sourcePath ?? "the route source"}{" "}
+                and the address it answered on. A revision is saved first, so it
+                can be restored from the release history.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {pageDeleteError ? (
+              <p role="alert" className="text-xs text-destructive">
+                {pageDeleteError}
+              </p>
+            ) : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={pageDeletePending}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={pageDeletePending}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={(event) => {
+                  event.preventDefault();
+                  const route = pageToDelete;
+                  if (!route || !onDeletePage) return;
+                  setPageDeletePending(true);
+                  setPageDeleteError(null);
+                  void onDeletePage(route)
+                    .then((result) => {
+                      if (result.ok) {
+                        setPageToDelete(null);
+                        return;
+                      }
+                      setPageDeleteError(
+                        result.reason ?? "Could not delete the page.",
+                      );
+                    })
+                    .finally(() => setPageDeletePending(false));
+                }}
+              >
+                {pageDeletePending ? "Deleting…" : "Delete page"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <AlertDialog
           open={deleteCandidate !== null}

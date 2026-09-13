@@ -122,6 +122,7 @@ import {
 import {
   createStorefrontThemePage,
   createStorefrontThemeRevision,
+  deleteStorefrontThemePage,
   getStorefrontThemeFile,
   initStorefrontStarterTheme,
   saveStorefrontThemeFile,
@@ -1873,6 +1874,65 @@ export function VisualEditorShell({
       context.theme.id,
       queryClient,
       refetchThemeFiles,
+      workspaceScope,
+    ],
+  );
+
+  const handleDeletePage = useCallback(
+    async (route: ThemeRouteRecord) => {
+      // The file's own identity, not just its path: deleting by path alone
+      // would remove whatever now sits there if it had been replaced.
+      const file = themeFiles.find((entry) => entry.path === route.sourcePath);
+      if (!file) {
+        return { ok: false, reason: "This page is no longer in the theme." };
+      }
+      const expectedSourceGeneration = useThemeWorkspaceStore
+        .getState()
+        .getAcceptedSourceGeneration(workspaceScope);
+      const result = await deleteStorefrontThemePage({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          sourcePath: route.sourcePath,
+          expectedFileId: file.id,
+          expectedVersion: file.version,
+          expectedSourceGeneration,
+        },
+      });
+      if (result?.success !== true) {
+        if (result?.error === "SOURCE_GENERATION_CONFLICT") {
+          await queryClient.invalidateQueries({
+            queryKey: storefrontThemeFileQueries.tree(
+              context.storefront.id,
+              context.theme.id,
+            ).queryKey,
+          });
+        }
+        return {
+          ok: false,
+          reason: result?.message ?? "Could not delete the page.",
+        };
+      }
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(result.data.sourceGeneration, workspaceScope);
+      await refetchThemeFiles();
+      // The routes the preview was built with no longer match the theme, and
+      // the author may be standing on the page that just went.
+      dispatchPreviewLifecycle({ type: "manual-recovery" });
+      if ((search.routePath ?? "/") === route.path) {
+        setPendingRoutePath("/");
+      }
+      toast.success(`Deleted ${result.data.routePath}`);
+      return { ok: true };
+    },
+    [
+      context.storefront.id,
+      context.theme.id,
+      queryClient,
+      refetchThemeFiles,
+      search.routePath,
+      themeFiles,
       workspaceScope,
     ],
   );
@@ -6421,6 +6481,7 @@ export function VisualEditorShell({
           onOpenThemeRoute={handleOpenThemeRoute}
           onOpenThemeRouteCode={handleOpenThemeRouteCode}
           onAddPage={handleAddPage}
+          onDeletePage={handleDeletePage}
           sectionOptions={routeSectionOptions}
           onAddSection={activeThemeRoute ? handleAddSection : undefined}
           onDeleteSection={

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { planNewThemePage } from "./theme-page-scaffold";
+import { planNewThemePage, planThemePageDeletion } from "./theme-page-scaffold";
 
 const existing = [
   "src/routes/__root.tsx",
@@ -96,5 +96,79 @@ describe("refusing a page that cannot be created", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain("/../secrets");
+  });
+});
+
+const route = (path: string, routeId: string) => ({
+  path,
+  content: `import { createFileRoute } from "@tanstack/react-router";\nexport const Route = createFileRoute("${routeId}")({ component: C });\nfunction C() { return <main></main>; }\n`,
+});
+
+const themeFiles = [
+  {
+    path: "src/routes/__root.tsx",
+    content:
+      'import { createRootRoute, Outlet } from "@tanstack/react-router";\nexport const Route = createRootRoute({ component: () => <Outlet /> });\n',
+  },
+  route("src/routes/index.tsx", "/"),
+  route("src/routes/about.tsx", "/about"),
+];
+
+describe("planning the removal of a page", () => {
+  it("removes an ordinary page", () => {
+    expect(
+      planThemePageDeletion({
+        sourcePath: "src/routes/about.tsx",
+        files: themeFiles,
+      }),
+    ).toMatchObject({ ok: true, routePath: "/about" });
+  });
+
+  it("refuses the root route", () => {
+    // It is the shell every page renders inside; removing it removes them all.
+    expect(
+      planThemePageDeletion({
+        sourcePath: "src/routes/__root.tsx",
+        files: themeFiles,
+      }),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("root route"),
+    });
+  });
+
+  it("refuses a file that is not a page", () => {
+    expect(
+      planThemePageDeletion({
+        sourcePath: "src/components/Hero.tsx",
+        files: themeFiles,
+      }),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("not a page"),
+    });
+  });
+
+  it("refuses a page this theme does not have", () => {
+    expect(
+      planThemePageDeletion({
+        sourcePath: "src/routes/missing.tsx",
+        files: themeFiles,
+      }),
+    ).toMatchObject({ ok: false });
+  });
+
+  it("refuses the last page", () => {
+    // A theme that serves nothing cannot be published, and the last page is
+    // the one most likely to go by accident.
+    expect(
+      planThemePageDeletion({
+        sourcePath: "src/routes/index.tsx",
+        files: [themeFiles[0]!, themeFiles[1]!],
+      }),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("only page"),
+    });
   });
 });
