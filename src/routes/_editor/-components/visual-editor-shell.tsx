@@ -98,6 +98,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type CSSProperties,
@@ -207,6 +208,11 @@ import {
 import type { InspectorPropsChangeOptions } from "./editor-style-inspector";
 import { resolveStylesSelectionTransition } from "./editor-styles-selection-mode";
 import {
+  initialLivePreviewLifecycleState,
+  livePreviewLifecycleLabel,
+  reduceLivePreviewLifecycle,
+} from "./live-preview-lifecycle";
+import {
   resolveEditorTemplate,
   templateTypeForRoute,
   toEditorRouteSearch,
@@ -218,9 +224,7 @@ import {
 } from "./editor-toolbar";
 import {
   isLatestStyleRevision,
-  isPreviewHandshakePending,
   shouldConfirmPreviewStyleRevision,
-  shouldWaitForPreviewFrame,
 } from "./style-revision";
 import {
   useLivePreviewMessageBridge,
@@ -481,14 +485,13 @@ const previewDefaultHeights = {
   mobile: 844,
 } as const;
 
-const DEFAULT_PREVIEW_VIEWPORT_HEIGHT = previewDefaultHeights.desktop;
 /** Settling time before re-measuring, so a burst of edits measures once. */
 const PREVIEW_REMEASURE_DELAY_MS = 500;
 /** A ready iframe must keep answering while its sandbox port is alive. */
 const PREVIEW_HEARTBEAT_INTERVAL_MS = 5_000;
 const PREVIEW_HEARTBEAT_TIMEOUT_MS = 15_000;
 const PREVIEW_LIVENESS_FAILURE_MESSAGE =
-  "Live Preview stopped responding. Its sandbox port may have expired. Retry Preview to reconnect.";
+  "Live Preview stopped responding after one automatic reconnect. Retry Preview to reconnect.";
 /**
  * How long a frame may take to announce itself before it is called
  * unreachable. Generous, because this covers a cold dev server compiling the
@@ -497,10 +500,11 @@ const PREVIEW_LIVENESS_FAILURE_MESSAGE =
  */
 const PREVIEW_FRAME_LOAD_TIMEOUT_MS = 45_000;
 const PREVIEW_UNREACHABLE_FAILURE_MESSAGE =
-  "Live Preview never finished loading. Its sandbox may be unreachable. Retry Preview to reconnect.";
-// Which preview this deployment runs. "user-code" executes the Theme's own
-// JavaScript and so needs an origin of its own; anything else, including an
-// unset variable, is the compatibility renderer that parses Theme source.
+  "Live Preview never finished loading after one automatic reconnect. Retry Preview to reconnect.";
+const PREVIEW_SOURCE_TIMEOUT_MS = 15_000;
+const PREVIEW_SOURCE_FAILURE_MESSAGE =
+  "Live Preview did not confirm the current Theme source after one automatic reconnect. Retry Preview.";
+const PREVIEW_SERVER_TIMEOUT_MS = 180_000;
 /** The origin of a URL, or null when it is not one this can read. */
 function safeOrigin(url: string): string | null {
   try {
@@ -592,15 +596,10 @@ export function VisualEditorShell({
   const rightPanelWidth = rightPanelResize.width;
 
   const [previewRevision, setPreviewRevision] = useState(0);
-  const [loadedPreviewKey, setLoadedPreviewKey] = useState<string | null>(null);
-  const [previewLoadFailure, setPreviewLoadFailure] = useState<{
-    key: string;
-    message: string;
-  } | null>(null);
-  const [previewFrameReady, setPreviewFrameReady] = useState<{
-    key: string;
-    sequence: number;
-  } | null>(null);
+  const [previewLifecycle, dispatchPreviewLifecycle] = useReducer(
+    reduceLivePreviewLifecycle,
+    initialLivePreviewLifecycleState,
+  );
   const initialPreviewSyncRef = useRef<{
     key: string;
     readySequence: number;
@@ -1025,32 +1024,28 @@ export function VisualEditorShell({
   );
 
   const previewSourceOriginRef = useRef<string | null>(null);
-  const previewSourceKindRef = useRef<string | null>(null);
-  // Whether this deployment runs Theme JavaScript is the server's answer, not
-  // a second switch here that has to agree with the first. It refuses before
-  // touching a container, so asking costs nothing when the answer is no.
+  // The Live Preview has one renderer: the Theme's real React/Vite server.
+  // While that server starts or reconnects the lifecycle UI is shown instead
+  // of framing the old AST interpreter as a visually similar substitute.
   const previewServer = useQuery(
     themePreviewServerQueries.forTheme(context.storefront.id, context.theme.id),
   );
+  const refetchPreviewServer = previewServer.refetch;
   const previewServerUrl =
-    previewServer.data?.success === true ? previewServer.data.data.url : null;
-  // Security follows the preview that is actually framed, not the mode this
-  // deployment configured. A deployment set to run Theme JavaScript still
-  // shows the compatibility renderer while its container starts, and that one
-  // executes nothing of the Theme's, so holding it to the cross-origin rule
-  // would disable the preview outright for the entire startup.
+    previewLifecycle.phase !== "reconnecting" &&
+    !previewServer.isFetching &&
+    previewServer.data?.success === true
+      ? previewServer.data.data.url
+      : null;
   const previewServerOrigin = previewServerUrl
     ? safeOrigin(previewServerUrl)
     : null;
   const livePreviewSecurity = resolveLivePreviewSecurity({
     editorOrigin: context.previewChannel?.editorOrigin ?? "",
-    // A preview server's origin is not configured anywhere: it exists once a
-    // container answers. It still goes through the same check, which is what
-    // refuses one that turned out to share the editor's origin.
     configuredPreviewOrigin:
       previewServerOrigin ??
       import.meta.env.VITE_STOREFRONT_LIVE_PREVIEW_ORIGIN,
-    executionMode: previewServerOrigin ? "user-code" : "compatibility-renderer",
+    executionMode: "user-code",
   });
 
   const livePreviewWorkspaceKey = `${context.storefront.id}:${context.theme.id}`;
@@ -1097,88 +1092,94 @@ export function VisualEditorShell({
   const previewSource =
     activeTemplate && livePreviewSecurity.enabled
       ? resolveLivePreviewSource({
-          executionMode: previewServerOrigin
-            ? "user-code"
-            : "compatibility-renderer",
-          compatibilityOrigin: livePreviewSecurity.previewOrigin,
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          templateId:
-            previewRouteSeedRef.current.templateId ?? activeTemplate.id,
-          routePath: previewRouteSeedRef.current.routePath,
-          viewportHeight: DEFAULT_PREVIEW_VIEWPORT_HEIGHT,
           editorOrigin: context.previewChannel?.editorOrigin ?? "",
           previewSession: stablePreviewSession,
-          // Null while one is starting, and if starting failed. Either way
-          // the compatibility preview is what gets framed, so an editor never
-          // waits on a container — or loses its preview — to show a page.
           previewServerUrl,
         })
       : null;
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
-  previewSourceKindRef.current = previewSource?.kind ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
   const previewKeyRef = useRef(previewKey);
   previewKeyRef.current = previewKey;
-  const isPreviewLoading = isPreviewHandshakePending(
+
+  useEffect(() => {
+    dispatchPreviewLifecycle({ type: "reset" });
+  }, [livePreviewWorkspaceKey]);
+
+  useEffect(() => {
+    if (previewLifecycle.phase === "reconnecting" || previewServer.isFetching) {
+      return;
+    }
+    if (previewServer.isError) {
+      dispatchPreviewLifecycle({
+        type: "server-failed",
+        message: "Live Preview server could not be started. Retry Preview.",
+      });
+      return;
+    }
+    if (previewServer.data?.success === false) {
+      dispatchPreviewLifecycle({
+        type: "server-failed",
+        message: previewServer.data.message,
+      });
+      return;
+    }
+    if (previewServer.data?.success === true && !livePreviewSecurity.enabled) {
+      dispatchPreviewLifecycle({
+        type: "server-failed",
+        message: `Live Preview is unavailable: ${livePreviewSecurity.reason}.`,
+      });
+      return;
+    }
+    if (previewKey) {
+      dispatchPreviewLifecycle({ type: "server-ready", key: previewKey });
+    }
+  }, [
+    livePreviewSecurity,
     previewKey,
-    loadedPreviewKey,
-    previewLoadFailure?.key ?? null,
+    previewLifecycle.phase,
+    previewServer.data,
+    previewServer.isError,
+    previewServer.isFetching,
+  ]);
+
+  useEffect(() => {
+    if (previewLifecycle.phase !== "reconnecting") return;
+    const recoveryId = previewLifecycle.recoveryId;
+    initialPreviewSyncRef.current = null;
+    setPreviewRevision((revision) => revision + 1);
+    const finishRecoveryRequest = () => {
+      dispatchPreviewLifecycle({
+        type: "recovery-request-finished",
+        recoveryId,
+      });
+    };
+    void refetchPreviewServer().then(
+      finishRecoveryRequest,
+      finishRecoveryRequest,
+    );
+  }, [
+    previewLifecycle.recoveryId,
+    previewLifecycle.phase,
+    refetchPreviewServer,
+  ]);
+
+  const previewFrameReady =
+    previewLifecycle.key && previewLifecycle.readySequence > 0
+      ? {
+          key: previewLifecycle.key,
+          sequence: previewLifecycle.readySequence,
+        }
+      : null;
+  const previewLifecycleStatus = livePreviewLifecycleLabel(
+    previewLifecycle.phase,
   );
-  useEffect(() => {
-    // Do not start the confirmation timeout while the frame or source query
-    // is still booting. The old timer started at iframe creation, so a slow
-    // first query could report a false Live Preview failure before any source
-    // update had been sent.
-    if (
-      !previewKey ||
-      loadedPreviewKey === previewKey ||
-      previewFrameReady?.key !== previewKey
-    ) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      setPreviewLoadFailure((current) =>
-        current?.key === previewKey
-          ? current
-          : {
-              key: previewKey,
-              message:
-                "Live Preview did not confirm the current Theme source. The last rendered frame remains available.",
-            },
-      );
-    }, 15_000);
-
-    return () => window.clearTimeout(timeout);
-  }, [loadedPreviewKey, previewFrameReady?.key, previewKey]);
-  useEffect(() => {
-    // The frame that never loads at all. Every other timer here waits for
-    // something this one cannot assume has happened: the confirmation timeout
-    // starts at readiness, and the heartbeat starts at confirmation. Only this
-    // watches the gap between giving a frame an address and hearing from it.
-    if (
-      !shouldWaitForPreviewFrame(
-        previewKey,
-        previewFrameReady?.key ?? null,
-        previewLoadFailure?.key ?? null,
-      ) ||
-      !previewKey
-    ) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      setPreviewLoadFailure((current) =>
-        current?.key === previewKey
-          ? current
-          : { key: previewKey, message: PREVIEW_UNREACHABLE_FAILURE_MESSAGE },
-      );
-    }, PREVIEW_FRAME_LOAD_TIMEOUT_MS);
-
-    return () => window.clearTimeout(timeout);
-  }, [previewFrameReady?.key, previewKey, previewLoadFailure?.key]);
+  const isPreviewLoading = Boolean(
+    activeTemplate &&
+    previewLifecycle.phase !== "ready" &&
+    previewLifecycle.phase !== "failed",
+  );
   const previewFrameHeight =
     previewContentSize?.key === previewKey
       ? previewContentSize.height
@@ -1348,6 +1349,11 @@ export function VisualEditorShell({
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
   });
+  const refetchThemeFiles = themeFilesQuery.refetch;
+  const retryLivePreview = useCallback(() => {
+    void refetchThemeFiles();
+    dispatchPreviewLifecycle({ type: "manual-recovery" });
+  }, [refetchThemeFiles]);
   const themeFiles = themeFilesQuery.data?.files ?? EMPTY_THEME_FILES;
   const themeTree = themeFilesQuery.data?.tree ?? EMPTY_THEME_TREE;
   const starterInitAttemptRef = useRef<string | null>(null);
@@ -1402,15 +1408,12 @@ export function VisualEditorShell({
 
   useEffect(() => {
     if (!previewKey || !themeFilesQuery.isError) return;
-    setPreviewLoadFailure((current) =>
-      current?.key === previewKey
-        ? current
-        : {
-            key: previewKey,
-            message:
-              "Live Preview could not load the Theme source. Apply the latest database migration, then retry Preview.",
-          },
-    );
+    dispatchPreviewLifecycle({
+      type: "source-failed",
+      key: previewKey,
+      message:
+        "Live Preview could not load the Theme source. Apply the latest database migration, then retry Preview.",
+    });
   }, [previewKey, themeFilesQuery.isError]);
 
   const workspaceFiles = useThemeWorkspaceStore((state) => state.files);
@@ -2013,10 +2016,10 @@ export function VisualEditorShell({
       ) {
         return;
       }
-      setLoadedPreviewKey(confirmation.previewKey);
-      setPreviewLoadFailure((current) =>
-        current?.key === confirmation.previewKey ? null : current,
-      );
+      dispatchPreviewLifecycle({
+        type: "source-confirmed",
+        key: confirmation.previewKey,
+      });
       latestAppliedStyleRevisionRef.current = confirmation.styleRevision;
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-request-selection-style",
@@ -2051,20 +2054,18 @@ export function VisualEditorShell({
           styleRevision,
         };
       }
-      // A preview server takes files through its own filesystem, because that
-      // is what Vite is watching: written there, the page updates itself by
-      // hot module replacement instead of reloading, which is what keeps an
-      // author's place — an open menu, a scroll position, a half-typed field.
-      // The message still goes, carrying the revision the preview confirms
-      // once the update has actually landed.
-      if (previewSourceKindRef.current === "preview-server") {
-        void applyThemePreviewFiles({
-          data: {
-            storefrontId: context.storefront.id,
-            themeId: context.theme.id,
-            files,
-          },
-        }).then((result) => {
+      // Files always go through the real preview server's filesystem. Vite
+      // watches those files and applies them through HMR, preserving component
+      // state. A write failure is also a reliable container-liveness signal,
+      // unlike a browser-only ping that can survive after the port expires.
+      void applyThemePreviewFiles({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          files,
+        },
+      })
+        .then((result) => {
           // Nothing to update means nothing to wait for. The container was
           // started from this source, so the page is already showing it, and
           // no hot update is coming to say so. Confirming here is reporting
@@ -2079,9 +2080,26 @@ export function VisualEditorShell({
               previewKey: targetPreviewKey,
               styleRevision,
             });
+            return;
           }
+          if (result?.success !== true && targetPreviewKey) {
+            dispatchPreviewLifecycle({
+              type: "automatic-recovery",
+              key: targetPreviewKey,
+              message:
+                "Live Preview could not update its sandbox after one automatic reconnect. Retry Preview.",
+            });
+          }
+        })
+        .catch(() => {
+          if (!targetPreviewKey) return;
+          dispatchPreviewLifecycle({
+            type: "automatic-recovery",
+            key: targetPreviewKey,
+            message:
+              "Live Preview could not update its sandbox after one automatic reconnect. Retry Preview.",
+          });
         });
-      }
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-theme-files",
         files,
@@ -2131,22 +2149,51 @@ export function VisualEditorShell({
   ]);
 
   useEffect(() => {
-    if (
-      !previewKey ||
-      loadedPreviewKey !== previewKey ||
-      previewFrameReady?.key !== previewKey
-    ) {
-      previewHeartbeatRef.current = null;
+    previewHeartbeatRef.current = null;
+
+    if (previewLifecycle.phase === "starting-server") {
+      const timer = window.setTimeout(() => {
+        dispatchPreviewLifecycle({
+          type: "server-failed",
+          message: "Live Preview server did not start in time. Retry Preview.",
+        });
+      }, PREVIEW_SERVER_TIMEOUT_MS);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (previewLifecycle.phase === "loading-frame" && previewLifecycle.key) {
+      const key = previewLifecycle.key;
+      const timer = window.setTimeout(() => {
+        dispatchPreviewLifecycle({
+          type: "automatic-recovery",
+          key,
+          message: PREVIEW_UNREACHABLE_FAILURE_MESSAGE,
+        });
+      }, PREVIEW_FRAME_LOAD_TIMEOUT_MS);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (previewLifecycle.phase === "syncing-source" && previewLifecycle.key) {
+      const key = previewLifecycle.key;
+      const timer = window.setTimeout(() => {
+        dispatchPreviewLifecycle({
+          type: "automatic-recovery",
+          key,
+          message: PREVIEW_SOURCE_FAILURE_MESSAGE,
+        });
+      }, PREVIEW_SOURCE_TIMEOUT_MS);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (previewLifecycle.phase !== "ready" || !previewLifecycle.key) {
       return;
     }
 
+    const key = previewLifecycle.key;
     const heartbeat = {
-      key: previewKey,
+      key,
       nextId: 0,
       lastSentAt: 0,
-      // Give the first probe the same grace period as every later probe. The
-      // source acknowledgement already proved this document was alive once;
-      // this timer only watches what happens after that point.
       lastPongAt: Date.now(),
       failed: false,
     };
@@ -2161,7 +2208,6 @@ export function VisualEditorShell({
         heartbeatId: heartbeat.nextId,
       });
     };
-
     const checkHeartbeat = () => {
       if (previewHeartbeatRef.current !== heartbeat || heartbeat.failed) return;
       if (
@@ -2169,11 +2215,11 @@ export function VisualEditorShell({
         Date.now() - heartbeat.lastPongAt >= PREVIEW_HEARTBEAT_TIMEOUT_MS
       ) {
         heartbeat.failed = true;
-        setPreviewLoadFailure((current) =>
-          current?.key === previewKey
-            ? current
-            : { key: previewKey, message: PREVIEW_LIVENESS_FAILURE_MESSAGE },
-        );
+        dispatchPreviewLifecycle({
+          type: "automatic-recovery",
+          key,
+          message: PREVIEW_LIVENESS_FAILURE_MESSAGE,
+        });
       }
     };
 
@@ -2192,10 +2238,9 @@ export function VisualEditorShell({
       }
     };
   }, [
-    loadedPreviewKey,
     postEditorToPreviewMessage,
-    previewFrameReady?.key,
-    previewKey,
+    previewLifecycle.key,
+    previewLifecycle.phase,
   ]);
 
   const getScopedOpKey = useCallback(
@@ -3721,11 +3766,7 @@ export function VisualEditorShell({
       // editor message bridge. This recovers when the preview's one-shot
       // `ready` message was emitted before the parent listener was attached,
       // without sending Theme files prematurely from the iframe load event.
-      setPreviewFrameReady((current) =>
-        current?.key === previewKey
-          ? current
-          : { key: previewKey, sequence: 1 },
-      );
+      dispatchPreviewLifecycle({ type: "frame-signal", key: previewKey });
       if (
         message.measurementRevision !==
         previewSizeMeasurementRevisionRef.current
@@ -3782,12 +3823,6 @@ export function VisualEditorShell({
         }
         heartbeat.lastPongAt = Date.now();
         heartbeat.failed = false;
-        setPreviewLoadFailure((current) =>
-          current?.key === heartbeat.key &&
-          current.message === PREVIEW_LIVENESS_FAILURE_MESSAGE
-            ? null
-            : current,
-        );
         return;
       }
 
@@ -3839,19 +3874,10 @@ export function VisualEditorShell({
       }
 
       if (message.type === "morph:storefront-preview-ready") {
-        setPreviewFrameReady((current) => ({
-          key: previewKey,
-          sequence: current?.key === previewKey ? current.sequence + 1 : 1,
-        }));
+        dispatchPreviewLifecycle({ type: "frame-ready", key: previewKey });
         // A frame that arrives late answers the only question that notice
         // asked. Cleared by message, so a slower sandbox than the timeout
         // allows for corrects itself instead of needing a retry.
-        setPreviewLoadFailure((current) =>
-          current?.key === previewKey &&
-          current.message === PREVIEW_UNREACHABLE_FAILURE_MESSAGE
-            ? null
-            : current,
-        );
         return;
       }
       if (message.type === "morph:storefront-preview-structure") {
@@ -3879,8 +3905,8 @@ export function VisualEditorShell({
         ) {
           return;
         }
-        setLoadedPreviewKey(previewKey);
-        setPreviewLoadFailure({
+        dispatchPreviewLifecycle({
+          type: "source-failed",
           key: previewKey,
           message:
             "Live Preview could not apply the current Theme source. Check the Theme compile diagnostic, then retry.",
@@ -6213,9 +6239,7 @@ export function VisualEditorShell({
             initialActiveFilePath={activeCodeFilePath}
             jumpLocation={jumpLocation}
             onResolveConflict={handleResolveConflict}
-            onRefreshPreview={() =>
-              setPreviewRevision((revision) => revision + 1)
-            }
+            onRefreshPreview={retryLivePreview}
             onThemeFilesMoved={handleThemeFilesMoved}
             onDirtyFilesChange={setMonacoDirtyFiles}
             onSaveFile={handleUnifiedSaveFile}
@@ -6366,10 +6390,8 @@ export function VisualEditorShell({
                       requestPreviewSize();
                     }}
                   />
-                ) : !livePreviewSecurity.enabled ? (
-                  <div className="flex size-full items-center justify-center p-6 text-center text-sm text-destructive">
-                    Live Preview is unavailable: {livePreviewSecurity.reason}.
-                  </div>
+                ) : activeTemplate ? (
+                  <div className="size-full bg-muted/20" aria-hidden="true" />
                 ) : (
                   <div className="flex size-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
                     No template is available for preview.
@@ -6469,9 +6491,13 @@ export function VisualEditorShell({
               ) : null}
             </div>
 
-            {isPreviewLoading && previewUrl ? (
-              <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center">
+            {isPreviewLoading ? (
+              <div
+                className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 text-sm text-muted-foreground"
+                role="status"
+              >
                 <LoaderCircle className="size-7 animate-spin text-muted-foreground" />
+                <span>{previewLifecycleStatus}</span>
               </div>
             ) : (
               <>
@@ -6541,26 +6567,20 @@ export function VisualEditorShell({
               </>
             )}
 
-            {previewLoadFailure?.key === previewKey && previewUrl ? (
+            {previewLifecycle.phase === "failed" && previewLifecycle.message ? (
               <div
                 role="alert"
                 className="absolute left-1/2 top-16 z-50 flex max-w-md -translate-x-1/2 items-start gap-3 rounded-lg border border-amber-500/40 bg-background/95 p-3 text-sm shadow-lg backdrop-blur-sm"
               >
                 <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
                 <div className="min-w-0">
-                  <p className="text-foreground">
-                    {previewLoadFailure.message}
-                  </p>
+                  <p className="text-foreground">{previewLifecycle.message}</p>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     className="mt-2"
-                    onClick={() => {
-                      setPreviewLoadFailure(null);
-                      void themeFilesQuery.refetch();
-                      setPreviewRevision((revision) => revision + 1);
-                    }}
+                    onClick={retryLivePreview}
                   >
                     Retry Preview
                   </Button>
@@ -6608,10 +6628,7 @@ export function VisualEditorShell({
                 handleExitCommentMode();
               }
             }}
-            onRefresh={() => {
-              setPreviewLoadFailure(null);
-              setPreviewRevision((revision) => revision + 1);
-            }}
+            onRefresh={retryLivePreview}
           />
         </main>
 

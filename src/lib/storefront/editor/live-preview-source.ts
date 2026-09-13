@@ -1,41 +1,24 @@
-import {
-  buildLivePreviewUrl,
-  type LivePreviewExecutionMode,
-} from "./live-preview-security";
-
 /**
- * Which of the two previews the editor frames, and at what address.
+ * The real React preview the editor frames, and at what address.
  *
- * The two are addressed in opposite ways, which is the whole reason this is a
- * decision rather than a string. The compatibility preview lives at a Morph
- * route the editor composes, and is told which template to render through the
- * URL. A preview server has no such route: a real Theme serves its own pages
- * and is told which one to show after it connects, so all its URL carries is
- * the channel back to the editor.
- *
- * Unconfigured means the compatibility preview, always. Running a Theme's own
- * JavaScript is something a deployment opts into by giving it a host of its
- * own, never something that happens because a setting was missing.
+ * A real Theme serves its own pages and is told which one to show after it
+ * connects, so its URL only carries the authenticated channel back to the
+ * editor. While the sandbox starts there is no source to frame; the lifecycle
+ * UI stays visible instead of silently switching to a different renderer.
  */
 
-export type LivePreviewSource =
-  | Readonly<{ kind: "compatibility-renderer"; url: string; origin: string }>
-  | Readonly<{ kind: "preview-server"; url: string; origin: string }>;
+export type LivePreviewSource = Readonly<{
+  kind: "preview-server";
+  url: string;
+  origin: string;
+}>;
 
 export type ResolveLivePreviewSourceInput = Readonly<{
-  executionMode: LivePreviewExecutionMode;
   editorOrigin: string;
   previewSession: string;
-  /** Where the compatibility preview is served from. */
-  compatibilityOrigin: string;
-  storefrontId: string;
-  themeId: string;
-  templateId: string;
-  routePath?: string;
-  viewportHeight: number;
   /**
    * The address a running preview server reported, already checked against
-   * the configured host. Absent while one is starting, or when none is.
+   * the configured host. Absent while one is starting or reconnecting.
    */
   previewServerUrl?: string | null;
 }>;
@@ -105,31 +88,15 @@ function reachableFromLoopback(
 
 export function resolveLivePreviewSource(
   input: ResolveLivePreviewSourceInput,
-): LivePreviewSource {
-  if (input.executionMode === "user-code" && input.previewServerUrl) {
-    const url = withPreviewChannel(
-      reachableFromLoopback(input.previewServerUrl, input.editorOrigin),
-      input,
-    );
-    return {
-      kind: "preview-server",
-      url,
-      origin: new URL(url).origin,
-    };
-  }
-
+): LivePreviewSource | null {
+  if (!input.previewServerUrl) return null;
+  const url = withPreviewChannel(
+    reachableFromLoopback(input.previewServerUrl, input.editorOrigin),
+    input,
+  );
   return {
-    kind: "compatibility-renderer",
-    url: buildLivePreviewUrl({
-      previewOrigin: input.compatibilityOrigin,
-      storefrontId: input.storefrontId,
-      themeId: input.themeId,
-      templateId: input.templateId,
-      routePath: input.routePath,
-      viewportHeight: input.viewportHeight,
-      editorOrigin: input.editorOrigin,
-      previewSession: input.previewSession,
-    }),
-    origin: input.compatibilityOrigin,
+    kind: "preview-server",
+    url,
+    origin: new URL(url).origin,
   };
 }
