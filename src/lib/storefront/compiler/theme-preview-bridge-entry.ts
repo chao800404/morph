@@ -121,6 +121,7 @@ function reportSelection(target) {
   if (!channel) return;
   const item = resolveSelectable(target);
   if (!item?.sectionId) return;
+  selectionRevision += 1;
   selectedItem = item;
   syncDragHandle();
   drawOverlays();
@@ -150,6 +151,7 @@ function reportSelection(target) {
       styleRevision: Number(
         document.documentElement.dataset.storefrontStyleRevision ?? 0,
       ),
+      selectionRevision,
       className: item.element.getAttribute("class") ?? "",
       isSection: item.element === item.section,
       inspectorOverride: item.element.dataset.morphInspector ?? null,
@@ -172,6 +174,16 @@ let gesture = null;
  * someone else's work as done.
  */
 let pendingStyleRevision = null;
+
+/**
+ * How many times selection has moved, counting both sides.
+ *
+ * The editor discards an answer older than the request it last made, so an
+ * answer that carries nothing is read as the oldest possible and thrown away.
+ * Enabling the tool is itself a request, which is why a click that followed it
+ * selected nothing at all until this was echoed back.
+ */
+let selectionRevision = 0;
 
 if (import.meta.hot) {
   import.meta.hot.on("vite:afterUpdate", () => {
@@ -528,6 +540,18 @@ if (channel) {
       // the container, which is what Vite is watching. This only records the
       // revision to confirm once the page has taken them.
       pendingStyleRevision = message.styleRevision;
+      // Stamped on the document because every answer this page sends back
+      // carries it, and the editor discards any answer that is not for the
+      // revision it last asked about. Left unset, every selection made on the
+      // canvas reported revision zero and was dropped as stale — the author
+      // clicked and nothing was selected.
+      //
+      // Recorded on arrival rather than once Vite has finished: a sync that
+      // changes no file produces no hot update to wait for, and the editor
+      // already treats that revision as the current one.
+      document.documentElement.dataset.storefrontStyleRevision = String(
+        message.styleRevision,
+      );
     }
     if (message?.type === "morph:storefront-preview-set-route") {
       // A real Theme owns its router, so the entry Morph generates hands it
@@ -547,6 +571,14 @@ if (channel) {
       }
     }
     if (message?.type === "morph:storefront-preview-set-selection-mode") {
+      // Taken forward, never back: the editor and this page each move the
+      // count, and the higher of the two is the one both have seen.
+      if (message.selectionRevision !== undefined) {
+        selectionRevision = Math.max(
+          selectionRevision,
+          message.selectionRevision,
+        );
+      }
       selectionEnabled = message.enabled;
       // What the pointer is for, said on the document so CSS can answer it.
       // Selecting and panning are the two things a wheel-less pointer does

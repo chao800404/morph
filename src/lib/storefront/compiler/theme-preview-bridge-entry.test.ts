@@ -16,6 +16,28 @@ describe("the script a Live Preview page runs for the editor", () => {
     expect(BRIDGE).toContain("heartbeatId: message.heartbeatId");
   });
 
+  it("counts selection moves so its answer is not read as the oldest one", () => {
+    // Enabling the tool is itself a request, so an answer carrying no count is
+    // older than it and discarded. Together with the style revision this is
+    // why clicking the canvas selected nothing in the real preview.
+    expect(BRIDGE).toContain("selectionRevision += 1");
+    expect(BRIDGE).toContain("selectionRevision,");
+    expect(BRIDGE).toContain("Math.max(\n          selectionRevision,");
+  });
+
+  it("stamps the revision every answer it sends is measured against", () => {
+    // The editor discards any answer that is not for the revision it last
+    // asked about. Without this the page reported revision zero forever, so
+    // every selection made on the canvas was dropped as stale and clicking
+    // selected nothing at all.
+    expect(BRIDGE).toContain(
+      "document.documentElement.dataset.storefrontStyleRevision",
+    );
+    expect(BRIDGE).toContain(
+      "String(\n        message.styleRevision,\n      )",
+    );
+  });
+
   it("says on the document which tool the pointer is", () => {
     // The editor's cursors are CSS reacting to these, and the browser tests
     // wait on the first one to know the tool actually reached the preview.
