@@ -6,8 +6,11 @@ import {
   themeSourceStore,
 } from "@/lib/storefront/storage/theme-storage.server";
 import { createStarterThemeWorkspaceBootstrapPlan } from "@/lib/storefront/starter-theme-files";
+import { planNewThemePage } from "@/lib/storefront/compiler/theme-page-scaffold";
+import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   applyStarterThemeWorkspaceInputSchema,
+  createThemePageInputSchema,
   createThemeRevisionInputSchema,
   deleteThemeFileInputSchema,
   getThemeFileInputSchema,
@@ -61,7 +64,9 @@ export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
   });
 
 export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(initStarterThemeFilesInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(initStarterThemeFilesInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     // A rejected precondition is a client error the caller already
@@ -102,7 +107,9 @@ export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
  * which template files or package versions are written.
  */
 export const previewStarterThemeWorkspace = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(previewStarterThemeWorkspaceInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(previewStarterThemeWorkspaceInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
@@ -381,6 +388,91 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
     }
   });
 
+/**
+ * Creates the source file for a page an author asked for.
+ *
+ * A Theme's routes are read from its files, so this writes one file and the
+ * page exists. The address is planned again here rather than trusted from the
+ * editor — the editor plans it too, but only to answer the author while they
+ * type.
+ *
+ * The whole route table is rebuilt with the new file included before anything
+ * is written. A page that would leave the Theme unable to describe its own
+ * routes is refused while refusing still costs nothing.
+ */
+export const createStorefrontThemePage = createServerFn({ method: "POST" })
+  .validator((data: unknown) => parseInput(createThemePageInputSchema, data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    const { storefrontId, themeId, routePath } = input.data;
+
+    const generation = await themeSourceStore.getSourceGeneration(
+      storefrontId,
+      themeId,
+    );
+    if (generation === null) {
+      return fail("This theme has no source to add a page to.", {
+        error: "THEME_SOURCE_MISSING",
+      });
+    }
+
+    const files = await themeSourceStore.listFiles(storefrontId, themeId);
+    const plan = planNewThemePage({
+      requestedPath: routePath,
+      existingPaths: files.map((file) => file.path),
+    });
+    if (!plan.ok) {
+      return fail(plan.reason, { error: "INVALID_PAGE_PATH" });
+    }
+
+    const registry = buildThemeRouteRegistry([
+      ...files.map((file) => ({ path: file.path, content: file.content })),
+      { path: plan.sourcePath, content: plan.content },
+    ]);
+    if (!registry.valid) {
+      return fail(
+        `Adding ${plan.routePath} would leave this theme's routes invalid.`,
+        { error: "INVALID_ROUTE_REGISTRY" },
+      );
+    }
+
+    let sourceGeneration: number | undefined;
+    try {
+      const saved = await themeSourceStore.saveFile(
+        storefrontId,
+        themeId,
+        plan.sourcePath,
+        plan.content,
+        "text/tsx",
+        {
+          expectMissing: true,
+          expectedSourceGeneration: generation,
+          createdBy: context.user?.id,
+          createRevision: true,
+          revisionMessage: `Add page ${plan.routePath}`,
+        },
+      );
+      sourceGeneration = saved.sourceGeneration;
+    } catch (error) {
+      return failure(
+        "createStorefrontThemePage",
+        error,
+        "PAGE_CREATE_FAILED",
+        "Could not add the page.",
+      );
+    }
+
+    // The generation this write produced, so the editor can adopt exactly the
+    // change it caused. Adopting whatever is current instead would silently
+    // swallow a change someone else made in between.
+    return ok("Page added", {
+      sourcePath: plan.sourcePath,
+      routePath: plan.routePath,
+      sourceGeneration,
+    });
+  });
+
 export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(deleteThemeFileInputSchema, data))
   .middleware([commerceAdminMiddleware])
@@ -502,7 +594,10 @@ export const previewStorefrontThemeRollback = createServerFn({ method: "POST" })
       if (sourceGeneration === null) {
         throw new Error("Theme not found or does not belong to storefront");
       }
-      const plan = resolveThemeRollbackPlan({ current, target: target.snapshot });
+      const plan = resolveThemeRollbackPlan({
+        current,
+        target: target.snapshot,
+      });
       return ok("Theme rollback plan ready", {
         // Carried back so the apply can be refused if the workspace moved
         // between seeing this plan and agreeing to it.

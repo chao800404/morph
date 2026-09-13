@@ -120,6 +120,7 @@ import {
   getThemeBuild,
 } from "@/server/storefront/storefront-theme-builds.serverFn";
 import {
+  createStorefrontThemePage,
   createStorefrontThemeRevision,
   getStorefrontThemeFile,
   initStorefrontStarterTheme,
@@ -1815,6 +1816,49 @@ export function VisualEditorShell({
   // jump into Code unconditionally, so a list that looks like a page switcher
   // threw anyone in Design mode into a source file they did not ask for. Code
   // is still followed along when that is already the mode being worked in.
+  /**
+   * Adds a page, then makes the preview aware a route now exists.
+   *
+   * A new route is not an incremental file update: the preview's entry module
+   * lists the routes it was built with, and it is regenerated when the
+   * workspace is planned. Reusing the retry path is what forces that plan —
+   * writing the file alone would leave a page the container cannot reach.
+   */
+  const handleAddPage = useCallback(
+    async (routePath: string) => {
+      const result = await createStorefrontThemePage({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          routePath,
+        },
+      });
+      if (result?.success !== true) {
+        return {
+          ok: false,
+          reason: result?.message ?? "Could not add the page.",
+        };
+      }
+      // The author's own page is not a remote change. Without adopting the
+      // generation it produced, their next save is refused as a conflict with
+      // themselves.
+      if (result.data.sourceGeneration !== undefined) {
+        useThemeWorkspaceStore
+          .getState()
+          .acceptRemoteGeneration(result.data.sourceGeneration, {
+            storefrontId: context.storefront.id,
+            themeId: context.theme.id,
+          });
+      }
+      await refetchThemeFiles();
+      dispatchPreviewLifecycle({ type: "manual-recovery" });
+      toast.success(`Added ${result.data.routePath}`);
+      setPendingRoutePath(result.data.routePath);
+      return { ok: true };
+    },
+    [context.storefront.id, context.theme.id, refetchThemeFiles],
+  );
+
   const handleOpenThemeRoute = useCallback(
     (route: ThemeRouteRecord) => {
       setPendingRoutePath(route.path);
@@ -6358,6 +6402,7 @@ export function VisualEditorShell({
           onPrefetchThemeRoute={handlePrefetchThemeRoute}
           onOpenThemeRoute={handleOpenThemeRoute}
           onOpenThemeRouteCode={handleOpenThemeRouteCode}
+          onAddPage={handleAddPage}
           sectionOptions={routeSectionOptions}
           onAddSection={activeThemeRoute ? handleAddSection : undefined}
           onDeleteSection={

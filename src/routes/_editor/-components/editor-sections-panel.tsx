@@ -43,6 +43,10 @@ import {
 } from "@/components/ui/sidebar";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { ThemeRouteRecord } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  EditorAddPageDialog,
+  type AddPageResult,
+} from "./editor-add-page-dialog";
 import type { ThemeRouteSectionOption } from "@/lib/storefront/compiler/theme-route-sections";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import type {
@@ -139,6 +143,7 @@ export type EditorSectionsPanelProps = {
   onOpenThemeRoute?: (route: ThemeRouteRecord) => void;
   /** Explicit "show me the source" action on a page row. */
   onOpenThemeRouteCode?: (route: ThemeRouteRecord) => void;
+  onAddPage?: (routePath: string) => Promise<AddPageResult>;
   sectionOptions?: readonly ThemeRouteSectionOption[];
   onAddSection?: (option: ThemeRouteSectionOption) => Promise<unknown>;
   onDeleteSection?: (
@@ -639,6 +644,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onPrefetchThemeRoute,
   onOpenThemeRoute,
   onOpenThemeRouteCode,
+  onAddPage,
   sectionOptions = [],
   onAddSection,
   onDeleteSection,
@@ -678,6 +684,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     () => new Set(),
   );
   const [pagesExpanded, setPagesExpanded] = useState(true);
+  const [addPageOpen, setAddPageOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] =
     useState<EditorDeleteCandidate | null>(null);
   const [isDeletePending, setIsDeletePending] = useState(false);
@@ -1017,6 +1024,17 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   >
                     {themeRoutes.length}/{themeRoutes.length}
                   </span>
+                  {onAddPage ? (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-md p-1 text-muted-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label="Add page"
+                      title="Add page"
+                      onClick={() => setAddPageOpen(true)}
+                    >
+                      <Plus className="size-3.5" aria-hidden="true" />
+                    </button>
+                  ) : null}
                 </div>
 
                 <CollapsibleContent>
@@ -1233,6 +1251,15 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
             </DropdownMenu>
           </SidebarFooter>
         </Sidebar>
+
+        {onAddPage ? (
+          <EditorAddPageDialog
+            open={addPageOpen}
+            onOpenChange={setAddPageOpen}
+            existingPaths={themeRoutes.map((route) => route.sourcePath)}
+            onAddPage={onAddPage}
+          />
+        ) : null}
 
         <AlertDialog
           open={deleteCandidate !== null}
