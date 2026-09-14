@@ -43,6 +43,8 @@ import {
   patchTailwindClasses as patchTailwindClassesBase,
   tokenizeTailwindClasses,
   type PatchTailwindOptions,
+  type TailwindPropertyFamily,
+  type TailwindToken,
 } from "@/lib/storefront/ast/tailwind-token-engine";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
@@ -477,19 +479,76 @@ function repeatedItemStructuralVariants(
   return variants;
 }
 
-function computedColorToHex(value?: string | null): string | null {
+function computedColorToInspectorPaint(value?: string | null): string | null {
   if (!value) return null;
   const raw = value.trim();
   if (/^#[0-9a-f]{6}$/i.test(raw)) return raw.toLowerCase();
   const match = raw.match(
     /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)$/i,
   );
-  if (!match) return null;
-  const alpha = match[4] === undefined ? 1 : Number(match[4]);
-  if (!Number.isFinite(alpha) || alpha < 0.999) return null;
-  return `#${[match[1], match[2], match[3]]
-    .map((part) => Number(part).toString(16).padStart(2, "0"))
-    .join("")}`;
+  if (match) {
+    const alpha = match[4] === undefined ? 1 : Number(match[4]);
+    if (!Number.isFinite(alpha) || alpha < 0.999) return null;
+    return `#${[match[1], match[2], match[3]]
+      .map((part) => Number(part).toString(16).padStart(2, "0"))
+      .join("")}`;
+  }
+  if (
+    /^(?:hsl|hsla|oklch|oklab|lab|lch|color)\(.+\)$/i.test(raw) &&
+    !/\/\s*0(?:\.0+)?\s*\)$/i.test(raw)
+  ) {
+    return raw.replace(/\s+/g, " ");
+  }
+  return null;
+}
+
+function variantsEqual(a: readonly string[], b: readonly string[]) {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** Resolve the utility that owns a property at the active responsive tier. */
+export function resolveInspectorTailwindToken(
+  className: string | undefined,
+  properties: readonly TailwindPropertyFamily[],
+  targetVariants: readonly string[],
+): TailwindToken | null {
+  const tokens = tokenizeTailwindClasses(className);
+  for (const variants of [targetVariants, []] as const) {
+    if (
+      variants.length === 0 &&
+      targetVariants.length === 0 &&
+      variants !== targetVariants
+    ) {
+      continue;
+    }
+    for (let index = tokens.length - 1; index >= 0; index -= 1) {
+      const candidate = tokens[index];
+      if (
+        properties.includes(candidate.propertyFamily) &&
+        variantsEqual(candidate.variants, variants)
+      ) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Clearing a paint at a responsive tier must mask a value inherited from a
+ * lower tier. Removing an absent `lg:*`/`md:*` token would leave the inherited
+ * base paint visible and make the clear action appear to do nothing.
+ */
+export function resolveResponsivePaintClearUtility(
+  className: string | undefined,
+  properties: readonly TailwindPropertyFamily[],
+  targetVariants: readonly string[],
+  resetUtility: string,
+): string {
+  if (targetVariants.length === 0) return "";
+  return resolveInspectorTailwindToken(className, properties, [])
+    ? resetUtility
+    : "";
 }
 
 /**
@@ -1529,15 +1588,36 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const computedBackgroundImage = containerComputedStyle?.backgroundImage;
   const sourceTextGradient = parseTailwindTextGradient(targetClassName);
   const containerTextGradient = parseTailwindTextGradient(containerClassName);
+  const backgroundToken = resolveInspectorTailwindToken(
+    containerClassName,
+    ["background", "background-color"],
+    targetVariants,
+  );
+  const textColorToken = resolveInspectorTailwindToken(
+    targetClassName,
+    ["text-color"],
+    targetVariants,
+  );
   const sourceBackgroundPaint = !containerTextGradient
-    ? (parseTailwindBackgroundPaint(containerClassName) ??
-      parseTailwindBackgroundColor(containerClassName))
+    ? (parseTailwindBackgroundPaint(backgroundToken?.raw) ??
+      parseTailwindBackgroundColor(backgroundToken?.raw))
     : null;
   const sourceTextPaint =
-    sourceTextGradient ?? parseTailwindTextColor(targetClassName);
+    sourceTextGradient ?? parseTailwindTextColor(textColorToken?.raw);
   const effectiveBackgroundPaint =
     optimisticValue("backgroundPaint") ??
     sourceBackgroundPaint ??
+    (backgroundToken
+      ? ((!containerTextGradient &&
+        computedBackgroundImage &&
+        computedBackgroundImage !== "none"
+          ? computedBackgroundImage
+          : undefined) ??
+        computedColorToInspectorPaint(
+          containerComputedStyle?.backgroundColor,
+        ) ??
+        "")
+      : null) ??
     (hasResolvedContainerSource
       ? ""
       : ((!containerTextGradient &&
@@ -1545,15 +1625,20 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         computedBackgroundImage !== "none"
           ? computedBackgroundImage
           : undefined) ??
-        computedColorToHex(containerComputedStyle?.backgroundColor) ??
+        computedColorToInspectorPaint(
+          containerComputedStyle?.backgroundColor,
+        ) ??
         props.backgroundColor ??
         "#fafaf9"));
   const effectiveTextPaint =
     optimisticValue("textPaint") ??
     sourceTextPaint ??
+    (textColorToken
+      ? (computedColorToInspectorPaint(activeComputedStyle?.color) ?? "")
+      : null) ??
     (hasResolvedTextSource
       ? ""
-      : (computedColorToHex(activeComputedStyle?.color) ??
+      : (computedColorToInspectorPaint(activeComputedStyle?.color) ??
         props.textColor ??
         "#1c1917"));
   const sourceBorderRadii = parseTailwindBorderRadii(containerClassName);
@@ -1742,10 +1827,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       : (containerComputedStyle?.borderTopStyle ?? "solid"));
   const effectiveBorderColor =
     optimisticValue("borderColor") ??
-    parseTailwindBorderColor(containerClassName) ??
+    parseTailwindBorderColor(
+      resolveInspectorTailwindToken(
+        containerClassName,
+        ["border-color"],
+        targetVariants,
+      )?.raw,
+    ) ??
+    (resolveInspectorTailwindToken(
+      containerClassName,
+      ["border-color"],
+      targetVariants,
+    )
+      ? (computedColorToInspectorPaint(
+          containerComputedStyle?.borderTopColor,
+        ) ?? "")
+      : null) ??
     (hasResolvedContainerSource
       ? ""
-      : (computedColorToHex(containerComputedStyle?.borderTopColor) ?? ""));
+      : (computedColorToInspectorPaint(
+          containerComputedStyle?.borderTopColor,
+        ) ?? ""));
   const inspectorIdentity =
     section.id +
     ":" +
@@ -4272,8 +4374,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     }}
                     onClear={() => {
                       previewContainerStyle({
-                        "background-color": "",
-                        "background-image": "",
+                        "background-color": "transparent",
+                        "background-image": "none",
                       });
                       if (!componentPath) {
                         handleFieldChange("backgroundColor", undefined);
@@ -4282,7 +4384,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         (prev) =>
                           patchTailwindClasses(prev, {
                             property: "background",
-                            value: "",
+                            value: resolveResponsivePaintClearUtility(
+                              prev,
+                              ["background", "background-color"],
+                              targetVariants,
+                              "bg-transparent",
+                            ),
                           }),
                         { backgroundPaint: "" },
                       );
@@ -4408,10 +4515,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   )
                 }
                 onBorderColorClear={() => {
-                  previewContainerStyle({ "border-color": "" });
+                  previewContainerStyle({ "border-color": "transparent" });
                   commitContainerProperty(
                     "border-color",
-                    "",
+                    resolveResponsivePaintClearUtility(
+                      containerClassName,
+                      ["border-color"],
+                      targetVariants,
+                      "border-transparent",
+                    ),
                     "borderColor",
                     "",
                   );

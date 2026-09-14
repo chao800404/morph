@@ -13,6 +13,7 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("font-bold")).toBe("font-weight");
     expect(classifyTailwindUtility("text-center")).toBe("text-align");
     expect(classifyTailwindUtility("text-stone-900")).toBe("text-color");
+    expect(classifyTailwindUtility("text-rose-700/75")).toBe("text-color");
     expect(classifyTailwindUtility("text-[#123456]")).toBe("text-color");
     expect(classifyTailwindUtility("leading-[1.2]")).toBe("line-height");
     expect(classifyTailwindUtility("leading-tight")).toBe("line-height");
@@ -50,6 +51,10 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("border-[2px]")).toBe("border-width");
     expect(classifyTailwindUtility("border-dashed")).toBe("border-style");
     expect(classifyTailwindUtility("border-[#123456]")).toBe("border-color");
+    expect(classifyTailwindUtility("bg-blue-500/80")).toBe("background");
+    expect(classifyTailwindUtility("border-emerald-400/[.35]")).toBe(
+      "border-color",
+    );
     expect(classifyTailwindUtility("object-cover")).toBe("object-fit");
     expect(classifyTailwindUtility("object-top-right")).toBe("object-position");
     expect(classifyTailwindUtility("object-[35%_20%]")).toBe("object-position");

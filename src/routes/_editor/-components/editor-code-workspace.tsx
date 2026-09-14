@@ -169,7 +169,8 @@ type EditorCodeWorkspaceProps = {
     path: string,
     resolution: "reload" | "force_mine",
   ) => void;
-  onRefreshPreview?: () => void;
+  /** Recreates the preview after a file-tree or toolchain change. */
+  onRestartPreview?: () => void;
   onThemeFilesMoved?: (
     moves: ReadonlyArray<{ from: string; to: string }>,
   ) => void;
@@ -178,6 +179,10 @@ type EditorCodeWorkspaceProps = {
     path: string,
     content: string,
   ) => Promise<StorefrontThemeFileDTO | null>;
+  /** Applies transient Monaco buffers to the running React preview. */
+  onPreviewFilesChange?: (
+    files: Array<{ path: string; content: string }>,
+  ) => void;
   onBuildPreview?: () => void;
   externalDiagnostics?: unknown;
   dependencySourceRevisionId?: string;
@@ -298,10 +303,11 @@ const EditorCodeWorkspaceContent = forwardRef<
     jumpLocation,
     externalConflictFiles,
     onResolveConflict,
-    onRefreshPreview,
+    onRestartPreview,
     onThemeFilesMoved,
     onDirtyFilesChange,
     onSaveFile,
+    onPreviewFilesChange,
     onBuildPreview,
     externalDiagnostics,
     dependencySourceRevisionId,
@@ -458,6 +464,15 @@ const EditorCodeWorkspaceContent = forwardRef<
   const draftContentsRef = useRef<Record<string, string>>({});
   const draftDirtyRef = useRef<Record<string, boolean>>({});
   const draftRevisionRef = useRef<Record<string, number>>({});
+  const autoSaveTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
+  const previewDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const autoSaveFileRef = useRef<((path: string) => Promise<void>) | null>(
+    null,
+  );
   const combinedDirtyPathsRef = useRef(dirtyPaths);
   const suppressModelChangeRef = useRef(false);
   const saveInFlightRef = useRef(false);
@@ -958,6 +973,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       path: string;
       content: string;
       draftRevision: number;
+      silent?: boolean;
     }) => {
       markWorkspaceSaving(path, workspaceScope);
       if (onSaveFile) return onSaveFile(path, content);
@@ -1022,8 +1038,13 @@ const EditorCodeWorkspaceContent = forwardRef<
       queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
       });
-      toast.success(`Saved ${saved.path}`);
-      onRefreshPreview?.();
+      if (!variables.silent) toast.success(`Saved ${saved.path}`);
+      // The editor shell's save boundary has already written the complete
+      // workspace into the running preview and asked Vite to apply its native
+      // HMR payload. Recreating the iframe here discards component state and
+      // makes switching back to Design look like a page reload. Standalone
+      // consumers without that boundary still need the full restart hook.
+      if (!onSaveFile) onRestartPreview?.();
     },
     onError: (err, variables) => {
       const fileState = useThemeWorkspaceStore
@@ -1209,7 +1230,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           ? "TanStack Start starter template applied"
           : "Starter template is already up to date",
       );
-      onRefreshPreview?.();
+      onRestartPreview?.();
     },
     onError: (error) => {
       toast.error(
@@ -1280,7 +1301,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           .queryKey,
       });
       toast.success("Deleted " + path);
-      onRefreshPreview?.();
+      onRestartPreview?.();
     },
     onError: (error) =>
       toast.error(
@@ -1380,7 +1401,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           .queryKey,
       });
       toast.success(`Deleted folder ${folderPath}`);
-      if (deletedPaths.length > 0) onRefreshPreview?.();
+      if (deletedPaths.length > 0) onRestartPreview?.();
     },
     onError: (error) =>
       toast.error(
@@ -1551,7 +1572,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           ? `Moved ${moves.length === 1 ? moves[0].to : `${moves.length} files`}; updated ${plan.rewrites.length} import${plan.rewrites.length === 1 ? "" : "s"}`
           : `Moved ${moves.length === 1 ? moves[0].to : `${moves.length} files`}`,
       );
-      onRefreshPreview?.();
+      onRestartPreview?.();
     },
     onError: (error) =>
       toast.error(
@@ -1624,7 +1645,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       toast.success(
         `Pasted ${createdCount} item${createdCount === 1 ? "" : "s"}`,
       );
-      onRefreshPreview?.();
+      onRestartPreview?.();
     },
     onError: (error) =>
       toast.error(error instanceof Error ? error.message : "Failed to paste"),
@@ -1673,7 +1694,7 @@ const EditorCodeWorkspaceContent = forwardRef<
         prev.includes(saved.path) ? prev : [...prev, saved.path],
       );
       toast.success(`Created ${saved.path}`);
-      onRefreshPreview?.();
+      onRestartPreview?.();
     },
     onError: (error) =>
       toast.error(
@@ -1836,6 +1857,32 @@ const EditorCodeWorkspaceContent = forwardRef<
         useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
       );
     }
+    if (previewDraftTimerRef.current) {
+      clearTimeout(previewDraftTimerRef.current);
+    }
+    previewDraftTimerRef.current = setTimeout(() => {
+      previewDraftTimerRef.current = null;
+      onPreviewFilesChange?.(
+        files.map((file) => ({
+          path: file.path,
+          content: getCurrentEditorContent(file.path),
+        })),
+      );
+    }, 120);
+
+    const existingAutoSave = autoSaveTimersRef.current.get(path);
+    if (existingAutoSave) clearTimeout(existingAutoSave);
+    if (isDirty && !externalConflictFiles?.[path]) {
+      autoSaveTimersRef.current.set(
+        path,
+        setTimeout(() => {
+          autoSaveTimersRef.current.delete(path);
+          void autoSaveFileRef.current?.(path);
+        }, 700),
+      );
+    } else {
+      autoSaveTimersRef.current.delete(path);
+    }
     if (routeDiagnosticsTimerRef.current) {
       clearTimeout(routeDiagnosticsTimerRef.current);
     }
@@ -1853,6 +1900,19 @@ const EditorCodeWorkspaceContent = forwardRef<
       );
     }
   };
+
+  useEffect(
+    () => () => {
+      if (previewDraftTimerRef.current) {
+        clearTimeout(previewDraftTimerRef.current);
+      }
+      for (const timer of autoSaveTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      autoSaveTimersRef.current.clear();
+    },
+    [],
+  );
 
   useEffect(() => {
     syncCombinedDirtyPaths(
@@ -1879,6 +1939,9 @@ const EditorCodeWorkspaceContent = forwardRef<
       return;
 
     saveInFlightRef.current = true;
+    const pendingAutoSave = autoSaveTimersRef.current.get(activeFilePath);
+    if (pendingAutoSave) clearTimeout(pendingAutoSave);
+    autoSaveTimersRef.current.delete(activeFilePath);
     const originalContent = getCurrentEditorContent(activeFilePath);
     let content = originalContent;
     const editor = editorRef.current;
@@ -1937,6 +2000,59 @@ const EditorCodeWorkspaceContent = forwardRef<
     updateWorkspaceLocal,
     workspaceScope,
   ]);
+
+  const handleAutoSaveFile = useCallback(
+    async (path: string): Promise<void> => {
+      if (externalConflictFiles?.[path] || !draftDirtyRef.current[path]) return;
+      if (saveInFlightRef.current || saveMutation.isPending) {
+        autoSaveTimersRef.current.set(
+          path,
+          setTimeout(() => {
+            autoSaveTimersRef.current.delete(path);
+            void autoSaveFileRef.current?.(path);
+          }, 250),
+        );
+        return;
+      }
+
+      const content = getCurrentEditorContent(path);
+      const draftRevision = draftRevisionRef.current[path] ?? 0;
+      saveInFlightRef.current = true;
+      try {
+        updateWorkspaceLocal(path, content, workspaceScope);
+        const saved = await saveMutation.mutateAsync({
+          path,
+          content,
+          draftRevision,
+          silent: true,
+        });
+        if (!saved) return;
+      } catch {
+        // onError keeps the draft and exposes the actionable failure state.
+        return;
+      } finally {
+        saveInFlightRef.current = false;
+      }
+
+      if (draftDirtyRef.current[path] && !externalConflictFiles?.[path]) {
+        autoSaveTimersRef.current.set(
+          path,
+          setTimeout(() => {
+            autoSaveTimersRef.current.delete(path);
+            void autoSaveFileRef.current?.(path);
+          }, 700),
+        );
+      }
+    },
+    [
+      externalConflictFiles,
+      getCurrentEditorContent,
+      saveMutation,
+      updateWorkspaceLocal,
+      workspaceScope,
+    ],
+  );
+  autoSaveFileRef.current = handleAutoSaveFile;
 
   const handleSaveAll = useCallback(async (): Promise<boolean> => {
     if (saveInFlightRef.current || saveMutation.isPending) return false;
@@ -3103,6 +3219,16 @@ const EditorCodeWorkspaceContent = forwardRef<
 
           {/* Action Buttons */}
           <div className="flex items-center gap-1.5 shrink-0 pl-2">
+            <span
+              className="min-w-12 text-right text-[10px] text-muted-foreground"
+              role="status"
+            >
+              {saveMutation.isPending
+                ? "Saving…"
+                : dirtyPathSet.has(activeFilePath)
+                  ? "Unsaved"
+                  : "Saved"}
+            </span>
             <Button
               variant="form"
               size="xs"

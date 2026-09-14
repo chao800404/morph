@@ -1758,6 +1758,7 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
       const nextElement = resolvePreviewSelectionRestoreElement(
         section,
         target,
+        selectedElement,
       );
 
       selectedElement = nextElement;

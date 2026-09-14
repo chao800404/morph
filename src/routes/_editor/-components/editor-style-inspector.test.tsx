@@ -4,6 +4,8 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import {
   EditorStyleInspector,
+  resolveInspectorTailwindToken,
+  resolveResponsivePaintClearUtility,
   resolveStyleInspectorClassName,
 } from "./editor-style-inspector";
 
@@ -98,6 +100,52 @@ describe("resolveStyleInspectorClassName", () => {
         "custom-class",
       ),
     ).toBe("props-class");
+  });
+});
+
+describe("resolveInspectorTailwindToken", () => {
+  it("resolves standard palette colors at the active breakpoint before the base color", () => {
+    expect(
+      resolveInspectorTailwindToken(
+        "bg-red-300 lg:bg-blue-500/80",
+        ["background", "background-color"],
+        ["lg"],
+      )?.raw,
+    ).toBe("lg:bg-blue-500/80");
+    expect(
+      resolveInspectorTailwindToken(
+        "text-rose-700 border-emerald-400",
+        ["text-color"],
+        ["md"],
+      )?.raw,
+    ).toBe("text-rose-700");
+  });
+
+  it("masks an inherited paint when clearing at a responsive breakpoint", () => {
+    expect(
+      resolveResponsivePaintClearUtility(
+        "max-w-xl bg-red-500",
+        ["background", "background-color"],
+        ["lg"],
+        "bg-transparent",
+      ),
+    ).toBe("bg-transparent");
+    expect(
+      resolveResponsivePaintClearUtility(
+        "max-w-xl lg:bg-red-500",
+        ["background", "background-color"],
+        ["lg"],
+        "bg-transparent",
+      ),
+    ).toBe("");
+    expect(
+      resolveResponsivePaintClearUtility(
+        "max-w-xl bg-red-500",
+        ["background", "background-color"],
+        [],
+        "bg-transparent",
+      ),
+    ).toBe("");
   });
 });
 
@@ -1153,7 +1201,7 @@ describe("EditorStyleInspector selection content", () => {
     );
 
     expect(onPreviewSelectionStyle).toHaveBeenLastCalledWith(
-      { "background-color": "", "background-image": "" },
+      { "background-color": "transparent", "background-image": "none" },
       "heading",
     );
     const backgroundUpdater = onUpdateThemeFileStyle.mock.calls[1]?.[2];
@@ -1190,6 +1238,79 @@ describe("EditorStyleInspector selection content", () => {
       ).value,
     ).toBe("");
   }, 10_000);
+
+  it("refreshes standard Tailwind palette colors from Code mode and removes their exact token", () => {
+    const onUpdateThemeFileStyle = vi.fn(
+      (
+        _filePath: string,
+        _elementName: string,
+        _updater: (previous: string) => string,
+      ) => 5,
+    );
+    const themeFile = (background: string) => ({
+      id: "file-hero",
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      path: "src/components/Hero.tsx",
+      content: `export function Hero() { return <section><h1 data-morph-node="heading" className="font-serif ${background} text-[48px]">Heading</h1></section>; }`,
+      mimeType: "text/typescript",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    });
+    const selection = (background: string, computedColor: string) =>
+      selectionDescriptor({
+        kind: "heading",
+        tagName: "h1",
+        nodeId: "heading",
+        elementKey: "heading",
+        fieldKey: "heading",
+        className: `font-serif ${background} text-[48px]`,
+        computed: { backgroundColor: computedColor },
+      });
+    const { rerender } = render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[themeFile("bg-red-300")]}
+        selection={selection("bg-red-300", "oklch(80.8% 0.114 19.571)")}
+        activeComputedStyleRevision={1}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />,
+    );
+
+    expect(
+      (screen.getByLabelText("Background color value") as HTMLInputElement)
+        .value,
+    ).toBe("oklch(80.8% 0.114 19.571)");
+
+    rerender(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[themeFile("bg-blue-500")]}
+        selection={selection("bg-blue-500", "oklch(62.3% 0.214 259.815)")}
+        activeComputedStyleRevision={2}
+        onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+      />,
+    );
+
+    expect(
+      (screen.getByLabelText("Background color value") as HTMLInputElement)
+        .value,
+    ).toBe("oklch(62.3% 0.214 259.815)");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Tailwind CSS Classes · 3" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove bg-blue-500" }));
+
+    const updater = onUpdateThemeFileStyle.mock.calls.at(-1)?.[2];
+    expect(updater?.("font-serif bg-blue-500 text-[48px]")).toBe(
+      "font-serif text-[48px]",
+    );
+  });
 
   it("shows section content when the section itself is selected", () => {
     render(

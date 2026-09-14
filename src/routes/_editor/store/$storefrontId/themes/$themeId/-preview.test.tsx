@@ -134,6 +134,33 @@ describe("preview selection restore", () => {
     ).toBe(image);
   });
 
+  it("keeps a connected plain element selected when formatting moves its source location", () => {
+    const section = document.createElement("section");
+    section.dataset.storefrontSectionId = "hero";
+    section.innerHTML = `
+      <div data-morph-loc="src/components/Hero.tsx:20:5"></div>
+      <div data-morph-loc="src/components/Hero.tsx:24:5"></div>
+    `;
+    document.body.appendChild(section);
+    const retained = section.lastElementChild as HTMLElement;
+
+    expect(
+      resolvePreviewSelectionRestoreElement(
+        section,
+        {
+          sectionId: "hero",
+          // Prettier moved the selected JSX element from 18 to 24. Reusing the
+          // old source position would otherwise demote selection to the whole
+          // section and make the element's style controls read-only.
+          sourceLocation: "src/components/Hero.tsx:18:5",
+        },
+        retained,
+      ),
+    ).toBe(retained);
+
+    section.remove();
+  });
+
   it("falls back to the section and supports selecting another child afterward", () => {
     const section = document.createElement("section");
     section.innerHTML = `<button data-morph-element="first"></button><button data-morph-element="second"></button>`;

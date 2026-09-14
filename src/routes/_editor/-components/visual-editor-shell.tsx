@@ -1,16 +1,6 @@
 import { commitPendingContent } from "@/lib/storefront/editor/pending-content-write";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -1362,9 +1352,6 @@ export function VisualEditorShell({
   const latestAppliedStyleRevisionRef = useRef(0);
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
   const editorCodeWorkspaceRef = useRef<EditorCodeWorkspaceHandle>(null);
-  const [isUnsavedCodeDialogOpen, setIsUnsavedCodeDialogOpen] = useState(false);
-  const [isSavingCodeBeforeModeSwitch, setIsSavingCodeBeforeModeSwitch] =
-    useState(false);
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -5216,44 +5203,9 @@ export function VisualEditorShell({
     syncPreviewSpacingOverlay,
   ]);
 
-  const handleContinueToDesign = useCallback(() => {
-    setIsUnsavedCodeDialogOpen(false);
-    switchToDesign();
-  }, [switchToDesign]);
-
-  const handleSaveAndSwitchToDesign = useCallback(async () => {
-    const saveAll = editorCodeWorkspaceRef.current?.saveAll;
-    if (!saveAll) {
-      toast.error("Code Workspace is still loading. Try again in a moment.");
-      return;
-    }
-
-    setIsSavingCodeBeforeModeSwitch(true);
-    try {
-      const saved = await saveAll();
-      if (!saved) {
-        toast.error(
-          "Could not save all Code Editor changes. Resolve any conflicts and try again.",
-        );
-        return;
-      }
-      setIsUnsavedCodeDialogOpen(false);
-      switchToDesign();
-    } catch {
-      // The Code Workspace reports the concrete save error. Keep the dialog
-      // open so a failed save never silently changes the editing mode.
-    } finally {
-      setIsSavingCodeBeforeModeSwitch(false);
-    }
-  }, [switchToDesign]);
-
   const handleSwitchToDesign = useCallback(() => {
-    if (editorMode === "code" && monacoDirtyFiles.length > 0) {
-      setIsUnsavedCodeDialogOpen(true);
-      return;
-    }
     switchToDesign();
-  }, [editorMode, monacoDirtyFiles.length, switchToDesign]);
+  }, [switchToDesign]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -6547,10 +6499,13 @@ export function VisualEditorShell({
             initialActiveFilePath={activeCodeFilePath}
             jumpLocation={jumpLocation}
             onResolveConflict={handleResolveConflict}
-            onRefreshPreview={retryLivePreview}
+            onRestartPreview={retryLivePreview}
             onThemeFilesMoved={handleThemeFilesMoved}
             onDirtyFilesChange={setMonacoDirtyFiles}
             onSaveFile={handleUnifiedSaveFile}
+            onPreviewFilesChange={(files) =>
+              postPreviewThemeFiles(files, { preserveCanvasPosition: true })
+            }
             onBuildPreview={handleBuildPreview}
             externalDiagnostics={buildDiagnostics}
             dependencySourceRevisionId={dependencySourceRevisionId}
@@ -6998,48 +6953,6 @@ export function VisualEditorShell({
 
         <EditorSmallScreenNotice />
       </EditorModeSurface>
-
-      <AlertDialog
-        open={isUnsavedCodeDialogOpen}
-        onOpenChange={(open) => {
-          if (!isSavingCodeBeforeModeSwitch) {
-            setIsUnsavedCodeDialogOpen(open);
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Unsaved Code changes</AlertDialogTitle>
-            <AlertDialogDescription>
-              You have unsaved changes in {monacoDirtyFiles.length} Code Editor{" "}
-              {monacoDirtyFiles.length === 1 ? "file" : "files"}. Save them
-              before switching to Design?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isSavingCodeBeforeModeSwitch}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              disabled={isSavingCodeBeforeModeSwitch}
-              onClick={handleContinueToDesign}
-            >
-              Continue without saving
-            </AlertDialogAction>
-            <Button
-              type="button"
-              variant="form"
-              disabled={isSavingCodeBeforeModeSwitch}
-              onClick={() => void handleSaveAndSwitchToDesign()}
-            >
-              {isSavingCodeBeforeModeSwitch ? (
-                <LoaderCircle className="size-3.5 animate-spin" />
-              ) : null}
-              {isSavingCodeBeforeModeSwitch ? "Saving…" : "Save & switch"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

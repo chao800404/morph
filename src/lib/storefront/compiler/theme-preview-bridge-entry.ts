@@ -219,7 +219,12 @@ function restoreSelectedTarget(target) {
     return;
   }
 
-  const nextElement = resolvePreviewSelectionRestoreElement(section, target);
+  const retainedElement = selectedItem?.element ?? null;
+  const nextElement = resolvePreviewSelectionRestoreElement(
+    section,
+    target,
+    retainedElement,
+  );
   selectedItem = resolveSelectable(nextElement);
   if (selectedItem) {
     selectedItem = {
@@ -363,6 +368,7 @@ function acknowledgePendingStyleRevision() {
     if (selectedItem?.element && selectionStylePreview.hasPending()) {
       selectionStylePreview.carryTo(selectedItem.element);
     }
+    scheduleSelectedTargetReport();
   }
 }
 
@@ -374,6 +380,35 @@ function scheduleStructureReport() {
   structureReportFrame = window.requestAnimationFrame(() => {
     structureReportFrame = null;
     reportStructure();
+  });
+}
+
+/**
+ * Re-resolves the selected DOM node after React commits a Fast Refresh update.
+ *
+ * Vite's afterUpdate signal means the module update was accepted; React may
+ * commit its class/text changes immediately afterward. Reading the selection
+ * only in the acknowledgement handler can therefore send the Inspector the
+ * previous className and computed style forever. A frame plus the DOM observer
+ * below makes the rendered React tree the point at which the fresh descriptor
+ * is reported.
+ */
+let selectionReportFrame = null;
+
+function scheduleSelectedTargetReport() {
+  if (
+    !channel ||
+    !selectionEnabled ||
+    !lastRestoreTarget ||
+    selectionReportFrame !== null
+  ) {
+    return;
+  }
+  selectionReportFrame = window.requestAnimationFrame(() => {
+    selectionReportFrame = null;
+    if (!selectionEnabled || !lastRestoreTarget) return;
+    restoreSelectedTarget(lastRestoreTarget);
+    if (selectedItem?.sectionId) sendSelectionReport(selectedItem);
   });
 }
 
@@ -470,20 +505,41 @@ if (channel) {
   // a feedback loop when a selected element is highlighted.
   const previewStructureRoot =
     document.querySelector("[data-storefront-preview-root]") ?? document.body;
-  const structureObserver = new MutationObserver(scheduleStructureReport);
+  const structureAttributes = new Set([
+    "data-storefront-section-id",
+    "data-storefront-field",
+    "data-storefront-field-path",
+    "data-storefront-item-id",
+    "data-storefront-component",
+    "data-morph-loc",
+    "data-morph-node",
+    "data-morph-element",
+  ]);
+  const structureObserver = new MutationObserver((mutations) => {
+    if (
+      mutations.some(
+        (mutation) =>
+          mutation.type === "childList" ||
+          (mutation.type === "attributes" &&
+            structureAttributes.has(mutation.attributeName ?? "")),
+      )
+    ) {
+      scheduleStructureReport();
+    }
+    // Class-only and text-only React commits do not change the editable tree,
+    // but they do change the values the Inspector must show. The style
+    // attribute stays out
+    // of the filter so live slider previews cannot create a report loop.
+    scheduleSelectedTargetReport();
+  });
   structureObserver.observe(previewStructureRoot, {
     subtree: true,
     childList: true,
+    characterData: true,
     attributes: true,
     attributeFilter: [
-      "data-storefront-section-id",
-      "data-storefront-field",
-      "data-storefront-field-path",
-      "data-storefront-item-id",
-      "data-storefront-component",
-      "data-morph-loc",
-      "data-morph-node",
-      "data-morph-element",
+      ...structureAttributes,
+      "class",
     ],
   });
   scheduleStructureReport();

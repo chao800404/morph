@@ -6,11 +6,11 @@
 
 | 項目         | 內容                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 最後更新     | 2026-09-13                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 最後更新     | 2026-09-14                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 目前狀態     | **Live Preview 已是真實 React，而且是編輯器唯一的引擎** —— `useState`／`useEffect`／Fast Refresh 與合法 npm 套件都在容器內的 Vite dev server 真實執行。相容性直譯器已在型別層退出編輯器路徑（`LivePreviewSource` 收斂為單成員），原始碼暫留觀察但走不到。預覽生命週期收斂為單一狀態機，並補上 sandbox 續期與存活偵測。**頁面生命週期已完整**：Pages 面板可新增與刪除頁面，兩者都以編輯器持有的 generation 做 OCC，並在寫入前重建整張路由表。Production Runtime、Domain 與遠端 Publish 仍未閉環                                                                                  |
-| 整體完成度   | **94%**（第 7 階段由 80% → 95%：最大的架構斷層已關閉；其餘階段維持，尚未閉環的是 production runtime、domain 與遠端 publish）                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 整體完成度   | **94%**（第 7 階段由 80% → 95%：最大的架構斷層已關閉；本輪補齊 Code／Design 草稿同步與自動儲存，尚未閉環的是 production runtime、domain 與遠端 publish）                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 目前重點     | 實際執行 `pnpm test:e2e`（新增／刪除頁面的整合流程已寫成 spec，但缺 `.env.e2e` 憑證而從未跑過，本輪的滾輪回歸正是手動驗證會漏掉的那一類）；其次為商品 catalog provisioning 觸發時機、真實 Cloudflare Theme Worker／Domain／Publish 閉環；確認觀察期後刪除已無法抵達的直譯器路徑                                                                                                                                                                                                                                                                                                 |
-| 最近完整驗證 | 2026-09-13 實跑：`pnpm typecheck`（0 錯誤）、`pnpm test`（**2338 passed、1 skipped**）、`pnpm build` 含 client bundle check（339 檔）與 deploy artifact guard、`git diff --check` 乾淨。另在真實容器與瀏覽器實測：冷啟動 serverFn 5.6 秒、暖啟動 293 毫秒且零檔案寫入、失聯偵測 12–15 秒後 1.5 秒恢復、續期下容器連續存活 21 分鐘、殺掉容器後 60 秒內偵測並自動恢復、暖容器上刪除頁面會一併移除舊計畫留下的檔案而不動 `node_modules` symlink、健康預覽連續 124 秒零次誤判重連。仍未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod`、**`pnpm test:e2e`（缺憑證）** |
+| 最近完整驗證 | 2026-09-14 實跑：`pnpm typecheck`（0 錯誤）、`pnpm test`（**2367 passed、1 skipped**）、`pnpm build` 含 client bundle check（339 檔）與 deploy artifact guard、`git diff --check` 乾淨。另以元件測試驗證 Code 草稿先更新 Live Preview、停止輸入後自動儲存、儲存期間保留較新的草稿，以及切換 Design 不再要求先儲存。既有真實容器與瀏覽器驗證仍有效：冷啟動 serverFn 5.6 秒、暖啟動 293 毫秒且零檔案寫入、失聯偵測 12–15 秒後 1.5 秒恢復、續期下容器連續存活 21 分鐘、殺掉容器後 60 秒內偵測並自動恢復。仍未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod`、**`pnpm test:e2e`（缺憑證）** |
 
 `█████████▍ 94%`
 
@@ -37,7 +37,7 @@
 | 2. 即時預覽與提交語意              | 操作中只更新 Live View，完成輸入後才真正提交資料                                                                                                                                  | ✅   |   100% | 新控制項必須沿用同一套 draft/commit 規則                                                                                                                              |
 | 3. Inspector 模組化與基本樣式      | capability 判定、Design Card、Sizing、Position、Appearance、Spacing、Typography、Fill、Border、array 欄位、link 欄位                                                              | 🟢   |    99% | Content 已獨立成分頁（2026-09-04）；其餘卡片仍有硬編碼 `text-[10px]`（15 處），待收斂到同一 token                                                                     |
 | 4. Editor ↔ Preview 通訊           | typed protocol、runtime validation、selection/style 同步、in-place route bridge                                                                                                   | 🟢   |    95% | 新訊息必須登錄 protocol registry 並加測試                                                                                                                             |
-| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入、未儲存 Code ↔ Design 切換防護、Code 診斷與補全、Color Picker 拖曳、面板寬度拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | 🟢   |    95% | 補完 Performance trace，重新量測大型 theme、深層 DOM 與大量 capability；並逐一稽核其餘高頻操作                                                                        |
+| 5. 編輯器互動效能                  | 選取側欄切換、Code 模式輸入與自動儲存、Code ↔ Design 草稿切換、Code 診斷與補全、Color Picker 拖曳、面板寬度拖曳、Canvas 捲動／平移／縮放、capability 解析快取、路由預取與穩定 iframe | 🟢   |    97% | 補完 Performance trace，重新量測大型 theme、深層 DOM 與大量 capability；並逐一稽核其餘高頻操作                                                                        |
 | 6. Code-authored 內容 round-trip   | 程式碼文字節點選取、Inspector 編輯、Live Preview、D1 draft／OCC persistence、商品 catalog source 與 preview loader、Header／Footer Document slot、統一連結欄位                    | 🟢   |    90% | 裁決 componentRef 嚴格拒絕與內容保存的衝突；將 catalog provisioning 從 Editor 開啟時的 lazy path 接到商品 create/update，並以真實 production runtime 完成 Publish E2E |
 | 7. Live Runtime 與真實建置的一致性 | 編輯器預覽即真實 React／真實 router／catalog loader，與建置產物同源                                                                                                               | 🟢   |    95% | 觀察期結束後刪除無法抵達的直譯器路徑（約 4100 行與 20 個測試檔）；公開 runtime 邊界與 production Worker 仍待閉環                                                      |
 | 8. 最終品質與發布準備              | E2E、無障礙、跨瀏覽器、響應式、錯誤與載入狀態、復原／重做、release 回滾、catalog 瀏覽流程                                                                                         | 🟡   |    88% | 設定 `E2E_SCRATCH_EDITOR_PATH` 讓自訂元件測試也納入常規；之後完成 Cloudflare runtime/domain、remote migration 與 Publish 發布閉環                                     |
@@ -50,11 +50,11 @@
 | 2. 即時預覽與提交語意              |       5 |   100% |            5.00 |
 | 3. Inspector 模組化與基本樣式      |      18 |    99% |           17.82 |
 | 4. Editor ↔ Preview 通訊           |      10 |    95% |            9.50 |
-| 5. 編輯器互動效能                  |      15 |    95% |           14.25 |
+| 5. 編輯器互動效能                  |      15 |    97% |           14.55 |
 | 6. Code-authored 內容 round-trip   |      15 |    90% |           13.50 |
 | 7. Live Runtime 與真實建置的一致性 |      12 |    95% |           11.40 |
 | 8. 最終品質與發布準備              |      20 |    88% |           17.60 |
-| **合計**                           | **100** |        | **94.07 → 94%** |
+| **合計**                           | **100** |        | **94.37 → 94%** |
 
 權重依「剩餘工作量 × 對可交付性的影響」設定：
 
@@ -470,17 +470,28 @@ Webflow 的 publish 有選填 note，Vercel／Netlify 用的是 commit message�
   e2e `publish.spec.ts` 改為點 Publish 後再點 `[data-publish-confirm]`，
   且刻意留白描述，確認 note 不是建立 release 的必要條件。
 
-### 2026-09-02：Code → Design 未儲存變更提示
+### 2026-09-14：Code／Design 草稿同步與樣式清除一致化
 
-- Code 模式切回 Design 前，若 Code Workspace 有 dirty source files，會先顯示明確提示。
-- 提供 `Save & switch`、`Continue without saving`、`Cancel` 三個選項；Save & switch
-  只有在所有 dirty files 實際保存成功且無 conflict 時才切換。
-- `Continue without saving` 只切換面板，不清除 Monaco transient draft；Code surface
-  維持掛載，切回 Code 時仍可繼續編輯。
-- 透過 `EditorCodeWorkspaceHandle.saveAll()` 連接既有 OCC／workspace save path，並新增
-  測試確認 Save All 會保存目前 Monaco model 內容。
-- 驗證：`pnpm typecheck`、`pnpm test`（230 files / 1544 tests passed、1 skipped）、
-  `pnpm build`、client bundle check、deploy artifact secret guard 與 `git diff --check` 通過。
+- Code 模式輸入後以 Monaco transient draft 更新同一個真實 React Live Preview；停止輸入約
+  700ms 後自動透過既有 OCC／workspace save path 持久化，`⌘S`／`Ctrl+S` 仍可立即儲存。
+- Code 與 Design surface 持續掛載，切換模式不再要求先儲存、不再重建 iframe；草稿、React
+  state、選取與畫布位置因此可以保留。工具列會顯示 `Unsaved`、`Saving…`、`Saved`，自動
+  儲存不重複跳出成功通知，衝突或失敗時保留草稿。
+- Code 草稿預覽與持久化拆成兩條路：預覽只送目前 workspace 的暫存檔案，只有自動儲存或
+  明確快捷鍵才寫入 Theme source；新增回歸測試鎖住「先預覽、後儲存」與較新輸入不被舊
+  儲存結果覆蓋。
+- 修正 responsive 顏色清除：在 desktop／tablet 清除繼承的基礎 `bg-*` 時寫入對應的
+  `lg:bg-transparent`／`md:bg-transparent`，手機則移除基礎色；border 色採相同規則，
+  清除時畫布立即顯示透明。
+- 同步補齊真實 React 預覽的來源位置、結構回報與樣式同步回歸，避免 Code 修改後右側
+  Inspector 使用舊的 computed style 或無法回寫目前節點。
+- 驗證：`pnpm typecheck`、`pnpm test`（**2367 passed、1 skipped**）、`pnpm build`、
+  client bundle check、deploy artifact secret guard 與 `git diff --check` 通過。
+
+### 2026-09-02：Code → Design 未儲存變更提示（已由自動儲存取代）
+
+- 原本的 `Save & switch`／`Continue without saving` 對話框已移除；現在由 Code 草稿即時
+  同步預覽並自動儲存，保留 `EditorCodeWorkspaceHandle.saveAll()` 供發布或明確批次操作使用。
 
 ### 2026-09-01 第七輪：Publish 需要時自動 build
 

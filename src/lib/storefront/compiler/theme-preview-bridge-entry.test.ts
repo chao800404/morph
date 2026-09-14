@@ -42,7 +42,8 @@ describe("the script a Live Preview page runs for the editor", () => {
     // The bridge is a sibling module script, so load/ready can run before
     // React's first commit and truthfully report an empty tree. DOM commits
     // must schedule a fresh, coalesced snapshot for deep canvas selection.
-    expect(BRIDGE).toContain("new MutationObserver(scheduleStructureReport)");
+    expect(BRIDGE).toContain("const structureObserver = new MutationObserver");
+    expect(BRIDGE).toContain("scheduleStructureReport();");
     expect(BRIDGE).toContain("childList: true");
     expect(BRIDGE).toContain("structureReportFrame !== null");
     expect(BRIDGE).not.toContain(
@@ -365,6 +366,24 @@ describe("confirming the Theme source the editor is waiting on", () => {
     expect(
       BRIDGE.slice(BRIDGE.indexOf("function acknowledgePendingStyleRevision")),
     ).toContain("reportStructure();");
+  });
+
+  it("refreshes the Inspector after React commits class or text changes", () => {
+    const refresh = BRIDGE.slice(
+      BRIDGE.indexOf("function scheduleSelectedTargetReport"),
+    );
+    expect(refresh).toContain("window.requestAnimationFrame");
+    expect(refresh).toContain("restoreSelectedTarget(lastRestoreTarget)");
+    expect(refresh).toContain("sendSelectionReport(selectedItem)");
+
+    const observerStart = BRIDGE.indexOf("structureObserver.observe");
+    const observer = BRIDGE.slice(
+      observerStart,
+      BRIDGE.indexOf("scheduleStructureReport();", observerStart),
+    );
+    expect(observer).toContain('"class"');
+    expect(observer).toContain("characterData: true");
+    expect(observer).not.toContain('"style"');
   });
 
   it("confirms each revision once", () => {

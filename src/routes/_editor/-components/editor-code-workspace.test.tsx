@@ -146,7 +146,11 @@ function renderWorkspace(props?: {
     path: string,
     content: string,
   ) => Promise<StorefrontThemeFileDTO | null>;
+  onRestartPreview?: () => void;
   onDirtyFilesChange?: (paths: string[]) => void;
+  onPreviewFilesChange?: (
+    files: Array<{ path: string; content: string }>,
+  ) => void;
 }) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -166,7 +170,9 @@ function renderWorkspace(props?: {
           },
         ]}
         onSaveFile={props?.onSaveFile}
+        onRestartPreview={props?.onRestartPreview}
         onDirtyFilesChange={props?.onDirtyFilesChange}
+        onPreviewFilesChange={props?.onPreviewFilesChange}
       />
     </QueryClientProvider>,
   );
@@ -231,6 +237,35 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     });
   });
 
+  it("previews a Monaco draft before automatically saving it", async () => {
+    const onPreviewFilesChange = vi.fn();
+    const onSaveFile = vi.fn(async (_path: string, content: string) => ({
+      ...file,
+      content,
+      version: 2,
+    }));
+    renderWorkspace({ onPreviewFilesChange, onSaveFile });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), {
+      target: { value: "live draft" },
+    });
+
+    expect(
+      useThemeWorkspaceStore.getState().files[file.path].localContent,
+    ).toBe("original");
+    await waitFor(() =>
+      expect(onPreviewFilesChange).toHaveBeenLastCalledWith([
+        { path: file.path, content: "live draft" },
+      ]),
+    );
+    expect(onSaveFile).not.toHaveBeenCalled();
+
+    await waitFor(
+      () => expect(onSaveFile).toHaveBeenCalledWith(file.path, "live draft"),
+      { timeout: 1_500 },
+    );
+  });
+
   it("exposes Save All for mode switches and persists the current Monaco draft", async () => {
     const workspaceRef = createRef<EditorCodeWorkspaceHandle>();
     const onSaveFile = vi.fn(async (_path: string, content: string) => ({
@@ -250,6 +285,24 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
       file.path,
       "draft before switching to Design",
     );
+  });
+
+  it("lets the editor shell apply a saved file through HMR without refreshing the iframe", async () => {
+    const onRestartPreview = vi.fn();
+    const onSaveFile = vi.fn(async (_path: string, content: string) => ({
+      ...file,
+      content,
+      version: 2,
+    }));
+    renderWorkspace({ onSaveFile, onRestartPreview });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), {
+      target: { value: "hot updated draft" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+
+    await waitFor(() => expect(onSaveFile).toHaveBeenCalledTimes(1));
+    expect(onRestartPreview).not.toHaveBeenCalled();
   });
 
   it("saves Monaco's formatted model content", async () => {

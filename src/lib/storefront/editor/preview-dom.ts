@@ -73,6 +73,7 @@ export function selectionStyleSnapshot(
 export function resolvePreviewSelectionRestoreElement(
   section: HTMLElement,
   target: PreviewSelectionRestoreTarget,
+  retainedElement?: HTMLElement | null,
 ): HTMLElement {
   if (target.isSection) return section;
   const sourceLocationSelector = target.sourceLocation
@@ -80,7 +81,7 @@ export function resolvePreviewSelectionRestoreElement(
     : null;
   const selectorWithSourceLocation = (selector: string) =>
     sourceLocationSelector ? `${selector}${sourceLocationSelector}` : null;
-  const selectors = [
+  const identitySelectors = [
     // A source location can be stale while the preview is being replaced. Use
     // it to disambiguate an authored identity first, but never let it override
     // a field/node identity and select an adjacent wrapper instead.
@@ -122,10 +123,27 @@ export function resolvePreviewSelectionRestoreElement(
     target.fieldKey
       ? `[data-storefront-field="${CSS.escape(target.fieldKey)}"]`
       : null,
-    sourceLocationSelector,
   ].filter((selector): selector is string => selector !== null);
-  for (const selector of selectors) {
+  for (const selector of identitySelectors) {
     const match = section.querySelector<HTMLElement>(selector);
+    if (match) return match;
+  }
+
+  // A plain authored element has only a source location. Formatting or adding
+  // lines in Code mode changes that location, while React commonly keeps the
+  // same DOM node alive through Fast Refresh. Preserve that concrete identity
+  // before trying the now-stale position; stable field/node identities above
+  // still win whenever the component exposes one.
+  if (
+    retainedElement?.isConnected &&
+    retainedElement !== section &&
+    section.contains(retainedElement)
+  ) {
+    return retainedElement;
+  }
+
+  if (sourceLocationSelector) {
+    const match = section.querySelector<HTMLElement>(sourceLocationSelector);
     if (match) return match;
   }
   return section;

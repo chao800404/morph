@@ -216,8 +216,10 @@ export function classifyTailwindUtility(
   if (textArbitrary && looksLikeBackgroundColor(textArbitrary))
     return "text-color";
   if (
-    /^text-(?:transparent|current|black|white)$/.test(utility) ||
-    /^text-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}$/.test(
+    /^text-(?:transparent|current|black|white)(?:\/(?:\d{1,3}|\[.+\]))?$/.test(
+      utility,
+    ) ||
+    /^text-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}(?:\/(?:\d{1,3}|\[.+\]))?$/.test(
       utility,
     )
   ) {
@@ -256,8 +258,10 @@ export function classifyTailwindUtility(
   }
   if (BACKGROUND_CLIP_PATTERN.test(utility)) return "background-clip";
   if (
-    /^bg-(?:transparent|current|black|white)$/.test(utility) ||
-    /^bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}$/.test(
+    /^bg-(?:transparent|current|black|white)(?:\/(?:\d{1,3}|\[.+\]))?$/.test(
+      utility,
+    ) ||
+    /^bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}(?:\/(?:\d{1,3}|\[.+\]))?$/.test(
       utility,
     )
   ) {
@@ -293,8 +297,10 @@ export function classifyTailwindUtility(
   }
   if (/^border(?:-(?:0|2|4|8))?$/.test(utility)) return "border-width";
   if (
-    /^border-(?:transparent|current|black|white)$/.test(utility) ||
-    /^border-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}$/.test(
+    /^border-(?:transparent|current|black|white)(?:\/(?:\d{1,3}|\[.+\]))?$/.test(
+      utility,
+    ) ||
+    /^border-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}(?:\/(?:\d{1,3}|\[.+\]))?$/.test(
       utility,
     )
   ) {
