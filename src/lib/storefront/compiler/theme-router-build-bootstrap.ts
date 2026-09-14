@@ -146,6 +146,9 @@ export function createThemeBuildBootstrap(args: {
   const cssImports = args.cssFiles
     .map((css) => `import "./${css.replace(/\\/g, "/")}";`)
     .join("\n");
+  const previewSetupImport = args.exposeRouterForPreview
+    ? 'import "./src/morph/preview-content";'
+    : "";
   const framework = readRouterFramework(args.files);
 
   if (framework !== "tanstack-start") {
@@ -295,6 +298,7 @@ if (container) {
     content: `
 import React from "react";
 import { createRoot } from "react-dom/client";
+${previewSetupImport}
 import {
   RouterProvider,
   createMemoryHistory,

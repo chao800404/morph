@@ -89,9 +89,12 @@ test.describe("visual editor", () => {
       await expect(
         page.getByText(/Remote source changes detected/i),
       ).toHaveCount(0);
-      await expect(
-        previewFrame(page).locator("[data-storefront-section-id]").first(),
-      ).toBeAttached({ timeout: 45_000 });
+      // A newly-created route intentionally starts with an empty <main> and
+      // therefore has no section markers until the author adds one. Wait for
+      // that route shell rather than accepting a marker left by the old page.
+      await expect(previewFrame(page).locator("main").first()).toBeAttached({
+        timeout: 45_000,
+      });
       await expect(page.getByText("Loading React preview…")).toHaveCount(0, {
         timeout: 45_000,
       });
@@ -192,9 +195,7 @@ test.describe("visual editor", () => {
     // The field sits below two collapsed layout nodes. Seeing its own row is
     // evidence that the post-React structure arrived and every ancestor was
     // expanded; a selected canvas ring by itself does not prove either one.
-    const selected = page.locator(
-      '[data-editor-tree-node-selected="true"]',
-    );
+    const selected = page.locator('[data-editor-tree-node-selected="true"]');
     await expect(selected).toHaveCount(1, { timeout: 15_000 });
     await expect(selected).toBeVisible();
     await expect(selected).toHaveAttribute(
@@ -269,6 +270,12 @@ test.describe("visual editor", () => {
       // that becomes shorter cannot report itself shorter while the frame is
       // still tall. Without a re-measure the removed section's space stays
       // behind as blank canvas, and only a file write ever cleared it.
+      await expect
+        .poll(async () => (await measure()).frameHeight, {
+          timeout: 20_000,
+          message: "the hidden section never changed the preview height",
+        })
+        .toBeLessThan(before.frameHeight);
       const after = await settleHeight(page, measure);
       expect(
         after.frameHeight,
@@ -382,29 +389,25 @@ test.describe("visual editor", () => {
     await expect(undo).toBeDisabled();
 
     try {
-      console.log("[style-roundtrip] first write");
       await writeTextColor(page, "rgb(200, 30, 30)");
-      await expect.poll(colorOf).toBe("rgb(200, 30, 30)");
-      console.log("[style-roundtrip] second write");
+      await expect.poll(colorOf, { timeout: 20_000 }).toBe("rgb(200, 30, 30)");
       await writeTextColor(page, "rgb(10, 90, 180)");
-      await expect.poll(colorOf).toBe("rgb(10, 90, 180)");
+      await expect.poll(colorOf, { timeout: 20_000 }).toBe("rgb(10, 90, 180)");
 
-      console.log("[style-roundtrip] first undo");
       await undo.click();
-      await expect.poll(colorOf).toBe("rgb(200, 30, 30)");
-      console.log("[style-roundtrip] second undo");
+      // The editor's own source-application deadline is 15 seconds. Give the
+      // real sandbox that full contract rather than failing at Playwright's
+      // shorter 10 second default while the same update is still in flight.
+      await expect.poll(colorOf, { timeout: 20_000 }).toBe("rgb(200, 30, 30)");
       await undo.click();
-      await expect.poll(colorOf).toBe(original);
-      console.log("[style-roundtrip] restored");
+      await expect.poll(colorOf, { timeout: 20_000 }).toBe(original);
     } finally {
-      console.log("[style-roundtrip] cleanup");
       // The theme file is real, so the test puts it back whether it passed or
       // not; a failed run must not leave the workspace edited.
       await undoEverything(page);
     }
 
-    console.log("[style-roundtrip] final assert");
-    await expect.poll(colorOf).toBe(original);
+    await expect.poll(colorOf, { timeout: 20_000 }).toBe(original);
   });
 
   test("undo steps back through each write, not just the last one", async ({
@@ -456,45 +459,8 @@ test.describe("visual editor", () => {
 async function writeTextColor(page: Page, value: string) {
   const input = page.getByLabel("Text color value");
   await input.scrollIntoViewIfNeeded();
-  console.log(
-    "[writeTextColor] hit",
-    await input.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      const hit = document.elementFromPoint(
-        rect.left + rect.width / 2,
-        rect.top + rect.height / 2,
-      );
-      return {
-        rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-        disabled: (element as HTMLInputElement).disabled,
-        hit: hit?.outerHTML.slice(0, 300),
-      };
-    }),
-  );
-  console.log("[writeTextColor] fill", value);
-  const fill = input.fill(value).then(() => "done" as const);
-  const outcome = await Promise.race([
-    fill,
-    page.waitForTimeout(3_000).then(() => "timeout" as const),
-  ]);
-  console.log("[writeTextColor] outcome", outcome);
-  if (outcome === "timeout") {
-    console.log(
-      "[writeTextColor] inputs",
-      await page
-        .getByLabel("Text color value")
-        .evaluateAll((inputs) =>
-          inputs.map((input) => ({
-            value: (input as HTMLInputElement).value,
-            connected: input.isConnected,
-          })),
-        ),
-    );
-    throw new Error("fill hung");
-  }
-  console.log("[writeTextColor] press", value);
+  await input.fill(value);
   await input.press("Enter");
-  console.log("[writeTextColor] done", value);
 }
 
 /** Presses undo until there is nothing left to reverse. */

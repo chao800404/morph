@@ -460,15 +460,26 @@ describe("checking on a preview someone is watching", () => {
 
 describe("asking twice for the same preview", () => {
   const withRunningVite = (harness: Harness) => {
+    let running = true;
     (harness.session as { listProcesses?: unknown }).listProcesses =
-      async () => [
-        {
-          id: "already-running",
-          command:
-            "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
-          status: "running",
-        },
-      ];
+      async () =>
+        running
+          ? [
+              {
+                id: "already-running",
+                command:
+                  "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+                status: "running",
+              },
+            ]
+          : [];
+    const kill = harness.session.killProcess!.bind(harness.session);
+    (
+      harness.session as { killProcess: PreviewServerSession["killProcess"] }
+    ).killProcess = async (id) => {
+      await kill(id);
+      if (id === "already-running") running = false;
+    };
     return harness;
   };
 
@@ -476,7 +487,9 @@ describe("asking twice for the same preview", () => {
     // The port is pinned, so a second one cannot bind it: it would sit there
     // until the timeout, and tearing down on that timeout would take the
     // working one with it.
-    const harness = withRunningVite(createSession("silent"));
+    const harness = createSession("ready");
+    expect((await startWith(harness)).ok).toBe(true);
+    withRunningVite(harness);
     const result = await startWith(harness, {}, { readyTimeoutMs: 50 });
 
     expect(result.ok).toBe(true);
@@ -484,8 +497,28 @@ describe("asking twice for the same preview", () => {
     expect(result.processId).toBe("already-running");
     expect(result.timings.reusedProcess).toBe(true);
     expect(result.timings.viteReadyMs).toBe(0);
-    expect(harness.commands).toEqual([]);
+    expect(harness.commands).toHaveLength(1);
     expect(harness.destroyed).toBe(0);
+  });
+
+  it("reuses an active exposed port rather than calling exposePort again", async () => {
+    const harness = createSession("ready");
+    expect((await startWith(harness)).ok).toBe(true);
+    withRunningVite(harness);
+    harness.exposed.length = 0;
+    (harness.session as any).getExposedPorts = async () => [
+      {
+        port: 5173,
+        url: "https://5173-existing.preview.localhost",
+        status: "active",
+      },
+    ];
+    const result = await startWith(harness, {}, { readyTimeoutMs: 50 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.url).toContain("5173-existing.preview.localhost");
+    expect(harness.exposed).toEqual([]);
   });
 
   it("skips every workspace write when the successful plan fingerprint still matches", async () => {
@@ -530,6 +563,9 @@ describe("asking twice for the same preview", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.timings.workspaceReused).toBe(false);
+    expect(result.timings.reusedProcess).toBe(false);
+    expect(harness.killed).toEqual(["already-running"]);
+    expect(harness.commands).toHaveLength(2);
     expect(harness.writePaths).toContain("/workspace/src/components/Hero.tsx");
     expect(harness.writePaths.at(-1)).toBe(
       THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
@@ -554,7 +590,7 @@ describe("asking twice for the same preview", () => {
   });
 
   it("treats an unreadable fingerprint as a cache miss", async () => {
-    const harness = withRunningVite(createSession("silent"));
+    const harness = withRunningVite(createSession("ready"));
     harness.written.set(
       THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
       "not-a-valid-workspace-fingerprint",
@@ -565,10 +601,57 @@ describe("asking twice for the same preview", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.timings.workspaceReused).toBe(false);
+    expect(harness.killed).toEqual(["already-running"]);
+    expect(harness.commands).toHaveLength(1);
     expect(harness.writePaths).toContain("/workspace/src/pages/index.tsx");
     expect(harness.writePaths.at(-1)).toBe(
       THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
     );
+  });
+
+  it("does not trust a generic ready marker from an older platform bridge", async () => {
+    const harness = withRunningVite(createSession("ready"));
+    harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "ready");
+
+    const result = await startWith(harness);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.timings.workspaceReused).toBe(false);
+    expect(harness.killed).toEqual(["already-running"]);
+    expect(harness.commands).toHaveLength(1);
+    expect(harness.writePaths).toContain(
+      "/workspace/src/morph/preview-bridge.ts",
+    );
+    expect(harness.writePaths.at(-1)).toBe(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    );
+  });
+
+  it("fails closed when the replaced Vite process does not release its port", async () => {
+    const harness = withRunningVite(createSession("ready"));
+    harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty");
+    // Model a termination request that returned while the old process was
+    // still reported as running. Starting another strict-port Vite here would
+    // intermittently exit with the port still occupied.
+    (
+      harness.session as { killProcess: PreviewServerSession["killProcess"] }
+    ).killProcess = async (id) => {
+      harness.killed.push(id);
+    };
+
+    const result = await startWith(
+      harness,
+      {},
+      { readyTimeoutMs: 50, stopTimeoutMs: 20 },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.stage).toBe("preview-server-restart");
+    expect(result.errorMessage).toContain("PREVIEW_SERVER_STOP_TIMEOUT");
+    expect(harness.commands).toEqual([]);
+    expect(harness.destroyed).toBe(1);
   });
 
   it("still starts one when the container has none", async () => {

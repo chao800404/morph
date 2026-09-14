@@ -29,6 +29,38 @@ describe("Theme router build bootstrap", () => {
     expect(result.content).toContain("createRouter");
     expect(result.content).toContain("rootRouteImport.addChildren([route0])");
     expect(result.content).toContain('import "./src/styles/global.css"');
+    expect(result.content).not.toContain(
+      'import "./src/morph/preview-content"',
+    );
+  });
+
+  it("installs the preview request bridge before route loaders run", () => {
+    const result = createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      exposeRouterForPreview: true,
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ router: { framework: "tanstack-start" } }),
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+      ],
+    });
+
+    const setup = result.content.indexOf(
+      'import "./src/morph/preview-content"',
+    );
+    const route = result.content.indexOf('from "./src/routes/index.tsx"');
+    expect(setup).toBeGreaterThan(-1);
+    expect(setup).toBeLessThan(route);
   });
 
   it("retains the legacy component bootstrap for themes without router metadata", () => {

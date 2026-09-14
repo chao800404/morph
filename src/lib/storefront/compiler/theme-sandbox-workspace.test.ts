@@ -91,11 +91,59 @@ describe("laying out the workspace a Theme is served from", () => {
                 absolutePath: "/workspace/node_modules/.vite/deps/react.js",
                 type: "file" as const,
               },
+              {
+                absolutePath: "/workspace/src/routeTree.gen.ts",
+                type: "file" as const,
+              },
+              {
+                absolutePath: "/workspace/.vite/deps/chunk.js",
+                type: "file" as const,
+              },
             ],
           };
         },
         async deleteFile(path) {
           deleted.push(path);
+        },
+      },
+      [
+        {
+          path: "/workspace/src/routes/index.tsx",
+          content: "export default function Page() {}",
+        },
+      ],
+    );
+
+    expect(deleted).toEqual(["/workspace/src/routes/deleted.tsx"]);
+    expect(written).toEqual(["/workspace/src/routes/index.tsx"]);
+  });
+
+  it("tolerates FileNotFoundError when a stale file was already removed", async () => {
+    const deleted: string[] = [];
+    const written: string[] = [];
+
+    await materializeThemeSandboxWorkspace(
+      {
+        async mkdir() {},
+        async writeFile(path) {
+          written.push(path);
+        },
+        async listFiles() {
+          return {
+            success: true,
+            files: [
+              {
+                absolutePath: "/workspace/src/routes/deleted.tsx",
+                type: "file" as const,
+              },
+            ],
+          };
+        },
+        async deleteFile(path) {
+          deleted.push(path);
+          const error = new Error(`File not found: ${path}`);
+          error.name = "FileNotFoundError";
+          throw error;
         },
       },
       [
@@ -283,6 +331,10 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(viteConfig).toContain("const isLivePreview = true");
     expect(viteConfig).toContain('"/__morph-theme-preview__/"');
     expect(viteConfig).toContain('? { path: "hmr" }');
+    expect(viteConfig).toContain("? { usePolling: true, interval: 100 }");
+    expect(viteConfig).toContain('name: "morph-preview-http-hmr"');
+    expect(viteConfig).toContain('"/__morph-theme-preview__/_morph/hmr"');
+    expect(viteConfig).toContain("__morphApplyViteHmrPayload");
   });
 
   it("serves authenticated draft content from inside the preview workspace", async () => {
@@ -322,6 +374,9 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(written.get("/workspace/vite.config.ts")).toContain(
       'name: "morph-preview-content"',
     );
+    expect(written.get("/workspace/vite.config.ts")).toContain(
+      'normalizedResolved.includes("/node_modules/.vite/")',
+    );
   });
 
   it("leaves a build with the Theme exactly as the author wrote it", async () => {
@@ -334,6 +389,7 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(result.ok && result.hoistedContentFields).toEqual([]);
     expect(result.ok && result.annotatedElements).toEqual({});
     expect(viteConfig).toContain("const isLivePreview = false");
+    expect(viteConfig).toContain("watch: isLivePreview");
   });
 });
 

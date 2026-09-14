@@ -15,6 +15,10 @@ export type { PreviewSpacingOverlayMode } from "./spacing-overlay";
 export type PreviewSectionProps =
   StorefrontPageDocument["sections"][number]["props"];
 
+export type PreviewCatalogResponseBody = JsonValue;
+
+const MAX_PREVIEW_CATALOG_RESPONSE_CHARS = 16 * 1024 * 1024;
+
 function isJsonValue(value: unknown, depth = 0): value is JsonValue {
   if (depth > 20) return false;
   if (
@@ -32,7 +36,20 @@ function isJsonValue(value: unknown, depth = 0): value is JsonValue {
     );
   }
   if (!isRecord(value) || Object.keys(value).length > 1_000) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
   return Object.values(value).every((item) => isJsonValue(item, depth + 1));
+}
+
+function isBoundedCatalogResponseBody(
+  value: unknown,
+): value is PreviewCatalogResponseBody {
+  if (!isJsonValue(value)) return false;
+  try {
+    return JSON.stringify(value).length <= MAX_PREVIEW_CATALOG_RESPONSE_CHARS;
+  } catch {
+    return false;
+  }
 }
 
 export function parsePreviewSectionProps(
@@ -245,6 +262,19 @@ export type EditorToPreviewMessage =
       renderDocument?: boolean;
     }
   | {
+      /** The sandbox finished writing this source revision. */
+      type: "morph:storefront-preview-theme-files-written";
+      styleRevision: number;
+    }
+  | {
+      /** Authenticated public catalog DTO returned for a preview loader. */
+      type: "morph:storefront-preview-catalog-response";
+      requestId: number;
+      ok: boolean;
+      status: number;
+      body: JsonValue;
+    }
+  | {
       type: "morph:storefront-preview-update-selection-style";
       styles: Record<string, string>;
       targetElement: string;
@@ -330,6 +360,13 @@ export type PreviewToEditorMessage =
   | {
       type: "morph:storefront-preview-theme-files-failed";
       styleRevision: number;
+    }
+  | {
+      /** Read-only catalog request delegated to the authenticated editor. */
+      type: "morph:storefront-preview-catalog-request";
+      requestId: number;
+      page: number;
+      handle?: string;
     }
   | PreviewSelectionMessage
   | {
@@ -810,6 +847,25 @@ export function parseEditorToPreviewMessage(
               : {}),
           }
         : null;
+    case "morph:storefront-preview-theme-files-written":
+      return isSafeRevision(value.styleRevision)
+        ? { type: value.type, styleRevision: value.styleRevision }
+        : null;
+    case "morph:storefront-preview-catalog-response":
+      return isSafeRevision(value.requestId) &&
+        typeof value.ok === "boolean" &&
+        Number.isSafeInteger(value.status) &&
+        Number(value.status) >= 100 &&
+        Number(value.status) <= 599 &&
+        isBoundedCatalogResponseBody(value.body)
+        ? {
+            type: value.type,
+            requestId: value.requestId,
+            ok: value.ok,
+            status: Number(value.status),
+            body: value.body,
+          }
+        : null;
     case "morph:storefront-preview-update-selection-style":
       return isStringRecord(value.styles) &&
         isBoundedString(value.targetElement, 100) &&
@@ -875,6 +931,20 @@ export function parsePreviewToEditorMessage(
     case "morph:storefront-preview-theme-files-failed":
       return isSafeRevision(value.styleRevision)
         ? { type: value.type, styleRevision: value.styleRevision }
+        : null;
+    case "morph:storefront-preview-catalog-request":
+      return isSafeRevision(value.requestId) &&
+        Number.isSafeInteger(value.page) &&
+        Number(value.page) >= 1 &&
+        Number(value.page) <= 10_000 &&
+        (value.handle === undefined ||
+          (isBoundedString(value.handle, 200) && value.handle.length > 0))
+        ? {
+            type: value.type,
+            requestId: value.requestId,
+            page: Number(value.page),
+            ...(value.handle === undefined ? {} : { handle: value.handle }),
+          }
         : null;
     case "morph:storefront-preview-select-section": {
       const descendantFields = parseEditableDescendantFields(

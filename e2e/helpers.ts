@@ -65,16 +65,27 @@ export async function openEditor(page: Page) {
   await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
     timeout: 45_000,
   });
+  await expect(page.locator("iframe").first()).toBeAttached({
+    timeout: 45_000,
+  });
 
+  // The toolbar can appear before the canvas handlers and restored tool state
+  // have hydrated. Resetting in that window is a click received by nothing.
+  await page.waitForTimeout(3_000);
+
+  // The pointer tool can be restored from the previous iframe document while
+  // the editor shell stays mounted. A double click selects in that mode; it
+  // does not reset the canvas transform, leaving the targets under a panel.
+  const disableSelection = page.getByRole("button", {
+    name: "Disable section selection",
+  });
+  if (await disableSelection.isVisible().catch(() => false)) {
+    await disableSelection.click();
+  }
   const point = await exposedCanvasPoint(page);
   if (point) {
     await page.mouse.dblclick(point.x, point.y);
   }
-  // The toolbar renders before the page finishes hydrating, and a click in that
-  // window is received by nothing at all — the control looks pressed and
-  // nothing happens. Every caller needs this, so it waits here rather than in
-  // each of them.
-  await page.waitForTimeout(3_000);
 }
 
 /** Turns on the pointer tool, the first thing a person does to select. */
@@ -91,7 +102,7 @@ export async function enableSelection(page: Page) {
     previewFrame(page).locator(
       "html[data-storefront-editor-selection-enabled]",
     ),
-  ).toBeAttached();
+  ).toBeAttached({ timeout: 45_000 });
 }
 
 /**

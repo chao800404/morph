@@ -1,4 +1,5 @@
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
+import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
 import {
   previewDevInfrastructureGuardSource,
@@ -506,6 +507,82 @@ const previewContentPlugin = ${
 const isStartRuntimeBuild =
   hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
 
+// Cloudflare's local preview-port bridge currently cannot carry Vite's HMR
+// WebSocket reliably. Keep Vite's own update calculation and browser handler,
+// but move the payload across an HTTP request on the already-isolated preview
+// origin. The browser still applies the native Vite/React Refresh payload, so
+// component state survives source edits.
+const previewHttpHmrPlugin = isLivePreview ? {
+  name: "morph-preview-http-hmr",
+  enforce: "post",
+  configureServer(server) {
+    let sequence = 0;
+    const entries = [];
+    const waiters = new Set();
+    let quietTimer = null;
+    const wakeAfterQuiet = () => {
+      if (quietTimer !== null) clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => {
+        quietTimer = null;
+        for (const wake of waiters) wake();
+        waiters.clear();
+      }, 120);
+    };
+    const hot = server.environments.client.hot;
+    const send = hot.send.bind(hot);
+    hot.send = (payload, ...rest) => {
+      if (payload && typeof payload === "object" && payload.type !== "connected") {
+        sequence += 1;
+        entries.push({ sequence, payload });
+        if (entries.length > 100) entries.splice(0, entries.length - 100);
+        wakeAfterQuiet();
+      }
+      return send(payload, ...rest);
+    };
+    server.middlewares.use((req, res, next) => {
+      const url = new URL(req.url || "/", "http://preview.invalid");
+      if (
+        url.pathname !== "/__morph-theme-preview__/_morph/hmr" &&
+        url.pathname !== "/_morph/hmr"
+      ) return next();
+      const after = Number(url.searchParams.get("after") || "0");
+      const respond = () => {
+        if (res.writableEnded) return;
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.setHeader("cache-control", "no-store");
+        res.end(JSON.stringify({
+          sequence,
+          entries: entries.filter((entry) => entry.sequence > after),
+        }));
+      };
+      if (url.searchParams.has("cursor") || entries.some((entry) => entry.sequence > after)) {
+        setTimeout(respond, quietTimer === null ? 0 : 140);
+        return;
+      }
+      waiters.add(respond);
+      setTimeout(() => {
+        waiters.delete(respond);
+        respond();
+      }, 5_000);
+    });
+  },
+  transform(code, id) {
+    if (!id.replace(/\\\\/g, "/").endsWith("/vite/dist/client/client.mjs")) return null;
+    const connect = "transport.connect(createHMRHandler(handleMessage));";
+    if (!code.includes(connect)) {
+      throw new Error("MORPH_PREVIEW_HMR_CLIENT_CONTRACT_CHANGED");
+    }
+    return {
+      code: code.replace(
+        connect,
+        "globalThis.__morphApplyViteHmrPayload = (payload) => handleMessage(payload);",
+      ),
+      map: null,
+    };
+  },
+} : null;
+
 // Vite's own HMR client and Refresh runtime, which only a dev server asks for.
 // Allowed while serving the Live Preview and refused during a build, so the
 // containment rule a build enforces is never relaxed by this file.
@@ -558,6 +635,9 @@ if (
       ? importer.replace(/\\\\/g, "/")
       : "";
     if (!normalizedImporter.startsWith("/workspace")) {
+      return null;
+    }
+    if (viteCommand === "serve" && normalizedResolved.includes("/node_modules/.vite/")) {
       return null;
     }
     throw new Error(
@@ -632,18 +712,21 @@ export default defineConfig({
     // shared definition.
     ${themePreviewServerStubPluginSource()},
     ...(previewContentPlugin ? [previewContentPlugin] : []),
+    ...(previewHttpHmrPlugin ? [previewHttpHmrPlugin] : []),
     tailwindcss(),
     viteReact(),
     ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
     dependencyEnforcerPlugin,
   ],
   resolve: {
-alias: themeAliases,
+    alias: themeAliases,
+    dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
   },
   // Keep these off esbuild's pre-bundling path so the preview's server-API
   // stubs, which are Rollup plugins, are what answers for them.
   optimizeDeps: {
-exclude: ${JSON.stringify(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES)},
+    include: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
+    exclude: ${JSON.stringify(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES)},
   },
   // Which files a dev server may read off disk. Unset, Vite guesses a root;
   // the Live Preview states it instead, so nothing outside the workspace and
@@ -653,6 +736,12 @@ fs: {
   strict: true,
   allow: ${JSON.stringify(THEME_PREVIEW_FS_ALLOW_ROOTS)},
 },
+// Sandbox writes arrive through the container API rather than a local inotify
+// stream. Polling is required for Vite to observe those writes and deliver HMR
+// updates to the real React preview; it is enabled only for the dev server.
+watch: isLivePreview
+  ? { usePolling: true, interval: 100 }
+  : undefined,
 hmr: isLivePreview
   ? { path: ${JSON.stringify(THEME_PREVIEW_SERVER_HMR_PATH)} }
   : undefined,
@@ -742,13 +831,33 @@ export async function materializeThemeSandboxWorkspace(
           filePath.startsWith(`${workspaceRoot}/`) &&
           !filePath.includes("/../") &&
           !filePath.startsWith(`${workspaceRoot}/node_modules/`) &&
+          !filePath.startsWith(`${workspaceRoot}/.vite/`) &&
+          !filePath.startsWith(`${workspaceRoot}/dist/`) &&
+          !isPlatformOwnedThemeBuildPath(
+            filePath.slice(workspaceRoot.length + 1),
+          ) &&
           filePath !== fingerprintPath &&
           !expectedPaths.has(filePath),
       );
     await runWithConcurrency(
       staleFiles,
       WORKSPACE_WRITE_CONCURRENCY,
-      async (filePath) => session.deleteFile!(filePath).then(() => undefined),
+      async (filePath) =>
+        session.deleteFile!(filePath)
+          .then(() => undefined)
+          .catch((error) => {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            const name = error instanceof Error ? error.name : "";
+            if (
+              name === "FileNotFoundError" ||
+              message.toLowerCase().includes("not found") ||
+              message.toLowerCase().includes("enoent")
+            ) {
+              return undefined;
+            }
+            throw error;
+          }),
     );
   }
 

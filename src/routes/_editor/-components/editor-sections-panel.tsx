@@ -354,7 +354,10 @@ function SortableSectionRow({
                   onToggleEnabled();
                 }}
                 className={cn(
-                  "top-1 right-1 z-10 size-5",
+                  // Active menu buttons use z-30; the visibility action must
+                  // remain above that surface or a selected row intercepts
+                  // its click (especially when the label carries "All pages").
+                  "top-1 right-1 z-40 size-5",
                   section.enabled === false && "opacity-100",
                 )}
                 aria-label={

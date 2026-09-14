@@ -83,6 +83,30 @@ function withReadyTimeout(
   });
 }
 
+async function waitForProcessToStop(
+  session: PreviewServerSession,
+  processId: string | undefined,
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  if (!processId || !session.listProcesses) return true;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const processes = await session.listProcesses().catch(() => null);
+    if (
+      processes &&
+      !processes.some(
+        (process) =>
+          process.id === processId &&
+          (process.status === "running" || process.status === "starting"),
+      )
+    ) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
 function withPreviewServerBase(exposedUrl: string): string {
   const url = new URL(exposedUrl);
   url.pathname = THEME_PREVIEW_SERVER_BASE_PATH;
@@ -215,6 +239,8 @@ export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
    * returned stage timings make local and deployed latency measurable.
    */
   readyTimeoutMs?: number;
+  /** How long a replaced Vite process may take to release its port. */
+  stopTimeoutMs?: number;
   /** Idle time after which the container may be reclaimed. */
   sleepAfter?: string | number;
   maxLogLines?: number;
@@ -225,6 +251,7 @@ export class CloudflareSandboxVitePreviewServer {
   private readonly sandboxProvider?: PreviewServerProvider;
   private readonly approvedDependencies: ReadonlySet<string>;
   private readonly readyTimeoutMs: number;
+  private readonly stopTimeoutMs: number;
   private readonly sleepAfter: string | number;
   private readonly maxLogLines: number;
 
@@ -235,6 +262,7 @@ export class CloudflareSandboxVitePreviewServer {
       options.approvedDependencies ?? DEFAULT_APPROVED_DEPENDENCIES,
     );
     this.readyTimeoutMs = options.readyTimeoutMs ?? 180_000;
+    this.stopTimeoutMs = options.stopTimeoutMs ?? 5_000;
     this.sleepAfter = options.sleepAfter ?? "10m";
     this.maxLogLines = options.maxLogLines ?? 200;
   }
@@ -421,14 +449,31 @@ export class CloudflareSandboxVitePreviewServer {
       const workspaceMs = Date.now() - workspaceStartedAt;
 
       // Authorize the URL before the server exists, so a process that becomes
-      // ready immediately still has somewhere to be reached.
-      const exposePortStartedAt = Date.now();
-      const exposed = await session.exposePort(THEME_PREVIEW_SERVER_PORT, {
-        hostname: previewHost,
-        name: "live-preview",
-      });
-      const exposePortMs = Date.now() - exposePortStartedAt;
-      const previewUrl = withPreviewServerBase(exposed.url);
+      // ready immediately still has somewhere to be reached. Re-exposing an
+      // active port mints a new token and resets the proxy tunnel, interrupting
+      // in-flight browser requests. Re-use the existing address when active.
+      let exposePortMs = 0;
+      let exposedUrl: string;
+      const existingPorts =
+        typeof session.getExposedPorts === "function"
+          ? await session.getExposedPorts(previewHost).catch(() => [])
+          : [];
+      const activePort = existingPorts.find(
+        (entry) =>
+          entry.port === THEME_PREVIEW_SERVER_PORT && entry.status === "active",
+      );
+      if (activePort) {
+        exposedUrl = activePort.url;
+      } else {
+        const exposePortStartedAt = Date.now();
+        const exposed = await session.exposePort(THEME_PREVIEW_SERVER_PORT, {
+          hostname: previewHost,
+          name: "live-preview",
+        });
+        exposePortMs = Date.now() - exposePortStartedAt;
+        exposedUrl = exposed.url;
+      }
+      const previewUrl = withPreviewServerBase(exposedUrl);
 
       const configureLifecycleStartedAt = Date.now();
       if (session.setSleepAfter) {
@@ -436,12 +481,14 @@ export class CloudflareSandboxVitePreviewServer {
       }
       const configureLifecycleMs = Date.now() - configureLifecycleStartedAt;
 
-      // Asking twice for the same preview must not start a second server.
-      // The port is pinned, so a second one cannot bind it and would sit there
-      // until the timeout — and tearing down on that timeout would take the
-      // working one with it, which is how the first end-to-end run lost a
-      // container that was serving perfectly well.
-      if (alreadyServing) {
+      // Asking twice for the exact same workspace must not start a second
+      // server. A changed full plan is different: Vite can still hold the old
+      // transformed route graph until its polling watcher notices the writes.
+      // Framing it in that window loads a route tree that cannot reach a page
+      // just created. Restart on a fingerprint change so the first request is
+      // compiled from the complete new plan; incremental source edits continue
+      // to use the live process and React Refresh.
+      if (alreadyServing && workspaceReused) {
         const totalMs = Date.now() - requestStartedAt;
         return {
           ok: true,
@@ -473,6 +520,41 @@ export class CloudflareSandboxVitePreviewServer {
           warnings: prepared.previewWarnings,
           logs,
         };
+      }
+
+      if (alreadyServing) {
+        if (!session.killProcess) {
+          await session.destroy();
+          return {
+            ok: false,
+            stage: "preview-server-restart",
+            errorMessage:
+              "PREVIEW_SERVER_RESTART_UNAVAILABLE: The changed workspace could not replace its stale Vite process.",
+            logs,
+          };
+        }
+        await session.killProcess(alreadyServing.id);
+        // `killProcess()` requests termination, but a completed RPC does not
+        // guarantee that the OS has released Vite's listening socket. Starting
+        // the replacement immediately can make `--strictPort` exit even though
+        // the old process disappears a moment later. Confirm the process is
+        // gone before binding the same port again.
+        if (
+          !(await waitForProcessToStop(
+            session,
+            alreadyServing.id,
+            this.stopTimeoutMs,
+          ))
+        ) {
+          await session.destroy();
+          return {
+            ok: false,
+            stage: "preview-server-restart",
+            errorMessage:
+              "PREVIEW_SERVER_STOP_TIMEOUT: The stale Vite process did not stop before its replacement was due to start.",
+            logs,
+          };
+        }
       }
 
       const startedAt = Date.now();

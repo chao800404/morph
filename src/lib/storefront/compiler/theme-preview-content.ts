@@ -94,7 +94,16 @@ export async function createThemePreviewContentSnapshot(args: {
 export function themePreviewContentModuleSource(
   snapshot: ThemePreviewContentSnapshot,
 ): string {
-  return `const snapshot = ${JSON.stringify(snapshot)};
+  return `import {
+  parseEditorToPreviewWindowEvent,
+  postPreviewToEditorMessage,
+  readPreviewRuntimeChannel,
+} from "./preview/preview-protocol";
+
+const snapshot = ${JSON.stringify(snapshot)};
+const previewChannel = readPreviewRuntimeChannel(window.location.href);
+const pendingCatalogRequests = new Map();
+let nextCatalogRequestId = 0;
 
 function templateTypeForPath(pathname) {
   const normalized = (pathname || "/").split("?")[0].replace(/\\/+$/, "") || "/";
@@ -134,13 +143,64 @@ export function updatePreviewContent(sectionId, props, enabled) {
 }
 
 const nativeFetch = window.fetch.bind(window);
+window.addEventListener("message", (event) => {
+  const message = parseEditorToPreviewWindowEvent(event);
+  if (message?.type !== "morph:storefront-preview-catalog-response") return;
+  const pending = pendingCatalogRequests.get(message.requestId);
+  if (!pending) return;
+  pendingCatalogRequests.delete(message.requestId);
+  window.clearTimeout(pending.timeout);
+  pending.resolve(new Response(JSON.stringify(message.body), {
+    status: message.status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  }));
+});
+
 window.fetch = (input, init) => {
   const requestUrl = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+  const requestMethod = (init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
   if (requestUrl.origin === window.location.origin && requestUrl.pathname === ${JSON.stringify(THEME_PREVIEW_CONTENT_PATH)}) {
     return Promise.resolve(new Response(JSON.stringify(previewContentForPath(requestUrl.searchParams.get("path") || "/")), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
     }));
+  }
+  const catalogMatch = requestUrl.origin === window.location.origin
+    ? /^\\/api\\/store\\/products(?:\\/([^/]+))?\\/?$/.exec(requestUrl.pathname)
+    : null;
+  if (catalogMatch && previewChannel && requestMethod === "GET") {
+    const pageValue = Number(requestUrl.searchParams.get("page") || "1");
+    const page = Number.isSafeInteger(pageValue) && pageValue >= 1 && pageValue <= 10_000 ? pageValue : 1;
+    let handle;
+    try {
+      handle = catalogMatch[1] ? decodeURIComponent(catalogMatch[1]) : undefined;
+    } catch {
+      return Promise.resolve(new Response(JSON.stringify({ error: "Invalid product handle" }), {
+        status: 400,
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      }));
+    }
+    if (handle && handle.length > 200) {
+      return Promise.resolve(new Response(JSON.stringify({ error: "Invalid product handle" }), {
+        status: 400,
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      }));
+    }
+    nextCatalogRequestId = nextCatalogRequestId >= Number.MAX_SAFE_INTEGER ? 1 : nextCatalogRequestId + 1;
+    const requestId = nextCatalogRequestId;
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        pendingCatalogRequests.delete(requestId);
+        reject(new Error("Catalog preview request timed out."));
+      }, 15_000);
+      pendingCatalogRequests.set(requestId, { resolve, reject, timeout });
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-catalog-request",
+        requestId,
+        page,
+        ...(handle ? { handle } : {}),
+      }, previewChannel);
+    });
   }
   return nativeFetch(input, init);
 };

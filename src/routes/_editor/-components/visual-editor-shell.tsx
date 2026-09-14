@@ -162,8 +162,10 @@ import {
   applyThemePreviewFiles,
   touchThemePreviewServer,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
+import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
   parsePreviewSectionProps,
+  type PreviewCatalogResponseBody,
   type PreviewEditableNode,
   type PreviewSectionProps,
   type PreviewSelectionRestoreTarget,
@@ -2213,7 +2215,17 @@ export function VisualEditorShell({
             });
             return;
           }
-          if (result?.success !== true && targetPreviewKey) {
+          if (result?.success === true) {
+            postEditorToPreviewMessage(
+              previewIframeRef.current?.contentWindow,
+              {
+                type: "morph:storefront-preview-theme-files-written",
+                styleRevision,
+              },
+            );
+            return;
+          }
+          if (targetPreviewKey) {
             dispatchPreviewLifecycle({
               type: "automatic-recovery",
               key: targetPreviewKey,
@@ -2696,6 +2708,7 @@ export function VisualEditorShell({
         content: string,
         options?: {
           fromHistory?: boolean;
+          renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
         },
       ) => Promise<unknown>)
@@ -2708,6 +2721,7 @@ export function VisualEditorShell({
       content: string,
       options?: {
         fromHistory?: boolean;
+        renderDocument?: boolean;
         preserveCanvasPosition?: boolean;
       },
     ) => {
@@ -2752,7 +2766,10 @@ export function VisualEditorShell({
                 workspaceScope.themeId,
               )[file.path]?.localContent ?? file.content,
         })),
-        { preserveCanvasPosition: options?.preserveCanvasPosition },
+        {
+          preserveCanvasPosition: options?.preserveCanvasPosition,
+          renderDocument: options?.renderDocument,
+        },
       );
 
       const nextRevision = saveQueueRef.current.claimRevision(opKey);
@@ -2778,10 +2795,12 @@ export function VisualEditorShell({
           undo: () =>
             handleUnifiedSaveFileRef.current?.(filePath, before, {
               fromHistory: true,
+              renderDocument: true,
             }),
           redo: () =>
             handleUnifiedSaveFileRef.current?.(filePath, content, {
               fromHistory: true,
+              renderDocument: true,
             }),
         });
       }
@@ -3648,12 +3667,14 @@ export function VisualEditorShell({
             resetPreviewSelectionStyle();
             return handleUnifiedSaveFile(stylePath, styleBefore, {
               fromHistory: true,
+              renderDocument: true,
             });
           },
           redo: () => {
             resetPreviewSelectionStyle();
             return handleUnifiedSaveFile(stylePath, styleAfter, {
               fromHistory: true,
+              renderDocument: true,
             });
           },
         });
@@ -4005,6 +4026,83 @@ export function VisualEditorShell({
         return;
       }
 
+      if (message.type === "morph:storefront-preview-catalog-request") {
+        void getStorefrontPreviewCatalog({
+          data: {
+            storefrontId: context.storefront.id,
+            themeId: context.theme.id,
+            page: message.page,
+            ...(message.handle ? { handle: message.handle } : {}),
+          },
+        })
+          .then((result) => {
+            const data = result.success
+              ? "products" in result.data
+                ? {
+                    ...result.data,
+                    products: result.data.products.map((product) => ({
+                      ...product,
+                      thumbnailUrl: product.thumbnailUrl?.startsWith("/")
+                        ? new URL(product.thumbnailUrl, window.location.origin)
+                            .href
+                        : product.thumbnailUrl,
+                    })),
+                  }
+                : {
+                    ...result.data,
+                    product: result.data.product
+                      ? {
+                          ...result.data.product,
+                          thumbnailUrl:
+                            result.data.product.thumbnailUrl?.startsWith("/")
+                              ? new URL(
+                                  result.data.product.thumbnailUrl,
+                                  window.location.origin,
+                                ).href
+                              : result.data.product.thumbnailUrl,
+                          assets: result.data.product.assets.map((asset) => ({
+                            ...asset,
+                            url: asset.url.startsWith("/")
+                              ? new URL(asset.url, window.location.origin).href
+                              : asset.url,
+                          })),
+                        }
+                      : null,
+                  }
+              : { error: result.message };
+            // Server functions can preserve Date instances for admin callers,
+            // while the isolated preview protocol intentionally accepts JSON
+            // only. The public Theme contract does not expose those dates, so
+            // normalize the DTO at the trust boundary before posting it.
+            const body = JSON.parse(
+              JSON.stringify(data),
+            ) as PreviewCatalogResponseBody;
+            postEditorToPreviewMessage(
+              previewIframeRef.current?.contentWindow,
+              {
+                type: "morph:storefront-preview-catalog-response",
+                requestId: message.requestId,
+                ok: result.success,
+                status: result.success ? 200 : 503,
+                body,
+              },
+            );
+          })
+          .catch(() => {
+            postEditorToPreviewMessage(
+              previewIframeRef.current?.contentWindow,
+              {
+                type: "morph:storefront-preview-catalog-response",
+                requestId: message.requestId,
+                ok: false,
+                status: 503,
+                body: { error: "Catalog preview unavailable" },
+              },
+            );
+          });
+        return;
+      }
+
       if (
         message.type === "morph:storefront-preview-commit-array-item-reorder"
       ) {
@@ -4195,10 +4293,13 @@ export function VisualEditorShell({
     activeTemplate,
     activeRouteSections,
     confirmPreviewStyleRevision,
+    context.storefront.id,
+    context.theme.id,
     handleSwapThemeFileSiblings,
     handleUpdateThemeFileStyle,
     isSelectionMode,
     onSearchChange,
+    postEditorToPreviewMessage,
     previewKey,
     search.section,
     search.viewport,
@@ -4230,6 +4331,7 @@ export function VisualEditorShell({
   }, [
     postEditorToPreviewMessage,
     previewFrameReady?.key,
+    previewFrameReady?.sequence,
     previewKey,
     beginPreviewSizeMeasurement,
     requestPreviewSize,

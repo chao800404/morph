@@ -9,6 +9,7 @@ import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import {
   CloudflareSandboxVitePreviewServer,
+  THEME_PREVIEW_SERVER_PORT,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
 } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
 import {
@@ -338,6 +339,13 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
           path: string,
           options?: { encoding?: string },
         ): Promise<{ content?: unknown } | string>;
+        getExposedPorts?(
+          hostname: string,
+        ): Promise<Array<{ port: number; status: string; url: string }>>;
+        exposePort?(
+          port: number,
+          options: { hostname: string; name?: string },
+        ): Promise<unknown>;
       };
       for (const file of hoisted) {
         // Left as the container generated it. Reported separately from
@@ -369,6 +377,29 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
         }
         await sandbox.writeFile(target, file.content);
         changed.push(file.path);
+      }
+
+      const previewEnv = env as unknown as PreviewEnv;
+      const host = resolveThemePreviewServerHost({
+        configuredPreviewHostname: previewEnv.THEME_PREVIEW_HOSTNAME,
+        env: env as unknown as Record<string, unknown>,
+      });
+      if (host.enabled && typeof sandbox.exposePort === "function") {
+        const exposed =
+          typeof sandbox.getExposedPorts === "function"
+            ? await sandbox.getExposedPorts(host.hostname).catch(() => [])
+            : [];
+        const isPortActive = exposed.some(
+          (entry) =>
+            entry.port === THEME_PREVIEW_SERVER_PORT &&
+            entry.status === "active",
+        );
+        if (!isPortActive) {
+          await sandbox.exposePort(THEME_PREVIEW_SERVER_PORT, {
+            hostname: host.hostname,
+            name: "live-preview",
+          });
+        }
       }
     } catch (error) {
       return fail("Could not update the Live Preview server.", {

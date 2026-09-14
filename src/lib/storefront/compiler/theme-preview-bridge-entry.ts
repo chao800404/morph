@@ -289,6 +289,82 @@ let gesture = null;
  */
 let pendingStyleRevision = null;
 let latestBridgeStyleRevision = 0;
+let previewHmrCursor = 0;
+let previewHmrApplyQueue = Promise.resolve();
+const previewHmrCursorReady = fetch(
+  "/__morph-theme-preview__/_morph/hmr?cursor=1",
+  { cache: "no-store" },
+)
+  .then((response) => (response.ok ? response.json() : null))
+  .then((value) => {
+    if (Number.isSafeInteger(value?.sequence) && value.sequence >= 0) {
+      previewHmrCursor = value.sequence;
+    }
+  })
+  .catch(() => {});
+
+function applyWrittenThemeRevision(styleRevision) {
+  previewHmrApplyQueue = previewHmrApplyQueue.then(async () => {
+    await previewHmrCursorReady;
+    let response = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        response = await fetch(
+          "/__morph-theme-preview__/_morph/hmr?after=" + previewHmrCursor,
+          { cache: "no-store" },
+        );
+        if (response.ok) break;
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    if (!response || !response.ok) throw new Error("PREVIEW_HMR_FETCH_FAILED");
+    const value = await response.json();
+    const entries = Array.isArray(value?.entries) ? value.entries : [];
+    const applyPayload = globalThis.__morphApplyViteHmrPayload;
+    if (typeof applyPayload !== "function" || entries.length === 0) {
+      throw new Error("PREVIEW_HMR_PAYLOAD_MISSING");
+    }
+    for (const entry of entries) {
+      if (
+        !Number.isSafeInteger(entry?.sequence) ||
+        entry.sequence <= previewHmrCursor ||
+        !entry.payload ||
+        typeof entry.payload !== "object"
+      ) {
+        continue;
+      }
+      previewHmrCursor = entry.sequence;
+      await applyPayload(entry.payload);
+    }
+    if (pendingStyleRevision === styleRevision) {
+      acknowledgePendingStyleRevision();
+    }
+  }).catch(() => {
+    if (pendingStyleRevision !== styleRevision || !channel) return;
+    pendingStyleRevision = null;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-theme-files-failed", styleRevision },
+      channel,
+    );
+  });
+}
+
+function acknowledgePendingStyleRevision() {
+  if (pendingStyleRevision === null || !channel) return;
+  const styleRevision = pendingStyleRevision;
+  pendingStyleRevision = null;
+  postPreviewToEditorMessage(
+    { type: "morph:storefront-preview-theme-files-applied", styleRevision },
+    channel,
+  );
+  reportStructure();
+  if (lastRestoreTarget) {
+    restoreSelectedTarget(lastRestoreTarget);
+    if (selectedItem?.element && selectionStylePreview.hasPending()) {
+      selectionStylePreview.carryTo(selectedItem.element);
+    }
+  }
+}
 
 /** Coalesces a React commit into one structure snapshot on the next frame. */
 let structureReportFrame = null;
@@ -313,21 +389,7 @@ let selectionRevision = 0;
 
 if (import.meta.hot) {
   import.meta.hot.on("vite:afterUpdate", () => {
-    if (pendingStyleRevision === null || !channel) return;
-    const styleRevision = pendingStyleRevision;
-    pendingStyleRevision = null;
-    postPreviewToEditorMessage(
-      { type: "morph:storefront-preview-theme-files-applied", styleRevision },
-      channel,
-    );
-    // The update changed the page, so what is on it has changed with it.
-    reportStructure();
-    if (lastRestoreTarget) {
-      restoreSelectedTarget(lastRestoreTarget);
-      if (selectedItem?.element && selectionStylePreview.hasPending()) {
-        selectionStylePreview.carryTo(selectedItem.element);
-      }
-    }
+    acknowledgePendingStyleRevision();
   });
 
   import.meta.hot.on("vite:error", () => {
@@ -740,6 +802,9 @@ if (channel) {
         message.styleRevision,
       );
     }
+    if (message?.type === "morph:storefront-preview-theme-files-written") {
+      applyWrittenThemeRevision(message.styleRevision);
+    }
     if (message?.type === "morph:storefront-preview-set-route") {
       // A real Theme owns its router, so the entry Morph generates hands it
       // over. Without one there is nothing to navigate and the page simply
@@ -862,9 +927,11 @@ if (channel) {
       message?.type ===
       "morph:storefront-preview-reset-selection-style-preview"
     ) {
-      if (selectedItem?.element) {
-        selectionStylePreview.holdCurrentStyles(selectedItem.element);
-      }
+      // A history reversal is about to render the source's previous value.
+      // Carrying the current computed value across that render would pin the
+      // value being undone and make the canvas appear unchanged. Clear both
+      // the inline declaration and its carry-over record before the HMR pass.
+      selectionStylePreview.clear();
       return;
     }
     if (

@@ -2,10 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 
 import {
   EDITOR_PATH,
-  clickExposedElement,
   enableSelection,
   openEditor as openEditorShell,
   openStylesTab,
+  settleSelection,
 } from "./helpers";
 
 /**
@@ -29,10 +29,20 @@ async function openEditor(page: Page) {
   await openEditorShell(page);
 }
 
+async function openEditorChrome(page: Page) {
+  await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+    timeout: 45_000,
+  });
+}
+
 for (const size of SUPPORTED_WIDTHS) {
   test(`header controls do not overlap at ${size.name}`, async ({ page }) => {
     await page.setViewportSize({ width: size.width, height: size.height });
-    await openEditor(page);
+    // Header geometry does not depend on the sandbox iframe. Waiting for and
+    // resetting that separate surface made this test fail when a preview was
+    // slow even though every header control was already rendered and usable.
+    await openEditorChrome(page);
 
     // The editor's own header, not every header on the page: the Inspector
     // renders one too, and comparing positions across two of them produces
@@ -100,22 +110,22 @@ test.describe("inspector panel", () => {
       await enableSelection(page);
 
       // Select something with styles to inspect; an empty panel proves nothing.
-      // Which element the canvas exposes differs by width, so this walks the
-      // candidates until one of them opens the controls being measured.
-      const fields = page
+      // Select a text-bearing field specifically. The layout test does not
+      // depend on which part of a 1440px canvas happens to be exposed through
+      // the 1024px editor viewport, so dispatch through the iframe instead of
+      // turning canvas pan position into a precondition for panel geometry.
+      const field = page
         .frameLocator("iframe")
-        .locator("[data-storefront-field]");
+        .locator(
+          "h1[data-storefront-field], h2[data-storefront-field], h3[data-storefront-field], p[data-storefront-field], span[data-storefront-field], a[data-storefront-field]",
+        )
+        .first();
+      await expect(field).toBeAttached();
+      await field.dispatchEvent("click");
+      await settleSelection(page);
+      await openStylesTab(page);
       const colorInput = page.getByLabel("Text color value");
-      let opened = false;
-      for (let attempt = 0; attempt < 6 && !opened; attempt += 1) {
-        const clicked = await clickExposedElement(page, fields, attempt);
-        if (!clicked) break;
-        // Selecting a node opens Content; the controls measured here are in
-        // Styles, so the tab has to be asked for.
-        await openStylesTab(page);
-        opened = await colorInput.isVisible().catch(() => false);
-      }
-      expect(opened, "no styleable element was reachable").toBe(true);
+      await expect(colorInput).toBeVisible();
 
       const panel = page.locator("aside").last();
       const escaping = await panel.evaluate((root) => {

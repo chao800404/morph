@@ -95,5 +95,10 @@ describe("Live Preview draft content", () => {
     expect(module).toContain("window.fetch =");
     expect(module).toContain("updatePreviewContent");
     expect(module).toContain('heading":"Draft');
+    expect(module).toContain("morph:storefront-preview-catalog-request");
+    expect(module).toContain("morph:storefront-preview-catalog-response");
+    expect(module).toContain("/^\\/api\\/store\\/products");
+    expect(module).toContain('input instanceof Request ? input.method : "GET"');
+    expect(module).toContain('error: "Invalid product handle"');
   });
 });

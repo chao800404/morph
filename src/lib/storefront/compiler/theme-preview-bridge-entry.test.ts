@@ -205,6 +205,18 @@ describe("applying document changes to the real React preview", () => {
   });
 });
 
+describe("reversing a style change in the real React preview", () => {
+  it("clears the inline carry-over before the source is rendered again", () => {
+    const reset = BRIDGE.slice(
+      BRIDGE.indexOf(
+        '"morph:storefront-preview-reset-selection-style-preview"',
+      ),
+    );
+    expect(reset).toContain("selectionStylePreview.clear();");
+    expect(reset).not.toContain("holdCurrentStyles");
+  });
+});
+
 describe("showing what is selected and what is under the pointer", () => {
   it("draws with the same controller the compatibility renderer uses", () => {
     expect(BRIDGE).toContain("createPreviewSelectionOverlays()");
@@ -318,6 +330,14 @@ describe("changing which page the editor is showing", () => {
 });
 
 describe("confirming the Theme source the editor is waiting on", () => {
+  it("applies Vite's native HMR payload over the preview HTTP bridge", () => {
+    expect(BRIDGE).toContain("/_morph/hmr?cursor=1");
+    expect(BRIDGE).toContain("/_morph/hmr?after=");
+    expect(BRIDGE).toContain("globalThis.__morphApplyViteHmrPayload");
+    expect(BRIDGE).toContain("await applyPayload(entry.payload)");
+    expect(BRIDGE).not.toContain("window.location.reload()");
+  });
+
   it("confirms only once the page has taken the update", () => {
     // Morph writes the files into the container and the page updates itself.
     // Saying "applied" on receiving the message would report someone else's
@@ -339,7 +359,12 @@ describe("confirming the Theme source the editor is waiting on", () => {
 
   it("re-reads the page, because the update changed what is on it", () => {
     const afterUpdate = BRIDGE.slice(BRIDGE.indexOf('"vite:afterUpdate"'));
-    expect(afterUpdate.slice(0, 600)).toContain("reportStructure()");
+    expect(afterUpdate.slice(0, 600)).toContain(
+      "acknowledgePendingStyleRevision();",
+    );
+    expect(
+      BRIDGE.slice(BRIDGE.indexOf("function acknowledgePendingStyleRevision")),
+    ).toContain("reportStructure();");
   });
 
   it("confirms each revision once", () => {

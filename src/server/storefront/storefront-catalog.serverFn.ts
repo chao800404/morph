@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
@@ -16,8 +17,63 @@ const inputSchema = z.object({
   sampleDetail: z.boolean().optional(),
 });
 
-// Trusted interpreter shell reads public DTOs, never evaluates customer loaders
-// with its session. No admin entity or credential is handed to Theme source.
+const PREVIEW_ASSET_MIME_TYPES = new Set([
+  "image/avif",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+const MAX_PREVIEW_ASSET_BYTES = 3 * 1024 * 1024;
+const MAX_PREVIEW_ASSET_TOTAL_BYTES = 8 * 1024 * 1024;
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Gives the isolated iframe bounded, inert image bytes without giving Theme
+ * code an authenticated Morph URL or an R2 capability. Production continues
+ * to use the public channel-scoped asset endpoint; this is preview-only.
+ */
+async function previewAssetDataUrls(
+  assets: Awaited<ReturnType<typeof assetDal.findByIds>>,
+): Promise<Map<string, string>> {
+  const urls = new Map<string, string>();
+  if (!env.R2_BUCKET) return urls;
+  let totalBytes = 0;
+  for (const asset of assets) {
+    const mimeType = asset.mimeType?.toLowerCase() ?? "";
+    if (
+      !PREVIEW_ASSET_MIME_TYPES.has(mimeType) ||
+      asset.size <= 0 ||
+      asset.size > MAX_PREVIEW_ASSET_BYTES ||
+      totalBytes + asset.size > MAX_PREVIEW_ASSET_TOTAL_BYTES
+    ) {
+      continue;
+    }
+    const key = asset.url.replace(/^\/+/, "");
+    const object = await env.R2_BUCKET.get(
+      key.startsWith("assets/") ? key : `assets/${key}`,
+    );
+    if (!object || object.size > MAX_PREVIEW_ASSET_BYTES) continue;
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (totalBytes + bytes.byteLength > MAX_PREVIEW_ASSET_TOTAL_BYTES) continue;
+    totalBytes += bytes.byteLength;
+    urls.set(
+      `/api/store/assets/${asset.id}`,
+      `data:${mimeType};base64,${encodeBase64(bytes)}`,
+    );
+  }
+  return urls;
+}
+
+// The authenticated editor bridge returns public catalog DTOs to the isolated
+// real-React preview. No admin entity or credential is handed to Theme source.
 export const getStorefrontPreviewCatalog = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(inputSchema, data))
   .middleware([commerceAdminMiddleware])
@@ -94,12 +150,7 @@ export const getStorefrontPreviewCatalog = createServerFn({ method: "POST" })
         ),
       ];
       const assets = ids.length ? await assetDal.findByIds(ids) : [];
-      const urls = new Map(
-        assets.map((asset) => [
-          "/api/store/assets/" + asset.id,
-          asset.url.startsWith("/") ? asset.url : "/" + asset.url,
-        ]),
-      );
+      const urls = await previewAssetDataUrls(assets);
       if ("products" in result)
         return ok("Preview catalog loaded", {
           ...result,

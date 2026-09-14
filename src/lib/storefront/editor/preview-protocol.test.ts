@@ -119,6 +119,41 @@ describe("preview protocol", () => {
     });
   });
 
+  it("accepts only bounded catalog requests and JSON responses", () => {
+    const request = {
+      type: "morph:storefront-preview-catalog-request",
+      requestId: 4,
+      page: 2,
+      handle: "linen-shirt",
+    } as const;
+    const response = {
+      type: "morph:storefront-preview-catalog-response",
+      requestId: 4,
+      ok: true,
+      status: 200,
+      body: { products: [], pagination: { page: 2 } },
+    } as const;
+
+    expect(parsePreviewToEditorMessage(request)).toEqual(request);
+    expect(parseEditorToPreviewMessage(response)).toEqual(response);
+    expect(
+      parsePreviewToEditorMessage({ ...request, page: 10_001 }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...request, handle: "x".repeat(201) }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({ ...response, body: new Date() }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({
+        ...response,
+        body: { image: "x".repeat(16 * 1024 * 1024 + 1) },
+      }),
+    ).toBeNull();
+    expect(parseEditorToPreviewMessage({ ...response, status: 99 })).toBeNull();
+  });
+
   it("accepts a bounded in-place route change", () => {
     const message = {
       type: "morph:storefront-preview-set-route",
