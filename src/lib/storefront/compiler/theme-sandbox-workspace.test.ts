@@ -337,6 +337,50 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(viteConfig).toContain("__morphApplyViteHmrPayload");
   });
 
+  it("leaves authored route modules for the generated preview entry to accept", async () => {
+    const written = new Map<string, string>();
+    const result = await prepareThemeSandboxWorkspace({
+      session: {
+        async mkdir() {},
+        async writeFile(path, content) {
+          written.set(path, String(content));
+        },
+      },
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ router: { framework: "tanstack-start" } }),
+        },
+        {
+          path: "src/router.tsx",
+          content: "export function getRouter() { return null; }",
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+      ],
+      entry: "src/routes/index.tsx",
+      buildId: "route-hmr-test",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "preview-server",
+    });
+
+    expect(result.ok).toBe(true);
+    const viteConfig = written.get("/workspace/vite.config.ts") ?? "";
+    expect(viteConfig).toContain("const previewRouteSourcePatterns = [");
+    expect(viteConfig).toContain('"/workspace/src/routes/__root.tsx"');
+    expect(viteConfig).toContain('"/workspace/src/routes/index.tsx"');
+    expect(viteConfig).toContain("/\\/node_modules\\//");
+    expect(viteConfig).toContain(
+      "viteReact({ exclude: previewReactExcludePatterns })",
+    );
+  });
+
   it("serves authenticated draft content from inside the preview workspace", async () => {
     const written = new Map<string, string>();
     const result = await prepareThemeSandboxWorkspace({

@@ -474,6 +474,20 @@ const themeAliases = themeAliasDefinitions.map(({ key, target, wildcard }) => ({
   find: wildcard ? key : new RegExp("^" + escapeAliasRegex(key) + "$"),
   replacement: target,
 }));
+// Route modules export TanStack Route objects, which are intentionally not a
+// React Fast Refresh boundary. The generated preview entry accepts those
+// modules and updates the existing router without replacing the iframe.
+const previewRouteSourcePatterns = ${JSON.stringify(
+    routeRegistry?.routes
+      .filter((route) => !route.isVirtual)
+      .map(
+        (route) => `${workspaceRoot}/${route.sourcePath.replace(/\\/g, "/")}`,
+      ) ?? [],
+  )}.map((file) => new RegExp("^" + escapeAliasRegex(file) + "$"));
+const previewReactExcludePatterns = [
+  /\\/node_modules\\//,
+  ...previewRouteSourcePatterns,
+];
 const themeBaseUrlRoot = path.resolve("/workspace", ${JSON.stringify(pathAliasConfig.baseUrl)});
 const themeBaseUrlPlugin = ${
     pathAliasConfig.baseUrl
@@ -714,7 +728,7 @@ export default defineConfig({
     ...(previewContentPlugin ? [previewContentPlugin] : []),
     ...(previewHttpHmrPlugin ? [previewHttpHmrPlugin] : []),
     tailwindcss(),
-    viteReact(),
+    viteReact({ exclude: previewReactExcludePatterns }),
     ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
     dependencyEnforcerPlugin,
   ],

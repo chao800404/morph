@@ -124,6 +124,89 @@ function routeParentIndex(
   return bestIndex;
 }
 
+function routePieceOptionKeys(route: ThemeRouteRecord): string[] {
+  const pieces = route.routePieces;
+  if (!pieces) return [];
+  return [
+    pieces.loader ? "loader" : null,
+    pieces.component ? "component" : null,
+    pieces.errorComponent ? "errorComponent" : null,
+    pieces.notFoundComponent ? "notFoundComponent" : null,
+    pieces.pendingComponent ? "pendingComponent" : null,
+  ].filter((value): value is string => value !== null);
+}
+
+function createPreviewRouteHmrSource(args: {
+  enabled: boolean;
+  registryRoutes: readonly ThemeRouteRecord[];
+  childRoutes: readonly ThemeRouteRecord[];
+  rootReference: string;
+}): string {
+  if (!args.enabled) return "";
+
+  const bindings = args.registryRoutes
+    .filter((route) => !route.isVirtual)
+    .map((route) => {
+      const childIndex = args.childRoutes.indexOf(route);
+      const currentRoute =
+        route.kind === "root" ? args.rootReference : `route${childIndex}`;
+      const preserve = [
+        ...(route.kind === "route"
+          ? ["id", ...(route.isPathless ? [] : ["path"]), "getParentRoute"]
+          : []),
+        ...routePieceOptionKeys(route),
+      ];
+      return {
+        specifier: `./${route.sourcePath}`,
+        currentRoute,
+        preserve,
+      };
+    });
+
+  if (bindings.length === 0) return "";
+
+  return `
+// Route modules export a Route object as well as defining React components.
+// React Fast Refresh cannot treat that object as a stable component export;
+// its normal fallback asks Vite to invalidate over the HMR WebSocket. The
+// isolated preview deliberately carries native Vite payloads over HTTP, so
+// this generated entry is the route boundary instead. It keeps the iframe,
+// router and memory history alive while replacing the authored route options.
+const __morphPreviewHotRoutes = [
+${bindings
+  .map(
+    ({ currentRoute, preserve }) =>
+      `  { current: ${currentRoute}, preserve: ${JSON.stringify(preserve)} },`,
+  )
+  .join("\n")}
+] as const;
+if (import.meta.hot) {
+  import.meta.hot.accept(
+    ${JSON.stringify(bindings.map(({ specifier }) => specifier))},
+    async (modules) => {
+      let applied = false;
+      for (let index = 0; index < modules.length; index += 1) {
+        const nextRoute = (modules[index] as { Route?: { options?: Record<string, unknown> } } | undefined)?.Route;
+        const binding = __morphPreviewHotRoutes[index];
+        if (!nextRoute?.options || !binding) continue;
+
+        const current = binding.current as { options: Record<string, unknown> };
+        const preserved: Record<string, unknown> = {};
+        for (const key of binding.preserve) {
+          if (Object.prototype.hasOwnProperty.call(current.options, key)) {
+            preserved[key] = current.options[key];
+          }
+        }
+        current.options = { ...nextRoute.options, ...preserved };
+        applied = true;
+      }
+      if (applied) await router.invalidate({ sync: true });
+    },
+  );
+}
+`;
+}
+
 /**
  * Creates the isolated client-preview bootstrap for a Theme build. TanStack
  * route modules stay as the authored SSOT; the generated route tree exists
@@ -292,6 +375,12 @@ if (container) {
         includeLazy: false,
       })};`
     : "";
+  const previewRouteHmrSource = createPreviewRouteHmrSource({
+    enabled: Boolean(args.exposeRouterForPreview),
+    registryRoutes: registry.routes,
+    childRoutes,
+    rootReference,
+  });
 
   return {
     routeRegistry: registry,
@@ -320,6 +409,7 @@ const router = createRouter({
   routeTree,
   history: createMemoryHistory({ initialEntries: ["/"] }),
 });
+${previewRouteHmrSource}
 ${
   args.exposeRouterForPreview ? "window.__morphPreviewRouter = router;\n" : ""
 }// A Theme that owns its document shell renders <html>, <head> and <body>

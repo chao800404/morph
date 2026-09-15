@@ -1,3 +1,4 @@
+import { parse } from "@babel/parser";
 import { describe, expect, it } from "vitest";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 
@@ -61,6 +62,71 @@ describe("Theme router build bootstrap", () => {
     const route = result.content.indexOf('from "./src/routes/index.tsx"');
     expect(setup).toBeGreaterThan(-1);
     expect(setup).toBeLessThan(route);
+  });
+
+  it("updates authored route modules through the existing preview router", () => {
+    const result = createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      exposeRouterForPreview: true,
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ router: { framework: "tanstack-start" } }),
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+      ],
+    });
+
+    expect(result.content).toContain("import.meta.hot.accept(");
+    expect(result.content).toContain(
+      '["./src/routes/__root.tsx","./src/routes/index.tsx"]',
+    );
+    expect(result.content).toContain(
+      'preserve: ["id","path","getParentRoute"]',
+    );
+    expect(result.content).toContain(
+      "current.options = { ...nextRoute.options, ...preserved }",
+    );
+    expect(result.content).toContain("await router.invalidate({ sync: true })");
+    expect(result.content).not.toContain("window.location.reload");
+    expect(() =>
+      parse(result.content, {
+        sourceType: "module",
+        plugins: ["typescript", "jsx"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("does not ship preview route HMR in an immutable build", () => {
+    const result = createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ router: { framework: "tanstack-start" } }),
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+      ],
+    });
+
+    expect(result.content).not.toContain("__morphPreviewHotRoutes");
+    expect(result.content).not.toContain("import.meta.hot.accept");
   });
 
   it("retains the legacy component bootstrap for themes without router metadata", () => {
