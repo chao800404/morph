@@ -82,6 +82,14 @@ export function resolvePreviewSelectionRestoreElement(
   const selectorWithSourceLocation = (selector: string) =>
     sourceLocationSelector ? `${selector}${sourceLocationSelector}` : null;
   const identitySelectors = [
+    // An id the author wrote is the only identity that survives an edit above
+    // the element. It leads, and everything below it remains because the id
+    // can be changed or deleted between the selection and the restore, and
+    // because an `id` put on a component is a prop it may never pass on.
+    target.htmlId
+      ? selectorWithSourceLocation(`#${CSS.escape(target.htmlId)}`)
+      : null,
+    target.htmlId ? `#${CSS.escape(target.htmlId)}` : null,
     // A source location can be stale while the preview is being replaced. Use
     // it to disambiguate an authored identity first, but never let it override
     // a field/node identity and select an adjacent wrapper instead.
@@ -235,16 +243,19 @@ export function previewSectionSelector(sectionId: string): string {
 }
 
 function previewEditableNodeLabel(element: HTMLElement): string {
-  // An authored HTML id is the clearest name a customer gave the element.
-  // Read it from the real DOM; never use platform-generated data markers as a
-  // label and never write an id back merely to make the tree look tidy.
+  // `Div#hero-content`, or `Div` when the element was never named: the tag says
+  // what it is and the id says which one. Written this way round rather than
+  // the id alone so one form covers both, and so a named element still reads
+  // as the same kind of thing as its unnamed neighbours.
+  //
+  // The name is deliberately independent of editor markers and field bindings.
+  // Those are implementation identities, not names an author sees in their own
+  // HTML — and reading "Heading" on an element nobody named would leave no way
+  // to tell which elements have actually been given a name.
   const authoredId = element.id.trim();
-  if (authoredId && authoredId.length <= 200) return authoredId;
+  const idSuffix =
+    authoredId && authoredId.length <= 200 ? `#${authoredId}` : "";
   const fieldPath = element.dataset.storefrontFieldPath ?? "";
-  // The tree name is intentionally independent from editor markers and field
-  // bindings. Those values are implementation identities, not names an author
-  // sees in their HTML. With no authored id, the DOM tag is the one stable name
-  // available for every element.
   const rawLabel = element.tagName.toLowerCase();
   const label = rawLabel
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -255,11 +266,11 @@ function previewEditableNodeLabel(element: HTMLElement): string {
   const pathSegments = fieldPath.split(".");
   const lastSegment = pathSegments.at(-1);
   const resolvedLabel = label || element.tagName.toLowerCase();
-  return (
+  return `${
     /^\d+$/.test(lastSegment ?? "")
       ? `${resolvedLabel} ${Number(lastSegment) + 1}`
       : resolvedLabel
-  ).slice(0, 200);
+  }${idSuffix}`.slice(0, 200);
 }
 
 export function collectPreviewEditableNodes(root: {
@@ -269,6 +280,16 @@ export function collectPreviewEditableNodes(root: {
 }): PreviewEditableNode[] {
   const nodes: PreviewEditableNode[] = [];
   const nodeIds = new Set<string>();
+  // An HTML id is only an identity while it is the document's. The same
+  // component rendered twice writes the same id twice without anyone asking
+  // for it, and a selection restored by a duplicate would land on whichever
+  // twin the browser happened to return. Counted over the whole document
+  // rather than per section, which is the scope the uniqueness rule has.
+  const htmlIdCounts = new Map<string, number>();
+  for (const element of root.querySelectorAll<HTMLElement>("[id]")) {
+    const id = element.id.trim();
+    if (id) htmlIdCounts.set(id, (htmlIdCounts.get(id) ?? 0) + 1);
+  }
   const sections = root.querySelectorAll<HTMLElement>(
     PREVIEW_SECTION_ROOT_SELECTOR,
   );
@@ -350,15 +371,23 @@ export function collectPreviewEditableNodes(root: {
         continue;
       }
 
-      const identity = itemId
-        ? `item:${itemId}:${nodeId ? `node:${nodeId}` : `field:${fieldKey ?? fieldPath}`}`
-        : fieldPath
-          ? `path:${fieldPath}${nodeId ? `:node:${nodeId}` : ""}`
-          : nodeId
-            ? `node:${nodeId}`
-            : fieldKey
-              ? `field:${fieldKey}`
-              : `loc:${sourceLocation}`;
+      const hasUniqueHtmlId = Boolean(htmlId) && htmlIdCounts.get(htmlId) === 1;
+      // An id the author wrote, ahead of everything the platform derived: it
+      // is the one identity that survives an edit above the element, which a
+      // source position does not. A row inside a repeated field keeps its
+      // row-scoped identity regardless, because an id repeated once per row is
+      // not unique and never reaches here.
+      const identity = hasUniqueHtmlId
+        ? `id:${htmlId}`
+        : itemId
+          ? `item:${itemId}:${nodeId ? `node:${nodeId}` : `field:${fieldKey ?? fieldPath}`}`
+          : fieldPath
+            ? `path:${fieldPath}${nodeId ? `:node:${nodeId}` : ""}`
+            : nodeId
+              ? `node:${nodeId}`
+              : fieldKey
+                ? `field:${fieldKey}`
+                : `loc:${sourceLocation}`;
       const id = `${sectionId}:${identity}`;
       if (id.length > 500 || nodeIds.has(id)) continue;
 
@@ -376,6 +405,9 @@ export function collectPreviewEditableNodes(root: {
       const target: PreviewSelectionRestoreTarget = {
         sectionId,
         sourceLocation: sourceLocation || undefined,
+        // Only when it is the document's own. A duplicate would restore onto
+        // whichever twin the browser returned first.
+        htmlId: hasUniqueHtmlId ? htmlId : undefined,
         nodeId: nodeId || undefined,
         fieldPath: fieldPath || undefined,
         elementKey: elementKey || undefined,

@@ -369,7 +369,7 @@ const editableNodes: readonly PreviewEditableNode[] = [
 ];
 
 describe("EditorSectionsPanel editable node tree", () => {
-  it("uses the real root once and prefers its authored id for the section row", () => {
+  it("uses the real root once and shows what it is beside the section name", () => {
     const onSearchChange = vi.fn();
     const onSelectEditableNode = vi.fn();
     const rootNode: PreviewEditableNode = {
@@ -404,7 +404,9 @@ describe("EditorSectionsPanel editable node tree", () => {
       onSelectEditableNode,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "hero-shell" }));
+    // The section keeps its own name; `section#hero-shell` goes beside it.
+    fireEvent.click(screen.getByRole("button", { name: "hero" }));
+    expect(screen.getByText("section#hero-shell")).toBeTruthy();
     expect(onSelectEditableNode).toHaveBeenCalledWith(rootNode.target);
     expect(onSearchChange).not.toHaveBeenCalled();
     // Once, and on the section row itself: hoisting the root means the section
@@ -424,9 +426,7 @@ describe("EditorSectionsPanel editable node tree", () => {
     expect(container.querySelector('[data-slot="sidebar"]')).toBeTruthy();
     expect(container.querySelector('[data-sidebar="menu"]')).toBeTruthy();
     expect(
-      screen
-        .getByRole("button", { name: "Content" })
-        .getAttribute("data-sidebar"),
+      screen.getByRole("button", { name: "hero" }).getAttribute("data-sidebar"),
     ).toBe("menu-button");
     expect(container.querySelector('[data-sidebar="menu-sub"]')).toBeTruthy();
     expect(
@@ -464,7 +464,7 @@ describe("EditorSectionsPanel editable node tree", () => {
   it("uses the section item itself as the drag surface without numbering or a grip icon", () => {
     renderPanel(vi.fn(), vi.fn(), { editableNodes });
 
-    const sectionButton = screen.getByRole("button", { name: "Content" });
+    const sectionButton = screen.getByRole("button", { name: "hero" });
     expect(sectionButton.getAttribute("title")).toContain("drag to reorder");
     expect(sectionButton.className.split(" ")).toContain("cursor-pointer");
     expect(sectionButton.className.split(" ")).not.toContain("cursor-grab");
@@ -483,7 +483,7 @@ describe("EditorSectionsPanel editable node tree", () => {
   it("shows semantic icons before section and editable node labels", () => {
     const { container } = renderPanel(vi.fn(), vi.fn(), { editableNodes });
 
-    const sectionButton = screen.getByRole("button", { name: "Content" });
+    const sectionButton = screen.getByRole("button", { name: "hero" });
     expect(
       sectionButton.querySelector('[data-editor-tree-icon="section"]'),
     ).toBeTruthy();
@@ -520,7 +520,7 @@ describe("EditorSectionsPanel editable node tree", () => {
       onSelectEditableNode,
     });
 
-    expect(screen.getByRole("button", { name: "Content" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "hero" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Expand Content" })).toBeNull();
     expect(screen.getByRole("button", { name: "Heading" })).toBeTruthy();
 
@@ -532,9 +532,7 @@ describe("EditorSectionsPanel editable node tree", () => {
         .getAttribute("aria-current"),
     ).toBeNull();
     expect(
-      screen
-        .getByRole("button", { name: "Content" })
-        .getAttribute("data-active"),
+      screen.getByRole("button", { name: "hero" }).getAttribute("data-active"),
     ).toBe("true");
     expect(onSelectEditableNode).toHaveBeenCalledWith(editableNodes[1].target);
     expect(onSearchChange).not.toHaveBeenCalled();
@@ -635,9 +633,7 @@ describe("EditorSectionsPanel editable node tree", () => {
         .getAttribute("aria-current"),
     ).toBeNull();
     expect(
-      screen
-        .getByRole("button", { name: "Content" })
-        .getAttribute("data-active"),
+      screen.getByRole("button", { name: "hero" }).getAttribute("data-active"),
     ).toBe("true");
   });
 
@@ -655,9 +651,7 @@ describe("EditorSectionsPanel editable node tree", () => {
     const headingButton = screen.getByRole("button", { name: "Heading" });
     expect(headingButton.getAttribute("aria-current")).toBe("true");
     expect(
-      screen
-        .getByRole("button", { name: "Content" })
-        .getAttribute("aria-current"),
+      screen.getByRole("button", { name: "hero" }).getAttribute("aria-current"),
     ).toBeNull();
   });
 
@@ -700,9 +694,7 @@ describe("EditorSectionsPanel editable node tree", () => {
       screen.getByRole("button", { name: "Div" }).getAttribute("aria-current"),
     ).toBe("true");
     expect(
-      screen
-        .getByRole("button", { name: "Content" })
-        .getAttribute("aria-current"),
+      screen.getByRole("button", { name: "hero" }).getAttribute("aria-current"),
     ).toBeNull();
   });
 
@@ -719,13 +711,11 @@ describe("EditorSectionsPanel editable node tree", () => {
     renderPanel(vi.fn(), vi.fn(), { editableNodes, activeSelection });
 
     const selectedSectionRoot = screen.getByRole("button", {
-      name: "Newsletter title",
+      name: "newsletter",
     });
     expect(selectedSectionRoot.getAttribute("data-active")).toBe("true");
     expect(
-      screen
-        .getByRole("button", { name: "Content" })
-        .getAttribute("data-active"),
+      screen.getByRole("button", { name: "hero" }).getAttribute("data-active"),
     ).not.toBe("true");
   });
 
@@ -744,7 +734,7 @@ describe("EditorSectionsPanel editable node tree", () => {
       activeSelection,
     });
 
-    const heroRow = screen.getByRole("button", { name: "Content" });
+    const heroRow = screen.getByRole("button", { name: "hero" });
     expect(heroRow.getAttribute("data-active")).not.toBe("true");
 
     fireEvent.click(heroRow);
@@ -769,9 +759,7 @@ describe("EditorSectionsPanel editable node tree", () => {
       </QueryClientProvider>,
     );
     expect(
-      screen
-        .getByRole("button", { name: "Content" })
-        .getAttribute("data-active"),
+      screen.getByRole("button", { name: "hero" }).getAttribute("data-active"),
     ).toBe("true");
   });
 
@@ -782,7 +770,7 @@ describe("EditorSectionsPanel editable node tree", () => {
       onDeleteEditableNode,
     });
 
-    const contentButton = screen.getByRole("button", { name: "Content" });
+    const contentButton = screen.getByRole("button", { name: "hero" });
     fireEvent.contextMenu(contentButton.parentElement!);
 
     const deleteMenuItem = await screen.findByRole("menuitem", {
@@ -929,8 +917,46 @@ describe("EditorSectionsPanel page structure", () => {
     });
 
     expect(
-      rootOrder(container, ["Header", "Content", "Newsletter title", "Footer"]),
-    ).toEqual(["Header", "Content", "Newsletter title", "Footer"]);
+      rootOrder(container, ["Header", "hero", "newsletter", "Footer"]),
+    ).toEqual(["Header", "hero", "newsletter", "Footer"]);
+  });
+
+  /**
+   * The row is named after the file it comes from. Its DOM root is only known
+   * once the preview has reported its structure, so a row that deferred to the
+   * root's tag renamed itself a moment after appearing, on every load. The
+   * Starter hides that by coincidence — `Header.tsx` is rooted in a `<header>`,
+   * so both names read "Header" — and a component rooted in a `<div>` does not.
+   */
+  it("keeps a shared layout row named after its file, not its root's tag", () => {
+    const rootedInADiv = layoutNodes.map((node) =>
+      node.id === "header:node:root"
+        ? { ...node, label: "Div", tagName: "div" }
+        : node,
+    ) as unknown as readonly PreviewEditableNode[];
+    const { container } = renderPanel(vi.fn(), vi.fn(), {
+      editableNodes: rootedInADiv,
+      activeRoute,
+    });
+
+    expect(rootOrder(container, ["Header", "Div"])).toEqual(["Header"]);
+  });
+
+  // A layout is its file, not its root element — so an authored id is shown
+  // beside the name rather than in place of it.
+  it("shows the root's id beside the layout name, not instead of it", () => {
+    const named = layoutNodes.map((node) =>
+      node.id === "header:node:root"
+        ? { ...node, label: "Header#site-header", htmlId: "site-header" }
+        : node,
+    ) as unknown as readonly PreviewEditableNode[];
+    const { container } = renderPanel(vi.fn(), vi.fn(), {
+      editableNodes: named,
+      activeRoute,
+    });
+
+    expect(rootOrder(container, ["Header"])).toEqual(["Header"]);
+    expect(screen.getByText("header#site-header")).toBeTruthy();
   });
 
   // Header and hero looked identical in the tree, so nothing said that editing

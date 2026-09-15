@@ -166,6 +166,16 @@ export type PreviewSelectionRestoreTarget = Readonly<{
   sectionId: string;
   /** Compile-time source position, present when the build annotated it. */
   sourceLocation?: string;
+  /**
+   * An authored HTML id, and only when it is unique in the document.
+   *
+   * Preferred over a source position because it survives edits above the
+   * element, which a position does not. Never the only identity carried: an
+   * author is free to change or delete the id, and the same `id` written on a
+   * component is a prop it may not pass on — so the position stays alongside
+   * it as what the editor falls back to.
+   */
+  htmlId?: string;
   nodeId?: string;
   fieldPath?: string;
   elementKey?: string;
@@ -557,6 +567,7 @@ function parsePreviewSelectionRestoreTarget(
   // marker-free element made the entire structure unusable — the panel kept
   // showing whatever it had last accepted.
   const identityKeys = [
+    "htmlId",
     "nodeId",
     "fieldPath",
     "elementKey",
@@ -570,6 +581,7 @@ function parsePreviewSelectionRestoreTarget(
     return null;
   }
   if (
+    (value.htmlId !== undefined && !isBoundedString(value.htmlId, 200)) ||
     (value.nodeId !== undefined && !isBoundedString(value.nodeId, 200)) ||
     (value.fieldPath !== undefined && !isBoundedString(value.fieldPath, 500)) ||
     (value.elementKey !== undefined &&
@@ -586,6 +598,7 @@ function parsePreviewSelectionRestoreTarget(
     // Carried through, not just accepted: dropping it here would leave a
     // marker-free element with nothing to restore its selection by.
     sourceLocation: value.sourceLocation,
+    htmlId: value.htmlId,
     nodeId: value.nodeId,
     fieldPath: value.fieldPath,
     elementKey: value.elementKey,

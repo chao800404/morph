@@ -497,11 +497,16 @@ function sortableSectionRows(page: Page) {
 }
 
 async function sectionOrder(page: Page) {
-  // A row can be read mid-render with no text yet. Dropping the blanks keeps a
-  // transient frame from being compared as if a section had lost its name; a
-  // row that is genuinely missing still shows up as a shorter list.
+  // The row's name, not everything printed on it. A section row also shows
+  // what its element is — `section#hero` — and that arrives only once the
+  // preview has reported its structure, so comparing the whole row would read
+  // as a reorder every time the supplementary line appeared or went away.
+  //
+  // A row can also be read mid-render with no text yet. Dropping the blanks
+  // keeps a transient frame from being compared as if a section had lost its
+  // name; a row that is genuinely missing still shows up as a shorter list.
   return (await sectionRows(page).allInnerTexts())
-    .map((text) => text.trim())
+    .map((text) => text.split("\n")[0]?.trim() ?? "")
     .filter((text) => text.length > 0);
 }
 

@@ -263,6 +263,7 @@ function moveSection(items: EditorSection[], from: number, to: number) {
 function SortableSectionRow({
   section,
   displayLabel,
+  domIdentity,
   index,
   selected,
   disabled,
@@ -282,6 +283,8 @@ function SortableSectionRow({
   section: EditorSection;
   /** The real preview root's label; CMS section metadata stays on this row. */
   displayLabel: string;
+  /** `section#hero` — what the row's element is, shown beside its name. */
+  domIdentity?: string;
   index: number;
   selected: boolean;
   disabled: boolean;
@@ -365,7 +368,15 @@ function SortableSectionRow({
                   data-editor-tree-icon="section"
                   aria-hidden="true"
                 />
-                <span>{displayLabel}</span>
+                <span className="truncate">{displayLabel}</span>
+                {domIdentity ? (
+                  <span
+                    aria-hidden="true"
+                    className="shrink-0 truncate font-mono text-[0.7rem] text-muted-foreground"
+                  >
+                    {domIdentity}
+                  </span>
+                ) : null}
               </SidebarMenuButton>
               <SidebarMenuAction
                 type="button"
@@ -432,8 +443,23 @@ function SortableSectionRow({
  */
 const SHARED_ROOT_HINT = "Shared by every page — editing this changes them all";
 
+/**
+ * What the row's element is, in DOM terms: `section#hero`, or `section`.
+ *
+ * Secondary to the name on purpose. A Section and a Route already have a name
+ * the author chose — "Newsletter", "/products" — and every Starter section is
+ * rooted in a `<section>`, so leading with the tag would print the same word
+ * down the whole tree. The DOM side is still worth seeing, and is where an
+ * authored id shows up for these rows.
+ */
+function domIdentityOf(node: PreviewEditableNode | null | undefined) {
+  if (!node?.tagName) return undefined;
+  return node.htmlId ? `${node.tagName}#${node.htmlId}` : node.tagName;
+}
+
 function RouteTreeRootRow({
   label,
+  domIdentity,
   shared,
   selected,
   rootNode,
@@ -445,6 +471,8 @@ function RouteTreeRootRow({
   children,
 }: {
   label: string;
+  /** `header#site-header` — what the row's element is, beside its name. */
+  domIdentity?: string;
   /** Supplied by the layout, so it is on every page rather than this one. */
   shared: boolean;
   selected: boolean;
@@ -500,6 +528,14 @@ function RouteTreeRootRow({
               aria-hidden="true"
             />
             <span className="min-w-0 truncate">{label}</span>
+            {domIdentity ? (
+              <span
+                aria-hidden="true"
+                className="shrink-0 truncate font-mono text-[0.7rem] text-muted-foreground"
+              >
+                {domIdentity}
+              </span>
+            ) : null}
             {/* The sidebar has its own surface token; `text-foreground` is
                 tuned for the page background and does not clear 4.5:1 here. */}
             {shared ? (
@@ -1016,24 +1052,31 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     const sectionNodes = normalized.children;
     const sourceName = sectionId.split("/").at(-1) ?? sectionId;
     const sourceStem = sourceName.replace(/\.[cm]?[jt]sx?$/, "");
-    const sourceLabel =
+    const rootLabel =
       sectionId === activeRoute?.sourcePath
         ? activeRoute.path === "/"
           ? "Home"
           : activeRoute.path
         : sourceStem
             .replace(/[-_]+/g, " ")
-            .replace(/\w/g, (character) => character.toUpperCase());
-    // Route roots are page identities, so keep their route label. Shared
-    // layout roots use the actual DOM root's id/tag label when one exists.
-    const label =
-      sectionId === activeRoute?.sourcePath
-        ? sourceLabel
-        : (normalized.root?.label ?? sourceLabel);
+            // `\b` written into this file unescaped once before, which left a
+            // literal backspace in the pattern: it matched nothing, so the
+            // transform silently did nothing and every shared layout row read
+            // "starter header" instead of "Starter Header".
+            .replace(/\b\w/g, (character) => character.toUpperCase());
+    // A route is its path and a shared layout is its file; neither is a plain
+    // DOM element, so neither takes its name from one. Deferring to the root's
+    // label also renamed the row a moment after it appeared, because the root
+    // is only known once the preview has reported its structure — hidden in
+    // the Starter by the coincidence of `Header.tsx` being rooted in a
+    // `<header>`, and not hidden at all for one rooted in a `<div>`. What the
+    // element actually is goes beside the name instead.
+    const label = rootLabel;
     return (
       <RouteTreeRootRow
         key={sectionId}
         label={label}
+        domIdentity={domIdentityOf(normalized.root)}
         shared={layoutRoots.shared.has(sectionId)}
         selected={
           (activeSelection?.sectionId ?? search.section) === sectionId &&
@@ -1282,13 +1325,15 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                             // after appearing. The section's own type is stable
                             // and distinguishing; an id the author wrote still
                             // wins over it, being the name they chose.
-                            displayLabel={
-                              normalized.root &&
-                              normalized.root.label.toLowerCase() !==
-                                normalized.root.tagName
-                                ? normalized.root.label
-                                : section.type
-                            }
+                            // The section's own name, always. Every Starter
+                            // section is rooted in a `<section>`, so the root's
+                            // tag names all of them the same thing — and it
+                            // only arrives once the preview has reported its
+                            // structure, so a row that deferred to it renamed
+                            // itself a moment after appearing. What the element
+                            // is goes beside the name instead.
+                            displayLabel={section.type}
+                            domIdentity={domIdentityOf(normalized.root)}
                             rootNode={normalized.root}
                             onRequestDeleteRoot={
                               normalized.root

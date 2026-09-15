@@ -108,7 +108,7 @@ describe("preview tree selection restore", () => {
 });
 
 describe("preview editable node naming", () => {
-  it("uses an authored HTML id and otherwise falls back to the tag name", () => {
+  it("names an element by its tag, and says which one when it has an id", () => {
     const root = document.createElement("main");
     root.innerHTML = `
       <section data-storefront-section-id="hero">
@@ -122,7 +122,9 @@ describe("preview editable node naming", () => {
     const copy = nodes.find((node) => node.target.nodeId === "copy");
     const heading = nodes.find((node) => node.target.nodeId === "heading");
 
-    expect(copy?.label).toBe("hero-copy");
+    // The tag says what it is and the id says which one, so one form covers a
+    // named element and an unnamed one — and a reader can tell them apart.
+    expect(copy?.label).toBe("Div#hero-copy");
     expect(copy?.htmlId).toBe("hero-copy");
     expect(heading?.label).toBe("H1");
     expect(heading?.htmlId).toBeUndefined();
@@ -140,5 +142,70 @@ describe("preview editable node naming", () => {
     expect(node?.label).toBe("Div");
     expect(node?.label).not.toContain("generated-node");
     expect(node?.htmlId).toBeUndefined();
+  });
+});
+
+describe("an authored id as an identity", () => {
+  const collect = (html: string) => {
+    const root = document.createElement("main");
+    root.innerHTML = html;
+    return collectPreviewEditableNodes(root);
+  };
+
+  // A position shifts the moment a line is added above it; an id does not.
+  it("is preferred over the position the compiler derived", () => {
+    const nodes = collect(`
+      <section data-storefront-section-id="hero">
+        <div id="hero-copy" data-morph-loc="src/Hero.tsx:12:5"></div>
+      </section>
+    `);
+    const copy = nodes.find((node) => node.htmlId === "hero-copy");
+    expect(copy?.id).toBe("hero:id:hero-copy");
+    // Never the only one carried: the author can change or delete the id
+    // between the selection and the restore.
+    expect(copy?.target.htmlId).toBe("hero-copy");
+    expect(copy?.target.sourceLocation).toBe("src/Hero.tsx:12:5");
+  });
+
+  /**
+   * One component rendered twice writes the same id twice without anyone
+   * asking for it, and a selection restored by a duplicate lands on whichever
+   * twin the browser returned first.
+   */
+  it("is ignored when the document holds more than one of it", () => {
+    const nodes = collect(`
+      <section data-storefront-section-id="a">
+        <div id="card" data-morph-loc="src/Card.tsx:3:1"></div>
+      </section>
+      <section data-storefront-section-id="b">
+        <div id="card" data-morph-loc="src/Card.tsx:3:1"></div>
+      </section>
+    `);
+    for (const node of nodes.filter((entry) => entry.htmlId === "card")) {
+      expect(node.id).not.toContain("id:card");
+      expect(node.target.htmlId).toBeUndefined();
+    }
+    // Still shown, because it is still what the author wrote on the element.
+    expect(nodes.some((node) => node.label === "Div#card")).toBe(true);
+  });
+
+  // Duplicated once per row, so it is never the document's — the row-scoped
+  // identity is what addresses these, and it stays.
+  it("leaves a repeated field's rows addressed by their row", () => {
+    const nodes = collect(`
+      <section data-storefront-section-id="list">
+        <div data-storefront-item-id="a" data-storefront-field-path="items.0">
+          <span id="title" data-storefront-field="title"
+            data-storefront-field-path="items.0.title">A</span>
+        </div>
+        <div data-storefront-item-id="b" data-storefront-field-path="items.1">
+          <span id="title" data-storefront-field="title"
+            data-storefront-field-path="items.1.title">B</span>
+        </div>
+      </section>
+    `);
+    const titles = nodes.filter((node) => node.htmlId === "title");
+    expect(titles).toHaveLength(2);
+    expect(titles.every((node) => node.id.startsWith("list:item:"))).toBe(true);
   });
 });
