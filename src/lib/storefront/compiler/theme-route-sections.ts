@@ -71,6 +71,10 @@ export function mergeDocumentWithRouteSections(
         id: routeSection.slotId,
         type: routeSection.sectionType,
         componentRef: routeSection.componentRef,
+        // The route owns which slots exist and which component fills them; the
+        // document owns everything the author put into one. A name is theirs,
+        // so it survives a rebuild of the structure exactly as the props do.
+        ...(stored?.name ? { name: stored.name } : {}),
         enabled: stored?.enabled !== false,
         props: stored?.props ?? {},
       };

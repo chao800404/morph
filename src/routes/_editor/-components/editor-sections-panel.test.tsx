@@ -910,6 +910,36 @@ describe("EditorSectionsPanel page structure", () => {
   // The tree used to show the route's own structure only when the template had
   // no sections, so Home listed five sections and gave no way to reach the
   // header and footer that were plainly on the canvas.
+  /**
+   * The author's own name for one placement, stored beside `props` rather than
+   * inside it: `props` is the component's content, is spread into the component
+   * and travels to every visitor, and a component may declare a content field
+   * of its own called `name`.
+   */
+  it("shows the stored name in place of the derived one", () => {
+    const named = {
+      ...context,
+      templates: context.templates.map((template) => ({
+        ...template,
+        document: {
+          ...template.document,
+          sections: template.document.sections.map((section) =>
+            section.id === "section-1"
+              ? { ...section, name: "Brand story" }
+              : section,
+          ),
+        },
+      })),
+    } as unknown as StorefrontThemeEditorDTO;
+
+    renderPanel(vi.fn(), vi.fn(), { editableNodes, context: named });
+
+    expect(screen.getByRole("button", { name: "Brand story" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "hero" })).toBeNull();
+    // The other placement is untouched: a name belongs to one of them.
+    expect(screen.getByRole("button", { name: "newsletter" })).toBeTruthy();
+  });
+
   it("shows the layout around the template's sections, in page order", () => {
     const { container } = renderPanel(vi.fn(), vi.fn(), {
       editableNodes: layoutNodes,

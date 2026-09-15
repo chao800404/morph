@@ -10,6 +10,7 @@ import {
   publishStorefrontThemeTemplateInputSchema,
   reorderStorefrontThemeSectionsInputSchema,
   storefrontThemeEditorInputSchema,
+  renameStorefrontThemeSectionInputSchema,
   updateStorefrontThemeSectionPropsInputSchema,
 } from "@/lib/validations/storefront-theme";
 import { createServerFn } from "@tanstack/react-start";
@@ -154,6 +155,31 @@ export const reorderStorefrontThemeSections = createServerFn({ method: "POST" })
         error,
         "UPDATE_FAILED",
         "Failed to reorder theme sections",
+      );
+    }
+  });
+
+export const renameStorefrontThemeSection = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(renameStorefrontThemeSectionInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    try {
+      const result = await storefrontThemeDal.renameSection({
+        ...input.data,
+        createdBy: context.user.id,
+      });
+      return result
+        ? ok("Section renamed", result)
+        : fail("Theme template or section not found", { error: "NOT_FOUND" });
+    } catch (error) {
+      return failure(
+        "Rename storefront theme section error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to rename the section",
       );
     }
   });

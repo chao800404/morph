@@ -859,6 +859,80 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
     expect(result?.document.sections[0].props.title).toBe("Updated Title");
   });
 
+  /**
+   * A name is the editor's label for one placement, not content. It is stored
+   * beside `props` because `props` is spread into the component and travels to
+   * every visitor — and a component may declare a content field of its own
+   * called `name`.
+   */
+  it("renameSection stores the name beside props and leaves props alone", async () => {
+    const document =
+      '{"version":1,"sections":[{"id":"hero","type":"hero","enabled":true,"props":{"title":"Original"}}]}';
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-rn', 'theme-a', 'index', 'Home', '${document}',
+         '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-rn', 1, '${document}', 'now');
+    `);
+
+    const renamed = await storefrontThemeDal.renameSection({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-rn",
+      sectionId: "hero",
+      name: "Brand story",
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(renamed?.document.sections[0]?.name).toBe("Brand story");
+    expect(renamed?.document.sections[0]?.props).toEqual({
+      title: "Original",
+    });
+    // Never inside props, which is what reaches the component and the visitor.
+    expect(renamed?.document.sections[0]?.props).not.toHaveProperty("name");
+
+    // Clearing restores the derived name rather than storing an empty one.
+    const cleared = await storefrontThemeDal.renameSection({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-rn",
+      sectionId: "hero",
+      name: null,
+      expectedDraftGeneration: renamed!.draftGeneration,
+      createdBy: "user-1",
+    });
+    expect(cleared?.document.sections[0]).not.toHaveProperty("name");
+  });
+
+  it("renameSection refuses a section the template does not have", async () => {
+    const document = '{"version":1,"sections":[]}';
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-rn2', 'theme-a', 'index', 'Home', '${document}',
+         '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now');
+    `);
+
+    await expect(
+      storefrontThemeDal.renameSection({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-rn2",
+        sectionId: "nope",
+        name: "Anything",
+        expectedDraftGeneration: 1,
+        createdBy: "user-1",
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("strictly filters out presentation styling props and keeps only content fields", async () => {
     sqlite.exec(`
       INSERT INTO storefront_theme_templates

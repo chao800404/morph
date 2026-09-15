@@ -63,6 +63,7 @@ import {
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
+import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
   normalizeThemeImageValue,
   withThemeImageSource,
@@ -946,6 +947,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     },
     parsedMeta,
   );
+  const jumpToSelectedSource = useCallback(() => {
+    if (!componentPath) return;
+    const location = parseThemeSourceLocation(activeSourceLocation);
+    const filePath = location?.filePath ?? componentPath;
+    const file = themeFiles?.find((candidate) => candidate.path === filePath);
+    const fallback = file?.content
+      ? (findSourceLocation(file.content, targetElement) ??
+        findSourceLocation(file.content, "heading"))
+      : null;
+    onJumpToCode?.(
+      filePath,
+      location?.line ?? fallback?.line,
+      location?.column ?? fallback?.column,
+    );
+  }, [
+    activeSourceLocation,
+    componentPath,
+    onJumpToCode,
+    targetElement,
+    themeFiles,
+  ]);
   const internalLinkPages = useMemo(
     () => resolveInternalLinkPages(themeFiles),
     [themeFiles],
@@ -2179,14 +2201,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               variant="outline"
               size="xs"
               className="h-7 w-full gap-1.5 text-xs font-medium justify-start"
-              onClick={() => {
-                const file = themeFiles?.find((f) => f.path === componentPath);
-                const loc = file?.content
-                  ? (findSourceLocation(file.content, targetElement) ??
-                    findSourceLocation(file.content, "heading"))
-                  : null;
-                onJumpToCode?.(componentPath, loc?.line, loc?.column);
-              }}
+              onClick={jumpToSelectedSource}
               title={`Open ${componentPath} in Monaco Code Editor`}
             >
               <Code2 className="size-3.5 text-primary shrink-0" />
@@ -2234,6 +2249,19 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               This element uses a dynamic expression (e.g. <code>cn(...)</code>
               ). Direct style patching is disabled to protect component logic.
             </p>
+            {componentPath ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className="mt-1 h-6 gap-1.5 border-amber-500/40 bg-background/60 text-[11px] text-amber-900 hover:bg-background dark:text-amber-100"
+                onClick={jumpToSelectedSource}
+                disabled={disabled}
+              >
+                <Code2 className="size-3" />
+                Open source in Code
+              </Button>
+            ) : null}
           </div>
         </div>
       )}

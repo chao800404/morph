@@ -17,6 +17,10 @@ export const storefrontPageDocumentSchema = z.object({
         id: z.string().trim().min(1).max(100),
         type: z.string().trim().min(1).max(100),
         componentRef: z.string().trim().min(1).max(160).optional().nullable(),
+        // Declared, because this schema is not `.strict()` and zod drops what
+        // it does not know: an undeclared name would round-trip to nothing,
+        // silently and without an error to notice.
+        name: z.string().trim().min(1).max(100).optional(),
         enabled: z.boolean().default(true),
         props: z.record(z.string(), z.json()),
       }),

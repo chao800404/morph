@@ -509,6 +509,51 @@ describe("EditorStyleInspector selection content", () => {
     onJumpToCode: vi.fn(),
   };
 
+  it("offers a Code action for a dynamic class expression", () => {
+    const onJumpToCode = vi.fn();
+    render(
+      <EditorStyleInspector
+        {...common}
+        onJumpToCode={onJumpToCode}
+        section={baseSection("hero", { heading: "Heading" })}
+        themeFiles={[
+          {
+            id: "hero-source",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: "src/components/Hero.tsx",
+            content: `export function Hero({ active }) {
+              return <section><h1 data-morph-node="heading" className={active ? "text-red-500" : "text-blue-500"}>Heading</h1></section>;
+            }`,
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-25T00:00:00.000Z",
+            updatedAt: "2026-08-25T00:00:00.000Z",
+          },
+        ]}
+        selection={selectionDescriptor({
+          kind: "heading",
+          tagName: "h1",
+          nodeId: "heading",
+          elementKey: "heading",
+          sourceFilePath: "src/components/Hero.tsx",
+          className: "text-red-500",
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/Code-Controlled ClassName/)).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open source in Code" }),
+    );
+    expect(onJumpToCode).toHaveBeenCalledWith(
+      "src/components/Hero.tsx",
+      2,
+      expect.any(Number),
+    );
+  });
+
   it("shows only image content for an image selection", () => {
     const props = {
       ...common,

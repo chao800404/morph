@@ -119,6 +119,7 @@ import {
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import {
   publishStorefrontThemeTemplate,
+  renameStorefrontThemeSection,
   updateStorefrontThemeSectionProps,
 } from "@/server/storefront/storefront-themes.serverFn";
 
@@ -1368,6 +1369,7 @@ export function VisualEditorShell({
   const latestStyleRevisionRef = useRef(0);
   const latestAppliedStyleRevisionRef = useRef(0);
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
+  const [isFlushingCodeChanges, setIsFlushingCodeChanges] = useState(false);
   const editorCodeWorkspaceRef = useRef<EditorCodeWorkspaceHandle>(null);
 
   const themeFilesQuery = useQuery({
@@ -5082,6 +5084,60 @@ export function VisualEditorShell({
 
   handleSectionToggleEnabledRef.current = handleSectionToggleEnabled;
 
+  /**
+   * Stores the author's own name for one section placement.
+   *
+   * Not a props write: a name is not content, so it needs none of the field
+   * validation that path performs — and it must not land in `props`, which is
+   * spread into the component and travels to every visitor. It goes through
+   * the same template queue so it takes its turn behind a pending content
+   * edit rather than racing it for the draft generation.
+   */
+  const handleRenameSection = useCallback(
+    async (sectionId: string, name: string | null) => {
+      const template = sectionModel.bindings.get(sectionId)?.templateId
+        ? context.templates.find(
+            (item) =>
+              item.id === sectionModel.bindings.get(sectionId)?.templateId,
+          )
+        : activeTemplate;
+      if (!template) throw new Error("No template owns this section.");
+      await flushTemplatePendingProps(template.id);
+      const result = await enqueueTemplateMutation(template.id, (generation) =>
+        renameStorefrontThemeSection({
+          data: {
+            storefrontId: context.storefront.id,
+            themeId: context.theme.id,
+            templateId: template.id,
+            sectionId,
+            name,
+            expectedDraftGeneration: generation,
+          },
+        }),
+      );
+      if (result && !result.success) {
+        toast.error(result.message);
+        return;
+      }
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ).queryKey,
+      });
+    },
+    [
+      activeTemplate,
+      context.storefront.id,
+      context.templates,
+      context.theme.id,
+      enqueueTemplateMutation,
+      flushTemplatePendingProps,
+      queryClient,
+      sectionModel,
+    ],
+  );
+
   const handleReorderSections = useCallback(
     async (sectionIds: string[]) => {
       if (!activeThemeRoute) {
@@ -5256,9 +5312,26 @@ export function VisualEditorShell({
     syncPreviewSpacingOverlay,
   ]);
 
-  const handleSwitchToDesign = useCallback(() => {
+  const handleSwitchToDesign = useCallback(async () => {
+    if (isFlushingCodeChanges) return;
+    if (monacoDirtyFiles.length > 0) {
+      setIsFlushingCodeChanges(true);
+      try {
+        const flushed =
+          (await editorCodeWorkspaceRef.current?.flushPendingChanges()) ??
+          false;
+        if (!flushed) {
+          toast.error(
+            "Design mode is waiting for Code changes to save. Resolve the save error and try again.",
+          );
+          return;
+        }
+      } finally {
+        setIsFlushingCodeChanges(false);
+      }
+    }
     switchToDesign();
-  }, [switchToDesign]);
+  }, [isFlushingCodeChanges, monacoDirtyFiles.length, switchToDesign]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -6121,9 +6194,11 @@ export function VisualEditorShell({
               size="sm"
               className="h-7 gap-1.5 px-3 text-xs font-medium"
               onClick={handleSwitchToDesign}
+              disabled={isFlushingCodeChanges}
+              aria-busy={isFlushingCodeChanges}
             >
               <Layout className="size-3.5" />
-              <span>Design</span>
+              <span>{isFlushingCodeChanges ? "Saving…" : "Design"}</span>
             </Button>
             <Button
               type="button"
@@ -6613,6 +6688,7 @@ export function VisualEditorShell({
               ? handleDeleteSection
               : undefined
           }
+          onRenameSection={handleRenameSection}
           onDeleteEditableNode={handleDeleteEditableNode}
         />
 

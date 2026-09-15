@@ -121,6 +121,7 @@ import {
   extractThemeDependencyNames,
   preloadGeneratedThemePackageDeclarations,
 } from "./editor-code-package-types";
+import { collectThemeContentFieldsDiagnostics } from "@/lib/storefront/ast/theme-content-fields-diagnostics";
 import { formatEditorCode } from "./editor-code-formatter";
 import { prepareDuplicateThemeFile } from "@/lib/storefront/editor/duplicate-theme-file";
 import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
@@ -190,6 +191,8 @@ type EditorCodeWorkspaceProps = {
 
 export type EditorCodeWorkspaceHandle = {
   saveAll: () => Promise<boolean>;
+  /** Flushes Monaco drafts before a consumer changes authoring mode. */
+  flushPendingChanges: () => Promise<boolean>;
 };
 
 type StarterThemeBootstrapPlan = {
@@ -476,6 +479,7 @@ const EditorCodeWorkspaceContent = forwardRef<
   const combinedDirtyPathsRef = useRef(dirtyPaths);
   const suppressModelChangeRef = useRef(false);
   const saveInFlightRef = useRef(false);
+  const pendingSavePromiseRef = useRef<Promise<unknown> | null>(null);
   const renameJustStartedRef = useRef(false);
   const selectedPathsRef = useRef(selectedPaths);
   selectedPathsRef.current = selectedPaths;
@@ -622,6 +626,18 @@ const EditorCodeWorkspaceContent = forwardRef<
       );
       next.push(
         ...collectThemeImportProtectionEditorDiagnostics(
+          files.map((file) => ({
+            path: file.path,
+            content:
+              draftContentsRef.current[file.path] ??
+              useThemeWorkspaceStore.getState().files[file.path]
+                ?.localContent ??
+              file.content,
+          })),
+        ),
+      );
+      next.push(
+        ...collectThemeContentFieldsDiagnostics(
           files.map((file) => ({
             path: file.path,
             content:
@@ -1988,7 +2004,23 @@ const EditorCodeWorkspaceContent = forwardRef<
       // Save is the source/workspace boundary: sync the complete transient
       // Monaco model exactly once before invoking the existing OCC mutation.
       updateWorkspaceLocal(activeFilePath, content, workspaceScope);
-      saveMutation.mutate({ path: activeFilePath, content, draftRevision });
+      const savePromise = saveMutation.mutateAsync({
+        path: activeFilePath,
+        content,
+        draftRevision,
+      });
+      pendingSavePromiseRef.current = savePromise;
+      try {
+        await savePromise;
+      } catch {
+        // The mutation's onError handler owns the visible failure state.
+        // Keep the command safe when it is invoked as a fire-and-forget UI
+        // action while still allowing flush callers to observe their result.
+      } finally {
+        if (pendingSavePromiseRef.current === savePromise) {
+          pendingSavePromiseRef.current = null;
+        }
+      }
     } finally {
       saveInFlightRef.current = false;
     }
@@ -2018,7 +2050,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       const content = getCurrentEditorContent(path);
       const draftRevision = draftRevisionRef.current[path] ?? 0;
       saveInFlightRef.current = true;
-      try {
+      const saveOperation = (async () => {
         updateWorkspaceLocal(path, content, workspaceScope);
         const saved = await saveMutation.mutateAsync({
           path,
@@ -2026,12 +2058,21 @@ const EditorCodeWorkspaceContent = forwardRef<
           draftRevision,
           silent: true,
         });
+        if (!saved) return false;
+        return true;
+      })();
+      pendingSavePromiseRef.current = saveOperation;
+      try {
+        const saved = await saveOperation;
         if (!saved) return;
       } catch {
         // onError keeps the draft and exposes the actionable failure state.
         return;
       } finally {
         saveInFlightRef.current = false;
+        if (pendingSavePromiseRef.current === saveOperation) {
+          pendingSavePromiseRef.current = null;
+        }
       }
 
       if (draftDirtyRef.current[path] && !externalConflictFiles?.[path]) {
@@ -2055,7 +2096,24 @@ const EditorCodeWorkspaceContent = forwardRef<
   autoSaveFileRef.current = handleAutoSaveFile;
 
   const handleSaveAll = useCallback(async (): Promise<boolean> => {
-    if (saveInFlightRef.current || saveMutation.isPending) return false;
+    if (saveInFlightRef.current) {
+      const pending = pendingSavePromiseRef.current;
+      if (!pending) return false;
+      try {
+        await pending;
+      } catch {
+        return false;
+      }
+      // The promise above is the authoritative completion signal. The
+      // mutation hook's `isPending` value belongs to the render that created
+      // this callback and can still be true for one render after the promise
+      // has settled.
+      if (saveInFlightRef.current) return false;
+    }
+    for (const timer of autoSaveTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+    autoSaveTimersRef.current.clear();
     const dirtyPaths = combinedDirtyPathsRef.current;
     const paths = combinedDirtyPathsRef.current.filter(
       (path) => !externalConflictFiles?.[path],
@@ -2066,21 +2124,31 @@ const EditorCodeWorkspaceContent = forwardRef<
     appendOutput(
       `Saving ${paths.length} file${paths.length === 1 ? "" : "s"}…`,
     );
-    try {
-      for (const path of paths) {
-        const content = getCurrentEditorContent(path);
-        const draftRevision = draftRevisionRef.current[path] ?? 0;
-        updateWorkspaceLocal(path, content, workspaceScope);
-        await saveMutation.mutateAsync({ path, content, draftRevision });
+    const saveOperation = (async () => {
+      try {
+        for (const path of paths) {
+          const content = getCurrentEditorContent(path);
+          const draftRevision = draftRevisionRef.current[path] ?? 0;
+          updateWorkspaceLocal(path, content, workspaceScope);
+          await saveMutation.mutateAsync({ path, content, draftRevision });
+        }
+        appendOutput(
+          `Saved ${paths.length} file${paths.length === 1 ? "" : "s"}.`,
+        );
+        return combinedDirtyPathsRef.current.length === 0;
+      } catch {
+        return false;
+      } finally {
+        saveInFlightRef.current = false;
       }
-      appendOutput(
-        `Saved ${paths.length} file${paths.length === 1 ? "" : "s"}.`,
-      );
-      return combinedDirtyPathsRef.current.length === 0;
-    } catch {
-      return false;
+    })();
+    pendingSavePromiseRef.current = saveOperation;
+    try {
+      return await saveOperation;
     } finally {
-      saveInFlightRef.current = false;
+      if (pendingSavePromiseRef.current === saveOperation) {
+        pendingSavePromiseRef.current = null;
+      }
     }
   }, [
     appendOutput,
@@ -2091,12 +2159,40 @@ const EditorCodeWorkspaceContent = forwardRef<
     workspaceScope,
   ]);
 
+  const flushPendingChanges = useCallback(async (): Promise<boolean> => {
+    if (previewDraftTimerRef.current) {
+      clearTimeout(previewDraftTimerRef.current);
+      previewDraftTimerRef.current = null;
+      onPreviewFilesChange?.(
+        files.map((file) => ({
+          path: file.path,
+          content: getCurrentEditorContent(file.path),
+        })),
+      );
+    }
+    for (const timer of autoSaveTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+    autoSaveTimersRef.current.clear();
+
+    const pending = pendingSavePromiseRef.current;
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        return false;
+      }
+    }
+    return handleSaveAll();
+  }, [files, getCurrentEditorContent, handleSaveAll, onPreviewFilesChange]);
+
   useImperativeHandle(
     ref,
     () => ({
       saveAll: handleSaveAll,
+      flushPendingChanges,
     }),
-    [handleSaveAll],
+    [flushPendingChanges, handleSaveAll],
   );
 
   const handleOpenLocation = useCallback(

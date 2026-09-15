@@ -287,6 +287,49 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     );
   });
 
+  it("flushes a pending debounce immediately for a mode switch", async () => {
+    const workspaceRef = createRef<EditorCodeWorkspaceHandle>();
+    const onSaveFile = vi.fn(async (_path: string, content: string) => ({
+      ...file,
+      content,
+      version: 2,
+    }));
+    renderWorkspace({ workspaceRef, onSaveFile });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), {
+      target: { value: "flush now" },
+    });
+    await waitFor(() => expect(workspaceRef.current).not.toBeNull());
+    await expect(workspaceRef.current!.flushPendingChanges()).resolves.toBe(
+      true,
+    );
+    expect(onSaveFile).toHaveBeenCalledTimes(1);
+    expect(onSaveFile).toHaveBeenCalledWith(file.path, "flush now");
+  });
+
+  it("waits for an in-flight file save instead of switching on stale content", async () => {
+    const workspaceRef = createRef<EditorCodeWorkspaceHandle>();
+    const onDirtyFilesChange = vi.fn();
+    let resolveSave!: (saved: StorefrontThemeFileDTO) => void;
+    const onSaveFile = vi.fn(
+      (_path: string, content: string) =>
+        new Promise<StorefrontThemeFileDTO>((resolve) => {
+          resolveSave = () => resolve({ ...file, content, version: 2 });
+        }),
+    );
+    renderWorkspace({ workspaceRef, onSaveFile, onDirtyFilesChange });
+    fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), {
+      target: { value: "in flight" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    await waitFor(() => expect(onSaveFile).toHaveBeenCalledTimes(1));
+
+    const flushPromise = workspaceRef.current!.flushPendingChanges();
+    resolveSave({ ...file, content: "in flight", version: 2 });
+    const flushed = await flushPromise;
+    expect(flushed).toBe(true);
+  });
+
   it("lets the editor shell apply a saved file through HMR without refreshing the iframe", async () => {
     const onRestartPreview = vi.fn();
     const onSaveFile = vi.fn(async (_path: string, content: string) => ({

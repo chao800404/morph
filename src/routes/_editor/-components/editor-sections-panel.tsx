@@ -20,6 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -81,6 +82,7 @@ import {
   ListTree,
   Minus,
   MousePointerClick,
+  PenLine,
   Plus,
   Table2,
   TextCursorInput,
@@ -150,6 +152,11 @@ export type EditorSectionsPanelProps = {
   onDeleteSection?: (
     sectionId: string,
   ) => Promise<EditorEditableNodeDeleteResult>;
+  /** `null` clears the name and restores the one derived from the component. */
+  onRenameSection?: (
+    sectionId: string,
+    name: string | null,
+  ) => Promise<unknown>;
   onDeleteEditableNode?: (
     node: PreviewEditableNode,
   ) => Promise<EditorEditableNodeDeleteResult>;
@@ -273,6 +280,7 @@ function SortableSectionRow({
   onToggleExpanded,
   onToggleEnabled,
   onRequestDelete,
+  onRequestRename,
   deleteDisabled,
   rootNode,
   rootNodeSelected,
@@ -294,6 +302,8 @@ function SortableSectionRow({
   onToggleExpanded: () => void;
   onToggleEnabled: () => void;
   onRequestDelete: () => void;
+  /** Absent while the editor has no writable template to store the name in. */
+  onRequestRename?: () => void;
   deleteDisabled?: boolean;
   /** The real DOM root represented by this row, when there is one. */
   rootNode?: PreviewEditableNode | null;
@@ -407,6 +417,12 @@ function SortableSectionRow({
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent className="w-44">
+            {onRequestRename ? (
+              <ContextMenuItem onSelect={onRequestRename}>
+                <PenLine className="size-3.5" />
+                <span>Rename</span>
+              </ContextMenuItem>
+            ) : null}
             <ContextMenuItem
               variant="destructive"
               disabled={deleteDisabled}
@@ -460,6 +476,7 @@ function domIdentityOf(node: PreviewEditableNode | null | undefined) {
 function RouteTreeRootRow({
   label,
   domIdentity,
+  onRequestRename,
   shared,
   selected,
   rootNode,
@@ -473,6 +490,8 @@ function RouteTreeRootRow({
   label: string;
   /** `header#site-header` — what the row's element is, beside its name. */
   domIdentity?: string;
+  /** Absent for a route row, whose name is its path rather than stored. */
+  onRequestRename?: () => void;
   /** Supplied by the layout, so it is on every page rather than this one. */
   shared: boolean;
   selected: boolean;
@@ -487,7 +506,7 @@ function RouteTreeRootRow({
   children?: React.ReactNode;
 }) {
   const Icon = shared ? Globe : FileCode2;
-  return (
+  const row = (
     <SidebarMenuItem
       data-editor-tree-node-id={rootNode?.id}
       data-editor-tree-node-selected={
@@ -548,6 +567,18 @@ function RouteTreeRootRow({
         <CollapsibleContent>{children}</CollapsibleContent>
       </Collapsible>
     </SidebarMenuItem>
+  );
+  if (!onRequestRename) return row;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuContent className="w-44">
+        <ContextMenuItem onSelect={onRequestRename}>
+          <PenLine className="size-3.5" />
+          <span>Rename</span>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -732,6 +763,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   sectionOptions = [],
   onAddSection,
   onDeleteSection,
+  onRenameSection,
   onDeleteEditableNode,
 }: EditorSectionsPanelProps) {
   const activeTemplate = resolveEditorTemplate(context, search);
@@ -777,6 +809,13 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   const [deleteCandidate, setDeleteCandidate] =
     useState<EditorDeleteCandidate | null>(null);
   const [isDeletePending, setIsDeletePending] = useState(false);
+  const [renameCandidate, setRenameCandidate] = useState<{
+    sectionId: string;
+    /** What the row reads now, so the field opens on the current name. */
+    current: string;
+  } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renamePending, setRenamePending] = useState(false);
   const nodesByParent = useMemo(() => {
     const result = new Map<string, PreviewEditableNode[]>();
     for (const node of editableNodes) {
@@ -1071,12 +1110,27 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     // the Starter by the coincidence of `Header.tsx` being rooted in a
     // `<header>`, and not hidden at all for one rooted in a `<div>`. What the
     // element actually is goes beside the name instead.
-    const label = rootLabel;
+    // A layout section stores its name like any other, and the tree should show
+    // it. One entry for the whole site means one name everywhere — which is
+    // what "All pages" on this row already tells the author.
+    const storedName = sections.find(
+      (section) => section.id === sectionId,
+    )?.name;
+    const label = storedName ?? rootLabel;
     return (
       <RouteTreeRootRow
         key={sectionId}
         label={label}
         domIdentity={domIdentityOf(normalized.root)}
+        onRequestRename={
+          onRenameSection &&
+          sections.some((section) => section.id === sectionId)
+            ? () => {
+                setRenameCandidate({ sectionId, current: label });
+                setRenameValue(storedName ?? "");
+              }
+            : undefined
+        }
         shared={layoutRoots.shared.has(sectionId)}
         selected={
           (activeSelection?.sectionId ?? search.section) === sectionId &&
@@ -1332,8 +1386,23 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                             // structure, so a row that deferred to it renamed
                             // itself a moment after appearing. What the element
                             // is goes beside the name instead.
-                            displayLabel={section.type}
+                            // The author's name for this placement, then the
+                            // one derived from the component. Stored per
+                            // section entry, so the same component placed on
+                            // three pages carries three names.
+                            displayLabel={section.name ?? section.type}
                             domIdentity={domIdentityOf(normalized.root)}
+                            onRequestRename={
+                              onRenameSection
+                                ? () => {
+                                    setRenameCandidate({
+                                      sectionId: section.id,
+                                      current: section.name ?? section.type,
+                                    });
+                                    setRenameValue(section.name ?? "");
+                                  }
+                                : undefined
+                            }
                             rootNode={normalized.root}
                             onRequestDeleteRoot={
                               normalized.root
@@ -1526,6 +1595,70 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                 }}
               >
                 {pageDeletePending ? "Deleting…" : "Delete page"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog
+          open={renameCandidate !== null}
+          onOpenChange={(open) => {
+            if (!open && !renamePending) setRenameCandidate(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Rename “{renameCandidate?.current ?? "section"}”
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                Names this placement in the editor only. The storefront never
+                shows it, and the same component on another page keeps its own
+                name. Leave it empty to go back to the derived name.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <Input
+              value={renameValue}
+              autoFocus
+              maxLength={100}
+              placeholder={renameCandidate?.current ?? ""}
+              aria-label="Section name"
+              onChange={(event) => setRenameValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.currentTarget
+                    .closest("[role=alertdialog]")
+                    ?.querySelector<HTMLButtonElement>(
+                      "[data-editor-rename-confirm]",
+                    )
+                    ?.click();
+                }
+              }}
+            />
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={renamePending}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                data-editor-rename-confirm="true"
+                disabled={renamePending || !onRenameSection}
+                onClick={async (event) => {
+                  event.preventDefault();
+                  if (!renameCandidate || !onRenameSection) return;
+                  setRenamePending(true);
+                  try {
+                    await onRenameSection(
+                      renameCandidate.sectionId,
+                      renameValue.trim() || null,
+                    );
+                    setRenameCandidate(null);
+                  } finally {
+                    setRenamePending(false);
+                  }
+                }}
+              >
+                {renamePending ? "Renaming…" : "Rename"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

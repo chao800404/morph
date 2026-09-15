@@ -39,6 +39,19 @@ export type StorefrontPageDocument = {
     id: string;
     type: string;
     componentRef?: string | null;
+    /**
+     * What the author calls this section, when they have renamed it.
+     *
+     * Beside `props`, not inside it. `props` is the component's content: it is
+     * spread into the component and travels to every visitor, and a component
+     * is free to declare a content field of its own called `name`. This is the
+     * editor's label for one placement — the storefront never sees it.
+     *
+     * Stored per section entry, so the same component placed on three pages
+     * has three names. A layout section has one entry for the whole site and
+     * therefore one name, which is what "All pages" on its row already says.
+     */
+    name?: string;
     enabled: boolean;
     props: Record<string, JsonValue>;
   }>;

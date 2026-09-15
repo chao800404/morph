@@ -46,6 +46,21 @@ export const updateStorefrontThemeSectionPropsInputSchema =
     expectedDraftGeneration: z.number().int().min(1),
   });
 
+/**
+ * Renaming one section placement.
+ *
+ * `null` clears the name and restores the derived one, which is why an empty
+ * string is not accepted: "" and "cleared" would be the same request with two
+ * spellings, and only one of them would survive a trim.
+ */
+export const renameStorefrontThemeSectionInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    templateId: idSchema("storefront theme template"),
+    sectionId: z.string().trim().min(1).max(100),
+    name: z.string().trim().min(1).max(100).nullable(),
+    expectedDraftGeneration: z.number().int().min(1),
+  });
+
 export const storefrontThemeEditorSearchSchema = z.object({
   template: z
     .enum(["index", "product", "collection", "page", "blog", "layout"])

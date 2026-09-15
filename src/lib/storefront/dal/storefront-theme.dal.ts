@@ -12,6 +12,7 @@ import {
   storefrontReleases,
 } from "@/db/storefront.schema";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
@@ -113,6 +114,163 @@ function prepareTemplateDraftCASGuard(args: {
     args.expectedDraftRevisionId ?? "",
     args.expectedSourceGeneration ?? null,
   );
+}
+
+/**
+ * Writes one template document, with the draft-revision rules every such write
+ * shares.
+ *
+ * An active uncommitted draft is updated in place; anything else branches a new
+ * revision. Both are guarded by the same compare-and-set over the draft
+ * generation, the draft revision and the source generation, so a write that
+ * raced another loses rather than overwriting it.
+ *
+ * Extracted because a second caller arrived — renaming a section — and the
+ * alternative was a hundred and fifty lines of optimistic concurrency living in
+ * two places, where only one of them would receive the next correction.
+ */
+async function writeTemplateDocument(args: {
+  storefrontId: string;
+  themeId: string;
+  templateId: string;
+  document: StorefrontPageDocument;
+  sourceGeneration: number;
+  draftRevisionId: string | null;
+  publishedRevisionId: string | null;
+  expectedDraftGeneration: number;
+  createdBy: string;
+}) {
+  const db = await getDb();
+  const now = new Date().toISOString();
+  const nextGeneration = args.expectedDraftGeneration + 1;
+
+  // If an uncommitted draft revision is currently active, update it in place
+  if (
+    args.draftRevisionId &&
+    args.draftRevisionId !== args.publishedRevisionId
+  ) {
+    const [activeDraft] = await db
+      .select({
+        id: storefrontThemeTemplateRevisions.id,
+        version: storefrontThemeTemplateRevisions.version,
+      })
+      .from(storefrontThemeTemplateRevisions)
+      .where(
+        and(
+          eq(storefrontThemeTemplateRevisions.id, args.draftRevisionId),
+          eq(storefrontThemeTemplateRevisions.templateId, args.templateId),
+        ),
+      )
+      .limit(1);
+
+    if (activeDraft) {
+      const statements = [
+        prepareTemplateDraftCASGuard({
+          storefrontId: args.storefrontId,
+          themeId: args.themeId,
+          templateId: args.templateId,
+          expectedDraftGeneration: args.expectedDraftGeneration,
+          expectedDraftRevisionId: activeDraft.id,
+          expectedSourceGeneration: args.sourceGeneration,
+        }),
+        env.DATABASE.prepare(
+          `
+            UPDATE storefront_theme_template_revisions
+            SET document = ?1
+            WHERE id = ?2 AND template_id = ?3
+          `,
+        ).bind(JSON.stringify(args.document), activeDraft.id, args.templateId),
+        env.DATABASE.prepare(
+          `
+            UPDATE storefront_theme_templates
+            SET draft_generation = ?1, updated_at = ?2
+            WHERE id = ?3 AND theme_id = ?4 AND deleted_at IS NULL
+          `,
+        ).bind(nextGeneration, now, args.templateId, args.themeId),
+      ];
+
+      try {
+        await env.DATABASE.batch(statements);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          message.includes("malformed JSON") ||
+          message.includes("constraint")
+        ) {
+          throw new Error(
+            "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+          );
+        }
+        throw error;
+      }
+
+      return {
+        document: args.document,
+        version: activeDraft.version,
+        draftRevisionId: activeDraft.id,
+        draftGeneration: nextGeneration,
+      };
+    }
+  }
+
+  // Branch a new draft revision
+  const [versionRow] = await db
+    .select({ value: max(storefrontThemeTemplateRevisions.version) })
+    .from(storefrontThemeTemplateRevisions)
+    .where(eq(storefrontThemeTemplateRevisions.templateId, args.templateId));
+  const revisionId = crypto.randomUUID();
+  const version = Number(versionRow?.value ?? 0) + 1;
+
+  const statements = [
+    prepareTemplateDraftCASGuard({
+      storefrontId: args.storefrontId,
+      themeId: args.themeId,
+      templateId: args.templateId,
+      expectedDraftGeneration: args.expectedDraftGeneration,
+      expectedDraftRevisionId: args.draftRevisionId,
+      expectedSourceGeneration: args.sourceGeneration,
+    }),
+    env.DATABASE.prepare(
+      `
+        INSERT INTO storefront_theme_template_revisions (
+          id, template_id, version, document, created_by, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      `,
+    ).bind(
+      revisionId,
+      args.templateId,
+      version,
+      JSON.stringify(args.document),
+      args.createdBy,
+      now,
+    ),
+    env.DATABASE.prepare(
+      `
+        UPDATE storefront_theme_templates
+        SET draft_revision_id = ?1, draft_generation = ?2, updated_at = ?3
+        WHERE id = ?4 AND theme_id = ?5 AND deleted_at IS NULL
+      `,
+    ).bind(revisionId, nextGeneration, now, args.templateId, args.themeId),
+  ];
+
+  try {
+    await env.DATABASE.batch(statements);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("malformed JSON") || message.includes("constraint")) {
+      throw new Error(
+        "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+      );
+    }
+    throw error;
+  }
+
+  return {
+    document: args.document,
+    version,
+    draftRevisionId: revisionId,
+    draftGeneration: nextGeneration,
+  };
 }
 
 export const storefrontThemeDal = {
@@ -460,6 +618,74 @@ export const storefrontThemeDal = {
     };
   },
 
+  /**
+   * Renames one section placement.
+   *
+   * Beside `props`, never inside it: `props` is the component's content, is
+   * spread into the component and travels to every visitor, and a component is
+   * free to declare a content field of its own called `name`. This is the
+   * editor's label for one placement, and the storefront never reads it —
+   * which is also why it needs none of the content-field validation a props
+   * write does. Clearing it restores the derived name rather than storing an
+   * empty one.
+   *
+   * Per placement, so the same component on three pages carries three names. A
+   * layout section is one entry for the whole site and therefore one name.
+   */
+  async renameSection(data: {
+    storefrontId: string;
+    themeId: string;
+    templateId: string;
+    sectionId: string;
+    name: string | null;
+    expectedDraftGeneration: number;
+    createdBy: string;
+  }) {
+    const context = await this.findEditorContext(
+      data.storefrontId,
+      data.themeId,
+    );
+    const template = context?.templates.find(
+      (item) => item.id === data.templateId,
+    );
+    if (!template) return null;
+    if (!template.document.sections.some((s) => s.id === data.sectionId)) {
+      return null;
+    }
+
+    const sourceGeneration = await env.DATABASE.prepare(
+      `SELECT source_generation AS sourceGeneration
+         FROM storefront_themes
+        WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL
+        LIMIT 1`,
+    )
+      .bind(data.themeId, data.storefrontId)
+      .first<{ sourceGeneration: number }>();
+    if (!sourceGeneration) return null;
+
+    const trimmed = data.name?.trim() ?? "";
+    const document = storefrontPageDocumentSchema.parse({
+      ...template.document,
+      sections: template.document.sections.map((section) => {
+        if (section.id !== data.sectionId) return section;
+        const { name: _previous, ...rest } = section;
+        return trimmed ? { ...rest, name: trimmed } : rest;
+      }),
+    });
+
+    return writeTemplateDocument({
+      storefrontId: data.storefrontId,
+      themeId: data.themeId,
+      templateId: data.templateId,
+      document,
+      sourceGeneration: sourceGeneration.sourceGeneration,
+      draftRevisionId: template.draftRevisionId,
+      publishedRevisionId: template.publishedRevisionId,
+      expectedDraftGeneration: data.expectedDraftGeneration,
+      createdBy: data.createdBy,
+    });
+  },
+
   async updateSectionProps(data: {
     storefrontId: string;
     themeId: string;
@@ -483,7 +709,6 @@ export const storefrontThemeDal = {
     );
     if (!targetSection) return null;
 
-    const db = await getDb();
     const manifestState = await env.DATABASE.prepare(
       `
       SELECT
@@ -613,140 +838,17 @@ export const storefrontThemeDal = {
       ),
     });
 
-    const now = new Date().toISOString();
-    const nextGeneration = data.expectedDraftGeneration + 1;
-
-    // If an uncommitted draft revision is currently active, update it in place
-    if (
-      template.draftRevisionId &&
-      template.draftRevisionId !== template.publishedRevisionId
-    ) {
-      const [activeDraft] = await db
-        .select({
-          id: storefrontThemeTemplateRevisions.id,
-          version: storefrontThemeTemplateRevisions.version,
-        })
-        .from(storefrontThemeTemplateRevisions)
-        .where(
-          and(
-            eq(storefrontThemeTemplateRevisions.id, template.draftRevisionId),
-            eq(storefrontThemeTemplateRevisions.templateId, data.templateId),
-          ),
-        )
-        .limit(1);
-
-      if (activeDraft) {
-        const statements = [
-          prepareTemplateDraftCASGuard({
-            storefrontId: data.storefrontId,
-            themeId: data.themeId,
-            templateId: data.templateId,
-            expectedDraftGeneration: data.expectedDraftGeneration,
-            expectedDraftRevisionId: activeDraft.id,
-            expectedSourceGeneration: manifestState.sourceGeneration,
-          }),
-          env.DATABASE.prepare(
-            `
-            UPDATE storefront_theme_template_revisions
-            SET document = ?1
-            WHERE id = ?2 AND template_id = ?3
-          `,
-          ).bind(JSON.stringify(document), activeDraft.id, data.templateId),
-          env.DATABASE.prepare(
-            `
-            UPDATE storefront_theme_templates
-            SET draft_generation = ?1, updated_at = ?2
-            WHERE id = ?3 AND theme_id = ?4 AND deleted_at IS NULL
-          `,
-          ).bind(nextGeneration, now, data.templateId, data.themeId),
-        ];
-
-        try {
-          await env.DATABASE.batch(statements);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          if (
-            message.includes("malformed JSON") ||
-            message.includes("constraint")
-          ) {
-            throw new Error(
-              "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
-            );
-          }
-          throw error;
-        }
-
-        return {
-          document,
-          version: activeDraft.version,
-          draftRevisionId: activeDraft.id,
-          draftGeneration: nextGeneration,
-        };
-      }
-    }
-
-    // Branch a new draft revision
-    const [versionRow] = await db
-      .select({ value: max(storefrontThemeTemplateRevisions.version) })
-      .from(storefrontThemeTemplateRevisions)
-      .where(eq(storefrontThemeTemplateRevisions.templateId, data.templateId));
-    const revisionId = crypto.randomUUID();
-    const version = Number(versionRow?.value ?? 0) + 1;
-
-    const statements = [
-      prepareTemplateDraftCASGuard({
-        storefrontId: data.storefrontId,
-        themeId: data.themeId,
-        templateId: data.templateId,
-        expectedDraftGeneration: data.expectedDraftGeneration,
-        expectedDraftRevisionId: template.draftRevisionId,
-        expectedSourceGeneration: manifestState.sourceGeneration,
-      }),
-      env.DATABASE.prepare(
-        `
-        INSERT INTO storefront_theme_template_revisions (
-          id, template_id, version, document, created_by, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-      `,
-      ).bind(
-        revisionId,
-        data.templateId,
-        version,
-        JSON.stringify(document),
-        data.createdBy,
-        now,
-      ),
-      env.DATABASE.prepare(
-        `
-        UPDATE storefront_theme_templates
-        SET draft_revision_id = ?1, draft_generation = ?2, updated_at = ?3
-        WHERE id = ?4 AND theme_id = ?5 AND deleted_at IS NULL
-      `,
-      ).bind(revisionId, nextGeneration, now, data.templateId, data.themeId),
-    ];
-
-    try {
-      await env.DATABASE.batch(statements);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        message.includes("malformed JSON") ||
-        message.includes("constraint")
-      ) {
-        throw new Error(
-          "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
-        );
-      }
-      throw error;
-    }
-
-    return {
+    return writeTemplateDocument({
+      storefrontId: data.storefrontId,
+      themeId: data.themeId,
+      templateId: data.templateId,
       document,
-      version,
-      draftRevisionId: revisionId,
-      draftGeneration: nextGeneration,
-    };
+      sourceGeneration: manifestState.sourceGeneration,
+      draftRevisionId: template.draftRevisionId,
+      publishedRevisionId: template.publishedRevisionId,
+      expectedDraftGeneration: data.expectedDraftGeneration,
+      createdBy: data.createdBy,
+    });
   },
 
   async publishTemplate(data: {
