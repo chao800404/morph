@@ -237,3 +237,55 @@ describe("preview router history", () => {
     expect(content).not.toMatch(/basepath\s*:/);
   });
 });
+
+describe("where a Theme is mounted", () => {
+  const bootstrapFor = (rootContent: string) =>
+    createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({
+            entry: "src/routes/index.tsx",
+            router: { framework: "tanstack-start" },
+          }),
+        },
+        { path: "src/routes/__root.tsx", content: rootContent },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+      ],
+    }).content;
+
+  // A Theme that owns its document shell renders <html>, <head> and <body>.
+  // Mounted inside `<div id="root">` that puts <html> in a <div>: React
+  // reports the invalid nesting on every load, and the preview stops matching
+  // the document the published site serves.
+  it("mounts a document shell on the document, not inside a div", () => {
+    const content = bootstrapFor(
+      "export const Route = createRootRoute({ shellComponent: RootDocument });",
+    );
+    expect(content).toContain("createRoot(document)");
+    // Decided where the answer is actually known. The shell is a runtime
+    // option on the root route, not something a parser should guess at.
+    expect(content).toContain("options?.shellComponent");
+  });
+
+  it("still mounts a Theme without a shell in its container", () => {
+    const content = bootstrapFor("export const Route = createRootRoute({});");
+    expect(content).toContain('document.getElementById("root")');
+  });
+
+  // React owns the head once it renders one, and Vite injected the Theme's
+  // styles into the head of the page it served. Losing them would leave an
+  // unstyled preview of a styled site.
+  it("carries the styles already in the head across the handover", () => {
+    const content = bootstrapFor(
+      "export const Route = createRootRoute({ shellComponent: RootDocument });",
+    );
+    expect(content).toContain("style, link[rel='stylesheet']");
+    expect(content).toContain("document.head.appendChild(node)");
+  });
+});

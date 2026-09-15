@@ -67,7 +67,7 @@ type PreviewEnv = {
  * never returned. The reference is what lets an author's screenshot be matched
  * to this line without giving the browser anything it should not hold.
  */
-function recordPreviewStartFailure(detail: {
+export function recordPreviewStartFailure(detail: {
   stage: string;
   errorMessage?: string;
   logs?: readonly string[];
