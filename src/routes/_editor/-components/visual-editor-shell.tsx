@@ -358,6 +358,18 @@ export function createSelectionRestoreMessages(
   return messages;
 }
 
+/**
+ * A route-section effect may be running for an older render while a newer
+ * sidebar selection is already waiting for the preview. Sending that older
+ * section-only message would replace the requested descendant with a wrapper.
+ */
+export function shouldSkipStalePreviewSectionSync(
+  currentSectionId: string | null,
+  pendingTarget: PreviewSelectionRestoreTarget | null,
+): boolean {
+  return Boolean(pendingTarget && pendingTarget.sectionId !== currentSectionId);
+}
+
 function collectEditableNodeDescendantFields(
   selectedNode: PreviewEditableNode | null,
   nodes: readonly PreviewEditableNode[],
@@ -622,6 +634,7 @@ export function VisualEditorShell({
   } | null>(null);
   const [previewStructure, setPreviewStructure] = useState<{
     key: string;
+    routePath: string;
     nodes: readonly PreviewEditableNode[];
   } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -673,6 +686,10 @@ export function VisualEditorShell({
   const activeTemplate = resolveEditorTemplate(context, search);
   const queryClient = useQueryClient();
   const [pendingRoutePath, setPendingRoutePath] = useState<string | null>(null);
+  const [pendingRouteSelection, setPendingRouteSelection] = useState<{
+    routePath: string;
+    sectionId: string;
+  } | null>(null);
   const currentSearchRoutePathRef = useRef(search.routePath);
   currentSearchRoutePathRef.current = search.routePath;
   const handleRouteIntent = useCallback((routePath?: string) => {
@@ -1928,6 +1945,10 @@ export function VisualEditorShell({
 
   const handleOpenThemeRoute = useCallback(
     (route: ThemeRouteRecord) => {
+      setPendingRouteSelection({
+        routePath: route.path,
+        sectionId: route.path,
+      });
       setPendingRoutePath(route.path);
       const routeTemplate =
         context.templates.find(
@@ -4145,7 +4166,11 @@ export function VisualEditorShell({
         return;
       }
       if (message.type === "morph:storefront-preview-structure") {
-        setPreviewStructure({ key: previewKey, nodes: message.nodes });
+        setPreviewStructure({
+          key: previewKey,
+          routePath: search.routePath ?? "/",
+          nodes: message.nodes,
+        });
         return;
       }
       if (message.type === "morph:storefront-preview-theme-files-applied") {
@@ -4220,7 +4245,11 @@ export function VisualEditorShell({
       pendingPreviewSelectionRef.current = null;
       const sectionId = message.sectionId;
       const nodeId = message.nodeId ?? null;
-      const sourceFilePath = message.sourceFilePath;
+      const sourceFilePath =
+        message.sourceFilePath ??
+        (message.isSection && sectionId === (search.routePath ?? "/")
+          ? (activeThemeRoute?.sourcePath ?? null)
+          : null);
       const elementKey = message.elementKey;
       const fieldKey = message.fieldKey ?? message.field;
       const fieldPath = message.fieldPath ?? fieldKey;
@@ -4238,12 +4267,14 @@ export function VisualEditorShell({
       const inspectorOverride = message.inspectorOverride;
       lastPreviewSelectionRef.current = incomingTarget;
       const componentType =
-        activeRouteSections.find((section) => section.slotId === sectionId)
-          ?.sectionType ??
-        activeTemplate?.document.sections.find(
-          (section) => section.id === sectionId,
-        )?.type ??
-        "custom";
+        sectionId === (search.routePath ?? "/")
+          ? "page"
+          : (activeRouteSections.find((section) => section.slotId === sectionId)
+              ?.sectionType ??
+            activeTemplate?.document.sections.find(
+              (section) => section.id === sectionId,
+            )?.type ??
+            "custom");
 
       setActiveSelection({
         sectionId,
@@ -4279,6 +4310,7 @@ export function VisualEditorShell({
   }, [
     activeTemplate,
     activeRouteSections,
+    activeThemeRoute,
     confirmPreviewStyleRevision,
     context.storefront.id,
     context.theme.id,
@@ -4326,14 +4358,29 @@ export function VisualEditorShell({
   ]);
 
   const syncPreviewSection = useCallback(() => {
+    const currentSectionId = search.section ?? null;
+    // A section change can be followed immediately by another tree click
+    // before React has flushed the first URL update. Do not let the stale
+    // effect for that first section send a wrapper-only restore and overwrite
+    // the newer explicit target. The pending target is cleared only after the
+    // preview confirms it, so this guard also covers a slow iframe.
+    const pendingSelection = pendingPreviewSelectionRef.current;
+    if (
+      shouldSkipStalePreviewSectionSync(
+        currentSectionId,
+        pendingSelection?.target ?? null,
+      )
+    ) {
+      return;
+    }
     const restoreTarget =
       isSelectionMode &&
-      lastPreviewSelectionRef.current?.sectionId === (search.section ?? null)
+      lastPreviewSelectionRef.current?.sectionId === currentSectionId
         ? lastPreviewSelectionRef.current
         : undefined;
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-section",
-      sectionId: search.section ?? null,
+      sectionId: currentSectionId,
       ...(restoreTarget
         ? {
             restoreTarget,
@@ -4358,37 +4405,41 @@ export function VisualEditorShell({
             isSection: true,
           } satisfies PreviewSelectionRestoreTarget;
           const componentType =
-            activeRouteSections.find((section) => section.slotId === sectionId)
-              ?.sectionType ??
-            activeTemplate?.document.sections.find(
-              (section) => section.id === sectionId,
-            )?.type ??
-            "custom";
+            sectionId === (search.routePath ?? "/")
+              ? "page"
+              : (activeRouteSections.find(
+                  (section) => section.slotId === sectionId,
+                )?.sectionType ??
+                activeTemplate?.document.sections.find(
+                  (section) => section.id === sectionId,
+                )?.type ??
+                "custom");
           lastPreviewSelectionRef.current = target;
           setActiveSelection(
             createEditorSelectionDescriptor(target, null, componentType),
           );
           setActiveComputedStyleRevision(0);
-          if (isSelectionMode) {
-            const selectionRevision = nextPreviewSelectionRevision();
-            pendingPreviewSelectionRef.current = {
-              target,
-              revision: selectionRevision,
-            };
-            for (const message of createSelectionRestoreMessages(
-              true,
-              target,
-              selectionRevision,
-            )) {
-              postEditorToPreviewMessage(
-                previewIframeRef.current?.contentWindow,
-                {
-                  ...message,
-                },
-              );
-            }
-          } else {
-            pendingPreviewSelectionRef.current = null;
+          // A tree row is an explicit selection request. Always enter select
+          // mode and send it to the iframe; previously this branch updated the
+          // URL and right panel only when select mode was off, leaving the
+          // canvas with no matching highlight.
+          setIsSelectionMode(true);
+          const selectionRevision = nextPreviewSelectionRevision();
+          pendingPreviewSelectionRef.current = {
+            target,
+            revision: selectionRevision,
+          };
+          for (const message of createSelectionRestoreMessages(
+            true,
+            target,
+            selectionRevision,
+          )) {
+            postEditorToPreviewMessage(
+              previewIframeRef.current?.contentWindow,
+              {
+                ...message,
+              },
+            );
           }
         }
       }
@@ -4397,11 +4448,37 @@ export function VisualEditorShell({
     [
       activeRouteSections,
       activeTemplate,
-      isSelectionMode,
       nextPreviewSelectionRevision,
       onSearchChange,
+      search.routePath,
     ],
   );
+
+  // A page row changes the route before it can select the page root. Wait for
+  // the structure response for that same route, then use the normal section
+  // selection path so the iframe and both side panels share one identity.
+  useEffect(() => {
+    const pending = pendingRouteSelection;
+    if (!pending) return;
+    if ((search.routePath ?? "/") !== pending.routePath) return;
+    if (!previewKey || previewFrameReady?.key !== previewKey) return;
+    if (
+      previewStructure?.key !== previewKey ||
+      previewStructure.routePath !== pending.routePath
+    ) {
+      return;
+    }
+
+    setPendingRouteSelection(null);
+    handleSectionsSearchChange({ section: pending.sectionId });
+  }, [
+    handleSectionsSearchChange,
+    pendingRouteSelection,
+    previewFrameReady?.key,
+    previewKey,
+    previewStructure,
+    search.routePath,
+  ]);
 
   const handleEditableNodeSelect = useCallback(
     (target: PreviewSelectionRestoreTarget) => {

@@ -213,6 +213,31 @@ section / template）才同步到 route search params。
 - 收合或不適用的 Inspector module 不得建立完整 field control tree；內容應在
   展開且 capability 適用時才 render。
 
+### 5.6.1 Visual tree identity 與正規化 DOM 結構
+
+Visual Editor 左側樹必須是一棵正規化樹：同一個實際 Live Preview root 只出現一次，
+不得把 Document section row 再包一個相同 DOM root 當成第二個純視覺節點。Section、page、
+layout、shared Header/Footer 的 CMS metadata 可以附著在該節點，但不得為了顯示而另造
+一層會與預覽 DOM 重複的假 row。
+
+- 預覽回報的 section root 直接作為該 section tree node；其 DOM descendants 掛在 root node
+  之下，不得把 root node 同時渲染成 section row 的 child。元件回傳多個 top-level roots 時，
+  必須保留每一個 root，不得為了扁平化而遺失內容。
+- 元素顯示名稱的優先序固定為：作者在 HTML tag 上設定的非空 `id`，否則使用實際 tag name。
+  `data-morph-*`、`data-storefront-*` 與平台產生的 stable identity 只能作選取、樣式與內容
+  binding，不得拿來冒充作者名稱，也不得為了命名自動寫回 `id`。
+- Section root 若是平台透明 wrapper，CMS 操作仍附著於該 section row；wrapper 沒有 HTML
+  `id` 時，顯示其實際 component root 的 `id` 或 tag，而不是把透明 wrapper 顯示成額外的
+  `Div`／`Section` 子層。
+- 點擊任何 tree row 都是明確的 Live Preview selection request：必須進入 selection mode，並以
+  該 row 代表的實際 DOM root target 同步 canvas、tree 與 Inspector。不得只更新 route／section
+  search state，也不得讓透明 Document wrapper 取代 component root 成為高亮目標。
+- 顯示 label 與 selection/storage identity 必須分離。選取、還原、樣式寫入與內容寫入仍使用
+  `sectionId`、`fieldPath`、`sourceLocation`、`nodeId` 或 item identity；HTML `id` 可變且可能
+  重複，不得成為唯一 persistence key。
+- Page route 與 shared Header/Footer 仍保留為語意根節點；shared scope 顯示 `All pages`，
+  owner、reorder、hide、delete 等能力必須來自 CMS metadata，不得靠 DOM hierarchy 猜測。
+
 Source AST 是由 Theme Source 推導的資料，不是 selection state：
 
 - AST parse 結果必須以穩定的 source identity（至少包含 file path 與 content / source

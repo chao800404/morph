@@ -129,11 +129,20 @@ export function resolvePreviewSelectionRestoreElement(
     if (match) return match;
   }
 
-  // A plain authored element has only a source location. Formatting or adding
-  // lines in Code mode changes that location, while React commonly keeps the
-  // same DOM node alive through Fast Refresh. Preserve that concrete identity
-  // before trying the now-stale position; stable field/node identities above
-  // still win whenever the component exposes one.
+  // A source location is the explicit identity sent by a tree row. Prefer it
+  // whenever the freshly rendered document still has that location; otherwise
+  // every plain element in the same section would resolve to the previously
+  // selected sibling simply because it remains connected to the DOM.
+  if (sourceLocationSelector) {
+    const match = section.querySelector<HTMLElement>(sourceLocationSelector);
+    if (match) return match;
+  }
+
+  // Formatting or adding lines in Code mode can make that location stale,
+  // while React commonly keeps the same DOM node alive through Fast Refresh.
+  // Preserve the concrete identity only after the requested location failed;
+  // stable field/node identities above still win whenever the component
+  // exposes one.
   if (
     retainedElement?.isConnected &&
     retainedElement !== section &&
@@ -142,10 +151,6 @@ export function resolvePreviewSelectionRestoreElement(
     return retainedElement;
   }
 
-  if (sourceLocationSelector) {
-    const match = section.querySelector<HTMLElement>(sourceLocationSelector);
-    if (match) return match;
-  }
   return section;
 }
 
@@ -176,6 +181,7 @@ export function previewSectionIdOf(element: HTMLElement): string | undefined {
   return (
     element.dataset.storefrontSectionId ??
     element.dataset.morphSection ??
+    element.dataset.morphRoutePath ??
     // Falls back to the component's own source file, so a component with no
     // authored markers still has a stable section identity.
     element.dataset.morphSourceFile ??
@@ -196,6 +202,7 @@ export function isPreviewSectionRoot(element: HTMLElement): boolean {
   if (element.dataset.morphSection) {
     return !element.parentElement?.closest("[data-storefront-section-id]");
   }
+  if (element.dataset.morphRoutePath) return true;
   // The preview renderer marks the root element of every component it renders,
   // which is exactly where one component's markup ends and another's begins.
   // Deriving this from source-file changes instead would also match a route's
@@ -221,19 +228,24 @@ export function previewSectionSelector(sectionId: string): string {
   return [
     `[data-storefront-section-id="${escaped}"]`,
     `[data-morph-section="${escaped}"]`,
+    `[data-morph-route-path="${escaped}"]`,
     // A component with no authored markers is identified by its source file.
     `[data-morph-source-file="${escaped}"]`,
   ].join(",");
 }
 
 function previewEditableNodeLabel(element: HTMLElement): string {
+  // An authored HTML id is the clearest name a customer gave the element.
+  // Read it from the real DOM; never use platform-generated data markers as a
+  // label and never write an id back merely to make the tree look tidy.
+  const authoredId = element.id.trim();
+  if (authoredId && authoredId.length <= 200) return authoredId;
   const fieldPath = element.dataset.storefrontFieldPath ?? "";
-  const rawLabel =
-    element.dataset.morphElement ??
-    element.dataset.storefrontComponent ??
-    element.dataset.storefrontField ??
-    element.dataset.morphNode ??
-    element.tagName.toLowerCase();
+  // The tree name is intentionally independent from editor markers and field
+  // bindings. Those values are implementation identities, not names an author
+  // sees in their HTML. With no authored id, the DOM tag is the one stable name
+  // available for every element.
+  const rawLabel = element.tagName.toLowerCase();
   const label = rawLabel
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[-_]+/g, " ")
@@ -311,11 +323,13 @@ export function collectPreviewEditableNodes(root: {
       const elementKey = candidate.dataset.morphElement;
       const itemId = candidate.closest<HTMLElement>("[data-storefront-item-id]")
         ?.dataset.storefrontItemId;
+      const htmlId = candidate.id.trim();
       if (
         (nodeId?.length ?? 0) > 200 ||
         (fieldPath?.length ?? 0) > 500 ||
         (fieldKey?.length ?? 0) > 200 ||
-        (elementKey?.length ?? 0) > 200
+        (elementKey?.length ?? 0) > 200 ||
+        htmlId.length > 200
       ) {
         continue;
       }
@@ -382,6 +396,7 @@ export function collectPreviewEditableNodes(root: {
         label: previewEditableNodeLabel(candidate),
         kind,
         tagName: candidate.tagName.toLowerCase().slice(0, 32),
+        htmlId: htmlId || undefined,
         // Reported, not used as the label: only an element with one can carry a
         // style bound to a single instance, and that is worth being able to see.
         stableId: nodeId || elementKey || undefined,
@@ -525,6 +540,37 @@ export const selectionMetadata = (item: SelectableInfo) => {
   };
 };
 
+/**
+ * A Document section is represented by a transparent wrapper. It deliberately
+ * has no source-location marker of its own, so resolving it must stop here
+ * rather than walking to the route's marked `<main>` ancestor. The latter is
+ * the page root and made every tree section click appear to select the page.
+ */
+function sectionRootSelectable(section: HTMLElement): SelectableInfo {
+  const sectionId = previewSectionIdOf(section) ?? null;
+  const sectionType =
+    section.dataset.storefrontSectionType ??
+    section.dataset.morphSection ??
+    (section.dataset.morphRoutePath ? "page" : undefined) ??
+    "section";
+  return {
+    element: section,
+    section,
+    sourceLocation: section.dataset.morphLoc ?? null,
+    sectionId,
+    type: sectionType,
+    label: getComponentDisplayName(sectionType),
+    elementKey: null,
+    fieldKey: null,
+    field: null,
+    fieldPath: null,
+    descendantFields: collectEditableDescendantFields(section),
+    tagName: section.tagName.toLowerCase(),
+    role: section.getAttribute("role"),
+    inputType: null,
+  };
+}
+
 export const resolveSelectable = (
   target: EventTarget | null,
 ): SelectableInfo | null => {
@@ -565,6 +611,18 @@ export const resolveSelectable = (
       role: fieldEl.getAttribute("role"),
       inputType: fieldEl instanceof HTMLInputElement ? fieldEl.type : null,
     };
+  }
+
+  // A sidebar section click passes the transparent Document wrapper itself.
+  // It has no AST marker, while the route's marked ancestor does; stop at the
+  // explicit section root before the generic marker lookup can steal it.
+  if (
+    (target.dataset.storefrontSectionId ||
+      target.dataset.morphSection ||
+      target.dataset.morphRoutePath) &&
+    isPreviewSectionRoot(target)
+  ) {
+    return sectionRootSelectable(target);
   }
 
   // 1. Prefer the nearest AST-backed Morph identity annotation.
@@ -752,24 +810,7 @@ export const resolveSelectable = (
 
   // 4. Fallback to outer Section
   const section = target.closest<HTMLElement>("[data-storefront-section-id]");
-  if (section) {
-    const secType = section.dataset.storefrontSectionType ?? "section";
-    return {
-      element: section,
-      section,
-      sectionId: section.dataset.storefrontSectionId ?? null,
-      type: secType,
-      label: getComponentDisplayName(secType),
-      elementKey: null,
-      fieldKey: null,
-      field: null,
-      fieldPath: null,
-      descendantFields: collectEditableDescendantFields(section),
-      tagName: section.tagName.toLowerCase(),
-      role: section.getAttribute("role"),
-      inputType: null,
-    };
-  }
+  if (section) return sectionRootSelectable(section);
 
   return null;
 };

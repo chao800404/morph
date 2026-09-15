@@ -6,6 +6,7 @@ import {
   parsePreviewToEditorEvent,
   parsePreviewToEditorMessage,
   postEditorToPreviewMessage,
+  type PreviewEditableNode,
   type PreviewStyleSnapshot,
 } from "./preview-protocol";
 
@@ -230,6 +231,7 @@ describe("preview protocol", () => {
         label: "Content",
         kind: "container",
         tagName: "div",
+        htmlId: "hero-content",
         target: {
           sectionId: "hero",
           nodeId: "content",
@@ -263,6 +265,14 @@ describe("preview protocol", () => {
         nodes,
       }),
     ).toEqual({ type: "morph:storefront-preview-structure", nodes });
+    expect(
+      (
+        parsePreviewToEditorMessage({
+          type: "morph:storefront-preview-structure",
+          nodes,
+        }) as { nodes: readonly PreviewEditableNode[] }
+      ).nodes[0]?.htmlId,
+    ).toBe("hero-content");
     expect(
       parsePreviewToEditorMessage({
         type: "morph:storefront-preview-structure",
@@ -302,6 +312,18 @@ describe("preview protocol", () => {
       parsePreviewToEditorMessage({
         type: "morph:storefront-preview-structure",
         nodes: [{ ...nodes[0], tagName: "DIV onclick=alert(1)" }],
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: [{ ...nodes[0], htmlId: "x".repeat(201) }],
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: [{ ...nodes[0], htmlId: "" }],
       }),
     ).toBeNull();
   });

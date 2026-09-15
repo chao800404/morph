@@ -257,15 +257,18 @@ describe("preview editable structure", () => {
     `;
 
     const nodes = collectPreviewEditableNodes(root);
-    const content = nodes.find((node) => node.label === "Container");
-    const label = nodes.find((node) => node.label === "Label");
-    const firstCard = nodes.find((node) => node.label === "Principle card 1");
+    const content = nodes.find((node) => node.target.nodeId === "content");
+    const label = nodes.find((node) => node.target.nodeId === "label");
+    const firstCard = nodes.find((node) => node.target.nodeId === "card");
     const title = nodes.find(
       (node) => node.target.fieldPath === "items.0.title",
     );
 
     expect(content).toBeTruthy();
     expect(content?.tagName).toBe("div");
+    expect(content?.label).toBe("Div");
+    expect(label?.label).toBe("P");
+    expect(firstCard?.label).toBe("Article 1");
     expect(label?.parentId).toBe(content?.id);
     expect(firstCard?.id).toContain("item:item-a:node:card");
     expect(title?.parentId).toBe(firstCard?.id);

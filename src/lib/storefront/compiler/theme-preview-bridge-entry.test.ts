@@ -51,6 +51,11 @@ describe("the script a Live Preview page runs for the editor", () => {
     );
   });
 
+  it("marks the mounted route so a page row can select the page root", () => {
+    expect(BRIDGE).toContain('"data-morph-route-path"');
+    expect(BRIDGE).toContain("message.routePath ?? \"/\"");
+  });
+
   it("says on the document which tool the pointer is", () => {
     // The editor's cursors are CSS reacting to these, and the browser tests
     // wait on the first one to know the tool actually reached the preview.

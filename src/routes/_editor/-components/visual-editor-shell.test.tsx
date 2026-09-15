@@ -9,6 +9,7 @@ import {
   createSelectionRestoreMessages,
   EditorCodeModeSurface,
   EditorModeSurface,
+  shouldSkipStalePreviewSectionSync,
 } from "./visual-editor-shell";
 
 describe("EditorModeSurface", () => {
@@ -109,6 +110,20 @@ describe("EditorCodeModeSurface", () => {
 });
 
 describe("Code to Design selection restore", () => {
+  it("ignores a stale section effect while another tree target is pending", () => {
+    const pendingTarget = {
+      sectionId: "category-showcase",
+      sourceLocation: "CategoryShowcase.tsx:41:7",
+      isSection: false,
+    } satisfies PreviewSelectionRestoreTarget;
+
+    expect(shouldSkipStalePreviewSectionSync("hero", pendingTarget)).toBe(true);
+    expect(
+      shouldSkipStalePreviewSectionSync("category-showcase", pendingTarget),
+    ).toBe(false);
+    expect(shouldSkipStalePreviewSectionSync("hero", null)).toBe(false);
+  });
+
   it("builds the immediate inspector selection from the tree target", () => {
     const target = {
       sectionId: "hero",

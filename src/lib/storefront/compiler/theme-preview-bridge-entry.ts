@@ -866,6 +866,11 @@ if (channel) {
       // over. Without one there is nothing to navigate and the page simply
       // stays where it is, which is better than reloading it out from under
       // an edit in progress.
+      const previewRoot = document.getElementById("root");
+      previewRoot?.setAttribute(
+        "data-morph-route-path",
+        message.routePath ?? "/",
+      );
       const router = window.__morphPreviewRouter;
       if (router) {
         inlineEditor.finish(true);
@@ -875,7 +880,14 @@ if (channel) {
         drawOverlays();
         void router.navigate({ to: message.routePath ?? "/" });
         // The page it lands on is a different set of elements entirely.
-        window.setTimeout(reportStructure, 0);
+        window.setTimeout(() => {
+          // The section command can arrive before this route commit when the iframe
+          // is first loaded or rebuilt. Re-run the existing selection restore
+          // after navigation so a page-root target is not lost just because
+          // the root marker did not exist in the previous route.
+          restoreSelectedSection();
+          reportStructure();
+        }, 0);
       }
     }
     if (message?.type === "morph:storefront-preview-update-section-props") {

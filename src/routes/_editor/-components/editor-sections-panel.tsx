@@ -262,6 +262,7 @@ function moveSection(items: EditorSection[], from: number, to: number) {
 
 function SortableSectionRow({
   section,
+  displayLabel,
   index,
   selected,
   disabled,
@@ -272,9 +273,14 @@ function SortableSectionRow({
   onToggleEnabled,
   onRequestDelete,
   deleteDisabled,
+  rootNode,
+  onRequestDeleteRoot,
+  rootDeleteDisabled,
   children,
 }: {
   section: EditorSection;
+  /** The real preview root's label; CMS section metadata stays on this row. */
+  displayLabel: string;
   index: number;
   selected: boolean;
   disabled: boolean;
@@ -285,6 +291,10 @@ function SortableSectionRow({
   onToggleEnabled: () => void;
   onRequestDelete: () => void;
   deleteDisabled?: boolean;
+  /** The real DOM root represented by this row, when there is one. */
+  rootNode?: PreviewEditableNode | null;
+  onRequestDeleteRoot?: () => void;
+  rootDeleteDisabled?: boolean;
   children?: React.ReactNode;
 }) {
   const { ref, handleRef, isDragging } = useSortable({
@@ -343,7 +353,7 @@ function SortableSectionRow({
                   data-editor-tree-icon="section"
                   aria-hidden="true"
                 />
-                <span>{section.type}</span>
+                <span>{displayLabel}</span>
               </SidebarMenuButton>
               <SidebarMenuAction
                 type="button"
@@ -385,6 +395,16 @@ function SortableSectionRow({
                 Del
               </span>
             </ContextMenuItem>
+            {rootNode && onRequestDeleteRoot ? (
+              <ContextMenuItem
+                variant="destructive"
+                disabled={rootDeleteDisabled}
+                onSelect={onRequestDeleteRoot}
+              >
+                <Trash2 className="size-3.5" />
+                <span>Delete element</span>
+              </ContextMenuItem>
+            ) : null}
           </ContextMenuContent>
         </ContextMenu>
         <CollapsibleContent>{children}</CollapsibleContent>
@@ -708,6 +728,32 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     }
     return result;
   }, [editableNodes]);
+  /**
+   * A Document section is represented in the preview by a transparent
+   * platform wrapper around the component's real root. The wrapper owns the
+   * CMS actions, while the first DOM node is the visual identity. Treat a
+   * single top-level node as the section row itself; only its descendants are
+   * rendered below it. If a component returns a fragment with multiple roots,
+   * keep all of those roots as children so no content disappears.
+   */
+  const normalizedSectionTree = (sectionId: string) => {
+    const roots = nodesByParent.get(`${sectionId}\u0000`) ?? [];
+    const root = roots.length === 1 ? (roots[0] ?? null) : null;
+    const childParentId = root?.id ?? null;
+    const children =
+      nodesByParent.get(`${sectionId}\u0000${childParentId ?? ""}`) ?? [];
+    return { root, children, hasChildren: children.length > 0 };
+  };
+  const selectNormalizedRoot = (
+    sectionId: string,
+    root: PreviewEditableNode | null,
+  ) => {
+    if (root && onSelectEditableNode) {
+      onSelectEditableNode(root.target);
+      return;
+    }
+    onSearchChange({ section: sectionId });
+  };
   const templateSectionIds = useMemo(
     () => new Set(sections.map((section) => section.id)),
     [sections],
@@ -943,10 +989,11 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
 
   /** A page root the template does not own: the layout, Header, Footer. */
   const renderLayoutRoot = (sectionId: string): React.ReactNode => {
-    const sectionNodes = nodesByParent.get(`${sectionId}\u0000`) ?? [];
+    const normalized = normalizedSectionTree(sectionId);
+    const sectionNodes = normalized.children;
     const sourceName = sectionId.split("/").at(-1) ?? sectionId;
     const sourceStem = sourceName.replace(/\.[cm]?[jt]sx?$/, "");
-    const label =
+    const sourceLabel =
       sectionId === activeRoute?.sourcePath
         ? activeRoute.path === "/"
           ? "Home"
@@ -954,6 +1001,12 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
         : sourceStem
             .replace(/[-_]+/g, " ")
             .replace(/\w/g, (character) => character.toUpperCase());
+    // Route roots are page identities, so keep their route label. Shared
+    // layout roots use the actual DOM root's id/tag label when one exists.
+    const label =
+      sectionId === activeRoute?.sourcePath
+        ? sourceLabel
+        : (normalized.root?.label ?? sourceLabel);
     return (
       <RouteTreeRootRow
         key={sectionId}
@@ -961,11 +1014,16 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
         shared={layoutRoots.shared.has(sectionId)}
         selected={
           (activeSelection?.sectionId ?? search.section) === sectionId &&
-          (!activeSelection || activeSelection.isSection)
+          (!activeSelection ||
+            activeSelection.isSection ||
+            Boolean(
+              normalized.root &&
+              selectionMatchesEditableNode(normalized.root, activeSelection),
+            ))
         }
         expanded={expandedSectionIds.has(sectionId)}
-        hasChildren={sectionNodes.length > 0}
-        onSelect={() => onSearchChange({ section: sectionId })}
+        hasChildren={normalized.hasChildren}
+        onSelect={() => selectNormalizedRoot(sectionId, normalized.root)}
         onToggleExpanded={() =>
           setExpandedSectionIds((current) => {
             const next = new Set(current);
@@ -975,7 +1033,9 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           })
         }
       >
-        {sectionNodes.length > 0 ? renderEditableNodes(sectionId, null) : null}
+        {sectionNodes.length > 0
+          ? renderEditableNodes(sectionId, normalized.root?.id ?? null)
+          : null}
       </RouteTreeRootRow>
     );
   };
@@ -1176,24 +1236,45 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   >
                     <SidebarMenu>
                       {sections.map((section, index) => {
-                        const sectionNodes =
-                          nodesByParent.get(`${section.id}\u0000`) ?? [];
+                        const normalized = normalizedSectionTree(section.id);
                         const expanded = expandedSectionIds.has(section.id);
                         return (
                           <SortableSectionRow
                             key={section.id}
                             section={section}
+                            displayLabel={
+                              normalized.root?.label ?? section.type
+                            }
+                            rootNode={normalized.root}
+                            onRequestDeleteRoot={
+                              normalized.root
+                                ? () =>
+                                    setDeleteCandidate({
+                                      kind: "node",
+                                      node: normalized.root!,
+                                      label: normalized.root!.label,
+                                    })
+                                : undefined
+                            }
                             index={index}
                             selected={
                               (activeSelection?.sectionId ?? search.section) ===
                                 section.id &&
-                              (!activeSelection || activeSelection.isSection)
+                              (!activeSelection ||
+                                activeSelection.isSection ||
+                                Boolean(
+                                  normalized.root &&
+                                  selectionMatchesEditableNode(
+                                    normalized.root,
+                                    activeSelection,
+                                  ),
+                                ))
                             }
                             disabled={reorderMutation.isPending}
                             expanded={expanded}
-                            hasChildren={sectionNodes.length > 0}
+                            hasChildren={normalized.hasChildren}
                             onSelect={() =>
-                              onSearchChange({ section: section.id })
+                              selectNormalizedRoot(section.id, normalized.root)
                             }
                             onToggleExpanded={() =>
                               setExpandedSectionIds((current) => {
@@ -1222,9 +1303,19 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                               reorderMutation.isPending ||
                               !onDeleteSection
                             }
+                            rootDeleteDisabled={
+                              isDeletePending ||
+                              reorderMutation.isPending ||
+                              !onDeleteEditableNode ||
+                              (!normalized.root?.target.nodeId &&
+                                !normalized.root?.target.sourceLocation)
+                            }
                           >
-                            {sectionNodes.length > 0
-                              ? renderEditableNodes(section.id, null)
+                            {normalized.children.length > 0
+                              ? renderEditableNodes(
+                                  section.id,
+                                  normalized.root?.id ?? null,
+                                )
                               : null}
                           </SortableSectionRow>
                         );

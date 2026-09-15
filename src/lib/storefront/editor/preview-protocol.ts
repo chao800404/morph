@@ -180,6 +180,8 @@ export type PreviewEditableNode = Readonly<{
   label: string;
   kind: SelectionKind;
   tagName: string | null;
+  /** Authored HTML id, when the element has one. Display metadata only. */
+  htmlId?: string;
   /**
    * Identity that survives edits to the file, when the element has one.
    *
@@ -609,6 +611,8 @@ function parsePreviewEditableNodes(
       !isBoundedString(item.kind, 100) ||
       !isSelectionKind(item.kind) ||
       !isNullableHtmlTagName(item.tagName) ||
+      (item.htmlId !== undefined &&
+        (!isBoundedString(item.htmlId, 200) || item.htmlId.length === 0)) ||
       (item.stableId !== undefined && !isBoundedString(item.stableId, 200)) ||
       ids.has(item.id)
     ) {
@@ -631,6 +635,7 @@ function parsePreviewEditableNodes(
       label: item.label,
       kind: item.kind,
       tagName: item.tagName,
+      htmlId: item.htmlId,
       stableId: item.stableId,
       target,
     });
