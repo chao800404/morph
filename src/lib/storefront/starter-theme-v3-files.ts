@@ -2157,11 +2157,19 @@ export const STARTER_THEME_V3_NEW_FILES = [
   {
     path: "src/components/EditorialIntro.tsx",
     mimeType: "text/typescript",
-    content: `export type EditorialIntroProps = {
+    content: `import type { ThemeContentFields } from "../morph/content-fields";
+
+export type EditorialIntroProps = {
   label?: string;
   heading?: string;
   body?: string;
 };
+
+export const contentFields = {
+  label: { type: "text", label: "Label", maxLength: 100 },
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  body: { type: "textarea", label: "Body", maxLength: 500 },
+} as const satisfies ThemeContentFields;
 
 export default function EditorialIntro({
   label = "About",
@@ -2174,20 +2182,17 @@ export default function EditorialIntro({
     >
       <div className="grid gap-10 border-t border-stone-300 pt-8 lg:grid-cols-[0.55fr_1.45fr]">
         <p
-          data-storefront-field="label"
           className="text-xs font-medium uppercase tracking-[0.22em] text-stone-500"
         >
           {label}
         </p>
         <div>
           <h2
-            data-storefront-field="heading"
             className="max-w-4xl font-serif text-[clamp(3rem,6vw,6.5rem)] leading-[0.92] tracking-[-0.045em] text-stone-950"
           >
             {heading}
           </h2>
           <p
-            data-storefront-field="body"
             className="ml-auto mt-10 max-w-xl text-lg leading-8 text-stone-600"
           >
             {body}
@@ -2252,7 +2257,6 @@ export default function CategoryShowcase({
     >
       <div className="mb-12 flex items-end justify-between border-b border-stone-700 pb-6">
         <h2
-          data-storefront-field="heading"
           className="font-serif text-[clamp(2.5rem,5vw,5rem)] tracking-[-0.04em]"
         >
           {heading}
@@ -2345,10 +2349,6 @@ export default function ImageWithText({
   imageAlt,
   imagePosition = "center",
 }: ImageWithTextProps) {
-  const displayImage = image ?? {
-    src: imageSrc ?? "/static/storefront/theme-preview-default.png",
-    alt: imageAlt ?? "Image with text",
-  };
   return (
     <section
       className="grid bg-[#d8d0c3] lg:grid-cols-2"
@@ -2357,9 +2357,8 @@ export default function ImageWithText({
         className="min-h-[32rem] overflow-hidden lg:min-h-[52rem]"
       >
         <img
-          data-storefront-field="image"
-          src={displayImage.src}
-          alt={displayImage.alt}
+          src={image?.src ?? imageSrc ?? "/static/storefront/theme-preview-default.png"}
+          alt={image?.alt ?? imageAlt ?? "Image with text"}
           style={{ objectPosition: imagePosition }}
           className="size-full scale-110 object-cover"
         />
@@ -2367,26 +2366,22 @@ export default function ImageWithText({
       <div className="flex items-center px-[clamp(2rem,7vw,7rem)] py-20">
         <div className="max-w-xl">
           <p
-            data-storefront-field="eyebrow"
             className="text-xs font-medium uppercase tracking-[0.22em] text-stone-600"
           >
             {eyebrow}
           </p>
           <h2
-            data-storefront-field="heading"
             className="mt-5 font-serif text-[clamp(3rem,5vw,5.5rem)] leading-[0.94] tracking-[-0.045em] text-stone-950"
           >
             {heading}
           </h2>
           <p
-            data-storefront-field="body"
             className="mt-7 text-base leading-7 text-stone-700"
           >
             {body}
           </p>
           <ThemeLink
             link={action}
-            data-storefront-field="actionLabel"
             className="mt-9 inline-flex border-b border-current pb-1 text-sm font-medium"
           >
             {actionLabel}
@@ -2400,13 +2395,23 @@ export default function ImageWithText({
   {
     path: "src/components/Newsletter.tsx",
     mimeType: "text/typescript",
-    content: `export type NewsletterProps = {
+    content: `import type { ThemeContentFields } from "../morph/content-fields";
+
+export type NewsletterProps = {
   eyebrow?: string;
   heading?: string;
   body?: string;
   placeholder?: string;
   actionLabel?: string;
 };
+
+export const contentFields = {
+  eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },
+  heading: { type: "text", label: "Heading", maxLength: 200 },
+  body: { type: "textarea", label: "Body", maxLength: 700 },
+  placeholder: { type: "text", label: "Placeholder", maxLength: 100 },
+  actionLabel: { type: "text", label: "Action label", maxLength: 100 },
+} as const satisfies ThemeContentFields;
 
 export default function Newsletter({
   eyebrow = "Stay connected",
@@ -2421,19 +2426,16 @@ export default function Newsletter({
     >
       <div className="mx-auto max-w-4xl text-center">
         <p
-          data-storefront-field="eyebrow"
           className="text-xs font-medium uppercase tracking-[0.24em] text-stone-700"
         >
           {eyebrow}
         </p>
         <h2
-          data-storefront-field="heading"
           className="mt-6 font-serif text-[clamp(3rem,6vw,6rem)] leading-[0.92] tracking-[-0.045em] text-stone-950"
         >
           {heading}
         </h2>
         <p
-          data-storefront-field="body"
           className="mx-auto mt-6 max-w-lg text-base leading-7 text-stone-700"
         >
           {body}
@@ -2442,10 +2444,10 @@ export default function Newsletter({
           className="mx-auto mt-10 flex max-w-xl border-b border-stone-800 py-3 text-left"
           aria-label={placeholder}
         >
-          <span data-storefront-field="placeholder" className="flex-1 text-sm text-stone-700">
+          <span className="flex-1 text-sm text-stone-700">
             {placeholder}
           </span>
-          <span data-storefront-field="actionLabel" className="text-sm font-medium text-stone-950">
+          <span className="text-sm font-medium text-stone-950">
             {actionLabel}
           </span>
         </div>

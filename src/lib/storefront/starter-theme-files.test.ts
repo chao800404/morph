@@ -454,6 +454,232 @@ describe("starter Principles theme source", () => {
     ).toBe(false);
   });
 
+  it("removes hand-written field markers from untouched v20 component sources", () => {
+    const currentByPath = new Map(
+      STARTER_THEME_FILES.map((file) => [file.path, file.content]),
+    );
+    const v20 = (path: string) => {
+      const source = currentByPath.get(path);
+      if (!source) throw new Error(`missing starter source: ${path}`);
+      return source;
+    };
+    const markerized = [
+      {
+        path: "src/components/Hero.tsx",
+        content: v20("src/components/Hero.tsx")
+          .replace(
+            `}: HeroProps) {\n  return (`,
+            `}: HeroProps) {\n  const displayImage = image ?? {\n    src: imageSrc ?? "/static/storefront/theme-preview-default.png",\n    alt: imageAlt ?? "A neutral collection of ceramic objects",\n  };\n  return (`,
+          )
+          .replace(
+            `        <img\n          src={image?.src ?? imageSrc ?? "/static/storefront/theme-preview-default.png"}\n          alt={image?.alt ?? imageAlt ?? "A neutral collection of ceramic objects"}`,
+            `        <img\n          data-storefront-field="image"\n          src={displayImage.src}\n          alt={displayImage.alt}`,
+          ),
+      },
+      {
+        path: "src/components/Principles.tsx",
+        content: v20("src/components/Principles.tsx")
+          .replace(
+            `import type { ThemeContentFields } from "../morph/content-fields";\n`,
+            "",
+          )
+          .replace(
+            `export const contentFields = {\n  items: {\n    type: "array",\n    label: "Principles",\n    fields: {\n      number: { type: "text", label: "Number", maxLength: 20 },\n      title: { type: "text", label: "Title", maxLength: 150 },\n      body: { type: "textarea", label: "Body", maxLength: 300 },\n    },\n  },\n  label: { type: "text", label: "Label", maxLength: 100 },\n} as const satisfies ThemeContentFields;\n\n`,
+            "",
+          )
+          .replace(
+            `      <p\n        className="mb-14`,
+            `      <p\n        data-storefront-field="label"\n        className="mb-14`,
+          ),
+      },
+      {
+        path: "src/components/EditorialIntro.tsx",
+        content: v20("src/components/EditorialIntro.tsx")
+          .replace(
+            `import type { ThemeContentFields } from "../morph/content-fields";\n\n`,
+            "",
+          )
+          .replace(
+            `export const contentFields = {\n  label: { type: "text", label: "Label", maxLength: 100 },\n  heading: { type: "text", label: "Heading", maxLength: 200 },\n  body: { type: "textarea", label: "Body", maxLength: 500 },\n} as const satisfies ThemeContentFields;\n\n`,
+            "",
+          )
+          .replace(
+            `        <p\n          className="text-xs`,
+            `        <p\n          data-storefront-field="label"\n          className="text-xs`,
+          )
+          .replace(
+            `          <h2\n            className="max-w-4xl`,
+            `          <h2\n            data-storefront-field="heading"\n            className="max-w-4xl`,
+          )
+          .replace(
+            `          <p\n            className="ml-auto`,
+            `          <p\n            data-storefront-field="body"\n            className="ml-auto`,
+          ),
+      },
+      {
+        path: "src/components/CategoryShowcase.tsx",
+        content: v20("src/components/CategoryShowcase.tsx").replace(
+          `        <h2\n          className="font-serif`,
+          `        <h2\n          data-storefront-field="heading"\n          className="font-serif`,
+        ),
+      },
+      {
+        path: "src/components/ImageWithText.tsx",
+        content: v20("src/components/ImageWithText.tsx")
+          .replace(
+            `}: ImageWithTextProps) {\n  return (`,
+            `}: ImageWithTextProps) {\n  const displayImage = image ?? {\n    src: imageSrc ?? "/static/storefront/theme-preview-default.png",\n    alt: imageAlt ?? "Image with text",\n  };\n  return (`,
+          )
+          .replace(
+            `        <img\n          src={image?.src ?? imageSrc ?? "/static/storefront/theme-preview-default.png"}\n          alt={image?.alt ?? imageAlt ?? "Image with text"}`,
+            `        <img\n          data-storefront-field="image"\n          src={displayImage.src}\n          alt={displayImage.alt}`,
+          )
+          .replace(
+            `          <p\n            className="text-xs`,
+            `          <p\n            data-storefront-field="eyebrow"\n            className="text-xs`,
+          )
+          .replace(
+            `          <h2\n            className="mt-5`,
+            `          <h2\n            data-storefront-field="heading"\n            className="mt-5`,
+          )
+          .replace(
+            `          <p\n            className="mt-7`,
+            `          <p\n            data-storefront-field="body"\n            className="mt-7`,
+          )
+          .replace(
+            `          <ThemeLink\n            link={action}\n            className=`,
+            `          <ThemeLink\n            link={action}\n            data-storefront-field="actionLabel"\n            className=`,
+          ),
+      },
+      {
+        path: "src/components/Newsletter.tsx",
+        content: v20("src/components/Newsletter.tsx")
+          .replace(
+            `import type { ThemeContentFields } from "../morph/content-fields";\n\n`,
+            "",
+          )
+          .replace(
+            `export const contentFields = {\n  eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },\n  heading: { type: "text", label: "Heading", maxLength: 200 },\n  body: { type: "textarea", label: "Body", maxLength: 700 },\n  placeholder: { type: "text", label: "Placeholder", maxLength: 100 },\n  actionLabel: { type: "text", label: "Action label", maxLength: 100 },\n} as const satisfies ThemeContentFields;\n\n`,
+            "",
+          )
+          .replace(
+            `        <p\n          className="text-xs`,
+            `        <p\n          data-storefront-field="eyebrow"\n          className="text-xs`,
+          )
+          .replace(
+            `        <h2\n          className="mt-6`,
+            `        <h2\n          data-storefront-field="heading"\n          className="mt-6`,
+          )
+          .replace(
+            `        <p\n          className="mx-auto mt-6`,
+            `        <p\n          data-storefront-field="body"\n          className="mx-auto mt-6`,
+          )
+          .replace(
+            `          <span className="flex-1 text-sm text-stone-700">`,
+            `          <span data-storefront-field="placeholder" className="flex-1 text-sm text-stone-700">`,
+          )
+          .replace(
+            `          <span className="text-sm font-medium text-stone-950">`,
+            `          <span data-storefront-field="actionLabel" className="text-sm font-medium text-stone-950">`,
+          ),
+      },
+    ];
+    const existing = markerized.map((file, index) => ({
+      ...file,
+      id: String(index),
+      version: 20,
+    }));
+    const upgrades = createStarterThemeWorkspaceUpgrade(existing);
+    for (const file of markerized) {
+      expect(
+        upgrades.find((upgrade) => upgrade.path === file.path),
+        file.path,
+      ).toMatchObject({
+        content: currentByPath.get(file.path),
+      });
+      expect(
+        upgrades.find((upgrade) => upgrade.path === file.path)?.content,
+      ).not.toMatch(/data-storefront-field(?:-path)?\s*=/);
+    }
+
+    const authored = existing.map((file) =>
+      file.path === "src/components/Hero.tsx"
+        ? { ...file, content: `${file.content}\n// authored` }
+        : file,
+    );
+    expect(
+      createStarterThemeWorkspaceUpgrade(authored).some(
+        (upgrade) => upgrade.path === "src/components/Hero.tsx",
+      ),
+    ).toBe(false);
+  });
+
+  /**
+   * The case the byte-exact replacements cannot reach: an author edited the
+   * file, so its bytes match no generation Morph knows, and the marker they
+   * were told they would never have to write is still sitting in it.
+   */
+  it("clears a derivable marker from a component the author has edited", () => {
+    const authored = `import type { ThemeContentFields } from "../morph/content-fields";
+
+export type PrinciplesProps = { label?: string };
+
+export const contentFields = {
+  label: { type: "text", label: "Label", maxLength: 8 },
+} as const satisfies ThemeContentFields;
+
+export default function Principles({ label = "Why we choose differently" }: PrinciplesProps) {
+  return (
+    <section className="bg-stone-50">
+      <p
+        data-storefront-field="label"
+        className="mb-14 text-xs"
+      >
+        {label}
+      </p>
+    </section>
+  );
+}
+`;
+    const upgrades = createStarterThemeWorkspaceUpgrade([
+      {
+        id: "authored",
+        path: "src/components/Principles.tsx",
+        content: authored,
+        version: 7,
+      },
+    ]);
+    const upgrade = upgrades.find(
+      (file) => file.path === "src/components/Principles.tsx",
+    );
+    expect(upgrade?.content).not.toContain("data-storefront-field");
+    // Their edit survives: only the attribute is removed.
+    expect(upgrade?.content).toContain("maxLength: 8");
+    expect(upgrade?.content).toContain('label = "Why we choose differently"');
+    // The write must lose to a concurrent edit rather than overwrite it.
+    expect(upgrade?.expectedFileId).toBe("authored");
+    expect(upgrade?.expectedVersion).toBe(7);
+  });
+
+  it("leaves an authored marker the compiler cannot reproduce", () => {
+    // `title` is declared nowhere, so removing the marker would take the only
+    // thing making this element editable with it.
+    const authored = `export default function Card({ heading }) {
+  return <h2 data-storefront-field="title">{heading}</h2>;
+}
+`;
+    expect(
+      createStarterThemeWorkspaceUpgrade([
+        {
+          id: "card",
+          path: "src/components/Card.tsx",
+          content: authored,
+          version: 1,
+        },
+      ]).some((file) => file.path === "src/components/Card.tsx"),
+    ).toBe(false);
+  });
+
   it("does not declare a document layout over an authored entry file", () => {
     const targetManifest = STARTER_THEME_FILES.find(
       (file) => file.path === "morph.theme.json",

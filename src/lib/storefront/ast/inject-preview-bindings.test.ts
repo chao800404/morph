@@ -75,6 +75,135 @@ export default function Hero({ items = [] }) {
     expect(out).toContain("data-storefront-field-path={`items.${i}.image`}");
   });
 
+  it("follows a grouped top-level value without an authored marker", () => {
+    const out = run(`export const contentFields = {
+  image: { type: "image" },
+} as const;
+export default function Hero({ image }) {
+  return <img src={image?.src ?? "/fallback.png"} alt={image?.alt ?? ""} />;
+}
+`);
+    expect(out).toContain('data-storefront-field="image"');
+    expect(out).not.toContain('data-storefront-field="src"');
+  });
+
+  describe("content shown through a component", () => {
+    // An attribute put on a component arrives as a prop it is free to ignore,
+    // so it would never reach the page. `<ThemeLink>{actionLabel}</ThemeLink>`
+    // was the one field in the Starter an author still had to mark by hand.
+    it("wraps it, because an attribute on a component is only a prop", () => {
+      const out = run(`export const contentFields = {
+  actionLabel: { type: "text" },
+} as const;
+export default function Hero({ actionLabel, action }) {
+  return <ThemeLink link={action}>{actionLabel}</ThemeLink>;
+}
+`);
+      expect(out).toContain(
+        '<span data-storefront-field="actionLabel" style={{ display: "contents" }}>',
+      );
+      expect(out).toContain("</ThemeLink></span>");
+    });
+
+    // A `div` inside a paragraph closes it early, so the preview would break a
+    // layout the build renders correctly.
+    it("wraps with a span, which is valid where content lives", () => {
+      const out = run(`export const contentFields = {
+  actionLabel: { type: "text" },
+} as const;
+export default function Hero({ actionLabel }) {
+  return <p>Read <ThemeLink>{actionLabel}</ThemeLink> now</p>;
+}
+`);
+      expect(out).toContain('<span data-storefront-field="actionLabel"');
+      expect(out).not.toMatch(/<div[^>]*data-storefront-field="actionLabel"/);
+    });
+
+    it("carries the row's path and identity when it sits in a loop", () => {
+      const out = run(`${DECLARES}
+export default function Hero({ items = [] }) {
+  return (
+    <ul>
+      {items.map((item, i) => (
+        <li key={item.id}>
+          <ThemeLink link={item.link}>{item.title}</ThemeLink>
+        </li>
+      ))}
+    </ul>
+  );
+}
+`);
+      expect(out).toContain('<span data-storefront-field="title"');
+      expect(out).toContain("data-storefront-field-path={`items.${i}.title`}");
+      expect(out).toContain("data-storefront-item-id={item?.id}");
+    });
+
+    it("wraps a component row once, not once as a row and again as content", () => {
+      const out = run(`${DECLARES}
+export default function Hero({ items = [] }) {
+  return <ul>{items.map((item, i) => <Card key={item.id} title={item.title} />)}</ul>;
+}
+`);
+      expect(
+        (out.match(/style=\{\{ display: "contents" \}\}/g) ?? []).length,
+      ).toBe(1);
+    });
+
+    it("leaves a section alone, which is wrapped as a section already", () => {
+      const out = run(
+        `export default function Page({ content }) {
+  return <main><Hero {...content("starter-hero")} /></main>;
+}
+`,
+        "src/routes/index.tsx",
+      );
+      expect(out).toContain('data-storefront-section-id="starter-hero"');
+      expect(out).not.toContain("<span data-storefront-field");
+    });
+
+    it("wraps nothing the component never declared", () => {
+      const out = run(`export default function Hero({ actionLabel, action }) {
+  return <ThemeLink link={action}>{actionLabel}</ThemeLink>;
+}
+`);
+      expect(out).not.toContain("data-storefront-field");
+    });
+
+    it("says so when a rule that counts children would notice the wrapper", () => {
+      const result = injectPreviewBindings([
+        {
+          path: "src/components/Hero.tsx",
+          content: `export const contentFields = {
+  actionLabel: { type: "text" },
+} as const;
+export default function Hero({ actionLabel }) {
+  return (
+    <div className="space-y-5">
+      <p>Intro</p>
+      <ThemeLink>{actionLabel}</ThemeLink>
+    </div>
+  );
+}
+`,
+        },
+      ]);
+      expect(result.warnings[0]?.message).toContain("space-y");
+    });
+
+    // The wrapper is not in the author's source, so a style edit aimed at it
+    // would have nothing to patch.
+    it("gives the wrapper no source position", () => {
+      const out = run(`export const contentFields = {
+  actionLabel: { type: "text" },
+} as const;
+export default function Hero({ actionLabel }) {
+  return <ThemeLink>{actionLabel}</ThemeLink>;
+}
+`);
+      expect(out).not.toMatch(/<span[^>]*data-morph-loc/);
+    });
+  });
+
   it("marks nothing the component never declared", () => {
     // A compiler cannot see which props arrived, so the declaration is the
     // only statement of intent it has. Marking more would put fields in the

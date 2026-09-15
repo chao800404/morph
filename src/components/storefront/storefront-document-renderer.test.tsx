@@ -226,7 +226,8 @@ describe("StorefrontDocumentRenderer Principles source mapping", () => {
         fieldPath: "items.1.title",
         itemId: "principle-time",
       },
-      "47:13",
+      // `h3` starts at line 60 after the co-located content declaration.
+      "60:13",
       () => "text-[54px] p-[13px]",
     );
     expect(patched.editable).toBe(true);

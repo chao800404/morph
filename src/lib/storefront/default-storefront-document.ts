@@ -35,8 +35,12 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  *     written rather than becoming a field that never appears.
  * 20: remove redundant manifest contentFields for untouched Starter components
  *     that already declare their fields in source; retain authored fallbacks.
+ * 21: remove the remaining hand-written data-storefront-field markers from
+ *     untouched Starter component source; preview binding stays compiler-owned.
+ * 22: remove every marker the compiler derives, in place, from source an author
+ *     has edited too — the byte-exact replacements above can never reach it.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 20;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 22;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

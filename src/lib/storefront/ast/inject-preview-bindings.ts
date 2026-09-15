@@ -283,6 +283,13 @@ export function injectPreviewBindings(
     const declared = declaredFields(file.content);
     const insertions: Insertion[] = [];
     const slotIds: string[] = [];
+    // Component rows the repeated-field branch has already wrapped. The row is
+    // reached a second time as an element in its own right, and wrapping it
+    // twice would nest one content marker inside another.
+    const wrappedRows = new Set<number>();
+    // Wrappers are extra children, which is the one thing a `space-y` rule
+    // notices. Counted so the warning below can speak for them too.
+    let contentWrappers = 0;
     let count = 0;
 
     const visit = (
@@ -326,6 +333,7 @@ export function injectPreviewBindings(
               text: `<div${attributes} style={{ display: "contents" }}>`,
             });
             insertions.push({ at: row.end, text: "</div>" });
+            wrappedRows.add(row.start);
           }
         }
         // Rows of an array field are addressed by the array they came from,
@@ -418,6 +426,49 @@ export function injectPreviewBindings(
             insertions.push({ at: opening.name.end, text: parts.join("") });
             count += 1;
           }
+        } else if (
+          !slotId &&
+          node.start != null &&
+          node.end != null &&
+          !wrappedRows.has(node.start)
+        ) {
+          // Content shown through a component. The markers cannot go on the
+          // element, because an attribute put on a component arrives as a prop
+          // it is free to ignore and would never reach the page — the reason
+          // `<ThemeLink>{actionLabel}</ThemeLink>` was the one field in the
+          // Starter an author still had to mark by hand. So it gets the same
+          // wrapper a component row gets.
+          //
+          // A `span` rather than a `div`: this wraps content, and content sits
+          // inside paragraphs. A `div` there would end the paragraph early in
+          // the preview and nowhere else.
+          //
+          // No position travels with it. The wrapper is not in the author's
+          // source, so a style edit aimed at it would have nothing to patch;
+          // selecting for content is all it is for.
+          const field = fieldForElement(node, arrayPath ? scope.item : null);
+          const allowed = declared
+            ? arrayPath
+              ? (declared.rows.get(arrayPath)?.has(field ?? "") ?? false)
+              : declared.top.has(field ?? "")
+            : false;
+          if (field && allowed) {
+            const attributes =
+              ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"` +
+              (arrayPath && scope.index
+                ? ` ${FIELD_PATH_ATTRIBUTE}={\`${arrayPath}.\${${scope.index}}.${field}\`}`
+                : "") +
+              (arrayPath && scope.item
+                ? ` ${ITEM_ID_ATTRIBUTE}={${scope.item}?.id}`
+                : "");
+            insertions.push({
+              at: node.start,
+              text: `<span${attributes} style={{ display: "contents" }}>`,
+            });
+            insertions.push({ at: node.end, text: "</span>" });
+            contentWrappers += 1;
+            count += 1;
+          }
         }
       }
 
@@ -429,11 +480,17 @@ export function injectPreviewBindings(
 
     visit(ast.program.body, null, { item: null, index: null });
 
-    if (slotIds.length > 0 && CHILD_COUNTING_UTILITIES.test(file.content)) {
+    if (
+      (slotIds.length > 0 || contentWrappers > 0) &&
+      CHILD_COUNTING_UTILITIES.test(file.content)
+    ) {
+      const wrapped =
+        slotIds.length > 0
+          ? "Sections here are"
+          : "Content shown through a component here is";
       warnings.push({
         path: file.path,
-        message:
-          "Sections here are spaced by a utility that counts children (space-y, space-x or divide). The Live Preview wraps each section, which such a rule notices, so the gaps will be missing in the preview but present in the build. Give each section its own padding instead — which also keeps the spacing correct when one is hidden or reordered.",
+        message: `${wrapped} spaced by a utility that counts children (space-y, space-x or divide). The Live Preview wraps each one, which such a rule notices, so the gaps will be missing in the preview but present in the build. Give each one its own padding instead — which also keeps the spacing correct when one is hidden or reordered.`,
       });
     }
 

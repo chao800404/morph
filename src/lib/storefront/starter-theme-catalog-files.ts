@@ -212,6 +212,99 @@ function ProductRoute() {
 
 export default function ProductList({ products, pagination }: CatalogList) {
   return (
+    <section className="bg-stone-50 px-6 py-16 text-stone-950 md:px-12 lg:px-20">
+      <h1 className="font-serif text-5xl tracking-tight md:text-7xl">Our collection</h1>
+      <p className="mt-5 text-sm text-stone-600">{pagination.total} products</p>
+      {products.length === 0 ? <p className="py-16 text-stone-600">No products on this page.</p> : null}
+      <div className="mt-10 grid gap-x-6 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
+        {products.map((product) => (
+          <a key={product.id} href={"/products/" + encodeURIComponent(product.handle)} className="group block min-w-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-stone-900">
+            <div className="flex aspect-square items-center justify-center overflow-hidden bg-stone-200">
+              {product.thumbnailUrl ? <img src={product.thumbnailUrl} alt={product.title} loading="lazy" className="h-full w-full object-cover" /> : <span className="text-sm text-stone-600">No image available</span>}
+            </div>
+            <h2 className="mt-5 break-words font-serif text-2xl group-hover:underline">{product.title}</h2>
+            {product.subtitle ? <p className="mt-2 text-sm text-stone-600">{product.subtitle}</p> : null}
+          </a>
+        ))}
+      </div>
+      <nav aria-label="Product pages" className="mt-14 flex items-center justify-between gap-6 border-t border-stone-300 pt-6 text-sm">
+        {pagination.page > 1 ? <a href={"/products?page=" + (pagination.page - 1)} className="underline">Previous</a> : <span />}
+        <span>Page {pagination.page}</span>
+        {pagination.page < pagination.totalPages ? <a href={"/products?page=" + (pagination.page + 1)} className="underline">Next</a> : <span />}
+      </nav>
+    </section>
+  );
+}
+`,
+  },
+  {
+    path: "src/components/ProductDetail.tsx",
+    mimeType: "text/tsx",
+    content: `import type { CatalogDetail } from "../morph/catalog";
+
+export default function ProductDetail({ product }: { product: CatalogDetail }) {
+  return (
+    <section className="bg-stone-50 px-6 py-16 text-stone-950 md:px-12 lg:px-20">
+      <a href="/products" className="text-sm text-stone-600 underline">All products</a>
+      <div className="mt-10 grid gap-12 lg:grid-cols-2">
+        <div className="space-y-6">
+          {product.thumbnailUrl ? <img src={product.thumbnailUrl} alt={product.title} className="aspect-square w-full bg-stone-200 object-cover" /> : <div className="flex aspect-square items-center justify-center bg-stone-200 text-sm text-stone-600">No cover image available</div>}
+          {product.assets.map((asset) => <img key={asset.id} src={asset.url} alt={asset.name} loading="lazy" className="aspect-square w-full bg-stone-200 object-cover" />)}
+        </div>
+        <div className="min-w-0 py-4">
+          <h1 className="break-words font-serif text-5xl tracking-tight md:text-6xl">{product.title}</h1>
+          {product.subtitle ? <p className="mt-5 text-lg text-stone-600">{product.subtitle}</p> : null}
+          {product.description ? <p className="mt-8 whitespace-pre-line break-words leading-7 text-stone-600">{product.description}</p> : <p className="mt-8 text-stone-600">Details coming soon.</p>}
+          <div className="mt-8 space-y-5">
+            {product.options.map((option) => <div key={option.id}>
+              <h2 className="text-sm font-medium">{option.title}</h2>
+              <ul className="mt-2 flex flex-wrap gap-3 text-sm text-stone-600">
+                {option.values.map((value) => <li key={value.id} className="border border-stone-300 px-3 py-2">{value.value}</li>)}
+              </ul>
+            </div>)}
+          </div>
+          <ul className="mt-8 divide-y divide-stone-300 border-y border-stone-300">
+            {product.variants.map((variant) => <li key={variant.id} className="flex flex-wrap items-start justify-between gap-4 py-5">
+              <div>
+                <h2 className="text-sm font-medium">{variant.title}</h2>
+                <p className="mt-2 text-sm text-stone-600">{variant.availableQuantity > 0 ? "In stock" : variant.allowBackorder ? "Available to backorder" : "Out of stock"}</p>
+              </div>
+              <p className="text-sm">{variant.formattedPrice ? variant.formattedPrice : "Price unavailable"}</p>
+            </li>)}
+          </ul>
+        </div>
+      </div>
+    </section>
+  );
+}
+`,
+  },
+];
+
+const PRODUCT_LIST_PATH = "src/components/ProductList.tsx";
+const PRODUCT_DETAIL_PATH = "src/components/ProductDetail.tsx";
+
+/** The generated copy of a catalog file, or `null` if the path is not one. */
+export function starterThemeCatalogSource(path: string): string | null {
+  return (
+    STARTER_THEME_CATALOG_FILES.find((file) => file.path === path)?.content ??
+    null
+  );
+}
+
+/**
+ * `ProductList.tsx` while it still named its own elements by hand.
+ *
+ * A full copy rather than a reversal of the current source: the difference is
+ * thirty-eight attributes across two files, and a reversal that stops matching
+ * does not fail loudly — it silently withdraws the upgrade, leaving the
+ * markers in place in exactly the workspaces meant to lose them. Frozen
+ * history is never edited again, so it cannot drift.
+ */
+export const LEGACY_STARTER_THEME_PRODUCT_LIST_MARKED_SOURCE = `import type { CatalogList } from "../morph/catalog";
+
+export default function ProductList({ products, pagination }: CatalogList) {
+  return (
     <section data-morph-node="product-list" className="bg-stone-50 px-6 py-16 text-stone-950 md:px-12 lg:px-20">
       <h1 data-morph-node="product-list-title" className="font-serif text-5xl tracking-tight md:text-7xl">Our collection</h1>
       <p data-morph-node="product-list-count" className="mt-5 text-sm text-stone-600">{pagination.total} products</p>
@@ -235,12 +328,10 @@ export default function ProductList({ products, pagination }: CatalogList) {
     </section>
   );
 }
-`,
-  },
-  {
-    path: "src/components/ProductDetail.tsx",
-    mimeType: "text/tsx",
-    content: `import type { CatalogDetail } from "../morph/catalog";
+`;
+
+/** `ProductDetail.tsx` of the same generation. */
+export const LEGACY_STARTER_THEME_PRODUCT_DETAIL_MARKED_SOURCE = `import type { CatalogDetail } from "../morph/catalog";
 
 export default function ProductDetail({ product }: { product: CatalogDetail }) {
   return (
@@ -277,36 +368,24 @@ export default function ProductDetail({ product }: { product: CatalogDetail }) {
     </section>
   );
 }
-`,
-  },
-];
-
-const PRODUCT_DETAIL_PATH = "src/components/ProductDetail.tsx";
-
-/** The generated copy of a catalog file, or `null` if the path is not one. */
-export function starterThemeCatalogSource(path: string): string | null {
-  return (
-    STARTER_THEME_CATALOG_FILES.find((file) => file.path === path)?.content ??
-    null
-  );
-}
+`;
 
 /**
  * `ProductDetail.tsx` before the gallery images reserved their space.
  *
  * Without an aspect ratio each gallery image resized the page as it loaded, so
  * the editor walked the preview frame up one image at a time and took seconds
- * to settle on a height. Derived from the current source by reversing exactly
- * that edit, so the two can never drift into a match that upgrades the wrong
- * bytes.
+ * to settle on a height. Derived from the generation that follows it by
+ * reversing exactly that edit, so the two can never drift into a match that
+ * upgrades the wrong bytes.
  */
 export const LEGACY_STARTER_THEME_PRODUCT_DETAIL_SOURCE: string | null =
   (() => {
-    const current = starterThemeCatalogSource(PRODUCT_DETAIL_PATH);
-    if (!current) return null;
     const reserved = `data-morph-node="product-asset" src={asset.url} alt={asset.name} loading="lazy" className="aspect-square w-full`;
-    if (!current.includes(reserved)) return null;
-    return current.replace(
+    if (!LEGACY_STARTER_THEME_PRODUCT_DETAIL_MARKED_SOURCE.includes(reserved)) {
+      return null;
+    }
+    return LEGACY_STARTER_THEME_PRODUCT_DETAIL_MARKED_SOURCE.replace(
       reserved,
       `data-morph-node="product-asset" src={asset.url} alt={asset.name} loading="lazy" className="w-full`,
     );
@@ -317,16 +396,28 @@ export const LEGACY_STARTER_THEME_PRODUCT_DETAIL_SOURCE: string | null =
  *
  * Byte-exact only: a file an author has touched is left alone, because a
  * preview that settles a second faster is not worth overwriting their work.
+ * One entry per generation, and a path may have several: a workspace matches
+ * at most one of them, so listing them all is what lets a Theme that skipped a
+ * generation still arrive at the current source.
  */
 export const STARTER_THEME_CATALOG_UPGRADES: ReadonlyArray<{
   path: string;
   legacyContent: string;
-}> =
-  LEGACY_STARTER_THEME_PRODUCT_DETAIL_SOURCE === null
+}> = [
+  {
+    path: PRODUCT_LIST_PATH,
+    legacyContent: LEGACY_STARTER_THEME_PRODUCT_LIST_MARKED_SOURCE,
+  },
+  {
+    path: PRODUCT_DETAIL_PATH,
+    legacyContent: LEGACY_STARTER_THEME_PRODUCT_DETAIL_MARKED_SOURCE,
+  },
+  ...(LEGACY_STARTER_THEME_PRODUCT_DETAIL_SOURCE === null
     ? []
     : [
         {
           path: PRODUCT_DETAIL_PATH,
           legacyContent: LEGACY_STARTER_THEME_PRODUCT_DETAIL_SOURCE,
         },
-      ];
+      ]),
+];

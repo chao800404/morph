@@ -1,4 +1,6 @@
 import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
+import { stripDerivableMarkers } from "./ast/strip-derivable-markers";
+import { STARTER_THEME_CATALOG_FILES } from "./starter-theme-catalog-files";
 import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SOURCE,
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
@@ -230,10 +232,6 @@ export default function Hero({
   imageSrc,
   imageAlt,
 }: HeroProps) {
-  const displayImage = image ?? {
-    src: imageSrc ?? "/static/storefront/theme-preview-default.png",
-    alt: imageAlt ?? "A neutral collection of ceramic objects",
-  };
   return (
     <section
       className="grid min-h-[42rem] bg-stone-100 lg:min-h-[50rem] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]"
@@ -269,9 +267,8 @@ export default function Hero({
         className="min-h-[30rem] overflow-hidden lg:min-h-0"
       >
         <img
-          data-storefront-field="image"
-          src={displayImage.src}
-          alt={displayImage.alt}
+          src={image?.src ?? imageSrc ?? "/static/storefront/theme-preview-default.png"}
+          alt={image?.alt ?? imageAlt ?? "A neutral collection of ceramic objects"}
           className="size-full object-cover"
         />
       </div>
@@ -289,7 +286,8 @@ export default function Hero({
   {
     path: "src/components/Principles.tsx",
     mimeType: "text/typescript",
-    content: `import { clsx as cn } from "clsx";
+    content: `import type { ThemeContentFields } from "../morph/content-fields";
+import { clsx as cn } from "clsx";
 
 export type PrincipleItem = {
   id?: string;
@@ -303,6 +301,19 @@ export type PrinciplesProps = {
   label?: string;
 };
 
+export const contentFields = {
+  items: {
+    type: "array",
+    label: "Principles",
+    fields: {
+      number: { type: "text", label: "Number", maxLength: 20 },
+      title: { type: "text", label: "Title", maxLength: 150 },
+      body: { type: "textarea", label: "Body", maxLength: 300 },
+    },
+  },
+  label: { type: "text", label: "Label", maxLength: 100 },
+} as const satisfies ThemeContentFields;
+
 const morphInstanceClasses: Record<string, string> = {};
 
 export default function Principles({
@@ -314,7 +325,6 @@ export default function Principles({
       className="bg-stone-50 px-[clamp(1.75rem,6vw,6rem)] py-[clamp(6rem,10vw,9rem)]"
     >
       <p
-        data-storefront-field="label"
         className="mb-14 text-xs font-medium uppercase tracking-[0.22em] text-stone-500"
       >
         {label}
@@ -408,9 +418,6 @@ export default function Principles({
             name: "Principles",
             source: "src/components/Principles.tsx",
             sectionType: "principles",
-            contentFields: {
-              label: { type: "text", label: "Label", maxLength: 100 },
-            },
           },
           "newsletter.default": {
             name: "Newsletter",
@@ -651,8 +658,197 @@ const V3_SECTION_TYPES = [
   "footer",
 ] as const;
 
+/**
+ * The previous Starter generation wrote content markers into the source that
+ * authors open in Code mode. Keep a byte-exact representation of that
+ * generation, derived from the current source, so existing untouched Starter
+ * workspaces can receive the same cleanup as a newly created one. The upgrade
+ * caller still compares bytes before applying it; authored files never enter
+ * this path.
+ */
+function legacyStarterSourceWithHandWrittenFields(path: string): string | null {
+  const current = STARTER_THEME_FILES.find(
+    (file) => file.path === path,
+  )?.content;
+  if (!current) return null;
+
+  const replace = (source: string, from: string, to: string): string | null => {
+    const index = source.indexOf(from);
+    if (index < 0) return null;
+    return source.slice(0, index) + to + source.slice(index + from.length);
+  };
+
+  switch (path) {
+    case "src/components/Hero.tsx": {
+      let source = replace(
+        current,
+        `}: HeroProps) {\n  return (`,
+        `}: HeroProps) {\n  const displayImage = image ?? {\n    src: imageSrc ?? "/static/storefront/theme-preview-default.png",\n    alt: imageAlt ?? "A neutral collection of ceramic objects",\n  };\n  return (`,
+      );
+      if (!source) return null;
+      return replace(
+        source,
+        `        <img\n          src={image?.src ?? imageSrc ?? "/static/storefront/theme-preview-default.png"}\n          alt={image?.alt ?? imageAlt ?? "A neutral collection of ceramic objects"}`,
+        `        <img\n          data-storefront-field="image"\n          src={displayImage.src}\n          alt={displayImage.alt}`,
+      );
+    }
+    case "src/components/Principles.tsx": {
+      let source = replace(
+        current,
+        `import type { ThemeContentFields } from "../morph/content-fields";\n`,
+        "",
+      );
+      if (!source) return null;
+      source = replace(
+        source,
+        `export const contentFields = {\n  items: {\n    type: "array",\n    label: "Principles",\n    fields: {\n      number: { type: "text", label: "Number", maxLength: 20 },\n      title: { type: "text", label: "Title", maxLength: 150 },\n      body: { type: "textarea", label: "Body", maxLength: 300 },\n    },\n  },\n  label: { type: "text", label: "Label", maxLength: 100 },\n} as const satisfies ThemeContentFields;\n\n`,
+        "",
+      );
+      if (!source) return null;
+      return replace(
+        source,
+        `      <p\n        className="mb-14`,
+        `      <p\n        data-storefront-field="label"\n        className="mb-14`,
+      );
+    }
+    case "src/components/EditorialIntro.tsx": {
+      let source = replace(
+        current,
+        `import type { ThemeContentFields } from "../morph/content-fields";\n\n`,
+        "",
+      );
+      if (!source) return null;
+      source = replace(
+        source,
+        `export const contentFields = {\n  label: { type: "text", label: "Label", maxLength: 100 },\n  heading: { type: "text", label: "Heading", maxLength: 200 },\n  body: { type: "textarea", label: "Body", maxLength: 500 },\n} as const satisfies ThemeContentFields;\n\n`,
+        "",
+      );
+      if (!source) return null;
+      for (const [from, to] of [
+        [
+          `        <p\n          className="text-xs`,
+          `        <p\n          data-storefront-field="label"\n          className="text-xs`,
+        ],
+        [
+          `          <h2\n            className="max-w-4xl`,
+          `          <h2\n            data-storefront-field="heading"\n            className="max-w-4xl`,
+        ],
+        [
+          `          <p\n            className="ml-auto`,
+          `          <p\n            data-storefront-field="body"\n            className="ml-auto`,
+        ],
+      ] as const) {
+        source = replace(source, from, to);
+        if (!source) return null;
+      }
+      return source;
+    }
+    case "src/components/CategoryShowcase.tsx":
+      return replace(
+        current,
+        `        <h2\n          className="font-serif`,
+        `        <h2\n          data-storefront-field="heading"\n          className="font-serif`,
+      );
+    case "src/components/ImageWithText.tsx": {
+      let source = replace(
+        current,
+        `}: ImageWithTextProps) {\n  return (`,
+        `}: ImageWithTextProps) {\n  const displayImage = image ?? {\n    src: imageSrc ?? "/static/storefront/theme-preview-default.png",\n    alt: imageAlt ?? "Image with text",\n  };\n  return (`,
+      );
+      if (!source) return null;
+      source = replace(
+        source,
+        `        <img\n          src={image?.src ?? imageSrc ?? "/static/storefront/theme-preview-default.png"}\n          alt={image?.alt ?? imageAlt ?? "Image with text"}`,
+        `        <img\n          data-storefront-field="image"\n          src={displayImage.src}\n          alt={displayImage.alt}`,
+      );
+      if (!source) return null;
+      for (const [from, to] of [
+        [
+          `          <p\n            className="text-xs`,
+          `          <p\n            data-storefront-field="eyebrow"\n            className="text-xs`,
+        ],
+        [
+          `          <h2\n            className="mt-5`,
+          `          <h2\n            data-storefront-field="heading"\n            className="mt-5`,
+        ],
+        [
+          `          <p\n            className="mt-7`,
+          `          <p\n            data-storefront-field="body"\n            className="mt-7`,
+        ],
+        [
+          `          <ThemeLink\n            link={action}\n            className=`,
+          `          <ThemeLink\n            link={action}\n            data-storefront-field="actionLabel"\n            className=`,
+        ],
+      ] as const) {
+        source = replace(source, from, to);
+        if (!source) return null;
+      }
+      return source;
+    }
+    case "src/components/Newsletter.tsx": {
+      let source = replace(
+        current,
+        `import type { ThemeContentFields } from "../morph/content-fields";\n\n`,
+        "",
+      );
+      if (!source) return null;
+      source = replace(
+        source,
+        `export const contentFields = {\n  eyebrow: { type: "text", label: "Eyebrow", maxLength: 100 },\n  heading: { type: "text", label: "Heading", maxLength: 200 },\n  body: { type: "textarea", label: "Body", maxLength: 700 },\n  placeholder: { type: "text", label: "Placeholder", maxLength: 100 },\n  actionLabel: { type: "text", label: "Action label", maxLength: 100 },\n} as const satisfies ThemeContentFields;\n\n`,
+        "",
+      );
+      if (!source) return null;
+      for (const [from, to] of [
+        [
+          `        <p\n          className="text-xs`,
+          `        <p\n          data-storefront-field="eyebrow"\n          className="text-xs`,
+        ],
+        [
+          `        <h2\n          className="mt-6`,
+          `        <h2\n          data-storefront-field="heading"\n          className="mt-6`,
+        ],
+        [
+          `        <p\n          className="mx-auto mt-6`,
+          `        <p\n          data-storefront-field="body"\n          className="mx-auto mt-6`,
+        ],
+        [
+          `          <span className="flex-1 text-sm text-stone-700">`,
+          `          <span data-storefront-field="placeholder" className="flex-1 text-sm text-stone-700">`,
+        ],
+        [
+          `          <span className="text-sm font-medium text-stone-950">`,
+          `          <span data-storefront-field="actionLabel" className="text-sm font-medium text-stone-950">`,
+        ],
+      ] as const) {
+        source = replace(source, from, to);
+        if (!source) return null;
+      }
+      return source;
+    }
+    default:
+      return null;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The media type Morph already records for a generated path.
+ *
+ * Rewriting a file must not quietly restate what kind of file it is: the two
+ * generated sets disagree (`text/typescript` against `text/tsx`), and adopting
+ * the wrong one would show up as a change in every such row.
+ */
+function generatedMimeType(path: string): string {
+  return (
+    STARTER_THEME_FILES.find((file) => file.path === path)?.mimeType ??
+    STARTER_THEME_CATALOG_FILES.find((file) => file.path === path)?.mimeType ??
+    (path.endsWith(".tsx") || path.endsWith(".ts")
+      ? "text/typescript"
+      : "text/plain")
+  );
 }
 
 /**
@@ -872,6 +1068,16 @@ export function createStarterThemeWorkspaceUpgrade(
   // can still be upgraded. A generation left out of this list is not merely
   // skipped once: matching is byte-exact, so that workspace can never receive
   // the file again by any route the editor offers.
+  const legacyFieldMarkerSources = new Map(
+    [
+      "src/components/Hero.tsx",
+      "src/components/Principles.tsx",
+      "src/components/EditorialIntro.tsx",
+      "src/components/CategoryShowcase.tsx",
+      "src/components/ImageWithText.tsx",
+      "src/components/Newsletter.tsx",
+    ].map((path) => [path, legacyStarterSourceWithHandWrittenFields(path)]),
+  );
   const exactLegacyReplacements: ReadonlyArray<{
     readonly path: string;
     readonly legacy: readonly string[];
@@ -882,6 +1088,9 @@ export function createStarterThemeWorkspaceUpgrade(
       legacy: [
         LEGACY_STARTER_THEME_HERO_SOURCE,
         LEGACY_STARTER_THEME_HERO_URL_FIELD_SOURCE,
+        ...(legacyFieldMarkerSources.get("src/components/Hero.tsx")
+          ? [legacyFieldMarkerSources.get("src/components/Hero.tsx")!]
+          : []),
       ],
       current: STARTER_THEME_FILES.find(
         (file) => file.path === "src/components/Hero.tsx",
@@ -893,6 +1102,13 @@ export function createStarterThemeWorkspaceUpgrade(
         LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
         LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_URL_FIELD_SOURCE,
         LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SOURCE,
+        ...(legacyFieldMarkerSources.get("src/components/CategoryShowcase.tsx")
+          ? [
+              legacyFieldMarkerSources.get(
+                "src/components/CategoryShowcase.tsx",
+              )!,
+            ]
+          : []),
       ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/CategoryShowcase.tsx",
@@ -903,9 +1119,45 @@ export function createStarterThemeWorkspaceUpgrade(
       legacy: [
         LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
         LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_URL_FIELD_SOURCE,
+        ...(legacyFieldMarkerSources.get("src/components/ImageWithText.tsx")
+          ? [legacyFieldMarkerSources.get("src/components/ImageWithText.tsx")!]
+          : []),
       ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/ImageWithText.tsx",
+      )!.content,
+    },
+    {
+      path: "src/components/EditorialIntro.tsx",
+      legacy: [
+        ...(legacyFieldMarkerSources.get("src/components/EditorialIntro.tsx")
+          ? [legacyFieldMarkerSources.get("src/components/EditorialIntro.tsx")!]
+          : []),
+      ],
+      current: STARTER_THEME_V3_NEW_FILES.find(
+        (file) => file.path === "src/components/EditorialIntro.tsx",
+      )!.content,
+    },
+    {
+      path: "src/components/Newsletter.tsx",
+      legacy: [
+        ...(legacyFieldMarkerSources.get("src/components/Newsletter.tsx")
+          ? [legacyFieldMarkerSources.get("src/components/Newsletter.tsx")!]
+          : []),
+      ],
+      current: STARTER_THEME_V3_NEW_FILES.find(
+        (file) => file.path === "src/components/Newsletter.tsx",
+      )!.content,
+    },
+    {
+      path: "src/components/Principles.tsx",
+      legacy: [
+        ...(legacyFieldMarkerSources.get("src/components/Principles.tsx")
+          ? [legacyFieldMarkerSources.get("src/components/Principles.tsx")!]
+          : []),
+      ],
+      current: STARTER_THEME_FILES.find(
+        (file) => file.path === "src/components/Principles.tsx",
       )!.content,
     },
     {
@@ -974,6 +1226,28 @@ export function createStarterThemeWorkspaceUpgrade(
 
   const existingManifest = existingByPath.get("morph.theme.json");
   const targetManifestFile = targetByPath.get("morph.theme.json");
+  // Everything else here replaces a file whose bytes Morph still recognises,
+  // which is precisely the set an author has not touched. The markers, though,
+  // are worst where the file has been edited: the author is looking at a
+  // `data-*` they were told they would never have to write, in a file no
+  // replacement will ever reach. So the attributes are removed in place
+  // instead, and only where the compiler is shown to produce the same bindings
+  // without them. Before the manifest, because a workspace whose manifest is
+  // missing or unreadable still has source an author has to read.
+  const markerPlanned = new Set(upgrades.map((upgrade) => upgrade.path));
+  for (const file of existingFiles) {
+    if (markerPlanned.has(file.path)) continue;
+    const stripped = stripDerivableMarkers(file);
+    if (!stripped) continue;
+    upgrades.push({
+      path: file.path,
+      content: stripped.content,
+      mimeType: generatedMimeType(file.path),
+      expectedFileId: file.id,
+      expectedVersion: file.version,
+    });
+  }
+
   if (!existingManifest || !targetManifestFile) return upgrades;
 
   try {

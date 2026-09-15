@@ -46,6 +46,31 @@ export function readRowFieldName(
 }
 
 /**
+ * The same first step for a component's own props.
+ *
+ * A grouped value is commonly read as `image?.src` (or `image.src`) after it
+ * has been passed to a component. There is no row variable in that scope, so
+ * the base identifier itself is the field. Local aliases remain harmless:
+ * callers accept the result only when that name is a declared prop.
+ */
+function readTopLevelFieldName(expression: any): string | null {
+  const steps: string[] = [];
+  let node: any = expression;
+  while (
+    node?.type === "MemberExpression" ||
+    node?.type === "OptionalMemberExpression"
+  ) {
+    if (node.computed === true || node.property?.type !== "Identifier") {
+      return null;
+    }
+    steps.unshift(node.property.name);
+    node = node.object;
+  }
+  if (node?.type !== "Identifier" || steps.length === 0) return null;
+  return node.name;
+}
+
+/**
  * Prop name a JSX expression reads, when it reads exactly one.
  *
  * `{heading}` and `{item.title ?? ""}` both name a single editable value; an
@@ -68,7 +93,9 @@ export function inferBoundPropName(
     // labelled by hand.
     case "MemberExpression":
     case "OptionalMemberExpression":
-      return readRowFieldName(expression, itemVariableName);
+      return itemVariableName
+        ? readRowFieldName(expression, itemVariableName)
+        : readTopLevelFieldName(expression);
     // `{item.title ?? ""}` and `{value || "fallback"}`: the left side is the
     // stored value and the right side is only what shows when it is missing.
     case "LogicalExpression":

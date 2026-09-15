@@ -108,43 +108,68 @@ describe("catalog source upgrades", () => {
     mocks.saveFilesBatch.mockResolvedValue([]);
   });
 
-  const legacyFiles = () =>
-    STARTER_THEME_CATALOG_UPGRADES.map((upgrade) => ({
-      id: `file-${upgrade.path}`,
-      path: upgrade.path,
-      content: upgrade.legacyContent,
+  /** One installed workspace, sitting on exactly one past generation. */
+  const workspaceOn = (upgrade: { path: string; legacyContent: string }) =>
+    [
+      ...STARTER_THEME_CATALOG_FILES.filter(
+        (file) => file.path !== upgrade.path,
+      ),
+      { path: upgrade.path, content: upgrade.legacyContent },
+    ].map((file) => ({
+      id: `file-${file.path}`,
+      path: file.path,
+      content: file.content,
       version: 3,
     }));
 
-  it("has a legacy copy to recognise, derived from the current source", () => {
+  it("has a legacy copy to recognise, and never one that is already current", () => {
     expect(STARTER_THEME_CATALOG_UPGRADES.length).toBeGreaterThan(0);
+    const seen = new Set<string>();
     for (const upgrade of STARTER_THEME_CATALOG_UPGRADES) {
       expect(upgrade.legacyContent).not.toBe(
         starterThemeCatalogSource(upgrade.path),
       );
+      // Two generations that share bytes would make the match ambiguous, and
+      // the second would be unreachable.
+      expect(seen.has(upgrade.legacyContent)).toBe(false);
+      seen.add(upgrade.legacyContent);
     }
   });
 
+  // A workspace sits on one generation at a time, so each is planned alone.
   // Gallery images with no reserved space resized the page as each one landed,
-  // so the editor walked the frame up image by image before settling.
+  // and hand-written `data-morph-node` named elements the compiler now names
+  // by position — both are Morph's own bytes to correct.
   it("replaces an untouched legacy file with the current source", () => {
-    const planned = planThemeCatalogUpgrades(legacyFiles());
-    expect(planned).toHaveLength(STARTER_THEME_CATALOG_UPGRADES.length);
-    for (const file of planned) {
-      expect(file.content).toBe(starterThemeCatalogSource(file.path));
-      expect(file.content).toContain("aspect-square w-full bg-stone-200");
+    for (const upgrade of STARTER_THEME_CATALOG_UPGRADES) {
+      const planned = planThemeCatalogUpgrades(workspaceOn(upgrade));
+      expect(planned, upgrade.path).toHaveLength(1);
+      const [file] = planned;
+      expect(file.path).toBe(upgrade.path);
+      expect(file.content).toBe(starterThemeCatalogSource(upgrade.path));
+      expect(file.content).not.toMatch(/data-morph-node/);
       // The write must lose to a concurrent edit rather than overwrite it.
-      expect(file.expectedFileId).toBe(`file-${file.path}`);
+      expect(file.expectedFileId).toBe(`file-${upgrade.path}`);
       expect(file.expectedVersion).toBe(3);
     }
   });
 
+  it("still reserves space for the gallery images it upgrades", () => {
+    const detail = starterThemeCatalogSource(
+      "src/components/ProductDetail.tsx",
+    );
+    expect(detail).toContain("aspect-square w-full bg-stone-200");
+  });
+
   it("leaves a file the author has edited alone", () => {
-    const edited = legacyFiles().map((file) => ({
-      ...file,
-      content: `${file.content}\n// author's note\n`,
-    }));
-    expect(planThemeCatalogUpgrades(edited)).toEqual([]);
+    for (const upgrade of STARTER_THEME_CATALOG_UPGRADES) {
+      const edited = workspaceOn(upgrade).map((file) =>
+        file.path === upgrade.path
+          ? { ...file, content: `${file.content}\n// author's note\n` }
+          : file,
+      );
+      expect(planThemeCatalogUpgrades(edited), upgrade.path).toEqual([]);
+    }
   });
 
   it("writes nothing once every file is current", () => {
@@ -158,20 +183,13 @@ describe("catalog source upgrades", () => {
   });
 
   it("upgrades a theme that already has the catalog routes", async () => {
-    mocks.listFiles.mockResolvedValue([
-      ...STARTER_THEME_CATALOG_FILES.filter(
-        (file) =>
-          !STARTER_THEME_CATALOG_UPGRADES.some(
-            (upgrade) => upgrade.path === file.path,
-          ),
-      ),
-      ...legacyFiles(),
-    ]);
+    const upgrade = STARTER_THEME_CATALOG_UPGRADES[0]!;
+    mocks.listFiles.mockResolvedValue(workspaceOn(upgrade));
 
     await expect(ensureThemeCatalog(input)).resolves.toBe(true);
 
     const [, , files, options] = mocks.saveFilesBatch.mock.calls[0] ?? [];
-    expect(files).toHaveLength(STARTER_THEME_CATALOG_UPGRADES.length);
+    expect(files).toHaveLength(1);
     expect(options.revisionMessage).toBe(
       "Update storefront product catalog routes",
     );
