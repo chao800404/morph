@@ -284,8 +284,6 @@ function SortableSectionRow({
   deleteDisabled,
   rootNode,
   rootNodeSelected,
-  onRequestDeleteRoot,
-  rootDeleteDisabled,
   children,
 }: {
   section: EditorSection;
@@ -305,12 +303,17 @@ function SortableSectionRow({
   /** Absent while the editor has no writable template to store the name in. */
   onRequestRename?: () => void;
   deleteDisabled?: boolean;
-  /** The real DOM root represented by this row, when there is one. */
+  /**
+   * The real DOM root represented by this row, when there is one.
+   *
+   * The row stands for both, which is why it offers one Delete and not two.
+   * Removing the section removes the element that rendered it; offering
+   * "Delete element" beside it described the same outcome twice and asked the
+   * author to tell two destructive actions apart by name.
+   */
   rootNode?: PreviewEditableNode | null;
   /** Whether the current selection is that root, rather than the section. */
   rootNodeSelected?: boolean;
-  onRequestDeleteRoot?: () => void;
-  rootDeleteDisabled?: boolean;
   children?: React.ReactNode;
 }) {
   const { ref, handleRef, isDragging } = useSortable({
@@ -434,16 +437,6 @@ function SortableSectionRow({
                 Del
               </span>
             </ContextMenuItem>
-            {rootNode && onRequestDeleteRoot ? (
-              <ContextMenuItem
-                variant="destructive"
-                disabled={rootDeleteDisabled}
-                onSelect={onRequestDeleteRoot}
-              >
-                <Trash2 className="size-3.5" />
-                <span>Delete element</span>
-              </ContextMenuItem>
-            ) : null}
           </ContextMenuContent>
         </ContextMenu>
         <CollapsibleContent>{children}</CollapsibleContent>
@@ -1404,16 +1397,6 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                                 : undefined
                             }
                             rootNode={normalized.root}
-                            onRequestDeleteRoot={
-                              normalized.root
-                                ? () =>
-                                    setDeleteCandidate({
-                                      kind: "node",
-                                      node: normalized.root!,
-                                      label: normalized.root!.label,
-                                    })
-                                : undefined
-                            }
                             index={index}
                             selected={
                               (activeSelection?.sectionId ?? search.section) ===
@@ -1469,13 +1452,6 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                               isDeletePending ||
                               reorderMutation.isPending ||
                               !onDeleteSection
-                            }
-                            rootDeleteDisabled={
-                              isDeletePending ||
-                              reorderMutation.isPending ||
-                              !onDeleteEditableNode ||
-                              (!normalized.root?.target.nodeId &&
-                                !normalized.root?.target.sourceLocation)
                             }
                           >
                             {normalized.children.length > 0

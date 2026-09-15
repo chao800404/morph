@@ -763,6 +763,11 @@ describe("EditorSectionsPanel editable node tree", () => {
     ).toBe("true");
   });
 
+  // On its own row, where a DOM node is the only thing that row stands for.
+  // The section row offers one Delete rather than two: it stands for the
+  // section and for the element that rendered it, and removing either removes
+  // both, so naming them separately asked the author to tell one destructive
+  // action from an identical one.
   it("offers a VS Code-style delete action for DOM nodes and confirms it in a dialog", async () => {
     const onDeleteEditableNode = vi.fn().mockResolvedValue({ success: true });
     renderPanel(vi.fn(), vi.fn(), {
@@ -770,29 +775,47 @@ describe("EditorSectionsPanel editable node tree", () => {
       onDeleteEditableNode,
     });
 
-    const contentButton = screen.getByRole("button", { name: "hero" });
-    fireEvent.contextMenu(contentButton.parentElement!);
+    const headingButton = screen.getByRole("button", { name: "Heading" });
+    fireEvent.contextMenu(headingButton.parentElement!);
 
     const deleteMenuItem = await screen.findByRole("menuitem", {
-      name: "Delete element",
+      name: /^Delete/,
     });
     fireEvent.click(deleteMenuItem);
 
     expect(
       await screen.findByRole("heading", {
-        name: "Delete “Content”?",
+        name: "Delete “Heading”?",
       }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() =>
-      expect(onDeleteEditableNode).toHaveBeenCalledWith(editableNodes[0]),
+      expect(onDeleteEditableNode).toHaveBeenCalledWith(
+        editableNodes.find((node) => node.id === "section-1:node:heading"),
+      ),
     );
     await waitFor(() =>
       expect(
-        screen.queryByRole("heading", { name: "Delete “Content”?" }),
+        screen.queryByRole("heading", { name: "Delete “Heading”?" }),
       ).toBeNull(),
     );
+  });
+
+  it("offers exactly one delete on a section row", async () => {
+    renderPanel(vi.fn(), vi.fn(), {
+      editableNodes,
+      onDeleteSection: vi.fn().mockResolvedValue({ success: true }),
+      onDeleteEditableNode: vi.fn().mockResolvedValue({ success: true }),
+    });
+
+    fireEvent.contextMenu(
+      screen.getByRole("button", { name: "hero" }).parentElement!,
+    );
+    const items = await screen.findAllByRole("menuitem");
+    expect(
+      items.filter((item) => /^Delete/.test(item.textContent ?? "")),
+    ).toHaveLength(1);
   });
 
   it("offers a separate delete action for top-level sections", async () => {
