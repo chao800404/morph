@@ -470,6 +470,12 @@ function reportReady() {
 
 if (channel) {
   const ensurePreviewRoot = () => {
+    // A marked element that React has since replaced is not the page any
+    // more, so it cannot go on answering for it.
+    const marked = document.querySelector("[data-storefront-preview-root]");
+    if (marked && !marked.isConnected) {
+      marked.removeAttribute("data-storefront-preview-root");
+    }
     const rootEl = document.getElementById("root") ?? document.body;
     if (rootEl && !rootEl.hasAttribute("data-storefront-preview-root")) {
       rootEl.setAttribute("data-storefront-preview-root", "true");
@@ -503,8 +509,13 @@ if (channel) {
   // the DOM React owns and report once after each structural commit. Editor
   // selection attributes are deliberately absent from the filter, avoiding
   // a feedback loop when a selected element is highlighted.
-  const previewStructureRoot =
-    document.querySelector("[data-storefront-preview-root]") ?? document.body;
+  const resolveStructureRoot = () => {
+    ensurePreviewRoot();
+    return (
+      document.querySelector("[data-storefront-preview-root]") ?? document.body
+    );
+  };
+  let previewStructureRoot = resolveStructureRoot();
   const structureAttributes = new Set([
     "data-storefront-section-id",
     "data-storefront-field",
@@ -532,16 +543,34 @@ if (channel) {
     // of the filter so live slider previews cannot create a report loop.
     scheduleSelectedTargetReport();
   });
-  structureObserver.observe(previewStructureRoot, {
-    subtree: true,
-    childList: true,
-    characterData: true,
-    attributes: true,
-    attributeFilter: [
-      ...structureAttributes,
-      "class",
-    ],
-  });
+  const observeStructureRoot = (target: Element) => {
+    structureObserver.observe(target, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: [...structureAttributes, "class"],
+    });
+  };
+  observeStructureRoot(previewStructureRoot);
+
+  // A Theme that owns its document shell is mounted on \`document\`, and React
+  // replaces \`<html>\` on its first commit. The node being watched is then
+  // detached: still a perfectly good element, observed forever, reporting
+  // nothing, while the page the author sees is somewhere else entirely. So the
+  // root is re-resolved whenever the one in hand has left the document.
+  const reattachStructureRootIfDetached = () => {
+    if (previewStructureRoot.isConnected) return;
+    previewStructureRoot = resolveStructureRoot();
+    structureObserver.disconnect();
+    observeStructureRoot(previewStructureRoot);
+    scheduleStructureReport();
+  };
+  const documentObserver = new MutationObserver(
+    reattachStructureRootIfDetached,
+  );
+  documentObserver.observe(document, { childList: true, subtree: false });
+
   scheduleStructureReport();
 
 

@@ -1212,7 +1212,26 @@ export function postEditorToPreviewMessage(
   ) {
     return;
   }
-  target?.postMessage(
+  if (!target) return;
+  // An iframe React has just created has not navigated yet: it is still
+  // `about:blank`, which inherits the editor's own origin. Posting to it with
+  // the preview's origin is refused, and the message is gone with nothing but
+  // a console warning to say so — the worst way for editor state to go
+  // missing, and five of them on every preview load.
+  //
+  // Readiness cannot be the test here. `request-size` is itself how the editor
+  // recovers when the preview's one-shot `ready` was emitted before the parent
+  // was listening, so a send gated on ready would remove the path that makes
+  // the frame ready. The origin is the honest question: a frame serving the
+  // preview is cross-origin, so reading its location throws, and that throw is
+  // the proof this is the frame the channel was opened for. Anything readable
+  // is still the blank one, and the send is skipped rather than dropped.
+  try {
+    if (target.location.origin !== channel.targetOrigin) return;
+  } catch {
+    // Cross-origin, which is what a loaded preview looks like from here.
+  }
+  target.postMessage(
     { ...message, previewSession: channel.previewSession },
     channel.targetOrigin,
   );

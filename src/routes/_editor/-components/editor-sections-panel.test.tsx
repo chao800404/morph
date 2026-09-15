@@ -288,6 +288,9 @@ const editableNodes: readonly PreviewEditableNode[] = [
     parentId: null,
     sectionId: "section-1",
     label: "Content",
+    // Only an authored id produces a label that is not the tag name. Without
+    // it this fixture described a node the DOM could never report.
+    htmlId: "Content",
     kind: "container",
     tagName: "div",
     target: {
@@ -404,11 +407,14 @@ describe("EditorSectionsPanel editable node tree", () => {
     fireEvent.click(screen.getByRole("button", { name: "hero-shell" }));
     expect(onSelectEditableNode).toHaveBeenCalledWith(rootNode.target);
     expect(onSearchChange).not.toHaveBeenCalled();
-    expect(
-      container.querySelector(
-        '[data-editor-tree-node-id="section-1:node:root"]',
-      ),
-    ).toBeNull();
+    // Once, and on the section row itself: hoisting the root means the section
+    // row stands for it, so that row has to answer which node it is. Rendering
+    // it again below as a child would be the duplicate this guards against.
+    const rootRows = container.querySelectorAll(
+      '[data-editor-tree-node-id="section-1:node:root"]',
+    );
+    expect(rootRows).toHaveLength(1);
+    expect(rootRows[0]?.getAttribute("data-editor-tree-sortable")).toBe("true");
     expect(screen.getByRole("button", { name: "H1" })).toBeTruthy();
   });
 

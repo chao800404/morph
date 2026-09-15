@@ -322,9 +322,39 @@ const router = createRouter({
 });
 ${
   args.exposeRouterForPreview ? "window.__morphPreviewRouter = router;\n" : ""
-}const container = document.getElementById("root");
-if (container) {
-  createRoot(container).render(React.createElement(RouterProvider, { router }));
+}// A Theme that owns its document shell renders <html>, <head> and <body>
+// itself. Mounted inside <div id="root"> that produces <html> nested in a
+// <div>: React reports the invalid nesting on every load, and the preview
+// stops matching the document the published site serves. Mounting on the
+// document is what the shell was written for.
+//
+// Vite injects the styles imported by the Theme into the head of the page it
+// served, and React owns that head once it renders one. They are moved across
+// rather than left behind, because losing them would leave an unstyled
+// preview of a styled site.
+const documentShell = Boolean(
+  (${
+    hasRootComponentPieces(root) ? "rootRoute" : "rootRouteImport"
+  } as { options?: { shellComponent?: unknown } }).options?.shellComponent,
+);
+if (documentShell) {
+  const carried = Array.from(
+    document.head.querySelectorAll("style, link[rel='stylesheet']"),
+  );
+  const root = createRoot(document);
+  root.render(React.createElement(RouterProvider, { router }));
+  queueMicrotask(() => {
+    for (const node of carried) {
+      if (!node.isConnected) document.head.appendChild(node);
+    }
+  });
+} else {
+  const container = document.getElementById("root");
+  if (container) {
+    createRoot(container).render(
+      React.createElement(RouterProvider, { router }),
+    );
+  }
 }
 `,
   };

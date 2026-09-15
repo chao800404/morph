@@ -274,6 +274,7 @@ function SortableSectionRow({
   onRequestDelete,
   deleteDisabled,
   rootNode,
+  rootNodeSelected,
   onRequestDeleteRoot,
   rootDeleteDisabled,
   children,
@@ -293,6 +294,8 @@ function SortableSectionRow({
   deleteDisabled?: boolean;
   /** The real DOM root represented by this row, when there is one. */
   rootNode?: PreviewEditableNode | null;
+  /** Whether the current selection is that root, rather than the section. */
+  rootNodeSelected?: boolean;
   onRequestDeleteRoot?: () => void;
   rootDeleteDisabled?: boolean;
   children?: React.ReactNode;
@@ -310,6 +313,15 @@ function SortableSectionRow({
       // list, so nothing else in the tree distinguishes a row you can drag
       // from one you cannot.
       data-editor-tree-sortable={disabled ? undefined : "true"}
+      // A section row stands for a real element whenever the preview reports a
+      // root for it, so it answers the same two questions a node row does.
+      // Without this a click on that element selected a row the tree could not
+      // report as selected — visibly highlighted, and invisible to anything
+      // reading the tree.
+      data-editor-tree-node-id={rootNode?.id}
+      data-editor-tree-node-selected={
+        rootNode && rootNodeSelected ? "true" : undefined
+      }
       className={cn(isDragging && "opacity-40")}
     >
       <Collapsible open={expanded} onOpenChange={onToggleExpanded}>
@@ -424,6 +436,8 @@ function RouteTreeRootRow({
   label,
   shared,
   selected,
+  rootNode,
+  rootNodeSelected,
   expanded,
   hasChildren,
   onSelect,
@@ -434,6 +448,10 @@ function RouteTreeRootRow({
   /** Supplied by the layout, so it is on every page rather than this one. */
   shared: boolean;
   selected: boolean;
+  /** The real DOM root represented by this row, when there is one. */
+  rootNode?: PreviewEditableNode | null;
+  /** Whether the current selection is that root, rather than the route. */
+  rootNodeSelected?: boolean;
   expanded: boolean;
   hasChildren: boolean;
   onSelect: () => void;
@@ -442,7 +460,12 @@ function RouteTreeRootRow({
 }) {
   const Icon = shared ? Globe : FileCode2;
   return (
-    <SidebarMenuItem>
+    <SidebarMenuItem
+      data-editor-tree-node-id={rootNode?.id}
+      data-editor-tree-node-selected={
+        rootNode && rootNodeSelected ? "true" : undefined
+      }
+    >
       <Collapsible open={expanded} onOpenChange={onToggleExpanded}>
         <div className="group/layout-root flex min-w-0 items-center">
           <CollapsibleTrigger asChild>
@@ -1021,6 +1044,13 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
               selectionMatchesEditableNode(normalized.root, activeSelection),
             ))
         }
+        rootNode={normalized.root}
+        rootNodeSelected={Boolean(
+          activeSelection &&
+          !activeSelection.isSection &&
+          normalized.root &&
+          selectionMatchesEditableNode(normalized.root, activeSelection),
+        )}
         expanded={expandedSectionIds.has(sectionId)}
         hasChildren={normalized.hasChildren}
         onSelect={() => selectNormalizedRoot(sectionId, normalized.root)}
@@ -1242,8 +1272,22 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                           <SortableSectionRow
                             key={section.id}
                             section={section}
+                            // The root's name only when it is a name. With no
+                            // authored id its label is just the tag, and every
+                            // section in the Starter is rooted in a `<section>`
+                            // — so the sidebar showed five rows all reading
+                            // "Section". Worse, the root only arrives once the
+                            // preview reports its structure, so each row renamed
+                            // itself from "Newsletter" to "Section" a moment
+                            // after appearing. The section's own type is stable
+                            // and distinguishing; an id the author wrote still
+                            // wins over it, being the name they chose.
                             displayLabel={
-                              normalized.root?.label ?? section.type
+                              normalized.root &&
+                              normalized.root.label.toLowerCase() !==
+                                normalized.root.tagName
+                                ? normalized.root.label
+                                : section.type
                             }
                             rootNode={normalized.root}
                             onRequestDeleteRoot={
@@ -1270,6 +1314,15 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                                   ),
                                 ))
                             }
+                            rootNodeSelected={Boolean(
+                              activeSelection &&
+                              !activeSelection.isSection &&
+                              normalized.root &&
+                              selectionMatchesEditableNode(
+                                normalized.root,
+                                activeSelection,
+                              ),
+                            )}
                             disabled={reorderMutation.isPending}
                             expanded={expanded}
                             hasChildren={normalized.hasChildren}
