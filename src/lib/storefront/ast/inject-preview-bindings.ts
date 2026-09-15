@@ -89,6 +89,33 @@ function hasAttribute(openingElement: any, attributeName: string): boolean {
 }
 
 /**
+ * The `key` an element carries, as written.
+ *
+ * A wrapper inserted around an element inside `.map()` becomes the array child
+ * in its place, and the key stays behind on the element it wraps. React warns,
+ * and then does the thing the warning is about: without a key these children
+ * are matched by position, so reordering rows — which is most of what this
+ * editor does to them — remounts every row below the move instead of moving
+ * one. Copied onto the wrapper rather than moved, because the element is still
+ * free to be an array child in the build, where no wrapper exists.
+ */
+function readKeyAttributeSource(node: any, source: string): string | null {
+  for (const attribute of node?.openingElement?.attributes ?? []) {
+    if (
+      attribute?.type !== "JSXAttribute" ||
+      attribute.name?.type !== "JSXIdentifier" ||
+      attribute.name.name !== "key" ||
+      typeof attribute.value?.start !== "number" ||
+      typeof attribute.value?.end !== "number"
+    ) {
+      continue;
+    }
+    return ` key=${source.slice(attribute.value.start, attribute.value.end)}`;
+  }
+  return null;
+}
+
+/**
  * The field one element shows, read the way the interpreter reads it: a lone
  * expression child first, then the attributes that carry content.
  */
@@ -330,7 +357,7 @@ export function injectPreviewBindings(
             // answer as a section: wrap it in something taken out of layout.
             insertions.push({
               at: row.start,
-              text: `<div${attributes} style={{ display: "contents" }}>`,
+              text: `<div${readKeyAttributeSource(row, file.content) ?? ""}${attributes} style={{ display: "contents" }}>`,
             });
             insertions.push({ at: row.end, text: "</div>" });
             wrappedRows.add(row.start);
@@ -463,7 +490,7 @@ export function injectPreviewBindings(
                 : "");
             insertions.push({
               at: node.start,
-              text: `<span${attributes} style={{ display: "contents" }}>`,
+              text: `<span${readKeyAttributeSource(node, file.content) ?? ""}${attributes} style={{ display: "contents" }}>`,
             });
             insertions.push({ at: node.end, text: "</span>" });
             contentWrappers += 1;

@@ -69,9 +69,23 @@ export async function openEditor(page: Page) {
     timeout: 45_000,
   });
 
-  // The toolbar can appear before the canvas handlers and restored tool state
-  // have hydrated. Resetting in that window is a click received by nothing.
-  await page.waitForTimeout(3_000);
+  // The toolbar can appear before the preview has rendered anything and before
+  // the editor has heard what is on the page. A fixed pause stood in for both
+  // and covered them only on an idle machine: every test that reads the tree
+  // passed alone and failed in a full run, which is the run that matters.
+  //
+  // Waited for instead: a section in the preview document, which is the Theme
+  // actually rendered, and a row in the sidebar, which can only exist once the
+  // preview has reported its structure back. Together they say the bridge
+  // completed its handshake — the thing the pause was guessing at.
+  await expect(
+    previewFrame(page).locator("[data-storefront-section-id]").first(),
+  ).toBeAttached({ timeout: 45_000 });
+  await expect(
+    page.locator("[data-editor-tree-sortable]").first(),
+  ).toBeAttached({ timeout: 45_000 });
+  // Handlers attach on the commit after that structure lands.
+  await page.waitForTimeout(500);
 
   // The pointer tool can be restored from the previous iframe document while
   // the editor shell stays mounted. A double click selects in that mode; it

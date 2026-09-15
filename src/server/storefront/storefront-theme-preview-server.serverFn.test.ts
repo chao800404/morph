@@ -1,10 +1,10 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import {
-  recordPreviewStartFailure,
   startThemePreviewServer,
   stopThemePreviewServer,
 } from "./storefront-theme-preview-server.serverFn";
+import { recordPreviewStartFailure } from "./preview-start-failure-record";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
 
 describe("storefront-theme-preview-server.serverFn", () => {

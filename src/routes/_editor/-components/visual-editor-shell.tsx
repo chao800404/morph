@@ -4044,39 +4044,15 @@ export function VisualEditorShell({
           },
         })
           .then((result) => {
+            // Passed through as the server decided it. Image bytes reach the
+            // preview inlined as `data:` URLs or not at all: an asset over the
+            // size budget, of an unlisted type, or past the total comes back
+            // null and is dropped from the list, so the Theme renders its own
+            // placeholder. Resolving a relative path against the editor's
+            // origin here would undo exactly that — handing Theme code a Morph
+            // address for bytes the server had declined to hand over.
             const data = result.success
-              ? "products" in result.data
-                ? {
-                    ...result.data,
-                    products: result.data.products.map((product) => ({
-                      ...product,
-                      thumbnailUrl: product.thumbnailUrl?.startsWith("/")
-                        ? new URL(product.thumbnailUrl, window.location.origin)
-                            .href
-                        : product.thumbnailUrl,
-                    })),
-                  }
-                : {
-                    ...result.data,
-                    product: result.data.product
-                      ? {
-                          ...result.data.product,
-                          thumbnailUrl:
-                            result.data.product.thumbnailUrl?.startsWith("/")
-                              ? new URL(
-                                  result.data.product.thumbnailUrl,
-                                  window.location.origin,
-                                ).href
-                              : result.data.product.thumbnailUrl,
-                          assets: result.data.product.assets.map((asset) => ({
-                            ...asset,
-                            url: asset.url.startsWith("/")
-                              ? new URL(asset.url, window.location.origin).href
-                              : asset.url,
-                          })),
-                        }
-                      : null,
-                  }
+              ? result.data
               : { error: result.message };
             // Server functions can preserve Date instances for admin callers,
             // while the isolated preview protocol intentionally accepts JSON

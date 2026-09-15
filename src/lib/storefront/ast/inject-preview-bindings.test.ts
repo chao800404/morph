@@ -149,6 +149,17 @@ export default function Hero({ items = [] }) {
       ).toBe(1);
     });
 
+    it("carries the row's key onto the wrapper that replaced it", () => {
+      // The wrapper is the array child now. Without the key React matches
+      // these by position, so moving one row remounts every row below it.
+      const out = run(`${DECLARES}
+export default function Hero({ items = [] }) {
+  return <ul>{items.map((item, i) => <Card key={item.id} title={item.title} />)}</ul>;
+}
+`);
+      expect(out).toContain("<div key={item.id} data-storefront-field=");
+    });
+
     it("leaves a section alone, which is wrapped as a section already", () => {
       const out = run(
         `export default function Page({ content }) {
