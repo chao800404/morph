@@ -175,6 +175,13 @@ export function createPreviewSelectionOverlays(): PreviewSelectionOverlays {
   hoverOverlay.appendChild(hoverLabel);
   document.body.appendChild(hoverOverlay);
 
+  /** Puts the rings back in whichever body is currently the document's. */
+  const reattachOverlays = () => {
+    if (!selectedOverlay.isConnected)
+      document.body.appendChild(selectedOverlay);
+    if (!hoverOverlay.isConnected) document.body.appendChild(hoverOverlay);
+  };
+
   const updateOverlayLabel = (
     nameElement: HTMLElement,
     tagElement: HTMLElement,
@@ -191,6 +198,13 @@ export function createPreviewSelectionOverlays(): PreviewSelectionOverlays {
       if (title) selectedDragHandle.title = title;
     },
     position(state: PreviewOverlayState) {
+      // A Theme that owns its document shell is mounted on the document, and
+      // React replaces `<body>` on its first commit. These were appended to
+      // the body that existed when the bridge loaded, so from then on every
+      // ring is drawn correctly into a tree nobody can see — selection still
+      // works, and looks like it stopped. Cheap to check, and the only moment
+      // it matters is the one commit that moves them.
+      reattachOverlays();
       if (!state.enabled) {
         hoverOverlay.style.display = "none";
         selectedOverlay.style.display = "none";
