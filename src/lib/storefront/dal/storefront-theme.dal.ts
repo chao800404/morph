@@ -15,8 +15,7 @@ import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-t
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
-import { backfillRowIds } from "@/lib/storefront/editor/backfill-row-ids";
-import { createMorphItemId } from "@/lib/storefront/editor/reorder-array-items";
+import { normalizeRowIds } from "@/lib/storefront/editor/normalize-row-ids";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
@@ -492,7 +491,10 @@ export const storefrontThemeDal = {
     let assigned = 0;
     let deduplicated = 0;
     const sections = template.document.sections.map((section) => {
-      const result = backfillRowIds(section.props, createMorphItemId);
+      const result = normalizeRowIds(section.props, {
+        templateId: data.templateId,
+        sectionId: section.id,
+      });
       if (!result.changed) return section;
       assigned += result.assigned;
       deduplicated += result.deduplicated;
