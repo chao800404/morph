@@ -355,3 +355,164 @@ describe("where a Theme is mounted", () => {
     expect(content).toContain("document.head.appendChild(node)");
   });
 });
+
+/**
+ * The generated accept handler, actually run.
+ *
+ * The assertions above check that the emitted source contains the right
+ * fragments, which is a different claim from the handler behaving correctly:
+ * they would pass just as well with the two arrays out of step, or `preserve`
+ * applied the wrong way round. Only the module graph proved that, by hand,
+ * once. This isolates the handler and runs it against fake routes.
+ */
+describe("the preview route hot-update handler, executed", () => {
+  const bootstrap = () =>
+    createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      exposeRouterForPreview: true,
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ router: { framework: "tanstack-start" } }),
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+        {
+          path: "src/routes/lookbook.tsx",
+          content: 'export const Route = createFileRoute("/lookbook")({});',
+        },
+      ],
+    });
+
+  /**
+   * Cuts the generated block out of the entry and makes it callable.
+   *
+   * Everything above it imports the Theme, which a unit test has no business
+   * loading. The block is self-contained: it closes over the route bindings
+   * the entry declared and over `router`, both of which are supplied here.
+   */
+  const runHandler = async (
+    source: string,
+    routes: Record<string, { options: Record<string, unknown> }>,
+    modules: ReadonlyArray<unknown>,
+  ) => {
+    const start = source.indexOf("const __morphPreviewHotRoutes");
+    const end = source.indexOf("}", source.indexOf("import.meta.hot.accept("));
+    expect(start).toBeGreaterThan(-1);
+    const js = source.slice(start, source.indexOf("\n}", end) + 2);
+
+    let accepted: ((modules: ReadonlyArray<unknown>) => Promise<void>) | null =
+      null;
+    let invalidated = 0;
+    const warnings: string[] = [];
+    const scope = {
+      importMeta: {
+        hot: {
+          accept: (_deps: string[], callback: typeof accepted) => {
+            accepted = callback;
+          },
+        },
+      },
+      router: {
+        invalidate: async () => {
+          invalidated += 1;
+        },
+      },
+      console: { warn: (message: string) => warnings.push(message) },
+      ...routes,
+    };
+    const keys = Object.keys(scope);
+    new Function(...keys, js.replaceAll("import.meta", "importMeta"))(
+      ...keys.map((key) => scope[key as keyof typeof scope]),
+    );
+    expect(accepted).not.toBeNull();
+    await accepted!(modules);
+    return { invalidated, warnings };
+  };
+
+  it("takes the new options and keeps the ones the tree owns", async () => {
+    const { content } = bootstrap();
+    const parent = () => "parent";
+    const route1 = {
+      options: {
+        id: "/lookbook",
+        path: "/lookbook",
+        getParentRoute: parent,
+        component: "old component",
+      },
+    };
+    const routes = {
+      rootRouteImport: { options: { component: "old root" } },
+      route0: { options: { id: "/", path: "/", getParentRoute: parent } },
+      route1,
+    };
+
+    const result = await runHandler(content, routes, [
+      undefined,
+      undefined,
+      { Route: { options: { component: "new component", path: "/moved" } } },
+    ]);
+
+    // The authored edit lands.
+    expect(route1.options.component).toBe("new component");
+    // Structure the generated tree decided stays, or the route would detach
+    // from its parent the first time its module was touched.
+    expect(route1.options.id).toBe("/lookbook");
+    expect(route1.options.path).toBe("/lookbook");
+    expect(route1.options.getParentRoute).toBe(parent);
+    expect(result.invalidated).toBe(1);
+    expect(result.warnings).toEqual([]);
+  });
+
+  // Index alignment between the accepted specifiers and the bindings: the two
+  // arrays are built from one list, and nothing else was guarding that.
+  it("applies each module to the route it came from", async () => {
+    const { content } = bootstrap();
+    const routes = {
+      rootRouteImport: { options: { marker: "root" } },
+      route0: { options: { marker: "index" } },
+      route1: { options: { marker: "lookbook" } },
+    };
+
+    await runHandler(content, routes, [
+      { Route: { options: { marker: "root updated" } } },
+      undefined,
+      undefined,
+    ]);
+
+    expect(routes.rootRouteImport.options.marker).toBe("root updated");
+    expect(routes.route0.options.marker).toBe("index");
+    expect(routes.route1.options.marker).toBe("lookbook");
+  });
+
+  /**
+   * An edit that leaves the module valid but no longer exporting `Route`. A
+   * syntax error raises Vite's own overlay; this does not, and silence would
+   * show the author their previous page as though nothing had happened.
+   */
+  it("says so when an update carries nothing it can use", async () => {
+    const { content } = bootstrap();
+    const routes = {
+      rootRouteImport: { options: {} },
+      route0: { options: {} },
+      route1: { options: {} },
+    };
+
+    const result = await runHandler(content, routes, [
+      { NotTheRoute: {} },
+      undefined,
+      undefined,
+    ]);
+
+    expect(result.invalidated).toBe(0);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("previous version");
+  });
+});

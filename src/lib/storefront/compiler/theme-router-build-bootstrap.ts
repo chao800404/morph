@@ -166,6 +166,11 @@ function createPreviewRouteHmrSource(args: {
   if (bindings.length === 0) return "";
 
   return `
+// Plain JavaScript on purpose, though the file it lands in is .tsx: nothing
+// typechecks this string — the container compiles it with esbuild, which only
+// strips types — and without type syntax the block can be lifted out and run
+// directly by a test, which is the only thing that checks the handler behaves.
+//
 // Route modules export a Route object as well as defining React components.
 // React Fast Refresh cannot treat that object as a stable component export;
 // its normal fallback asks Vite to invalidate over the HMR WebSocket. The
@@ -179,19 +184,19 @@ ${bindings
       `  { current: ${currentRoute}, preserve: ${JSON.stringify(preserve)} },`,
   )
   .join("\n")}
-] as const;
+];
 if (import.meta.hot) {
   import.meta.hot.accept(
     ${JSON.stringify(bindings.map(({ specifier }) => specifier))},
     async (modules) => {
       let applied = false;
       for (let index = 0; index < modules.length; index += 1) {
-        const nextRoute = (modules[index] as { Route?: { options?: Record<string, unknown> } } | undefined)?.Route;
+        const nextRoute = modules[index]?.Route;
         const binding = __morphPreviewHotRoutes[index];
         if (!nextRoute?.options || !binding) continue;
 
-        const current = binding.current as { options: Record<string, unknown> };
-        const preserved: Record<string, unknown> = {};
+        const current = binding.current;
+        const preserved = {};
         for (const key of binding.preserve) {
           if (Object.prototype.hasOwnProperty.call(current.options, key)) {
             preserved[key] = current.options[key];
@@ -200,7 +205,18 @@ if (import.meta.hot) {
         current.options = { ...nextRoute.options, ...preserved };
         applied = true;
       }
-      if (applied) await router.invalidate({ sync: true });
+      if (!applied) {
+        // A hot update arrived and none of it could be used. The usual cause is
+        // an edit that leaves the module valid but no longer exporting \`Route\`
+        // — a syntax error would have raised Vite's own overlay instead. Silence
+        // here shows the author their previous page as though nothing happened,
+        // so it is said out loud in the preview's console.
+        console.warn(
+          "[morph] a route module was hot-updated but exported no usable Route; the preview is still showing the previous version.",
+        );
+        return;
+      }
+      await router.invalidate({ sync: true });
     },
   );
 }
