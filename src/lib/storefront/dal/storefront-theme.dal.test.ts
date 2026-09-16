@@ -1737,3 +1737,215 @@ describe("co-located content field declarations", () => {
     expect(saved.removedField).toBeUndefined();
   });
 });
+
+describe("row identity is repaired with the first edit, not on read", () => {
+  /** Two nav rows with no ids, the shape every Store predating row identity has. */
+  const idlessDocument = JSON.stringify({
+    version: 1,
+    sections: [
+      {
+        id: "header",
+        type: "header",
+        enabled: true,
+        props: {
+          navItems: [{ label: "Shop" }, { label: "About" }],
+        },
+      },
+    ],
+  });
+
+  function seedTemplate(templateId: string, draftRevisionId: string) {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+      VALUES
+        ('${templateId}', 'theme-a', 'layout', 'Shell', '${idlessDocument}',
+         '${draftRevisionId}', NULL, 1, 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('${draftRevisionId}', '${templateId}', 1, '${idlessDocument}', 'now');
+    `);
+  }
+
+  function storedRows(templateId: string) {
+    const row = sqlite
+      .prepare(
+        `SELECT r.document AS document, t.draft_generation AS generation
+           FROM storefront_theme_templates t
+           JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+          WHERE t.id = ?`,
+      )
+      .get(templateId) as { document: string; generation: number };
+    return {
+      generation: row.generation,
+      rows: JSON.parse(row.document).sections[0].props.navItems as {
+        id?: string;
+      }[],
+    };
+  }
+
+  /**
+   * The author sees identified rows from the first frame, but nothing is
+   * written — repairing data as a side effect of reading it would write on
+   * every page load and race with whatever else is open.
+   */
+  it("hands the editor identified rows without touching the database", async () => {
+    seedTemplate("template-rid1", "aaaaaaaa-1111-4111-8111-111111111111");
+
+    const context = await storefrontThemeDal.findEditorContext(
+      "storefront-a",
+      "theme-a",
+    );
+    const template = context?.templates.find((t) => t.id === "template-rid1");
+    const rows = template?.document.sections[0]?.props.navItems as {
+      id?: string;
+    }[];
+
+    expect(rows.every((row) => typeof row.id === "string")).toBe(true);
+    const stored = storedRows("template-rid1");
+    expect(stored.rows.every((row) => row.id === undefined)).toBe(true);
+    expect(stored.generation).toBe(1);
+  });
+
+  /**
+   * The repair and the author's edit are one write. Two would mean two
+   * generations, and an author holding the first would find their own edit
+   * rejected by the repair that went before it.
+   */
+  it("saves the repair and the edit together, advancing the generation once", async () => {
+    seedTemplate("template-rid2", "aaaaaaaa-2222-4222-8222-222222222222");
+
+    const result = await storefrontThemeDal.renameSection({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-rid2",
+      sectionId: "header",
+      name: "Site header",
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result?.draftGeneration).toBe(2);
+    const stored = storedRows("template-rid2");
+    expect(stored.generation).toBe(2);
+    expect(stored.rows.every((row) => /^morph-mig-/.test(row.id ?? ""))).toBe(
+      true,
+    );
+  });
+
+  /**
+   * The ids the browser derived at load and the ids the server writes on save
+   * have to be the same, or the response renumbers every row on screen and
+   * React remounts all of them.
+   */
+  it("writes the same ids the editor was already showing", async () => {
+    seedTemplate("template-rid3", "aaaaaaaa-3333-4333-8333-333333333333");
+
+    const context = await storefrontThemeDal.findEditorContext(
+      "storefront-a",
+      "theme-a",
+    );
+    const shown = (
+      context?.templates.find((t) => t.id === "template-rid3")?.document
+        .sections[0]?.props.navItems as { id?: string }[]
+    ).map((row) => row.id);
+
+    await storefrontThemeDal.renameSection({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-rid3",
+      sectionId: "header",
+      name: "Site header",
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(storedRows("template-rid3").rows.map((row) => row.id)).toEqual(
+      shown,
+    );
+  });
+
+  /** Half a repair is worse than none: the whole batch stands or falls. */
+  it("writes neither the repair nor the edit when the generation moved", async () => {
+    seedTemplate("template-rid4", "aaaaaaaa-4444-4444-8444-444444444444");
+
+    await expect(
+      storefrontThemeDal.renameSection({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-rid4",
+        sectionId: "header",
+        name: "Site header",
+        expectedDraftGeneration: 99,
+        createdBy: "user-1",
+      }),
+    ).rejects.toThrow(/CONFLICT_DRAFT_GENERATION_MISMATCH/);
+
+    const stored = storedRows("template-rid4");
+    expect(stored.generation).toBe(1);
+    expect(stored.rows.every((row) => row.id === undefined)).toBe(true);
+  });
+
+  /**
+   * `reorderSections` kept its own copy of the draft write until now, which is
+   * how it came to be the one mutator without a source-generation guard.
+   */
+  it("repairs rows through reorderSections too", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+      VALUES
+        ('template-rid5', 'theme-a', 'index', 'Home', '${JSON.stringify({
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled: true,
+              props: { navItems: [{ label: "A" }] },
+            },
+            { id: "story", type: "story", enabled: true, props: {} },
+          ],
+        })}', 'aaaaaaaa-5555-4555-8555-555555555555', NULL, 1, 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('aaaaaaaa-5555-4555-8555-555555555555', 'template-rid5', 1, '${JSON.stringify(
+          {
+            version: 1,
+            sections: [
+              {
+                id: "hero",
+                type: "hero",
+                enabled: true,
+                props: { navItems: [{ label: "A" }] },
+              },
+              { id: "story", type: "story", enabled: true, props: {} },
+            ],
+          },
+        )}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.reorderSections({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-rid5",
+      sectionIds: ["story", "hero"],
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result?.document.sections.map((s) => s.id)).toEqual([
+      "story",
+      "hero",
+    ]);
+    expect(result?.draftGeneration).toBe(2);
+    const hero = result?.document.sections.find((s) => s.id === "hero");
+    expect(
+      ((hero?.props.navItems as { id?: string }[])[0]?.id ?? "").startsWith(
+        "morph-mig-",
+      ),
+    ).toBe(true);
+  });
+});
