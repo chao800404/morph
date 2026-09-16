@@ -463,9 +463,17 @@ function SortableSectionRow({
  * down the whole tree. The DOM side is still worth seeing, and is where an
  * authored id shows up for these rows.
  */
-function domIdentityOf(node: PreviewEditableNode | null | undefined) {
+function domIdentityOf(
+  node: PreviewEditableNode | null | undefined,
+  options?: { omitTag?: boolean },
+) {
   if (!node?.tagName) return undefined;
-  return node.htmlId ? `${node.tagName}#${node.htmlId}` : node.tagName;
+  if (node.htmlId) {
+    return options?.omitTag
+      ? `#${node.htmlId}`
+      : `${node.tagName}#${node.htmlId}`;
+  }
+  return options?.omitTag ? undefined : node.tagName;
 }
 
 function RouteTreeRootRow({
@@ -483,7 +491,7 @@ function RouteTreeRootRow({
   children,
 }: {
   label: string;
-  /** `header#site-header` — what the row's element is, beside its name. */
+  /** The element identity beside its name, such as `#site-header`. */
   domIdentity?: string;
   /** Absent for a route row, whose name is its path rather than stored. */
   onRequestRename?: () => void;
@@ -1093,6 +1101,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     // two global shell roles.
     const semanticLayoutStem =
       /^(?:starter[-_])?(header|footer)$/i.exec(sourceStem)?.[1] ?? sourceStem;
+    const isGlobalShell = /^(header|footer)$/i.test(semanticLayoutStem);
     const rootLabel =
       sectionId === activeRoute?.sourcePath
         ? activeRoute.path === "/"
@@ -1119,7 +1128,12 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
       <RouteTreeRootRow
         key={sectionId}
         label={label}
-        domIdentity={domIdentityOf(normalized.root)}
+        // Header/Footer already name the semantic element. Showing a second
+        // `header`/`footer` tag is redundant; keep an authored id visible as
+        // the useful DOM identity when one exists.
+        domIdentity={domIdentityOf(normalized.root, {
+          omitTag: isGlobalShell,
+        })}
         onRequestRename={
           onRenameSection &&
           sections.some((section) => section.id === sectionId)

@@ -1020,12 +1020,29 @@ describe("EditorSectionsPanel page structure", () => {
     expect(screen.getAllByText("Global")).toHaveLength(2);
   });
 
+  it("does not repeat the header or footer tag after the semantic shell name", () => {
+    const { container } = renderPanel(vi.fn(), vi.fn(), {
+      editableNodes: layoutNodes,
+      activeRoute,
+    });
+
+    const header = screen.getByRole("button", { name: /HeaderGlobal/ });
+    const footer = screen.getByRole("button", { name: /FooterGlobal/ });
+    expect(header.textContent).not.toContain("header");
+    expect(footer.textContent).not.toContain("footer");
+    expect(rootOrder(container, ["Header", "Footer"])).toEqual([
+      "Header",
+      "Footer",
+    ]);
+  });
+
   // A layout is its file, not its root element — so an authored id is shown
-  // beside the name rather than in place of it.
+  // beside the name rather than in place of it. Header/Footer omit the
+  // redundant tag while retaining the id.
   it("shows the root's id beside the layout name, not instead of it", () => {
     const named = layoutNodes.map((node) =>
       node.id === "header:node:root"
-        ? { ...node, label: "Header#site-header", htmlId: "site-header" }
+        ? { ...node, htmlId: "site-header" }
         : node,
     ) as unknown as readonly PreviewEditableNode[];
     const { container } = renderPanel(vi.fn(), vi.fn(), {
@@ -1034,7 +1051,8 @@ describe("EditorSectionsPanel page structure", () => {
     });
 
     expect(rootOrder(container, ["Header"])).toEqual(["Header"]);
-    expect(screen.getByText("header#site-header")).toBeTruthy();
+    expect(screen.getByText("#site-header")).toBeTruthy();
+    expect(screen.queryByText("header#site-header")).toBeNull();
   });
 
   // Header and hero looked identical in the tree, so nothing said that editing
