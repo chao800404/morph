@@ -974,6 +974,25 @@ describe("EditorSectionsPanel page structure", () => {
     ).toEqual(["Header", "hero", "newsletter", "Footer"]);
   });
 
+  it("shows source-known layout roots before the iframe reports its DOM", () => {
+    const onSearchChange = vi.fn();
+    const { container } = renderPanel(vi.fn(), onSearchChange, {
+      activeRoute,
+      sourceLayoutRoots: {
+        before: ["starter-header"],
+        after: ["starter-footer"],
+      },
+    });
+
+    expect(
+      rootOrder(container, ["Header", "hero", "newsletter", "Footer"]),
+    ).toEqual(["Header", "hero", "newsletter", "Footer"]);
+    expect(screen.getAllByText("Global")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: /HeaderGlobal/ }));
+    expect(onSearchChange).toHaveBeenCalledWith({ section: "starter-header" });
+  });
+
   /**
    * The row is named after the file it comes from. Its DOM root is only known
    * once the preview has reported its structure, so a row that deferred to the
@@ -1010,6 +1029,10 @@ describe("EditorSectionsPanel page structure", () => {
     const { container } = renderPanel(vi.fn(), vi.fn(), {
       editableNodes: starterLayoutNodes,
       activeRoute,
+      sourceLayoutRoots: {
+        before: ["starter-header"],
+        after: ["starter-footer"],
+      },
     });
 
     expect(

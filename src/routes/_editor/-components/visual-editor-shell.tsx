@@ -1725,6 +1725,17 @@ export function VisualEditorShell({
     () => deriveThemeLayoutSections(effectiveThemeFiles).sections,
     [effectiveThemeFiles],
   );
+  const sourceLayoutRoots = useMemo(
+    () => ({
+      before: layoutSections
+        .filter((section) => section.layoutPlacement !== "after-page")
+        .map((section) => section.slotId),
+      after: layoutSections
+        .filter((section) => section.layoutPlacement === "after-page")
+        .map((section) => section.slotId),
+    }),
+    [layoutSections],
+  );
   const layoutTemplate = useMemo(
     () => context.templates.find((template) => template.type === "layout"),
     [context.templates],
@@ -6666,6 +6677,7 @@ export function VisualEditorShell({
           activeRoute={activeThemeRoute}
           routeStructurePending={routeStructurePending}
           sharedSectionIds={sectionModel.sharedSectionIds}
+          sourceLayoutRoots={sourceLayoutRoots}
           editableNodes={
             previewStructure?.key === previewKey
               ? previewStructure.nodes

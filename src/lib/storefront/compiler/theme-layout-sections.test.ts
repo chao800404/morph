@@ -27,6 +27,50 @@ describe("layout sections derived from the starter shell", () => {
       STOREFRONT_LAYOUT_HEADER_SLOT_ID,
       STOREFRONT_LAYOUT_FOOTER_SLOT_ID,
     ]);
+    expect(derived.sections.map((section) => section.layoutPlacement)).toEqual([
+      "before-page",
+      "after-page",
+    ]);
+  });
+
+  it("places layout slots around either children or a direct Outlet", () => {
+    const manifest = JSON.stringify({
+      documentLayout: { source: "src/layouts/Shell.tsx", export: "default" },
+    });
+    const customFiles = [
+      { path: "morph.theme.json", content: manifest },
+      {
+        path: "src/layouts/Shell.tsx",
+        content: `import { Outlet } from "@tanstack/react-router";
+import Header from "../components/Header";
+import Footer from "../components/Footer";
+import { content } from "../morph/content";
+function Helper({ children }: { children: React.ReactNode }) {
+  return <aside>{children}</aside>;
+}
+export default function Shell() {
+  return <><Header {...content("header")} /><Outlet /><Footer {...content("footer")} /></>;
+}`,
+      },
+      {
+        path: "src/components/Header.tsx",
+        content: "export default function Header() { return <header />; }",
+      },
+      {
+        path: "src/components/Footer.tsx",
+        content: "export default function Footer() { return <footer />; }",
+      },
+    ];
+
+    expect(
+      deriveThemeLayoutSections(customFiles).sections.map((section) => [
+        section.slotId,
+        section.layoutPlacement,
+      ]),
+    ).toEqual([
+      ["header", "before-page"],
+      ["footer", "after-page"],
+    ]);
   });
 
   it("names a section type per component rather than one shared 'layout'", () => {

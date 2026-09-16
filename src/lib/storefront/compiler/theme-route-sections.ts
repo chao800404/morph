@@ -16,6 +16,13 @@ export type ThemeRouteSection = Readonly<{
   componentSourcePath: string;
   routeSourcePath: string;
   /**
+   * Where a document-layout slot sits relative to the page content it wraps.
+   *
+   * Route sections leave this unset. The editor uses it to paint shared
+   * Header/Footer-style roots before the preview iframe has reported its DOM.
+   */
+  layoutPlacement?: "before-page" | "after-page";
+  /**
    * Set when the route imports this slot's component from a file the workspace
    * no longer has.
    *
@@ -412,6 +419,61 @@ function readDocumentLayoutPath(
   }
 }
 
+function readLayoutPageBoundary(
+  ast: any,
+  sections: readonly PositionedSection[],
+): number | null {
+  const candidates: number[] = [];
+  walkWithParent(ast, null, (candidate) => {
+    if (typeof candidate?.start !== "number") return;
+    const expression =
+      candidate.type === "JSXExpressionContainer" ? candidate.expression : null;
+    const isChildrenIdentifier =
+      expression?.type === "Identifier" && expression.name === "children";
+    const isChildrenMember =
+      expression?.type === "MemberExpression" &&
+      !expression.computed &&
+      expression.property?.type === "Identifier" &&
+      expression.property.name === "children";
+    const isOutlet =
+      candidate.type === "JSXElement" && jsxIdentifier(candidate) === "Outlet";
+    if (!isChildrenIdentifier && !isChildrenMember && !isOutlet) return;
+    candidates.push(candidate.start);
+  });
+  if (candidates.length === 0 || sections.length === 0) return null;
+  const starts = sections
+    .map((section) => section.node?.start)
+    .filter((value): value is number => typeof value === "number");
+  const ends = sections
+    .map((section) => section.node?.end)
+    .filter((value): value is number => typeof value === "number");
+  if (starts.length === 0 || ends.length === 0) return candidates[0] ?? null;
+  const firstSection = Math.min(...starts);
+  const lastSection = Math.max(...ends);
+  // A file may define a helper component that also renders `{children}`.
+  // Prefer the page placeholder among the layout slots; otherwise choose the
+  // candidate nearest that range rather than the first one in the file.
+  const withinSlots = candidates.filter(
+    (position) => position > firstSection && position < lastSection,
+  );
+  if (withinSlots.length > 0) return withinSlots[0] ?? null;
+  return candidates.reduce((nearest, position) => {
+    const distance =
+      position < firstSection
+        ? firstSection - position
+        : position > lastSection
+          ? position - lastSection
+          : 0;
+    const nearestDistance =
+      nearest < firstSection
+        ? firstSection - nearest
+        : nearest > lastSection
+          ? nearest - lastSection
+          : 0;
+    return distance < nearestDistance ? position : nearest;
+  });
+}
+
 /**
  * Sections the layout shell declares, which every route renders.
  *
@@ -428,7 +490,21 @@ export function deriveThemeLayoutSections(
   if (!layoutPath) {
     return { sections: [], diagnostics: [], hasContentImport: false };
   }
-  return deriveThemeRouteSections(files, layoutPath);
+  const parsed = parsePositionedSections(files, layoutPath);
+  const pageBoundary = readLayoutPageBoundary(parsed.ast, parsed.sections);
+  return {
+    sections: parsed.sections.map(({ node, parent: _parent, ...section }) => ({
+      ...section,
+      layoutPlacement:
+        pageBoundary !== null &&
+        typeof node?.start === "number" &&
+        node.start > pageBoundary
+          ? "after-page"
+          : "before-page",
+    })),
+    diagnostics: parsed.diagnostics,
+    hasContentImport: parsed.hasContentImport,
+  };
 }
 
 /** Components the route author may add as editable sections. */

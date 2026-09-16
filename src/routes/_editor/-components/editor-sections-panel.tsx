@@ -131,6 +131,14 @@ export type EditorSectionsPanelProps = {
   /** Source route currently rendered by the Design preview. */
   activeRoute?: ThemeRouteRecord | null;
   /**
+   * Shared layout slots known from Theme source before the preview iframe is
+   * ready. Runtime structure later enriches these rows with DOM children.
+   */
+  sourceLayoutRoots?: Readonly<{
+    before: readonly string[];
+    after: readonly string[];
+  }>;
+  /**
    * The URL already points at a source route, but its file tree has not been
    * loaded yet. Keep the previous template sections out of the first paint so
    * the tree never briefly shows a different page.
@@ -181,6 +189,11 @@ type EditorSection =
 
 /** Shared empty tree; a new literal would defeat the identity checks below. */
 const NO_SECTIONS: EditorSection[] = [];
+const NO_EDITABLE_NODES: readonly PreviewEditableNode[] = [];
+const NO_LAYOUT_ROOTS: Readonly<{
+  before: readonly string[];
+  after: readonly string[];
+}> = { before: [], after: [] };
 
 type EditorDeleteCandidate =
   | { kind: "section"; sectionId: string; label: string }
@@ -751,10 +764,11 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onSaveStateChange,
   onReorderSections,
   onToggleSectionEnabled,
-  editableNodes = [],
+  editableNodes,
   activeSelection,
   onSelectEditableNode,
   activeRoute = null,
+  sourceLayoutRoots = NO_LAYOUT_ROOTS,
   routeStructurePending = false,
   sharedSectionIds,
   themeRoutes = [],
@@ -770,6 +784,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onDeleteEditableNode,
 }: EditorSectionsPanelProps) {
   const activeTemplate = resolveEditorTemplate(context, search);
+  const previewEditableNodes = editableNodes ?? NO_EDITABLE_NODES;
+  const documentSections = activeTemplate?.document.sections ?? NO_SECTIONS;
   // A route whose kind has no template still loads the editor against a
   // borrowed one. Showing that template's sections here is what let the panel
   // offer the product template for editing while an About page was previewed,
@@ -781,7 +797,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     if (!templateAppliesToRoute(activeTemplate, search.routePath)) {
       return NO_SECTIONS;
     }
-    const all = activeTemplate?.document.sections ?? NO_SECTIONS;
+    const all = documentSections;
     // The shell's sections are in this document so the tree can show them,
     // but they are not this page's to order: reordering rewrites the route
     // file, and the route does not declare the layout's slots. Leaving them
@@ -792,7 +808,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     if (!sharedSectionIds?.size) return all;
     const own = all.filter((section) => !sharedSectionIds.has(section.id));
     return own.length === all.length ? all : own;
-  }, [activeTemplate, search.routePath, sharedSectionIds]);
+  }, [activeTemplate, documentSections, search.routePath, sharedSectionIds]);
   const [sections, setSections] = useState(sourceSections);
   const sectionsRef = useRef(sourceSections);
   const dragStartSectionsRef = useRef<EditorSection[] | null>(null);
@@ -821,14 +837,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   const [renamePending, setRenamePending] = useState(false);
   const nodesByParent = useMemo(() => {
     const result = new Map<string, PreviewEditableNode[]>();
-    for (const node of editableNodes) {
+    for (const node of previewEditableNodes) {
       const key = `${node.sectionId}\u0000${node.parentId ?? ""}`;
       const siblings = result.get(key) ?? [];
       siblings.push(node);
       result.set(key, siblings);
     }
     return result;
-  }, [editableNodes]);
+  }, [previewEditableNodes]);
   /**
    * A Document section is represented in the preview by a transparent
    * platform wrapper around the component's real root. The wrapper owns the
@@ -866,34 +882,59 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
    * five editable sections and no way to reach the header or footer that were
    * plainly on the canvas -- the same header a product page let you select.
    */
-  const layoutRoots = useMemo(
-    () =>
-      activeRoute
-        ? splitPageRoots({
-            editableNodes,
-            templateSectionIds,
-            routeSourcePath: activeRoute.sourcePath,
-          })
-        : { before: [], after: [], shared: new Set<string>() },
-    [activeRoute, editableNodes, templateSectionIds],
-  );
+  const layoutRoots = useMemo(() => {
+    if (!activeRoute) {
+      return { before: [], after: [], shared: new Set<string>() };
+    }
+    const rendered = splitPageRoots({
+      editableNodes: previewEditableNodes,
+      templateSectionIds,
+      routeSourcePath: activeRoute.sourcePath,
+    });
+    const renderedIds = new Set([...rendered.before, ...rendered.after]);
+    // Theme source already tells us which shared slots wrap the page. Keep
+    // those rows present from the first paint, then let the iframe add route
+    // roots and DOM children without replacing or renaming the source rows.
+    const before = [
+      ...sourceLayoutRoots.before.filter((id) => !renderedIds.has(id)),
+      ...rendered.before,
+    ];
+    const after = [
+      ...rendered.after,
+      ...sourceLayoutRoots.after.filter((id) => !renderedIds.has(id)),
+    ];
+    return {
+      before,
+      after,
+      shared: new Set([
+        ...sourceLayoutRoots.before,
+        ...sourceLayoutRoots.after,
+        ...rendered.shared,
+      ]),
+    };
+  }, [
+    activeRoute,
+    previewEditableNodes,
+    sourceLayoutRoots,
+    templateSectionIds,
+  ]);
 
   const layoutRootIds = useMemo(
     () => [...layoutRoots.before, ...layoutRoots.after],
     [layoutRoots],
   );
   const editableNodeById = useMemo(
-    () => new Map(editableNodes.map((node) => [node.id, node])),
-    [editableNodes],
+    () => new Map(previewEditableNodes.map((node) => [node.id, node])),
+    [previewEditableNodes],
   );
   const selectedEditableNode = useMemo(
     () =>
-      editableNodes.find(
+      previewEditableNodes.find(
         (node) =>
           node.sectionId === (activeSelection?.sectionId ?? search.section) &&
           selectionMatchesEditableNode(node, activeSelection),
       ) ?? null,
-    [activeSelection, editableNodes, search.section],
+    [activeSelection, previewEditableNodes, search.section],
   );
   const updateSections = (next: EditorSection[]) => {
     sectionsRef.current = next;
@@ -1120,7 +1161,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     // A layout section stores its name like any other, and the tree should show
     // it. One entry for the whole site means one name everywhere — which is
     // what the "Global" badge on this row tells the author.
-    const storedName = sections.find(
+    const storedName = documentSections.find(
       (section) => section.id === sectionId,
     )?.name;
     const label = storedName ?? rootLabel;
@@ -1136,7 +1177,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
         })}
         onRequestRename={
           onRenameSection &&
-          sections.some((section) => section.id === sectionId)
+          documentSections.some((section) => section.id === sectionId)
             ? () => {
                 setRenameCandidate({ sectionId, current: label });
                 setRenameValue(storedName ?? "");
