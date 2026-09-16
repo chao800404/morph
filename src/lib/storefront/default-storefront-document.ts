@@ -40,9 +40,11 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  * 22: remove every marker the compiler derives, in place, from source an author
  *     has edited too — the byte-exact replacements above can never reach it.
  * 23: give the Header's navigation map an index, without which its rows carry
- *     no field path and the editor cannot tell one link from another.
+ *     no field path and the editor cannot tell one link from another; and make
+ *     its rows the link itself, the hand-written span around each one having
+ *     been standing in for a wrapper the compiler now decides.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 23;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 24;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

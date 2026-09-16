@@ -692,11 +692,13 @@ export default function Header({
         aria-label="Storefront navigation"
       >
         {navItems.map((item, index) => (
-          <span key={item.label}>
-            <ThemeLink link={item.link} className="hover:text-neutral-950">
-              {item.label}
-            </ThemeLink>
-          </span>
+          <ThemeLink
+            key={index}
+            link={item.link}
+            className="hover:text-neutral-950"
+          >
+            {item.label}
+          </ThemeLink>
         ))}
       </nav>
       <ThemeLink
@@ -949,7 +951,15 @@ export default function Footer({
 `;
 
 /**
- * The Header before its navigation map took an index.
+ * The Header before its navigation map took an index, and before its rows were
+ * the link itself.
+ *
+ * The `<span>` around each `ThemeLink` was doing by hand what the compiler now
+ * does: giving the row a real host element to carry its markers, because an
+ * attribute put on a component is only a prop it may never pass on. The
+ * compiler recognises `morph/link` and hands the markers to the anchor it
+ * renders, and wraps anything it cannot vouch for — so the row is the link, as
+ * it already was in the Footer.
  *
  * A `.map()` callback with no second parameter leaves the compiler nothing to
  * build `navItems.0.label` from, so the rows it renders carry no field path
@@ -962,8 +972,22 @@ export default function Footer({
  */
 export const LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE =
   STARTER_THEME_HEADER_SOURCE.replace(
-    "{navItems.map((item, index) => (",
-    "{navItems.map((item) => (",
+    `        {navItems.map((item, index) => (
+          <ThemeLink
+            key={index}
+            link={item.link}
+            className="hover:text-neutral-950"
+          >
+            {item.label}
+          </ThemeLink>
+        ))}`,
+    `        {navItems.map((item) => (
+          <span key={item.label}>
+            <ThemeLink link={item.link} className="hover:text-neutral-950">
+              {item.label}
+            </ThemeLink>
+          </span>
+        ))}`,
   );
 
 export const STARTER_THEME_FOOTER_SOURCE = `import type { ThemeContentFields } from "../morph/content-fields";

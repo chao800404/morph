@@ -11,6 +11,7 @@ import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE,
   LEGACY_STARTER_THEME_HERO_SOURCE,
   LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
@@ -22,6 +23,7 @@ import {
   LEGACY_STARTER_THEME_ROOT_ROUTE_CONTENTLESS_SOURCE,
   LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE,
+  STARTER_THEME_HEADER_SOURCE,
   STARTER_THEME_HOME_ROUTE_SOURCE,
   STARTER_THEME_V3_NEW_FILES,
 } from "./starter-theme-v3-files";
@@ -678,6 +680,48 @@ export default function Principles({ label = "Why we choose differently" }: Prin
         },
       ]).some((file) => file.path === "src/components/Card.tsx"),
     ).toBe(false);
+  });
+
+  /**
+   * The Footer's shape, now the Header's too: the row is the link. The span
+   * that used to wrap each one was standing in for a wrapper the compiler
+   * decides — an attribute on a component is only a prop it may never pass on,
+   * so the compiler hands markers to a `morph/link` anchor directly and wraps
+   * anything it cannot vouch for.
+   */
+  it("makes a repeated link the row itself, in the Header as in the Footer", () => {
+    const header = STARTER_THEME_FILES.find(
+      (file) => file.path === "src/components/Header.tsx",
+    )!.content;
+
+    expect(header).toContain("{navItems.map((item, index) => (");
+    expect(header).not.toContain("<span key={item.label}>");
+  });
+
+  // A workspace still on the previous shape has to be recognised, or it keeps
+  // a navigation whose rows the editor cannot tell apart.
+  it("still recognises the Header it replaced", () => {
+    expect(LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE).not.toBe(
+      STARTER_THEME_HEADER_SOURCE,
+    );
+    expect(LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE).toContain(
+      "{navItems.map((item) => (",
+    );
+    expect(LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE).toContain(
+      "<span key={item.label}>",
+    );
+    const upgrades = createStarterThemeWorkspaceUpgrade([
+      {
+        id: "header",
+        path: "src/components/Header.tsx",
+        content: LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE,
+        version: 4,
+      },
+    ]);
+    expect(
+      upgrades.find((file) => file.path === "src/components/Header.tsx")
+        ?.content,
+    ).toBe(STARTER_THEME_HEADER_SOURCE);
   });
 
   it("does not declare a document layout over an authored entry file", () => {
