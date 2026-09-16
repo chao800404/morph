@@ -98,3 +98,30 @@ export function normalizeWheelDelta(
   if (deltaMode === 2) return deltaY * viewportHeight;
   return deltaY;
 }
+
+/**
+ * The vertical pan that puts one element on the viewport's horizontal midline.
+ *
+ * The canvas translates rather than scrolls, so bringing something into view is
+ * arithmetic on the transform: an element at `top` in the preview's own pixels
+ * appears at `y + top * scale`, and centring it means solving for the `y` that
+ * places its middle at the middle of the viewport.
+ *
+ * Returned unclamped. The caller passes it through `clampCanvasTransform`,
+ * which owns how far the canvas may travel — an element near either end of a
+ * long page cannot be centred, and should come to rest against the edge rather
+ * than leaving the page half off-screen.
+ */
+export function canvasYToCenterElement({
+  elementTop,
+  elementHeight,
+  viewportHeight,
+  scale,
+}: {
+  elementTop: number;
+  elementHeight: number;
+  viewportHeight: number;
+  scale: number;
+}): number {
+  return viewportHeight / 2 - (elementTop + elementHeight / 2) * scale;
+}

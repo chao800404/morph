@@ -244,6 +244,7 @@ import {
   resolvePreviewViewport,
   snapCanvasScaleTowardDefault,
   type CanvasTransform,
+  canvasYToCenterElement,
 } from "./editor-canvas-geometry";
 import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
@@ -2038,6 +2039,7 @@ export function VisualEditorShell({
     postMessage: postEditorToPreviewMessage,
   } = useLivePreviewMessageBridge(livePreviewChannel, previewIframeRef);
   const previewSizeMeasurementRevisionRef = useRef(0);
+  const revealNextSelectionRef = useRef(false);
   const beginPreviewSizeMeasurement = useCallback(() => {
     previewSizeMeasurementRevisionRef.current += 1;
     return previewSizeMeasurementRevisionRef.current;
@@ -4206,6 +4208,30 @@ export function VisualEditorShell({
       if (responseSelectionRevision < previewSelectionRevisionRef.current) {
         return;
       }
+      // Brings the canvas to a selection the tree asked for. Consumed either
+      // way, so a canvas click that lands between the request and the reply
+      // cannot inherit a pan that was meant for the tree.
+      const shouldReveal = revealNextSelectionRef.current;
+      revealNextSelectionRef.current = false;
+      if (shouldReveal && message.documentRect) {
+        const viewportHeight =
+          canvasViewportHeightRef.current ||
+          canvasViewportRef.current?.clientHeight ||
+          0;
+        if (viewportHeight > 0) {
+          const rect = message.documentRect;
+          scheduleCanvasTransform((current) => ({
+            ...current,
+            y: canvasYToCenterElement({
+              elementTop: rect.top,
+              elementHeight: rect.height,
+              viewportHeight,
+              scale: current.scale,
+            }),
+          }));
+        }
+      }
+
       const incomingTarget: PreviewSelectionRestoreTarget = {
         sectionId: message.sectionId,
         sourceLocation: message.sourceLocation ?? undefined,
@@ -4472,6 +4498,10 @@ export function VisualEditorShell({
   const handleEditableNodeSelect = useCallback(
     (target: PreviewSelectionRestoreTarget) => {
       reportAuthenticatedUserActivity();
+      // Only a selection the author made in the tree brings the canvas to it.
+      // Clicking something on the canvas means they are already looking at it,
+      // and moving the page under a click is how a click feels like a misfire.
+      revealNextSelectionRef.current = true;
       const previewNodes =
         previewStructure?.key === previewKey ? previewStructure.nodes : [];
       const selectedNode =

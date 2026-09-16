@@ -163,6 +163,17 @@ function sendSelectionReport(item) {
       computedStyle: styleOf(item.element),
       parentComputedStyle: styleOf(item.element.parentElement ?? item.element),
       sectionComputedStyle: styleOf(item.section ?? item.element),
+      // Where it sits in this document, which only this side can measure: the
+      // editor holds a cross-origin frame, rendered at full height inside a
+      // canvas that pans by transform, so it has neither the element nor a
+      // scroll position to read.
+      documentRect: (() => {
+        const rect = item.element.getBoundingClientRect();
+        return {
+          top: rect.top + window.scrollY,
+          height: rect.height,
+        };
+      })(),
     },
     channel,
   );

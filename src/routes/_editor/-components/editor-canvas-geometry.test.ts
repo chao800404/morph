@@ -9,6 +9,7 @@ import {
   CANVAS_DEFAULT_SCALE,
   MAX_CANVAS_SCALE,
   MIN_CANVAS_SCALE,
+  canvasYToCenterElement,
   clampCanvasScale,
   clampCanvasTransform,
   clampPreviewWidth,
@@ -80,5 +81,67 @@ describe("panning", () => {
     expect(normalizeWheelDelta(3, 0, 900)).toBe(3);
     expect(normalizeWheelDelta(3, 1, 900)).toBe(48);
     expect(normalizeWheelDelta(2, 2, 900)).toBe(1800);
+  });
+});
+
+describe("bringing a selection to the middle of the canvas", () => {
+  const viewportHeight = 1172;
+
+  /**
+   * The canvas translates rather than scrolls, so this is where an element
+   * ends up: `y + top * scale`. Centring is the `y` that puts its middle on
+   * the viewport's own middle, which is the whole of the arithmetic.
+   */
+  const centreOnScreen = (
+    elementTop: number,
+    elementHeight: number,
+    scale = 1,
+  ) =>
+    canvasYToCenterElement({
+      elementTop,
+      elementHeight,
+      viewportHeight,
+      scale,
+    }) +
+    (elementTop + elementHeight / 2) * scale;
+
+  it("puts the element's middle on the viewport's middle", () => {
+    for (const [top, height] of [
+      [64, 1900],
+      [2586, 700],
+      [4015, 601],
+    ]) {
+      expect(centreOnScreen(top!, height!)).toBeCloseTo(viewportHeight / 2);
+    }
+  });
+
+  // Zoom scales the distance travelled, not the destination.
+  it("holds at any zoom", () => {
+    for (const scale of [0.5, 1, 1.75]) {
+      expect(centreOnScreen(3418, 597, scale)).toBeCloseTo(viewportHeight / 2);
+    }
+  });
+
+  /**
+   * An element near either end cannot be centred without leaving the page half
+   * off-screen. The clamp owns that, which is why the centring itself is
+   * returned unclamped.
+   */
+  it("is left to the clamp to keep the page on screen", () => {
+    const contentHeight = 5000;
+    const top = canvasYToCenterElement({
+      elementTop: 0,
+      elementHeight: 100,
+      viewportHeight,
+      scale: 1,
+    });
+    expect(top).toBeGreaterThan(0);
+    expect(
+      clampCanvasTransform(
+        { x: 0, y: top, scale: 1 },
+        viewportHeight,
+        contentHeight,
+      ).y,
+    ).toBeLessThan(top);
   });
 });

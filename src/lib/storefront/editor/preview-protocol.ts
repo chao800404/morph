@@ -334,6 +334,15 @@ export type PreviewSelectionMessage = {
   computedStyle: PreviewStyleSnapshot | null;
   parentComputedStyle: PreviewStyleSnapshot | null;
   sectionComputedStyle: PreviewStyleSnapshot | null;
+  /**
+   * Where the element sits in the preview document, in its own CSS pixels.
+   *
+   * The editor cannot measure it: the preview is a cross-origin frame, and it
+   * is rendered at full height inside a canvas that pans by transform rather
+   * than scrolling, so there is no scroll position to read either. Reported so
+   * a selection made in the tree can be brought into view.
+   */
+  documentRect?: { top: number; height: number } | null;
 };
 
 export type PreviewToEditorMessage =
@@ -1003,7 +1012,8 @@ export function parsePreviewToEditorMessage(
         !(
           value.sectionComputedStyle === null ||
           isStyleSnapshot(value.sectionComputedStyle)
-        )
+        ) ||
+        !isNullableDocumentRect(value.documentRect)
       ) {
         return null;
       }
@@ -1034,6 +1044,7 @@ export function parsePreviewToEditorMessage(
         computedStyle: value.computedStyle,
         parentComputedStyle: value.parentComputedStyle,
         sectionComputedStyle: value.sectionComputedStyle,
+        documentRect: readDocumentRect(value.documentRect),
       };
     }
     case "morph:storefront-preview-open-file-history":
@@ -1166,6 +1177,34 @@ export function parseEditorToPreviewEvent(
     return null;
   }
   return parseEditorToPreviewMessage(event.data);
+}
+
+/**
+ * A rectangle the preview measured in its own document.
+ *
+ * Bounded like every other value crossing this boundary: the frame runs Theme
+ * JavaScript, so a number arriving from it is a claim, not a fact. A page
+ * taller than this is past anything the canvas can show.
+ */
+const MAX_PREVIEW_DOCUMENT_EXTENT = 1_000_000;
+
+function isNullableDocumentRect(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (!isRecord(value)) return false;
+  return (
+    Number.isFinite(value.top) &&
+    Number.isFinite(value.height) &&
+    Math.abs(value.top as number) <= MAX_PREVIEW_DOCUMENT_EXTENT &&
+    (value.height as number) >= 0 &&
+    (value.height as number) <= MAX_PREVIEW_DOCUMENT_EXTENT
+  );
+}
+
+function readDocumentRect(
+  value: unknown,
+): { top: number; height: number } | null {
+  if (!isNullableDocumentRect(value) || !isRecord(value)) return null;
+  return { top: value.top as number, height: value.height as number };
 }
 
 export function parsePreviewToEditorEvent(
