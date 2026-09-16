@@ -32,9 +32,15 @@ export function shouldRevealPreviewSelection(args: {
 }): boolean {
   const { request, responseRevision, previewKey, targetMatches } = args;
   if (!request || request.reveal !== true) return false;
-  // Not `>=`: a later report is a different selection, and an earlier one is an
-  // answer to a request already superseded. Only the exact revision asked for.
-  if (responseRevision !== request.revision) return false;
+  // At least the revision asked for, not exactly it. The preview keeps its own
+  // counter and adopts the higher of the two, so a request made while its
+  // counter is ahead — which it is right after a load, having already selected
+  // something itself — is answered with that higher number. Requiring equality
+  // refused the first selection of every session.
+  //
+  // An earlier revision is an answer to a request already superseded, and the
+  // target check below is what keeps a newer, unrelated selection out.
+  if (responseRevision < request.revision) return false;
   // A reconnect mints a new preview, and anything outstanding against the old
   // one describes a document that is no longer on screen.
   if (

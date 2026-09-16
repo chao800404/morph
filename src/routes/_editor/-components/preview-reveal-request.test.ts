@@ -31,13 +31,24 @@ describe("deciding whether a report may move the canvas", () => {
   });
 
   /**
-   * Two rows clicked quickly. The first request is replaced by the second, so
-   * the first reply arrives against a revision nobody is waiting for — and the
-   * second reply must not be spent on the first row's rectangle either.
+   * Two rows clicked quickly. The first reply arrives against a revision that
+   * has already been passed, and is an answer to a request nobody is waiting
+   * for any more.
    */
   it("ignores a reply to a request that was superseded", () => {
     expect(answer({ responseRevision: 41 })).toBe(false);
-    expect(answer({ responseRevision: 43 })).toBe(false);
+  });
+
+  /**
+   * The preview keeps its own counter and adopts the higher of the two, so a
+   * request made while it is ahead comes back with a number larger than the one
+   * asked for. That is the answer, not a different selection — which is why the
+   * target has to match and does the work of telling them apart. Requiring
+   * equality here refused the first selection of every session.
+   */
+  it("accepts an answer the preview numbered higher", () => {
+    expect(answer({ responseRevision: 43 })).toBe(true);
+    expect(answer({ responseRevision: 43, targetMatches: false })).toBe(false);
   });
 
   /**

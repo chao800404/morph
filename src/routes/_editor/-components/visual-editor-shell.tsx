@@ -1365,19 +1365,21 @@ export function VisualEditorShell({
   const pendingPreviewSelectionRef = useRef<{
     target: PreviewSelectionRestoreTarget;
     revision: number;
-    /**
-     * Whether this request should bring the canvas to what it selects.
-     *
-     * Carried on the request rather than kept beside it, because a flag on its
-     * own cannot say which request it belongs to: the next report to arrive
-     * consumes it, and between asking and hearing back the author may have
-     * clicked the canvas, switched route, or clicked another row. Bound to the
-     * revision and target, an answer that is not the one asked for moves
-     * nothing.
-     */
-    reveal?: boolean;
-    /** The preview it was asked of; a reconnect makes it a different one. */
-    previewKey?: string | null;
+  } | null>(null);
+  /**
+   * A request from the tree to bring the canvas to what it selects.
+   *
+   * Held apart from the selection request above, which every accepted report
+   * clears — including the preview's own restore, which arrives first after a
+   * reload and is not an answer to anything. Clearing the reveal with it killed
+   * the request before its reply landed, which is why the first click after a
+   * load did nothing. This one is cleared when it is answered, when a newer
+   * request replaces it, or when the thing it was asked of is gone.
+   */
+  const pendingRevealRef = useRef<{
+    target: PreviewSelectionRestoreTarget;
+    revision: number;
+    previewKey: string | null;
   } | null>(null);
   const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
     useState(0);
@@ -2078,6 +2080,7 @@ export function VisualEditorShell({
     if (previousMode === editorMode || editorMode !== "code") return;
 
     pendingPreviewSelectionRef.current = null;
+    pendingRevealRef.current = null;
     setActiveSelection(null);
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-selection-mode",
@@ -3932,6 +3935,7 @@ export function VisualEditorShell({
     ) {
       lastPreviewSelectionRef.current = null;
       pendingPreviewSelectionRef.current = null;
+      pendingRevealRef.current = null;
       setActiveSelection(null);
       resetCanvasScrollPosition();
     }
@@ -3942,6 +3946,7 @@ export function VisualEditorShell({
     if (previousRoutePathRef.current !== search.routePath) {
       lastPreviewSelectionRef.current = null;
       pendingPreviewSelectionRef.current = null;
+      pendingRevealRef.current = null;
       setActiveSelection(null);
       resetCanvasScrollPosition();
     }
@@ -4250,15 +4255,24 @@ export function VisualEditorShell({
       // it moves anything. Every part has to agree: the revision, the target it
       // named, and the preview it was asked of — a reconnect mints a new one
       // and any request outstanding against the old preview is stale.
-      const revealRequest = pendingPreviewSelectionRef.current;
+      const revealRequest = pendingRevealRef.current;
       const shouldReveal = shouldRevealPreviewSelection({
-        request: revealRequest,
+        request: revealRequest && { ...revealRequest, reveal: true },
         responseRevision: responseSelectionRevision,
         previewKey: previewKeyRef.current,
         targetMatches: revealRequest
           ? previewSelectionTargetMatches(revealRequest.target, incomingTarget)
           : false,
       });
+      // Answered, or overtaken by a selection made since. A report that is
+      // neither — the preview restoring its own selection after a reload —
+      // leaves the request standing for the reply still on its way.
+      if (
+        shouldReveal ||
+        (revealRequest && responseSelectionRevision > revealRequest.revision)
+      ) {
+        pendingRevealRef.current = null;
+      }
       pendingPreviewSelectionRef.current = null;
       if (shouldReveal && message.documentRect) {
         const rect = message.documentRect;
@@ -4547,10 +4561,13 @@ export function VisualEditorShell({
       pendingPreviewSelectionRef.current = {
         target,
         revision: selectionRevision,
-        // Only a selection made here. Clicking something on the canvas means
-        // the author is already looking at it, and moving the page under a
-        // click is how a click comes to feel like a misfire.
-        reveal: true,
+      };
+      // Only a selection made here brings the canvas to it. Clicking something
+      // on the canvas means the author is already looking at it, and moving the
+      // page under a click is how a click comes to feel like a misfire.
+      pendingRevealRef.current = {
+        target,
+        revision: selectionRevision,
         previewKey: previewKeyRef.current,
       };
       setActiveSelection(nextSelection);
