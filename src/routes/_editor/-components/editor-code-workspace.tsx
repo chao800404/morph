@@ -3460,11 +3460,6 @@ const EditorCodeWorkspaceContent = forwardRef<
               onMount={handleEditorDidMount}
               theme="vs-dark"
               options={{
-                // Swaps Monaco's two click gestures: Alt/Option goes to the
-                // definition and Cmd/Ctrl adds a cursor. The default is the
-                // other way round, which is what left Alt-clicking a component
-                // dropping a second caret instead of opening its file.
-                multiCursorModifier: "ctrlCmd",
                 readOnly: activeFileIsGenerated,
                 domReadOnly: activeFileIsGenerated,
                 fontSize: 13,

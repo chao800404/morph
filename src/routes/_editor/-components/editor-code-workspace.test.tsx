@@ -21,15 +21,13 @@ const monacoTestState = vi.hoisted(() => ({
   formatter: null as null | ((content: string) => string | Promise<string>),
   formatError: false,
   editorOptions: null as Record<string, unknown> | null,
-  editorOpener: null as
-    | {
-        openCodeEditor: (
-          source: unknown,
-          resource: { toString(): string },
-          selectionOrPosition?: unknown,
-        ) => boolean | Promise<boolean>;
-      }
-    | null,
+  editorOpener: null as {
+    openCodeEditor: (
+      source: unknown,
+      resource: { toString(): string },
+      selectionOrPosition?: unknown,
+    ) => boolean | Promise<boolean>;
+  } | null,
   lastPosition: null as { lineNumber: number; column: number } | null,
 }));
 
@@ -99,9 +97,9 @@ vi.mock("@monaco-editor/react", () => ({
       const monaco = {
         editor: {
           getModels: () => [model],
-          registerEditorOpener: (opener: NonNullable<
-            typeof monacoTestState.editorOpener
-          >) => {
+          registerEditorOpener: (
+            opener: NonNullable<typeof monacoTestState.editorOpener>,
+          ) => {
             monacoTestState.editorOpener = opener;
             return {
               dispose: () => {
@@ -245,14 +243,18 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     ).toBe("vs-dark");
   });
 
-  it("uses Alt or Option for Monaco's go-to-definition gesture", async () => {
+  /**
+   * Monaco's own default, which is the platform's: Cmd on macOS and Ctrl
+   * elsewhere goes to a definition, and Alt/Option adds a cursor — the same
+   * pairing VS Code uses. Setting `multiCursorModifier: "ctrlCmd"` swaps them,
+   * which is what briefly made Option the go-to gesture here and left the
+   * editor disagreeing with every other editor on the machine.
+   */
+  it("leaves the go-to-definition gesture on the platform's own modifier", async () => {
     renderWorkspace();
 
-    await waitFor(() => {
-      expect(monacoTestState.editorOptions?.multiCursorModifier).toBe(
-        "ctrlCmd",
-      );
-    });
+    await waitFor(() => expect(monacoTestState.editorOptions).not.toBeNull());
+    expect(monacoTestState.editorOptions?.multiCursorModifier).toBeUndefined();
   });
 
   it("opens a definition from another file in the Theme workspace", async () => {
