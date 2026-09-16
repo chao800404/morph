@@ -49,7 +49,7 @@ export type StorefrontPageDocument = {
      *
      * Stored per section entry, so the same component placed on three pages
      * has three names. A layout section has one entry for the whole site and
-     * therefore one name, which is what "All pages" on its row already says.
+     * therefore one name, which is what the editor's "Global" badge already says.
      */
     name?: string;
     enabled: boolean;

@@ -161,6 +161,10 @@ import {
   readThemeInstanceStyleClasses,
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
+import {
+  GLOBAL_LAYOUT_LABEL,
+  SHARED_LAYOUT_HINT,
+} from "./editor-layout-labels";
 
 type EditorSection =
   StorefrontThemeEditorDTO["templates"][number]["document"]["sections"][number];
@@ -2186,9 +2190,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           {componentPath && sharedLayoutPaths?.has(componentPath) ? (
             <span
               className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium text-foreground"
-              title="Shared by every page — editing this changes them all"
+              title={SHARED_LAYOUT_HINT}
             >
-              All pages
+              {GLOBAL_LAYOUT_LABEL}
             </span>
           ) : null}
         </div>

@@ -1759,7 +1759,7 @@ export function VisualEditorShell({
    * The template that stores a section's values.
    *
    * A shell section is on the canvas of whichever page is open, but writing it
-   * into that page's document would make "All pages" a lie the moment a second
+   * into that page's document would make the "Global" scope a lie the moment a second
    * page was edited.
    */
   const templateIdForSection = useCallback(

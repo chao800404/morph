@@ -241,7 +241,7 @@ export const STOREFRONT_LAYOUT_FOOTER_SLOT_ID = "starter-footer";
  * the document changes nothing on the page: the values move from the source to
  * the Document, and the rendered result is byte-identical until an author
  * edits one. Held apart from the page documents because it belongs to every
- * path at once — the same reason the editor labels these rows "All pages".
+ * path at once — the same reason the editor labels these rows "Global".
  */
 export function createDefaultStorefrontLayoutDocument(): StorefrontPageDocument {
   return {

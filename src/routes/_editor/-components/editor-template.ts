@@ -1,5 +1,6 @@
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
+import { GLOBAL_LAYOUT_LABEL } from "./editor-layout-labels";
 
 type EditorTemplate = StorefrontThemeEditorDTO["templates"][number];
 
@@ -10,7 +11,7 @@ const templatePaths: Record<EditorTemplate["type"], string> = {
   page: "/pages/:handle",
   blog: "/blogs/:handle",
   // No URL resolves to the layout; it is the shell every path renders inside.
-  layout: "All pages",
+  layout: GLOBAL_LAYOUT_LABEL,
 };
 
 /** Map a source-authored URL to the template document used for its content. */

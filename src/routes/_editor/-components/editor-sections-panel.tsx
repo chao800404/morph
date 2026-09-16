@@ -110,6 +110,10 @@ import {
   templateAppliesToRoute,
 } from "./editor-template";
 import { EditorPagesSearch } from "./editor-pages-search";
+import {
+  GLOBAL_LAYOUT_LABEL,
+  SHARED_LAYOUT_HINT,
+} from "./editor-layout-labels";
 
 export type EditorSectionsPanelProps = {
   context: StorefrontThemeEditorDTO;
@@ -402,7 +406,7 @@ function SortableSectionRow({
                 className={cn(
                   // Active menu buttons use z-30; the visibility action must
                   // remain above that surface or a selected row intercepts
-                  // its click (especially when the label carries "All pages").
+                  // its click (especially when the label carries "Global").
                   "top-1 right-1 z-40 size-5",
                   section.enabled === false && "opacity-100",
                 )}
@@ -450,8 +454,6 @@ function SortableSectionRow({
  * sections. Keep that source tree visible without pretending it is a stored
  * section (which would incorrectly enable reorder, visibility, or delete).
  */
-const SHARED_ROOT_HINT = "Shared by every page — editing this changes them all";
-
 /**
  * What the row's element is, in DOM terms: `section#hero`, or `section`.
  *
@@ -514,7 +516,7 @@ function RouteTreeRootRow({
               className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
               aria-label={`${expanded ? "Collapse" : "Expand"} ${
                 shared ? "shared layout" : "route"
-              } ${label}${shared ? `. ${SHARED_ROOT_HINT}` : ""}`}
+              } ${label}${shared ? `. ${SHARED_LAYOUT_HINT}` : ""}`}
               aria-expanded={hasChildren ? expanded : undefined}
               disabled={!hasChildren}
               onPointerDown={(event) => event.stopPropagation()}
@@ -533,7 +535,7 @@ function RouteTreeRootRow({
             isActive={selected}
             className="min-w-0 flex-1 cursor-pointer px-1.5"
             onClick={onSelect}
-            title={shared ? SHARED_ROOT_HINT : `Select ${label}`}
+            title={shared ? SHARED_LAYOUT_HINT : `Select ${label}`}
           >
             <Icon
               className="shrink-0 text-muted-foreground"
@@ -552,7 +554,7 @@ function RouteTreeRootRow({
                 tuned for the page background and does not clear 4.5:1 here. */}
             {shared ? (
               <span className="ml-auto shrink-0 pl-2 text-[10px] font-medium text-sidebar-foreground">
-                All pages
+                {GLOBAL_LAYOUT_LABEL}
               </span>
             ) : null}
           </SidebarMenuButton>
@@ -1078,23 +1080,26 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     );
   };
 
-  /** A page root the template does not own: the layout, Header, Footer. */
+  /** A page root the template does not own: the global Header or Footer. */
   const renderLayoutRoot = (sectionId: string): React.ReactNode => {
     const normalized = normalizedSectionTree(sectionId);
     const sectionNodes = normalized.children;
     const sourceName = sectionId.split("/").at(-1) ?? sectionId;
     const sourceStem = sourceName.replace(/\.[cm]?[jt]sx?$/, "");
+    // Layout slot ids are storage identities. The starter reserves the
+    // `starter-header`/`starter-footer` forms, but exposing that prefix makes
+    // the tree read like an implementation detail. Preserve other authored
+    // names and only remove the reserved prefix when it identifies one of the
+    // two global shell roles.
+    const semanticLayoutStem =
+      /^(?:starter[-_])?(header|footer)$/i.exec(sourceStem)?.[1] ?? sourceStem;
     const rootLabel =
       sectionId === activeRoute?.sourcePath
         ? activeRoute.path === "/"
           ? "Home"
           : activeRoute.path
-        : sourceStem
+        : semanticLayoutStem
             .replace(/[-_]+/g, " ")
-            // `\b` written into this file unescaped once before, which left a
-            // literal backspace in the pattern: it matched nothing, so the
-            // transform silently did nothing and every shared layout row read
-            // "starter header" instead of "Starter Header".
             .replace(/\b\w/g, (character) => character.toUpperCase());
     // A route is its path and a shared layout is its file; neither is a plain
     // DOM element, so neither takes its name from one. Deferring to the root's
@@ -1105,7 +1110,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     // element actually is goes beside the name instead.
     // A layout section stores its name like any other, and the tree should show
     // it. One entry for the whole site means one name everywhere — which is
-    // what "All pages" on this row already tells the author.
+    // what the "Global" badge on this row tells the author.
     const storedName = sections.find(
       (section) => section.id === sectionId,
     )?.name;

@@ -48,7 +48,10 @@ function renderPanel(options?: {
   expect(shell.diagnostics).toEqual([]);
   expect(route.diagnostics).toEqual([]);
 
-  const pageTemplate = { id: "page", document: createDefaultStorefrontHomeDocument() };
+  const pageTemplate = {
+    id: "page",
+    document: createDefaultStorefrontHomeDocument(),
+  };
   const model = resolveEditorSectionModel({
     pageTemplate,
     shellTemplate:
@@ -145,7 +148,7 @@ describe("selecting a navigation link in the shell", () => {
   it("says the row is shared by every page", () => {
     renderPanel();
 
-    expect(screen.getByText("All pages")).toBeTruthy();
+    expect(screen.getByText("Global")).toBeTruthy();
   });
 
   it("falls back to the entries the component itself declares", () => {

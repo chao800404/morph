@@ -922,7 +922,7 @@ describe("EditorSectionsPanel page structure", () => {
    */
   const rootOrder = (container: HTMLElement, roots: readonly string[]) =>
     [...container.querySelectorAll("button")]
-      // A shared root carries an "All pages" badge inside the same button, so
+      // A shared root carries a "Global" badge inside the same button, so
       // the row is matched by the name it leads with.
       .map((button) => {
         const text = button.textContent?.trim() ?? "";
@@ -995,6 +995,31 @@ describe("EditorSectionsPanel page structure", () => {
     expect(rootOrder(container, ["Header", "Div"])).toEqual(["Header"]);
   });
 
+  it("hides the reserved starter prefix from global layout names", () => {
+    const starterLayoutNodes = layoutNodes.map((node) => {
+      const isHeader = node.sectionId === "src/components/Header.tsx";
+      const isFooter = node.sectionId === "src/components/Footer.tsx";
+      if (!isHeader && !isFooter) return node;
+      const sectionId = isHeader ? "starter-header" : "starter-footer";
+      return {
+        ...node,
+        sectionId,
+        target: { ...node.target, sectionId },
+      };
+    }) as unknown as readonly PreviewEditableNode[];
+    const { container } = renderPanel(vi.fn(), vi.fn(), {
+      editableNodes: starterLayoutNodes,
+      activeRoute,
+    });
+
+    expect(
+      rootOrder(container, ["Header", "hero", "newsletter", "Footer"]),
+    ).toEqual(["Header", "hero", "newsletter", "Footer"]);
+    expect(screen.queryByText("Starter Header")).toBeNull();
+    expect(screen.queryByText("Starter Footer")).toBeNull();
+    expect(screen.getAllByText("Global")).toHaveLength(2);
+  });
+
   // A layout is its file, not its root element — so an authored id is shown
   // beside the name rather than in place of it.
   it("shows the root's id beside the layout name, not instead of it", () => {
@@ -1041,12 +1066,12 @@ describe("EditorSectionsPanel page structure", () => {
     expect(headerToggle.getAttribute("aria-label")).toContain(
       "Shared by every page",
     );
-    const header = screen.getByRole("button", { name: /HeaderAll pages/ });
-    expect(header.textContent).toContain("All pages");
+    const header = screen.getByRole("button", { name: /HeaderGlobal/ });
+    expect(header.textContent).toContain("Global");
 
     // The route's own module is this page's alone.
     const route = screen.getByRole("button", { name: "Home" });
-    expect(route.textContent).not.toContain("All pages");
+    expect(route.textContent).not.toContain("Global");
   });
 
   it("uses the same separate select and expand controls for layout roots and sections", () => {
@@ -1058,7 +1083,7 @@ describe("EditorSectionsPanel page structure", () => {
       onSelectEditableNode,
     });
 
-    const headerRow = screen.getByRole("button", { name: /HeaderAll pages/ });
+    const headerRow = screen.getByRole("button", { name: /HeaderGlobal/ });
     const headerToggle = screen.getByRole("button", {
       name: /Expand shared layout Header/,
     });
