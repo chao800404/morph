@@ -4,7 +4,10 @@ import {
   resolveThemeContentCapabilitiesFromFiles,
 } from "../theme-content-capability-resolver";
 import { parseComponentSource } from "./theme-ast-transformer";
-import { findUnindexedContentArrayMaps } from "./inject-preview-bindings";
+import {
+  findIndexKeyedContentArrayMaps,
+  findUnindexedContentArrayMaps,
+} from "./inject-preview-bindings";
 
 const MAX_SOURCE_BYTES = 512 * 1024;
 const MAX_PROPS_PER_COMPONENT = 50;
@@ -272,6 +275,28 @@ export function collectThemeContentFieldsDiagnostics(
         endLine: unindexed.line,
         endColumn: unindexed.column + 3,
         message: `"${unindexed.arrayPath}" is a repeated content field, and this map takes no index. Its rows cannot be told apart in Design mode once the array holds more than one item — take a second parameter, as in ${unindexed.arrayPath}.map((item, index) => …).`,
+        source: "Morph content fields",
+        severity: "warning",
+      });
+    }
+
+    // Keying a row by its position rather than its identity. Separate from the
+    // reminder above: that one says a row cannot be addressed at all, this one
+    // says it can, but that React will match it to whatever now sits where it
+    // used to — which shows up as an author's typing appearing in a different
+    // row after a reorder, long after the edit that caused it.
+    for (const indexKeyed of findIndexKeyedContentArrayMaps({
+      path: file.path,
+      content: file.content,
+    })) {
+      diagnostics.push({
+        id: `content-array-index-key:${file.path}:${indexKeyed.arrayPath}`,
+        path: file.path,
+        line: indexKeyed.line,
+        column: indexKeyed.column,
+        endLine: indexKeyed.line,
+        endColumn: indexKeyed.column + 3,
+        message: `This row is keyed by its position, so reordering or deleting "${indexKeyed.arrayPath}" moves one row's DOM state into another — a caret, a scroll position, anything uncontrolled inside it. Every row carries an id; key by that instead, as in key={item.id}.`,
         source: "Morph content fields",
         severity: "warning",
       });

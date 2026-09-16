@@ -468,6 +468,90 @@ export function findUnindexedContentArrayMaps(file: {
   return found;
 }
 
+/**
+ * Repeated fields whose rows React matches by position.
+ *
+ * `key={index}` names a row by where it sits, so reordering or deleting carries
+ * one row's DOM node — its caret, its scroll position, anything uncontrolled in
+ * that subtree — into another, and the author sees what they typed attached to
+ * the wrong row. A row's `id` is the identity to key by, and every row created
+ * through the editor carries one.
+ *
+ * Only the bare `key={index}` is reported. An expression that merely mentions
+ * the index — `item.id ?? index` — is the shape the starter ships while rows
+ * without ids still exist out there, and warning about the code Morph itself
+ * writes would be noise. Once that fallback is gone, this is the rule that
+ * catches a file which kept it.
+ *
+ * Reported for the author's own components, which a template upgrade must not
+ * rewrite: the starter's own files are corrected by replacing them.
+ */
+export function findIndexKeyedContentArrayMaps(file: {
+  path: string;
+  content: string;
+}): Array<{ arrayPath: string; line: number; column: number }> {
+  if (!JSX_FILE.test(file.path)) return [];
+  const declared = declaredFields(file.content);
+  if (!declared || declared.rows.size === 0) return [];
+
+  let ast: any;
+  try {
+    ast = parse(file.content, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+  } catch {
+    return [];
+  }
+
+  const found: Array<{ arrayPath: string; line: number; column: number }> = [];
+  const seen = new Set<string>();
+  const visit = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    const mapCall = readMapCall(node);
+    if (
+      mapCall &&
+      mapCall.scope.index &&
+      mapCall.rowElement &&
+      declared.rows.has(mapCall.arrayPath) &&
+      !seen.has(mapCall.arrayPath)
+    ) {
+      for (const attribute of mapCall.rowElement.openingElement?.attributes ??
+        []) {
+        if (
+          attribute?.type !== "JSXAttribute" ||
+          attribute.name?.type !== "JSXIdentifier" ||
+          attribute.name.name !== "key" ||
+          attribute.value?.type !== "JSXExpressionContainer" ||
+          attribute.value.expression?.type !== "Identifier" ||
+          attribute.value.expression.name !== mapCall.scope.index
+        ) {
+          continue;
+        }
+        const at = attribute.loc?.start;
+        if (!at) continue;
+        seen.add(mapCall.arrayPath);
+        found.push({
+          arrayPath: mapCall.arrayPath,
+          line: at.line,
+          column: at.column + 1,
+        });
+        break;
+      }
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "loc" || key === "leadingComments") continue;
+      visit(value);
+    }
+  };
+  visit(ast.program);
+  return found;
+}
+
 export function injectPreviewBindings(
   files: readonly PreviewBindingFile[],
 ): PreviewBindingsResult {
