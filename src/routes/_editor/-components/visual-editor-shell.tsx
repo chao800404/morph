@@ -246,6 +246,7 @@ import {
   type CanvasTransform,
   canvasYToCenterElement,
 } from "./editor-canvas-geometry";
+import { shouldRevealPreviewSelection } from "./preview-reveal-request";
 import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 
@@ -1364,6 +1365,19 @@ export function VisualEditorShell({
   const pendingPreviewSelectionRef = useRef<{
     target: PreviewSelectionRestoreTarget;
     revision: number;
+    /**
+     * Whether this request should bring the canvas to what it selects.
+     *
+     * Carried on the request rather than kept beside it, because a flag on its
+     * own cannot say which request it belongs to: the next report to arrive
+     * consumes it, and between asking and hearing back the author may have
+     * clicked the canvas, switched route, or clicked another row. Bound to the
+     * revision and target, an answer that is not the one asked for moves
+     * nothing.
+     */
+    reveal?: boolean;
+    /** The preview it was asked of; a reconnect makes it a different one. */
+    previewKey?: string | null;
   } | null>(null);
   const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
     useState(0);
@@ -2039,7 +2053,6 @@ export function VisualEditorShell({
     postMessage: postEditorToPreviewMessage,
   } = useLivePreviewMessageBridge(livePreviewChannel, previewIframeRef);
   const previewSizeMeasurementRevisionRef = useRef(0);
-  const revealNextSelectionRef = useRef(false);
   const beginPreviewSizeMeasurement = useCallback(() => {
     previewSizeMeasurementRevisionRef.current += 1;
     return previewSizeMeasurementRevisionRef.current;
@@ -4208,30 +4221,6 @@ export function VisualEditorShell({
       if (responseSelectionRevision < previewSelectionRevisionRef.current) {
         return;
       }
-      // Brings the canvas to a selection the tree asked for. Consumed either
-      // way, so a canvas click that lands between the request and the reply
-      // cannot inherit a pan that was meant for the tree.
-      const shouldReveal = revealNextSelectionRef.current;
-      revealNextSelectionRef.current = false;
-      if (shouldReveal && message.documentRect) {
-        const viewportHeight =
-          canvasViewportHeightRef.current ||
-          canvasViewportRef.current?.clientHeight ||
-          0;
-        if (viewportHeight > 0) {
-          const rect = message.documentRect;
-          scheduleCanvasTransform((current) => ({
-            ...current,
-            y: canvasYToCenterElement({
-              elementTop: rect.top,
-              elementHeight: rect.height,
-              viewportHeight,
-              scale: current.scale,
-            }),
-          }));
-        }
-      }
-
       const incomingTarget: PreviewSelectionRestoreTarget = {
         sectionId: message.sectionId,
         sourceLocation: message.sourceLocation ?? undefined,
@@ -4257,7 +4246,43 @@ export function VisualEditorShell({
         previewSelectionRevisionRef.current,
         responseSelectionRevision,
       );
+      // Past the checks above, so only an answer to the request that asked for
+      // it moves anything. Every part has to agree: the revision, the target it
+      // named, and the preview it was asked of — a reconnect mints a new one
+      // and any request outstanding against the old preview is stale.
+      const revealRequest = pendingPreviewSelectionRef.current;
+      const shouldReveal = shouldRevealPreviewSelection({
+        request: revealRequest,
+        responseRevision: responseSelectionRevision,
+        previewKey: previewKeyRef.current,
+        targetMatches: revealRequest
+          ? previewSelectionTargetMatches(revealRequest.target, incomingTarget)
+          : false,
+      });
       pendingPreviewSelectionRef.current = null;
+      if (shouldReveal && message.documentRect) {
+        const rect = message.documentRect;
+        // A frame later: the preview reports where the element is as it marks
+        // it, and React may not have finished committing around it yet.
+        // Reading the viewport after that commit costs nothing and avoids
+        // centring against a height that is about to change.
+        window.requestAnimationFrame(() => {
+          const viewportHeight =
+            canvasViewportHeightRef.current ||
+            canvasViewportRef.current?.clientHeight ||
+            0;
+          if (viewportHeight <= 0) return;
+          scheduleCanvasTransform((current) => ({
+            ...current,
+            y: canvasYToCenterElement({
+              elementTop: rect.top,
+              elementHeight: rect.height,
+              viewportHeight,
+              scale: current.scale,
+            }),
+          }));
+        });
+      }
       const sectionId = message.sectionId;
       const nodeId = message.nodeId ?? null;
       const sourceFilePath =
@@ -4498,10 +4523,6 @@ export function VisualEditorShell({
   const handleEditableNodeSelect = useCallback(
     (target: PreviewSelectionRestoreTarget) => {
       reportAuthenticatedUserActivity();
-      // Only a selection the author made in the tree brings the canvas to it.
-      // Clicking something on the canvas means they are already looking at it,
-      // and moving the page under a click is how a click feels like a misfire.
-      revealNextSelectionRef.current = true;
       const previewNodes =
         previewStructure?.key === previewKey ? previewStructure.nodes : [];
       const selectedNode =
@@ -4526,6 +4547,11 @@ export function VisualEditorShell({
       pendingPreviewSelectionRef.current = {
         target,
         revision: selectionRevision,
+        // Only a selection made here. Clicking something on the canvas means
+        // the author is already looking at it, and moving the page under a
+        // click is how a click comes to feel like a misfire.
+        reveal: true,
+        previewKey: previewKeyRef.current,
       };
       setActiveSelection(nextSelection);
       setActiveComputedStyleRevision(0);
