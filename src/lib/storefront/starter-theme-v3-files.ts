@@ -645,6 +645,15 @@ export type HeaderLink = {
 };
 
 export type HeaderNavItem = {
+  /**
+   * Identity Morph stores for a repeated row, when it has given the row one.
+   *
+   * Not a DOM id and not a marker to hand-write: the editor assigns it, and a
+   * Theme's only use for it is as a React key. Keying by the array index
+   * matches rows by position, so reordering carries one row's DOM node — its
+   * caret, its scroll position, any state in that subtree — into another.
+   */
+  id?: string;
   label?: string;
   link?: HeaderLink;
 };
@@ -693,7 +702,7 @@ export default function Header({
       >
         {navItems.map((item, index) => (
           <ThemeLink
-            key={index}
+            key={item.id ?? index}
             link={item.link}
             className="hover:text-neutral-950"
           >
@@ -951,43 +960,74 @@ export default function Footer({
 `;
 
 /**
- * The Header before its navigation map took an index, and before its rows were
- * the link itself.
+ * Every Header navigation the Starter has shipped, as the block that changed.
  *
- * The `<span>` around each `ThemeLink` was doing by hand what the compiler now
- * does: giving the row a real host element to carry its markers, because an
- * attribute put on a component is only a prop it may never pass on. The
- * compiler recognises `morph/link` and hands the markers to the anchor it
- * renders, and wraps anything it cannot vouch for — so the row is the link, as
- * it already was in the Footer.
- *
- * A `.map()` callback with no second parameter leaves the compiler nothing to
- * build `navItems.0.label` from, so the rows it renders carry no field path
- * and share one source position. The editor then has no way to tell them
- * apart and drops all of them — which looks like working software while the
- * array holds one item, and like a section that lost its links at two.
- *
- * Derived by reversing exactly that edit, so the two cannot drift into a match
- * that upgrades the wrong bytes.
+ * One anchor and a list of what it replaced, rather than each snapshot deriving
+ * from the one before: the previous arrangement reversed a single edit off the
+ * *current* source, so the next edit to that source silently skipped a
+ * generation — the Header with an index but still wrapped in a span matched
+ * nothing and could never be upgraded again. Stating each generation outright
+ * means adding one cannot quietly orphan another, and the tests below hold them
+ * apart.
  */
-export const LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE =
-  STARTER_THEME_HEADER_SOURCE.replace(
-    `        {navItems.map((item, index) => (
+const HEADER_NAV_BLOCK_CURRENT = `        {navItems.map((item, index) => (
           <ThemeLink
-            key={index}
+            key={item.id ?? index}
             link={item.link}
             className="hover:text-neutral-950"
           >
             {item.label}
           </ThemeLink>
-        ))}`,
-    `        {navItems.map((item) => (
+        ))}`;
+
+/**
+ * The span around each link was doing by hand what the compiler now does:
+ * giving the row a host element to carry its markers, because an attribute put
+ * on a component is only a prop it may never pass on. The compiler recognises
+ * `morph/link` and marks the anchor it renders.
+ */
+const HEADER_NAV_BLOCK_INDEXED_SPAN = `        {navItems.map((item, index) => (
           <span key={item.label}>
             <ThemeLink link={item.link} className="hover:text-neutral-950">
               {item.label}
             </ThemeLink>
           </span>
-        ))}`,
+        ))}`;
+
+/**
+ * And before that, no index either. A `.map()` callback with no second
+ * parameter leaves the compiler nothing to build `navItems.0.label` from, so
+ * its rows carry no field path and share one source position — which looks
+ * like working software while the array holds one item, and like a section
+ * that lost its links at two.
+ */
+const HEADER_NAV_BLOCK_UNINDEXED_SPAN = `        {navItems.map((item) => (
+          <span key={item.label}>
+            <ThemeLink link={item.link} className="hover:text-neutral-950">
+              {item.label}
+            </ThemeLink>
+          </span>
+        ))}`;
+
+/** The Header of template version 24: the link as the row, keyed by position. */
+export const LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE =
+  STARTER_THEME_HEADER_SOURCE.replace(
+    HEADER_NAV_BLOCK_CURRENT,
+    HEADER_NAV_BLOCK_CURRENT.replace("key={item.id ?? index}", "key={index}"),
+  );
+
+/** The Header of template version 23: an index, and still the span. */
+export const LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE =
+  STARTER_THEME_HEADER_SOURCE.replace(
+    HEADER_NAV_BLOCK_CURRENT,
+    HEADER_NAV_BLOCK_INDEXED_SPAN,
+  );
+
+/** The Header before either change. */
+export const LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE =
+  STARTER_THEME_HEADER_SOURCE.replace(
+    HEADER_NAV_BLOCK_CURRENT,
+    HEADER_NAV_BLOCK_UNINDEXED_SPAN,
   );
 
 export const STARTER_THEME_FOOTER_SOURCE = `import type { ThemeContentFields } from "../morph/content-fields";
@@ -1000,6 +1040,15 @@ export type FooterLink = {
 };
 
 export type FooterNavItem = {
+  /**
+   * Identity Morph stores for a repeated row, when it has given the row one.
+   *
+   * Not a DOM id and not a marker to hand-write: the editor assigns it, and a
+   * Theme's only use for it is as a React key. Keying by the array index
+   * matches rows by position, so reordering carries one row's DOM node — its
+   * caret, its scroll position, any state in that subtree — into another.
+   */
+  id?: string;
   label?: string;
   link?: FooterLink | string;
 };
@@ -1069,7 +1118,7 @@ export default function Footer({
         </p>
         {exploreItems.map((item, index) => (
           <ThemeLink
-            key={index}
+            key={item.id ?? index}
             link={item.link}
             className="block hover:text-white"
           >
@@ -1083,7 +1132,7 @@ export default function Footer({
         </p>
         {helpItems.map((item, index) => (
           <ThemeLink
-            key={index}
+            key={item.id ?? index}
             link={item.link}
             className="block hover:text-white"
           >

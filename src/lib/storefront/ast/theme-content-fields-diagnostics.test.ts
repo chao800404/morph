@@ -126,18 +126,35 @@ export default function Nav({ navItems = [] }) {
     );
 
   /**
-   * TypeScript accepts this — a callback may always take fewer parameters than
-   * the signature offers — so the compiler cannot refuse it and says so here
-   * instead. The rows it produces share one source position and carry no field
-   * path, and the editor drops them rather than write one row into another.
+   * The compiler writes the parameter in for any callback that takes a row, so
+   * this is no longer something to tell the author about. `map` passes the
+   * index whether or not the callback asked for it.
    */
-  it("is reported, because a type error is not available", () => {
+  it("says nothing when the compiler can supply the index itself", () => {
+    expect(
+      indexDiagnostics(
+        "navItems.map((item) => <span key={item.label}>{item.label}</span>)",
+      ),
+    ).toEqual([]);
+    expect(
+      indexDiagnostics(
+        "navItems.map(item => <span key={item.label}>{item.label}</span>)",
+      ),
+    ).toEqual([]);
+  });
+
+  /**
+   * A callback that takes nothing has no row to address and nowhere to put a
+   * parameter, so it is the one shape left to say out loud. It cannot be a type
+   * error either: TypeScript accepts a callback with fewer parameters than the
+   * signature offers, as it must for `arr.map(x => x * 2)` to compile.
+   */
+  it("is reported when there is no row to address", () => {
     const [diagnostic, ...rest] = indexDiagnostics(
-      "navItems.map((item) => <span key={item.label}>{item.label}</span>)",
+      "navItems.map(() => <span>link</span>)",
     );
     expect(rest).toEqual([]);
     expect(diagnostic?.message).toContain('"navItems"');
-    expect(diagnostic?.message).toContain("(item, index)");
     expect(diagnostic?.severity).toBe("warning");
     // On the `map` itself, which is what has to change.
     expect(diagnostic?.line).toBe(12);

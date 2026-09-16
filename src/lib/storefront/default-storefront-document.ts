@@ -40,11 +40,13 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  * 22: remove every marker the compiler derives, in place, from source an author
  *     has edited too — the byte-exact replacements above can never reach it.
  * 23: give the Header's navigation map an index, without which its rows carry
- *     no field path and the editor cannot tell one link from another; and make
- *     its rows the link itself, the hand-written span around each one having
- *     been standing in for a wrapper the compiler now decides.
+ *     no field path and the editor cannot tell one link from another.
+ * 24: make a Header row the link itself; the hand-written span around each one
+ *     was standing in for a wrapper the compiler now decides.
+ * 25: key a repeated row by the identity Morph stores for it rather than its
+ *     position, so reordering does not carry one row's DOM node into another.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 24;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 25;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

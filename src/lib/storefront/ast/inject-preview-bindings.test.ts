@@ -87,6 +87,78 @@ export default function Hero({ image }) {
     expect(out).not.toContain('data-storefront-field="src"');
   });
 
+  describe("an index the callback did not ask for", () => {
+    const DECLARES_ROWS = `export const contentFields = {
+  items: { type: "array", fields: { title: { type: "text" } } },
+} as const;
+`;
+    const rows = (callback: string) =>
+      run(`${DECLARES_ROWS}
+export default function Hero({ items = [] }) {
+  return <ul>{items.map(${callback})}</ul>;
+}
+`);
+
+    /**
+     * `map` passes the index whether or not the callback asked for it, so the
+     * compiler takes it. Requiring the author to write it would put an editor
+     * implementation detail into ordinary React — and it could not be enforced
+     * anyway, since TypeScript accepts a callback with fewer parameters.
+     */
+    it("is written in, so the rows can be told apart", () => {
+      const out = rows("(item) => (<li key={item.title}>{item.title}</li>)");
+      expect(out).toContain("items.map((item, __morphRow0) =>");
+      expect(out).toContain(
+        "data-storefront-field-path={`items.${__morphRow0}`}",
+      );
+    });
+
+    // `item => …` has no brackets to put a second parameter inside.
+    it("brings brackets with it when the parameter had none", () => {
+      const out = rows("item => (<li key={item.title}>{item.title}</li>)");
+      expect(out).toContain("items.map((item, __morphRow0) =>");
+    });
+
+    it("leaves a callback that already takes one alone", () => {
+      const out = rows("(item, i) => (<li key={i}>{item.title}</li>)");
+      expect(out).not.toContain("__morphRow");
+      expect(out).toContain("data-storefront-field-path={`items.${i}`}");
+    });
+
+    // A destructured row still has a position, even with no name to bind.
+    it("addresses a destructured row", () => {
+      const out = rows("({ title }) => (<li key={title}>{title}</li>)");
+      expect(out).toContain("items.map(({ title }, __morphRow0) =>");
+    });
+
+    // Two names in one file would shadow each other in a nested callback.
+    it("gives each map its own name", () => {
+      const out = run(`${DECLARES_ROWS}
+export default function Hero({ items = [] }) {
+  return (
+    <ul>
+      {items.map(item => (<li key={item.title}>{item.title}</li>))}
+      {items.map(item => (<li key={item.title}>{item.title}</li>))}
+    </ul>
+  );
+}
+`);
+      expect(out).toContain("__morphRow0");
+      expect(out).toContain("__morphRow1");
+    });
+
+    // A map over something that is not a declared repeated field is the
+    // component's own code, and is left exactly as written.
+    it("does not touch a map the editor has no claim on", () => {
+      const out = run(`${DECLARES_ROWS}
+export default function Hero() {
+  return <ul>{[1, 2].map(value => (<li key={value}>{value}</li>))}</ul>;
+}
+`);
+      expect(out).not.toContain("__morphRow");
+    });
+  });
+
   describe("content shown through a component", () => {
     it("puts identity on the anchor-forwarding platform ThemeLink", () => {
       const out = run(`import ActionLink from "../morph/link";
@@ -452,13 +524,24 @@ export default function List({ items = [] }) {
     expect(out).toContain("data-storefront-field-path={`items.${index}`}");
   });
 
-  it("marks no row when the loop never named its index", () => {
+  /**
+   * This used to mark nothing, on the grounds that a loop which never named its
+   * index gave the compiler no position to address a row by. It does now: `map`
+   * passes the index whether the callback asked for it or not, so the compiler
+   * writes the parameter in rather than leaving every row of the field
+   * unreachable — which is what the author would have seen, and only once the
+   * field held more than one item.
+   */
+  it("names the index itself when the loop did not", () => {
     const out = run(`${DECLARED}
 export default function List({ items = [] }) {
   return <ul>{items.map((item) => <li key={item.id}>{item.title}</li>)}</ul>;
 }
 `);
-    expect(out).not.toContain("data-storefront-field-path");
+    expect(out).toContain("items.map((item, __morphRow0) =>");
+    expect(out).toContain(
+      "data-storefront-field-path={`items.${__morphRow0}`}",
+    );
   });
 
   it("still produces valid syntax around a wrapped component row", async () => {

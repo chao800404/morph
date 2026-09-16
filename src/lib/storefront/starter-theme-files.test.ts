@@ -11,6 +11,8 @@ import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE,
+  LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE,
   LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE,
   LEGACY_STARTER_THEME_HERO_SOURCE,
   LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
@@ -698,6 +700,44 @@ export default function Principles({ label = "Why we choose differently" }: Prin
     expect(header).not.toContain("<span key={item.label}>");
   });
 
+  /**
+   * Every Header generation must be recognised, and no two may be the same.
+   *
+   * The snapshots used to reverse one edit off the current source, so the next
+   * edit to that source skipped a generation without a word: the Header with an
+   * index but still wrapped in a span matched nothing and could never be
+   * upgraded again. This fails the moment a generation is orphaned that way.
+   */
+  it("recognises every Header it has shipped, and tells them apart", () => {
+    const generations = {
+      "no index, span": LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE,
+      "index, span": LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE,
+      "link row, keyed by position":
+        LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE,
+    };
+    const seen = new Set<string>();
+    for (const [name, content] of Object.entries(generations)) {
+      expect(content, name).not.toBe(STARTER_THEME_HEADER_SOURCE);
+      expect(seen.has(content), `${name} duplicates another generation`).toBe(
+        false,
+      );
+      seen.add(content);
+      const upgrades = createStarterThemeWorkspaceUpgrade([
+        {
+          id: "header",
+          path: "src/components/Header.tsx",
+          content,
+          version: 4,
+        },
+      ]);
+      expect(
+        upgrades.find((file) => file.path === "src/components/Header.tsx")
+          ?.content,
+        name,
+      ).toBe(STARTER_THEME_HEADER_SOURCE);
+    }
+  });
+
   // A workspace still on the previous shape has to be recognised, or it keeps
   // a navigation whose rows the editor cannot tell apart.
   it("still recognises the Header it replaced", () => {
@@ -722,6 +762,28 @@ export default function Principles({ label = "Why we choose differently" }: Prin
       upgrades.find((file) => file.path === "src/components/Header.tsx")
         ?.content,
     ).toBe(STARTER_THEME_HEADER_SOURCE);
+  });
+
+  /**
+   * Keying a repeated row by its array index matches rows by position, so
+   * reordering carries one row's DOM node — its caret, its scroll position,
+   * any state in that subtree — into another. Morph stores an identity for a
+   * row once it has given it one; the index remains the fallback for rows it
+   * has not.
+   */
+  it("keys a repeated row by its identity before its position", () => {
+    for (const path of [
+      "src/components/Header.tsx",
+      "src/components/Footer.tsx",
+    ]) {
+      const source = STARTER_THEME_FILES.find(
+        (file) => file.path === path,
+      )!.content;
+      expect(source, path).toContain("key={item.id ?? index}");
+      expect(source, path).not.toContain("key={index}");
+      // Declared, or a Theme in Code mode reads an error on its own row type.
+      expect(source, path).toMatch(/id\?: string;/);
+    }
   });
 
   it("does not declare a document layout over an authored entry file", () => {

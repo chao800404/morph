@@ -212,9 +212,13 @@ function readRowElement(callback: any): any {
 }
 
 /** `items.map((item, index) => …)` — the array path and the two binding names. */
-function readMapCall(
-  node: any,
-): { arrayPath: string; rowElement: any; scope: RowScope } | null {
+function readMapCall(node: any): {
+  arrayPath: string;
+  rowElement: any;
+  scope: RowScope;
+  itemParamEnd: number | null;
+  itemParamStart: number | null;
+} | null {
   if (
     node.type !== "CallExpression" &&
     node.type !== "OptionalCallExpression"
@@ -263,7 +267,31 @@ function readMapCall(
       item: itemParam?.type === "Identifier" ? itemParam.name : null,
       index: indexParam?.type === "Identifier" ? indexParam.name : null,
     },
+    // Where a second parameter could be written, for a callback that has none.
+    // `map` passes the index whether or not the author asked for it, so the
+    // compiler can take it without changing what the callback receives.
+    itemParamEnd: typeof itemParam?.end === "number" ? itemParam.end : null,
+    itemParamStart:
+      typeof itemParam?.start === "number" ? itemParam.start : null,
   };
+}
+
+/**
+ * Whether a callback's parameters are already in brackets.
+ *
+ * `item => …` is the same function as `(item) => …` until a second parameter
+ * arrives, at which point the brackets stop being optional. Read from the
+ * source, which the node does not record — and read forwards: the bracket
+ * before the parameter belongs to `map(` either way, so looking back reports
+ * every callback as parenthesised and produces `map(item, i => …)`.
+ */
+function hasParenthesizedParams(source: string, itemParamEnd: number) {
+  for (let at = itemParamEnd; at < source.length; at += 1) {
+    const character = source[at]!;
+    if (/\s/.test(character)) continue;
+    return character === ")";
+  }
+  return false;
 }
 
 /**
@@ -324,15 +352,20 @@ function escapeAttribute(value: string): string {
 }
 
 /**
- * Maps over a declared array field whose callback takes no index.
+ * Maps over a declared array field that the compiler cannot address by row.
  *
- * `items.map((item) => …)` is ordinary JavaScript and TypeScript accepts it —
- * a callback may always take fewer parameters than the signature offers, which
- * is why this cannot be a type error. But without the index there is nothing to
- * build `items.0.title` from, so every row is emitted with the same source
- * position and no field path, and the editor drops all of them rather than
- * write one row's edit into another. That failure is invisible while the array
- * holds a single item and arrives when a second is added.
+ * Without an index there is nothing to build `items.0.title` from, so every row
+ * is emitted at the same source position with no field path and the editor
+ * drops all of them rather than write one row's edit into another — invisible
+ * while the field holds a single item, and arriving when a second is added.
+ *
+ * The compiler writes the parameter in itself wherever it can, which is any
+ * callback that takes a row: `map` passes the index whether or not the author
+ * asked for it, so taking it changes nothing about what the callback receives.
+ * What remains is `map(() => …)`, which has no row to address and nowhere to
+ * put a parameter — and that cannot be a type error either, since TypeScript
+ * accepts a callback with fewer parameters than the signature offers, as it
+ * must for `arr.map(x => x * 2)` to compile.
  *
  * Reported from here because this is the code that does the dropping: a rule
  * stated anywhere else would be a second opinion about what the compiler does.
@@ -368,6 +401,11 @@ export function findUnindexedContentArrayMaps(file: {
     if (
       mapCall &&
       !mapCall.scope.index &&
+      // Only what the compiler cannot supply itself. It writes the parameter in
+      // for a callback that takes a row, which is nearly all of them; a
+      // callback that takes nothing has no row to address and no place to put
+      // one, and that is what is left to say out loud.
+      mapCall.itemParamEnd === null &&
       mapCall.rowElement &&
       declared.rows.has(mapCall.arrayPath) &&
       !seen.has(mapCall.arrayPath)
@@ -427,6 +465,9 @@ export function injectPreviewBindings(
     // Wrappers are extra children, which is the one thing a `space-y` rule
     // notices. Counted so the warning below can speak for them too.
     let contentWrappers = 0;
+    // Names the compiler introduced for a callback that took no index. Counted
+    // so nested maps cannot shadow one another.
+    let synthesizedIndexes = 0;
     let count = 0;
 
     const visit = (
@@ -445,7 +486,39 @@ export function injectPreviewBindings(
       const mapCall = readMapCall(node);
       if (mapCall) {
         const row = mapCall.rowElement;
-        const rowIndex = mapCall.scope.index;
+        // `map` passes the index whether the callback asked for it or not, so
+        // the compiler writes the parameter in when the author did not. Without
+        // one there is nothing to build `items.0.title` from: every row is
+        // emitted at the same source position with no path, and the editor
+        // drops all of them rather than write one row's edit into another —
+        // invisible while the field holds a single item, and arriving when a
+        // second is added. Requiring it of the author instead would put an
+        // editor implementation detail into ordinary React.
+        let rowIndex = mapCall.scope.index;
+        if (
+          !rowIndex &&
+          row &&
+          declared?.rows.has(mapCall.arrayPath) &&
+          mapCall.itemParamEnd !== null &&
+          mapCall.itemParamStart !== null
+        ) {
+          rowIndex = `__morphRow${synthesizedIndexes}`;
+          synthesizedIndexes += 1;
+          if (hasParenthesizedParams(file.content, mapCall.itemParamEnd)) {
+            insertions.push({
+              at: mapCall.itemParamEnd,
+              text: `, ${rowIndex}`,
+            });
+          } else {
+            // `item => …` has no brackets to put a second parameter inside, so
+            // it gains them along with the parameter.
+            insertions.push({ at: mapCall.itemParamStart, text: "(" });
+            insertions.push({
+              at: mapCall.itemParamEnd,
+              text: `, ${rowIndex})`,
+            });
+          }
+        }
         if (row && rowIndex && row.start != null && row.end != null) {
           const path = `${mapCall.arrayPath}.\${${rowIndex}}`;
           const attributes =
