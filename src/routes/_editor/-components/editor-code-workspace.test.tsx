@@ -20,6 +20,17 @@ import { formatEditorCode } from "./editor-code-formatter";
 const monacoTestState = vi.hoisted(() => ({
   formatter: null as null | ((content: string) => string | Promise<string>),
   formatError: false,
+  editorOptions: null as Record<string, unknown> | null,
+  editorOpener: null as
+    | {
+        openCodeEditor: (
+          source: unknown,
+          resource: { toString(): string },
+          selectionOrPosition?: unknown,
+        ) => boolean | Promise<boolean>;
+      }
+    | null,
+  lastPosition: null as { lineNumber: number; column: number } | null,
 }));
 
 vi.mock(
@@ -61,12 +72,14 @@ vi.mock("@monaco-editor/react", () => ({
     onMount,
     beforeMount,
     theme,
+    options,
   }: {
     defaultValue?: string;
     onChange?: (value?: string) => void;
     beforeMount?: (monaco: unknown) => void;
     onMount?: (editor: unknown, monaco: unknown) => void;
     theme?: string;
+    options?: Record<string, unknown>;
   }) => {
     const [value, setValue] = useState(defaultValue ?? "");
     const valueRef = useRef(value);
@@ -86,6 +99,18 @@ vi.mock("@monaco-editor/react", () => ({
       const monaco = {
         editor: {
           getModels: () => [model],
+          registerEditorOpener: (opener: NonNullable<
+            typeof monacoTestState.editorOpener
+          >) => {
+            monacoTestState.editorOpener = opener;
+            return {
+              dispose: () => {
+                if (monacoTestState.editorOpener === opener) {
+                  monacoTestState.editorOpener = null;
+                }
+              },
+            };
+          },
           deltaDecorations: vi.fn((_oldIds: string[], next: unknown[]) =>
             next.map((_decoration, index) => String(index)),
           ),
@@ -107,9 +132,15 @@ vi.mock("@monaco-editor/react", () => ({
             id === "editor.action.formatDocument" ? formatAction : undefined,
           onDidChangeModel: () => ({ dispose: vi.fn() }),
           deltaDecorations: monaco.editor.deltaDecorations,
+          revealPositionInCenter: vi.fn(),
+          setPosition: (position: { lineNumber: number; column: number }) => {
+            monacoTestState.lastPosition = position;
+          },
+          focus: vi.fn(),
         },
         monaco,
       );
+      monacoTestState.editorOptions = options ?? null;
     }, [onMount]);
 
     return (
@@ -200,6 +231,9 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     vi.mocked(formatEditorCode).mockClear();
     monacoTestState.formatter = null;
     monacoTestState.formatError = false;
+    monacoTestState.editorOptions = null;
+    monacoTestState.editorOpener = null;
+    monacoTestState.lastPosition = null;
   });
 
   it("uses Monaco's built-in dark theme without defining a custom theme", () => {
@@ -209,6 +243,54 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
         .getByRole("textbox", { name: "Code editor" })
         .getAttribute("data-theme"),
     ).toBe("vs-dark");
+  });
+
+  it("uses Alt or Option for Monaco's go-to-definition gesture", async () => {
+    renderWorkspace();
+
+    await waitFor(() => {
+      expect(monacoTestState.editorOptions?.multiCursorModifier).toBe(
+        "ctrlCmd",
+      );
+    });
+  });
+
+  it("opens a definition from another file in the Theme workspace", async () => {
+    renderWorkspace();
+
+    await waitFor(() => expect(monacoTestState.editorOpener).not.toBeNull());
+    const handled = await monacoTestState.editorOpener!.openCodeEditor(
+      null,
+      {
+        toString: () =>
+          "file:///morph-theme/store-1/theme-1/src/components/Hero.tsx",
+      },
+      { lineNumber: 12, column: 7 },
+    );
+
+    expect(handled).toBe(true);
+    await waitFor(() => {
+      expect(monacoTestState.lastPosition).toEqual({
+        lineNumber: 12,
+        column: 7,
+      });
+    });
+  });
+
+  it("does not let Monaco open a definition outside the active Theme", async () => {
+    renderWorkspace();
+
+    await waitFor(() => expect(monacoTestState.editorOpener).not.toBeNull());
+    const handled = await monacoTestState.editorOpener!.openCodeEditor(
+      null,
+      {
+        toString: () => "file:///morph-theme/other/theme/src/lib.ts",
+      },
+      { lineNumber: 1, column: 1 },
+    );
+
+    expect(handled).toBe(false);
+    expect(monacoTestState.lastPosition).toBeNull();
   });
 
   it("keeps repeated typing out of the global workspace and saves the latest model once", async () => {
