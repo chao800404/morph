@@ -111,6 +111,7 @@ import {
   disposeThemeWorkspaceModels,
   ensureThemeWorkspaceModels,
   getThemeModelUri,
+  readThemeModelPath,
   GENERATED_ROUTE_TREE_PATH,
   renderGeneratedRouteTreeSource,
   createJsxTagDecorations,
@@ -668,6 +669,15 @@ const EditorCodeWorkspaceContent = forwardRef<
     if (monaco) refreshDiagnostics(monaco);
   }, [refreshDiagnostics, routeDiagnosticsRevision]);
 
+  /**
+   * Set below, where the handler is defined; read on mount, which happens
+   * first. The opener outlives any one render, so it cannot close over a
+   * particular version of the handler.
+   */
+  const handleOpenLocationRef = useRef<
+    ((path: string, line?: number, column?: number) => void) | null
+  >(null);
+
   const handleEditorDidMount = useCallback<OnMount>(
     (editor, monaco) => {
       editorRef.current = editor;
@@ -687,6 +697,48 @@ const EditorCodeWorkspaceContent = forwardRef<
         disposable.dispose(),
       );
       editorDisposablesRef.current = [];
+      // Monaco can find a definition in another file but cannot show it: one
+      // editor holds one model, and opening a different file is the embedder's
+      // to do. Without this, a go-to-definition across files resolves and then
+      // silently does nothing.
+      //
+      // Registered here so it is disposed with the rest on remount — a second
+      // registration would leave the first one answering for a workspace that
+      // is no longer on screen.
+      if (typeof monaco.editor.registerEditorOpener === "function") {
+        editorDisposablesRef.current.push(
+          monaco.editor.registerEditorOpener({
+            openCodeEditor: (
+              _source: unknown,
+              resource: { toString(): string },
+              selectionOrPosition?: unknown,
+            ) => {
+              // Every URI Monaco is asked to open arrives here, including the
+              // TypeScript lib files. Only this workspace's own models name a
+              // file the explorer can show.
+              const path = readThemeModelPath(
+                workspaceScope,
+                resource.toString(),
+              );
+              if (!path) return false;
+              // A position or a whole range, depending on what the caller
+              // resolved; the range's start is the place to land either way.
+              const target = selectionOrPosition as
+                | {
+                    lineNumber?: number;
+                    column?: number;
+                    startLineNumber?: number;
+                    startColumn?: number;
+                  }
+                | undefined;
+              const line = target?.startLineNumber ?? target?.lineNumber ?? 1;
+              const column = target?.startColumn ?? target?.column ?? 1;
+              handleOpenLocationRef.current?.(path, line, column);
+              return true;
+            },
+          }),
+        );
+      }
       if (typeof monaco.editor.onDidChangeMarkers === "function") {
         editorDisposablesRef.current.push(
           monaco.editor.onDidChangeMarkers(() => refreshDiagnostics(monaco)),
@@ -2212,6 +2264,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     },
     [],
   );
+  handleOpenLocationRef.current = handleOpenLocation;
 
   const handleReplaceAll = useCallback(
     (query: string, replacement: string, options: EditorCodeSearchOptions) => {
@@ -3407,6 +3460,11 @@ const EditorCodeWorkspaceContent = forwardRef<
               onMount={handleEditorDidMount}
               theme="vs-dark"
               options={{
+                // Swaps Monaco's two click gestures: Alt/Option goes to the
+                // definition and Cmd/Ctrl adds a cursor. The default is the
+                // other way round, which is what left Alt-clicking a component
+                // dropping a second caret instead of opening its file.
+                multiCursorModifier: "ctrlCmd",
                 readOnly: activeFileIsGenerated,
                 domReadOnly: activeFileIsGenerated,
                 fontSize: 13,

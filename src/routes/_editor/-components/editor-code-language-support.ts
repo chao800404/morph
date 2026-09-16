@@ -1401,6 +1401,27 @@ export function getThemeModelUri(scope: ThemeModelScope, path: string): string {
   return `file:///morph-theme/${workspaceId}/${normalizeThemeFilePath(path)}`;
 }
 
+/**
+ * The Theme file a model URI stands for, or `null` for anything else.
+ *
+ * The inverse of `getThemeModelUri`, and scoped to one workspace on purpose:
+ * Monaco hands the opener every URI it is asked to open, including the
+ * TypeScript lib files and other themes' models, and a path resolved out of one
+ * of those would name a file this workspace does not have.
+ */
+export function readThemeModelPath(
+  scope: ThemeModelScope,
+  uri: string,
+): string | null {
+  const prefix = `file:///morph-theme/${[scope.storefrontId, scope.themeId]
+    .map(encodeURIComponent)
+    .join("/")}/`;
+  if (!uri.startsWith(prefix)) return null;
+  const path = uri.slice(prefix.length);
+  // A URI can carry a query or fragment; neither is part of the file's path.
+  return path.split(/[?#]/)[0] || null;
+}
+
 function getThemeModelLanguage(path: string): string {
   if (path.endsWith(".tsx") || path.endsWith(".ts")) return "typescript";
   if (path.endsWith(".jsx") || path.endsWith(".js")) return "javascript";
