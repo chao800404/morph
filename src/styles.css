@@ -327,4 +327,15 @@ body {
   .monaco-editor .view-lines .morph-jsx-tag-4 span { color: #ff9d00 !important; }
   .monaco-editor .view-lines .morph-jsx-tag-5,
   .monaco-editor .view-lines .morph-jsx-tag-5 span { color: #00d7ff !important; }
+
+  /* Monaco can place its definition-link decoration outside the token span,
+     while Morph's JSX depth decoration sits on the token itself. Apply the
+     affordance to both shapes so Option/Alt-hover remains visible. */
+  .monaco-editor .view-lines .view-line .goto-definition-link,
+  .monaco-editor .view-lines .view-line .goto-definition-link span {
+    text-decoration-line: underline !important;
+    text-decoration-thickness: 1.5px !important;
+    text-underline-offset: 2px;
+    cursor: pointer !important;
+  }
 }

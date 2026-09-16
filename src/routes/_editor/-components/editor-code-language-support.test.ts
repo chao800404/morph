@@ -82,6 +82,20 @@ describe("JSX tag decoration CSS", () => {
       ),
     ).toHaveLength(6);
   });
+
+  it("keeps Monaco's definition-link underline visible through JSX decorations", () => {
+    const css = readFileSync("src/styles.css", "utf8");
+
+    expect(css).toContain(
+      ".monaco-editor .view-lines .view-line .goto-definition-link,",
+    );
+    expect(css).toContain(
+      ".monaco-editor .view-lines .view-line .goto-definition-link span",
+    );
+    expect(css).toMatch(
+      /\.goto-definition-link span\s*\{[^}]*text-decoration-line:\s*underline\s*!important;/s,
+    );
+  });
 });
 
 describe("createJsxTagDecorations", () => {
