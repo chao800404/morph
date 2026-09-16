@@ -4,6 +4,7 @@ import {
   resolveThemeContentCapabilitiesFromFiles,
 } from "../theme-content-capability-resolver";
 import { parseComponentSource } from "./theme-ast-transformer";
+import { findUnindexedContentArrayMaps } from "./inject-preview-bindings";
 
 const MAX_SOURCE_BYTES = 512 * 1024;
 const MAX_PROPS_PER_COMPONENT = 50;
@@ -253,6 +254,29 @@ export function collectThemeContentFieldsDiagnostics(
       continue;
     }
     if (typeof file.content !== "string") continue;
+
+    // A repeated field whose callback takes no index. Reported before the
+    // declaration reminder below because it is the more consequential of the
+    // two: the props one says a field will not appear, this one says every row
+    // of a field that does appear is unreachable — and only once the array
+    // holds more than one item, so it reads as software that worked yesterday.
+    for (const unindexed of findUnindexedContentArrayMaps({
+      path: file.path,
+      content: file.content,
+    })) {
+      diagnostics.push({
+        id: `content-array-index:${file.path}:${unindexed.arrayPath}`,
+        path: file.path,
+        line: unindexed.line,
+        column: unindexed.column,
+        endLine: unindexed.line,
+        endColumn: unindexed.column + 3,
+        message: `"${unindexed.arrayPath}" is a repeated content field, and this map takes no index. Its rows cannot be told apart in Design mode once the array holds more than one item — take a second parameter, as in ${unindexed.arrayPath}.map((item, index) => …).`,
+        source: "Morph content fields",
+        severity: "warning",
+      });
+    }
+
     const props = collectComponentPropNames(file.content);
     if (props.size === 0) continue;
     // Legacy components with literal defaults already have the bounded source

@@ -691,7 +691,7 @@ export default function Header({
         className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
         aria-label="Storefront navigation"
       >
-        {navItems.map((item) => (
+        {navItems.map((item, index) => (
           <span key={item.label}>
             <ThemeLink link={item.link} className="hover:text-neutral-950">
               {item.label}
@@ -947,6 +947,24 @@ export default function Footer({
   );
 }
 `;
+
+/**
+ * The Header before its navigation map took an index.
+ *
+ * A `.map()` callback with no second parameter leaves the compiler nothing to
+ * build `navItems.0.label` from, so the rows it renders carry no field path
+ * and share one source position. The editor then has no way to tell them
+ * apart and drops all of them — which looks like working software while the
+ * array holds one item, and like a section that lost its links at two.
+ *
+ * Derived by reversing exactly that edit, so the two cannot drift into a match
+ * that upgrades the wrong bytes.
+ */
+export const LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE =
+  STARTER_THEME_HEADER_SOURCE.replace(
+    "{navItems.map((item, index) => (",
+    "{navItems.map((item) => (",
+  );
 
 export const STARTER_THEME_FOOTER_SOURCE = `import type { ThemeContentFields } from "../morph/content-fields";
 import ThemeLink from "../morph/link";

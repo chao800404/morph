@@ -39,8 +39,10 @@ import type { StorefrontPageDocument } from "@/db/storefront.schema";
  *     untouched Starter component source; preview binding stays compiler-owned.
  * 22: remove every marker the compiler derives, in place, from source an author
  *     has edited too — the byte-exact replacements above can never reach it.
+ * 23: give the Header's navigation map an index, without which its rows carry
+ *     no field path and the editor cannot tell one link from another.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 22;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 23;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

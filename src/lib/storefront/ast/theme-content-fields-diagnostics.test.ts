@@ -92,3 +92,84 @@ describe("collectThemeContentFieldsDiagnostics", () => {
     expect(diagnostics).toEqual([]);
   });
 });
+
+describe("a repeated field whose map takes no index", () => {
+  const component = (map: string) => [
+    {
+      path: "morph.theme.json",
+      content: JSON.stringify({
+        components: { "nav.default": { source: "src/components/Nav.tsx" } },
+      }),
+    },
+    {
+      path: "src/components/Nav.tsx",
+      content: `import type { ThemeContentFields } from "../morph/content-fields";
+
+export const contentFields = {
+  navItems: {
+    type: "array",
+    label: "Navigation",
+    fields: { label: { type: "text" } },
+  },
+} as const satisfies ThemeContentFields;
+
+export default function Nav({ navItems = [] }) {
+  return <nav>{${map}}</nav>;
+}
+`,
+    },
+  ];
+
+  const indexDiagnostics = (map: string) =>
+    collectThemeContentFieldsDiagnostics(component(map)).filter((entry) =>
+      entry.id.startsWith("content-array-index:"),
+    );
+
+  /**
+   * TypeScript accepts this — a callback may always take fewer parameters than
+   * the signature offers — so the compiler cannot refuse it and says so here
+   * instead. The rows it produces share one source position and carry no field
+   * path, and the editor drops them rather than write one row into another.
+   */
+  it("is reported, because a type error is not available", () => {
+    const [diagnostic, ...rest] = indexDiagnostics(
+      "navItems.map((item) => <span key={item.label}>{item.label}</span>)",
+    );
+    expect(rest).toEqual([]);
+    expect(diagnostic?.message).toContain('"navItems"');
+    expect(diagnostic?.message).toContain("(item, index)");
+    expect(diagnostic?.severity).toBe("warning");
+    // On the `map` itself, which is what has to change.
+    expect(diagnostic?.line).toBe(12);
+  });
+
+  it("says nothing once the callback takes one", () => {
+    expect(
+      indexDiagnostics(
+        "navItems.map((item, index) => <span key={index}>{item.label}</span>)",
+      ),
+    ).toEqual([]);
+  });
+
+  // The name is not the point; having a second parameter is.
+  it("accepts any name for it", () => {
+    expect(
+      indexDiagnostics(
+        "navItems.map((item, idx) => <span key={idx}>{item.label}</span>)",
+      ),
+    ).toEqual([]);
+  });
+
+  // Only a declared repeated field is addressed by row, so only those rows are
+  // lost. An ordinary array in a component's own code is not the editor's.
+  it("leaves a map over something that is not a content field alone", () => {
+    const files = component(
+      "[1, 2, 3].map((value) => <span key={value}>{value}</span>)",
+    );
+    expect(
+      collectThemeContentFieldsDiagnostics(files).filter((entry) =>
+        entry.id.startsWith("content-array-index:"),
+      ),
+    ).toEqual([]);
+  });
+});

@@ -323,6 +323,74 @@ function escapeAttribute(value: string): string {
   return value.replace(/"/g, "&quot;");
 }
 
+/**
+ * Maps over a declared array field whose callback takes no index.
+ *
+ * `items.map((item) => …)` is ordinary JavaScript and TypeScript accepts it —
+ * a callback may always take fewer parameters than the signature offers, which
+ * is why this cannot be a type error. But without the index there is nothing to
+ * build `items.0.title` from, so every row is emitted with the same source
+ * position and no field path, and the editor drops all of them rather than
+ * write one row's edit into another. That failure is invisible while the array
+ * holds a single item and arrives when a second is added.
+ *
+ * Reported from here because this is the code that does the dropping: a rule
+ * stated anywhere else would be a second opinion about what the compiler does.
+ */
+export function findUnindexedContentArrayMaps(file: {
+  path: string;
+  content: string;
+}): Array<{ arrayPath: string; line: number; column: number }> {
+  if (!JSX_FILE.test(file.path)) return [];
+  const declared = declaredFields(file.content);
+  if (!declared || declared.rows.size === 0) return [];
+
+  let ast: any;
+  try {
+    ast = parse(file.content, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+  } catch {
+    // The author's own syntax error, which their editor is already showing.
+    return [];
+  }
+
+  const found: Array<{ arrayPath: string; line: number; column: number }> = [];
+  const seen = new Set<string>();
+  const visit = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    const mapCall = readMapCall(node);
+    if (
+      mapCall &&
+      !mapCall.scope.index &&
+      mapCall.rowElement &&
+      declared.rows.has(mapCall.arrayPath) &&
+      !seen.has(mapCall.arrayPath)
+    ) {
+      const at = node.callee?.property?.loc?.start ?? node.loc?.start;
+      if (at) {
+        seen.add(mapCall.arrayPath);
+        found.push({
+          arrayPath: mapCall.arrayPath,
+          line: at.line,
+          column: at.column + 1,
+        });
+      }
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "loc" || key === "leadingComments") continue;
+      visit(value);
+    }
+  };
+  visit(ast.program);
+  return found;
+}
+
 export function injectPreviewBindings(
   files: readonly PreviewBindingFile[],
 ): PreviewBindingsResult {
