@@ -32,14 +32,11 @@ export function shouldRevealPreviewSelection(args: {
 }): boolean {
   const { request, responseRevision, previewKey, targetMatches } = args;
   if (!request || request.reveal !== true) return false;
-  // At least the revision asked for, not exactly it. The preview keeps its own
-  // counter and adopts the higher of the two, so a request made while its
-  // counter is ahead — which it is right after a load, having already selected
-  // something itself — is answered with that higher number. Requiring equality
-  // refused the first selection of every session.
-  //
-  // An earlier revision is an answer to a request already superseded, and the
-  // target check below is what keeps a newer, unrelated selection out.
+  // At least the revision asked for, not exactly it. The preview takes the
+  // higher of its own counter and the one it is sent, so an answer can come
+  // back numbered above the request that provoked it. An earlier revision is an
+  // answer to a request already superseded, and the target check below is what
+  // keeps a newer, unrelated selection out.
   if (responseRevision < request.revision) return false;
   // A reconnect mints a new preview, and anything outstanding against the old
   // one describes a document that is no longer on screen.
@@ -51,4 +48,29 @@ export function shouldRevealPreviewSelection(args: {
     return false;
   }
   return targetMatches;
+}
+
+/**
+ * Whether a selection report has been overtaken and should be ignored.
+ *
+ * The editor numbers each selection it asks for, and a report numbered below
+ * the latest one asked for describes a selection the author has already moved
+ * on from. The rule is only sound while that number means *a new selection was
+ * asked for*: a message that merely re-asserts the selection already in hand —
+ * re-sending selection mode, say — must carry the current number rather than
+ * take a new one, or it silently outranks a request still waiting to be
+ * answered and the answer is discarded as stale.
+ *
+ * That is not hypothetical. It is what made the first tree click of every
+ * session fail to move the canvas: that click is what turns selection mode on,
+ * the mode sync ran immediately after it with a freshly minted number, and the
+ * preview's answer to the click arrived one behind.
+ */
+export function isPreviewSelectionReportStale(args: {
+  /** The revision the preview echoed back. */
+  responseRevision: number;
+  /** The highest revision the editor has asked for or seen. */
+  latestSelectionRevision: number;
+}): boolean {
+  return args.responseRevision < args.latestSelectionRevision;
 }

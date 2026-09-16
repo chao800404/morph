@@ -246,7 +246,10 @@ import {
   type CanvasTransform,
   canvasYToCenterElement,
 } from "./editor-canvas-geometry";
-import { shouldRevealPreviewSelection } from "./preview-reveal-request";
+import {
+  isPreviewSelectionReportStale,
+  shouldRevealPreviewSelection,
+} from "./preview-reveal-request";
 import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 
@@ -4223,7 +4226,12 @@ export function VisualEditorShell({
       )
         return;
       const responseSelectionRevision = message.selectionRevision ?? 0;
-      if (responseSelectionRevision < previewSelectionRevisionRef.current) {
+      if (
+        isPreviewSelectionReportStale({
+          responseRevision: responseSelectionRevision,
+          latestSelectionRevision: previewSelectionRevisionRef.current,
+        })
+      ) {
         return;
       }
       const incomingTarget: PreviewSelectionRestoreTarget = {
@@ -5356,16 +5364,29 @@ export function VisualEditorShell({
   }, [previewKey, search.section, syncPreviewSection]);
 
   const syncPreviewSelectionMode = useCallback(() => {
-    const selectionRevision = nextPreviewSelectionRevision();
+    // The revision already in hand, not a new one. Turning selection mode on
+    // re-asserts the selection the editor already has; it does not ask for a
+    // different one. Minting here numbered this message above the request the
+    // author had just made, and the answer to that request then failed the
+    // staleness check below and was thrown away.
+    //
+    // It fell on exactly the first click of a session: that click is what turns
+    // selection mode on, which changes this callback and re-runs the effect
+    // that calls it. Afterwards the mode is already on, the callback is stable,
+    // and the effect never runs again — so every later click worked.
+    //
+    // The preview takes the higher of its own counter and this one, so sending
+    // the current value orders nothing differently. It just stops this message
+    // from outranking a selection that is still waiting to be answered.
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-selection-mode",
       enabled: isSelectionMode,
-      selectionRevision,
+      selectionRevision: previewSelectionRevisionRef.current,
       restoreTarget: isSelectionMode
         ? (lastPreviewSelectionRef.current ?? undefined)
         : undefined,
     });
-  }, [isSelectionMode, nextPreviewSelectionRevision]);
+  }, [isSelectionMode]);
 
   const syncPreviewSpacingOverlay = useCallback(() => {
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {

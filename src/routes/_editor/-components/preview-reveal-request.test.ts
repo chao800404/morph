@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { shouldRevealPreviewSelection } from "./preview-reveal-request";
+import {
+  isPreviewSelectionReportStale,
+  shouldRevealPreviewSelection,
+} from "./preview-reveal-request";
 
 const request = {
   revision: 42,
@@ -74,5 +77,65 @@ describe("deciding whether a report may move the canvas", () => {
         previewKey: "preview-9",
       }),
     ).toBe(true);
+  });
+});
+
+describe("deciding whether a report has been overtaken", () => {
+  /**
+   * The sequence that broke the first tree click of every session, played in
+   * order: the click asks for a selection, the mode sync runs straight after it
+   * because that click is what turned selection mode on, and then the preview
+   * answers the click.
+   */
+  it("keeps the answer to a request a re-assertion followed", () => {
+    let latest = 3;
+    const askForSelection = () => (latest += 1);
+    const reassertSelectionMode = () => latest;
+
+    const asked = askForSelection();
+    reassertSelectionMode();
+
+    expect(
+      isPreviewSelectionReportStale({
+        responseRevision: asked,
+        latestSelectionRevision: latest,
+      }),
+    ).toBe(false);
+  });
+
+  /**
+   * The same sequence with the mode sync taking a number of its own, which is
+   * what the shell used to do. The click is answered and the answer is thrown
+   * away — kept here so the difference is a failing test rather than a comment.
+   */
+  it("would discard it had the re-assertion taken a number", () => {
+    let latest = 3;
+    const asked = (latest += 1);
+    latest += 1;
+
+    expect(
+      isPreviewSelectionReportStale({
+        responseRevision: asked,
+        latestSelectionRevision: latest,
+      }),
+    ).toBe(true);
+  });
+
+  it("still discards a report the author has moved on from", () => {
+    expect(
+      isPreviewSelectionReportStale({
+        responseRevision: 4,
+        latestSelectionRevision: 7,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps a report numbered above the latest request", () => {
+    expect(
+      isPreviewSelectionReportStale({
+        responseRevision: 9,
+        latestSelectionRevision: 7,
+      }),
+    ).toBe(false);
   });
 });
