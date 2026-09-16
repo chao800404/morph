@@ -72,6 +72,46 @@ function isHostElement(name: any): boolean {
 }
 
 /**
+ * Platform components whose contract guarantees that arbitrary anchor
+ * attributes reach their rendered DOM element.
+ *
+ * A capitalised JSX name is normally opaque: adding an editor attribute only
+ * creates a prop that the component may ignore. `morph/link` is different by
+ * design. Its public props extend anchor attributes and its implementation
+ * spreads the remainder onto either the real `<a>` or the router's anchor.
+ * Recognising the import rather than the local name keeps an unrelated
+ * component called `ThemeLink` on the safe wrapper path.
+ */
+function attributeForwardingComponentNames(ast: any): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const statement of ast?.program?.body ?? []) {
+    if (
+      statement?.type !== "ImportDeclaration" ||
+      typeof statement.source?.value !== "string" ||
+      !/(?:^|\/)morph\/link(?:\.[cm]?[jt]sx?)?$/.test(statement.source.value)
+    ) {
+      continue;
+    }
+    for (const specifier of statement.specifiers ?? []) {
+      if (
+        specifier?.type === "ImportDefaultSpecifier" &&
+        specifier.local?.type === "Identifier"
+      ) {
+        names.add(specifier.local.name);
+      }
+    }
+  }
+  return names;
+}
+
+function isAttributeForwardingComponent(
+  name: any,
+  componentNames: ReadonlySet<string>,
+): boolean {
+  return name?.type === "JSXIdentifier" && componentNames.has(name.name ?? "");
+}
+
+/**
  * Whether the author already wrote this attribute themselves.
  *
  * A hand-written marker exists precisely where the analysis cannot see — a
@@ -308,6 +348,8 @@ export function injectPreviewBindings(
     }
 
     const declared = declaredFields(file.content);
+    const attributeForwardingComponents =
+      attributeForwardingComponentNames(ast);
     const insertions: Insertion[] = [];
     const slotIds: string[] = [];
     // Component rows the repeated-field branch has already wrapped. The row is
@@ -389,7 +431,13 @@ export function injectPreviewBindings(
           insertions.push({ at: node.end, text: "</div>" });
         }
 
-        if (isHostElement(opening?.name)) {
+        if (
+          isHostElement(opening?.name) ||
+          isAttributeForwardingComponent(
+            opening?.name,
+            attributeForwardingComponents,
+          )
+        ) {
           const parts: string[] = [];
           // Which file a reorder among these siblings would rewrite. The
           // outermost element of a file is where that answer changes, so it
@@ -459,12 +507,12 @@ export function injectPreviewBindings(
           node.end != null &&
           !wrappedRows.has(node.start)
         ) {
-          // Content shown through a component. The markers cannot go on the
+          // Content shown through an opaque component. The markers cannot go on the
           // element, because an attribute put on a component arrives as a prop
-          // it is free to ignore and would never reach the page — the reason
-          // `<ThemeLink>{actionLabel}</ThemeLink>` was the one field in the
-          // Starter an author still had to mark by hand. So it gets the same
-          // wrapper a component row gets.
+          // it is free to ignore and would never reach the page. So it gets the
+          // same wrapper a component row gets. Platform `morph/link` imports
+          // are handled above because their contract explicitly forwards these
+          // attributes to the anchor they render.
           //
           // A `span` rather than a `div`: this wraps content, and content sits
           // inside paragraphs. A `div` there would end the paragraph early in

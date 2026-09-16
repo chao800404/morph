@@ -88,10 +88,24 @@ export default function Hero({ image }) {
   });
 
   describe("content shown through a component", () => {
-    // An attribute put on a component arrives as a prop it is free to ignore,
-    // so it would never reach the page. `<ThemeLink>{actionLabel}</ThemeLink>`
-    // was the one field in the Starter an author still had to mark by hand.
-    it("wraps it, because an attribute on a component is only a prop", () => {
+    it("puts identity on the anchor-forwarding platform ThemeLink", () => {
+      const out = run(`import ActionLink from "../morph/link";
+export const contentFields = {
+  actionLabel: { type: "text" },
+} as const;
+export default function Hero({ actionLabel, action }) {
+  return <ActionLink link={action}>{actionLabel}</ActionLink>;
+}
+`);
+      expect(out).toMatch(
+        /<ActionLink[^>]*data-morph-loc="src\/components\/Hero\.tsx:6:10"[^>]*data-storefront-field="actionLabel"/,
+      );
+      expect(out).not.toContain("<span");
+    });
+
+    // An attribute put on an opaque component arrives as a prop it is free to
+    // ignore, so only those components keep the transparent wrapper.
+    it("wraps an unrelated component with the same local name", () => {
       const out = run(`export const contentFields = {
   actionLabel: { type: "text" },
 } as const;
