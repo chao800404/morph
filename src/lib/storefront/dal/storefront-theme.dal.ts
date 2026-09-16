@@ -15,6 +15,8 @@ import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-t
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
+import { backfillRowIds } from "@/lib/storefront/editor/backfill-row-ids";
+import { createMorphItemId } from "@/lib/storefront/editor/reorder-array-items";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
@@ -448,6 +450,204 @@ export const storefrontThemeDal = {
             : null,
       },
       templates,
+    };
+  },
+
+  /**
+   * Gives every repeated row in one template an id, once.
+   *
+   * The repair for Stores that predate row identity. Their rows were written by
+   * the shell's own defaults and by a layout document that is only ever seeded,
+   * never rebuilt, so no template upgrade reaches them — and a list holding both
+   * identified and unidentified rows is what makes `key={item.id ?? index}`
+   * match rows by position and throw away DOM state on reorder.
+   *
+   * Deliberately not folded into `findEditorContext`. Repairing data as a side
+   * effect of reading it writes on every page load, races with whatever else is
+   * open, and gives the author no generation to have been holding. This is an
+   * explicit call that takes the generation the caller last read and goes
+   * through the same CAS guard as any authored edit: if someone saved in
+   * between, it writes nothing and says so, and the caller re-reads rather than
+   * overwriting an edit made a moment ago.
+   *
+   * Returns `changed: false` without writing when every row already has a
+   * distinct id, so running it again costs a read and moves no generation.
+   */
+  async backfillTemplateRowIds(data: {
+    storefrontId: string;
+    themeId: string;
+    templateId: string;
+    expectedDraftGeneration: number;
+    createdBy: string;
+  }) {
+    const context = await this.findEditorContext(
+      data.storefrontId,
+      data.themeId,
+    );
+    const template = context?.templates.find(
+      (item) => item.id === data.templateId,
+    );
+    if (!template) return null;
+
+    let assigned = 0;
+    let deduplicated = 0;
+    const sections = template.document.sections.map((section) => {
+      const result = backfillRowIds(section.props, createMorphItemId);
+      if (!result.changed) return section;
+      assigned += result.assigned;
+      deduplicated += result.deduplicated;
+      return { ...section, props: result.value };
+    });
+
+    if (assigned === 0 && deduplicated === 0) {
+      return {
+        changed: false as const,
+        assigned: 0,
+        deduplicated: 0,
+        draftGeneration: template.draftGeneration,
+      };
+    }
+
+    const document = storefrontPageDocumentSchema.parse({
+      ...template.document,
+      sections,
+    });
+    const now = new Date().toISOString();
+    const db = await getDb();
+    const nextGeneration = data.expectedDraftGeneration + 1;
+
+    if (
+      template.draftRevisionId &&
+      template.draftRevisionId !== template.publishedRevisionId
+    ) {
+      const [activeDraft] = await db
+        .select({
+          id: storefrontThemeTemplateRevisions.id,
+          version: storefrontThemeTemplateRevisions.version,
+        })
+        .from(storefrontThemeTemplateRevisions)
+        .where(
+          and(
+            eq(storefrontThemeTemplateRevisions.id, template.draftRevisionId),
+            eq(storefrontThemeTemplateRevisions.templateId, data.templateId),
+          ),
+        )
+        .limit(1);
+
+      if (activeDraft) {
+        const statements = [
+          prepareTemplateDraftCASGuard({
+            storefrontId: data.storefrontId,
+            themeId: data.themeId,
+            templateId: data.templateId,
+            expectedDraftGeneration: data.expectedDraftGeneration,
+            expectedDraftRevisionId: activeDraft.id,
+          }),
+          env.DATABASE.prepare(
+            `
+            UPDATE storefront_theme_template_revisions
+            SET document = ?1
+            WHERE id = ?2 AND template_id = ?3
+          `,
+          ).bind(JSON.stringify(document), activeDraft.id, data.templateId),
+          env.DATABASE.prepare(
+            `
+            UPDATE storefront_theme_templates
+            SET draft_generation = ?1, updated_at = ?2
+            WHERE id = ?3 AND theme_id = ?4 AND deleted_at IS NULL
+          `,
+          ).bind(nextGeneration, now, data.templateId, data.themeId),
+        ];
+
+        try {
+          await env.DATABASE.batch(statements);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (
+            message.includes("malformed JSON") ||
+            message.includes("constraint")
+          ) {
+            throw new Error(
+              "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+            );
+          }
+          throw error;
+        }
+
+        return {
+          changed: true as const,
+          assigned,
+          deduplicated,
+          document,
+          version: activeDraft.version,
+          draftRevisionId: activeDraft.id,
+          draftGeneration: nextGeneration,
+        };
+      }
+    }
+
+    const [versionRow] = await db
+      .select({ value: max(storefrontThemeTemplateRevisions.version) })
+      .from(storefrontThemeTemplateRevisions)
+      .where(eq(storefrontThemeTemplateRevisions.templateId, data.templateId));
+    const revisionId = crypto.randomUUID();
+    const version = Number(versionRow?.value ?? 0) + 1;
+
+    const statements = [
+      prepareTemplateDraftCASGuard({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        templateId: data.templateId,
+        expectedDraftGeneration: data.expectedDraftGeneration,
+        expectedDraftRevisionId: template.draftRevisionId,
+      }),
+      env.DATABASE.prepare(
+        `
+        INSERT INTO storefront_theme_template_revisions (
+          id, template_id, version, document, created_by, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      `,
+      ).bind(
+        revisionId,
+        data.templateId,
+        version,
+        JSON.stringify(document),
+        data.createdBy,
+        now,
+      ),
+      env.DATABASE.prepare(
+        `
+        UPDATE storefront_theme_templates
+        SET draft_revision_id = ?1, draft_generation = ?2, updated_at = ?3
+        WHERE id = ?4 AND theme_id = ?5 AND deleted_at IS NULL
+      `,
+      ).bind(revisionId, nextGeneration, now, data.templateId, data.themeId),
+    ];
+
+    try {
+      await env.DATABASE.batch(statements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
+        throw new Error(
+          "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+        );
+      }
+      throw error;
+    }
+
+    return {
+      changed: true as const,
+      assigned,
+      deduplicated,
+      document,
+      version,
+      draftRevisionId: revisionId,
+      draftGeneration: nextGeneration,
     };
   },
 

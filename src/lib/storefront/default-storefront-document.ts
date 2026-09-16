@@ -1,4 +1,9 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import {
+  DEFAULT_FOOTER_EXPLORE_ITEM_IDS,
+  DEFAULT_FOOTER_HELP_ITEM_IDS,
+  DEFAULT_HEADER_NAV_ITEM_IDS,
+} from "./default-row-ids";
 
 /**
  * Starter workspace revision.
@@ -255,9 +260,21 @@ export function createDefaultStorefrontLayoutDocument(): StorefrontPageDocument 
         props: {
           storeName: "Online Store",
           navItems: [
-            { label: "Shop", link: { href: "/collections/all" } },
-            { label: "About", link: { href: "/pages/about" } },
-            { label: "Journal", link: { href: "/blogs/journal" } },
+            {
+              id: DEFAULT_HEADER_NAV_ITEM_IDS[0],
+              label: "Shop",
+              link: { href: "/collections/all" },
+            },
+            {
+              id: DEFAULT_HEADER_NAV_ITEM_IDS[1],
+              label: "About",
+              link: { href: "/pages/about" },
+            },
+            {
+              id: DEFAULT_HEADER_NAV_ITEM_IDS[2],
+              label: "Journal",
+              link: { href: "/blogs/journal" },
+            },
           ],
           cartLabel: "Cart (0)",
           cartLink: { href: "/cart" },
@@ -275,15 +292,39 @@ export function createDefaultStorefrontLayoutDocument(): StorefrontPageDocument 
             "Objects with lasting character for thoughtful, everyday living.",
           exploreHeading: "Explore",
           exploreItems: [
-            { label: "Shop all", link: { href: "/collections/all" } },
-            { label: "Our story", link: { href: "/pages/about" } },
-            { label: "Journal", link: { href: "/blogs/journal" } },
+            {
+              id: DEFAULT_FOOTER_EXPLORE_ITEM_IDS[0],
+              label: "Shop all",
+              link: { href: "/collections/all" },
+            },
+            {
+              id: DEFAULT_FOOTER_EXPLORE_ITEM_IDS[1],
+              label: "Our story",
+              link: { href: "/pages/about" },
+            },
+            {
+              id: DEFAULT_FOOTER_EXPLORE_ITEM_IDS[2],
+              label: "Journal",
+              link: { href: "/blogs/journal" },
+            },
           ],
           helpHeading: "Help",
           helpItems: [
-            { label: "Contact", link: { href: "/pages/contact" } },
-            { label: "Shipping", link: { href: "/pages/shipping" } },
-            { label: "Returns", link: { href: "/pages/returns" } },
+            {
+              id: DEFAULT_FOOTER_HELP_ITEM_IDS[0],
+              label: "Contact",
+              link: { href: "/pages/contact" },
+            },
+            {
+              id: DEFAULT_FOOTER_HELP_ITEM_IDS[1],
+              label: "Shipping",
+              link: { href: "/pages/shipping" },
+            },
+            {
+              id: DEFAULT_FOOTER_HELP_ITEM_IDS[2],
+              label: "Returns",
+              link: { href: "/pages/returns" },
+            },
           ],
         },
       },
