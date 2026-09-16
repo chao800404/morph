@@ -55,6 +55,24 @@ describe("what a dragged element is", () => {
     );
   });
 
+  it("moves a transparent component-row boundary when its anchor is selected", () => {
+    const q = mount(
+      SECTION(`
+        <div data-morph-preview-row-wrapper data-storefront-item-id="row-a"
+          data-storefront-field-path="items.2">
+          <a data-storefront-field-path="items.2.title"
+            data-morph-loc="src/components/Hero.tsx:8:5">A</a>
+        </div>
+      `),
+    );
+    const wrapper = q("[data-morph-preview-row-wrapper]");
+    const identity = reorderIdentity(q("a"));
+    expect(identity?.kind).toBe("array");
+    expect(identity?.fieldPath).toBe("items.2");
+    expect(identity?.element).toBe(wrapper);
+    expect(identity?.parent).toBe(wrapper.parentElement);
+  });
+
   it("falls back to a source position, but only when it names one element", () => {
     // An element inside map() renders once per item and shares one position,
     // which is exactly the ambiguity that must not be reordered through source.
@@ -96,6 +114,7 @@ describe("where it may be dropped", () => {
       parent: HTMLElement;
     },
   ) => ({
+    element: document.createElement("div"),
     kind: "array" as const,
     nodeId: null,
     fieldPath: "items.1.title",
@@ -174,6 +193,7 @@ describe("the edit a drop means", () => {
           draggedNodeId: null,
         },
         {
+          element: document.createElement("div"),
           kind: "array",
           nodeId: null,
           fieldPath: "items.2.title",
@@ -205,6 +225,7 @@ describe("the edit a drop means", () => {
           draggedNodeId: null,
         },
         {
+          element: document.createElement("div"),
           kind: "section",
           nodeId: "footer",
           fieldPath: null,
@@ -235,6 +256,7 @@ describe("the edit a drop means", () => {
           draggedNodeId: "4:3",
         },
         {
+          element: document.createElement("div"),
           kind: "source",
           nodeId: "9:5",
           fieldPath: null,
@@ -267,6 +289,7 @@ describe("the edit a drop means", () => {
           draggedNodeId: null,
         },
         {
+          element: document.createElement("div"),
           kind: "array",
           nodeId: null,
           fieldPath: null,

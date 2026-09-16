@@ -15,6 +15,8 @@ import { sourceLocationKey } from "@/lib/storefront/ast/source-location-key";
 export type ReorderKind = "section" | "array" | "source";
 
 export type ReorderIdentity = Readonly<{
+  /** Concrete DOM row that moves; it can be a preview-only transparent wrapper. */
+  element: HTMLElement;
   kind: ReorderKind;
   nodeId: string | null;
   fieldPath: string | null;
@@ -75,19 +77,28 @@ const isUniqueMorphNode = (element: HTMLElement, nodeId: string) => {
 };
 
 export const reorderIdentity = (element: HTMLElement) => {
-  const nodeId = element.dataset.morphNode;
-  const fieldPath = element.dataset.storefrontFieldPath;
+  // A component row is represented in the tree by the real element it renders,
+  // while its array boundary stays on a preview-only wrapper. Selecting the
+  // real element must still drag that boundary, otherwise hiding the fake tree
+  // row would silently turn an array reorder into a source reorder.
+  const reorderElement =
+    element.closest<HTMLElement>("[data-morph-preview-row-wrapper]") ?? element;
+  const nodeId = reorderElement.dataset.morphNode;
+  const fieldPath = reorderElement.dataset.storefrontFieldPath;
   const arrayItem = fieldPath ? parseArrayItemFieldPath(fieldPath) : null;
-  const parent = element.parentElement;
-  const section = element.closest<HTMLElement>("[data-storefront-section-id]");
+  const parent = reorderElement.parentElement;
+  const section = reorderElement.closest<HTMLElement>(
+    "[data-storefront-section-id]",
+  );
   const sectionId = section?.dataset.storefrontSectionId;
-  const sourceFilePath = sourceFilePathFor(element);
+  const sourceFilePath = sourceFilePathFor(reorderElement);
   if (!parent || !sectionId || !sourceFilePath) return null;
   // A section root belongs to the route's section list, not to the JSX
   // siblings inside one component, so it reorders through the same path the
   // sidebar uses rather than through a source-file rewrite.
-  if (element === section) {
+  if (reorderElement === section) {
     return {
+      element: reorderElement,
       kind: "section" as const,
       nodeId: sectionId,
       fieldPath: null,
@@ -99,6 +110,7 @@ export const reorderIdentity = (element: HTMLElement) => {
   }
   if (arrayItem && fieldPath) {
     return {
+      element: reorderElement,
       kind: "array" as const,
       nodeId: null,
       fieldPath,
@@ -113,11 +125,12 @@ export const reorderIdentity = (element: HTMLElement) => {
   // still draggable — but the position must resolve to one element in this
   // file, exactly as a marker must.
   const targetKey =
-    nodeId && isUniqueMorphNode(element, nodeId)
+    nodeId && isUniqueMorphNode(reorderElement, nodeId)
       ? nodeId
-      : uniqueSourceLocationKey(element);
+      : uniqueSourceLocationKey(reorderElement);
   if (!targetKey) return null;
   return {
+    element: reorderElement,
     kind: "source" as const,
     nodeId: targetKey,
     fieldPath: null,

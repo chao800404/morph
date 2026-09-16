@@ -113,6 +113,31 @@ export default function Hero({ items = [] }) {
       );
     });
 
+    it("carries the generated index into a field inside the row", () => {
+      const out = run(`import ThemeLink from "../morph/link";
+export const contentFields = {
+  items: { type: "array", fields: { title: { type: "text" } } },
+} as const;
+export default function Hero({ items = [] }) {
+  return <nav>{items.map(item => <ThemeLink>{item.title}</ThemeLink>)}</nav>;
+}
+`);
+      expect(out).toContain(
+        "data-storefront-field-path={`items.${__morphRow0}.title`}",
+      );
+    });
+
+    it("does not shadow an identifier the author already uses", () => {
+      const out = run(`${DECLARES_ROWS}
+const __morphRow0 = "author value";
+export default function Hero({ items = [] }) {
+  return <ul>{items.map(item => <li>{__morphRow0}: {item.title}</li>)}</ul>;
+}
+`);
+      expect(out).toContain("items.map((item, __morphRow1) =>");
+      expect(out).toContain("{__morphRow0}");
+    });
+
     // `item => …` has no brackets to put a second parameter inside.
     it("brings brackets with it when the parameter had none", () => {
       const out = rows("item => (<li key={item.title}>{item.title}</li>)");
@@ -503,7 +528,7 @@ export default function List({ items = [] }) {
 }
 `);
     expect(out).toContain(
-      'data-storefront-field-path={`items.${index}`} data-storefront-item-id={item?.id} style={{ display: "contents" }}>',
+      'data-storefront-field-path={`items.${index}`} data-storefront-item-id={item?.id} data-morph-preview-row-wrapper="" style={{ display: "contents" }}>',
     );
     expect(out).toContain("<Card");
   });

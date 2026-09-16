@@ -26,6 +26,7 @@ import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme
 const FIELD_ATTRIBUTE = "data-storefront-field";
 const FIELD_PATH_ATTRIBUTE = "data-storefront-field-path";
 const ITEM_ID_ATTRIBUTE = "data-storefront-item-id";
+const PREVIEW_ROW_WRAPPER_ATTRIBUTE = "data-morph-preview-row-wrapper";
 const SECTION_ID_ATTRIBUTE = "data-storefront-section-id";
 const SOURCE_FILE_ATTRIBUTE = "data-morph-source-file";
 
@@ -109,6 +110,44 @@ function isAttributeForwardingComponent(
   componentNames: ReadonlySet<string>,
 ): boolean {
   return name?.type === "JSXIdentifier" && componentNames.has(name.name ?? "");
+}
+
+/**
+ * Every identifier already present in the author's module.
+ *
+ * A generated callback parameter is a real JavaScript binding. Reusing a name
+ * the author already used would shadow their value inside the callback and
+ * change the Theme merely by opening its preview. Counting only other generated
+ * parameters is therefore insufficient; choose outside the whole module's
+ * namespace instead.
+ */
+function identifierNames(ast: any): Set<string> {
+  const names = new Set<string>();
+  const seen = new WeakSet<object>();
+  const visit = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (node.type === "Identifier" && typeof node.name === "string") {
+      names.add(node.name);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (
+        key === "loc" ||
+        key === "leadingComments" ||
+        key === "trailingComments"
+      ) {
+        continue;
+      }
+      if (Array.isArray(value)) {
+        for (const child of value) visit(child);
+      } else {
+        visit(value);
+      }
+    }
+  };
+  visit(ast);
+  return names;
 }
 
 /**
@@ -456,6 +495,7 @@ export function injectPreviewBindings(
     const declared = declaredFields(file.content);
     const attributeForwardingComponents =
       attributeForwardingComponentNames(ast);
+    const usedIdentifierNames = identifierNames(ast);
     const insertions: Insertion[] = [];
     const slotIds: string[] = [];
     // Component rows the repeated-field branch has already wrapped. The row is
@@ -465,9 +505,17 @@ export function injectPreviewBindings(
     // Wrappers are extra children, which is the one thing a `space-y` rule
     // notices. Counted so the warning below can speak for them too.
     let contentWrappers = 0;
-    // Names the compiler introduced for a callback that took no index. Counted
-    // so nested maps cannot shadow one another.
+    // Names the compiler introduced for a callback that took no index.
     let synthesizedIndexes = 0;
+    const nextSynthesizedIndex = () => {
+      let name: string;
+      do {
+        name = `__morphRow${synthesizedIndexes}`;
+        synthesizedIndexes += 1;
+      } while (usedIdentifierNames.has(name));
+      usedIdentifierNames.add(name);
+      return name;
+    };
     let count = 0;
 
     const visit = (
@@ -502,8 +550,7 @@ export function injectPreviewBindings(
           mapCall.itemParamEnd !== null &&
           mapCall.itemParamStart !== null
         ) {
-          rowIndex = `__morphRow${synthesizedIndexes}`;
-          synthesizedIndexes += 1;
+          rowIndex = nextSynthesizedIndex();
           if (hasParenthesizedParams(file.content, mapCall.itemParamEnd)) {
             insertions.push({
               at: mapCall.itemParamEnd,
@@ -540,7 +587,7 @@ export function injectPreviewBindings(
             // answer as a section: wrap it in something taken out of layout.
             insertions.push({
               at: row.start,
-              text: `<div${readKeyAttributeSource(row, file.content) ?? ""}${attributes} style={{ display: "contents" }}>`,
+              text: `<div${readKeyAttributeSource(row, file.content) ?? ""}${attributes} ${PREVIEW_ROW_WRAPPER_ATTRIBUTE}="" style={{ display: "contents" }}>`,
             });
             insertions.push({ at: row.end, text: "</div>" });
             wrappedRows.add(row.start);
@@ -548,9 +595,13 @@ export function injectPreviewBindings(
         }
         // Rows of an array field are addressed by the array they came from,
         // so the callback body is walked with that path in hand.
+        const rowScope =
+          rowIndex === mapCall.scope.index
+            ? mapCall.scope
+            : { ...mapCall.scope, index: rowIndex };
         for (const [key, value] of Object.entries(node)) {
           if (key === "loc" || key === "leadingComments") continue;
-          visit(value, mapCall.arrayPath, mapCall.scope, insideJsx);
+          visit(value, mapCall.arrayPath, rowScope, insideJsx);
         }
         return;
       }

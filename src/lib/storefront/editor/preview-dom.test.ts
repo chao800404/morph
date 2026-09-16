@@ -145,6 +145,46 @@ describe("preview editable node naming", () => {
   });
 });
 
+describe("preview-only row wrappers", () => {
+  it("shows the rendered anchor instead of the compiler's wrapper", () => {
+    const root = document.createElement("main");
+    root.innerHTML = `
+      <section data-storefront-section-id="header">
+        <nav data-morph-loc="src/Header.tsx:4:3">
+          <div data-morph-preview-row-wrapper data-storefront-item-id="nav-1"
+            data-storefront-field="items" data-storefront-field-path="items.0">
+            <a data-morph-loc="src/Header.tsx:6:7" data-storefront-field="label"
+              data-storefront-field-path="items.0.label">Home</a>
+          </div>
+        </nav>
+      </section>
+    `;
+
+    const nodes = collectPreviewEditableNodes(root);
+    expect(nodes.map((node) => node.label)).toEqual(["Nav", "A"]);
+    const anchor = nodes.find((node) => node.tagName === "a");
+    const nav = nodes.find((node) => node.tagName === "nav");
+    expect(anchor?.parentId).toBe(nav?.id);
+    expect(anchor?.target.fieldPath).toBe("items.0.label");
+    expect(anchor?.id).toContain("item:nav-1");
+  });
+
+  it("keeps an authored display-contents element in the tree", () => {
+    const root = document.createElement("main");
+    root.innerHTML = `
+      <section data-storefront-section-id="hero">
+        <div style="display: contents" data-morph-loc="src/Hero.tsx:3:3">
+          <a data-morph-loc="src/Hero.tsx:4:5">Action</a>
+        </div>
+      </section>
+    `;
+
+    expect(collectPreviewEditableNodes(root).map((node) => node.label)).toEqual(
+      ["Div", "A"],
+    );
+  });
+});
+
 describe("an authored id as an identity", () => {
   const collect = (html: string) => {
     const root = document.createElement("main");

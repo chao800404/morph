@@ -172,6 +172,15 @@ export const PREVIEW_EDITABLE_NODE_SELECTOR = [
 ].join(",");
 
 /**
+ * A layout-neutral row boundary injected only for preview bookkeeping.
+ *
+ * It remains in the DOM so array reordering retains `items.N`, but it is not
+ * authored JSX and therefore must never become a second, fake row in the
+ * editor tree. Authored `display: contents` elements deliberately do not match.
+ */
+export const PREVIEW_ROW_WRAPPER_SELECTOR = "[data-morph-preview-row-wrapper]";
+
+/**
  * Elements that act as a selectable section root.
  *
  * `data-storefront-section-id` is injected when a component resolves to a
@@ -310,7 +319,11 @@ export function collectPreviewEditableNodes(root: {
     if (!sectionId || sectionId.length > 100) continue;
     const candidates = Array.from(
       section.querySelectorAll<HTMLElement>(PREVIEW_EDITABLE_NODE_SELECTOR),
-    ).filter((candidate) => closestPreviewSectionRoot(candidate) === section);
+    ).filter(
+      (candidate) =>
+        closestPreviewSectionRoot(candidate) === section &&
+        !candidate.matches(PREVIEW_ROW_WRAPPER_SELECTOR),
+    );
     const morphNodeCounts = new Map<string, number>();
     const fieldKeyCounts = new Map<string, number>();
     const sourceLocationCounts = new Map<string, number>();

@@ -780,7 +780,7 @@ if (channel) {
 
       gesture = {
         kind: identity.kind,
-        dragged: selectedItem.element,
+        dragged: identity.element,
         parent: identity.parent,
         sectionId: identity.sectionId,
         sourceFilePath: identity.sourceFilePath,
