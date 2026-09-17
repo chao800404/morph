@@ -51,16 +51,33 @@ export const LogoF: React.FC<LogoProps> = ({ size = 60, style, ...props }) => {
   const uniqueId = useId();
   const maskId = `${uniqueId}-mask`;
   const filterId = `${uniqueId}-filter`;
+  const width = props.width ?? size;
+  const height = props.height ?? size;
+
+  /**
+   * `auto` is a CSS keyword, not an SVG length.
+   *
+   * As an attribute the browser rejects it outright — two console errors every
+   * render — and the element falls back to its default size, so a caller asking
+   * to fill its container silently gets whatever the default is instead. In
+   * `style` it is valid and means what the call site meant.
+   */
+  const isAuto = (value: number | string) => value === "auto";
 
   return (
     <svg
       viewBox="0 0 73 73"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      width={props.width || size}
-      height={props.height || size}
-      style={{ minWidth: size, ...style }}
       {...props}
+      width={isAuto(width) ? undefined : width}
+      height={isAuto(height) ? undefined : height}
+      style={{
+        ...(isAuto(width) ? { width: "auto" } : null),
+        ...(isAuto(height) ? { height: "auto" } : null),
+        minWidth: size,
+        ...style,
+      }}
     >
       <mask id={maskId} fill="white">
         <path d="M0 16C0 7.16344 7.16344 0 16 0H57C65.8366 0 73 7.16344 73 16V57C73 65.8366 65.8366 73 57 73H16C7.16344 73 0 65.8366 0 57V16Z" />
