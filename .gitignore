@@ -28,3 +28,7 @@ e2e/.auth/
 test-results/
 playwright-report/
 .env.e2e
+
+# Local pnpm content-addressable store. Package bytes, not source: 19MB of it
+# reached this repo once already, and it grows with every install.
+.pnpm-store/
