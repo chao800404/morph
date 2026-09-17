@@ -1,38 +1,19 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  rebaseContentProps,
+  sameContentValue,
+} from "@/lib/storefront/editor/content-rebase";
 
 export type InspectorContentProps = Record<string, unknown>;
 
 /**
  * Compare stored content structurally.
  *
- * Refetched JSON objects are new references even when their contents did not
- * change. Structural comparison lets the hook rebase server updates without
- * mistaking every refetch for a local edit.
+ * The rule now lives in `content-rebase`, where the content write path can
+ * reach it too: a conflicted save has to rebase the same way a refetch does.
+ * Re-exported for the callers that already know it by this name.
  */
-export function sameInspectorContentValue(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (a === null || b === null) return false;
-  if (typeof a !== "object" || typeof b !== "object") return false;
-
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return (
-      a.length === b.length &&
-      a.every((item, index) => sameInspectorContentValue(item, b[index]))
-    );
-  }
-
-  const aRecord = a as Record<string, unknown>;
-  const bRecord = b as Record<string, unknown>;
-  const aKeys = Object.keys(aRecord);
-  const bKeys = Object.keys(bRecord);
-  if (aKeys.length !== bKeys.length) return false;
-  return aKeys.every(
-    (key) =>
-      Object.prototype.hasOwnProperty.call(bRecord, key) &&
-      sameInspectorContentValue(aRecord[key], bRecord[key]),
-  );
-}
+export const sameInspectorContentValue = sameContentValue;
 
 /**
  * Keeps Inspector content edits responsive while rebasing server updates.
@@ -82,13 +63,11 @@ export function useInspectorContentProps(args: {
 
     // Keep keys the author is currently editing while rebasing every other
     // key onto the latest server state.
-    const local = localPropsRef.current;
-    const rebased: InspectorContentProps = { ...incomingProps };
-    for (const key of Object.keys(local)) {
-      if (!sameInspectorContentValue(local[key], baseline[key])) {
-        rebased[key] = local[key];
-      }
-    }
+    const rebased = rebaseContentProps({
+      incoming: incomingProps,
+      baseline,
+      local: localPropsRef.current,
+    });
 
     localPropsRef.current = rebased;
     setLocalProps(rebased);
