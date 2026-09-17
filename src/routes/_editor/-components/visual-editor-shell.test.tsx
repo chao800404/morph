@@ -6,10 +6,8 @@ import type {
 } from "@/lib/storefront/editor/preview-protocol";
 import {
   createEditorSelectionDescriptor,
-  createSelectionRestoreMessages,
   EditorCodeModeSurface,
   EditorModeSurface,
-  shouldSkipStalePreviewSectionSync,
 } from "./visual-editor-shell";
 
 describe("EditorModeSurface", () => {
@@ -109,21 +107,7 @@ describe("EditorCodeModeSurface", () => {
   });
 });
 
-describe("Code to Design selection restore", () => {
-  it("ignores a stale section effect while another tree target is pending", () => {
-    const pendingTarget = {
-      sectionId: "category-showcase",
-      sourceLocation: "CategoryShowcase.tsx:41:7",
-      isSection: false,
-    } satisfies PreviewSelectionRestoreTarget;
-
-    expect(shouldSkipStalePreviewSectionSync("hero", pendingTarget)).toBe(true);
-    expect(
-      shouldSkipStalePreviewSectionSync("category-showcase", pendingTarget),
-    ).toBe(false);
-    expect(shouldSkipStalePreviewSectionSync("hero", null)).toBe(false);
-  });
-
+describe("createEditorSelectionDescriptor", () => {
   it("builds the immediate inspector selection from the tree target", () => {
     const target = {
       sectionId: "hero",
@@ -153,45 +137,5 @@ describe("Code to Design selection restore", () => {
         isSection: false,
       },
     );
-  });
-
-  it("posts selection mode restore followed by style refresh without remounting the preview", () => {
-    const target = {
-      sectionId: "hero",
-      nodeId: "hero-heading",
-      fieldPath: "heading",
-      elementKey: "heading",
-      fieldKey: "heading",
-      isSection: false,
-    } as const;
-
-    expect(createSelectionRestoreMessages(true, target)).toEqual([
-      {
-        type: "morph:storefront-preview-set-selection-mode",
-        enabled: true,
-        restoreTarget: target,
-      },
-      { type: "morph:storefront-preview-request-selection-style" },
-    ]);
-    expect(createSelectionRestoreMessages(false, target)).toEqual([
-      {
-        type: "morph:storefront-preview-set-selection-mode",
-        enabled: false,
-        restoreTarget: undefined,
-      },
-    ]);
-  });
-
-  it("carries the latest selection revision through a restore request", () => {
-    const target = {
-      sectionId: "hero",
-      elementKey: "hero-image",
-      isSection: false,
-    } as const;
-
-    expect(createSelectionRestoreMessages(true, target, 4)[0]).toMatchObject({
-      type: "morph:storefront-preview-set-selection-mode",
-      selectionRevision: 4,
-    });
   });
 });

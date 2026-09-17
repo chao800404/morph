@@ -225,7 +225,6 @@ import {
   EditorToolbarMode,
 } from "./editor-toolbar";
 import {
-  isLatestStyleRevision,
   shouldConfirmPreviewStyleRevision,
   shouldStartInitialPreviewSync,
 } from "./style-revision";
@@ -250,12 +249,10 @@ import {
   type CanvasTransform,
   canvasYToCenterElement,
 } from "./editor-canvas-geometry";
-import {
-  isPreviewSelectionReportStale,
-  shouldRevealPreviewSelection,
-} from "./preview-reveal-request";
+import { previewSelectionTargetMatches } from "./preview-reveal-request";
 import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
+import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 
 const loadEditorCodeWorkspace = () =>
@@ -340,47 +337,6 @@ export function EditorCodeModeSurface({
   );
 }
 
-export function createSelectionRestoreMessages(
-  selectionMode: boolean,
-  restoreTarget: PreviewSelectionRestoreTarget | null,
-  selectionRevision?: number,
-) {
-  const messages: Array<
-    | {
-        type: "morph:storefront-preview-set-selection-mode";
-        enabled: boolean;
-        restoreTarget?: PreviewSelectionRestoreTarget;
-        selectionRevision?: number;
-      }
-    | { type: "morph:storefront-preview-request-selection-style" }
-  > = [
-    {
-      type: "morph:storefront-preview-set-selection-mode",
-      enabled: selectionMode,
-      restoreTarget: selectionMode ? (restoreTarget ?? undefined) : undefined,
-      ...(selectionRevision === undefined ? {} : { selectionRevision }),
-    },
-  ];
-  if (selectionMode && restoreTarget) {
-    messages.push({
-      type: "morph:storefront-preview-request-selection-style",
-    });
-  }
-  return messages;
-}
-
-/**
- * A route-section effect may be running for an older render while a newer
- * sidebar selection is already waiting for the preview. Sending that older
- * section-only message would replace the requested descendant with a wrapper.
- */
-export function shouldSkipStalePreviewSectionSync(
-  currentSectionId: string | null,
-  pendingTarget: PreviewSelectionRestoreTarget | null,
-): boolean {
-  return Boolean(pendingTarget && pendingTarget.sectionId !== currentSectionId);
-}
-
 function collectEditableNodeDescendantFields(
   selectedNode: PreviewEditableNode | null,
   nodes: readonly PreviewEditableNode[],
@@ -420,36 +376,6 @@ function collectEditableNodeDescendantFields(
 
   visit(selectedNode.id);
   return result;
-}
-
-function previewSelectionTargetMatches(
-  left: PreviewSelectionRestoreTarget,
-  right: PreviewSelectionRestoreTarget,
-): boolean {
-  if (
-    left.sectionId !== right.sectionId ||
-    Boolean(left.isSection) !== Boolean(right.isSection)
-  ) {
-    return false;
-  }
-  if (left.isSection) return true;
-
-  // Preview responses can enrich a target with a source location or a DOM
-  // marker that was not present in the tree payload. Compare the strongest
-  // shared identity instead of requiring every optional field to be equal.
-  const identityKeys = [
-    "fieldPath",
-    "nodeId",
-    "elementKey",
-    "fieldKey",
-    "sourceLocation",
-  ] as const;
-  return identityKeys.some(
-    (key) =>
-      left[key] !== undefined &&
-      right[key] !== undefined &&
-      left[key] === right[key],
-  );
 }
 
 function formatBuildDiagnostics(value: unknown): string {
@@ -1514,14 +1440,6 @@ export function VisualEditorShell({
    * replace a newer sidebar intent with an older section-level response.
    */
   const editableSelection = isImmutableBuildPreview ? null : activeSelection;
-  const previewSelectionRevisionRef = useRef(0);
-  const nextPreviewSelectionRevision = useCallback(() => {
-    previewSelectionRevisionRef.current += 1;
-    return previewSelectionRevisionRef.current;
-  }, []);
-  const lastPreviewSelectionRef = useRef<PreviewSelectionRestoreTarget | null>(
-    null,
-  );
   /**
    * The last inline style preview is already painted in the iframe. When its
    * source patch commits, the iframe can compile the new CSS without asking
@@ -1532,25 +1450,6 @@ export function VisualEditorShell({
     selectionKey: string;
     targetElement: string;
     styles: Record<string, string>;
-  } | null>(null);
-  const pendingPreviewSelectionRef = useRef<{
-    target: PreviewSelectionRestoreTarget;
-    revision: number;
-  } | null>(null);
-  /**
-   * A request from the tree to bring the canvas to what it selects.
-   *
-   * Held apart from the selection request above, which every accepted report
-   * clears — including the preview's own restore, which arrives first after a
-   * reload and is not an answer to anything. Clearing the reveal with it killed
-   * the request before its reply landed, which is why the first click after a
-   * load did nothing. This one is cleared when it is answered, when a newer
-   * request replaces it, or when the thing it was asked of is gone.
-   */
-  const pendingRevealRef = useRef<{
-    target: PreviewSelectionRestoreTarget;
-    revision: number;
-    previewKey: string | null;
   } | null>(null);
   const [activeComputedStyleRevision, setActiveComputedStyleRevision] =
     useState(0);
@@ -2226,6 +2125,30 @@ export function VisualEditorShell({
     parseMessage: parseLivePreviewMessage,
     postMessage: postEditorToPreviewMessage,
   } = useLivePreviewMessageBridge(livePreviewChannel, previewIframeRef);
+
+  /**
+   * The selection round trip's own state, kept out of this component: which
+   * request is outstanding, which reply answers it, and which reply may move the
+   * canvas. The rules live in `preview-reveal-request`; the bookkeeping and the
+   * commands live in `use-preview-selection`.
+   */
+  const postSelectionMessage = useCallback(
+    (message: Parameters<typeof postEditorToPreviewMessage>[1]) =>
+      postEditorToPreviewMessage(
+        previewIframeRef.current?.contentWindow,
+        message,
+      ),
+    [postEditorToPreviewMessage],
+  );
+  const readLatestStyleRevision = useCallback(
+    () => latestStyleRevisionRef.current,
+    [],
+  );
+  const previewSelection = usePreviewSelection({
+    post: postSelectionMessage,
+    previewKey,
+    latestStyleRevision: readLatestStyleRevision,
+  });
   const previewSizeMeasurementRevisionRef = useRef(0);
   const beginPreviewSizeMeasurement = useCallback(() => {
     previewSizeMeasurementRevisionRef.current += 1;
@@ -2251,15 +2174,9 @@ export function VisualEditorShell({
     previousEditorModeRef.current = editorMode;
     if (previousMode === editorMode || editorMode !== "code") return;
 
-    pendingPreviewSelectionRef.current = null;
-    pendingRevealRef.current = null;
+    previewSelection.leaveSelectionMode();
     setActiveSelection(null);
-    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-      type: "morph:storefront-preview-set-selection-mode",
-      enabled: false,
-      selectionRevision: nextPreviewSelectionRevision(),
-    });
-  }, [editorMode, nextPreviewSelectionRevision, postEditorToPreviewMessage]);
+  }, [editorMode, previewSelection]);
 
   // A surface stays mounted so Monaco and the preview keep their local state,
   // but focus must not remain inside the surface that just became hidden. A
@@ -2300,7 +2217,7 @@ export function VisualEditorShell({
   >(() => {});
   const previewSelectionStyle = useCallback(
     (styles: Record<string, string>, targetElement: string) => {
-      const selection = lastPreviewSelectionRef.current;
+      const selection = previewSelection.currentTarget();
       const sourceLocation = selection?.sourceLocation ?? null;
       const selectionKey = [
         selection?.sectionId ?? "",
@@ -2326,10 +2243,10 @@ export function VisualEditorShell({
         // An unmarked element's `targetElement` is only `line:column`, which
         // matches no DOM attribute; the full position is how the preview finds
         // it for live feedback while a control is being dragged.
-        sourceLocation: lastPreviewSelectionRef.current?.sourceLocation ?? null,
+        sourceLocation: previewSelection.currentTarget()?.sourceLocation ?? null,
       });
     },
-    [],
+    [previewSelection],
   );
   const previewSelectionField = useCallback(
     (fieldKey: string, fieldPath: string | null, value: string) => {
@@ -3834,7 +3751,7 @@ export function VisualEditorShell({
             content: updatedContent,
           });
         }
-        const selection = lastPreviewSelectionRef.current;
+        const selection = previewSelection.currentTarget();
         const selectionKey = [
           selection?.sectionId ?? "",
           selection?.sourceLocation ?? "",
@@ -4086,12 +4003,10 @@ export function VisualEditorShell({
   ]);
 
   const resetEditorContext = useCallback(() => {
-    lastPreviewSelectionRef.current = null;
-    pendingPreviewSelectionRef.current = null;
-    pendingRevealRef.current = null;
+    previewSelection.clear();
     setActiveSelection(null);
     resetCanvasScrollPosition();
-  }, [resetCanvasScrollPosition]);
+  }, [previewSelection, resetCanvasScrollPosition]);
 
   useEditorContextReset({
     templateId: search.templateId,
@@ -4360,72 +4275,10 @@ export function VisualEditorShell({
       if (message.type !== "morph:storefront-preview-select-section") return;
       reportAuthenticatedUserActivity();
 
-      const responseStyleRevision = message.styleRevision;
-      if (
-        !isLatestStyleRevision(
-          responseStyleRevision,
-          latestStyleRevisionRef.current,
-        )
-      )
-        return;
-      const responseSelectionRevision = message.selectionRevision ?? 0;
-      if (
-        isPreviewSelectionReportStale({
-          responseRevision: responseSelectionRevision,
-          latestSelectionRevision: previewSelectionRevisionRef.current,
-        })
-      ) {
-        return;
-      }
-      const incomingTarget: PreviewSelectionRestoreTarget = {
-        sectionId: message.sectionId,
-        sourceLocation: message.sourceLocation ?? undefined,
-        nodeId: message.nodeId ?? undefined,
-        fieldPath: message.fieldPath ?? undefined,
-        elementKey: message.elementKey ?? undefined,
-        fieldKey: message.fieldKey ?? message.field ?? undefined,
-        isSection: message.isSection,
-      };
-      const pendingSelection = pendingPreviewSelectionRef.current;
-      // A route/context sync can make the iframe briefly report its section
-      // element after the sidebar has already requested a descendant. Keep
-      // that older response out of both inspectors. A newer canvas click is
-      // allowed through because its iframe revision is greater.
-      if (
-        pendingSelection &&
-        responseSelectionRevision <= pendingSelection.revision &&
-        !previewSelectionTargetMatches(pendingSelection.target, incomingTarget)
-      ) {
-        return;
-      }
-      previewSelectionRevisionRef.current = Math.max(
-        previewSelectionRevisionRef.current,
-        responseSelectionRevision,
-      );
-      // Past the checks above, so only an answer to the request that asked for
-      // it moves anything. Every part has to agree: the revision, the target it
-      // named, and the preview it was asked of — a reconnect mints a new one
-      // and any request outstanding against the old preview is stale.
-      const revealRequest = pendingRevealRef.current;
-      const shouldReveal = shouldRevealPreviewSelection({
-        request: revealRequest && { ...revealRequest, reveal: true },
-        responseRevision: responseSelectionRevision,
-        previewKey: previewKeyRef.current,
-        targetMatches: revealRequest
-          ? previewSelectionTargetMatches(revealRequest.target, incomingTarget)
-          : false,
-      });
-      // Answered, or overtaken by a selection made since. A report that is
-      // neither — the preview restoring its own selection after a reload —
-      // leaves the request standing for the reply still on its way.
-      if (
-        shouldReveal ||
-        (revealRequest && responseSelectionRevision > revealRequest.revision)
-      ) {
-        pendingRevealRef.current = null;
-      }
-      pendingPreviewSelectionRef.current = null;
-      if (shouldReveal && message.documentRect) {
+      const outcome = previewSelection.acceptReport(message);
+      if (!outcome.accepted) return;
+
+      if (outcome.reveal && message.documentRect) {
         const rect = message.documentRect;
         // A frame later: the preview reports where the element is as it marks
         // it, and React may not have finished committing around it yet.
@@ -4470,7 +4323,6 @@ export function VisualEditorShell({
       const parentComputedStyle = message.parentComputedStyle;
       const sectionComputedStyle = message.sectionComputedStyle;
       const inspectorOverride = message.inspectorOverride;
-      lastPreviewSelectionRef.current = incomingTarget;
       const componentType =
         sectionId === (search.routePath ?? "/")
           ? "page"
@@ -4503,7 +4355,7 @@ export function VisualEditorShell({
         sectionComputed: sectionComputedStyle,
         inspectorOverride,
       });
-      setActiveComputedStyleRevision(responseStyleRevision);
+      setActiveComputedStyleRevision(message.styleRevision);
 
       if (sectionId !== search.section) {
         onSearchChange({ section: sectionId });
@@ -4525,6 +4377,7 @@ export function VisualEditorShell({
     onSearchChange,
     postEditorToPreviewMessage,
     previewKey,
+    previewSelection,
     search.section,
     search.viewport,
   ]);
@@ -4569,39 +4422,18 @@ export function VisualEditorShell({
     // effect for that first section send a wrapper-only restore and overwrite
     // the newer explicit target. The pending target is cleared only after the
     // preview confirms it, so this guard also covers a slow iframe.
-    const pendingSelection = pendingPreviewSelectionRef.current;
-    if (
-      shouldSkipStalePreviewSectionSync(
-        currentSectionId,
-        pendingSelection?.target ?? null,
-      )
-    ) {
-      return;
-    }
-    const restoreTarget =
-      isSelectionMode &&
-      lastPreviewSelectionRef.current?.sectionId === currentSectionId
-        ? lastPreviewSelectionRef.current
-        : undefined;
-    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-      type: "morph:storefront-preview-set-section",
+    previewSelection.syncSection({
       sectionId: currentSectionId,
-      ...(restoreTarget
-        ? {
-            restoreTarget,
-            selectionRevision: previewSelectionRevisionRef.current,
-          }
-        : {}),
+      enabled: isSelectionMode,
     });
-  }, [isSelectionMode, search.section]);
+  }, [isSelectionMode, previewSelection, search.section]);
 
   const handleSectionsSearchChange = useCallback(
     (next: Partial<StorefrontThemeEditorSearch>) => {
       if (next.section !== undefined) {
         const sectionId = next.section ?? null;
         if (!sectionId) {
-          pendingPreviewSelectionRef.current = null;
-          lastPreviewSelectionRef.current = null;
+          previewSelection.forget();
           setActiveSelection(null);
           setActiveComputedStyleRevision(0);
         } else {
@@ -4619,7 +4451,6 @@ export function VisualEditorShell({
                   (section) => section.id === sectionId,
                 )?.type ??
                 "custom");
-          lastPreviewSelectionRef.current = target;
           setActiveSelection(
             createEditorSelectionDescriptor(target, null, componentType),
           );
@@ -4629,23 +4460,7 @@ export function VisualEditorShell({
           // URL and right panel only when select mode was off, leaving the
           // canvas with no matching highlight.
           setIsSelectionMode(true);
-          const selectionRevision = nextPreviewSelectionRevision();
-          pendingPreviewSelectionRef.current = {
-            target,
-            revision: selectionRevision,
-          };
-          for (const message of createSelectionRestoreMessages(
-            true,
-            target,
-            selectionRevision,
-          )) {
-            postEditorToPreviewMessage(
-              previewIframeRef.current?.contentWindow,
-              {
-                ...message,
-              },
-            );
-          }
+          previewSelection.askForSelection({ target, reveal: false });
         }
       }
       onSearchChange(next);
@@ -4653,7 +4468,6 @@ export function VisualEditorShell({
     [
       activeRouteSections,
       activeTemplate,
-      nextPreviewSelectionRevision,
       onSearchChange,
       search.routePath,
     ],
@@ -4708,40 +4522,19 @@ export function VisualEditorShell({
         componentType,
         collectEditableNodeDescendantFields(selectedNode, previewNodes),
       );
-      const selectionRevision = nextPreviewSelectionRevision();
-      pendingPreviewSelectionRef.current = {
-        target,
-        revision: selectionRevision,
-      };
-      // Only a selection made here brings the canvas to it. Clicking something
-      // on the canvas means the author is already looking at it, and moving the
-      // page under a click is how a click comes to feel like a misfire.
-      pendingRevealRef.current = {
-        target,
-        revision: selectionRevision,
-        previewKey: previewKeyRef.current,
-      };
       setActiveSelection(nextSelection);
       setActiveComputedStyleRevision(0);
-      lastPreviewSelectionRef.current = target;
       if (target.sectionId !== search.section) {
         onSearchChange({ section: target.sectionId });
       }
       setIsSelectionMode(true);
-      for (const message of createSelectionRestoreMessages(
-        true,
-        target,
-        selectionRevision,
-      )) {
-        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-          ...message,
-        });
-      }
+      // Only a selection made here brings the canvas to it. Clicking something
+      // on the canvas means the author is already looking at it.
+      previewSelection.askForSelection({ target, reveal: true });
     },
     [
       activeRouteSections,
       activeTemplate,
-      nextPreviewSelectionRevision,
       onSearchChange,
       previewKey,
       previewStructure,
@@ -4837,8 +4630,7 @@ export function VisualEditorShell({
         };
       }
 
-      lastPreviewSelectionRef.current = null;
-      pendingPreviewSelectionRef.current = null;
+      previewSelection.forget();
       setActiveSelection(null);
       setActiveComputedStyleRevision(0);
       return { success: true };
@@ -4920,8 +4712,7 @@ export function VisualEditorShell({
         )?.slotId;
         onSearchChange({ section: nextSectionId ?? "" });
       }
-      lastPreviewSelectionRef.current = null;
-      pendingPreviewSelectionRef.current = null;
+      previewSelection.forget();
       setActiveSelection(null);
       setActiveComputedStyleRevision(0);
       return { success: true };
@@ -5044,7 +4835,7 @@ export function VisualEditorShell({
   useEffect(() => {
     inlineTextCommitHandlerRef.current = (message) => {
       const selection = activeSelection;
-      const lastSelection = lastPreviewSelectionRef.current;
+      const lastSelection = previewSelection.currentTarget();
       if (
         !selection ||
         !activeTemplate ||
@@ -5521,15 +5312,8 @@ export function VisualEditorShell({
     // The preview takes the higher of its own counter and this one, so sending
     // the current value orders nothing differently. It just stops this message
     // from outranking a selection that is still waiting to be answered.
-    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-      type: "morph:storefront-preview-set-selection-mode",
-      enabled: isSelectionMode,
-      selectionRevision: previewSelectionRevisionRef.current,
-      restoreTarget: isSelectionMode
-        ? (lastPreviewSelectionRef.current ?? undefined)
-        : undefined,
-    });
-  }, [isSelectionMode]);
+    previewSelection.reassertMode({ enabled: isSelectionMode });
+  }, [isSelectionMode, previewSelection]);
 
   const syncPreviewSpacingOverlay = useCallback(() => {
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
@@ -5541,24 +5325,10 @@ export function VisualEditorShell({
   const switchToDesign = useCallback(() => {
     setEditorMode("design");
     syncPreviewSpacingOverlay();
-    const selectionRevision = nextPreviewSelectionRevision();
     if (isCommentMode) return;
 
-    for (const message of createSelectionRestoreMessages(
-      isSelectionMode,
-      lastPreviewSelectionRef.current,
-      selectionRevision,
-    )) {
-      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-        ...message,
-      });
-    }
-  }, [
-    isCommentMode,
-    isSelectionMode,
-    nextPreviewSelectionRevision,
-    syncPreviewSpacingOverlay,
-  ]);
+    previewSelection.askForCurrent({ enabled: isSelectionMode });
+  }, [isCommentMode, isSelectionMode, previewSelection, syncPreviewSpacingOverlay]);
 
   const handleSwitchToDesign = useCallback(async () => {
     if (isFlushingCodeChanges) return;

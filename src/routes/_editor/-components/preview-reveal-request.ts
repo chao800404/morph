@@ -1,3 +1,8 @@
+import type {
+  EditorToPreviewMessage,
+  PreviewSelectionRestoreTarget,
+} from "@/lib/storefront/editor/preview-protocol";
+
 /**
  * Whether a selection report is the answer to the request that asked the canvas
  * to move.
@@ -73,4 +78,79 @@ export function isPreviewSelectionReportStale(args: {
   latestSelectionRevision: number;
 }): boolean {
   return args.responseRevision < args.latestSelectionRevision;
+}
+
+/**
+ * Whether a report names the element a request asked for.
+ *
+ * A report can arrive enriched — with a source location or a DOM marker the
+ * tree payload never carried — so the strongest *shared* identity is what
+ * decides, not equality of every optional field. Two reports that share no
+ * identity are about different elements, however similar they look.
+ */
+export function previewSelectionTargetMatches(
+  left: PreviewSelectionRestoreTarget,
+  right: PreviewSelectionRestoreTarget,
+): boolean {
+  if (
+    left.sectionId !== right.sectionId ||
+    Boolean(left.isSection) !== Boolean(right.isSection)
+  ) {
+    return false;
+  }
+  if (left.isSection) return true;
+
+  const identityKeys = [
+    "fieldPath",
+    "nodeId",
+    "elementKey",
+    "fieldKey",
+    "sourceLocation",
+  ] as const;
+  return identityKeys.some(
+    (key) =>
+      left[key] !== undefined &&
+      right[key] !== undefined &&
+      left[key] === right[key],
+  );
+}
+
+/**
+ * A route-section effect may be running for an older render while a newer
+ * sidebar selection is already waiting for the preview. Sending that older
+ * section-only message would replace the requested descendant with a wrapper.
+ */
+export function shouldSkipStalePreviewSectionSync(
+  currentSectionId: string | null,
+  pendingTarget: PreviewSelectionRestoreTarget | null,
+): boolean {
+  return Boolean(pendingTarget && pendingTarget.sectionId !== currentSectionId);
+}
+
+/**
+ * The messages that ask the preview for a selection.
+ *
+ * Two of them, in order: turn selection mode on with the target to restore, then
+ * ask for the selection's style. The style request only means something once a
+ * target is being selected, which is why it is not sent on its own.
+ */
+export function createSelectionRestoreMessages(
+  selectionMode: boolean,
+  restoreTarget: PreviewSelectionRestoreTarget | null,
+  selectionRevision?: number,
+): EditorToPreviewMessage[] {
+  const messages: EditorToPreviewMessage[] = [
+    {
+      type: "morph:storefront-preview-set-selection-mode",
+      enabled: selectionMode,
+      restoreTarget: selectionMode ? (restoreTarget ?? undefined) : undefined,
+      ...(selectionRevision === undefined ? {} : { selectionRevision }),
+    },
+  ];
+  if (selectionMode && restoreTarget) {
+    messages.push({
+      type: "morph:storefront-preview-request-selection-style",
+    });
+  }
+  return messages;
 }

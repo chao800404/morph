@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { PreviewSelectionRestoreTarget } from "@/lib/storefront/editor/preview-protocol";
 import {
+  createSelectionRestoreMessages,
   isPreviewSelectionReportStale,
   shouldRevealPreviewSelection,
+  shouldSkipStalePreviewSectionSync,
 } from "./preview-reveal-request";
 
 const request = {
@@ -137,5 +140,61 @@ describe("deciding whether a report has been overtaken", () => {
         latestSelectionRevision: 7,
       }),
     ).toBe(false);
+  });
+});
+
+describe("a section sync that would replace a waiting selection", () => {
+  it("ignores a stale section effect while another tree target is pending", () => {
+    const pendingTarget = {
+      sectionId: "category-showcase",
+      sourceLocation: "CategoryShowcase.tsx:41:7",
+      isSection: false,
+    } satisfies PreviewSelectionRestoreTarget;
+
+    expect(shouldSkipStalePreviewSectionSync("hero", pendingTarget)).toBe(true);
+    expect(
+      shouldSkipStalePreviewSectionSync("category-showcase", pendingTarget),
+    ).toBe(false);
+    expect(shouldSkipStalePreviewSectionSync("hero", null)).toBe(false);
+  });
+
+  it("posts selection mode restore followed by style refresh without remounting the preview", () => {
+    const target = {
+      sectionId: "hero",
+      nodeId: "hero-heading",
+      fieldPath: "heading",
+      elementKey: "heading",
+      fieldKey: "heading",
+      isSection: false,
+    } as const;
+
+    expect(createSelectionRestoreMessages(true, target)).toEqual([
+      {
+        type: "morph:storefront-preview-set-selection-mode",
+        enabled: true,
+        restoreTarget: target,
+      },
+      { type: "morph:storefront-preview-request-selection-style" },
+    ]);
+    expect(createSelectionRestoreMessages(false, target)).toEqual([
+      {
+        type: "morph:storefront-preview-set-selection-mode",
+        enabled: false,
+        restoreTarget: undefined,
+      },
+    ]);
+  });
+
+  it("carries the latest selection revision through a restore request", () => {
+    const target = {
+      sectionId: "hero",
+      elementKey: "hero-image",
+      isSection: false,
+    } as const;
+
+    expect(createSelectionRestoreMessages(true, target, 4)[0]).toMatchObject({
+      type: "morph:storefront-preview-set-selection-mode",
+      selectionRevision: 4,
+    });
   });
 });
