@@ -19,6 +19,17 @@ export function isServerFnRequest(request: Request): boolean {
  * Only these reads are safe to replay when Vite leaves the Start handler in a
  * broken HMR generation. Mutations and opaque API requests must surface their
  * first answer instead of being performed twice.
+ *
+ * The method is not the whole reason a replay is safe, and reading it that way
+ * would be a mistake to inherit. Rendering a document runs its route loaders,
+ * and a loader here may write: opening the editor reaches the starter workspace
+ * upgrade, which rewrites theme files and moves a template version. Replaying
+ * is safe because that work is idempotent — version-gated, CAS-guarded, and
+ * content-addressed — not because the request said GET.
+ *
+ * So the premise a new loader has to keep is idempotence, not read-only. A
+ * loader that appends, counts, charges, or sends would be performed twice by
+ * this path, in development, with nothing in the request to mark it.
  */
 export function isHtmlDocumentRequest(request: Request): boolean {
   if (request.method !== "GET" || isServerFnRequest(request)) return false;
