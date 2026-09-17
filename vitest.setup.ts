@@ -1,5 +1,31 @@
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach } from "vitest";
+
+/**
+ * How long `waitFor` and `findBy*` may wait.
+ *
+ * Independent of `testTimeout` in `vitest.config.ts`, and left at Testing
+ * Library's 1s default until it started failing the run intermittently.
+ *
+ * The margin was the problem, not the feature. `editor-code-workspace.tsx`
+ * schedules its auto-save 700ms after a change settles, in two places — the
+ * per-file draft save and the save that follows a file operation — so an
+ * assertion waiting on either had 300ms of budget left for everything else.
+ * The same path already measured 753-783ms on an idle machine. Under a full
+ * run, where suites compete for the CPU, it crossed 1s and failed a case that
+ * passes in isolation, which is the same failure mode `testTimeout` was raised
+ * for.
+ *
+ * Confirmed by running the whole suite three times back to back with the
+ * machine already loaded: green each time, where before the change a run could
+ * lose one case at random.
+ *
+ * This is headroom for a signal that is genuinely scheduled, not patience for a
+ * hang: a `waitFor` that will never be satisfied still fails, just five seconds
+ * later instead of one. A call site that needs a different budget can still
+ * pass its own `timeout`.
+ */
+configure({ asyncUtilTimeout: 5_000 });
 
 /**
  * Browser APIs jsdom does not implement.
