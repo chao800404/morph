@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import {
+  DEFAULT_FOOTER_EXPLORE_ITEM_IDS,
+  DEFAULT_FOOTER_HELP_ITEM_IDS,
+  DEFAULT_HEADER_NAV_ITEM_IDS,
+} from "./default-row-ids";
 import { parseComponentSource } from "./ast/theme-ast-transformer";
 import { validateThemeStartPackageContract } from "./compiler/theme-start-toolchain";
 import {
@@ -12,7 +17,10 @@ import {
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE,
+  LEGACY_STARTER_THEME_HEADER_ID_FALLBACK_SOURCE,
   LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE,
+  STARTER_THEME_FOOTER_LEGACY_ANCHORS,
+  STARTER_THEME_LEGACY_ANCHORS,
   LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE,
   LEGACY_STARTER_THEME_HERO_SOURCE,
   LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
@@ -696,7 +704,7 @@ export default function Principles({ label = "Why we choose differently" }: Prin
       (file) => file.path === "src/components/Header.tsx",
     )!.content;
 
-    expect(header).toContain("{navItems.map((item, index) => (");
+    expect(header).toContain("{navItems.map((item) => (");
     expect(header).not.toContain("<span key={item.label}>");
   });
 
@@ -714,6 +722,8 @@ export default function Principles({ label = "Why we choose differently" }: Prin
       "index, span": LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE,
       "link row, keyed by position":
         LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE,
+      "id with position fallback":
+        LEGACY_STARTER_THEME_HEADER_ID_FALLBACK_SOURCE,
     };
     const seen = new Set<string>();
     for (const [name, content] of Object.entries(generations)) {
@@ -771,7 +781,15 @@ export default function Principles({ label = "Why we choose differently" }: Prin
    * row once it has given it one; the index remains the fallback for rows it
    * has not.
    */
-  it("keys a repeated row by its identity before its position", () => {
+  /**
+   * The fallback is gone. It existed while documents holding rows without ids
+   * were still out there, and one list keyed both ways is what carried a row's
+   * DOM state into its neighbour on a reorder. It could only go once a row was
+   * guaranteed to arrive with an id from every direction: the editor normalizes
+   * what it reads, every draft write saves that repair with the author's edit,
+   * publishing seals it into the release, and new rows are born with one.
+   */
+  it("keys a repeated row by its identity alone", () => {
     for (const path of [
       "src/components/Header.tsx",
       "src/components/Footer.tsx",
@@ -779,10 +797,53 @@ export default function Principles({ label = "Why we choose differently" }: Prin
       const source = STARTER_THEME_FILES.find(
         (file) => file.path === path,
       )!.content;
-      expect(source, path).toContain("key={item.id ?? index}");
+      expect(source, path).toContain("key={item.id}");
+      expect(source, path).not.toContain("?? index");
       expect(source, path).not.toContain("key={index}");
       // Declared, or a Theme in Code mode reads an error on its own row type.
       expect(source, path).toMatch(/id\?: string;/);
+    }
+  });
+
+  /**
+   * Every row the shell ships with is born identified, and the layout document
+   * seeded beside it quotes the same ids — the document adopts the rows the
+   * component would otherwise have defaulted to, so the two must agree or a
+   * Store's rows are silently re-identified the first time it is saved.
+   */
+  it("gives the shell's own default rows the ids the document seeds", () => {
+    const header = STARTER_THEME_FILES.find(
+      (file) => file.path === "src/components/Header.tsx",
+    )!.content;
+    const footer = STARTER_THEME_FILES.find(
+      (file) => file.path === "src/components/Footer.tsx",
+    )!.content;
+
+    for (const id of DEFAULT_HEADER_NAV_ITEM_IDS) {
+      expect(header, id).toContain(`id: "${id}"`);
+    }
+    for (const id of [
+      ...DEFAULT_FOOTER_EXPLORE_ITEM_IDS,
+      ...DEFAULT_FOOTER_HELP_ITEM_IDS,
+    ]) {
+      expect(footer, id).toContain(`id: "${id}"`);
+    }
+  });
+
+  /**
+   * A snapshot substitutes text into the current source, and `String.replace`
+   * returns the original when it cannot find what it was given. So an anchor
+   * that drifts does not fail — every generation derived through it collapses
+   * into one string, which reads as "nothing to upgrade" for the workspaces
+   * that most need upgrading. Changing the Header's key without updating its
+   * anchor did exactly that, and only the distinctness check below caught it.
+   */
+  it("can still find every anchor its legacy snapshots substitute", () => {
+    for (const { name, anchor, source } of [
+      ...STARTER_THEME_LEGACY_ANCHORS,
+      ...STARTER_THEME_FOOTER_LEGACY_ANCHORS,
+    ]) {
+      expect(source.includes(anchor), name).toBe(true);
     }
   });
 

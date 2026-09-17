@@ -53,9 +53,10 @@ describe("findIndexKeyedContentArrayMaps", () => {
   });
 
   /**
-   * The shape the starter ships while documents without row ids are still out
-   * there. Warning about the code Morph itself writes would be noise; this
-   * becomes reportable once the fallback is gone.
+   * Left alone on purpose. A declared repeated field is normalized before the
+   * editor renders it, so its rows always have an id and the fallback never
+   * fires — redundant code rather than broken code, and a warning with no
+   * defect behind it is one an author learns to ignore.
    */
   it("stays quiet on the id-with-index fallback", () => {
     expect(
@@ -124,8 +125,11 @@ export default function Footer({ navItems = [], helpItems = [] }: { navItems?: {
         <span key={index}>{item.label}</span>
       ))}`,
     );
-    const line = content.split("\n").findIndex((row) => row.includes("key=")) + 1;
+    const line =
+      content.split("\n").findIndex((row) => row.includes("key=")) + 1;
 
-    expect(findIndexKeyedContentArrayMaps({ path, content })[0]?.line).toBe(line);
+    expect(findIndexKeyedContentArrayMaps({ path, content })[0]?.line).toBe(
+      line,
+    );
   });
 });

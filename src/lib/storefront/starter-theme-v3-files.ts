@@ -682,9 +682,21 @@ export const contentFields = {
 export default function Header({
   storeName = "Online Store",
   navItems = [
-    { label: "Shop", link: { href: "/collections/all" } },
-    { label: "About", link: { href: "/pages/about" } },
-    { label: "Journal", link: { href: "/blogs/journal" } },
+    {
+      id: "morph-nav-shop",
+      label: "Shop",
+      link: { href: "/collections/all" },
+    },
+    {
+      id: "morph-nav-about",
+      label: "About",
+      link: { href: "/pages/about" },
+    },
+    {
+      id: "morph-nav-journal",
+      label: "Journal",
+      link: { href: "/blogs/journal" },
+    },
   ],
   cartLabel = "Cart (0)",
   cartLink = { href: "/cart" },
@@ -700,9 +712,9 @@ export default function Header({
         className="hidden items-center gap-7 text-xs text-neutral-600 sm:flex"
         aria-label="Storefront navigation"
       >
-        {navItems.map((item, index) => (
+        {navItems.map((item) => (
           <ThemeLink
-            key={item.id ?? index}
+            key={item.id}
             link={item.link}
             className="hover:text-neutral-950"
           >
@@ -970,9 +982,37 @@ export default function Footer({
  * means adding one cannot quietly orphan another, and the tests below hold them
  * apart.
  */
-const HEADER_NAV_BLOCK_CURRENT = `        {navItems.map((item, index) => (
+const HEADER_NAV_BLOCK_CURRENT = `        {navItems.map((item) => (
+          <ThemeLink
+            key={item.id}
+            link={item.link}
+            className="hover:text-neutral-950"
+          >
+            {item.label}
+          </ThemeLink>
+        ))}`;
+
+/**
+ * The key as it stood while documents without row ids were still out there: an
+ * id when the row had one, its position when it did not. One list keyed both
+ * ways is what made reordering carry a row's DOM state into its neighbour, and
+ * it could only be dropped once the editor, every draft write and publishing all
+ * guaranteed a row arrives with an id.
+ */
+const HEADER_NAV_BLOCK_ID_FALLBACK = `        {navItems.map((item, index) => (
           <ThemeLink
             key={item.id ?? index}
+            link={item.link}
+            className="hover:text-neutral-950"
+          >
+            {item.label}
+          </ThemeLink>
+        ))}`;
+
+/** Before a row had any identity to key by. */
+const HEADER_NAV_BLOCK_INDEX_KEYED = `        {navItems.map((item, index) => (
+          <ThemeLink
+            key={index}
             link={item.link}
             className="hover:text-neutral-950"
           >
@@ -1009,26 +1049,89 @@ const HEADER_NAV_BLOCK_UNINDEXED_SPAN = `        {navItems.map((item) => (
           </span>
         ))}`;
 
+/** The default rows as they are now: born with the id the editor keys by. */
+const HEADER_NAV_DEFAULTS_CURRENT = `  navItems = [
+    {
+      id: "morph-nav-shop",
+      label: "Shop",
+      link: { href: "/collections/all" },
+    },
+    {
+      id: "morph-nav-about",
+      label: "About",
+      link: { href: "/pages/about" },
+    },
+    {
+      id: "morph-nav-journal",
+      label: "Journal",
+      link: { href: "/blogs/journal" },
+    },
+  ],`;
+
+/**
+ * And as they were before v26. Every generation below predates row identity, so
+ * each one reverts the defaults as well as the map — a snapshot that reversed
+ * only the key would describe a Header that never shipped, and would match no
+ * workspace at all.
+ */
+const HEADER_NAV_DEFAULTS_IDLESS = `  navItems = [
+    { label: "Shop", link: { href: "/collections/all" } },
+    { label: "About", link: { href: "/pages/about" } },
+    { label: "Journal", link: { href: "/blogs/journal" } },
+  ],`;
+
+/**
+ * Every anchor a legacy snapshot substitutes, paired with the source it has to
+ * be found in.
+ *
+ * Exported so a test can prove each one is still there. `String.replace` on a
+ * string it cannot find returns the original, so an anchor that drifts out of
+ * date does not fail — it makes every generation derived through it collapse
+ * into the same text, which reads as "no upgrade needed" for workspaces that
+ * badly need one. That is not hypothetical: changing the key in the current
+ * Header without updating the anchor collapsed three generations into one, and
+ * only the distinctness test downstream noticed.
+ */
+export const STARTER_THEME_LEGACY_ANCHORS: ReadonlyArray<{
+  name: string;
+  anchor: string;
+  source: string;
+}> = [
+  {
+    name: "Header nav map",
+    anchor: HEADER_NAV_BLOCK_CURRENT,
+    source: STARTER_THEME_HEADER_SOURCE,
+  },
+  {
+    name: "Header nav defaults",
+    anchor: HEADER_NAV_DEFAULTS_CURRENT,
+    source: STARTER_THEME_HEADER_SOURCE,
+  },
+];
+
+function legacyHeaderSource(navBlock: string) {
+  return STARTER_THEME_HEADER_SOURCE.replace(
+    HEADER_NAV_DEFAULTS_CURRENT,
+    HEADER_NAV_DEFAULTS_IDLESS,
+  ).replace(HEADER_NAV_BLOCK_CURRENT, navBlock);
+}
+
+/** The Header of template version 25: an id when the row had one, else position. */
+export const LEGACY_STARTER_THEME_HEADER_ID_FALLBACK_SOURCE =
+  legacyHeaderSource(HEADER_NAV_BLOCK_ID_FALLBACK);
+
 /** The Header of template version 24: the link as the row, keyed by position. */
 export const LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE =
-  STARTER_THEME_HEADER_SOURCE.replace(
-    HEADER_NAV_BLOCK_CURRENT,
-    HEADER_NAV_BLOCK_CURRENT.replace("key={item.id ?? index}", "key={index}"),
-  );
+  legacyHeaderSource(HEADER_NAV_BLOCK_INDEX_KEYED);
 
 /** The Header of template version 23: an index, and still the span. */
 export const LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE =
-  STARTER_THEME_HEADER_SOURCE.replace(
-    HEADER_NAV_BLOCK_CURRENT,
-    HEADER_NAV_BLOCK_INDEXED_SPAN,
-  );
+  legacyHeaderSource(HEADER_NAV_BLOCK_INDEXED_SPAN);
 
 /** The Header before either change. */
-export const LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE =
-  STARTER_THEME_HEADER_SOURCE.replace(
-    HEADER_NAV_BLOCK_CURRENT,
-    HEADER_NAV_BLOCK_UNINDEXED_SPAN,
-  );
+export const LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE = legacyHeaderSource(
+  HEADER_NAV_BLOCK_UNINDEXED_SPAN,
+);
 
 export const STARTER_THEME_FOOTER_SOURCE = `import type { ThemeContentFields } from "../morph/content-fields";
 import ThemeLink from "../morph/link";
@@ -1093,15 +1196,39 @@ export default function Footer({
   tagline = "Objects with lasting character for thoughtful, everyday living.",
   exploreHeading = "Explore",
   exploreItems = [
-    { label: "Shop all", link: { href: "/collections/all" } },
-    { label: "Our story", link: { href: "/pages/about" } },
-    { label: "Journal", link: { href: "/blogs/journal" } },
+    {
+      id: "morph-explore-shop-all",
+      label: "Shop all",
+      link: { href: "/collections/all" },
+    },
+    {
+      id: "morph-explore-our-story",
+      label: "Our story",
+      link: { href: "/pages/about" },
+    },
+    {
+      id: "morph-explore-journal",
+      label: "Journal",
+      link: { href: "/blogs/journal" },
+    },
   ],
   helpHeading = "Help",
   helpItems = [
-    { label: "Contact", link: { href: "/pages/contact" } },
-    { label: "Shipping", link: { href: "/pages/shipping" } },
-    { label: "Returns", link: { href: "/pages/returns" } },
+    {
+      id: "morph-help-contact",
+      label: "Contact",
+      link: { href: "/pages/contact" },
+    },
+    {
+      id: "morph-help-shipping",
+      label: "Shipping",
+      link: { href: "/pages/shipping" },
+    },
+    {
+      id: "morph-help-returns",
+      label: "Returns",
+      link: { href: "/pages/returns" },
+    },
   ],
 }: FooterProps) {
   return (
@@ -1116,9 +1243,9 @@ export default function Footer({
         <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">
           {exploreHeading}
         </p>
-        {exploreItems.map((item, index) => (
+        {exploreItems.map((item) => (
           <ThemeLink
-            key={item.id ?? index}
+            key={item.id}
             link={item.link}
             className="block hover:text-white"
           >
@@ -1130,9 +1257,9 @@ export default function Footer({
         <p className="mb-2 text-xs uppercase tracking-[0.18em] text-stone-600">
           {helpHeading}
         </p>
-        {helpItems.map((item, index) => (
+        {helpItems.map((item) => (
           <ThemeLink
-            key={item.id ?? index}
+            key={item.id}
             link={item.link}
             className="block hover:text-white"
           >
@@ -1149,6 +1276,89 @@ export default function Footer({
 `;
 
 /** Footer of the same generation as the marked Header above. */
+const FOOTER_EXPLORE_DEFAULTS_CURRENT = `    {
+      id: "morph-explore-shop-all",
+      label: "Shop all",
+      link: { href: "/collections/all" },
+    },
+    {
+      id: "morph-explore-our-story",
+      label: "Our story",
+      link: { href: "/pages/about" },
+    },
+    {
+      id: "morph-explore-journal",
+      label: "Journal",
+      link: { href: "/blogs/journal" },
+    },`;
+
+const FOOTER_EXPLORE_DEFAULTS_IDLESS = `    { label: "Shop all", link: { href: "/collections/all" } },
+    { label: "Our story", link: { href: "/pages/about" } },
+    { label: "Journal", link: { href: "/blogs/journal" } },`;
+
+const FOOTER_HELP_DEFAULTS_CURRENT = `    {
+      id: "morph-help-contact",
+      label: "Contact",
+      link: { href: "/pages/contact" },
+    },
+    {
+      id: "morph-help-shipping",
+      label: "Shipping",
+      link: { href: "/pages/shipping" },
+    },
+    {
+      id: "morph-help-returns",
+      label: "Returns",
+      link: { href: "/pages/returns" },
+    },`;
+
+const FOOTER_HELP_DEFAULTS_IDLESS = `    { label: "Contact", link: { href: "/pages/contact" } },
+    { label: "Shipping", link: { href: "/pages/shipping" } },
+    { label: "Returns", link: { href: "/pages/returns" } },`;
+
+/**
+ * The Footer of template version 25: rows without ids in its defaults, and a key
+ * that fell back to position when a row had none.
+ *
+ * Derived by reversing exactly the two edits v26 made, and only for the
+ * generation immediately before it. Reversing one edit off the current source to
+ * describe an older generation is what once orphaned a snapshot that then
+ * matched no workspace and could never be upgraded again.
+ */
+/** The Footer's half of the anchor list above; same reason, same guard. */
+export const STARTER_THEME_FOOTER_LEGACY_ANCHORS: ReadonlyArray<{
+  name: string;
+  anchor: string;
+  source: string;
+}> = [
+  {
+    name: "Footer explore defaults",
+    anchor: FOOTER_EXPLORE_DEFAULTS_CURRENT,
+    source: STARTER_THEME_FOOTER_SOURCE,
+  },
+  {
+    name: "Footer help defaults",
+    anchor: FOOTER_HELP_DEFAULTS_CURRENT,
+    source: STARTER_THEME_FOOTER_SOURCE,
+  },
+];
+
+export const LEGACY_STARTER_THEME_FOOTER_ID_FALLBACK_SOURCE =
+  STARTER_THEME_FOOTER_SOURCE.replace(
+    FOOTER_EXPLORE_DEFAULTS_CURRENT,
+    FOOTER_EXPLORE_DEFAULTS_IDLESS,
+  )
+    .replace(FOOTER_HELP_DEFAULTS_CURRENT, FOOTER_HELP_DEFAULTS_IDLESS)
+    .replaceAll("key={item.id}", "key={item.id ?? index}")
+    .replaceAll(
+      "{exploreItems.map((item) => (",
+      "{exploreItems.map((item, index) => (",
+    )
+    .replaceAll(
+      "{helpItems.map((item) => (",
+      "{helpItems.map((item, index) => (",
+    );
+
 export const LEGACY_STARTER_THEME_FOOTER_MARKED_SOURCE = `export type FooterProps = {
   storeName?: string;
   copyrightText?: string;

@@ -51,7 +51,7 @@ import {
  * 25: key a repeated row by the identity Morph stores for it rather than its
  *     position, so reordering does not carry one row's DOM node into another.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 25;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 26;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

@@ -477,11 +477,11 @@ export function findUnindexedContentArrayMaps(file: {
  * the wrong row. A row's `id` is the identity to key by, and every row created
  * through the editor carries one.
  *
- * Only the bare `key={index}` is reported. An expression that merely mentions
- * the index — `item.id ?? index` — is the shape the starter ships while rows
- * without ids still exist out there, and warning about the code Morph itself
- * writes would be noise. Once that fallback is gone, this is the rule that
- * catches a file which kept it.
+ * Only the bare `key={index}` is reported. `item.id ?? index` is left alone
+ * deliberately, and stays left alone now the starter has dropped it: a declared
+ * repeated field is normalized before the editor ever renders it, so its rows
+ * always have an id and the fallback never fires. Reporting it would be a
+ * warning with no defect behind it — redundant code, not broken code.
  *
  * Reported for the author's own components, which a template upgrade must not
  * rewrite: the starter's own files are corrected by replacing them.
