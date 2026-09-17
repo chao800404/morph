@@ -3943,20 +3943,6 @@ export function VisualEditorShell({
     scheduleCanvasTransform,
   ]);
 
-  useEffect(() => {
-    const viewport = canvasViewportRef.current;
-    if (!viewport || typeof ResizeObserver === "undefined") return;
-
-    canvasViewportHeightRef.current = viewport.clientHeight;
-    const observer = new ResizeObserver(([entry]) => {
-      canvasViewportHeightRef.current = entry?.contentRect.height ?? 0;
-      scheduleCanvasTransform((current) => current);
-    });
-    observer.observe(viewport);
-
-    return () => observer.disconnect();
-  }, [scheduleCanvasTransform]);
-
   const resetEditorContext = useCallback(() => {
     lastPreviewSelectionRef.current = null;
     pendingPreviewSelectionRef.current = null;

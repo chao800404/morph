@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import {
   CANVAS_SCROLL_COMMIT_DELAY_MS,
@@ -112,6 +112,30 @@ export function useEditorCanvasTransform({
     },
     [applyToDom, previewFrameHeightRef, scheduleCommit],
   );
+
+  /**
+   * The height the clamp measures against, observed where it is used.
+   *
+   * This ref is returned to the caller, and the caller used to watch the
+   * element itself — so the height lived in one place and the transform that
+   * clamps against it in another. Watching it here keeps the measurement and
+   * its consumer together, and leaves the shell with the element only.
+   */
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") return;
+
+    viewportHeightRef.current = viewport.clientHeight;
+    const observer = new ResizeObserver(([entry]) => {
+      viewportHeightRef.current = entry?.contentRect.height ?? 0;
+      // Re-apply what is already in hand, so the clamp follows the new height
+      // without moving the canvas on its own.
+      schedule((current) => current);
+    });
+    observer.observe(viewport);
+
+    return () => observer.disconnect();
+  }, [schedule]);
 
   /** Releases the frame and timer a gesture may have left pending. */
   const dispose = useCallback(() => {
