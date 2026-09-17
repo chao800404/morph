@@ -961,6 +961,18 @@ export function VisualEditorShell({
         },
       });
     },
+    /**
+     * A request that never landed has no decision in it, so nobody is asked:
+     * it goes again a couple of times, and the author hears about it only once
+     * those are spent. Same backoff shape as the editor's other queries.
+     *
+     * A conflict is not retried, and cannot be by accident: it comes back as a
+     * resolved failure rather than a rejection, so retrying would mean sending
+     * the same stale payload again — the thing the refusal exists to stop. That
+     * one is rebased first, on a press.
+     */
+    retry: 2,
+    retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 2_000),
     onMutate: () => setDraftSaveState("saving"),
     onSuccess: async (result) => {
       if (!result.success) {
@@ -1163,6 +1175,25 @@ export function VisualEditorShell({
     context.theme.id,
     queryClient,
   ]);
+
+  /**
+   * Sends content that a failed save left pending, once, when the author asks.
+   *
+   * Nothing is rebased here: a request that never landed changed nothing on the
+   * server, so the payload that was refused is the payload to send. Conflicted
+   * content is not touched — that has to go through the update, not a resend.
+   */
+  const retryFailedContent = useCallback(async () => {
+    const templateId = activeTemplate?.id;
+    if (!templateId) return;
+    const prefix = `${templateId}:`;
+    for (const key of Array.from(pendingPropsMapRef.current.keys())) {
+      if (!key.startsWith(prefix)) continue;
+      await commitSectionPending(templateId, key).catch(() => {
+        // Reported by the mutation, and still pending if it failed again.
+      });
+    }
+  }, [activeTemplate?.id, commitSectionPending]);
 
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
@@ -6514,6 +6545,19 @@ export function VisualEditorShell({
                     title="Save your changes on top of the version someone else saved. Your edits stay; every other field comes from the latest version."
                   >
                     Load latest, keep mine
+                  </Button>
+                ) : draftSaveState === "error" ? (
+                  // Nothing was rebased and nothing is in the way — the write
+                  // simply did not land, so sending it again is the whole fix.
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => void retryFailedContent()}
+                    title="Send the content that did not save."
+                  >
+                    Try again
                   </Button>
                 ) : null}
                 {/* Splits the bar into what is true and what you can do. The

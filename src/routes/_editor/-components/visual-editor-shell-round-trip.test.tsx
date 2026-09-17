@@ -401,6 +401,50 @@ describe("a content save that fails", () => {
     );
   });
 
+  it("offers one more send once the attempts are spent", async () => {
+    updateSectionProps.mockRejectedValue(new Error("offline"));
+    renderShell();
+    await commitInlineText();
+
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    // Three attempts: the first, and the two the retry allowance spent.
+    expect(updateSectionProps).toHaveBeenCalledTimes(3);
+
+    const attempts = updateSectionProps.mock.calls.length;
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 8 },
+    } as never);
+    act(() => {
+      screen.getByRole("button", { name: "Try again" }).click();
+    });
+
+    await waitFor(() =>
+      expect(updateSectionProps.mock.calls.length).toBeGreaterThan(attempts),
+    );
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+  });
+
+  it("goes again by itself when the request never lands", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({
+        success: true,
+        data: { draftGeneration: 8 },
+      } as never);
+    renderShell();
+
+    await commitInlineText();
+
+    // The first attempt is refused by the network, not by the server, so the
+    // same payload goes again without asking — and the author is told nothing,
+    // because there was no decision for them to make.
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(error).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+  });
+
   it("says so when the request never lands", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
     updateSectionProps.mockRejectedValue(new Error("offline"));

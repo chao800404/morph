@@ -13,6 +13,13 @@ import type { TailwindClassSuggestion } from "./tailwind-class-suggestions";
  * Derived classes are offered *alongside* the static list, never instead of it:
  * a gap in this derivation then costs the author nothing, where replacing the
  * list would quietly take away suggestions they already had.
+ *
+ * **Nothing here is visible until a Theme declares a token of its own.** The
+ * starter Theme's stylesheet is `@import "tailwindcss"` and nothing else, so for
+ * every Theme as shipped this derives nothing and the completions are exactly
+ * what they were before. Finding no difference against a starter Theme is
+ * therefore the expected result, not a sign that the derivation is broken — put
+ * a `@theme` block in a Theme's CSS and its utilities appear.
  */
 
 /** Token namespaces, and the utility prefixes each one names. */
