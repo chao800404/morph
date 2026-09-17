@@ -32,8 +32,19 @@
 - `use-panel-resize.ts` — 面板寬度
 - `use-editor-history.ts` — undo／redo
 - `use-live-preview-message-bridge.ts` — iframe 通訊
-- `use-editor-canvas-transform.ts` + `editor-canvas-geometry.ts` — 平移縮放
+- `use-editor-canvas-transform.ts` + `editor-canvas-geometry.ts` — 平移縮放，**以及量測畫布視窗
+  高度的 `ResizeObserver`**（2026-09-17 從 shell 移入：量測與使用該量測的 clamp 現在同屬一處）
 - `theme-file-save-queue.ts` — 存檔的順序與過期判定
+- `use-editor-context-reset.ts` + `editor-context-reset.ts` — template／route 切換時的重設
+
+shell 現有的測試接縫（2026-09-17 起）：`visual-editor-shell.test.tsx` 的匯出純函式、
+`visual-editor-shell-selection.test.tsx` 的 2 個掛載 smoke、
+`visual-editor-shell-round-trip.test.tsx` 的 3 個選取接線測試。
+**它們都碰不到存檔路徑**，所以任何動到存檔的搬移目前仍沒有安全網。
+
+置中（reveal）在 jsdom 觀察不到：視窗高度為 0，置中分支直接返回。補一個 `clientHeight` stub
+可以讓它可觀察，但實測會與 Radix 的 ref 記帳級聯，整包隨機噴 `Maximum update depth exceeded`
+（4 次完整跑紅 3 次），所以那個測試被退回。**那條級聯是 harness 假象還是產品隱患，尚未判定。**
 
 **判準：一段程式碼值得抽出，當它同時滿足兩件事** —— 界線清楚（少數幾個輸入、不共用可變 ref），
 以及**抽出後驗證得了**（能寫成單元測試，或能在編輯器裡實際操作確認）。
@@ -43,6 +54,18 @@
 - **save／style／history 那組**：彼此共用 `fileRevisionRef`、`pendingSaveTimersRef`、`history`
   與 workspace store，依賴陣列各有 8–9 項。抽成 hook 要注入近十個依賴，那是把糾纏換個位置，
   閱讀成本反而上升。要改善它，**先補測試**（純邏輯抽成模組並測試），不要先搬家。
+
+  更進一步：`handleUnifiedSaveFile` 與 style patch 那條看起來是同一段邏輯寫了兩次
+  （都做 `updateWorkspaceLocal` → 推預覽 → `claimRevision` → 記 history），**但它們不能合併**。
+  統一路徑立即 `await` 寫入；style 路徑 `setTimeout` 300ms —— 因為 Inspector 拖一條 slider 會
+  連續觸發數十次，逐次立即寫會把寫入序列化。而延遲寫入一旦成立，history 的順序就**必須**倒過來：
+  先樂觀記錄（否則 300ms 內按 undo 沒東西可撤），失敗再 `history.discard`。統一路徑則是寫入
+  落地後才記。`renderDocument` 選項表達不了這個差異。
+
+  合併它等於在所有東西都依賴的那個寫入 owner 中間放一個模式旗標，而 shell 目前的 5 個測試
+  （2 個 smoke ＋ 3 個 round-trip）碰不到存檔路徑。**在存檔路徑進入測試覆蓋之前，維持重複是
+  比較安全的狀態。** 這一條是 2026-09-17 重新發現並提錯後，查證推翻才寫下的。
+
 - **build／publish**：界線其實乾淨，但唯一的端到端覆蓋在 `E2E_ALLOW_PUBLISH` 閘門後面
   （會建立 release 並把 production 切過去）。不可為了驗證自己的重構而開啟那個閘門；
   沒有驗證手段時，重構的風險由使用者承擔而不是由你。

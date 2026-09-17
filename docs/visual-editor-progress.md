@@ -9,8 +9,8 @@
 | 最後更新     | 2026-09-17                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 目前狀態     | **Live Preview 已是真實 React，而且是編輯器唯一的引擎** —— `useState`／`useEffect`／Fast Refresh 與合法 npm 套件都在容器內的 Vite dev server 真實執行。相容性直譯器已在型別層退出編輯器路徑（`LivePreviewSource` 收斂為單成員），原始碼暫留觀察但走不到。預覽生命週期收斂為單一狀態機，並補上 sandbox 續期與存活偵測。**頁面生命週期已完整**：Pages 面板可新增與刪除頁面，兩者都以編輯器持有的 generation 做 OCC，並在寫入前重建整張路由表。Production Runtime、Domain 與遠端 Publish 仍未閉環                                                                                  |
 | 整體完成度   | **94%**（第 7 階段由 80% → 95%：最大的架構斷層已關閉；本輪補齊 Code／Design 草稿同步與自動儲存，尚未閉環的是 production runtime、domain 與遠端 publish）                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 目前重點     | 實際執行 `pnpm test:e2e`（新增／刪除頁面的整合流程已寫成 spec，但缺 `.env.e2e` 憑證而從未跑過）；其次為商品 catalog provisioning 觸發時機、真實 Cloudflare Theme Worker／Domain／Publish 閉環、以及把 VisualEditorShell／EditorStyleInspector 沿清楚的 seam 繼續拆出。相容性直譯器仍只保留給 legacy/static preview，Live Preview 不回退                                                                                                                                                                                                                                                                                                 |
-| 最近完整驗證 | 2026-09-17 實跑：`pnpm typecheck`（0 錯誤）、`pnpm test`（**2536 passed、1 skipped**）、`MORPH_THEME_PARITY=1 pnpm test workspace-theme-parity`（**15 passed**）、`pnpm build` 含 client bundle check 與 deploy artifact guard、`git diff --check` 乾淨。另新增 context reset、Inspector content rebase、Tailwind parser 邊界與 route-data parity fixture 測試。仍未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod`、**`pnpm test:e2e`（缺憑證）** |
+| 目前重點     | 實際執行 `pnpm test:e2e`（spec 已寫，本機 `.env.e2e` 的 `E2E_EMAIL`／`E2E_PASSWORD`／`E2E_EDITOR_PATH` 三個鍵齊全、無技術阻塞，尚未實跑；CI 啟用另需 GitHub Actions secrets 與可重現的 seed store）；其次為商品 catalog provisioning 觸發時機、真實 Cloudflare Theme Worker／Domain／Publish 閉環、以及把 VisualEditorShell／EditorStyleInspector 沿清楚的 seam 繼續拆出。相容性直譯器仍只保留給 legacy/static preview，Live Preview 不回退                                                                                                                                                                                                                                                                                                 |
+| 最近完整驗證 | 2026-09-17 實跑：`pnpm typecheck`（0 錯誤）、`pnpm test`（**2543 passed、1 skipped**）、`MORPH_THEME_PARITY=1 pnpm test workspace-theme-parity`（**15 passed**）、`pnpm build` 含 client bundle check 與 deploy artifact guard、`git diff --check` 乾淨。另新增 context reset、Inspector content rebase、Tailwind parser 邊界與 route-data parity fixture 測試。仍未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod`、**`pnpm test:e2e`（本機可跑，會在 dev store 建立／刪除頁面，未執行）** |
 
 `█████████▍ 94%`
 
@@ -1173,14 +1173,14 @@ Theme 的路由從檔案集合推導，所以一個頁面就是一個原始碼�
 
 ## 驗證基準
 
-最近一次完整驗證結果（2026-09-07，於目前 WSL checkout 實際執行）：
+最近一次完整驗證結果（2026-09-17，於 macOS checkout 實際執行）：
 
 | 檢查                                                                       | 結果    | 備註                                                                                   |
 | -------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------- |
 | `pnpm typecheck`                                                           | ✅ 通過 | 0 個 TypeScript 錯誤                                                                   |
 | `pnpm typecheck:data`                                                      | ✅ 通過 | 資料層在 `noUncheckedIndexedAccess` 下無違規                                           |
-| `pnpm test`                                                                | ✅ 通過 | 268 個測試檔通過、1 個 skipped；1909 個 tests 通過、1 個 skipped                       |
-| `pnpm build`                                                               | ✅ 通過 | 正式建置、server-only、client bundle（332 檔）與 deploy artifact secret guard 檢查通過 |
+| `pnpm test`                                                                | ✅ 通過 | 335 個測試檔通過、1 個 skipped；2543 個 tests 通過、1 個 skipped                       |
+| `pnpm build`                                                               | ✅ 通過 | 正式建置、server-only、client bundle（339 檔）與 deploy artifact secret guard 檢查通過 |
 | `pnpm exec playwright test e2e/catalog.spec.ts --project=editor --no-deps` | ✅ 通過 | 1 個 editor catalog 瀏覽流程通過（15.8 秒）                                            |
 | `git diff --check`                                                         | ✅ 通過 | 文件更新後重跑，無 whitespace error                                                    |
 
@@ -1230,6 +1230,23 @@ Theme 的路由從檔案集合推導，所以一個頁面就是一個原始碼�
 - 把 Tailwind property parser 從 AST transformer 移到獨立模組，AST transformer 保留相容匯出，避免兩套 import 路徑漂移。
 - 修正 workspace parity harness：真實 React 元件直接掛在 root route，商品列表／商品詳情用與 route loader 相同形狀的 deterministic fixture；`MORPH_THEME_PARITY=1` 現在 15 個元件全部通過，沒有放寬 interpreter 斷言。
 - VisualEditorShell／EditorStyleInspector 的完整 top-down 拆分與 editor E2E CI credentials 仍保留為後續工作，避免在沒有接縫測試時做大範圍搬移。
+
+### 2026-09-17 第二十七輪：重複列身分、發布快照完整性，與 shell 的第一道測試接縫
+
+**Row identity（先前各輪漏記的一整段）。** 重複列的 `key={item.id ?? index}` 在同一份清單裡混用兩種身分：動過樣式的用 id、沒動過的用位置。後果是重新排序或刪除時，一列的 DOM 狀態（游標、卷軸、未送出的輸入）會落到另一列身上；而一列第一次被加樣式時 key 會從 index 變成 id，React 讀作刪除加插入，正在編輯的節點當場被丟棄。
+
+- 修復 id 改為 `morph-mig-<hash>`，輸入含 template／section／欄位路徑／位置／穩定內容，前後端匯入**同一個純函式**。隨機 id 會讓伺服器回應把瀏覽器已算繪的列重新編號、整批 remount —— 正是這修復要避免的事，而且發生在按下儲存的那一刻。去重也是 deterministic（計數後綴），並先保留陣列中所有既有 id，避免修復撞到後面的列還握著的 id。
+- 正規化在 `findEditorContext` 以**記憶體內**進行，不寫入。放在讀取點使四個 mutator 自動在正規化後的 base 上建立修改；修復隨作者第一次真實編輯一起落地，同一個 CAS batch、generation 只 +1。
+- 發布時套用同一不變式，並**寫進 revision 而非只蓋 `published_at`** —— publication 釘的是 revision、runtime 讀的是那一列，只修 template 的副本不會改變訪客看到的內容。
+- Starter 升至 v26，`key={item.id}` 不再有 fallback，預設列天生帶 id 且與 layout document 共用同一組常數。v25 留作 legacy snapshot（**不可刪除**：刪了會讓 v25 workspace 比對不到任何世代、永遠無法升級）。作者改過的檔案不覆蓋，改以 index-key 診斷提醒。
+
+**過程中踩到並記下的兩個坑**：改了現行 Header 的 key 卻沒同步 anchor，`String.replace` 找不到就原樣返回，**三個世代靜默塌縮成同一字串**（讀起來像「不需要升級」，偏偏對最需要升級的 workspace）；以及舊世代的 snapshot 必須同時還原 defaults 和 map，只還原其一會描述一個從未出貨的 Header。已加測試斷言每個 anchor 仍找得到。
+
+**其他**：`src/routes/_editor` 的 `any` 清零（收緊時逼出一個真錯：jump 位置在 `setTimeout` 內讀取，屬性的收窄無法跟進閉包）；`.pnpm-store` 加入 `.gitignore` 並停止追蹤（歷史中的 19MB 未移除，需改寫已發布 commit）；`VisualEditorShell` **首次被測試 render**，並補上選取 round-trip 的接線測試；畫布視窗高度的 `ResizeObserver` 從 shell 移入 `use-editor-canvas-transform`。
+
+**未做，及理由**：selection/reveal 控制器、Header JSX、Inspector orchestrator、build／publish 狀態的抽離都未進行 —— 存檔路徑尚未進入測試覆蓋，§19.0 的判準（抽出後驗證得了）不成立。另外查證推翻了一個看似明顯的重構：`handleUnifiedSaveFile` 與 style patch 那條**不能合併**，理由已寫入 §19.0。
+
+**一個仍未判定的觀察**：替置中補視窗高度 stub 後，整包測試會隨機噴 `Maximum update depth exceeded`（Radix compose-refs，4 次完整跑紅 3 次）。真實瀏覽器的視窗高度永遠 > 0，所以無法排除這是產品面隱患而非 harness 假象。該測試已退回，觀察保留。
 
 ## 更新規則
 
