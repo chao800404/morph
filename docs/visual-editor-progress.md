@@ -1244,9 +1244,13 @@ Theme 的路由從檔案集合推導，所以一個頁面就是一個原始碼�
 
 **其他**：`src/routes/_editor` 的 `any` 清零（收緊時逼出一個真錯：jump 位置在 `setTimeout` 內讀取，屬性的收窄無法跟進閉包）；`.pnpm-store` 加入 `.gitignore` 並停止追蹤（歷史中的 19MB 未移除，需改寫已發布 commit）；`VisualEditorShell` **首次被測試 render**，並補上選取 round-trip 的接線測試；畫布視窗高度的 `ResizeObserver` 從 shell 移入 `use-editor-canvas-transform`。
 
-**未做，及理由**：selection/reveal 控制器、Header JSX、Inspector orchestrator、build／publish 狀態的抽離都未進行 —— 存檔路徑尚未進入測試覆蓋，§19.0 的判準（抽出後驗證得了）不成立。另外查證推翻了一個看似明顯的重構：`handleUnifiedSaveFile` 與 style patch 那條**不能合併**，理由已寫入 §19.0。
+**未做，及理由**：selection/reveal 控制器、Header JSX、Inspector orchestrator、build／publish 狀態的抽離都未進行 —— 存檔路徑的失敗分支雖已有覆蓋（見下一段），成功寫入與 debounce／flush 的順序仍未覆蓋，§19.0 的判準（抽出後驗證得了）對那部分仍不成立。另外查證推翻了一個看似明顯的重構：`handleUnifiedSaveFile` 與 style patch 那條**不能合併**，理由已寫入 §19.0。
 
-**一個仍未判定的觀察**：替置中補視窗高度 stub 後，整包測試會隨機噴 `Maximum update depth exceeded`（Radix compose-refs，4 次完整跑紅 3 次）。真實瀏覽器的視窗高度永遠 > 0，所以無法排除這是產品面隱患而非 harness 假象。該測試已退回，觀察保留。
+**該觀察已於同日判定並結案**：那個級聯（`Maximum update depth exceeded`，Radix `useComposedRefs`）是 **jsdom 專屬**。在真實瀏覽器對執行中的編輯器製造同一次存檔失敗（攔截 serverFn POST）：`[data-editor-save-status]` 從 1 個仍是 1 個、顯示 `Save failed`、樹保有 15 列；jsdom 則是 1 → 0。二分法定位兇手為 `editor-assistant-panel` 的重繪，sections panel 不是。
+
+因此 round-trip 測試把 assistant panel passthrough 掉，並一併補回三件事：**置中接線**（先前因這個級聯退回）、以及**存檔失敗的兩種形態**（伺服器拒絕走 `success: false`、請求未送達走 `onError`，兩者都必須送達作者）。三個都以「撤回對應分支後必須失敗」反向驗證，且各自只紅自己那一個。連續六次完整測試全綠 —— 刻意跑多次，因為置中測試先前 4 次中會紅 3 次。
+
+EDIT-02 剩下的是**重試／衝突處置入口**：payload 與 baseline 都保留，作者可以再編輯或按發布，但沒有明確引導。那是產品決策，不是缺陷。
 
 ## 更新規則
 

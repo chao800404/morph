@@ -39,12 +39,18 @@
 
 shell 現有的測試接縫（2026-09-17 起）：`visual-editor-shell.test.tsx` 的匯出純函式、
 `visual-editor-shell-selection.test.tsx` 的 2 個掛載 smoke、
-`visual-editor-shell-round-trip.test.tsx` 的 3 個選取接線測試。
-**它們都碰不到存檔路徑**，所以任何動到存檔的搬移目前仍沒有安全網。
+`visual-editor-shell-round-trip.test.tsx` 的 6 個測試（選取接線、置中、以及存檔失敗的兩種形態）。
+存檔路徑的**失敗分支**有覆蓋了；**成功的寫入與 debounce／flush 的順序仍沒有**，動到那兩者的
+搬移依然沒有安全網。
 
-置中（reveal）在 jsdom 觀察不到：視窗高度為 0，置中分支直接返回。補一個 `clientHeight` stub
-可以讓它可觀察，但實測會與 Radix 的 ref 記帳級聯，整包隨機噴 `Maximum update depth exceeded`
-（4 次完整跑紅 3 次），所以那個測試被退回。**那條級聯是 harness 假象還是產品隱患，尚未判定。**
+置中（reveal）與存檔失敗原本都無法在 jsdom 斷言，而且是同一個原因：Inspector 面板在場時，
+一次失敗的重繪會讓 shell 撞上 React 的 nested-update 上限（Radix `useComposedRefs`），樹被拆掉，
+`[data-editor-save-status]` 從 1 個變 0 個。用二分法定位到兇手是 `editor-assistant-panel`，
+sections panel 不是，所以測試把前者 passthrough 掉、後者留著。
+
+**那條級聯已判定為 jsdom 專屬。** 在真實瀏覽器對同一次存檔失敗做對照（攔截 serverFn POST）：
+標記存活、顯示 `Save failed`、樹保有列數。所以繞過它不隱藏任何產品問題 —— 這個判定寫在測試檔的
+mock docblock 裡，改動那個 mock 前先讀它。
 
 **判準：一段程式碼值得抽出，當它同時滿足兩件事** —— 界線清楚（少數幾個輸入、不共用可變 ref），
 以及**抽出後驗證得了**（能寫成單元測試，或能在編輯器裡實際操作確認）。
@@ -62,9 +68,10 @@ shell 現有的測試接縫（2026-09-17 起）：`visual-editor-shell.test.tsx`
   先樂觀記錄（否則 300ms 內按 undo 沒東西可撤），失敗再 `history.discard`。統一路徑則是寫入
   落地後才記。`renderDocument` 選項表達不了這個差異。
 
-  合併它等於在所有東西都依賴的那個寫入 owner 中間放一個模式旗標，而 shell 目前的 5 個測試
-  （2 個 smoke ＋ 3 個 round-trip）碰不到存檔路徑。**在存檔路徑進入測試覆蓋之前，維持重複是
-  比較安全的狀態。** 這一條是 2026-09-17 重新發現並提錯後，查證推翻才寫下的。
+  合併它等於在所有東西都依賴的那個寫入 owner 中間放一個模式旗標。存檔的**失敗分支**現在有
+  測試（round-trip 檔裡的兩個），但**成功路徑與 debounce／flush 的順序仍然沒有** —— 而順序正是
+  兩條路徑真正的差異所在。**在那部分進入覆蓋之前，維持重複仍是比較安全的狀態。**
+  這一條是 2026-09-17 重新發現並提錯後，查證推翻才寫下的。
 
 - **build／publish**：界線其實乾淨，但唯一的端到端覆蓋在 `E2E_ALLOW_PUBLISH` 閘門後面
   （會建立 release 並把 production 切過去）。不可為了驗證自己的重構而開啟那個閘門；
