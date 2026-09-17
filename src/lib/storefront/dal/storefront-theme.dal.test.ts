@@ -1949,3 +1949,68 @@ describe("row identity is repaired with the first edit, not on read", () => {
     ).toBe(true);
   });
 });
+
+describe("publishing seals a complete snapshot", () => {
+  /**
+   * A release is immutable: it pins a source revision, a build and a content
+   * publication, and the runtime serves that publication's revisions. A Store
+   * nobody has edited since row identity existed would otherwise seal rows with
+   * no ids, and the only way to correct a release afterwards is another one.
+   */
+  it("gives every row an id in the revision the release will pin", async () => {
+    const idless = JSON.stringify({
+      version: 1,
+      sections: [
+        {
+          id: "hero",
+          type: "hero",
+          enabled: true,
+          props: { navItems: [{ label: "Shop" }, { label: "About" }] },
+        },
+      ],
+    });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+      VALUES
+        ('template-pub-rid', 'theme-a', 'index', 'Home', '${idless}',
+         'bbbbbbbb-1111-4111-8111-111111111111', NULL, 1, 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('bbbbbbbb-1111-4111-8111-111111111111', 'template-pub-rid', 1, '${idless}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1,
+         'Checkpoint', 'publish', '[]', 'now', 'now');
+    `);
+
+    await storefrontThemeDal.publishTemplate({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-pub-rid",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
+      expectedDraftRevisionId: "bbbbbbbb-1111-4111-8111-111111111111",
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+
+    // The revision, because that is what the publication pins and the runtime
+    // reads — repairing only the template's own copy would change nothing a
+    // visitor ever sees.
+    const revision = sqlite
+      .prepare(
+        "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+      )
+      .get("bbbbbbbb-1111-4111-8111-111111111111") as { document: string };
+    const rows = JSON.parse(revision.document).sections[0].props.navItems as {
+      id?: string;
+    }[];
+
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => /^morph-mig-/.test(row.id ?? ""))).toBe(true);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+  });
+});

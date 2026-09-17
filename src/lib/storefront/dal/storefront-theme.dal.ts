@@ -945,11 +945,22 @@ export const storefrontThemeDal = {
       .limit(1);
     if (!revision) return null;
 
-    const document = storefrontPageDocumentSchema.parse(
-      typeof revision.document === "string"
-        ? JSON.parse(revision.document)
-        : revision.document,
-    );
+    // The same normalization the editor and every draft write apply, so what
+    // gets sealed into a release is complete. A Store whose rows were never
+    // repaired — nobody edited it since row identity existed — would otherwise
+    // publish a snapshot with unidentified rows, and a release is immutable:
+    // the only way to correct it afterwards is another release.
+    //
+    // Idempotent, so for a document the editor already repaired this changes
+    // nothing and derives the same ids it would have derived there.
+    const document = normalizeDocumentRowIds(
+      storefrontPageDocumentSchema.parse(
+        typeof revision.document === "string"
+          ? JSON.parse(revision.document)
+          : revision.document,
+      ),
+      data.templateId,
+    ).value;
 
     // The shell wraps every page and has no URL of its own, so it can never be
     // the template a publish targets. Left behind, its edits would sit in a
@@ -985,11 +996,14 @@ export const storefrontThemeDal = {
         ? {
             id: shell.id,
             revisionId: shell.draftRevisionId,
-            document: storefrontPageDocumentSchema.parse(
-              typeof shell.document === "string"
-                ? JSON.parse(shell.document)
-                : shell.document,
-            ),
+            document: normalizeDocumentRowIds(
+              storefrontPageDocumentSchema.parse(
+                typeof shell.document === "string"
+                  ? JSON.parse(shell.document)
+                  : shell.document,
+              ),
+              shell.id,
+            ).value,
           }
         : null;
 
@@ -1103,10 +1117,19 @@ export const storefrontThemeDal = {
         env.DATABASE.prepare(
           `
           UPDATE storefront_theme_template_revisions
-          SET published_at = ?1
-          WHERE id = ?2 AND template_id = ?3
+          SET published_at = ?1, document = ?2
+          WHERE id = ?3 AND template_id = ?4
         `,
-        ).bind(now, data.expectedDraftRevisionId, data.templateId),
+          // The revision is written, not just stamped. A release pins the
+          // publication, the publication pins this revision, and the runtime
+          // serves what this row holds — so repairing only the template's copy
+          // would leave the published content exactly as it was.
+        ).bind(
+          now,
+          JSON.stringify(document),
+          data.expectedDraftRevisionId,
+          data.templateId,
+        ),
       );
     }
 
@@ -1133,10 +1156,15 @@ export const storefrontThemeDal = {
         env.DATABASE.prepare(
           `
           UPDATE storefront_theme_template_revisions
-          SET published_at = ?1
-          WHERE id = ?2 AND template_id = ?3
+          SET published_at = ?1, document = ?2
+          WHERE id = ?3 AND template_id = ?4
         `,
-        ).bind(now, pendingShell.revisionId, pendingShell.id),
+        ).bind(
+          now,
+          JSON.stringify(pendingShell.document),
+          pendingShell.revisionId,
+          pendingShell.id,
+        ),
       );
     }
 
