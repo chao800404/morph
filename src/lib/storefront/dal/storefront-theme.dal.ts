@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import { getDb } from "@/db";
 import { withReleaseNote } from "@/lib/storefront/release-note";
 import {
@@ -1243,7 +1244,7 @@ export const storefrontThemeDal = {
           latestTemplate.draftGeneration !== data.expectedDraftGeneration
         ) {
           throw new Error(
-            "TEMPLATE_DRAFT_CONFLICT: Template draft was modified concurrently.",
+            `${TEMPLATE_DRAFT_CONFLICT}: Template draft was modified concurrently.`,
           );
         }
         throw new Error(

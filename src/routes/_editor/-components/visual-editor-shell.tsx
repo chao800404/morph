@@ -1,5 +1,7 @@
 import { commitPendingContent } from "@/lib/storefront/editor/pending-content-write";
 import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
+import { rebaseContentProps } from "@/lib/storefront/editor/content-rebase";
+import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
@@ -673,6 +675,22 @@ export function VisualEditorShell({
   const [draftSaveState, setDraftSaveState] = useState<
     "idle" | "saving" | "error"
   >("idle");
+  /**
+   * Content writes the server refused because the document moved under them,
+   * keyed like the pending map and naming the template each belongs to.
+   *
+   * Kept apart from `draftSaveState`, which only knows "the save failed". A
+   * conflict means the author's edit is still valid but the document it was
+   * written against has moved, and the answer is to rebase it onto the current
+   * document rather than to send the same payload again — sending it again is
+   * how one author's stale copy lands on top of another's work, which is the
+   * whole reason the write is refused in the first place.
+   */
+  const [contentConflicts, setContentConflicts] = useState<
+    Record<string, string>
+  >({});
+  const contentConflictsRef = useRef(contentConflicts);
+  contentConflictsRef.current = contentConflicts;
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
@@ -1026,36 +1044,125 @@ export function VisualEditorShell({
     ((sectionId: string, props: Record<string, unknown>) => void) | null
   >(null);
   const commitSectionPending = useCallback(
-    (tid: string, key: string, recordHistory = true) =>
-      commitPendingContent({
-        key,
-        pending: pendingPropsMapRef.current,
-        baselines: pendingPropsBaselineRef.current,
-        save: (entry) =>
-          enqueueTemplateMutation(tid, (generation) =>
-            updatePropsMutation.mutateAsync({
-              templateId: tid,
-              sectionId: entry.sectionId,
-              props: entry.props,
-              expectedDraftGeneration: generation,
-            }),
-          ),
-        onSaved: recordHistory
-          ? (entry, baseline) => {
-              if (!baseline) return;
-              history.record({
-                label: "Content",
-                scope: sectionHistoryScope(entry.sectionId),
-                undo: () =>
-                  contentChangeRef.current?.(entry.sectionId, baseline),
-                redo: () =>
-                  contentChangeRef.current?.(entry.sectionId, entry.props),
-              });
-            }
-          : undefined,
-      }),
+    async (tid: string, key: string, recordHistory = true) => {
+      const clearConflict = () =>
+        setContentConflicts((current) => {
+          if (!(key in current)) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+
+      try {
+        const result = await commitPendingContent({
+          key,
+          pending: pendingPropsMapRef.current,
+          baselines: pendingPropsBaselineRef.current,
+          failureCode: (result) => result.error,
+          save: (entry) =>
+            enqueueTemplateMutation(tid, (generation) =>
+              updatePropsMutation.mutateAsync({
+                templateId: tid,
+                sectionId: entry.sectionId,
+                props: entry.props,
+                expectedDraftGeneration: generation,
+              }),
+            ),
+          onSaved: recordHistory
+            ? (entry, baseline) => {
+                if (!baseline) return;
+                history.record({
+                  label: "Content",
+                  scope: sectionHistoryScope(entry.sectionId),
+                  undo: () =>
+                    contentChangeRef.current?.(entry.sectionId, baseline),
+                  redo: () =>
+                    contentChangeRef.current?.(entry.sectionId, entry.props),
+                });
+              }
+            : undefined,
+        });
+        clearConflict();
+        return result;
+      } catch (error) {
+        // The payload is retained either way; what differs is what the author
+        // can do about it, so a conflict is recorded rather than only reported.
+        if (
+          (error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT
+        ) {
+          setContentConflicts((current) => ({ ...current, [key]: tid }));
+        }
+        throw error;
+      }
+    },
     [enqueueTemplateMutation, updatePropsMutation, history],
   );
+
+  /**
+   * Rebases conflicted content onto the document as it is now, then saves it.
+   *
+   * One pass per press, never a loop: if the document moves again in between,
+   * the write is refused again and the section stays conflicted, so the author
+   * decides whether to keep going. Retrying on its own would be a busy loop in
+   * a room with more than one editor, and each turn of it would widen what the
+   * author's copy is allowed to overwrite.
+   *
+   * The rebase is the whole point. Re-sending the payload unchanged would write
+   * the author's stale copy of every field over whatever the other writer
+   * changed — the outcome the refusal exists to prevent.
+   */
+  const resolveContentConflicts = useCallback(async () => {
+    const conflicts = Object.entries(contentConflictsRef.current);
+    if (conflicts.length === 0) return;
+
+    const detailKey = storefrontThemeQueries.detail(
+      context.storefront.id,
+      context.theme.id,
+    ).queryKey;
+    await queryClient.invalidateQueries({ queryKey: detailKey });
+    const fresh = queryClient.getQueryData<
+      ServerResult<StorefrontThemeEditorDTO>
+    >(detailKey);
+    const freshTemplates = fresh?.success ? fresh.data.templates : null;
+    if (!freshTemplates) return;
+
+    for (const [key, templateId] of conflicts) {
+      const pending = pendingPropsMapRef.current.get(key);
+      const template = freshTemplates.find((entry) => entry.id === templateId);
+      if (!pending || !template) continue;
+      const section = template.document.sections.find(
+        (entry) => entry.id === pending.sectionId,
+      );
+      const incoming = (section?.props as Record<string, unknown>) ?? {};
+
+      pendingPropsMapRef.current.set(key, {
+        sectionId: pending.sectionId,
+        props: rebaseContentProps({
+          incoming,
+          baseline: pendingPropsBaselineRef.current.get(key) ?? {},
+          local: pending.props,
+        }),
+      });
+      pendingPropsBaselineRef.current.set(key, { ...incoming });
+      // The refused write left this session's observed generation behind the
+      // document's, and reusing it would be refused for the same reason.
+      if (typeof template.draftGeneration === "number") {
+        templateDraftGenerationRef.current.set(
+          templateId,
+          template.draftGeneration,
+        );
+      }
+
+      await commitSectionPending(templateId, key).catch(() => {
+        // Reported by the mutation, and recorded again if it conflicted.
+      });
+    }
+  }, [
+    commitSectionPending,
+    context.storefront.id,
+    context.theme.id,
+    queryClient,
+  ]);
 
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
@@ -1075,8 +1182,13 @@ export function VisualEditorShell({
           key.startsWith(prefix),
         )
       ) {
+        // A conflicted write is not waiting on a retry — sending the same
+        // payload again is what the refusal was protecting against — so the
+        // message names the action that resolves it.
         throw new Error(
-          "Content changed while saving. Retry before continuing.",
+          Object.keys(contentConflictsRef.current).length > 0
+            ? "Content is out of date with the document. Load the latest version and keep your changes before continuing."
+            : "Content changed while saving. Retry before continuing.",
         );
       }
     },
@@ -6325,6 +6437,7 @@ export function VisualEditorShell({
               (s) => s === "saving",
             );
             const firstThemeError = Object.values(themeFileSaveErrors)[0];
+            const conflictCount = Object.keys(contentConflicts).length;
             const hasError =
               draftSaveState === "error" || Boolean(firstThemeError);
             const isSaving =
@@ -6336,17 +6449,21 @@ export function VisualEditorShell({
               ? "Publishing…"
               : isSaving
                 ? "Saving…"
-                : hasError
-                  ? firstThemeError
-                    ? `Save failed: ${firstThemeError.slice(0, 30)}…`
-                    : "Save failed"
-                  : // One word each, and the same word stem, so the two states
-                    // read as a pair the eye can tell apart at a glance. The
-                    // longer phrasings sat beside four icon buttons and a
-                    // Publish button and read as a sentence in a toolbar.
-                    hasUnpublishedChanges
-                    ? "Unpublished"
-                    : "Published";
+                : conflictCount > 0
+                  ? // Not "Save failed": the author's edit is intact, and the
+                    // word next to it says what happened to it.
+                    "Out of date"
+                  : hasError
+                    ? firstThemeError
+                      ? `Save failed: ${firstThemeError.slice(0, 30)}…`
+                      : "Save failed"
+                    : // One word each, and the same word stem, so the two states
+                      // read as a pair the eye can tell apart at a glance. The
+                      // longer phrasings sat beside four icon buttons and a
+                      // Publish button and read as a sentence in a toolbar.
+                      hasUnpublishedChanges
+                      ? "Unpublished"
+                      : "Published";
 
             return (
               <>
@@ -6385,6 +6502,20 @@ export function VisualEditorShell({
                   )}
                   <span className="hidden xl:inline">{statusLabel}</span>
                 </span>
+                {conflictCount > 0 ? (
+                  // The verb is "update", not "retry": the edit is kept, and
+                  // what changes is the document it is saved on top of.
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => void resolveContentConflicts()}
+                    title="Save your changes on top of the version someone else saved. Your edits stay; every other field comes from the latest version."
+                  >
+                    Load latest, keep mine
+                  </Button>
+                ) : null}
                 {/* Splits the bar into what is true and what you can do. The
                     status was the only item here with no container of its own,
                     so against a row of icon buttons it read as loose text. */}

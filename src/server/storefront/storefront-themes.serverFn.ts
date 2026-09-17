@@ -1,4 +1,5 @@
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
+import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import { parseRejectedContentField } from "@/lib/storefront/theme-content-capabilities";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import {
@@ -441,9 +442,9 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           { error: "RELEASE_GENERATION_CONFLICT" },
         );
       }
-      if (message.includes("TEMPLATE_DRAFT_CONFLICT")) {
+      if (message.includes(TEMPLATE_DRAFT_CONFLICT)) {
         return fail("Template draft was modified concurrently.", {
-          error: "TEMPLATE_DRAFT_CONFLICT",
+          error: TEMPLATE_DRAFT_CONFLICT,
         });
       }
       if (

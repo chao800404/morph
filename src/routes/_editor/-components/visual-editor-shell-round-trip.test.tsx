@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
+import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { VisualEditorShell } from "./visual-editor-shell";
 
@@ -409,6 +410,96 @@ describe("a content save that fails", () => {
 
     await waitFor(() => expect(saveStatus()).toBe("Save failed"));
     expect(error).toHaveBeenCalledWith("Failed to update section properties");
+  });
+});
+
+/**
+ * A write the document moved out from under.
+ *
+ * The OCC guard refusing the write is the protection, not the problem: the
+ * author's edit is still valid, but the document it was written against has
+ * moved, so the answer is to rebase it rather than to send it again. Sending it
+ * again is what lands one author's stale copy on another's work.
+ */
+describe("a content save the document moved under", () => {
+  it("offers the update, and not a retry that would resend the stale payload", async () => {
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    renderShell();
+
+    await commitInlineText();
+
+    // The status names what happened to the edit, and the control beside it
+    // names the action: load the latest, keep the author's changes.
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
+  });
+
+  it("resends rebased onto the latest document, at the generation it reports", async () => {
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+
+    // The document as someone else left it: they changed `heading` and added
+    // `cta`, and the draft generation is ahead of this session's.
+    const client = readyQueryClient();
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      {
+        success: true,
+        data: {
+          ...context,
+          templates: [
+            {
+              ...context.templates[0],
+              draftGeneration: 7,
+              document: {
+                version: 1,
+                sections: [
+                  {
+                    id: "hero",
+                    type: "hero",
+                    props: { heading: "Theirs", cta: "New" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      } as never,
+    );
+    renderShell(client);
+
+    await commitInlineText("Mine");
+    // The write is debounced, so the refusal arrives on its own schedule.
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 8 },
+    } as never);
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    const resend = updateSectionProps.mock.calls[1]![0] as {
+      data: { props: Record<string, unknown>; expectedDraftGeneration: number };
+    };
+
+    // The author's key wins and the other writer's keys survive, which is the
+    // only reason this is safe to send at all.
+    expect(resend.data.props).toEqual({ heading: "Mine", cta: "New" });
+    // The generation comes from the document as it is now. Reusing this
+    // session's observed one would be refused for the same reason.
+    expect(resend.data.expectedDraftGeneration).toBe(7);
   });
 });
 
