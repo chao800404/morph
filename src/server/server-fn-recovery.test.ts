@@ -4,7 +4,9 @@ import {
   STALE_SERVER_FN_HEADER,
   isOpaqueUnhandledBody,
   describeServerFnId,
+  isHtmlDocumentRequest,
   isServerFnRequest,
+  recoverDevDocumentResponse,
   recoverServerFnResponse,
   serverFnIdFromRequest,
 } from "./server-fn-recovery";
@@ -32,6 +34,43 @@ describe("isServerFnRequest", () => {
     ]) {
       expect(isServerFnRequest(req(url))).toBe(false);
     }
+  });
+});
+
+describe("isHtmlDocumentRequest", () => {
+  it("recognises an HTML page navigation", () => {
+    expect(
+      isHtmlDocumentRequest(
+        new Request("https://x.test/dashboard", {
+          headers: { accept: "text/html,application/xhtml+xml" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses mutations, server functions, and non-HTML reads", () => {
+    expect(
+      isHtmlDocumentRequest(
+        new Request("https://x.test/dashboard", {
+          method: "POST",
+          headers: { accept: "text/html" },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isHtmlDocumentRequest(
+        new Request("https://x.test/_serverFn/abc", {
+          headers: { accept: "text/html" },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isHtmlDocumentRequest(
+        new Request("https://x.test/api/data", {
+          headers: { accept: "application/json" },
+        }),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -192,5 +231,90 @@ describe("recoverServerFnResponse", () => {
       )
     ).json()) as { message: string };
     expect(body.message).not.toMatch(/reload|dev server/i);
+  });
+});
+
+describe("recoverDevDocumentResponse", () => {
+  const htmlRequest = () =>
+    new Request("https://x.test/dashboard", {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    });
+
+  it("retries the exact opaque document failure once in development", async () => {
+    let calls = 0;
+    const recovered = new Response("recovered", { status: 200 });
+    const out = await recoverDevDocumentResponse(htmlRequest(), opaque500(), {
+      dev: true,
+      retry: async () => {
+        calls += 1;
+        return recovered;
+      },
+    });
+
+    expect(calls).toBe(1);
+    expect(out).toBe(recovered);
+  });
+
+  it("does not loop when the replacement handler also fails opaquely", async () => {
+    let calls = 0;
+    const secondFailure = opaque500();
+    const out = await recoverDevDocumentResponse(htmlRequest(), opaque500(), {
+      dev: true,
+      retry: async () => {
+        calls += 1;
+        return secondFailure;
+      },
+    });
+
+    expect(calls).toBe(1);
+    expect(out).toBe(secondFailure);
+  });
+
+  it("does not replay production, mutations, APIs, or explained failures", async () => {
+    let calls = 0;
+    const retry = async () => {
+      calls += 1;
+      return new Response("unexpected");
+    };
+    const explained = new Response(
+      '{"status":500,"message":"database unavailable"}',
+      { status: 500 },
+    );
+    const post = new Request("https://x.test/dashboard", {
+      method: "POST",
+      headers: { accept: "text/html" },
+    });
+    const json = new Request("https://x.test/api/data", {
+      headers: { accept: "application/json" },
+    });
+    const productionFailure = opaque500();
+    const mutationFailure = opaque500();
+    const apiFailure = opaque500();
+
+    expect(
+      await recoverDevDocumentResponse(htmlRequest(), productionFailure, {
+        dev: false,
+        retry,
+      }),
+    ).toBe(productionFailure);
+    expect(
+      await recoverDevDocumentResponse(post, mutationFailure, {
+        dev: true,
+        retry,
+      }),
+    ).toBe(mutationFailure);
+    expect(
+      await recoverDevDocumentResponse(json, apiFailure, {
+        dev: true,
+        retry,
+      }),
+    ).toBe(apiFailure);
+    expect(
+      await recoverDevDocumentResponse(htmlRequest(), explained, {
+        dev: true,
+        retry,
+      }),
+    ).toBe(explained);
+    expect(calls).toBe(0);
   });
 });

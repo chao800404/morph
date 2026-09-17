@@ -13,6 +13,22 @@ export function isServerFnRequest(request: Request): boolean {
 }
 
 /**
+ * A top-level HTML navigation, as distinct from a server function or data
+ * request.
+ *
+ * Only these reads are safe to replay when Vite leaves the Start handler in a
+ * broken HMR generation. Mutations and opaque API requests must surface their
+ * first answer instead of being performed twice.
+ */
+export function isHtmlDocumentRequest(request: Request): boolean {
+  if (request.method !== "GET" || isServerFnRequest(request)) return false;
+  const accept = request.headers.get("accept") ?? "";
+  return accept
+    .split(",")
+    .some((part) => part.trim().toLowerCase().startsWith("text/html"));
+}
+
+/**
  * Turns a server function id into something readable in a log.
  *
  * The id is base64 of `{file, export}`, so printed raw it is a wall of
@@ -139,4 +155,38 @@ export async function recoverServerFnResponse(
     `Server function failed with no reported reason: ${describeServerFnId(functionId)}`,
   );
   return describeOpaqueServerFnFailure({ dev: options.dev, functionId });
+}
+
+/**
+ * Recovers one precise Vite/TanStack development failure without turning a
+ * page reload into a general-purpose retry policy.
+ *
+ * During a long HMR session the outer Start handler can outlive the SSR module
+ * generation it was created against. h3 then returns its opaque catch-all for
+ * the document itself. A clean dev-server restart fixes the same request,
+ * which proves the route and its data are not the cause. Recreating that one
+ * handler is the in-process equivalent of the restart.
+ *
+ * The gate is intentionally narrow: development only, GET HTML navigation
+ * only, and the exact body h3 uses when it discarded the cause. A real 500
+ * with a useful body, any mutation, and every production response pass through
+ * untouched. The caller supplies a single retry, so this cannot loop.
+ */
+export async function recoverDevDocumentResponse(
+  request: Request,
+  response: Response,
+  options: { dev: boolean; retry: () => Promise<Response> },
+): Promise<Response> {
+  if (!options.dev || response.status !== 500) return response;
+  if (!isHtmlDocumentRequest(request)) return response;
+
+  let body: string;
+  try {
+    body = await response.clone().text();
+  } catch {
+    return response;
+  }
+  if (!isOpaqueUnhandledBody(body)) return response;
+
+  return options.retry();
 }

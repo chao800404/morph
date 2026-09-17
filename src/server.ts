@@ -152,7 +152,27 @@ export default {
       return handleStorefrontRequest(request);
     }
 
-    const response = await (await getHandler())(...args);
+    let response = await (await getHandler())(...args);
+
+    if (response.status === 500 && import.meta.env.DEV) {
+      const { recoverDevDocumentResponse } =
+        await import("@/server/server-fn-recovery");
+      response = await recoverDevDocumentResponse(request, response, {
+        dev: true,
+        retry: async () => {
+          // A clean process serves this same request; discard only the outer
+          // Start handler whose manifest resolver survived the stale HMR
+          // generation. The recreated handler still resolves the current
+          // router and server-function entries per request.
+          console.error(
+            `Opaque SSR failure after HMR for ${request.method} ${url.pathname}; recreating the Start handler once.`,
+          );
+          handler = undefined;
+          if (hotData) hotData.handler = undefined;
+          return (await getHandler())(...args);
+        },
+      });
+    }
 
     // h3 turns anything that escapes a handler into a 500 carrying no cause,
     // and it *returns* that rather than throwing, so it has to be caught on the
