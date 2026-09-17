@@ -25,6 +25,9 @@ import {
   findSourceLocation,
   getComponentFilePath,
   parseComponentSource,
+  type ComponentElementMeta,
+} from "@/lib/storefront/ast/theme-ast-transformer";
+import {
   parseTailwindBackgroundColor,
   parseTailwindBorderColor,
   parseTailwindBorderRadii,
@@ -37,8 +40,7 @@ import {
   parseTailwindPadding,
   parseTailwindTextAlign,
   parseTailwindTextColor,
-  type ComponentElementMeta,
-} from "@/lib/storefront/ast/theme-ast-transformer";
+} from "@/lib/storefront/ast/tailwind-style-parsers";
 import {
   patchTailwindClasses as patchTailwindClassesBase,
   tokenizeTailwindClasses,
@@ -109,6 +111,7 @@ import {
   InspectorModuleCard as InspectorGroup,
   InspectorModuleStaticSections,
 } from "./style-inspector/inspector-module-card";
+import { useInspectorContentProps } from "./style-inspector/use-inspector-content-props";
 import {
   InspectorSelectContent,
   InspectorSelectControl,
@@ -641,41 +644,6 @@ export function resolveStyleInspectorClassName(
   return "";
 }
 
-/**
- * Whether two content values are the same as far as an edit is concerned.
- *
- * Reference equality is wrong here. Every refetch parses fresh JSON, so an
- * object or array prop is a new reference with identical contents — and reading
- * that as "the user changed it" meant array fields such as a repeater's rows
- * were *never* rebased, keeping a stale local copy over whatever the server
- * had. Scalars were fine, which is why it looked like it worked.
- */
-function sameContentValue(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (a === null || b === null) return false;
-  if (typeof a !== "object" || typeof b !== "object") return false;
-
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return (
-      a.length === b.length &&
-      a.every((item, index) => sameContentValue(item, b[index]))
-    );
-  }
-
-  const aKeys = Object.keys(a as Record<string, unknown>);
-  const bKeys = Object.keys(b as Record<string, unknown>);
-  if (aKeys.length !== bKeys.length) return false;
-  return aKeys.every(
-    (key) =>
-      Object.prototype.hasOwnProperty.call(b, key) &&
-      sameContentValue(
-        (a as Record<string, unknown>)[key],
-        (b as Record<string, unknown>)[key],
-      ),
-  );
-}
-
 export const EditorStyleInspector = memo(function EditorStyleInspector({
   resourceKey = "",
   section,
@@ -726,59 +694,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setSectionsExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const [localProps, setLocalProps] = useState<Record<string, any>>(
-    () => (section.props as Record<string, any>) ?? {},
-  );
-  const localPropsRef = useRef(localProps);
-  const lastSectionIdRef = useRef(section.id);
+  const { contentResourceKey, setLocalProps, localPropsRef, props } =
+    useInspectorContentProps({
+      resourceKey,
+      sectionId: section.id,
+      sectionProps: section.props,
+    });
   const optimisticStyleRef = useRef<{
     key: string;
     revision: number;
     values: Record<string, string | number>;
   }>({ key: "", revision: 0, values: {} });
 
-  // What the server last said this section holds. Kept so a change arriving
-  // from elsewhere can be told apart from this component's own edits.
-  const serverBaselineRef = useRef<Record<string, any>>(
-    (section.props as Record<string, any>) ?? {},
-  );
-
-  const contentResourceKey = `${resourceKey}:${section.id}`;
-  const lastContentResourceKeyRef = useRef(contentResourceKey);
-  useEffect(() => {
-    const incoming = (section.props as Record<string, any>) ?? {};
-    const baseline = serverBaselineRef.current;
-    serverBaselineRef.current = incoming;
-
-    // Switching sections replaces everything; there is no edit in progress
-    // that belongs to the new one.
-    if (contentResourceKey !== lastContentResourceKeyRef.current) {
-      lastContentResourceKeyRef.current = contentResourceKey;
-      lastSectionIdRef.current = section.id;
-      localPropsRef.current = incoming;
-      setLocalProps(incoming);
-      return;
-    }
-
-    // Same section, new server state — a refetch, a reorder, an undo, or a
-    // template swap that reused the id. Syncing only on `section.id` left the
-    // local snapshot stale, and every field edit sends the *whole* object, so
-    // the next keystroke wrote the stale values back over the change. OCC
-    // cannot catch that: the generation is current and the payload looks
-    // deliberate.
-    //
-    // Fields the user has locally diverged on are kept, because discarding
-    // them would delete something being typed. Everything else rebases.
-    const local = localPropsRef.current;
-    const rebased: Record<string, any> = { ...incoming };
-    for (const key of Object.keys(local)) {
-      if (!sameContentValue(local[key], baseline[key]))
-        rebased[key] = local[key];
-    }
-
-    localPropsRef.current = rebased;
-    setLocalProps(rebased);
-  }, [contentResourceKey, section.id, section.props]);
   useEffect(() => {
     if (
       optimisticStyleRef.current.revision > 0 &&
@@ -812,11 +739,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     section.componentRef ?? undefined,
   );
   const activeSourceLocation = selection?.sourceLocation ?? null;
-  // Render the new resource before its uncontrolled fields mount.
-  const props =
-    contentResourceKey === lastContentResourceKeyRef.current
-      ? localProps
-      : ((section.props as Record<string, any>) ?? {});
+  const propString = (key: string): string | undefined =>
+    typeof props[key] === "string" ? props[key] : undefined;
+  const propNumber = (key: string): number | undefined =>
+    typeof props[key] === "number" ? props[key] : undefined;
+  const propTextAlign = (): "left" | "center" | "right" | undefined => {
+    const value = propString("textAlign");
+    return value === "left" || value === "center" || value === "right"
+      ? value
+      : undefined;
+  };
   const selectedField = activeFieldKey ?? activeElementKey;
   const isSelectedNode = activeSelectionIsSection === false;
   // Selecting a section from the sidebar intentionally clears the transient
@@ -906,6 +838,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     }`;
   const optimisticValue = (key: string): number | string | undefined =>
     optimisticStyleRef.current.values[key];
+  const optimisticString = (key: string): string | undefined => {
+    const value = optimisticStyleRef.current.values[key];
+    return typeof value === "string" ? value : undefined;
+  };
   const optimisticNumber = (key: string): number | undefined => {
     const value = optimisticStyleRef.current.values[key];
     return typeof value === "number" ? value : undefined;
@@ -1389,27 +1325,25 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     computedFontSizeNum ??
     (fontSizeDetailed.type === "exact"
       ? fontSizeDetailed.value
-      : typeof props.fontSize === "number"
-        ? props.fontSize
-        : 48);
+      : (propNumber("fontSize") ?? 48));
 
   const effectiveFontFamily =
-    optimisticValue("fontFamily") ??
+    optimisticString("fontFamily") ??
     computedFontFamilyKind(activeComputedStyle?.fontFamily) ??
     parseTailwindFontFamily(targetClassName) ??
-    props.fontFamily ??
+    propString("fontFamily") ??
     "serif";
 
   const effectiveFontWeight =
-    optimisticValue("fontWeight") ??
+    optimisticString("fontWeight") ??
     computedFontWeightKind(activeComputedStyle?.fontWeight) ??
     parseTailwindFontWeight(targetClassName) ??
-    props.fontWeight ??
+    propString("fontWeight") ??
     "normal";
 
   const computedAlign = activeComputedStyle?.textAlign;
   const effectiveTextAlign =
-    optimisticValue("textAlign") ??
+    optimisticString("textAlign") ??
     (computedAlign === "left" ||
     computedAlign === "center" ||
     computedAlign === "right" ||
@@ -1417,7 +1351,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     computedAlign === "start" ||
     computedAlign === "end"
       ? computedAlign
-      : (parseTailwindTextAlign(targetClassName) ?? props.textAlign ?? "left"));
+      : (parseTailwindTextAlign(targetClassName) ?? propTextAlign() ?? "left"));
 
   const effectiveLineHeight =
     optimisticNumber("lineHeight") ??
@@ -1426,7 +1360,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       activeComputedStyle?.fontSize,
     ) ??
     parseTailwindLineHeight(targetClassName) ??
-    (typeof props.lineHeight === "number" ? props.lineHeight : 1.1);
+    propNumber("lineHeight") ??
+    1.1;
 
   const containerClassName = isSelectedNode
     ? targetClassName
@@ -1453,9 +1388,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const computedPaddingBottom = parsePx(containerComputedStyle?.paddingBottom);
   const computedPaddingLeft = parsePx(containerComputedStyle?.paddingLeft);
   const computedPaddingRight = parsePx(containerComputedStyle?.paddingRight);
-  const sourcePaddingAll =
-    sourcePadding.all ??
-    (typeof props.padding === "number" ? props.padding : 48);
+  const sourcePaddingAll = sourcePadding.all ?? propNumber("padding") ?? 48;
 
   const effectivePaddingTop =
     optimisticNumber("paddingTop") ??
@@ -1474,13 +1407,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     computedPaddingLeft ??
     sourcePadding.left ??
     sourcePadding.x ??
-    (typeof props.paddingLeft === "number" ? props.paddingLeft : 24);
+    propNumber("paddingLeft") ??
+    24;
   const effectivePaddingRight =
     optimisticNumber("paddingRight") ??
     computedPaddingRight ??
     sourcePadding.right ??
     sourcePadding.x ??
-    (typeof props.paddingRight === "number" ? props.paddingRight : 24);
+    propNumber("paddingRight") ??
+    24;
   const effectivePaddingAll =
     optimisticNumber("paddingAll") ??
     (effectivePaddingTop === effectivePaddingBottom &&
@@ -1631,7 +1566,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const sourceTextPaint =
     sourceTextGradient ?? parseTailwindTextColor(textColorToken?.raw);
   const effectiveBackgroundPaint =
-    optimisticValue("backgroundPaint") ??
+    optimisticString("backgroundPaint") ??
     sourceBackgroundPaint ??
     (backgroundToken
       ? ((!containerTextGradient &&
@@ -1654,10 +1589,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         computedColorToInspectorPaint(
           containerComputedStyle?.backgroundColor,
         ) ??
-        props.backgroundColor ??
+        propString("backgroundColor") ??
         "#fafaf9"));
   const effectiveTextPaint =
-    optimisticValue("textPaint") ??
+    optimisticString("textPaint") ??
     sourceTextPaint ??
     (textColorToken
       ? (computedColorToInspectorPaint(activeComputedStyle?.color) ?? "")
@@ -1665,7 +1600,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     (hasResolvedTextSource
       ? ""
       : (computedColorToInspectorPaint(activeComputedStyle?.color) ??
-        props.textColor ??
+        propString("textColor") ??
         "#1c1917"));
   const sourceBorderRadii = parseTailwindBorderRadii(containerClassName);
   const computedBorderRadius = parsePx(containerComputedStyle?.borderRadius);
@@ -1687,8 +1622,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     commonSourceCornerRadius ??
     (hasResolvedContainerSource
       ? 0
-      : (computedBorderRadius ??
-        (typeof props.borderRadius === "number" ? props.borderRadius : 0)));
+      : (computedBorderRadius ?? propNumber("borderRadius") ?? 0));
   const resolveCornerRadius = (
     optimisticKey: string,
     sourceValue: number | null,

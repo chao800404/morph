@@ -6,11 +6,9 @@ import path from "node:path";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  Outlet,
   RouterProvider,
   createMemoryHistory,
   createRootRoute,
-  createRoute,
   createRouter,
 } from "@tanstack/react-router";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -114,15 +112,10 @@ function stripRouterLocationState(html: string): string {
  */
 async function renderInRouter(element: ReactElement): Promise<string> {
   const rootRoute = createRootRoute({
-    component: () => createElement(Outlet),
-  });
-  const indexRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/",
     component: () => element,
   });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute]),
+    routeTree: rootRoute,
     history: createMemoryHistory({ initialEntries: ["/"] }),
   } as never) as unknown as { load: () => Promise<void> };
   await router.load();
@@ -145,6 +138,60 @@ const components = files
   )
   .map((file) => file.path)
   .sort();
+
+/**
+ * Components that are normally fed by a route loader still need a meaningful
+ * value when the parity check renders them in isolation. Keeping these
+ * fixtures here makes the comparison exercise the component's actual markup
+ * (including repeated rows) instead of failing before either renderer gets a
+ * chance to run.
+ */
+function propsForComponent(sourcePath: string): Record<string, unknown> {
+  if (sourcePath.endsWith("/ProductList.tsx")) {
+    return {
+      products: [
+        {
+          id: "product-1",
+          handle: "linen-vase",
+          thumbnailUrl: "/images/linen-vase.jpg",
+          title: "Linen vase",
+          subtitle: "A quiet essential",
+        },
+      ],
+      pagination: { page: 1, total: 1, totalPages: 1 },
+    };
+  }
+  if (sourcePath.endsWith("/ProductDetail.tsx")) {
+    return {
+      product: {
+        id: "product-1",
+        handle: "linen-vase",
+        thumbnailUrl: "/images/linen-vase.jpg",
+        title: "Linen vase",
+        subtitle: "A quiet essential",
+        description: "Made for everyday rituals.",
+        assets: [{ id: "asset-1", url: "/images/detail.jpg", name: "Detail" }],
+        options: [
+          {
+            id: "option-1",
+            title: "Color",
+            values: [{ id: "value-1", value: "Natural" }],
+          },
+        ],
+        variants: [
+          {
+            id: "variant-1",
+            title: "Natural / One size",
+            availableQuantity: 1,
+            allowBackorder: false,
+            formattedPrice: "$48",
+          },
+        ],
+      },
+    };
+  }
+  return {};
+}
 
 describe.skipIf(!ENABLED || components.length === 0)(
   "the workspace Theme renders identically through both paths",
@@ -173,15 +220,16 @@ describe.skipIf(!ENABLED || components.length === 0)(
           `${sourcePath} has no default export to render`,
         ).toBe("function");
 
+        const props = propsForComponent(sourcePath);
         const fromReact = stripRouterLocationState(
           normalizeThemeMarkup(
-            await renderInRouter(createElement(Component, {})),
+            await renderInRouter(createElement(Component, props)),
           ),
         );
         const result = renderSafeThemeComponent({
           files,
           sourcePath,
-          props: {},
+          props,
         });
         if (!result.success) {
           throw new Error(

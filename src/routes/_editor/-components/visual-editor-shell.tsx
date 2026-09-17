@@ -1,4 +1,5 @@
 import { commitPendingContent } from "@/lib/storefront/editor/pending-content-write";
+import type { ServerResult } from "@/lib/db/server-result";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
 import { Input } from "@/components/ui/input";
@@ -252,6 +253,7 @@ import {
 } from "./preview-reveal-request";
 import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
+import { useEditorContextReset } from "./use-editor-context-reset";
 
 const loadEditorCodeWorkspace = () =>
   import("./editor-code-workspace").then((module) => ({
@@ -445,6 +447,22 @@ function previewSelectionTargetMatches(
       right[key] !== undefined &&
       left[key] === right[key],
   );
+}
+
+function formatBuildDiagnostics(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["error", "message"] as const) {
+      if (typeof record[key] === "string") return record[key];
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "Build diagnostics are unavailable.";
+    }
+  }
+  return String(value);
 }
 
 export function createEditorSelectionDescriptor(
@@ -810,7 +828,7 @@ export function VisualEditorShell({
             context.theme.id,
             activeTemplate?.id ?? "",
           ).queryKey,
-          (old: any) => {
+          (old: ServerResult<StorefrontCommentGroupDTO[]> | undefined) => {
             if (!old || !old.success || !Array.isArray(old.data)) return old;
             return {
               ...old,
@@ -961,7 +979,10 @@ export function VisualEditorShell({
   const { actions: history, state: historyState } = useEditorHistory();
 
   const enqueueTemplateMutation = useCallback(
-    (templateId: string, op: (generation: number) => Promise<any>) => {
+    (
+      templateId: string,
+      op: (generation: number) => Promise<ServerResult<unknown>>,
+    ) => {
       const currentQueue =
         templateMutationQueueRef.current.get(templateId) ?? Promise.resolve();
       const nextPromise = currentQueue
@@ -973,17 +994,22 @@ export function VisualEditorShell({
             templates: context.templates,
           });
           const result = await op(expectedDraftGeneration);
-          if (result?.success && result.data) {
-            if (typeof result.data.draftGeneration === "number") {
+          if (
+            result.success &&
+            result.data !== null &&
+            typeof result.data === "object"
+          ) {
+            const data = result.data as Record<string, unknown>;
+            if (typeof data.draftGeneration === "number") {
               templateDraftGenerationRef.current.set(
                 templateId,
-                result.data.draftGeneration,
+                data.draftGeneration,
               );
             }
-            if (result.data.draftRevisionId) {
+            if (typeof data.draftRevisionId === "string") {
               templateDraftRevisionIdRef.current.set(
                 templateId,
-                result.data.draftRevisionId,
+                data.draftRevisionId,
               );
             }
           }
@@ -1306,7 +1332,7 @@ export function VisualEditorShell({
   }, [abortBuildWait, context.storefront.id, context.theme.id]);
   const [isReleaseHistoryOpen, setIsReleaseHistoryOpen] = useState(false);
   const releaseHistoryTriggerRef = useRef<HTMLButtonElement>(null);
-  const [buildDiagnostics, setBuildDiagnostics] = useState<any | null>(null);
+  const [buildDiagnostics, setBuildDiagnostics] = useState<unknown>(null);
 
   const [activeCodeFilePath, setActiveCodeFilePath] = useState<
     string | undefined
@@ -1363,8 +1389,6 @@ export function VisualEditorShell({
     targetElement: string;
     styles: Record<string, string>;
   } | null>(null);
-  const previousTemplateIdRef = useRef(search.templateId);
-  const previousRoutePathRef = useRef(search.routePath);
   const pendingPreviewSelectionRef = useRef<{
     target: PreviewSelectionRestoreTarget;
     revision: number;
@@ -1402,6 +1426,7 @@ export function VisualEditorShell({
   }, [refetchThemeFiles]);
   const themeFiles = themeFilesQuery.data?.files ?? EMPTY_THEME_FILES;
   const themeTree = themeFilesQuery.data?.tree ?? EMPTY_THEME_TREE;
+  type ThemeFilesTreeQueryData = NonNullable<typeof themeFilesQuery.data>;
   const starterInitAttemptRef = useRef<string | null>(null);
   const starterInitMutation = useMutation({
     mutationFn: async () => {
@@ -2667,22 +2692,20 @@ export function VisualEditorShell({
             }
 
             markWorkspaceSaved(res.data, workspaceScope);
-            queryClient.setQueryData(
+            queryClient.setQueryData<ThemeFilesTreeQueryData | undefined>(
               storefrontThemeFileQueries.tree(
                 context.storefront.id,
                 context.theme.id,
               ).queryKey,
-              (old: any) => {
+              (old) => {
                 if (!old?.files) return old;
-                const exists = old.files.some(
-                  (file: any) => file.path === filePath,
-                );
+                const exists = old.files.some((file) => file.path === filePath);
                 return {
                   ...old,
                   sourceGeneration:
                     res.data.sourceGeneration ?? old.sourceGeneration,
                   files: exists
-                    ? old.files.map((file: any) =>
+                    ? old.files.map((file) =>
                         file.path === filePath
                           ? { ...file, ...res.data }
                           : file,
@@ -3438,9 +3461,12 @@ export function VisualEditorShell({
         toast.error(build.errorMessage || `Build status: ${build.status}`);
         setBuildDiagnostics(build.diagnosticsJson);
       }
-    } catch (err: any) {
-      toast.error(err?.message || "Failed to create preview build");
-      setBuildDiagnostics({ error: err?.message || String(err) });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(message || "Failed to create preview build");
+      setBuildDiagnostics({
+        error: message || "Failed to create preview build",
+      });
       return { ok: false };
     } finally {
       buildWaitAbortRef.current = null;
@@ -3931,30 +3957,19 @@ export function VisualEditorShell({
     return () => observer.disconnect();
   }, [scheduleCanvasTransform]);
 
-  useEffect(() => {
-    if (
-      previousTemplateIdRef.current &&
-      previousTemplateIdRef.current !== search.templateId
-    ) {
-      lastPreviewSelectionRef.current = null;
-      pendingPreviewSelectionRef.current = null;
-      pendingRevealRef.current = null;
-      setActiveSelection(null);
-      resetCanvasScrollPosition();
-    }
-    previousTemplateIdRef.current = search.templateId;
-  }, [resetCanvasScrollPosition, search.templateId]);
+  const resetEditorContext = useCallback(() => {
+    lastPreviewSelectionRef.current = null;
+    pendingPreviewSelectionRef.current = null;
+    pendingRevealRef.current = null;
+    setActiveSelection(null);
+    resetCanvasScrollPosition();
+  }, [resetCanvasScrollPosition]);
 
-  useEffect(() => {
-    if (previousRoutePathRef.current !== search.routePath) {
-      lastPreviewSelectionRef.current = null;
-      pendingPreviewSelectionRef.current = null;
-      pendingRevealRef.current = null;
-      setActiveSelection(null);
-      resetCanvasScrollPosition();
-    }
-    previousRoutePathRef.current = search.routePath;
-  }, [resetCanvasScrollPosition, search.routePath]);
+  useEditorContextReset({
+    templateId: search.templateId,
+    routePath: search.routePath,
+    onReset: resetEditorContext,
+  });
 
   useEffect(() => {
     if (activeTemplate && search.templateId !== activeTemplate.id) {
@@ -6657,14 +6672,10 @@ export function VisualEditorShell({
             </div>
           }
         >
-          {buildDiagnostics && (
+          {buildDiagnostics !== null && buildDiagnostics !== undefined && (
             <div className="border-b bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
               <span className="font-semibold">Diagnostic: </span>
-              {typeof buildDiagnostics === "object"
-                ? buildDiagnostics.error ||
-                  buildDiagnostics.message ||
-                  JSON.stringify(buildDiagnostics)
-                : String(buildDiagnostics)}
+              {formatBuildDiagnostics(buildDiagnostics)}
             </div>
           )}
           {activePreviewToken ? (
