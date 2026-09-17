@@ -1,4 +1,5 @@
 import { commitPendingContent } from "@/lib/storefront/editor/pending-content-write";
+import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
 import type { ServerResult } from "@/lib/db/server-result";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
@@ -3714,61 +3715,59 @@ export function VisualEditorShell({
 
         // Debounce save to database (300ms)
         const opKey = getScopedOpKey(targetFilePath);
-        const existingTimer = pendingSaveTimersRef.current.get(opKey);
-        if (existingTimer) {
-          clearTimeout(existingTimer);
-        }
-
         const nextRevision = saveQueueRef.current.claimRevision(opKey);
 
         // Recorded against the same write path the edit used, so reversing it
         // inherits the version checks, debouncing and preview sync rather than
         // reaching around them. The value is captured now because the workspace
         // has already moved on by the time anyone presses undo.
+        //
+        // The ordering — recorded before the debounced write, taken back if it
+        // never lands — lives in `scheduleDeferredWrite`, where it is stated as
+        // tests. It is deliberately not the order the unified save path uses.
         const styleBefore = targetCurrentSource;
         const styleAfter = updatedContent;
         const stylePath = targetFilePath;
-        const historyId = history.record({
-          label: `Style · ${elementName}`,
-          scope: themeFileHistoryScope(stylePath),
-          undo: () => {
-            resetPreviewSelectionStyle();
-            return handleUnifiedSaveFile(stylePath, styleBefore, {
-              fromHistory: true,
-              renderDocument: true,
-            });
-          },
-          redo: () => {
-            resetPreviewSelectionStyle();
-            return handleUnifiedSaveFile(stylePath, styleAfter, {
-              fromHistory: true,
-              renderDocument: true,
-            });
+        scheduleDeferredWrite({
+          timers: pendingSaveTimersRef.current,
+          key: opKey,
+          delayMs: 300,
+          record: () =>
+            history.record({
+              label: `Style · ${elementName}`,
+              scope: themeFileHistoryScope(stylePath),
+              undo: () => {
+                resetPreviewSelectionStyle();
+                return handleUnifiedSaveFile(stylePath, styleBefore, {
+                  fromHistory: true,
+                  renderDocument: true,
+                });
+              },
+              redo: () => {
+                resetPreviewSelectionStyle();
+                return handleUnifiedSaveFile(stylePath, styleAfter, {
+                  fromHistory: true,
+                  renderDocument: true,
+                });
+              },
+            }),
+          discard: (id) => history.discard(id),
+          save: () =>
+            saveThemeFileSequentially(
+              targetFilePath,
+              updatedContent,
+              nextRevision,
+            ),
+          isConflict: (result) => result.status === "source-conflict",
+          onError: (error) => {
+            toast.error(
+              `Failed to save source file ${targetFilePath}: ${
+                (error as { message?: string }).message
+              }`,
+            );
           },
         });
 
-        const newTimer = setTimeout(() => {
-          pendingSaveTimersRef.current.delete(opKey);
-          saveThemeFileSequentially(
-            targetFilePath,
-            updatedContent,
-            nextRevision,
-          )
-            .then((result) => {
-              // A conflicted write never landed, so there is nothing to reverse;
-              // leaving the entry would undo a change that never happened.
-              if (result.status === "source-conflict")
-                history.discard(historyId);
-            })
-            .catch((err) => {
-              history.discard(historyId);
-              toast.error(
-                `Failed to save source file ${targetFilePath}: ${err.message}`,
-              );
-            });
-        }, 300);
-
-        pendingSaveTimersRef.current.set(opKey, newTimer);
         markWorkspaceDebouncing(targetFilePath, workspaceScope);
         return styleRevision;
       }
