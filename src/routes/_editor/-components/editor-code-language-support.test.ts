@@ -1140,15 +1140,17 @@ describe("collectThemeRouteDiagnostics", () => {
 });
 
 describe("registerTailwindCompletionProvider", () => {
-  it("returns ranked Tailwind suggestions for the current class token", () => {
-    let provider:
-      | {
-          provideCompletionItems: (
-            model: { uri: { path: string }; getLineContent: () => string },
-            position: { lineNumber: number; column: number },
-          ) => { suggestions: Array<{ label: string; insertText: string }> };
-        }
-      | undefined;
+  type Provider = {
+    provideCompletionItems: (
+      model: { uri: { path: string }; getLineContent: () => string },
+      position: { lineNumber: number; column: number },
+    ) => { suggestions: Array<{ label: string; insertText: string }> };
+  };
+
+  const mountProvider = (
+    files: ReadonlyArray<{ path: string; content: string }> = [],
+  ) => {
+    let provider: Provider | undefined;
     const monaco = {
       Range: class {
         constructor(
@@ -1161,7 +1163,7 @@ describe("registerTailwindCompletionProvider", () => {
       languages: {
         CompletionItemKind: { Value: 12 },
         registerCompletionItemProvider: vi.fn(
-          (_language: string, nextProvider: typeof provider) => {
+          (_language: string, nextProvider: Provider) => {
             provider = nextProvider;
             return { dispose: vi.fn() };
           },
@@ -1169,15 +1171,24 @@ describe("registerTailwindCompletionProvider", () => {
       },
     } as unknown as Monaco;
 
-    registerTailwindCompletionProvider(monaco);
-    expect(
-      monaco.languages.registerCompletionItemProvider,
-    ).toHaveBeenCalledTimes(2);
-    const line = '<div className="flex bg-st';
-    const result = provider!.provideCompletionItems(
+    registerTailwindCompletionProvider(monaco, () => files);
+    return { provider: provider as Provider, monaco };
+  };
+
+  const complete = (provider: Provider, line: string) =>
+    provider.provideCompletionItems(
       { uri: { path: "/src/Hero.tsx" }, getLineContent: () => line },
       { lineNumber: 1, column: line.length + 1 },
     );
+
+  it("returns ranked Tailwind suggestions for the current class token", () => {
+    const { provider, monaco } = mountProvider();
+    expect(
+      monaco.languages.registerCompletionItemProvider,
+    ).toHaveBeenCalledTimes(2);
+
+    const line = '<div className="flex bg-st';
+    const result = complete(provider, line);
 
     expect(result.suggestions[0]).toMatchObject({
       label: "bg-stone-50",
@@ -1186,6 +1197,33 @@ describe("registerTailwindCompletionProvider", () => {
     expect(result.suggestions.some(({ label }) => label === "flex")).toBe(
       false,
     );
+  });
+
+  it("offers the Theme's own tokens alongside Tailwind's", () => {
+    // The tokens live in the Theme's stylesheet, so that is where the editor
+    // reads them from. Both names share the `bg-b` prefix, which is what makes
+    // this a union rather than a replacement.
+    const { provider } = mountProvider([
+      {
+        path: "src/styles/global.css",
+        content:
+          '@import "tailwindcss";\n@theme {\n  --color-brand: oklch(0.7 0.1 200);\n  --radius-card: 1rem;\n}\n',
+      },
+      { path: "src/routes/index.tsx", content: "export default function P() {}" },
+    ]);
+
+    const classes = complete(provider, '<div className="bg-b').suggestions.map(
+      ({ label }) => label,
+    );
+    expect(classes).toContain("bg-brand");
+    // The built-in list is still there, unchanged.
+    expect(classes).toContain("bg-black");
+
+    const radii = complete(
+      provider,
+      '<div className="rounded-c',
+    ).suggestions.map(({ label }) => label);
+    expect(radii).toContain("rounded-card");
   });
 });
 

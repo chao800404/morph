@@ -686,8 +686,10 @@ const EditorCodeWorkspaceContent = forwardRef<
       editorRef.current = editor;
       monacoRef.current = monaco;
       completionProviderRef.current?.dispose();
-      completionProviderRef.current =
-        registerTailwindCompletionProvider(monaco);
+      completionProviderRef.current = registerTailwindCompletionProvider(
+        monaco,
+        () => themeRouteFilesRef.current,
+      );
       routeCompletionProviderRef.current?.dispose();
       routeCompletionProviderRef.current =
         registerTanStackRouteCompletionProvider(

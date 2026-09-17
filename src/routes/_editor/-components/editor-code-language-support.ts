@@ -5,7 +5,11 @@ import {
   collectThemeImportProtectionDiagnosticsForBuild,
 } from "@/lib/storefront/compiler/theme-import-protection";
 import { readThemePathAliases } from "@/lib/storefront/compiler/theme-path-aliases";
-import { suggestTailwindClasses } from "@/lib/storefront/ast/tailwind-class-suggestions";
+import {
+  suggestTailwindClasses,
+  type TailwindClassSuggestion,
+} from "@/lib/storefront/ast/tailwind-class-suggestions";
+import { deriveThemeTokenClasses } from "@/lib/storefront/ast/tailwind-theme-tokens";
 import {
   DEFAULT_THEME_TYPE_PACKAGE_NAMES,
   getGeneratedThemePackageDeclarations,
@@ -1957,7 +1961,36 @@ export function configureThemeTypeScript(
   }
 }
 
-export function registerTailwindCompletionProvider(monaco: Monaco) {
+/**
+ * Utilities offered inside a `className`, from the Theme's tokens and Tailwind's.
+ *
+ * The stylesheets are read through the caller rather than captured: the Theme
+ * workspace changes while the provider lives, and a provider registered once
+ * cannot hold a version of it.
+ *
+ * Derived tokens are unioned with the built-in list, so a Theme with no
+ * `@theme` block — every Theme at the time of writing — is offered exactly what
+ * it was before.
+ */
+export function registerTailwindCompletionProvider(
+  monaco: Monaco,
+  getFiles: () => readonly ThemeModelFile[],
+) {
+  // Re-parsing the stylesheets on every keystroke is wasted work, and they
+  // change far less often than the author types.
+  let parsedCss: string | null = null;
+  let themeClasses: TailwindClassSuggestion[] = [];
+  const themeTokenClasses = () => {
+    const css = getFiles()
+      .filter((file) => file.path.endsWith(".css"))
+      .map((file) => file.content)
+      .join("\n");
+    if (css === parsedCss) return themeClasses;
+    parsedCss = css;
+    themeClasses = deriveThemeTokenClasses(css);
+    return themeClasses;
+  };
+
   const provider = {
     triggerCharacters: ["-", ":", "/", "["],
     provideCompletionItems(model: editor.ITextModel, position: Position) {
@@ -1980,6 +2013,8 @@ export function registerTailwindCompletionProvider(monaco: Monaco) {
       const suggestions = suggestTailwindClasses(
         context.query,
         context.excludedClasses,
+        32,
+        themeTokenClasses(),
       ).map((suggestion, index) => ({
         label: suggestion.value,
         kind: monaco.languages.CompletionItemKind.Value,

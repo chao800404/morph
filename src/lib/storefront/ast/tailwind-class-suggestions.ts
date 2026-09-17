@@ -463,19 +463,38 @@ function scoreCandidate(candidate: string, query: string): number {
   return Number.POSITIVE_INFINITY;
 }
 
+/**
+ * Utilities matching `query`, ranked.
+ *
+ * `extra` is unioned with the built-in list rather than replacing it: the
+ * Theme's own `@theme` tokens are derived from its stylesheets and offered
+ * alongside Tailwind's defaults, so a gap in that derivation costs the author
+ * nothing. Built-in entries come first, so where the two name the same utility
+ * the ranking the editor already had is the one that stands.
+ */
 export function suggestTailwindClasses(
   query: string,
   excluded: ReadonlySet<string> = new Set(),
   limit = 32,
+  extra: readonly TailwindClassSuggestion[] = [],
 ): TailwindClassSuggestion[] {
   const normalized = query.trim();
   const { prefix, utility } = splitVariantPrefix(normalized);
-  return BASE_SUGGESTIONS.map((suggestion, index) => ({
-    ...suggestion,
-    value: `${prefix}${suggestion.value}`,
-    score: scoreCandidate(suggestion.value, utility),
-    index,
-  }))
+  const seen = new Set<string>();
+  return [...BASE_SUGGESTIONS, ...extra]
+    .filter((suggestion) => {
+      // A Theme may redeclare a default token, which would otherwise offer the
+      // same utility twice.
+      if (seen.has(suggestion.value)) return false;
+      seen.add(suggestion.value);
+      return true;
+    })
+    .map((suggestion, index) => ({
+      ...suggestion,
+      value: `${prefix}${suggestion.value}`,
+      score: scoreCandidate(suggestion.value, utility),
+      index,
+    }))
     .filter(
       (suggestion) =>
         Number.isFinite(suggestion.score) && !excluded.has(suggestion.value),
