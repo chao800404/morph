@@ -115,6 +115,21 @@ import {
   SHARED_LAYOUT_HINT,
 } from "./editor-layout-labels";
 
+/**
+ * What a reorder reports back.
+ *
+ * The shell's implementation throws on every failure and returns
+ * `{ success: true }` otherwise, so the failure branch below is defensive
+ * rather than exercised. It is declared because the prop is an extension
+ * point: a route that reports a failure instead of throwing needs somewhere to
+ * say so, and `Promise<unknown>` here is what let an `any` sit on the panel's
+ * error path.
+ */
+export type SectionReorderResult = {
+  success: boolean;
+  message?: string;
+};
+
 export type EditorSectionsPanelProps = {
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
@@ -123,7 +138,9 @@ export type EditorSectionsPanelProps = {
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
   onSectionOrderChange: (sectionIds: string[]) => void;
   onSaveStateChange: (state: "idle" | "saving" | "error") => void;
-  onReorderSections?: (sectionIds: string[]) => Promise<unknown>;
+  onReorderSections?: (
+    sectionIds: string[],
+  ) => Promise<SectionReorderResult | void>;
   onToggleSectionEnabled?: (sectionId: string, enabled: boolean) => void;
   editableNodes?: readonly PreviewEditableNode[];
   activeSelection?: EditorSelectionDescriptor | null;
@@ -960,11 +977,11 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
       }
       return onReorderSections(sectionIds);
     },
-    onSuccess: async (result: any) => {
+    onSuccess: async (result) => {
       if (result && !result.success) {
         updateSections(sourceSections);
         onSaveStateChange("error");
-        toast.error(result.message);
+        toast.error(result.message ?? "Failed to reorder theme sections");
         return;
       }
       await queryClient.invalidateQueries({

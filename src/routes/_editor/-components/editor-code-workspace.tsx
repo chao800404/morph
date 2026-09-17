@@ -319,8 +319,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   ref,
 ) {
   const queryClient = useQueryClient();
-  const editorRef = useRef<any>(null);
-  const monacoRef = useRef<any>(null);
+  // Derived from the mount callback this file already imports, so the editor
+  // and namespace are typed without taking a direct dependency on
+  // `monaco-editor` just to name them.
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
   const routeCompletionProviderRef = useRef<{ dispose: () => void } | null>(
     null,
@@ -827,16 +830,15 @@ const EditorCodeWorkspaceContent = forwardRef<
           : [...prev, jumpLocation.filePath],
       );
 
-      if (editorRef.current && jumpLocation.line) {
+      // Read before the timer rather than inside it: the position is what it
+      // was when the jump was requested, and a narrowing on a property cannot
+      // be carried into a callback that runs later anyway.
+      const lineNumber = jumpLocation.line;
+      const column = jumpLocation.column ?? 1;
+      if (editorRef.current && lineNumber) {
         setTimeout(() => {
-          editorRef.current?.revealPositionInCenter({
-            lineNumber: jumpLocation.line,
-            column: jumpLocation.column ?? 1,
-          });
-          editorRef.current?.setPosition({
-            lineNumber: jumpLocation.line,
-            column: jumpLocation.column ?? 1,
-          });
+          editorRef.current?.revealPositionInCenter({ lineNumber, column });
+          editorRef.current?.setPosition({ lineNumber, column });
           editorRef.current?.focus();
         }, 50);
       }
