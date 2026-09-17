@@ -45,6 +45,29 @@ globalThis.DOMRect ??= class DOMRectStub {
   }
 } as unknown as typeof DOMRect;
 
+/**
+ * jsdom has no media queries at all, and anything that adapts to viewport or
+ * to `prefers-reduced-motion` calls this during its first render. Reported as
+ * "no match", which is the honest answer for a document with no layout.
+ */
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: (query: string): MediaQueryList =>
+      ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }) as unknown as MediaQueryList,
+  });
+}
+
 if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
@@ -54,7 +77,10 @@ if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
  * Web Storage methods (`clear`, `removeItem`, `setItem`, `getItem`) unless
  * `--localstorage-file` is configured. Polyfill standard mock Storage if missing.
  */
-if (typeof window !== "undefined" && typeof window.localStorage?.removeItem !== "function") {
+if (
+  typeof window !== "undefined" &&
+  typeof window.localStorage?.removeItem !== "function"
+) {
   class MemoryStorage implements Storage {
     private store = new Map<string, string>();
     get length() {
@@ -90,7 +116,6 @@ if (typeof window !== "undefined" && typeof window.localStorage?.removeItem !== 
   });
 }
 
-
 /**
  * Unmount between tests.
  *
@@ -101,4 +126,3 @@ if (typeof window !== "undefined" && typeof window.localStorage?.removeItem !== 
 if (typeof window !== "undefined") {
   afterEach(cleanup);
 }
-
