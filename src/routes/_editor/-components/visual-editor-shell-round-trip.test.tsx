@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
@@ -24,11 +25,8 @@ import { VisualEditorShell } from "./visual-editor-shell";
  * messages are real ones on `window`, so they still pass the transport's origin,
  * source and session checks.
  *
- * Not covered here: the reveal itself. Moving the canvas needs a viewport
- * height, and a stub that reports one makes the shell's own re-render path
- * interact with Radix's ref bookkeeping until React throws "Maximum update
- * depth exceeded" — intermittently, and only under a full run. A test that goes
- * red at random is not evidence, so it is left out rather than shipped flaky.
+ * The Inspector panel is replaced with a passthrough; see the mock below for
+ * why, and for the browser check that says the reason is jsdom's.
  */
 
 const EDITOR_ORIGIN = "http://localhost:3000";
@@ -36,6 +34,44 @@ const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
 
 const posted: Array<Record<string, unknown>> = [];
+
+/**
+ * The Inspector panel is replaced with a passthrough, and it is a jsdom
+ * workaround rather than a claim about the panel.
+ *
+ * With it rendered, a content write that fails sends the shell through React's
+ * nested-update limit — "Maximum update depth exceeded" out of Radix's
+ * `useComposedRefs` — and React tears the tree down: `[data-editor-save-status]`
+ * goes from one element to none, which is why the failure marker could not be
+ * asserted at all. The same failure was produced in a real browser against the
+ * running editor: the marker stayed, showed "Save failed", and the tree kept its
+ * rows. So the cascade is jsdom's, and answering it here hides nothing.
+ *
+ * The row the tests click lives in the sections panel, which stays rendered, and
+ * the marker they assert lives in the shell's own header.
+ */
+vi.mock("./editor-assistant-panel", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  EditorAssistantPanel: () => null,
+}));
+
+/**
+ * The content write an inline-text commit reaches.
+ *
+ * Mocked so a failure can be produced on demand. The shape decides which
+ * callback runs: a refused write resolves with `success: false` — the OCC
+ * conflict case — while a request that never lands rejects and goes to
+ * `onError`. Both have to reach the author.
+ */
+const updateSectionProps = vi.hoisted(() => vi.fn());
+
+vi.mock(
+  "@/server/storefront/storefront-themes.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    updateStorefrontThemeSectionProps: updateSectionProps,
+  }),
+);
 
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -105,6 +141,10 @@ const heroNode = {
     sectionId: "hero",
     nodeId: "hero:node:heading",
     elementKey: "heading",
+    // The inline-text guard maps one text box to one persisted field and
+    // compares these against the message it is sent.
+    fieldKey: "heading",
+    fieldPath: "heading",
     isSection: false,
   },
 };
@@ -153,6 +193,107 @@ function fromPreview(data: Record<string, unknown>) {
 
 const messagesOfType = (type: string) =>
   posted.filter((message) => message.type === type);
+
+/**
+ * Selects the one node, then commits text into it the way the canvas does.
+ *
+ * The preview decides whether an element is an inline-text candidate; the shell
+ * re-checks the descriptor it already holds, then writes. So the harness only
+ * has to select the node and send the commit.
+ */
+async function commitInlineText(value = "Hello") {
+  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  const row = await screen.findByText("h1");
+  act(() => {
+    row.closest("button")?.click();
+  });
+  fromPreview({
+    type: "morph:storefront-preview-commit-inline-text",
+    sectionId: "hero",
+    fieldKey: "heading",
+    fieldPath: "heading",
+    value,
+  });
+}
+
+/** The header's own marker, which outlives the toast. */
+const saveStatus = () =>
+  document
+    .querySelector("[data-editor-save-status]")
+    ?.getAttribute("aria-label");
+
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/**
+ * A viewport with a height.
+ *
+ * The reveal reads the viewport height through the canvas's `ResizeObserver`,
+ * and jsdom has no layout: `clientHeight` is 0 and the setup file's observer
+ * never fires, so the reveal's `viewportHeight <= 0` guard returns before the
+ * canvas is moved. Reporting a height through the observer the shell actually
+ * registers is what puts the wiring in range.
+ */
+const VIEWPORT_HEIGHT = 900;
+
+function isCanvasViewport(target: Element): boolean {
+  return (
+    target.getAttribute("role") === "region" &&
+    (target.getAttribute("aria-label") ?? "").startsWith(
+      "Storefront preview canvas",
+    )
+  );
+}
+
+class ReportingResizeObserver {
+  private readonly reported = new Set<Element>();
+
+  constructor(private readonly callback: ResizeObserverCallback) {}
+
+  observe(target: Element) {
+    if (this.reported.has(target)) return;
+    this.reported.add(target);
+    // Radix registers one of these per floating element; only the canvas is
+    // answered, which is what the setup file's silent stub does for the rest.
+    if (!isCanvasViewport(target)) return;
+    queueMicrotask(() => {
+      this.callback(
+        [
+          {
+            target,
+            contentRect: { height: VIEWPORT_HEIGHT },
+          } as unknown as ResizeObserverEntry,
+        ],
+        this as unknown as ResizeObserver,
+      );
+    });
+  }
+
+  unobserve() {}
+
+  disconnect() {}
+}
+
+/** The canvas offset the transform was applied to the DOM with, or null. */
+function canvasY(): string | null {
+  for (const element of Array.from(
+    document.querySelectorAll<HTMLElement>("*"),
+  )) {
+    const value = element.style.getPropertyValue("--morph-canvas-y");
+    if (value) return value;
+  }
+  return null;
+}
+
+/** Lets the reveal's frame, and the transform's own frame, run. */
+async function flushFrames() {
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+}
 
 describe("the selection round trip", () => {
   it("tells the frame which section the tree moved to", () => {
@@ -231,5 +372,115 @@ describe("the selection round trip", () => {
     for (const revision of revisions.slice(1)) {
       expect(revision).toBe(revisions[0]);
     }
+  });
+});
+
+/**
+ * A failed content save has to reach the author.
+ *
+ * The write is debounced and fired from a timer whose rejection is swallowed on
+ * purpose: the mutation reports it, and the shared queue keeps the input for the
+ * next attempt. Nothing demonstrated that, so the failure read as silent to
+ * anyone looking at the catch — this pins both shapes it arrives in.
+ */
+describe("a content save that fails", () => {
+  it("says so when the server refuses the write", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+    } as never);
+    renderShell();
+
+    await commitInlineText();
+
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(error).toHaveBeenCalledWith(
+      "Template draft was modified concurrently.",
+    );
+  });
+
+  it("says so when the request never lands", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockRejectedValue(new Error("offline"));
+    renderShell();
+
+    await commitInlineText();
+
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(error).toHaveBeenCalledWith("Failed to update section properties");
+  });
+});
+
+/**
+ * The one part of the round trip that moves what the author is looking at.
+ *
+ * `preview-reveal-request.test.ts` states when a report may reveal; this is the
+ * wiring. It needs a viewport height, which is why it is here and not with the
+ * rest of the rules.
+ */
+describe("bringing the canvas to a selection", () => {
+  it("moves for the answer it asked for, and not for a stale one", async () => {
+    vi.stubGlobal("ResizeObserver", ReportingResizeObserver);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    renderShell();
+
+    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    const row = await screen.findByText("h1");
+    posted.length = 0;
+    act(() => {
+      row.closest("button")?.click();
+    });
+
+    const revision = messagesOfType(
+      "morph:storefront-preview-set-selection-mode",
+    )[0]!.selectionRevision as number;
+    expect(revision).toBeGreaterThan(0);
+
+    // Every nullable field is present as an explicit `null`: the protocol reads
+    // an omitted key as the wrong shape, not as an absent value.
+    const answer = (selectionRevision: number) => ({
+      type: "morph:storefront-preview-select-section",
+      sectionId: "hero",
+      componentType: "hero",
+      kind: "heading",
+      nodeId: "hero:node:heading",
+      sourceFilePath: null,
+      sourceLocation: null,
+      elementKey: "heading",
+      fieldKey: null,
+      field: null,
+      fieldPath: null,
+      descendantFields: [],
+      tagName: "h1",
+      role: null,
+      inputType: null,
+      styleRevision: 0,
+      className: "text-xl",
+      isSection: false,
+      inspectorOverride: null,
+      computedStyle: null,
+      parentComputedStyle: null,
+      sectionComputedStyle: null,
+      selectionRevision,
+      documentRect: { top: 2_000, height: 100 },
+    });
+
+    const resting = canvasY();
+    expect(resting).not.toBeNull();
+
+    fromPreview(answer(revision - 1));
+    await flushFrames();
+    const afterStale = canvasY();
+
+    fromPreview(answer(revision));
+    await flushFrames();
+
+    // Checked before the assertions that depend on it: a message the transport
+    // rejects would leave the canvas still, and both would then hold for the
+    // wrong reason.
+    expect(warn).not.toHaveBeenCalled();
+    expect(afterStale).toBe(resting);
+    expect(canvasY()).not.toBe(resting);
   });
 });
