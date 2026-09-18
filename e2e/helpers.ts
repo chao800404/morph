@@ -52,26 +52,31 @@ export async function exposedCanvasPoint(page: Page) {
 }
 
 /**
- * Not captured here: the preview server's own stage timings.
+ * The preview server's own account of its startup, read off the console.
  *
- * `storefront-theme-preview-server.serverFn` returns `timings` beside
- * `readyMs` — `workspaceMs`, `workspaceMaterializeMs`, `viteReadyMs` — and both
- * transports fill it, which is what the sandbox server's comment means by
- * "returned stage timings make local and deployed latency measurable". They are
- * the server half of everything below, and they are measured, returned, and
- * then dropped: nothing in the editor reads them.
+ * Both transports measure `workspaceMs`, `workspaceMaterializeMs`,
+ * `viteReadyMs` and the rest, and the server function returns them beside
+ * `readyMs` — the sandbox server's comment calls this "returned stage timings
+ * make local and deployed latency measurable". They are the server half of
+ * every stage below, so a stall inside a container is a number here instead of
+ * a guess.
  *
- * A first version of this helper read them off the response. It could not:
- * TanStack Start encodes server function replies with seroval, so the body is
- * `{"t":10,"i":0,"p":{"k":[...],"v":[...]}}` and `data.timings` does not exist
- * to access. Decoding that shape by hand would couple these tests to an
- * internal format whose failure mode is silence — a capture that quietly
- * returns nothing is the exact thing the rest of this file exists to stop.
- *
- * The honest way in is the client, which already holds the decoded object. Once
- * the editor surfaces it, `page.on("console")` reads it with no coupling at
- * all, and the same line answers the question on a deployed sandbox.
+ * Taken from a console line, not from the response. Reading the response is
+ * what a first version did and it could not work: TanStack Start encodes server
+ * function replies with seroval, so the body is
+ * `{"t":10,"i":0,"p":{"k":[…],"v":[…]}}` and `data.timings` is not something to
+ * access. Decoding that by hand would tie these tests to an internal format
+ * whose failure mode is silence. The editor logs the decoded object instead,
+ * which is the same line an operator reads on a deployed editor.
  */
+function capturePreviewServerReport(page: Page): { line: string | null } {
+  const report: { line: string | null } = { line: null };
+  page.on("console", (message) => {
+    const text = message.text();
+    if (text.startsWith("[preview-server]")) report.line = text;
+  });
+  return report;
+}
 
 /** `name 123ms` pairs, in the order they finished. */
 function describeStages(stages: ReadonlyArray<[string, number]>): string {
@@ -88,6 +93,7 @@ function describeStages(stages: ReadonlyArray<[string, number]>): string {
  * only while selection is off — which is also the state the editor loads in.
  */
 export async function openEditor(page: Page) {
+  const server = capturePreviewServerReport(page);
   const done: [string, number][] = [];
 
   /**
@@ -110,7 +116,8 @@ export async function openEditor(page: Page) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(
         `openEditor stalled at "${name}" after ${Date.now() - startedAt}ms.\n` +
-          `Completed: ${describeStages(done)}.\n\n` +
+          `Completed: ${describeStages(done)}.\n` +
+          `Preview server: ${server.line ?? "said nothing yet"}.\n\n` +
           reason,
       );
     }
@@ -184,7 +191,10 @@ export async function openEditor(page: Page) {
 
   // Printed the way the latency specs print theirs, so a run carries the
   // distribution of this phase without a second job to collect it.
-  console.log(`[openEditor] ${describeStages(done)}`);
+  console.log(
+    `[openEditor] ${describeStages(done)}` +
+      (server.line ? `\n${server.line}` : ""),
+  );
 }
 
 /** Turns on the pointer tool, the first thing a person does to select. */
