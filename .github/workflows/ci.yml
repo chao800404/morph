@@ -42,6 +42,12 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # A source scan, so it belongs with the other static checks rather than
+      # with the end-to-end job: it protects every pull request, including the
+      # ones that never run a browser.
+      - name: Check end-to-end assertions
+        run: pnpm check:e2e-assertions
+
       - name: Test
         run: pnpm test
 

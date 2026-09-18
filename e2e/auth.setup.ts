@@ -96,10 +96,12 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
   await page.getByPlaceholder("Password").fill(password!);
   await page.getByRole("button", { name: /sign in/i }).click();
 
-  // Landing anywhere other than the sign-in page is what proves the session
-  // exists; the destination differs by role and by what was requested.
-  await expect(page).not.toHaveURL(/sign-in/, { timeout: 30_000 });
-
+  // No "landed somewhere other than sign-in" check here. It would be sound in
+  // this one place, because the page starts on `/sign-in` and the assertion
+  // therefore has something to wait for — but the check below is strictly
+  // stronger, and keeping the weaker one would leave the only exception to a
+  // rule that is otherwise absolute, which is what `check-e2e-assertions`
+  // enforces.
   expect(
     await reachedStoreSettings(page),
     "signed in, but never reached the store settings page, so the store was not provisioned",
