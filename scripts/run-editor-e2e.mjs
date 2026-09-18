@@ -33,6 +33,8 @@ const WRANGLER_ENV = "local_preview_e2e";
 const DEV_PORT = Number(process.env.MORPH_E2E_PORT ?? 3000);
 const DEV_ORIGIN = `http://localhost:${DEV_PORT}`;
 const SIDECAR_ENV_FILE = `.dev.vars.${WRANGLER_ENV}`;
+/** Where the setup project stores the signed-in browser state. */
+const STORAGE_STATE = "e2e/.auth/user.json";
 const READY_TIMEOUT_MS = 120_000;
 /**
  * Fewest tests a whole run may execute before the result is treated as a
@@ -196,6 +198,18 @@ async function main() {
 
   stateDir = await mkdtemp(path.join(tmpdir(), "morph-e2e-"));
   log(`state directory ${stateDir}`);
+
+  // A stored session is worth nothing to this run and can cost it the suite.
+  // The setup project reuses one to avoid the sign-in rate limit, which is the
+  // right trade against a database that has been there a while — but this
+  // database is minutes old and so is its rate limiter, so there is nothing to
+  // conserve. Worse, Better Auth caches a session in the cookie itself for five
+  // minutes (`cookieCache`), so a cookie from a run that just finished
+  // authenticates without a database lookup even though the new database holds
+  // no session at all. The check passes, the suite starts, and the cache
+  // expires partway through — which is the failure that first looked like the
+  // editor losing its session at test five.
+  await rm(STORAGE_STATE, { force: true });
 
   log("applying migrations");
   run("npx", [

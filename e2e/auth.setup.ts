@@ -43,10 +43,23 @@ async function reachedStoreSettings(page: Page): Promise<boolean> {
   await page
     .goto("/dashboard/settings", { waitUntil: "domcontentloaded" })
     .catch(() => undefined);
-  return page
-    .waitForURL(STORE_SETTINGS_URL, { timeout: 30_000 })
-    .then(() => true)
-    .catch(() => false);
+  // Both outcomes are waited for, not just the good one. Waiting only for the
+  // settings URL meant a dead session cost the full thirty seconds before the
+  // run learned anything — and since every run builds a new database, the
+  // stored session is always dead, so that thirty seconds was spent on every
+  // run and left too little of the sixty-second budget for the sign-in that
+  // followed. Racing them costs about two seconds instead, because the
+  // application says so itself by redirecting.
+  //
+  // Neither pattern matches the URL this navigation starts at: the settings
+  // index is `/dashboard/settings` and redirects to `/dashboard/settings/store`,
+  // so the trailing slash is what distinguishes arriving from having asked.
+  return Promise.race([
+    page
+      .waitForURL(STORE_SETTINGS_URL, { timeout: 30_000 })
+      .then(() => true, () => false),
+    page.waitForURL(/sign-in/, { timeout: 30_000 }).then(() => false, () => false),
+  ]);
 }
 
 setup("authenticate", async ({ page, browser, baseURL }) => {
@@ -96,12 +109,21 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
   await page.getByPlaceholder("Password").fill(password!);
   await page.getByRole("button", { name: /sign in/i }).click();
 
-  // No "landed somewhere other than sign-in" check here. It would be sound in
-  // this one place, because the page starts on `/sign-in` and the assertion
-  // therefore has something to wait for — but the check below is strictly
-  // stronger, and keeping the weaker one would leave the only exception to a
-  // rule that is otherwise absolute, which is what `check-e2e-assertions`
-  // enforces.
+  // Waits for the sign-in navigation to finish before anything navigates away.
+  // This is not decoration: removing it as redundant broke the setup, because
+  // the check below starts with a `goto` and that `goto` then cut across a
+  // sign-in still in flight, landing back on the form with no session.
+  //
+  // `waitForURL` with a predicate rather than `expect(page).not.toHaveURL(…)`.
+  // The distinction §24.4 is really about is whether the thing waits: the
+  // negative assertion holds the moment the URL is anything else, which after
+  // a `goto` is true before the redirect has run. Here the page is on
+  // `/sign-in` when this is called, so both would wait — but only one of them
+  // says so, and only one of them stays correct if this moves.
+  await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), {
+    timeout: 30_000,
+  });
+
   expect(
     await reachedStoreSettings(page),
     "signed in, but never reached the store settings page, so the store was not provisioned",
