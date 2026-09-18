@@ -236,7 +236,12 @@ async function main() {
   await waitForOk(DEV_ORIGIN, "the dev server");
   log("dev server ready");
 
-  const extra = process.argv.slice(2);
+  // A leading `--` is dropped rather than forwarded. The usage above offers it,
+  // and Playwright reads it as end-of-options — so `-- e2e/editor.spec.ts -g x`
+  // silently ran the whole suite instead of one test, with the filter accepted
+  // and ignored. Both spellings work now.
+  const passed = process.argv.slice(2);
+  const extra = passed[0] === "--" ? passed.slice(1) : passed;
   const report = path.join(stateDir, "playwright-report.json");
   const reporting = extra.some((argument) => argument.startsWith("--reporter"))
     ? []
