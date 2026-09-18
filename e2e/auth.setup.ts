@@ -12,7 +12,7 @@ const STORAGE_STATE = "e2e/.auth/user.json";
  * belongs to whoever is running the tests.
  */
 /**
- * Opens a page that makes the store exist.
+ * Opens a page that makes the store exist, and says whether it got there.
  *
  * The editor does not create a storefront or a theme. It fills a workspace and
  * a home document for one that is already there, while the rows themselves are
@@ -25,10 +25,28 @@ const STORAGE_STATE = "e2e/.auth/user.json";
  * store. Doing it here rather than in a seed keeps provisioning in one place:
  * if what triggers it ever moves, this follows the application instead of
  * drifting from it.
+ *
+ * It waits for the settings URL rather than for the absence of `/sign-in`.
+ * A negative assertion is satisfied the instant the navigation commits, which
+ * is before the client decides there is no session and redirects — so an
+ * unauthenticated run passed this check, saved a storage state that had never
+ * worked, and handed the suite a browser sitting on the sign-in page. The
+ * first two accessibility specs then passed against that page, because
+ * scanning it for violations and for unnamed controls is something a sign-in
+ * form does well, and the failure only surfaced on the third spec as a missing
+ * Publish button. `/dashboard/settings` redirects to `/dashboard/settings/store`,
+ * which no unauthenticated visit reaches.
  */
-async function ensureStoreProvisioned(page: Page) {
-  await page.goto("/dashboard/settings", { waitUntil: "domcontentloaded" });
-  await expect(page).not.toHaveURL(/sign-in/, { timeout: 30_000 });
+const STORE_SETTINGS_URL = /\/dashboard\/settings\//;
+
+async function reachedStoreSettings(page: Page): Promise<boolean> {
+  await page
+    .goto("/dashboard/settings", { waitUntil: "domcontentloaded" })
+    .catch(() => undefined);
+  return page
+    .waitForURL(STORE_SETTINGS_URL, { timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false);
 }
 
 setup("authenticate", async ({ page, browser, baseURL }) => {
@@ -48,16 +66,13 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
       baseURL,
     });
     const probe = await context.newPage();
-    await probe
-      .goto("/dashboard", { waitUntil: "domcontentloaded", timeout: 30_000 })
-      .catch(() => undefined);
-    const stillSignedIn = !probe.url().includes("sign-in");
-    if (stillSignedIn) {
-      await ensureStoreProvisioned(probe);
-      await context.close();
-      return;
-    }
+    // Verified, not assumed: a stored session belongs to whichever database
+    // was standing when it was written, and an end-to-end run lays out a new
+    // one every time. A cookie from the previous run's database is a file of
+    // the right shape and no use at all.
+    const reusable = await reachedStoreSettings(probe);
     await context.close();
+    if (reusable) return;
   }
 
   await page.goto("/sign-in");
@@ -85,7 +100,10 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
   // exists; the destination differs by role and by what was requested.
   await expect(page).not.toHaveURL(/sign-in/, { timeout: 30_000 });
 
-  await ensureStoreProvisioned(page);
+  expect(
+    await reachedStoreSettings(page),
+    "signed in, but never reached the store settings page, so the store was not provisioned",
+  ).toBe(true);
 
   fs.mkdirSync(path.dirname(STORAGE_STATE), { recursive: true });
   await page.context().storageState({ path: STORAGE_STATE });
