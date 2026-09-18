@@ -349,6 +349,53 @@ GitHub CI / local validation 若尚未實際執行或無法取得結果，必須
 - 任何 production state migration 都要有 rollback。
 - 不可為了新架構直接丟棄既有 published storefront state。
 
+### 26.2 時間戳的慣例邊界在型別，例外是原始 SQL
+
+這個 schema 有兩種時間戳慣例，而且**兩種都是對的**：
+
+| 慣例 | 欄位宣告 | 使用者 |
+| --- | --- | --- |
+| epoch 毫秒 | `integer(..., { mode: "timestamp_ms" })` | `auth.schema.ts`（better-auth 要求） |
+| ISO-8601 字串 | `text("created_at")`（多數經由 `columns.ts` 的 `timestamps`） | 其餘全部 |
+
+不需要再包一層 `nowIso()` / `nowMs()` helper 去「保護」TypeScript 寫入端 —— **drizzle 的
+insert 型別已經是那道邊界**，而且比 helper 強：
+
+```
+number → text("created_at")                    TS2322 Type 'number' is not assignable to type 'string'
+ISO 字串 → integer(mode: "timestamp_ms")        TS2322 Type 'string' is not assignable to type 'Date'
+```
+
+兩者今天都是編譯錯誤，`tsc` 對 157 個寫入點一體適用。所以規則不是「加 helper」，而是
+**認清邊界在哪裡、哪裡沒有邊界**：
+
+- **繞過型別的只有原始 SQL —— migration 與 seed 腳本。** 實際發生過的兩次都在那裡：
+  `seed-e2e.mjs` 把 `Date.now()` 寫進 ISO text 欄位（SQLite 因欄位親和性把它轉成文字，
+  `typeof` 仍是 `text`，所以只有「讀回來是不是 Invalid Date」抓得到）；
+  `0024_remarkable_omega_flight.sql` 用 `CURRENT_TIMESTAMP` 寫 `sales_channels.updated_at`。
+- **SQLite 的時間函式只准兩種拼法**，各對應一種慣例：
+
+  ```sql
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now')              -- text ISO-8601
+  (cast(unixepoch('subsecond') * 1000 as integer))    -- integer timestamp_ms
+  ```
+
+  `CURRENT_TIMESTAMP` 產生的是 `2026-09-18 07:39:52`：瞬間是對的（SQLite 用 UTC），
+  但 `new Date()` 會把空白分隔的字串當**本地時間**解讀，讀回來依讀取者的時區偏移；它也
+  排在同一天所有 ISO 值之前，因為空白小於 `T`。
+- **已套用的 migration 是歷史，不要改。** 改了既不會重跑，也修不了任何一列資料，只會讓
+  紀錄與事實不符。要修就另寫一支修復 migration（實例：`0054`），並在守衛裡具名豁免舊檔
+  且指向修復。
+- **範本檔跟正式檔一樣重要。** `example.schema.ts` 原本自帶第三種慣例
+  （`mode: "timestamp"`，秒）又用 `$defaultFn` 填值，與 `columns.ts` 明寫的「由 DAL 寫入」
+  相反。範本被複製的次數遠多於被閱讀的次數。
+- **seed 寫完要讀回來驗。** 驗的動作就是壞掉的那個動作：對欄位值呼叫 `.toISOString()`，
+  並比對 SQLite 實際選的 storage class。這讓錯誤在 seed 當場具名失敗，而不是三層之外
+  變成主題文案「This product is temporarily unavailable」。
+
+自動化：`pnpm check:sql-timestamps` 以白名單掃 `drizzle/*.sql`（掃描前先遮掉註解，否則
+修復 migration 自己的說明會被誤報），在 CI 的 validate job 執行。
+
 ### 26.0 內容形狀的 migration 要寫成腳本
 
 改動元件宣告的欄位形狀（例如把平坦的 `actionHref` 收斂成一個 `link` 欄位）時，既有

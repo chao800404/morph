@@ -48,6 +48,10 @@ jobs:
       - name: Check end-to-end assertions
         run: pnpm check:e2e-assertions
 
+      # Migrations are the other place Drizzle's column types do not reach.
+      - name: Check migration timestamps
+        run: pnpm check:sql-timestamps
+
       - name: Test
         run: pnpm test
 
