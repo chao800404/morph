@@ -180,12 +180,13 @@
         ],
       },
       "vars": {
-        // 3000, and it has to be: `getPublicURL` ignores this value outside
-        // production and hands the browser `http://localhost:3000` regardless,
-        // so a run on any other port loads its pages from one origin while its
-        // sign-in requests go to another and fail as "Failed to fetch". An
-        // end-to-end run therefore needs 3000 to itself — stop `pnpm dev`
-        // first. Reading this value in development would lift that.
+        // 3000 because that is the port `pnpm dev` uses, not because anything
+        // requires it. Outside production both `getPublicURL` and the auth
+        // base URL follow the origin the request arrived on (see
+        // `src/server/public-origin.ts`), so a run on another port serves its
+        // pages and checks its sign-ins against the same origin. This value is
+        // the fallback for a server function with no request in hand, and the
+        // configured origin in production, where the request is never trusted.
         "PUBLIC_URL": "http://localhost:3000",
         // The preview runs Theme JavaScript, so it needs a host of its own.
         // The sidecar serves loopback; this is the name the editor frames it by.

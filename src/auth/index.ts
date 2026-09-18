@@ -1,4 +1,9 @@
 import { ac, administrator, guest, user } from "@/auth/permissions";
+import {
+  DEFAULT_DEV_ORIGIN,
+  resolvePublicOrigin,
+  type PublicOriginEnv,
+} from "@/server/public-origin";
 import { localization } from "@/lib/config/localization";
 import { cmsTrustedOrigins } from "@/lib/config/trusted-origins";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
@@ -27,15 +32,26 @@ export interface CloudflareBindings {
  * Build one auth configuration for both the Cloudflare runtime and the schema CLI.
  * D1 is the source of truth for users, accounts, sessions, and verifications.
  */
-function createAuth(env?: CloudflareBindings) {
+function createAuth(env?: CloudflareBindings, requestUrl?: string | null) {
   const db = env
     ? drizzle(env.DATABASE, { schema })
     : ({} as ReturnType<typeof drizzle>);
-  const baseURL =
-    env?.PUBLIC_URL ||
-    process.env.BETTER_AUTH_URL ||
-    process.env.PUBLIC_URL ||
-    "http://localhost:3000";
+  // Unchanged in production: the chain below is what it always was, and
+  // `resolvePublicOrigin` returns it untouched there. Outside production the
+  // request wins, because `PUBLIC_URL` is a fixed string and a dev server on
+  // another port would otherwise check its own sign-in requests against an
+  // origin it is not being served from — better-auth refuses them, and the
+  // browser reports "Failed to fetch" without naming the port. `baseURL` is in
+  // `trustedOrigins` below, so following the request is what admits it.
+  const baseURL = resolvePublicOrigin({
+    env: (env ?? {}) as PublicOriginEnv,
+    configured:
+      env?.PUBLIC_URL ||
+      process.env.BETTER_AUTH_URL ||
+      process.env.PUBLIC_URL ||
+      DEFAULT_DEV_ORIGIN,
+    requestUrl,
+  });
 
   return betterAuth({
     database: drizzleAdapter(db, {

@@ -192,7 +192,7 @@ async function main() {
   process.loadEnvFile(".env.e2e");
   if (await portInUse(DEV_PORT)) {
     throw new Error(
-      `PORT_IN_USE: something already listens on ${DEV_PORT}. Stop it first — a run that attached to a developer's own dev server would exercise their database and still pass. Moving this run elsewhere with MORPH_E2E_PORT does not help on its own: outside production the application pins its own origin to http://localhost:3000 (getPublicURL), so the dev server starts on the new port and then refuses every request as a bad origin. Stopping the other server is the remedy until that is addressed.`,
+      `PORT_IN_USE: something already listens on ${DEV_PORT}. Stop it first, or set MORPH_E2E_PORT to run beside it — a run that attached to a developer's own dev server would exercise their database and still pass.`,
     );
   }
 
