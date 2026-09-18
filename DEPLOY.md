@@ -6,14 +6,18 @@ Morph deploys to Cloudflare Workers with Wrangler. The repository does not curre
 
 - Access to the Cloudflare account that owns the configured Worker resources
 - Wrangler authentication through `pnpm wrangler login` or `CLOUDFLARE_API_TOKEN`
-- Permission to edit Workers, D1, R2, and secrets
-- A reviewed database migration when the schema has changed
+- Permission to edit Workers, D1, R2, Queues, Durable Objects, Containers, and secrets
+- A running Docker daemon. `wrangler.jsonc` declares a container
+  (`class_name: Sandbox`, `image: ./Dockerfile.sandbox`) and `wrangler deploy`
+  builds and pushes that image as part of the deployment. Without Docker the
+  deployment fails at the image build, not at the Worker.
+- A reviewed database migration when one is pending
 
 The existing `wrangler.jsonc` is environment-specific and already identifies the production D1, KV, and R2 resources. Do not replace those identifiers during a normal deployment.
 
 ## 1. Validate the application
 
-```powershell
+```bash
 pnpm install --frozen-lockfile
 pnpm exec tsc --noEmit
 pnpm test
@@ -26,7 +30,7 @@ Resolve target-related failures before deploying. A successful build does not ap
 
 Store secrets through Wrangler rather than in `wrangler.jsonc`:
 
-```powershell
+```bash
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put RESEND_API_KEY
 ```
@@ -57,25 +61,65 @@ domain list.
 
 ## 3. Apply database migrations
 
-When `src/db/*.schema.ts` changed, first review the generated SQL under `drizzle/`, then apply the committed migrations:
+The test is whether `drizzle/` has files this environment has not applied — not
+whether the schema changed. Migrations here also carry data repairs, which touch
+no schema at all: `0054_normalize_sales_channel_timestamps.sql` rewrites
+`sales_channels` timestamps that an earlier migration wrote in SQLite's own
+format, and reading "no schema change, skip it" would leave them wrong forever.
+Review the pending SQL under `drizzle/`, then apply it:
 
-```powershell
+```bash
 pnpm db:migrate:prod
 ```
 
-This command changes the remote D1 database. Do not run it for a deployment that contains no schema change.
+This command changes the remote D1 database. Skip it only when `drizzle/` holds
+nothing the remote has not already applied; `wrangler d1 migrations list DATABASE --remote`
+answers that.
 
 ## 4. Deploy
 
-```powershell
+```bash
 pnpm deploy
 ```
 
-The command builds the application and runs `wrangler deploy`.
+The command builds the application and runs `wrangler deploy`. That single step
+does more than upload a Worker, and each part can fail on its own:
+
+- **The container image.** `wrangler deploy` builds `Dockerfile.sandbox` and
+  pushes it, because `containers` is configured. This needs Docker running
+  locally and is usually the slowest part of a first deployment.
+  `--containers-rollout none` deploys the Worker without touching Containers,
+  which is the right flag only when the image is known to be unchanged.
+- **The container rollout is gradual.** New instances replace old ones in steps,
+  so immediately after a deploy some previews may still be served by the
+  previous image. `wrangler containers instances <ID>` shows the state.
+- **Durable Object migrations** in `wrangler.jsonc` under `migrations` run with
+  the deployment. The `Sandbox` class is a Durable Object as well as a
+  container; a rename or delete there is not reversible by redeploying.
+- **The queue consumer** is bound in the same config as the producer
+  (`morph-theme-builds`). A deployment that registers the producer but not the
+  consumer accepts builds and never runs them, which looks like a hung build
+  rather than a misconfiguration.
 
 ## 5. Verify
 
-After deployment, verify at minimum:
+No test exercises the container path. The sandbox transport, the build runner
+inside a container, the queue consumer and the container preview are covered by
+types, unit tests and config parity, and none of that runs a container: the
+end-to-end suite runs in an environment that omits `containers` on purpose and
+asserts it got the sidecar instead. So this list is not a formality.
+
+Some of it can be checked before deploying, and cheaply. `pnpm dev` uses the
+default Wrangler environment, which declares `containers`, so a local dev server
+runs the same `CloudflareSandboxVitePreviewServer` against a real Docker
+container — reversible, and touching no remote resource. Doing that first turns
+a deployment into a confirmation rather than a first attempt.
+
+What only a deployment reaches: Cloudflare's own container runtime rather than
+local Docker, the remote D1 and R2, the queue consumer, and the Worker as it is
+actually served.
+
+**The application**
 
 - The public URL loads without a server error
 - Sign-in and session restoration work
@@ -83,7 +127,46 @@ After deployment, verify at minimum:
 - Asset listing and asset delivery through `/assets/*` work
 - Any feature changed by the release behaves correctly
 
-If the release included a schema change, also verify the affected read and write paths against production D1.
+**The container path.** Open the editor once and read the browser console. The
+editor prints a line when a preview starts:
+
+```
+[preview-server] ready in 1393ms | transport=cloudflare-sandbox | stages: totalMs=… viteReadyMs=… | counts: …
+```
+
+- `transport=cloudflare-sandbox` is the check that matters. There is no sidecar
+  in a deployment, so the container is the only thing that can have served it —
+  but that is an argument from code, and an argument from code is what a bug
+  breaks. Read the word.
+- The stages say where the time went. `viteReadyMs` dominates locally; whether
+  that holds in a container is the question this deployment answers.
+- `reuse=reusedProcess` beside `readyMs=0` means no server was started, not that
+  one started instantly. A first measurement should come from a cold start.
+
+**A build.** Publish once, then read the structured line the service emits:
+
+```json
+{"scope":"storefront.theme.build.timings","runner":{"isolation":"sandbox-container","durationMs":…},"artifactMs":…,"totalMs":…}
+```
+
+- `runner.durationMs` is what the runner's own `maxDurationMs` budget governs —
+  currently 30s, set by nothing and asserted by nothing. This number is the
+  evidence for whether that budget is right. The build row's
+  `completed_at - started_at` is not: it contains the artifact upload as well.
+- `isolation: "sandbox-container"` confirms the build ran in a container rather
+  than in process.
+- No line at all means the build was reused rather than run
+  (`requestPreviewBuild` returns an existing success before orchestration), so a
+  sample of these excludes the absence of a line, not a small value.
+- Confirm the queue actually consumed the job rather than only accepting it, and
+  that activating the release makes the storefront respond.
+
+**The infrastructure**
+
+- `wrangler containers instances <ID>` — the rollout is gradual, so check that
+  instances are on the new image before trusting a timing
+- If the release included a migration, verify the affected read and write paths
+  against production D1
 
 ## Provisioning a separate environment
 
@@ -99,7 +182,19 @@ The legacy `pnpm setup:cloudflare` script rewrites `wrangler.jsonc` and is not p
 
 ## CI status
 
-No workflow is active under `.github/workflows/`. If automated deployment is added later, it should perform the same sequence documented here:
+`.github/workflows/ci.yml` is active on every push and pull request. It runs
+typecheck, two static guards (`check:e2e-assertions`, `check:sql-timestamps`),
+the unit suite, the production build with its three release guards, and an
+editor end-to-end run against the loopback preview transport.
+
+It does not deploy, and it does not exercise the container path: the end-to-end
+job runs in the `local_preview_e2e` Wrangler environment, which omits
+`containers` and `durable_objects` on purpose and asserts that the preview came
+from the sidecar. A green CI therefore says nothing about the half of the system
+this document covers.
+
+If automated deployment is added later, it should perform the same sequence
+documented here:
 
 1. Install with the committed pnpm lockfile.
 2. Run TypeScript, tests, and the production build.
