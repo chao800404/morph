@@ -21,7 +21,7 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
       GET: async ({ request }) => {
         let session = null;
         try {
-          const auth = createAuth(env);
+          const auth = createAuth(env, request.url);
           session = await auth.api.getSession({ headers: request.headers });
         } catch {
           return new Response(JSON.stringify({ error: "Unauthorized" }), {

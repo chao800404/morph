@@ -10,7 +10,7 @@ export const Route = createFileRoute("/_backend/assets/$")({
       GET: async ({ request }) => {
         let session = null;
         try {
-          const auth = createAuth(env);
+          const auth = createAuth(env, request.url);
           session = await auth.api.getSession({ headers: request.headers });
         } catch {
           return new Response("Unauthorized", { status: 401 });
