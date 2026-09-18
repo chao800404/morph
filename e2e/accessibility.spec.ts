@@ -88,7 +88,22 @@ test.describe("editor accessibility", () => {
     // closed dialog is invisible to it. Scanning only the resting page is how
     // an unnamed close button and three contrast failures went unnoticed.
     await page.getByRole("button", { name: "Release history" }).click();
-    await expect(page.getByRole("dialog").first()).toBeVisible();
+    const dialog = page.getByRole("dialog").first();
+    await expect(dialog).toBeVisible();
+
+    // Waited for opacity, not just visibility. The dialog and its overlay fade
+    // in over 300ms (`fade-in-0`, `duration-300`), and an element at opacity
+    // 0.3 is already "visible" to Playwright — so a scan can start mid-fade,
+    // where axe resolves every text node against a blended background and
+    // reports contrast failures that do not exist once the animation lands.
+    // That is what it did on CI: five nodes of `color-contrast` on the release
+    // table's headers, on a token pair that measures 4.83:1 on white and
+    // 5.66:1 on the dark popover — both above the 4.5 it was said to fail.
+    await expect
+      .poll(() => dialog.evaluate((el) => getComputedStyle(el).opacity), {
+        timeout: 5_000,
+      })
+      .toBe("1");
 
     const results = await scanEditorChrome(page).analyze();
     const summary = results.violations.map((violation) => ({
