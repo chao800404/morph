@@ -7,6 +7,22 @@ import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 
 // Real Vite builds. These reach ~8s under a loaded parallel run, and 20s was
 // not enough headroom above that; the sibling describe below already uses 60s.
+//
+// That 60s is Vitest's ceiling on the test. The runner has a second, independent
+// ceiling of its own — `maxDurationMs`, the guard that kills a runaway build —
+// and it defaults to 30s. These tests are not asserting that guard; they assert
+// that a Theme builds correctly, on a machine whose speed is not the subject.
+// Left at the default, a contended run turns "the machine was busy" into a
+// *product* verdict:
+//
+//   TIMEOUT: TanStack Start Theme build exceeded maximum allowed duration of 30000ms
+//
+// which reads as a build failure and sends the reader to the compiler instead of
+// to the machine. So the correctness tests state a budget far above anything a
+// build needs, and the guard is asserted separately with a budget no machine can
+// meet.
+const BUILD_BUDGET_MS = 180_000;
+
 describe("LocalViteThemeBuildRunner (Phase 4B-5)", { timeout: 60_000 }, () => {
   const createInput = (
     files: Array<{
@@ -30,7 +46,7 @@ describe("LocalViteThemeBuildRunner (Phase 4B-5)", { timeout: 60_000 }, () => {
   });
 
   it("builds starter theme successfully into dist index.html, js, and css bundles with Tailwind v4 utilities", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const input = createInput([
       {
@@ -107,7 +123,7 @@ export default function HomePage() {
   });
 
   it("builds a Theme using tsconfig path aliases", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
     const input = createInput([
       {
         path: "tsconfig.json",
@@ -141,7 +157,7 @@ export default function HomePage() {
   });
 
   it("builds source-authored TanStack routes through the isolated client preview adapter", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
     const input = createInput(
       [
         {
@@ -202,7 +218,7 @@ export const Route = createFileRoute("/")({ component: () => <main>Home</main> }
   });
 
   it("builds the complete stored starter Theme route contract", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
     const input = createInput(STARTER_THEME_FILES, {
       entry: "src/routes/index.tsx",
     });
@@ -221,7 +237,7 @@ export const Route = createFileRoute("/")({ component: () => <main>Home</main> }
   });
 
   it("builds the independent catalog routes and isomorphic public loaders", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
     const result = await runner.run(
       createInput([...STARTER_THEME_FILES, ...STARTER_THEME_CATALOG_FILES], {
         entry: "src/routes/index.tsx",
@@ -234,7 +250,7 @@ export const Route = createFileRoute("/")({ component: () => <main>Home</main> }
   });
 
   it("preserves binary artifacts intact as Uint8Array without utf-8 corruption", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     // 4-byte PNG signature header: 0x89, 0x50, 0x4E, 0x47
     const mockPngBytes = new Uint8Array([
@@ -278,7 +294,7 @@ export const Route = createFileRoute("/")({ component: () => <main>Home</main> }
   });
 
   it("blocks path traversal escape attempts in relative imports", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const input = createInput([
       {
@@ -304,7 +320,7 @@ export default function Page() {
   });
 
   it("blocks path traversal escape in virtual file paths", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const input = createInput([
       {
@@ -327,7 +343,7 @@ export default function Page() {
   });
 
   it("rejects compiler identity mismatch", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const input = createInput(
       [
@@ -351,7 +367,7 @@ export default function Page() {
   });
 
   it("handles TSX syntax errors cleanly by returning failure result with diagnostics", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const input = createInput([
       {
@@ -382,7 +398,7 @@ export default function Page() {
   });
 
   it("blocks unapproved dependencies with a clean security diagnostic", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const input = createInput([
       {
@@ -409,7 +425,7 @@ export default function Page() {
   });
 
   it("blocks direct relative filesystem imports from node_modules with UNAPPROVED_DEPENDENCY_PATH", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const input = createInput([
       {
@@ -436,7 +452,7 @@ export default function Page() {
   });
 
   it("blocks web-root filesystem imports from /node_modules with UNAPPROVED_DEPENDENCY_PATH", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const input = createInput([
       {
@@ -461,8 +477,43 @@ export default function Page() {
     }
   });
 
+  it("fails a build that exceeds its own duration budget, whatever the machine is doing", async () => {
+    // The guard is a product guarantee: a build that runs away in a container
+    // has to be killed rather than hold the worker. Asserted with a budget no
+    // machine can meet, so this says "the guard fires" and cannot be influenced
+    // by how fast the machine is — the opposite of the shape that let a
+    // contended run report a product timeout.
+    const files = [
+      {
+        path: "src/components/Minimal.tsx",
+        content: "export default function Minimal() { return <p>Minimal</p>; }",
+      },
+      {
+        path: "src/pages/index.tsx",
+        content:
+          'import Minimal from "../components/Minimal";\nexport default function Page() { return <Minimal />; }',
+      },
+    ];
+
+    const killed = await new LocalViteThemeBuildRunner({
+      maxDurationMs: 1,
+    }).run(createInput(files));
+
+    if (killed.success) throw new Error("the duration guard did not fire");
+    expect(killed.errorMessage).toContain("TIMEOUT");
+    expect(killed.errorMessage).toContain("maximum allowed duration");
+
+    // The same Theme with a budget it can meet does build, so the failure above
+    // is the guard and not a fixture that could never have compiled.
+    const allowed = await new LocalViteThemeBuildRunner({
+      maxDurationMs: BUILD_BUDGET_MS,
+    }).run(createInput(files));
+    expect(allowed.success).toBe(true);
+  });
+
   it("enforces max source files limit", async () => {
     const runner = new LocalViteThemeBuildRunner({
+      maxDurationMs: BUILD_BUDGET_MS,
       maxSourceFiles: 2,
     });
 
@@ -483,6 +534,7 @@ export default function Page() {
 
   it("enforces max source size limit", async () => {
     const runner = new LocalViteThemeBuildRunner({
+      maxDurationMs: BUILD_BUDGET_MS,
       maxSourceSizeBytes: 50,
     });
 
@@ -507,7 +559,7 @@ export default function Page() {
   });
 
   it("blocks theme virtual files located inside node_modules before write", async () => {
-    const runner = new LocalViteThemeBuildRunner();
+    const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
 
     const attackPaths = [
       "node_modules/vite/x.js",
@@ -534,6 +586,7 @@ export default function Page() {
 
   it("enforces maxOutputSizeBytes preflight limit", async () => {
     const runner = new LocalViteThemeBuildRunner({
+      maxDurationMs: BUILD_BUDGET_MS,
       maxOutputSizeBytes: 10, // 10 bytes limit
     });
 
@@ -557,6 +610,7 @@ export default function Page() {
 
   it("enforces maxOutputFiles preflight limit", async () => {
     const runner = new LocalViteThemeBuildRunner({
+      maxDurationMs: BUILD_BUDGET_MS,
       maxOutputFiles: 1, // Only 1 file allowed, but Vite build produces index.html + js + css (>= 2)
     });
 
@@ -590,7 +644,7 @@ describe(
       // Build Preview shows an immutable artifact and carries no editor channel,
       // so source positions would be unreadable weight — and would place Theme
       // source paths into stored build output.
-      const runner = new LocalViteThemeBuildRunner();
+      const runner = new LocalViteThemeBuildRunner({ maxDurationMs: BUILD_BUDGET_MS });
       const result = await runner.run({
         buildId: "loc-build",
         storefrontId: "storefront-1",
