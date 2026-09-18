@@ -192,7 +192,7 @@ async function main() {
   process.loadEnvFile(".env.e2e");
   if (await portInUse(DEV_PORT)) {
     throw new Error(
-      `PORT_IN_USE: something already listens on ${DEV_PORT}. Stop it first — a run that attached to a developer's own dev server would exercise their database and still pass. Set MORPH_E2E_PORT to use another port.`,
+      `PORT_IN_USE: something already listens on ${DEV_PORT}. Stop it first — a run that attached to a developer's own dev server would exercise their database and still pass. Moving this run elsewhere with MORPH_E2E_PORT does not help on its own: outside production the application pins its own origin to http://localhost:3000 (getPublicURL), so the dev server starts on the new port and then refuses every request as a bad origin. Stopping the other server is the remedy until that is addressed.`,
     );
   }
 
@@ -248,6 +248,11 @@ async function main() {
     E2E_EXPECT_PREVIEW_TRANSPORT: "local-sidecar",
     MORPH_E2E_STATE_DIR: stateDir,
     PLAYWRIGHT_JSON_OUTPUT_NAME: report,
+    // Without this the port guard's own escape hatch does not work: the script
+    // would move the dev server to `MORPH_E2E_PORT` and leave the suite calling
+    // the default origin, which is whatever is already listening on 3000 — the
+    // developer's own server, which is the thing the guard exists to avoid.
+    E2E_BASE_URL: DEV_ORIGIN,
   });
 
   if (extra.length === 0 && reporting.length > 0) {
