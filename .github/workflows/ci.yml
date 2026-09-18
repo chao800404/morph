@@ -47,3 +47,68 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  editor-e2e-local-preview:
+    name: Editor end-to-end (local preview transport)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for Playwright
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Nothing here is a secret. The database is created empty for this run
+      # and deleted after it, the account exists only inside it, and the ids
+      # are the ones provisioning always writes: `DEFAULT_STOREFRONT_ID` and
+      # `DEFAULT_STOREFRONT_THEME_ID` in `storefront.dal.ts`. A repository
+      # secret would suggest these values matter somewhere else, and they do
+      # not. The template is `DEFAULT_HOME_TEMPLATE_ID` from the same file. The
+      # sidecar token is generated per run because it is a shared secret
+      # between two processes on this machine and nothing else.
+      - name: Write the run's environment
+        run: |
+          cat > .env.e2e <<EOF
+          E2E_EMAIL=editor-e2e@morph.invalid
+          E2E_PASSWORD=$(openssl rand -hex 24)
+          E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+          EOF
+          cat > .dev.vars.local_preview_e2e <<EOF
+          MORPH_LOCAL_THEME_PREVIEW_ORIGIN=http://127.0.0.1:5199
+          MORPH_LOCAL_THEME_PREVIEW_TOKEN=$(openssl rand -hex 32)
+          EOF
+
+      # No Docker and no container image: the `local_preview_e2e` Wrangler
+      # environment deliberately omits `containers` and `durable_objects`, so
+      # the preview is served by the loopback sidecar. The run asserts that as
+      # a precondition rather than trusting it.
+      - name: Editor end-to-end
+        run: pnpm test:e2e:local-preview
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-e2e-results
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
