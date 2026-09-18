@@ -155,6 +155,20 @@ function workspaceDirectoryName(previewId: string): string {
  */
 export { LOCAL_PREVIEW_HOST, isLoopbackPreviewHostname };
 
+/**
+ * Raised when the started server is polling for file changes.
+ *
+ * The `watch: { usePolling: false }` override below is load-bearing and, until
+ * this check, was guarded only by a test that has to run alone to mean
+ * anything: the defect is a race with the watcher's first scan, so it appears
+ * only when a write lands immediately after `start()`. Anything that keeps the
+ * watcher busy first — a prior request, a full suite, a CI machine under load —
+ * hides it. A structural check has none of that dependence. The merged config
+ * either says polling or it does not, on any machine, under any load, on every
+ * start.
+ */
+export const LOCAL_PREVIEW_POLLING_WATCHER = "LOCAL_PREVIEW_POLLING_WATCHER";
+
 export class LocalVitePreviewServer implements ThemePreviewServer {
   private readonly workspacesRoot: string;
   private readonly toolchainRoot: string;
@@ -395,6 +409,18 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         clearScreen: false,
         customLogger: this.previewLogger(addLog),
       });
+      // Asserted on the merged configuration rather than trusted from the
+      // options passed in: the generated config asks for polling, these
+      // options override it, and Vite resolves the two. Reading the result is
+      // the only way to know which one won — and the failure this prevents is
+      // silent, because a polling watcher serves a Theme perfectly well and
+      // only loses the writes that arrive while it is still enumerating.
+      if (server.config.server.watch?.usePolling) {
+        throw new Error(
+          `${LOCAL_PREVIEW_POLLING_WATCHER}: this transport needs native filesystem events, and the resolved Vite config asks for polling. A local write is a filesystem event; polling is what loses it while the watcher's first scan is still running. The generated config polls because a container's writes arrive through the Sandbox API instead — so the override belongs here, in the transport that does not use it.`,
+        );
+      }
+
       await withReadyTimeout(
         server.listen(),
         this.readyTimeoutMs,

@@ -109,6 +109,29 @@ afterAll(async () => {
   await removeTree(workspacesRoot);
 });
 
+/**
+ * Asserts a start succeeded, and says why when it did not.
+ *
+ * `expect(started.ok).toBe(true)` fails with "expected false to be true",
+ * which is the one thing the reader already knew. The transport puts the
+ * reason in `errorMessage`, so this reads it: removing the watcher override,
+ * for instance, fails here naming `LOCAL_PREVIEW_POLLING_WATCHER` rather than
+ * sending someone to a debugger to find out what went wrong.
+ *
+ * It narrows too, which retires the `if (!started.ok) return;` that followed
+ * every one of these. That line was harmless only because the assertion above
+ * it had already failed — on its own it is the shape that lets the rest of a
+ * test quietly not run.
+ */
+function expectStarted(
+  result: Awaited<ReturnType<LocalVitePreviewServer["start"]>>,
+): asserts result is Extract<
+  Awaited<ReturnType<LocalVitePreviewServer["start"]>>,
+  { ok: true }
+> {
+  if (!result.ok) expect.fail(`the preview failed to start: ${result.errorMessage}`);
+}
+
 /** The base the editor would frame, and one path under it. */
 const under = (url: string, suffix: string) =>
   new URL(suffix, url.endsWith("/") ? url : `${url}/`).toString();
@@ -118,8 +141,7 @@ describe("the local Live Preview transport", () => {
     const server = newServer({ workspacesRoot });
     const started = await start(server);
 
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    expectStarted(started);
     const url = new URL(started.url);
     expect(url.hostname).toBe(LOCAL_PREVIEW_HOST);
     expect(url.pathname).toBe(THEME_PREVIEW_SERVER_BASE_PATH);
@@ -176,8 +198,7 @@ describe("the local Live Preview transport", () => {
         },
       ],
     });
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    expectStarted(started);
 
     // The generated config's containment and allowlist are what answer, not a
     // second copy written for the local transport.
@@ -189,8 +210,7 @@ describe("the local Live Preview transport", () => {
   it("reuses a matching server and replaces a changed one", async () => {
     const server = newServer({ workspacesRoot });
     const first = await start(server);
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
+    expectStarted(first);
     expect(first.timings.reusedProcess).toBe(false);
 
     const again = await start(server);
@@ -201,8 +221,7 @@ describe("the local Live Preview transport", () => {
     const changed = await start(server, {
       files: [{ path: "src/pages/index.tsx", content: PAGE.replace("Hello", "Goodbye") }],
     });
-    expect(changed.ok).toBe(true);
-    if (!changed.ok) return;
+    expectStarted(changed);
     expect(changed.timings.reusedProcess).toBe(false);
     const source = await (
       await fetch(under(changed.url, "src/pages/index.tsx"))
@@ -213,8 +232,7 @@ describe("the local Live Preview transport", () => {
   it("applies an edit to the files a running server is watching", async () => {
     const server = newServer({ workspacesRoot });
     const started = await start(server);
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    expectStarted(started);
 
     const source = await (
       await fetch(under(started.url, "src/pages/index.tsx"))
@@ -288,8 +306,7 @@ describe("the local Live Preview transport", () => {
     // it. If it ever needs protecting, that measurement has to come first.
     const server = newServer({ workspacesRoot });
     const started = await start(server);
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    expectStarted(started);
 
     // Load what a page loads: the document, the generated entry, and the Theme
     // module itself. An update can only be computed for a module the graph has
@@ -322,8 +339,7 @@ describe("the local Live Preview transport", () => {
   it("answers whether the address the editor framed is still served", async () => {
     const server = newServer({ workspacesRoot });
     const started = await start(server);
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    expectStarted(started);
     const origin = new URL(started.url).origin;
 
     await expect(
@@ -362,14 +378,13 @@ describe("the local Live Preview transport", () => {
 
     // The port is really released, which is what lets the next start bind it.
     const restarted = await start(server, { previewId: "theme-a-user-1" });
-    expect(restarted.ok).toBe(true);
+    expectStarted(restarted);
   }, 180_000);
 
   it("keeps its workspace where a toolchain can be resolved from it", async () => {
     const server = newServer({ workspacesRoot });
     const started = await start(server);
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    expectStarted(started);
 
     const workspace = server.workspaceRootFor("theme-a-user-1");
     expect(workspace.startsWith(workspacesRoot)).toBe(true);
