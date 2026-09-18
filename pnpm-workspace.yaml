@@ -1,5 +1,37 @@
 packages:
   - "."
 
-ignoredBuiltDependencies:
+# Built because the test suite uses it directly: `better-sqlite3` is a
+# devDependency and thirty-nine DAL tests need its native binding. It arrived
+# under `ignoredBuiltDependencies` with the initial source-repo import, which
+# told pnpm never to compile it — invisible on a machine that had compiled it
+# once, and a guaranteed red on every clean checkout: CI failed the whole
+# `Test` step with `Could not locate the bindings file`, which also skipped
+# `Build` and the three release guards underneath it.
+onlyBuiltDependencies:
   - better-sqlite3
+
+# Moved here from `package.json`. pnpm 10 no longer reads a `pnpm` field there
+# and says so on every install; the pins survived only because they were
+# already written into the lockfile, so the next person to regenerate it would
+# have dropped all nineteen without a word. Several are security pins.
+overrides:
+  '@babel/core': 7.29.7
+  '@rvf/set-get': 7.0.2
+  browserslist: 4.28.7
+  defu: 6.1.5
+  dompurify: 3.4.13
+  js-yaml: 4.3.1
+  launch-editor: 2.14.1
+  'nanoid@>=3.0.0 <4.0.0': 3.3.18
+  next: 16.2.11
+  picomatch: 4.0.5
+  postcss: 8.5.23
+  rollup: 4.59.0
+  seroval: 1.5.6
+  sharp: 0.35.2
+  shell-quote: 1.9.0
+  undici: 7.29.0
+  vite: 7.3.5
+  'vitest@<3.2.6': 3.2.7
+  ws: 8.21.0
