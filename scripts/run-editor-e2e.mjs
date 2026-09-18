@@ -29,10 +29,38 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const WRANGLER_ENV = "local_preview_e2e";
+/**
+ * Which preview transport this run exercises.
+ *
+ * `local-sidecar` is the default and the one CI uses: no container, so the
+ * suite runs anywhere. `cloudflare-sandbox` runs the same suite against a real
+ * Docker container through `CloudflareSandboxVitePreviewServer`, which is the
+ * half of the system no test otherwise touches — types, unit tests and config
+ * parity cover it, and none of those start a container.
+ *
+ * The difference is entirely which Wrangler environment serves it.
+ * `containers` and `durable_objects` are declared at the top level and are not
+ * inherited, so `local_preview_e2e` cannot reach a container and the default
+ * environment cannot avoid one. Everything else here follows from that, down to
+ * whether a sidecar is started at all.
+ *
+ * Either way the transport is asserted rather than assumed: the run tells the
+ * precondition spec which one to expect, and a fallback fails the run instead
+ * of passing quietly under the wrong one.
+ */
+const TRANSPORT = process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar";
+if (TRANSPORT !== "local-sidecar" && TRANSPORT !== "cloudflare-sandbox") {
+  console.error(
+    `[e2e] MORPH_E2E_TRANSPORT must be "local-sidecar" or "cloudflare-sandbox", not "${TRANSPORT}".`,
+  );
+  process.exit(1);
+}
+const USES_SIDECAR = TRANSPORT === "local-sidecar";
+/** Empty means Wrangler's default environment, the one that has containers. */
+const WRANGLER_ENV = USES_SIDECAR ? "local_preview_e2e" : "";
 const DEV_PORT = Number(process.env.MORPH_E2E_PORT ?? 3000);
 const DEV_ORIGIN = `http://localhost:${DEV_PORT}`;
-const SIDECAR_ENV_FILE = `.dev.vars.${WRANGLER_ENV}`;
+const SIDECAR_ENV_FILE = ".dev.vars.local_preview_e2e";
 /** Where the setup project stores the signed-in browser state. */
 const STORAGE_STATE = "e2e/.auth/user.json";
 const READY_TIMEOUT_MS = 120_000;
@@ -176,7 +204,7 @@ async function testsRun(reportPath) {
 }
 
 async function main() {
-  if (!existsSync(SIDECAR_ENV_FILE)) {
+  if (USES_SIDECAR && !existsSync(SIDECAR_ENV_FILE)) {
     throw new Error(
       `MISSING_SIDECAR_ENV: ${SIDECAR_ENV_FILE} holds MORPH_LOCAL_THEME_PREVIEW_ORIGIN and MORPH_LOCAL_THEME_PREVIEW_TOKEN, which the Worker and the sidecar must agree on.`,
     );
@@ -190,6 +218,14 @@ async function main() {
   // needs the same two values, and it has to hash the very password the suite
   // will sign in with.
   process.loadEnvFile(".env.e2e");
+  // Inherited, this would quietly send a container run to a named environment
+  // that has no containers — and the transport precondition would then fail
+  // for a reason that looks nothing like its cause.
+  if (!USES_SIDECAR && process.env.CLOUDFLARE_ENV) {
+    throw new Error(
+      `CLOUDFLARE_ENV_SET: the container transport needs Wrangler's default environment, but CLOUDFLARE_ENV is "${process.env.CLOUDFLARE_ENV}" in this shell. Unset it and run again.`,
+    );
+  }
   if (await portInUse(DEV_PORT)) {
     throw new Error(
       `PORT_IN_USE: something already listens on ${DEV_PORT}. Stop it first, or set MORPH_E2E_PORT to run beside it — a run that attached to a developer's own dev server would exercise their database and still pass.`,
@@ -198,6 +234,7 @@ async function main() {
 
   stateDir = await mkdtemp(path.join(tmpdir(), "morph-e2e-"));
   log(`state directory ${stateDir}`);
+  log(`transport ${TRANSPORT}`);
 
   // A stored session is worth nothing to this run and can cost it the suite.
   // The setup project reuses one to avoid the sign-in rate limit, which is the
@@ -214,23 +251,35 @@ async function main() {
   log("applying migrations");
   run("npx", [
     "wrangler", "d1", "migrations", "apply", "DATABASE",
-    "--local", "--env", WRANGLER_ENV, "--persist-to", stateDir,
+    "--local", ...(WRANGLER_ENV ? ["--env", WRANGLER_ENV] : []),
+    "--persist-to", stateDir,
   ]);
 
   log("seeding the account and one published product");
   run("node", [
     "scripts/seed-e2e.mjs", "--persist-to", stateDir, "--env", WRANGLER_ENV,
   ]);
+  // `--env ""` is deliberate above: the seed reads an empty value as "the
+  // default environment" and drops the flag, which is not something `--env`
+  // can express to Wrangler directly.
 
-  log("starting the preview sidecar");
-  start("sidecar", "node", [
-    `--env-file-if-exists=${SIDECAR_ENV_FILE}`,
-    "scripts/theme-preview-sidecar.mjs",
-  ]);
+  if (USES_SIDECAR) {
+    log("starting the preview sidecar");
+    start("sidecar", "node", [
+      `--env-file-if-exists=${SIDECAR_ENV_FILE}`,
+      "scripts/theme-preview-sidecar.mjs",
+    ]);
+  } else {
+    // Nothing to start: the Worker reaches a container through its own binding,
+    // and Docker has to be running for that binding to resolve.
+    log("no sidecar — the preview comes from a container");
+  }
 
   log(`starting the dev server on ${DEV_PORT}`);
   start("dev server", "npx", ["vite", "dev", "--port", String(DEV_PORT)], {
-    CLOUDFLARE_ENV: WRANGLER_ENV,
+    // Unset, not empty: an empty `CLOUDFLARE_ENV` is still a named environment
+    // as far as the plugin is concerned.
+    ...(WRANGLER_ENV ? { CLOUDFLARE_ENV: WRANGLER_ENV } : {}),
     MORPH_E2E_STATE_DIR: stateDir,
   });
   await waitForOk(DEV_ORIGIN, "the dev server");
@@ -250,7 +299,7 @@ async function main() {
   run("npx", ["playwright", "test", "--project=editor", ...reporting, ...extra], {
     // Asserted as a precondition, so a run that silently fell back to the
     // container transport fails instead of passing for the wrong reason.
-    E2E_EXPECT_PREVIEW_TRANSPORT: "local-sidecar",
+    E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,
     MORPH_E2E_STATE_DIR: stateDir,
     PLAYWRIGHT_JSON_OUTPUT_NAME: report,
     // Without this the port guard's own escape hatch does not work: the script

@@ -125,7 +125,11 @@ function quote(value) {
 async function main() {
   const args = readArgs(process.argv.slice(2));
   const persistTo = args.get("persist-to");
-  const env = args.get("env") ?? "local_preview_e2e";
+  // An empty `--env` means Wrangler's default environment, which is where the
+  // container transport lives: `containers` and `durable_objects` are declared
+  // at the top level and a named environment does not inherit them. Passing
+  // `--env ""` to Wrangler would not say that, so the flag is dropped instead.
+  const env = args.has("env") ? args.get("env") : "local_preview_e2e";
   const email = process.env.E2E_EMAIL;
   const password = process.env.E2E_PASSWORD;
 
@@ -190,8 +194,7 @@ async function main() {
         "execute",
         "DATABASE",
         "--local",
-        "--env",
-        env,
+        ...(env ? ["--env", env] : []),
         "--persist-to",
         persistTo,
         ...(json ? ["--json"] : []),
