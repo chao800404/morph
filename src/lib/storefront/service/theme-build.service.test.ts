@@ -364,6 +364,99 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     markSucceededSpy.mockRestore();
   });
 
+  it("reports the build's own cost, separated from the artifact stage and attributed to a runner", async () => {
+    // Three numbers that a build record cannot keep apart on its own:
+    // `completed_at - started_at` contains the runner *and* the artifact upload,
+    // and the reuse identity (sourceRevisionId, inputHash, compilerId,
+    // compilerVersion) cannot say which plane ran it, because both runners
+    // deliberately share that identity so their artifacts are interchangeable.
+    // Right for shipping, wrong for taking a sample.
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-timings", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+    ]);
+
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      lines.push(String(line));
+    });
+    try {
+      const build = await service.requestPreviewBuild({
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        sourceRevisionId: "rev-timings",
+        runner: new FakeThemeBuildRunner({ shouldSucceed: true, delayMs: 20 }),
+        artifactStore: new FakeThemeBuildArtifactStore(),
+      });
+
+      expect(build.status).toBe("succeeded");
+
+      const timing = lines
+        .map((line) => {
+          try {
+            return JSON.parse(line) as Record<string, any>;
+          } catch {
+            return null;
+          }
+        })
+        .find((parsed) => parsed?.scope === "storefront.theme.build.timings");
+      expect(timing, "no build timing line was emitted").toBeDefined();
+
+      // Which plane ran it, and that a runner ran at all.
+      expect(timing!.runner).toMatchObject({ isolation: "fake-mock", ran: true });
+      expect(typeof timing!.runner.id).toBe("string");
+
+      // The build's own cost — the number a duration budget is about.
+      expect(timing!.runner.durationMs).toBeGreaterThanOrEqual(20);
+
+      // Kept apart from the artifact stage, and both inside the whole. This is
+      // the boundary that makes the two stages unsplittable after the fact.
+      expect(typeof timing!.artifactMs).toBe("number");
+      expect(timing!.totalMs).toBeGreaterThanOrEqual(
+        timing!.runner.durationMs + timing!.artifactMs,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("emits no timing line for a build that failed, so a failed sample cannot be read as a cost", async () => {
+    // A failed build returns in milliseconds and is not a sample of build cost.
+    // Asserted rather than assumed, because "no line" and "a line with a small
+    // number" are the two possible behaviours and only one of them is safe to
+    // average over.
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-timings-failed", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+    ]);
+
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      lines.push(String(line));
+    });
+    try {
+      const build = await service.requestPreviewBuild({
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        sourceRevisionId: "rev-timings-failed",
+        runner: new FakeThemeBuildRunner({
+          shouldSucceed: false,
+          errorMessage: "COMPILE_ERROR: bad jsx",
+        }),
+        artifactStore: new FakeThemeBuildArtifactStore(),
+      });
+
+      expect(build.status).toBe("failed");
+      expect(
+        lines.some((line) => line.includes("storefront.theme.build.timings")),
+      ).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("transitions to failed when runner throws an exception", async () => {
     seedStorefront("storefront-1");
 

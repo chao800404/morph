@@ -156,6 +156,11 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       previewId,
       url: url.url,
       origin: url.origin,
+      // Which transport served this, for the same reason the build runner now
+      // reports it: after a deployment there is no sidecar, so "it must be the
+      // container" is a code argument, and a code argument is what a bug breaks.
+      // Reported as a name and timings, never the container handle itself.
+      kind: selection.kind,
       readyMs: started.readyMs,
       timings: started.timings,
       hoistedContentFields: started.hoistedContentFields,

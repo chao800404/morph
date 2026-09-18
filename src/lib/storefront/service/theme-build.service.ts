@@ -233,6 +233,11 @@ export class ThemeBuildService {
 
     // Stage 1a: Retrieve build metadata only. Build lifecycle state remains a
     // responsibility of the build DAL.
+    // One clock for the whole orchestration, so the line emitted on success can
+    // say what the build actually cost rather than being derivable only from
+    // `completed_at - started_at`, which also contains the artifact upload.
+    const orchestrationStartedAt = Date.now();
+
     let build: StorefrontThemeBuildDTO;
     try {
       const found = await this.dal.getBuild(
@@ -428,6 +433,8 @@ export class ThemeBuildService {
     }
 
     let storeResult: ThemeBuildArtifactStoreResult;
+    let artifactMs = 0;
+    const artifactStartedAt = Date.now();
     try {
       storeResult = await artifactStore.persistBuildArtifacts({
         build: startedBuild,
@@ -435,6 +442,7 @@ export class ThemeBuildService {
         artifacts: runnerResult.artifacts ?? [],
         runnerManifest: runnerResult.manifestJson,
       });
+      artifactMs = Date.now() - artifactStartedAt;
     } catch (storeException) {
       const exceptionMessage =
         storeException instanceof Error
@@ -456,6 +464,30 @@ export class ThemeBuildService {
     }
 
     // Stage 6: Finalize state.
+    //
+    // One structured line, emitted where the build's own cost is still known.
+    // Two numbers, two stages: the runner reports what compiling cost, and the
+    // artifact stage is measured here, because `completed_at - started_at`
+    // contains both and cannot be split after the fact. The runner also says
+    // which plane it is, so a duration collected locally is never counted as a
+    // container build when a sample is taken.
+    console.log(
+      JSON.stringify({
+        scope: "storefront.theme.build.timings",
+        storefrontId: params.storefrontId,
+        themeId: params.themeId,
+        buildId: params.buildId,
+        runner: {
+          isolation: runner.isolation,
+          id: runner.id,
+          ran: true,
+          durationMs: runnerResult.durationMs ?? null,
+        },
+        artifactMs,
+        totalMs: Date.now() - orchestrationStartedAt,
+      }),
+    );
+
     try {
       return await this.dal.markBuildSucceeded(
         params.storefrontId,

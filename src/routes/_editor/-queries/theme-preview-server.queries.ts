@@ -28,18 +28,42 @@ function reportPreviewServerTimings(
   result: Awaited<ReturnType<typeof startThemePreviewServer>>,
 ): void {
   if (!result.success) return;
-  const { readyMs, timings } = result.data;
-  // `Ms` decides the unit. The same object carries counts — `mkdirCalls`,
-  // `writeCalls`, `readCalls` — and a first version suffixed every number with
-  // `ms`, which reported 45 filesystem writes as 45 milliseconds. A log that
-  // labels its own numbers wrongly is worse than one that omits them.
-  const stages = Object.entries(timings ?? {})
-    .filter((entry): entry is [string, number] => typeof entry[1] === "number")
-    .map(([name, value]) => `${name}=${value}${name.endsWith("Ms") ? "ms" : ""}`)
-    .join(" ");
-  console.log(
-    `[preview-server] ready in ${readyMs}ms${stages ? ` | ${stages}` : ""}`,
+  const { readyMs, timings, kind } = result.data;
+  // Three kinds of number, kept apart, because they answer different questions:
+  // a count of calls, a cumulative total that may exceed wall time when calls
+  // overlap, and a stage that is wall time. A first version suffixed every
+  // number with `ms`, which reported 45 filesystem writes as 45 milliseconds —
+  // a log that labels its own numbers wrongly is worse than one that omits them.
+  // Grouped by the name rather than by a list, so a newly measured stage appears
+  // here the moment it exists.
+  const numbers = Object.entries(timings ?? {}).filter(
+    (entry): entry is [string, number] => typeof entry[1] === "number",
   );
+  const format = (entries: [string, number][]) =>
+    entries
+      .map(([name, value]) => `${name}=${value}${name.endsWith("Ms") ? "ms" : ""}`)
+      .join(" ");
+  const counts = numbers.filter(([name]) => name.endsWith("Calls"));
+  const cumulative = numbers.filter(([name]) => name.endsWith("CumulativeMs"));
+  const stages = numbers.filter(
+    ([name]) => !name.endsWith("Calls") && !name.endsWith("CumulativeMs"),
+  );
+  // A reused start reports zeroes because nothing was started, which is not the
+  // same fact as a start that was instant. Said out loud rather than left to be
+  // inferred from a zero.
+  const reuse = timings?.reusedProcess
+    ? "reusedProcess"
+    : timings?.workspaceReused
+      ? "workspaceReused"
+      : "";
+  const parts = [
+    `transport=${kind}`,
+    reuse ? `reuse=${reuse}` : "",
+    stages.length ? `stages: ${format(stages)}` : "",
+    cumulative.length ? `cumulative, may exceed wall: ${format(cumulative)}` : "",
+    counts.length ? `counts: ${format(counts)}` : "",
+  ].filter(Boolean);
+  console.log(`[preview-server] ready in ${readyMs}ms | ${parts.join(" | ")}`);
 }
 
 /**
