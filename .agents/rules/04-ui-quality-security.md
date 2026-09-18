@@ -389,12 +389,58 @@ ISO 字串 → integer(mode: "timestamp_ms")        TS2322 Type 'string' is not 
 - **範本檔跟正式檔一樣重要。** `example.schema.ts` 原本自帶第三種慣例
   （`mode: "timestamp"`，秒）又用 `$defaultFn` 填值，與 `columns.ts` 明寫的「由 DAL 寫入」
   相反。範本被複製的次數遠多於被閱讀的次數。
-- **seed 寫完要讀回來驗。** 驗的動作就是壞掉的那個動作：對欄位值呼叫 `.toISOString()`，
-  並比對 SQLite 實際選的 storage class。這讓錯誤在 seed 當場具名失敗，而不是三層之外
-  變成主題文案「This product is temporarily unavailable」。
+- **seed 寫完要讀回來驗，而且檢查必須放在讀取路徑。** 驗的動作就是壞掉的那個動作：對欄位值
+  呼叫 `.toISOString()`。不可以「簡化」成只檢查 storage class —— **SQLite 的欄位親和性會把
+  數字轉成文字**，所以 `Date.now()` 寫進 `text("created_at")` 之後 `typeof` 仍然回 `text`，
+  storage class 那條完全抓不到，只有「讀回來是不是 Invalid Date」抓得到。兩條檢查都保留，
+  但能抓到真實事故的是後者。
 
-自動化：`pnpm check:sql-timestamps` 以白名單掃 `drizzle/*.sql`（掃描前先遮掉註解，否則
-修復 migration 自己的說明會被誤報），在 CI 的 validate job 執行。
+自動化：`pnpm check:sql-timestamps` 以白名單掃**兩個根**，在 CI 的 validate job 執行。
+`drizzle/*.sql` 掃全檔（掃描前先遮掉 `--` 註解，否則修復 migration 自己的說明會被誤報）；
+`src/**/*.ts` **只掃 `sql` 模板字面值的內容**。兩件事要一起理解：
+
+- schema 裡的 `.default(sql\`…\`)` 是安全的，理由不是巧合 —— drizzle-kit 會把它物化進
+  `drizzle/*.sql`，守衛在那裡看得到。但 DAL 裡的 `sql\`…\`` 永遠不會變成 migration 檔，
+  所以那條路徑必須單獨掃。`sql` 是 src 裡唯一的原始 SQL 入口（`db.batch` 吃 query builder，
+  沒有任何地方用字串呼叫 `.prepare`）。
+- 只掃模板內容不是潔癖，是必要的。整檔掃描會把 `editor-code-package-declarations.generated.ts`
+  裡打包的 Zod `.datetime()` 型別宣告報兩次，而 `date(` / `time(` 在 TypeScript 裡到處都是。
+  **會誤報的守衛會被關掉，代價比守衛本身還大。**
+
+### 26.3 修復型 migration 的驗證程序
+
+讀取型偵測的代價是掃描，修復型 `UPDATE` 的代價是碰到本來健康的列 —— 這個不對稱決定了兩件事：
+**修復範圍要由枚舉證據決定，不是由「保險起見」決定**，而且每一支修復都要照下面跑過才算完成。
+
+`0054` 的範圍是枚舉出來的：全部 55 支 migration 的時鐘運算式只有三種拼法，不合格的只有
+`0024` 的兩處，而它們只寫過 `sales_channels`；另外兩支寫 `_at` 欄位的（`0013`、`0048`）是
+`INSERT ... SELECT`，值從既有欄位複製，不可能自己生出新格式。在一個已證明只有一個來源的母體裡
+做全表掃描，期望值是負的。
+
+驗證程序（三步，缺一不可）：
+
+1. **對受損列測**——確認它真的修好，而且修得無損。
+2. **對健康列測**——確認它不動本來正確的資料。
+3. **再跑一次**——確認冪等。
+
+這不是儀式。`0054` 第一版用字元類別的 GLOB 比對，D1 直接以
+`LIKE or GLOB pattern too complex` 拒絕**整支 migration**——對每一個資料庫，不只受損的那些。
+一支修復可以讓所有人的 migration 停住，所以它比一般 migration 更需要先被執行過。
+
+### 26.4 「journal 說的就是跑過的」在這個 repo 是假的
+
+普查今天的檔案樹能證明的只有今天的檔案樹。它證明不了舊安裝實際執行過什麼 —— 若某支
+migration 在套用之後被編輯或刪除過，現在的檔案就不等於當時跑的 SQL。
+
+而這不是假想：**`drizzle/` 的檔案集與 `meta/_journal.json` 已經不一致**（55 個 `.sql`、
+54 個 journal 條目，唯一沒有條目的是手寫的 `0052_theme_source_manifest.sql`）。它照樣被套用，
+因為 **wrangler 不讀 drizzle 的 journal**：它依 `migrations_dir` 的檔名順序套用，記在自己的
+`d1_migrations` 表（在全新資料庫上確認共 54 支、含 `0052`）。journal 只是 drizzle-kit 的帳。
+
+所以推理時不要用 journal 當「跑過什麼」的依據，也不要用「今天全樹乾淨」去宣稱舊安裝乾淨。
+這是一句關於**證明邊界**的話，不是關於損壞的話 —— 目前沒有任何證據顯示有人編輯過已套用的
+migration。真要對某個特定舊安裝收斂時，最便宜的形式是**唯讀偵測**（數一下 text 時間戳欄位裡
+不符合 ISO 形狀的列數），一次、手動、有證據才修，讓修復範圍永遠是證據驅動的。
 
 ### 26.0 內容形狀的 migration 要寫成腳本
 
