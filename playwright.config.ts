@@ -46,9 +46,31 @@ export default defineConfig({
   },
   projects: [
     { name: "setup", testMatch: /auth\.setup\.ts/ },
+    /**
+     * Which transport served the preview, checked before anything uses it.
+     *
+     * A precondition rather than a test: the editor specs cannot tell one
+     * transport from another, so a run that quietly fell back to the container
+     * would pass every one of them and prove nothing about the sidecar it was
+     * set up to exercise. As `editor`'s dependency, a wrong transport stops the
+     * suite instead of adding a red line to a wall of green.
+     */
+    {
+      name: "preview-transport",
+      testMatch: /preview-transport\.spec\.ts/,
+      dependencies: ["setup"],
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1600, height: 950 },
+        storageState: "e2e/.auth/user.json",
+      },
+    },
     {
       name: "editor",
-      dependencies: ["setup"],
+      dependencies: ["setup", "preview-transport"],
+      // Its own project runs it as this one's precondition; without this it
+      // would also run here, after the specs it exists to gate.
+      testIgnore: /preview-transport\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1600, height: 950 },
