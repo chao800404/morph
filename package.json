@@ -45,7 +45,8 @@
     "test:e2e:ui": "playwright test --ui",
     "test:parity": "MORPH_THEME_PARITY=1 vitest run src/lib/storefront/workspace-theme-parity.test.ts",
     "theme:preview": "node --env-file-if-exists=.dev.vars scripts/theme-preview-sidecar.mjs",
-    "check:local-preview-sidecar": "node scripts/check-local-preview-sidecar.mjs"
+    "check:local-preview-sidecar": "node scripts/check-local-preview-sidecar.mjs",
+    "test:e2e:local-preview": "node scripts/run-editor-e2e.mjs"
   },
   "dependencies": {
     "@babel/parser": "^7.26.9",
