@@ -37,6 +37,78 @@ const PRODUCT_ID = "00000000-0000-4000-8000-00000000e2e3";
 /** Written by `currency.dal`, and the channel the storefront reads through. */
 const SALES_CHANNEL_ID = "00000000-0000-4000-8000-000000000001";
 
+/**
+ * The two timestamp conventions this schema keeps, one function each.
+ *
+ * `auth.schema.ts` stores epoch milliseconds in
+ * `integer(..., { mode: "timestamp_ms" })`. `product.schema.ts`,
+ * `link.schema.ts` and `columns.ts` store ISO-8601 in `text("created_at")`.
+ * Every TypeScript writer is held to this by Drizzle — a number into a text
+ * column is `TS2322: Type 'number' is not assignable to type 'string'` — but
+ * this file builds SQL by hand, so nothing types it and nothing checks it.
+ *
+ * That is not hypothetical. This seed wrote `Date.now()` into all four tables.
+ * SQLite stored the numbers without complaint; the catalog list survived them,
+ * because `JSON.stringify` turns an Invalid Date into `null`; and the detail
+ * DTO threw `Invalid time value` from `.toISOString()` three layers away,
+ * arriving as the Theme's "This product is temporarily unavailable". Naming the
+ * two conversions is the smallest thing that makes the choice deliberate at
+ * every call site, and `verifyTimestamps` below is what makes a wrong one fail
+ * here rather than there.
+ */
+const epochMs = (at) => at.getTime();
+const iso = (at) => at.toISOString();
+
+/**
+ * Reads the seeded rows back and fails if a timestamp cannot survive the trip.
+ *
+ * The check is the operation that broke: the DTO path calls `.toISOString()` on
+ * whatever the column yields, so this does the same, and compares the storage
+ * class SQLite actually chose against the one the schema declares. A number in
+ * a text column reports `typeof` as `integer` and gives an Invalid Date, and
+ * both are caught on the row that was just written.
+ */
+async function verifyTimestamps(run) {
+  const expectations = [
+    { table: "users", id: `id = ${quote(USER_ID)}`, storage: "integer" },
+    { table: "accounts", id: `id = ${quote(ACCOUNT_ID)}`, storage: "integer" },
+    { table: "products", id: `id = ${quote(PRODUCT_ID)}`, storage: "text" },
+    {
+      table: "product_sales_channels",
+      id: `product_id = ${quote(PRODUCT_ID)}`,
+      storage: "text",
+    },
+  ];
+
+  for (const { table, id, storage } of expectations) {
+    const [row] = run(
+      `SELECT typeof(created_at) AS created_type, created_at, typeof(updated_at) AS updated_type, updated_at FROM ${table} WHERE ${id};`,
+    );
+    if (!row) throw new Error(`SEED_ROW_MISSING: ${table} has no seeded row.`);
+
+    for (const column of ["created", "updated"]) {
+      const actual = row[`${column}_type`];
+      const value = row[`${column}_at`];
+      if (actual !== storage) {
+        throw new Error(
+          `SEED_TIMESTAMP_STORAGE: ${table}.${column}_at is stored as ${actual}, but its schema declares ${storage}. SQLite accepts either; the DTO that reads it does not.`,
+        );
+      }
+      const date = new Date(storage === "text" ? value : Number(value));
+      if (Number.isNaN(date.getTime())) {
+        throw new Error(
+          `SEED_TIMESTAMP_UNREADABLE: ${table}.${column}_at is ${JSON.stringify(value)}, which is an Invalid Date. This is what the detail DTO throws "Invalid time value" on.`,
+        );
+      }
+      if (storage === "text" && date.toISOString() !== value) {
+        throw new Error(
+          `SEED_TIMESTAMP_NOT_ISO: ${table}.${column}_at is ${JSON.stringify(value)}, which is readable but not the ISO-8601 the DAL writes. Values in two formats sort against each other wrongly.`,
+        );
+      }
+    }
+  }
+}
+
 function readArgs(argv) {
   const args = new Map();
   for (let index = 0; index < argv.length; index += 1) {
@@ -79,17 +151,7 @@ async function main() {
   }
 
   const hash = await hashPassword(password);
-  // Two conventions live in this schema, and mixing them does not fail at the
-  // insert. `auth.schema.ts` stores epoch milliseconds
-  // (`integer(..., { mode: "timestamp_ms" })`), while `product.schema.ts` and
-  // `link.schema.ts` store ISO strings (`text("created_at")`). SQLite accepts
-  // either value in either column, so a number written into a text timestamp is
-  // read back as `new Date("1758...")` — an Invalid Date that survives the list
-  // query, because `JSON.stringify` turns it into `null`, and then throws
-  // "Invalid time value" the moment the detail DTO calls `.toISOString()`. The
-  // preview reports that as "This product is temporarily unavailable".
-  const now = Date.now();
-  const nowIso = new Date(now).toISOString();
+  const at = new Date();
 
   // `role` is `admin` because every editor server function runs behind
   // `commerceAdminMiddleware`. A `user` account signs in and then fails every
@@ -105,38 +167,52 @@ async function main() {
   // asks for them. Only the link is ours.
   const sql = [
     `INSERT INTO users (id, name, email, email_verified, role, created_at, updated_at)`,
-    `VALUES (${quote(USER_ID)}, 'E2E', ${quote(email)}, 1, 'admin', ${now}, ${now})`,
-    `ON CONFLICT(id) DO UPDATE SET email = excluded.email, role = 'admin', email_verified = 1, updated_at = ${now};`,
+    `VALUES (${quote(USER_ID)}, 'E2E', ${quote(email)}, 1, 'admin', ${epochMs(at)}, ${epochMs(at)})`,
+    `ON CONFLICT(id) DO UPDATE SET email = excluded.email, role = 'admin', email_verified = 1, updated_at = ${epochMs(at)};`,
     `INSERT INTO accounts (id, account_id, provider_id, user_id, password, created_at, updated_at)`,
-    `VALUES (${quote(ACCOUNT_ID)}, ${quote(USER_ID)}, 'credential', ${quote(USER_ID)}, ${quote(hash)}, ${now}, ${now})`,
-    `ON CONFLICT(id) DO UPDATE SET password = excluded.password, updated_at = ${now};`,
+    `VALUES (${quote(ACCOUNT_ID)}, ${quote(USER_ID)}, 'credential', ${quote(USER_ID)}, ${quote(hash)}, ${epochMs(at)}, ${epochMs(at)})`,
+    `ON CONFLICT(id) DO UPDATE SET password = excluded.password, updated_at = ${epochMs(at)};`,
     `INSERT INTO products (id, title, handle, status, is_giftcard, discountable, created_by, updated_by, created_at, updated_at)`,
-    `VALUES (${quote(PRODUCT_ID)}, 'E2E Product', 'e2e-product', 'published', 0, 1, ${quote(USER_ID)}, ${quote(USER_ID)}, ${quote(nowIso)}, ${quote(nowIso)})`,
-    `ON CONFLICT(id) DO UPDATE SET status = 'published', created_at = ${quote(nowIso)}, updated_at = ${quote(nowIso)};`,
+    `VALUES (${quote(PRODUCT_ID)}, 'E2E Product', 'e2e-product', 'published', 0, 1, ${quote(USER_ID)}, ${quote(USER_ID)}, ${quote(iso(at))}, ${quote(iso(at))})`,
+    `ON CONFLICT(id) DO UPDATE SET status = 'published', created_at = ${quote(iso(at))}, updated_at = ${quote(iso(at))};`,
     `INSERT INTO product_sales_channels (product_id, sales_channel_id, created_at, updated_at)`,
-    `VALUES (${quote(PRODUCT_ID)}, ${quote(SALES_CHANNEL_ID)}, ${quote(nowIso)}, ${quote(nowIso)})`,
-    `ON CONFLICT(product_id, sales_channel_id) DO UPDATE SET updated_at = ${quote(nowIso)};`,
+    `VALUES (${quote(PRODUCT_ID)}, ${quote(SALES_CHANNEL_ID)}, ${quote(iso(at))}, ${quote(iso(at))})`,
+    `ON CONFLICT(product_id, sales_channel_id) DO UPDATE SET updated_at = ${quote(iso(at))};`,
   ].join("\n");
 
-  execFileSync(
-    "npx",
-    [
-      "wrangler",
-      "d1",
-      "execute",
-      "DATABASE",
-      "--local",
-      "--env",
-      env,
-      "--persist-to",
-      persistTo,
-      "--command",
-      sql,
-    ],
-    { stdio: ["ignore", "pipe", "inherit"] },
-  );
+  /** One statement batch against the run's database. `json` returns its rows. */
+  const execute = (command, json = false) => {
+    const output = execFileSync(
+      "npx",
+      [
+        "wrangler",
+        "d1",
+        "execute",
+        "DATABASE",
+        "--local",
+        "--env",
+        env,
+        "--persist-to",
+        persistTo,
+        ...(json ? ["--json"] : []),
+        "--command",
+        command,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    ).toString();
+    if (!json) return [];
+    // Wrangler prints its configuration warnings before the JSON, so the array
+    // is found rather than assumed to start the output.
+    const start = output.indexOf("[");
+    if (start === -1) throw new Error("SEED_NO_JSON: wrangler returned no result array.");
+    return JSON.parse(output.slice(start)).flatMap((result) => result.results ?? []);
+  };
+
+  execute(sql);
+  await verifyTimestamps((command) => execute(command, true));
 
   console.log(`[seed-e2e] account ready for ${email} (role: admin), 1 published product linked to the storefront channel`);
+  console.log("[seed-e2e] timestamps verified: every seeded row reads back through the conversion its schema declares");
 }
 
 main().catch((error) => {
