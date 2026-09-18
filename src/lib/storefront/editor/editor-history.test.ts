@@ -29,6 +29,50 @@ function entry(label: string, log: string[]) {
 }
 
 describe("editor history", () => {
+  it("counts the writes that landed, and only those", async () => {
+    // The count the end-to-end suite waits on. It has to move on `record`,
+    // which the shell calls from the save's `onSaved`, and back on `undo` and
+    // on `discard` — a write that never landed must not be counted, or a test
+    // waiting for it would go on without it.
+    const log: string[] = [];
+    const history = createEditorHistory();
+    expect(history.getSnapshot().depth).toBe(0);
+
+    const first = history.record(entry("padding", log));
+    expect(history.getSnapshot().depth).toBe(1);
+    history.record(entry("heading", log));
+    expect(history.getSnapshot().depth).toBe(2);
+
+    history.discard(first);
+    expect(history.getSnapshot().depth).toBe(1);
+    expect(history.getSnapshot().undoLabel).toBe("heading");
+
+    await history.undo();
+    expect(history.getSnapshot().depth).toBe(0);
+
+    history.record(entry("colour", log));
+    history.clear();
+    expect(history.getSnapshot().depth).toBe(0);
+  });
+
+  it("republishes when only the depth changed", async () => {
+    // A subscriber that waits for the depth is the whole point of the field, so
+    // a change that touches nothing else must still notify.
+    const history = createEditorHistory();
+    const seen: number[] = [];
+    const stop = history.subscribe(() => {
+      seen.push(history.getSnapshot().depth);
+    });
+
+    // Two entries with the same label and the same resulting flags: before the
+    // depth existed this republished nothing.
+    history.record(entry("padding", []));
+    history.record(entry("padding", []));
+    stop();
+
+    expect(seen).toEqual([1, 2]);
+  });
+
   it("reverses edits in the order they were made", async () => {
     const log: string[] = [];
     const history = createEditorHistory();

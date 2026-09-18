@@ -58,6 +58,21 @@ export type EditorHistorySnapshot = Readonly<{
   redoLabel: string | null;
   /** True while an undo or redo is still being written. */
   busy: boolean;
+  /**
+   * How many edits have been recorded and not yet undone.
+   *
+   * `canUndo` cannot answer "did the edit I just made land". It is already true
+   * from the first recorded edit, so it stays true while a later write is still
+   * in flight, and a caller waiting on it returns early. Depth is the count of
+   * writes that really landed — `record()` is called from the save's `onSaved`,
+   * and `discard()` takes back one that did not — so it is the only monotonic
+   * signal that can tell "this write landed" from "an earlier one did".
+   *
+   * The end-to-end suite waits on it, for the exact count the test caused. It
+   * is on the snapshot rather than derived by the caller because the caller
+   * cannot see `past`.
+   */
+  depth: number;
 }>;
 
 export const DEFAULT_EDITOR_HISTORY_LIMIT = 100;
@@ -100,6 +115,7 @@ export function createEditorHistory(
     undoLabel: null,
     redoLabel: null,
     busy: false,
+    depth: 0,
   };
   const listeners = new Set<() => void>();
 
@@ -110,13 +126,18 @@ export function createEditorHistory(
       undoLabel: past.at(-1)?.label ?? null,
       redoLabel: future.at(-1)?.label ?? null,
       busy,
+      depth: past.length,
     };
     if (
       next.canUndo === snapshot.canUndo &&
       next.canRedo === snapshot.canRedo &&
       next.undoLabel === snapshot.undoLabel &&
       next.redoLabel === snapshot.redoLabel &&
-      next.busy === snapshot.busy
+      next.busy === snapshot.busy &&
+      // Without this the depth is on the snapshot but never republished, and a
+      // subscriber waiting for it waits forever — the failure mode this field
+      // exists to remove, reintroduced one layer down.
+      next.depth === snapshot.depth
     ) {
       return;
     }

@@ -6346,6 +6346,10 @@ export function VisualEditorShell({
             disabled={!historyState.canUndo}
             onClick={history.undo}
             aria-label="Undo"
+            // How many writes have landed, which `disabled` cannot express: it
+            // is already false from the first edit. The end-to-end suite waits
+            // for this count instead of guessing at a settled panel.
+            data-editor-undo-depth={historyState.depth}
             title={
               historyState.undoLabel ? `Undo ${historyState.undoLabel}` : "Undo"
             }

@@ -437,12 +437,14 @@ test.describe("visual editor", () => {
       // was all there was — the first order could never be reached again.
       await dragSection(page, 0, 1);
       await expect.poll(() => sectionOrder(page)).not.toEqual(original);
-      await settleAfterWrite(page);
+      await settleAfterWrite(page, 1);
       const afterFirst = await sectionOrder(page);
 
       await dragSection(page, 1, 2);
       await expect.poll(() => sectionOrder(page)).not.toEqual(afterFirst);
-      await settleAfterWrite(page);
+      // Two writes, so two entries before anything is undone. This is the line
+      // whose absence was the bug.
+      await settleAfterWrite(page, 2);
 
       await undo.click();
       await expect
@@ -592,16 +594,25 @@ async function dragSection(page: Page, fromIndex: number, toIndex: number) {
  * before it — which is what made this test fail while the editor was behaving
  * correctly.
  */
-async function settleAfterWrite(page: Page) {
+async function settleAfterWrite(page: Page, expectedDepth: number) {
+  // `canUndo` cannot say "the write you just made has landed": it is already
+  // true from the first recorded edit, so a second write is invisible to it and
+  // this helper used to return while that write was still in its debounce. The
+  // test then pressed undo against a history that did not yet hold the write it
+  // meant to reverse, the order went back one step too far, and the failure
+  // surfaced 20 seconds later as a poll for an order that was never coming.
+  //
+  // Depth is the number of writes that landed, so waiting for the count this
+  // test caused is exact and monotonic, and a write that never lands fails here
+  // — where the reason is knowable — rather than somewhere unrelated later.
+  // Passing the count also states the premise the assertions rest on: two
+  // reorders, two entries.
   const undo = page.getByRole("button", { name: /undo/i }).first();
-  await expect(undo).toBeEnabled({ timeout: 20_000 });
-  let previous = await sectionOrder(page);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    await page.waitForTimeout(500);
-    const current = await sectionOrder(page);
-    if (current.join("\u0000") === previous.join("\u0000")) return;
-    previous = current;
-  }
+  await expect(undo).toHaveAttribute(
+    "data-editor-undo-depth",
+    String(expectedDepth),
+    { timeout: 20_000 },
+  );
 }
 
 /** Reads a measurement repeatedly until two consecutive reads agree. */
