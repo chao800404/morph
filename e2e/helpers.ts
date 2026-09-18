@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 /**
  * The editor path under test.
@@ -52,6 +52,35 @@ export async function exposedCanvasPoint(page: Page) {
 }
 
 /**
+ * Not captured here: the preview server's own stage timings.
+ *
+ * `storefront-theme-preview-server.serverFn` returns `timings` beside
+ * `readyMs` — `workspaceMs`, `workspaceMaterializeMs`, `viteReadyMs` — and both
+ * transports fill it, which is what the sandbox server's comment means by
+ * "returned stage timings make local and deployed latency measurable". They are
+ * the server half of everything below, and they are measured, returned, and
+ * then dropped: nothing in the editor reads them.
+ *
+ * A first version of this helper read them off the response. It could not:
+ * TanStack Start encodes server function replies with seroval, so the body is
+ * `{"t":10,"i":0,"p":{"k":[...],"v":[...]}}` and `data.timings` does not exist
+ * to access. Decoding that shape by hand would couple these tests to an
+ * internal format whose failure mode is silence — a capture that quietly
+ * returns nothing is the exact thing the rest of this file exists to stop.
+ *
+ * The honest way in is the client, which already holds the decoded object. Once
+ * the editor surfaces it, `page.on("console")` reads it with no coupling at
+ * all, and the same line answers the question on a deployed sandbox.
+ */
+
+/** `name 123ms` pairs, in the order they finished. */
+function describeStages(stages: ReadonlyArray<[string, number]>): string {
+  return stages.length
+    ? stages.map(([name, ms]) => `${name} ${ms}ms`).join(", ")
+    : "none";
+}
+
+/**
  * Opens the editor and puts the canvas back to its default pan and zoom.
  *
  * The canvas remembers where it was left, and a panned canvas puts the theme's
@@ -59,14 +88,51 @@ export async function exposedCanvasPoint(page: Page) {
  * only while selection is off — which is also the state the editor loads in.
  */
 export async function openEditor(page: Page) {
+  const done: [string, number][] = [];
+
+  /**
+   * One handoff, named, timed, and reported when it is the one that stalled.
+   *
+   * This phase is the most expensive thing every spec does and it used to be
+   * opaque: six waits behind one 45s ceiling, so a stall failed whichever
+   * assertion came next and the error named a spec that had nothing to do with
+   * it. Two CI reds were read that way before the real causes were found.
+   *
+   * `test.step` puts each stage in the report and the trace with its own
+   * duration; the rethrow adds what a trace cannot show at a glance — which
+   * stages did complete, and what the preview server said about its own half.
+   */
+  const stage = async (name: string, run: () => Promise<void>) => {
+    const startedAt = Date.now();
+    try {
+      await test.step(`openEditor: ${name}`, run);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `openEditor stalled at "${name}" after ${Date.now() - startedAt}ms.\n` +
+          `Completed: ${describeStages(done)}.\n\n` +
+          reason,
+      );
+    }
+    done.push([name, Date.now() - startedAt]);
+  };
+
   // "domcontentloaded", not the default "load": the editor holds a preview
   // iframe that keeps fetching, so the load event can arrive late or not at all.
-  await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
-    timeout: 45_000,
+  await stage("document", async () => {
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
   });
-  await expect(page.locator("iframe").first()).toBeAttached({
-    timeout: 45_000,
+
+  await stage("editor chrome", async () => {
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+  });
+
+  await stage("preview frame", async () => {
+    await expect(page.locator("iframe").first()).toBeAttached({
+      timeout: 45_000,
+    });
   });
 
   // The toolbar can appear before the preview has rendered anything and before
@@ -78,28 +144,47 @@ export async function openEditor(page: Page) {
   // actually rendered, and a row in the sidebar, which can only exist once the
   // preview has reported its structure back. Together they say the bridge
   // completed its handshake — the thing the pause was guessing at.
-  await expect(
-    previewFrame(page).locator("[data-storefront-section-id]").first(),
-  ).toBeAttached({ timeout: 45_000 });
-  await expect(
-    page.locator("[data-editor-tree-sortable]").first(),
-  ).toBeAttached({ timeout: 45_000 });
-  // Handlers attach on the commit after that structure lands.
-  await page.waitForTimeout(500);
+  await stage("theme rendered", async () => {
+    await expect(
+      previewFrame(page).locator("[data-storefront-section-id]").first(),
+    ).toBeAttached({ timeout: 45_000 });
+  });
+
+  await stage("structure reported", async () => {
+    await expect(
+      page.locator("[data-editor-tree-sortable]").first(),
+    ).toBeAttached({ timeout: 45_000 });
+  });
+
+  // The one guess left in this phase, and named so that it is visible as one.
+  // Handlers attach on the commit after that structure lands, and no marker
+  // says when that commit happened — so this is a fixed pause, deliberately
+  // still here rather than replaced by a signal invented to retire it. Its cost
+  // is now measured alongside the stages that are real, which is what a
+  // replacement would have to be argued against.
+  await stage("handlers attached (fixed 500ms)", async () => {
+    await page.waitForTimeout(500);
+  });
 
   // The pointer tool can be restored from the previous iframe document while
   // the editor shell stays mounted. A double click selects in that mode; it
   // does not reset the canvas transform, leaving the targets under a panel.
-  const disableSelection = page.getByRole("button", {
-    name: "Disable section selection",
+  await stage("canvas reset", async () => {
+    const disableSelection = page.getByRole("button", {
+      name: "Disable section selection",
+    });
+    if (await disableSelection.isVisible().catch(() => false)) {
+      await disableSelection.click();
+    }
+    const point = await exposedCanvasPoint(page);
+    if (point) {
+      await page.mouse.dblclick(point.x, point.y);
+    }
   });
-  if (await disableSelection.isVisible().catch(() => false)) {
-    await disableSelection.click();
-  }
-  const point = await exposedCanvasPoint(page);
-  if (point) {
-    await page.mouse.dblclick(point.x, point.y);
-  }
+
+  // Printed the way the latency specs print theirs, so a run carries the
+  // distribution of this phase without a second job to collect it.
+  console.log(`[openEditor] ${describeStages(done)}`);
 }
 
 /** Turns on the pointer tool, the first thing a person does to select. */
