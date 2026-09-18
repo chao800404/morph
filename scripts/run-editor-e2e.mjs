@@ -24,7 +24,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,6 +34,21 @@ const DEV_PORT = Number(process.env.MORPH_E2E_PORT ?? 3000);
 const DEV_ORIGIN = `http://localhost:${DEV_PORT}`;
 const SIDECAR_ENV_FILE = `.dev.vars.${WRANGLER_ENV}`;
 const READY_TIMEOUT_MS = 120_000;
+/**
+ * Fewest tests a whole run may execute before the result is treated as a
+ * mistake rather than a pass.
+ *
+ * Every editor spec skips itself when `E2E_EDITOR_PATH` is unset, which is the
+ * documented behaviour and the right one for a developer who has not set the
+ * suite up. It also means one bad variable turns the job green with nothing
+ * run, and "27 passed" and "0 passed" arrive through the same exit code. This
+ * is the same refusal the build guard makes: a vacuum is not a pass.
+ *
+ * Only applied to a full run. Asking for one spec is a deliberate narrowing,
+ * and a floor that failed it would make the script useless for the debugging
+ * it exists to support.
+ */
+const MIN_TESTS_RUN = Number(process.env.MORPH_E2E_MIN_TESTS ?? 20);
 
 /** Children to stop, newest first, however the run ends. */
 const started = [];
@@ -128,6 +143,36 @@ async function cleanUp() {
   }
 }
 
+/**
+ * How many tests actually executed, as distinct from how many were collected.
+ *
+ * Counted from Playwright's own JSON report rather than from its console
+ * output, which is a rendering and changes with the reporter.
+ */
+async function testsRun(reportPath) {
+  let report;
+  try {
+    report = JSON.parse(await readFile(reportPath, "utf8"));
+  } catch {
+    throw new Error(
+      `UNREADABLE_REPORT: Playwright wrote no JSON report at ${reportPath}, so the number of tests that ran cannot be checked.`,
+    );
+  }
+  let ran = 0;
+  const visit = (suite) => {
+    for (const spec of suite.specs ?? []) {
+      for (const test of spec.tests ?? []) {
+        for (const result of test.results ?? []) {
+          if (result.status && result.status !== "skipped") ran += 1;
+        }
+      }
+    }
+    for (const child of suite.suites ?? []) visit(child);
+  };
+  for (const suite of report.suites ?? []) visit(suite);
+  return ran;
+}
+
 async function main() {
   if (!existsSync(SIDECAR_ENV_FILE)) {
     throw new Error(
@@ -178,13 +223,28 @@ async function main() {
   log("dev server ready");
 
   const extra = process.argv.slice(2);
+  const report = path.join(stateDir, "playwright-report.json");
+  const reporting = extra.some((argument) => argument.startsWith("--reporter"))
+    ? []
+    : ["--reporter=line,json"];
   log(`running playwright${extra.length ? ` (${extra.join(" ")})` : ""}`);
-  run("npx", ["playwright", "test", "--project=editor", ...extra], {
+  run("npx", ["playwright", "test", "--project=editor", ...reporting, ...extra], {
     // Asserted as a precondition, so a run that silently fell back to the
     // container transport fails instead of passing for the wrong reason.
     E2E_EXPECT_PREVIEW_TRANSPORT: "local-sidecar",
     MORPH_E2E_STATE_DIR: stateDir,
+    PLAYWRIGHT_JSON_OUTPUT_NAME: report,
   });
+
+  if (extra.length === 0 && reporting.length > 0) {
+    const ran = await testsRun(report);
+    if (ran < MIN_TESTS_RUN) {
+      throw new Error(
+        `TOO_FEW_TESTS_RAN: ${ran} test(s) executed, expected at least ${MIN_TESTS_RUN}. Playwright reported success, but a suite that skipped itself passes the same way one that ran does. Check that .env.e2e still carries E2E_EDITOR_PATH, E2E_EMAIL and E2E_PASSWORD.`,
+      );
+    }
+    log(`${ran} tests executed`);
+  }
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
