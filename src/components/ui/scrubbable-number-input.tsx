@@ -22,7 +22,17 @@ type ScrubbableNumberInputProps = {
   ariaLabel: string;
   className?: string;
   inputClassName?: string;
-  onValuePreview?: (value: number) => void;
+  /**
+   * Where a drag goes while it is still in flight.
+   *
+   * Required, though every call site could have fallen back to `onValueChange`
+   * — and that is exactly why it is not optional. The fallback made a drag
+   * commit on every pointer event, silently, at any call site that forgot to
+   * pass this: `onValueChange` reaches the Inspector's write path, so one call
+   * per move is one persistent write per move. A caller that really does want
+   * every step committed passes the same function twice and says so.
+   */
+  onValuePreview: (value: number) => void;
   onValueChange: (value: number) => void;
 };
 
@@ -95,7 +105,7 @@ export function ScrubbableNumberInput({
 
     const nextValue = clamp(parsed, min, max);
     setDraftValue(String(nextValue));
-    onValuePreview?.(nextValue);
+    onValuePreview(nextValue);
     onValueChange(nextValue);
   };
 
@@ -108,7 +118,7 @@ export function ScrubbableNumberInput({
     if (event.key === "Escape") {
       event.preventDefault();
       setDraftValue(String(value));
-      onValuePreview?.(value);
+      onValuePreview(value);
       skipNextBlurCommitRef.current = true;
       isEditingRef.current = false;
       inputRef.current?.blur();
@@ -127,7 +137,7 @@ export function ScrubbableNumberInput({
     );
     isEditingRef.current = true;
     setDraftValue(String(nextValue));
-    onValuePreview?.(nextValue);
+    onValuePreview(nextValue);
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLInputElement>) => {
@@ -186,7 +196,7 @@ export function ScrubbableNumberInput({
     origin.moved = true;
     origin.nextValue = nextValue;
     setDraftValue(String(nextValue));
-    (onValuePreview ?? onValueChange)(nextValue);
+    onValuePreview(nextValue);
   };
 
   const handlePointerUp = (event: PointerEvent<HTMLInputElement>) => {
@@ -197,7 +207,7 @@ export function ScrubbableNumberInput({
     releasePointerLock();
 
     if (origin.moved) {
-      onValuePreview?.(origin.nextValue);
+      onValuePreview(origin.nextValue);
       onValueChange(origin.nextValue);
       isEditingRef.current = false;
       return;
@@ -242,7 +252,7 @@ export function ScrubbableNumberInput({
           draftValueRef.current = event.target.value;
           const parsed = Number(event.target.value);
           if (event.target.value.trim() !== "" && Number.isFinite(parsed)) {
-            onValuePreview?.(clamp(parsed, min, max));
+            onValuePreview(clamp(parsed, min, max));
           }
         }}
         onBlur={() => {

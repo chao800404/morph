@@ -6070,6 +6070,16 @@ export function VisualEditorShell({
                 scrubPixelsPerStep={2}
                 suffix="%"
                 ariaLabel="Canvas zoom percentage"
+                // Both, and the same function: the canvas already batches
+                // through `scheduleCanvasTransform`, so a drag following the
+                // pointer and a drag committing on release are the same call
+                // here. Stated rather than left to a fallback.
+                onValuePreview={(value) =>
+                  scheduleCanvasTransform((current) => ({
+                    ...current,
+                    scale: clampCanvasScale(value / 100),
+                  }))
+                }
                 onValueChange={(value) =>
                   scheduleCanvasTransform((current) => ({
                     ...current,

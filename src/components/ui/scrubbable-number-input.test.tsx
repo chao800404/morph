@@ -11,6 +11,7 @@ describe("ScrubbableNumberInput", () => {
         max={200}
         suffix="%"
         ariaLabel="Canvas zoom percentage"
+        onValuePreview={vi.fn()}
         onValueChange={vi.fn()}
       />,
     );
@@ -39,6 +40,7 @@ describe("ScrubbableNumberInput", () => {
         max={200}
         suffix="%"
         ariaLabel="Canvas zoom percentage"
+        onValuePreview={vi.fn()}
         onValueChange={onValueChange}
       />,
     );
@@ -61,6 +63,7 @@ describe("ScrubbableNumberInput", () => {
         max={10_000}
         step={4}
         ariaLabel="Section padding"
+        onValuePreview={vi.fn()}
         onValueChange={onValueChange}
       />,
     );
@@ -220,6 +223,87 @@ describe("ScrubbableNumberInput", () => {
     expect(onValueChange).toHaveBeenLastCalledWith(110);
   });
 
+  /**
+   * The count, not the value.
+   *
+   * The test above already asserted what a scrub ends up committing, with
+   * `toHaveBeenLastCalledWith` and a single move — which passes just as well if
+   * every step of the drag commits. That is the failure this control exists to
+   * avoid: `onValueChange` is wired to the Inspector's write path, so one call
+   * per pointer event is a persistent write per pointer event.
+   *
+   * Twenty steps, because one cannot tell "once at the end" from "once per
+   * move".
+   */
+  it("commits nothing while a drag is in flight, and exactly once when it ends", () => {
+    const onValuePreview = vi.fn();
+    const onValueChange = vi.fn();
+    render(
+      <ScrubbableNumberInput
+        value={100}
+        min={25}
+        max={200}
+        step={1}
+        scrubPixelsPerStep={2}
+        ariaLabel="Canvas zoom percentage"
+        onValuePreview={onValuePreview}
+        onValueChange={onValueChange}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Canvas zoom percentage",
+    });
+    Object.defineProperty(input, "setPointerCapture", { value: vi.fn() });
+
+    fireEvent.pointerDown(input, { button: 0, pointerId: 1, clientX: 100 });
+    for (let step = 1; step <= 20; step += 1) {
+      fireEvent.pointerMove(input, { pointerId: 1, clientX: 100 + step * 2 });
+    }
+
+    expect(
+      onValueChange,
+      "a drag committed before the pointer was released",
+    ).toHaveBeenCalledTimes(0);
+    // The preview is the thing that is allowed to be continuous: it is what
+    // makes the canvas follow the pointer.
+    expect(onValuePreview.mock.calls.length).toBeGreaterThan(1);
+
+    fireEvent.pointerUp(input, { pointerId: 1, clientX: 140 });
+
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+    expect(onValueChange).toHaveBeenCalledWith(120);
+  });
+
+  /**
+   * A press that never moved is a focus, not an edit. Without this, "commits
+   * exactly once" could be satisfied by committing on every release.
+   */
+  it("commits nothing when a press never became a drag", () => {
+    const onValueChange = vi.fn();
+    render(
+      <ScrubbableNumberInput
+        value={100}
+        min={25}
+        max={200}
+        step={1}
+        ariaLabel="Canvas zoom percentage"
+        onValuePreview={vi.fn()}
+        onValueChange={onValueChange}
+      />,
+    );
+
+    const input = screen.getByRole("spinbutton", {
+      name: "Canvas zoom percentage",
+    });
+    Object.defineProperty(input, "setPointerCapture", { value: vi.fn() });
+
+    fireEvent.pointerDown(input, { button: 0, pointerId: 1, clientX: 100 });
+    fireEvent.pointerUp(input, { pointerId: 1, clientX: 100 });
+
+    expect(onValueChange).toHaveBeenCalledTimes(0);
+  });
+
   it("keeps accumulating movement while the pointer is locked at a screen edge", () => {
     const onValuePreview = vi.fn();
     const onValueChange = vi.fn();
@@ -288,6 +372,7 @@ describe("ScrubbableNumberInput", () => {
         min={25}
         max={200}
         ariaLabel="Canvas zoom percentage"
+        onValuePreview={vi.fn()}
         onValueChange={onValueChange}
       />,
     );
@@ -302,6 +387,7 @@ describe("ScrubbableNumberInput", () => {
         min={25}
         max={200}
         ariaLabel="Canvas zoom percentage"
+        onValuePreview={vi.fn()}
         onValueChange={onValueChange}
       />,
     );
