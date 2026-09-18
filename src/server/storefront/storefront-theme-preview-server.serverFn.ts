@@ -8,7 +8,6 @@ import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-fi
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import {
-  CloudflareSandboxVitePreviewServer,
   THEME_PREVIEW_SERVER_PORT,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
 } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
@@ -19,10 +18,7 @@ import {
 import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
 import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
 import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-preview-session-id";
-import {
-  resolveThemePreviewServerHost,
-  validateExposedPreviewUrl,
-} from "@/lib/storefront/service/theme-preview-server-origin";
+import { createServerThemePreviewServer } from "@/lib/storefront/service/theme-preview-server.factory";
 import { createThemePreviewContentSnapshot } from "@/lib/storefront/compiler/theme-preview-content";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
 
@@ -54,6 +50,10 @@ const touchThemePreviewServerInputSchema = themePreviewServerInputSchema.extend(
 type PreviewEnv = {
   THEME_PREVIEW_HOSTNAME?: string;
   Sandbox?: unknown;
+  /** Loopback origin a locally-run preview sidecar listens on. */
+  MORPH_LOCAL_THEME_PREVIEW_ORIGIN?: string;
+  /** The token that sidecar was started with. */
+  MORPH_LOCAL_THEME_PREVIEW_TOKEN?: string;
 };
 
 export const startThemePreviewServer = createServerFn({ method: "POST" })
@@ -62,19 +62,15 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
   .handler(async ({ data: input, context }) => {
     if (!input.success) return input;
     const { storefrontId, themeId } = input.data;
-    const previewEnv = env as unknown as PreviewEnv;
 
-    // Resolved before any container is touched. A preview with nowhere safe to
-    // run should cost nothing and change nothing.
-    const host = resolveThemePreviewServerHost({
-      configuredPreviewHostname: previewEnv.THEME_PREVIEW_HOSTNAME,
-      env: env as unknown as Record<string, unknown>,
-    });
-    if (!host.enabled) {
-      return fail(
-        "The Live Preview server needs its own hostname, separate from every Morph hostname.",
-        { error: host.reason },
-      );
+    // Resolved before any container or sidecar is touched. A preview with
+    // nowhere safe to run should cost nothing and change nothing, and which
+    // transport that is comes from the environment rather than from a flag.
+    const selection = createServerThemePreviewServer(
+      env as unknown as Record<string, unknown>,
+    );
+    if (!selection.enabled) {
+      return fail(selection.message, { error: selection.reason });
     }
 
     const editorContext = await storefrontThemeDal.findEditorContext(
@@ -110,14 +106,12 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       pages,
     });
 
-    const server = new CloudflareSandboxVitePreviewServer({
-      sandboxBinding: previewEnv.Sandbox,
-    });
+    const server = selection.server;
     const started = await server.start({
       previewId,
       files: files.map((file) => ({ path: file.path, content: file.content })),
       entry,
-      previewHostname: host.hostname,
+      previewHostname: selection.previewHostname,
       previewContent,
       env: env as unknown as Record<string, unknown>,
     });
@@ -137,10 +131,9 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     }
 
     // Checked again on this side of the boundary. The URL comes back from the
-    // container runtime, and the editor is about to frame it.
-    const url = validateExposedPreviewUrl({
+    // container runtime or the sidecar, and the editor is about to frame it.
+    const url = selection.admitAddress({
       url: started.url,
-      hostname: host.hostname,
       env: env as unknown as Record<string, unknown>,
     });
     if (!url.ok) {
@@ -181,12 +174,15 @@ export const stopThemePreviewServer = createServerFn({ method: "POST" })
       themeId,
       userId: context.user.id,
     });
-    const server = new CloudflareSandboxVitePreviewServer({
-      sandboxBinding: (env as unknown as PreviewEnv).Sandbox,
-    });
+    const selection = createServerThemePreviewServer(
+      env as unknown as Record<string, unknown>,
+    );
     // Stopping something that is not running is the same outcome as stopping
-    // it, so a failure here is not worth surfacing to the author.
-    await server.stop(previewId).catch(() => {});
+    // it, so a failure here is not worth surfacing to the author — and neither
+    // is having no transport to stop, which is the same nothing.
+    if (selection.enabled) {
+      await selection.server.stop(previewId).catch(() => {});
+    }
 
     return ok("Live Preview server stopped", { previewId });
   });
@@ -217,13 +213,11 @@ export const touchThemePreviewServer = createServerFn({ method: "POST" })
   .handler(async ({ data: input, context }) => {
     if (!input.success) return input;
     const { storefrontId, themeId, previewOrigin } = input.data;
-    const previewEnv = env as unknown as PreviewEnv;
 
-    const host = resolveThemePreviewServerHost({
-      configuredPreviewHostname: previewEnv.THEME_PREVIEW_HOSTNAME,
-      env: env as unknown as Record<string, unknown>,
-    });
-    if (!host.enabled) {
+    const selection = createServerThemePreviewServer(
+      env as unknown as Record<string, unknown>,
+    );
+    if (!selection.enabled) {
       return ok("Live Preview server checked", {
         previewId: null,
         serving: false,
@@ -235,12 +229,9 @@ export const touchThemePreviewServer = createServerFn({ method: "POST" })
       themeId,
       userId: context.user.id,
     });
-    const server = new CloudflareSandboxVitePreviewServer({
-      sandboxBinding: previewEnv.Sandbox,
-    });
-    const serving = await server.isServing({
+    const serving = await selection.server.isServing({
       previewId,
-      previewHostname: host.hostname,
+      previewHostname: selection.previewHostname,
       expectedOrigin: previewOrigin,
     });
     // Not a failure of this request: "the preview is gone" is an answer, and
@@ -345,79 +336,102 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
     const changed: string[] = [];
     const unchanged: string[] = [];
     const skipped: string[] = [];
-    let workspaceFingerprintInvalidated = false;
+
+    // Left as the transport generated it. Reported separately from "unchanged",
+    // because the two are different facts: one says the workspace already holds
+    // what the editor sent, the other says the editor never owned that file
+    // here. Decided once, for both transports, so a generated path cannot be
+    // skipped on one path and written on the other.
+    const writable: { path: string; content: string }[] = [];
+    for (const file of hoisted) {
+      if (isWorkspaceGeneratedThemePath(file.path)) {
+        skipped.push(file.path);
+        continue;
+      }
+      writable.push({ path: file.path, content: String(file.content) });
+    }
+
+    const selection = createServerThemePreviewServer(
+      env as unknown as Record<string, unknown>,
+    );
 
     try {
-      const { getSandbox } = await import("@cloudflare/sandbox");
-      const sandbox = getSandbox(
-        (env as unknown as PreviewEnv).Sandbox as never,
-        previewId,
-      ) as unknown as {
-        writeFile(path: string, content: string): Promise<void>;
-        readFile?(
-          path: string,
-          options?: { encoding?: string },
-        ): Promise<{ content?: unknown } | string>;
-        getExposedPorts?(
-          hostname: string,
-        ): Promise<Array<{ port: number; status: string; url: string }>>;
-        exposePort?(
-          port: number,
-          options: { hostname: string; name?: string },
-        ): Promise<unknown>;
-      };
-      for (const file of hoisted) {
-        // Left as the container generated it. Reported separately from
-        // "unchanged", because the two are different facts: one says the
-        // container already holds what the editor sent, the other says the
-        // editor never owned that file here.
-        if (isWorkspaceGeneratedThemePath(file.path)) {
-          skipped.push(file.path);
-          continue;
+      if (selection.enabled && selection.applyFiles) {
+        // A sidecar's filesystem is in another process. It applies the same
+        // "only write what differs" rule on its side, because there it is what
+        // decides whether Vite rebuilds.
+        const applied = await selection.applyFiles({ previewId, files: writable });
+        changed.push(...applied.changed);
+        unchanged.push(...applied.unchanged);
+      } else {
+        const { getSandbox } = await import("@cloudflare/sandbox");
+        const sandbox = getSandbox(
+          (env as unknown as PreviewEnv).Sandbox as never,
+          previewId,
+        ) as unknown as {
+          writeFile(path: string, content: string): Promise<void>;
+          readFile?(
+            path: string,
+            options?: { encoding?: string },
+          ): Promise<{ content?: unknown } | string>;
+          getExposedPorts?(
+            hostname: string,
+          ): Promise<Array<{ port: number; status: string; url: string }>>;
+          exposePort?(
+            port: number,
+            options: { hostname: string; name?: string },
+          ): Promise<unknown>;
+        };
+        let workspaceFingerprintInvalidated = false;
+        for (const file of writable) {
+          const target = `/workspace/${file.path}`;
+          // Written only when it would differ. Vite rebuilds on every write,
+          // even one that changes nothing, and a rebuild the author did not ask
+          // for costs them the state they were looking at.
+          if (await fileMatches(sandbox, target, file.content)) {
+            unchanged.push(file.path);
+            continue;
+          }
+          // The marker describes the entire workspace, so invalidate it before
+          // the first incremental write. If this request stops halfway, the
+          // next start performs a complete sync instead of trusting a partial
+          // HMR update as the prior committed plan.
+          if (!workspaceFingerprintInvalidated) {
+            await sandbox.writeFile(
+              THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+              "dirty",
+            );
+            workspaceFingerprintInvalidated = true;
+          }
+          await sandbox.writeFile(target, file.content);
+          changed.push(file.path);
         }
-        const target = `/workspace/${file.path}`;
-        // Written only when it would differ. Vite rebuilds on every write,
-        // even one that changes nothing, and a rebuild the author did not ask
-        // for costs them the state they were looking at.
-        if (await fileMatches(sandbox, target, file.content)) {
-          unchanged.push(file.path);
-          continue;
-        }
-        // The marker describes the entire workspace, so invalidate it before
-        // the first incremental write. If this request stops halfway, the
-        // next start performs a complete sync instead of trusting a partial
-        // HMR update as the prior committed plan.
-        if (!workspaceFingerprintInvalidated) {
-          await sandbox.writeFile(
-            THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-            "dirty",
-          );
-          workspaceFingerprintInvalidated = true;
-        }
-        await sandbox.writeFile(target, file.content);
-        changed.push(file.path);
-      }
 
-      const previewEnv = env as unknown as PreviewEnv;
-      const host = resolveThemePreviewServerHost({
-        configuredPreviewHostname: previewEnv.THEME_PREVIEW_HOSTNAME,
-        env: env as unknown as Record<string, unknown>,
-      });
-      if (host.enabled && typeof sandbox.exposePort === "function") {
-        const exposed =
-          typeof sandbox.getExposedPorts === "function"
-            ? await sandbox.getExposedPorts(host.hostname).catch(() => [])
-            : [];
-        const isPortActive = exposed.some(
-          (entry) =>
-            entry.port === THEME_PREVIEW_SERVER_PORT &&
-            entry.status === "active",
-        );
-        if (!isPortActive) {
-          await sandbox.exposePort(THEME_PREVIEW_SERVER_PORT, {
-            hostname: host.hostname,
-            name: "live-preview",
-          });
+        // Re-exposed through the same selection that chose the transport, so
+        // the host a preview is reached on is decided in one place rather than
+        // re-derived here from a binding.
+        if (
+          selection.enabled &&
+          selection.kind === "cloudflare-sandbox" &&
+          typeof sandbox.exposePort === "function"
+        ) {
+          const exposed =
+            typeof sandbox.getExposedPorts === "function"
+              ? await sandbox
+                  .getExposedPorts(selection.previewHostname)
+                  .catch(() => [])
+              : [];
+          const isPortActive = exposed.some(
+            (entry) =>
+              entry.port === THEME_PREVIEW_SERVER_PORT &&
+              entry.status === "active",
+          );
+          if (!isPortActive) {
+            await sandbox.exposePort(THEME_PREVIEW_SERVER_PORT, {
+              hostname: selection.previewHostname,
+              name: "live-preview",
+            });
+          }
         }
       }
     } catch (error) {

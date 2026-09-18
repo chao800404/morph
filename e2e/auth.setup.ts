@@ -1,4 +1,4 @@
-import { expect, test as setup } from "@playwright/test";
+import { expect, test as setup, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -11,6 +11,26 @@ const STORAGE_STATE = "e2e/.auth/user.json";
  * password committed to a project is a password leaked, and the local database
  * belongs to whoever is running the tests.
  */
+/**
+ * Opens a page that makes the store exist.
+ *
+ * The editor does not create a storefront or a theme. It fills a workspace and
+ * a home document for one that is already there, while the rows themselves are
+ * written by `ensureDefault`, which only the currency and sales-channel paths
+ * reach. On a developer's machine that ran long ago and is invisible; on the
+ * empty database an end-to-end run starts from, going straight to the editor
+ * finds nothing to edit.
+ *
+ * So the run arrives the way a person does, through a page that asks for the
+ * store. Doing it here rather than in a seed keeps provisioning in one place:
+ * if what triggers it ever moves, this follows the application instead of
+ * drifting from it.
+ */
+async function ensureStoreProvisioned(page: Page) {
+  await page.goto("/dashboard/settings", { waitUntil: "domcontentloaded" });
+  await expect(page).not.toHaveURL(/sign-in/, { timeout: 30_000 });
+}
+
 setup("authenticate", async ({ page, browser, baseURL }) => {
   const email = process.env.E2E_EMAIL;
   const password = process.env.E2E_PASSWORD;
@@ -32,8 +52,12 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
       .goto("/dashboard", { waitUntil: "domcontentloaded", timeout: 30_000 })
       .catch(() => undefined);
     const stillSignedIn = !probe.url().includes("sign-in");
+    if (stillSignedIn) {
+      await ensureStoreProvisioned(probe);
+      await context.close();
+      return;
+    }
     await context.close();
-    if (stillSignedIn) return;
   }
 
   await page.goto("/sign-in");
@@ -60,6 +84,8 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
   // Landing anywhere other than the sign-in page is what proves the session
   // exists; the destination differs by role and by what was requested.
   await expect(page).not.toHaveURL(/sign-in/, { timeout: 30_000 });
+
+  await ensureStoreProvisioned(page);
 
   fs.mkdirSync(path.dirname(STORAGE_STATE), { recursive: true });
   await page.context().storageState({ path: STORAGE_STATE });

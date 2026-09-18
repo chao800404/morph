@@ -3,10 +3,11 @@ import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
 import {
   previewDevInfrastructureGuardSource,
+  SANDBOX_TOOLCHAIN_ROOT,
   THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES,
-  THEME_PREVIEW_FS_ALLOW_ROOTS,
   THEME_PREVIEW_SERVER_BASE_PATH,
   THEME_PREVIEW_SERVER_HMR_PATH,
+  themePreviewFsAllowRoots,
 } from "./theme-preview-dev-server";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
@@ -124,7 +125,32 @@ export type PrepareThemeWorkspaceInput = Readonly<{
 export type PlanThemeWorkspaceInput = Omit<
   PrepareThemeWorkspaceInput,
   "session"
->;
+> &
+  Readonly<{
+    /**
+     * Filesystem root the generated `vite.config.ts` names.
+     *
+     * File paths in the plan stay in the workspace vocabulary — `/workspace/...`
+     * — because a `ThemeWorkspaceWriter` translates them to wherever the
+     * workspace really is. The generated config is different: it is source a
+     * *toolchain* reads, and every path in it is resolved by that toolchain
+     * against the real filesystem. In a container the two happen to be the same
+     * string; a server running out of a checkout has them differ, and a config
+     * still naming `/workspace` there fails its own containment check on the
+     * first import.
+     *
+     * Defaults to the container's root, so the container's workspace is
+     * unchanged.
+     */
+    hostWorkspaceRoot?: string;
+    /**
+     * Where the pinned toolchain's `node_modules` is, for the same config.
+     *
+     * Names a namespace, not a dependency list: the package allowlist is
+     * separate and does not move with it.
+     */
+    toolchainRoot?: string;
+  }>;
 
 export type ThemeWorkspacePlanFile = Readonly<{
   path: string;
@@ -183,6 +209,8 @@ export function planThemeSandboxWorkspace({
   approvedDependencies,
   mode,
   previewContent,
+  hostWorkspaceRoot: requestedHostWorkspaceRoot,
+  toolchainRoot: requestedToolchainRoot,
 }: PlanThemeWorkspaceInput): PrepareThemeWorkspaceResult {
   // A build ships none of the editor's attributes. The Theme's stored source
   // keeps them — that is where a hand-written marker is doing its job — but a
@@ -245,7 +273,18 @@ export function planThemeSandboxWorkspace({
       : file,
   );
 
+  // Where the plan's file paths live. Always the container vocabulary, because
+  // a writer is what turns it into a real location.
   const workspaceRoot = "/workspace";
+  // Where the *toolchain* that reads the generated config will run. The same
+  // place as the container's workspace, unless a caller says otherwise.
+  const hostWorkspaceRoot = requestedHostWorkspaceRoot ?? workspaceRoot;
+  const toolchainRoot = requestedToolchainRoot ?? SANDBOX_TOOLCHAIN_ROOT;
+  // Interpolated into the generated config as strings rather than spliced in as
+  // text: a host path can contain anything a path can, including a quote.
+  const hostRootLiteral = JSON.stringify(hostWorkspaceRoot);
+  const hostPathLiteral = (suffix: string) =>
+    JSON.stringify(`${hostWorkspaceRoot}${suffix}`);
   // Assemble the complete workspace before touching the container. Besides
   // avoiding a partially-written workspace when validation fails, this lets
   // independent directory and file operations share a bounded number of
@@ -452,11 +491,12 @@ export function planThemeSandboxWorkspace({
   );
   queueWorkspaceFile(`${workspaceRoot}/package.json`, packageJson);
 
-  // Write controlled vite.config.ts with Morph dependency enforcer AND workspace path containment inside container
+  // Write controlled vite.config.ts with Morph dependency enforcer AND host
+  // filesystem containment for the toolchain that reads it
   const approvedArrayJson = JSON.stringify(Array.from(approvedDependencies));
   const themeAliasDefinitionsJson = renderThemeViteAliases(
     pathAliasConfig,
-    workspaceRoot,
+    hostWorkspaceRoot,
   );
   const viteConfigContent = `
 import path from "node:path";
@@ -481,14 +521,14 @@ const previewRouteSourcePatterns = ${JSON.stringify(
     routeRegistry?.routes
       .filter((route) => !route.isVirtual)
       .map(
-        (route) => `${workspaceRoot}/${route.sourcePath.replace(/\\/g, "/")}`,
+        (route) => `${hostWorkspaceRoot}/${route.sourcePath.replace(/\\/g, "/")}`,
       ) ?? [],
   )}.map((file) => new RegExp("^" + escapeAliasRegex(file) + "$"));
 const previewReactExcludePatterns = [
   /\\/node_modules\\//,
   ...previewRouteSourcePatterns,
 ];
-const themeBaseUrlRoot = path.resolve("/workspace", ${JSON.stringify(pathAliasConfig.baseUrl)});
+const themeBaseUrlRoot = path.resolve(${hostRootLiteral}, ${JSON.stringify(pathAliasConfig.baseUrl)});
 const themeBaseUrlPlugin = ${
     pathAliasConfig.baseUrl
       ? `{
@@ -497,7 +537,7 @@ const themeBaseUrlPlugin = ${
   resolveId(source) {
 if (source.startsWith(".") || source.startsWith("/")) return null;
 const candidateRoot = path.resolve(themeBaseUrlRoot, source);
-const relative = path.relative("/workspace", candidateRoot);
+const relative = path.relative(${hostRootLiteral}, candidateRoot);
 if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
 const candidates = [
   candidateRoot,
@@ -600,7 +640,7 @@ const previewHttpHmrPlugin = isLivePreview ? {
 // Vite's own HMR client and Refresh runtime, which only a dev server asks for.
 // Allowed while serving the Live Preview and refused during a build, so the
 // containment rule a build enforces is never relaxed by this file.
-const isPreviewDevInfrastructure = ${previewDevInfrastructureGuardSource()};
+const isPreviewDevInfrastructure = ${previewDevInfrastructureGuardSource(toolchainRoot)};
 let viteCommand = null;
 
 const dependencyEnforcerPlugin = {
@@ -618,7 +658,7 @@ if (importer && importer.includes("/node_modules/")) {
   return null;
 }
 
-// Enforce /workspace filesystem containment for relative and absolute imports
+// Enforce ${hostWorkspaceRoot} filesystem containment for relative and absolute imports
 if (
   source.startsWith("./") ||
   source.startsWith("../") ||
@@ -627,18 +667,18 @@ if (
 ) {
   let resolved;
   if (source.startsWith("/")) {
-    resolved = path.resolve("/workspace", source.slice(1));
+    resolved = path.resolve(${hostRootLiteral}, source.slice(1));
   } else if (path.isAbsolute(source)) {
     resolved = path.resolve(source);
   } else {
-    const importerDir = importer ? path.dirname(importer) : "/workspace";
+    const importerDir = importer ? path.dirname(importer) : ${hostRootLiteral};
     resolved = path.resolve(importerDir, source);
   }
 
-  const rel = path.relative("/workspace", resolved);
+  const rel = path.relative(${hostRootLiteral}, resolved);
   const normalizedResolved = resolved.replace(/\\\\/g, "/");
 
-  if (rel.startsWith("..") || !normalizedResolved.startsWith("/workspace")) {
+  if (rel.startsWith("..") || !normalizedResolved.startsWith(${hostRootLiteral})) {
     throw new Error(
       'WORKSPACE_PATH_ESCAPE: Import "' + source + '" resolves outside workspace root: "' + resolved + '"'
     );
@@ -648,7 +688,7 @@ if (
     const normalizedImporter = typeof importer === "string"
       ? importer.replace(/\\\\/g, "/")
       : "";
-    if (!normalizedImporter.startsWith("/workspace")) {
+    if (!normalizedImporter.startsWith(${hostRootLiteral})) {
       return null;
     }
     if (viteCommand === "serve" && normalizedResolved.includes("/node_modules/.vite/")) {
@@ -704,7 +744,7 @@ return null;
 };
 
 export default defineConfig({
-  root: "${workspaceRoot}",
+  root: ${hostRootLiteral},
   base: isStartRuntimeBuild
 ? "/"
 : isLivePreview
@@ -748,7 +788,7 @@ export default defineConfig({
   server: {
 fs: {
   strict: true,
-  allow: ${JSON.stringify(THEME_PREVIEW_FS_ALLOW_ROOTS)},
+  allow: ${JSON.stringify(themePreviewFsAllowRoots({ hostWorkspaceRoot, toolchainRoot }))},
 },
 // Sandbox writes arrive through the container API rather than a local inotify
 // stream. Polling is required for Vite to observe those writes and deliver HMR
@@ -762,10 +802,10 @@ hmr: isLivePreview
   },
   build: {
 outDir: isStartRuntimeBuild
-  ? "${workspaceRoot}/dist/runtime"
+  ? ${hostPathLiteral("/dist/runtime")}
   : hasStartRuntime
-    ? "${workspaceRoot}/dist/preview"
-    : "${workspaceRoot}/dist",
+    ? ${hostPathLiteral("/dist/preview")}
+    : ${hostPathLiteral("/dist")},
 emptyOutDir: true,
 minify: true,
 cssMinify: true,

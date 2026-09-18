@@ -1,5 +1,6 @@
 import { normalizeStorefrontHostname } from "./storefront-host-resolver";
 import { collectPlatformHostnames } from "./storefront-request-routing";
+import { isLoopbackPreviewHostname } from "@/lib/storefront/compiler/local-preview-host";
 
 /**
  * Decides whether a Live Preview may run Theme JavaScript, and on what host.
@@ -24,7 +25,8 @@ export type ExposedPreviewUrlRefusal =
   | "INVALID_PREVIEW_URL"
   | "INSECURE_PREVIEW_URL"
   | "PREVIEW_URL_OFF_HOST"
-  | "PLATFORM_PREVIEW_HOST";
+  | "PLATFORM_PREVIEW_HOST"
+  | "LOCAL_PREVIEW_OFF_LOOPBACK";
 
 export type ExposedPreviewUrlResult =
   | Readonly<{ ok: true; url: string; origin: string }>
@@ -110,6 +112,67 @@ export function validateExposedPreviewUrl({
 
   if (collectPlatformHostnames(env).has(host)) {
     return { ok: false, reason: "PLATFORM_PREVIEW_HOST" };
+  }
+
+  return { ok: true, url: parsed.toString(), origin: parsed.origin };
+}
+
+export type LoopbackPreviewUrlRefusal =
+  | "INVALID_PREVIEW_URL"
+  | "INSECURE_PREVIEW_URL"
+  | "LOCAL_PREVIEW_OFF_LOOPBACK";
+
+/**
+ * The local transport's version of the check above, and a different question.
+ *
+ * The sandbox's rule is "a strict subdomain of the configured preview host,
+ * over https", because that is what a container's exposed port looks like. A
+ * locally-run preview has no proxy and no certificate to offer, and the address
+ * it really answers on is `http://127.0.0.1:<port>`.
+ *
+ * So the rule here is loopback or nothing, and it does not stack with
+ * `PLATFORM_PREVIEW_HOST`. It cannot: `collectPlatformHostnames` classifies
+ * `localhost` and `127.0.0.1` as platform surface on purpose, so that a request
+ * to them resolves to Morph rather than to a merchant's storefront. Applying
+ * that classification here would refuse every local preview there can be.
+ *
+ * That is not a narrowing of the boundary, because the rule it replaces was
+ * answering a different question. "Is this a Morph hostname" is about storefront
+ * routing. "Could this address be a Morph origin" is the security question, and
+ * no platform hostname is ever a loopback literal — which is exactly what the
+ * loopback rule states outright.
+ *
+ * What neither rule can see is whether the preview shares the *editor's* origin.
+ * A sidecar pointed at a port the editor also uses would be admitted here. That
+ * is `resolveLivePreviewSecurity`'s question, on the side that knows the editor's
+ * origin, and it refuses it there; `LocalVitePreviewServer` binds a port the OS
+ * picks, so agreeing with the editor by accident is not something it can do.
+ */
+export function validateLoopbackPreviewUrl({
+  url,
+}: {
+  url: string;
+  env?: Record<string, unknown> | undefined;
+}): ExposedPreviewUrlResult {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, reason: "INVALID_PREVIEW_URL" };
+  }
+
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: "INVALID_PREVIEW_URL" };
+  }
+  if (parsed.protocol !== "http:") {
+    // A loopback preview has no certificate. `https:` here would be a claim
+    // about a name this transport never asked anyone to trust.
+    return { ok: false, reason: "INSECURE_PREVIEW_URL" };
+  }
+
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
+  if (!isLoopbackPreviewHostname(host)) {
+    return { ok: false, reason: "LOCAL_PREVIEW_OFF_LOOPBACK" };
   }
 
   return { ok: true, url: parsed.toString(), origin: parsed.origin };

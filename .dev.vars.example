@@ -21,6 +21,24 @@ PUBLIC_URL=http://localhost:3000
 MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
 MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
 
+# Locally-run Live Preview.
+#
+# `pnpm dev` serves the app from workerd, where `node:fs` is an in-memory file
+# system scoped to one request — so a Theme workspace cannot be laid out there
+# and a Vite dev server cannot run. `pnpm theme:preview` runs a Node sidecar
+# that does both, and these two values are how the Worker reaches it.
+#
+# The sidecar executes Theme code on this machine, so it listens on loopback
+# only, refuses to start in a production runtime, and requires the token below
+# on every request. It is not in the deploy artifact at all: `pnpm build` fails
+# if the sidecar's code ever appears under dist/.
+#
+# The token must be at least 32 characters; generate one and keep it out of
+# source control. Both values are read by the sidecar (`--env-file=.dev.vars`)
+# and by the Worker, from this one file.
+# MORPH_LOCAL_THEME_PREVIEW_ORIGIN=http://127.0.0.1:5199
+# MORPH_LOCAL_THEME_PREVIEW_TOKEN=generate_with_openssl_rand_hex_32
+
 # Hostnames that must stay on the Morph dashboard rather than resolving as a
 # storefront. localhost and *.workers.dev are always platform surface.
 # MORPH_PLATFORM_HOSTNAMES=admin.localtest.me

@@ -75,8 +75,28 @@ function tanstackServerFnValidateFix(): Plugin {
 const config = defineConfig({
   plugins: [
     tanstackServerFnValidateFix(),
-    devtools(),
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
+    // Skipped for an end-to-end run: its event bus binds a fixed port (42069),
+    // so a run started beside a developer's own `pnpm dev` dies before serving
+    // anything. Nothing attaches devtools to an automated run anyway.
+    ...(process.env.MORPH_E2E_STATE_DIR ? [] : [devtools()]),
+    cloudflare({
+      viteEnvironment: { name: "ssr" },
+      // Local bindings live in `.wrangler/state` unless a run asks for its own.
+      // An editor end-to-end run does: it lays out a database, seeds an account
+      // and throws the directory away, and doing that in the shared state would
+      // mean a test run and a developer's own store writing to one place. The
+      // path must be absolute — Wrangler resolves `--persist-to` against the
+      // working directory while this resolves against Vite's root, so a
+      // relative one sends the migrations and the server to different
+      // directories and the server simply finds nothing.
+      persistState: process.env.MORPH_E2E_STATE_DIR
+        ? { path: process.env.MORPH_E2E_STATE_DIR }
+        : undefined,
+      // The debugger port is fixed, so a run started beside a developer's own
+      // `pnpm dev` dies on `EADDRINUSE` before it serves anything. An
+      // end-to-end run has nothing to attach a debugger to, so it goes without.
+      inspectorPort: process.env.MORPH_E2E_STATE_DIR ? false : undefined,
+    }),
     tailwindcss(),
     tanstackStart(),
     // Must come after tanstackStart: with vite-tsconfig-paths registered first,

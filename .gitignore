@@ -21,6 +21,10 @@ todos.json
 
 .phase3-seal-backup/
 .morph-builds
+# Theme workspaces a locally-run Live Preview lays out. Source the transport
+# wrote, not source anyone authored.
+.morph-previews
+.morph-previews-*
 *Zone.Identifier*
 *:Zone.Identifier:
 # Playwright

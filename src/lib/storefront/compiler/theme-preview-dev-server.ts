@@ -51,11 +51,17 @@ export function isPreviewDevInfrastructureSpecifier(source: string): boolean {
  * The generated `vite.config.ts` cannot import Morph's modules, so the rule
  * has to travel as text. Built from the same constant as the in-process
  * predicate above, because two copies of a security boundary drift silently.
+ *
+ * The toolchain root is a parameter because it is the one thing here that is a
+ * property of *where* the server runs; the rule itself is identical in a
+ * container and on a checkout.
  */
-export function previewDevInfrastructureGuardSource(): string {
+export function previewDevInfrastructureGuardSource(
+  toolchainRoot: string = SANDBOX_TOOLCHAIN_ROOT,
+): string {
   return `(source) =>
   typeof source === "string" &&
-  source.startsWith(${JSON.stringify(`/@fs${SANDBOX_TOOLCHAIN_ROOT}/node_modules/`)})`;
+  source.startsWith(${JSON.stringify(`/@fs${toolchainRoot}/node_modules/`)})`;
 }
 
 /**
@@ -69,10 +75,29 @@ export function previewDevInfrastructureGuardSource(): string {
  * boundary. Pinned to the workspace plus the toolchain's `node_modules`, so
  * the rest of the image, `/etc` included, is unreachable over HTTP.
  */
-export const THEME_PREVIEW_FS_ALLOW_ROOTS: readonly string[] = [
-  "/workspace",
-  `${SANDBOX_TOOLCHAIN_ROOT}/node_modules`,
-];
+export const THEME_PREVIEW_FS_ALLOW_ROOTS: readonly string[] =
+  themePreviewFsAllowRoots();
+
+/**
+ * Both roots of the same rule, for a server that is not the container.
+ *
+ * The guard above and this list answer "where does this server run", not "what
+ * may it reach": a local server has the workspace in a checkout directory and
+ * the pinned packages in that checkout's own `node_modules`, and the boundary
+ * it needs is the same shape — the workspace, plus the toolchain, and nothing
+ * else. One function so the two roots cannot be half-updated, and so the
+ * container's answer above is this call with no arguments rather than a second
+ * copy of it.
+ */
+export function themePreviewFsAllowRoots({
+  hostWorkspaceRoot = "/workspace",
+  toolchainRoot = SANDBOX_TOOLCHAIN_ROOT,
+}: {
+  hostWorkspaceRoot?: string;
+  toolchainRoot?: string;
+} = {}): readonly string[] {
+  return [hostWorkspaceRoot, `${toolchainRoot}/node_modules`];
+}
 
 /**
  * Packages the dev server must not hand to esbuild for dependency

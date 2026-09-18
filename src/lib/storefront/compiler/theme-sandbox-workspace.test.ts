@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   materializeThemeSandboxWorkspace,
+  planThemeSandboxWorkspace,
   prepareThemeSandboxWorkspace,
 } from "./theme-sandbox-workspace";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
@@ -420,6 +421,103 @@ describe("laying out the workspace a Theme is served from", () => {
     );
     expect(written.get("/workspace/vite.config.ts")).toContain(
       'normalizedResolved.includes("/node_modules/.vite/")',
+    );
+  });
+
+  it("names the container's roots in the config, where the toolchain runs there", async () => {
+    const { viteConfig } = await prepare("preview-server");
+
+    // Every path the generated config resolves at runtime is the container's.
+    expect(viteConfig).toContain('root: "/workspace"');
+    expect(viteConfig).toContain(
+      'allow: ["/workspace","/opt/morph-toolchain/node_modules"]',
+    );
+    expect(viteConfig).toContain('path.relative("/workspace", resolved)');
+    expect(viteConfig).toContain(
+      'resolved = path.resolve("/workspace", source.slice(1))',
+    );
+    expect(viteConfig).toContain(
+      'const importerDir = importer ? path.dirname(importer) : "/workspace";',
+    );
+    expect(viteConfig).toContain(
+      '!normalizedResolved.startsWith("/workspace")',
+    );
+    expect(viteConfig).toContain(
+      'source.startsWith("/@fs/opt/morph-toolchain/node_modules/")',
+    );
+    for (const outDir of ["runtime", "preview"]) {
+      expect(viteConfig).toContain(`"/workspace/dist/${outDir}"`);
+    }
+  });
+
+  it("puts a caller's host root in the config while plan paths stay the workspace's", async () => {
+    // A root with a space and a quote: a filesystem path may contain both, and
+    // the generated config is text that must survive either.
+    const hostRoot = '/tmp/morph theme "quoted"/workspace';
+    const toolchainRoot = "/repo/morph";
+    const plan = planThemeSandboxWorkspace({
+      files: [
+        {
+          path: "morph.theme.json",
+          content: JSON.stringify({ router: { framework: "tanstack-start" } }),
+        },
+        {
+          path: "src/router.tsx",
+          content: "export function getRouter() { return null; }",
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+      ],
+      entry: "src/routes/index.tsx",
+      buildId: "host-root-test",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "preview-server",
+      hostWorkspaceRoot: hostRoot,
+      toolchainRoot,
+    });
+
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    const config =
+      plan.workspaceFiles.find(
+        (file) => file.path === "/workspace/vite.config.ts",
+      )?.content ?? "";
+    // `JSON.stringify` is what a quote in a path has to travel through, so the
+    // escaped form is the exact string the config is expected to contain.
+    const root = JSON.stringify(hostRoot);
+
+    expect(config).toContain(`root: ${root}`);
+    expect(config).toContain(`path.relative(${root}, resolved)`);
+    expect(config).toContain(`resolved = path.resolve(${root}, source.slice(1))`);
+    expect(config).toContain(
+      `const importerDir = importer ? path.dirname(importer) : ${root};`,
+    );
+    expect(config).toContain(`!normalizedResolved.startsWith(${root})`);
+    expect(config).toContain(`${JSON.stringify(`${hostRoot}/dist/preview`)}`);
+    expect(config).toContain(
+      `allow: [${root},${JSON.stringify(`${toolchainRoot}/node_modules`)}]`,
+    );
+    expect(config).toContain(
+      `source.startsWith(${JSON.stringify(`/@fs${toolchainRoot}/node_modules/`)})`,
+    );
+    // The route modules Vite must not treat as a Refresh boundary are named
+    // where they really are, or the exclusion matches nothing.
+    expect(config).toContain(`${JSON.stringify(`${hostRoot}/src/routes/index.tsx`)}`);
+    // Aliases point into the real root too.
+    expect(config).toMatch(/themeAliasDefinitions = \[/);
+    expect(config).not.toContain('root: "/workspace"');
+
+    // And the plan's own paths do not move: a writer is still what decides
+    // where those land, which is why the local transport translates them.
+    expect(config).not.toContain(`${hostRoot}/vite.config.ts`);
+    expect(plan.workspaceFiles.map((file) => file.path)).toContain(
+      "/workspace/vite.config.ts",
     );
   });
 

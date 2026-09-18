@@ -124,4 +124,73 @@
    * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
    */
   // "services": [{ "binding": "MY_SERVICE", "service": "my-service" }]
+
+  /**
+   * Editor end-to-end runs, on a machine that may have no container.
+   *
+   * The Live Preview has two transports behind one contract, and the factory
+   * prefers the sandbox whenever `Sandbox` is bound — deliberately, so a
+   * deployment can never fall back to running Theme code beside the CMS. The
+   * consequence is that the local transport is unreachable on any machine where
+   * the container exists, which is every developer machine. This environment is
+   * how it gets exercised: the same Worker, with no container bound, so the
+   * factory resolves the loopback sidecar instead.
+   *
+   * **The omission is the point.** `containers` and `durable_objects` are absent
+   * on purpose. Wrangler warns that they "exist at the top level, but not on
+   * this environment" and suggests adding them; that warning is expected here,
+   * and acting on it silently turns these runs back into sandbox runs while
+   * every test still passes. The editor specs cannot tell the difference — only
+   * the transport-identity assertion in the E2E suite can, which is why it runs
+   * before them.
+   *
+   * Everything else is repeated rather than inherited because Wrangler does not
+   * inherit bindings into environments. Keep it in step with the top level; a
+   * binding that exists there and not here fails at runtime, not at config time.
+   */
+  "env": {
+    "local_preview_e2e": {
+      "d1_databases": [
+        {
+          "binding": "DATABASE",
+          "database_name": "morph-d1-global",
+          "database_id": "43d5c881-bd19-4020-92cc-3945d8b5cb39",
+          "migrations_dir": "drizzle",
+        },
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "KV",
+          "id": "d59ec8725b024e28a5783ab38c9384f7",
+        },
+      ],
+      "r2_buckets": [
+        {
+          "binding": "R2_BUCKET",
+          "bucket_name": "morph-r2-global",
+          "preview_bucket_name": "morph-r2-global",
+        },
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "THEME_BUILD_QUEUE",
+            "queue": "morph-theme-builds",
+          },
+        ],
+      },
+      "vars": {
+        // 3000, and it has to be: `getPublicURL` ignores this value outside
+        // production and hands the browser `http://localhost:3000` regardless,
+        // so a run on any other port loads its pages from one origin while its
+        // sign-in requests go to another and fail as "Failed to fetch". An
+        // end-to-end run therefore needs 3000 to itself — stop `pnpm dev`
+        // first. Reading this value in development would lift that.
+        "PUBLIC_URL": "http://localhost:3000",
+        // The preview runs Theme JavaScript, so it needs a host of its own.
+        // The sidecar serves loopback; this is the name the editor frames it by.
+        "THEME_PREVIEW_HOSTNAME": "127.0.0.1",
+      },
+    },
+  },
 }

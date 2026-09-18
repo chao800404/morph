@@ -186,8 +186,15 @@ test.describe("visual editor", () => {
     await openEditor(page);
     await enableSelection(page);
 
+    // `image`, not `imageSrc`. The starter groups the picture into
+    // `image: { src, alt }` and declares that as the content field; `imageSrc`
+    // survives only as a read-only fallback for documents written before the
+    // grouping. A store that has existed for a while still holds the flat
+    // shape, so this assertion kept passing there long after a newly created
+    // store stopped producing it — the failure only appears on a fresh
+    // database, which is what an end-to-end run starts from.
     const image = previewFrame(page).locator(
-      '[data-storefront-section-id="starter-hero"] [data-storefront-field="imageSrc"]',
+      '[data-storefront-section-id="starter-hero"] [data-storefront-field="image"]',
     );
     await expect(image).toHaveCount(1);
     expect(await clickExposedElement(page, image)).not.toBeNull();
@@ -200,7 +207,7 @@ test.describe("visual editor", () => {
     await expect(selected).toBeVisible();
     await expect(selected).toHaveAttribute(
       "data-editor-tree-node-id",
-      "starter-hero:field:imageSrc",
+      "starter-hero:field:image",
     );
   });
 
