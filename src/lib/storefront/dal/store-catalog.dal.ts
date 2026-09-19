@@ -11,7 +11,7 @@ import {
   productVariants,
   products,
 } from "@/db/product.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import { productDal } from "@/lib/product/dal/product.dal";
 import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
 import { MAX_GENERATED_VARIANTS } from "@/lib/product/variant-limits";
@@ -27,7 +27,6 @@ import {
   eq,
   exists,
   isNull,
-  like,
   or,
   type SQL,
 } from "drizzle-orm";
@@ -87,11 +86,11 @@ export const storeCatalogDal = {
       ),
     ];
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(products.title, pattern),
-          like(products.handle, pattern),
+          likeContains(products.title, term),
+          likeContains(products.handle, term),
         ) as SQL,
       );
     }

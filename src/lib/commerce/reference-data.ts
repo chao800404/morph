@@ -10,7 +10,7 @@ import {
   returnReasons,
 } from "@/db/schema";
 import type { Metadata } from "@/db/json";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import {
   and,
   asc,
@@ -19,7 +19,6 @@ import {
   eq,
   inArray,
   isNull,
-  like,
   or,
 } from "drizzle-orm";
 
@@ -73,12 +72,11 @@ export const referenceDataDal = {
     const offset = (params.page - 1) * params.limit;
     const direction = orderDirection(params.sortOrder);
     const term = params.query?.trim();
-    const pattern = term ? containsPattern(term) : undefined;
 
     if (params.kind === "product-types") {
       const where = and(
         isNull(productTypes.deletedAt),
-        pattern ? like(productTypes.value, pattern) : undefined,
+        term ? likeContains(productTypes.value, term) : undefined,
       );
       const [rows, [{ total }]] = await Promise.all([
         db
@@ -136,7 +134,7 @@ export const referenceDataDal = {
     if (params.kind === "product-tags") {
       const where = and(
         isNull(productTags.deletedAt),
-        pattern ? like(productTags.value, pattern) : undefined,
+        term ? likeContains(productTags.value, term) : undefined,
       );
       const [rows, [{ total }]] = await Promise.all([
         db
@@ -205,10 +203,10 @@ export const referenceDataDal = {
         );
       const where = and(
         isNull(returnReasons.deletedAt),
-        pattern
+        term
           ? or(
-              like(returnReasons.label, pattern),
-              like(returnReasons.value, pattern),
+              likeContains(returnReasons.label, term),
+              likeContains(returnReasons.value, term),
             )
           : undefined,
       );
@@ -269,10 +267,10 @@ export const referenceDataDal = {
 
     const where = and(
       isNull(refundReasons.deletedAt),
-      pattern
+      term
         ? or(
-            like(refundReasons.label, pattern),
-            like(refundReasons.code, pattern),
+            likeContains(refundReasons.label, term),
+            likeContains(refundReasons.code, term),
           )
         : undefined,
     );

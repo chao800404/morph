@@ -5,7 +5,7 @@ import {
   stockLocationAddresses,
   stockLocations,
 } from "@/db/stock-location.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import { chunkForInsert } from "@/lib/product/dal/d1-batch";
 import {
   and,
@@ -15,7 +15,6 @@ import {
   eq,
   inArray,
   isNull,
-  like,
   type SQL,
 } from "drizzle-orm";
 import type {
@@ -96,7 +95,7 @@ export const stockLocationDal = {
 
     if (options.query?.trim()) {
       conditions.push(
-        like(stockLocations.name, containsPattern(options.query.trim())),
+        likeContains(stockLocations.name, options.query.trim()),
       );
     }
 
