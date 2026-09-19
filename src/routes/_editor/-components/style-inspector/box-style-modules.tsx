@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
+import { parseTailwindBoxShadow } from "@/lib/storefront/ast/tailwind-style-parsers";
 import type { PatchTailwindOptions } from "@/lib/storefront/ast/tailwind-token-engine";
 import { cn } from "@/lib/utils";
-import { Box, LayoutGrid, Move, Sparkles } from "lucide-react";
+import { Box, LayoutGrid, Move, Sparkles, Sun } from "lucide-react";
 import { InspectorModuleCard } from "./inspector-module-card";
 import { inspectorControlSurface } from "./inspector-control-surface";
 import { InspectorSelectControl } from "./inspector-select-control";
@@ -396,6 +397,53 @@ export function PositionInspectorModule(props: SharedProps) {
             />
           </div>
         ) : null}
+      </div>
+    </InspectorModuleCard>
+  );
+}
+
+/**
+ * Shadow, which every selection resolved and nothing rendered.
+ *
+ * `resolveInspectorModules` has added `effects` to every selection since it was
+ * written, and the Inspector had no such module — so a decision was computed on
+ * every click and thrown away, and `box-shadow` had no control anywhere in the
+ * editor.
+ *
+ * Read from the class list rather than from the computed style. A computed
+ * `boxShadow` is a resolved colour and geometry — `rgba(0,0,0,.1) 0 1px 2px` —
+ * which cannot be matched back to the size that produced it, and a control that
+ * guessed would show `md` for something an author wrote as `lg`. The class says
+ * exactly what was chosen, and says nothing when the shadow came from somewhere
+ * this control does not own.
+ */
+export function EffectsInspectorModule(
+  props: SharedProps & { className?: string | null },
+) {
+  const current = parseTailwindBoxShadow(props.className ?? undefined) ?? "none";
+  return (
+    <InspectorModuleCard
+      title="Effects"
+      icon={<Sun className="size-3.5" />}
+      expanded={props.expanded}
+      onToggle={props.onToggle}
+    >
+      <div className="space-y-3">
+        <InspectorSelectControl
+          label="Shadow"
+          ariaLabel="Element shadow"
+          value={current}
+          options={["none", "2xs", "xs", "sm", "md", "lg", "xl", "2xl"]}
+          disabled={props.disabled}
+          onValueChange={(value) => {
+            // `shadow-none` is a utility rather than the absence of one, so
+            // clearing a shadow is a write like any other; leaving the class
+            // off would inherit whatever the Theme set.
+            const utility = `shadow-${value}`;
+            props.onPreview({ boxShadow: value === "none" ? "none" : "" });
+            props.onCommit("box-shadow", utility, "boxShadow", value);
+          }}
+        />
       </div>
     </InspectorModuleCard>
   );

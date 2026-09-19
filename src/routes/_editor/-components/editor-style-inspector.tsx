@@ -141,6 +141,7 @@ import {
 } from "./style-inspector/border-radius-inspector-module";
 import {
   AppearanceInspectorModule,
+  EffectsInspectorModule,
   LayoutInspectorModule,
   PositionInspectorModule,
   SizingInspectorModule,
@@ -687,6 +688,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     typography: true,
     fills: true,
     borders: true,
+    effects: true,
     tailwind: false,
   });
 
@@ -4086,6 +4088,19 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 expanded={sectionsExpanded.appearance}
                 onToggle={() => toggleSection("appearance")}
                 computed={containerComputedStyle}
+                disabled={disabled || sourceStyleLocked || !componentFile}
+                onPreview={previewContainerStyle}
+                onCommit={commitContainerProperty}
+              />
+            ))}
+
+            {/* 2b. Effects */}
+            {renderInspectorDesignModule("effects", visibleModules, () => (
+              <EffectsInspectorModule
+                expanded={sectionsExpanded.effects}
+                onToggle={() => toggleSection("effects")}
+                computed={containerComputedStyle}
+                className={activeClassName}
                 disabled={disabled || sourceStyleLocked || !componentFile}
                 onPreview={previewContainerStyle}
                 onCommit={commitContainerProperty}

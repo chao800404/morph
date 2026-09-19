@@ -363,6 +363,25 @@ export function parseTailwindBorderWidth(className?: string): number | null {
   return namedMatch[1] ? Number.parseInt(namedMatch[1], 10) : 1;
 }
 
+/**
+ * The shadow size on a class list, or `null` when it sets none.
+ *
+ * Only the size utilities. `shadow-red-500` sets a colour and leaves the size
+ * where it was, so reporting it as a size would make the control show a shadow
+ * the element does not have — and committing from that reading would delete the
+ * colour. An arbitrary `shadow-[...]` is a full shadow this control cannot
+ * represent, so it reads as `null` and the element keeps it until something
+ * else is chosen.
+ */
+export function parseTailwindBoxShadow(className?: string): string | null {
+  if (!className) return null;
+  return (
+    className.match(
+      /(?:^|\s)(?:[a-z0-9-]+:)*shadow-(none|2xs|xs|sm|md|lg|xl|2xl|inner)(?=\s|$)/,
+    )?.[1] ?? null
+  );
+}
+
 export function parseTailwindBorderStyle(className?: string): string | null {
   if (!className) return null;
   return (

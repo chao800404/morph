@@ -52,6 +52,7 @@ export type TailwindPropertyFamily =
   | "z-index"
   | "rotate"
   | "opacity"
+  | "box-shadow"
   | "overflow"
   | "other";
 
@@ -160,6 +161,16 @@ const LEFT_PATTERN = /^-?left-(?:auto|full|\d+(?:\.\d+)?|\[.+\])$/;
 const Z_INDEX_PATTERN = /^-?z-(?:auto|\d+|\[.+\])$/;
 const ROTATE_PATTERN = /^-?rotate-(?:\d+(?:\.\d+)?|\[.+\])$/;
 const OPACITY_PATTERN = /^opacity-(?:\d+(?:\.\d+)?|\[.+\])$/;
+/**
+ * The size scale only, never a shadow colour.
+ *
+ * `shadow-red-500` sets a colour and leaves the size alone, so matching it here
+ * would let a size change delete a colour — the two are separate utilities that
+ * happen to share a prefix. Listing the sizes explicitly keeps them apart; an
+ * arbitrary value is a full shadow and does belong to this family.
+ */
+const BOX_SHADOW_PATTERN =
+  /^shadow(?:-(?:none|2xs|xs|sm|md|lg|xl|2xl|inner|\[.+\]))?$/;
 const OVERFLOW_PATTERN = /^overflow-(?:auto|hidden|clip|visible|scroll)$/;
 const BACKGROUND_CLIP_PATTERN = /^bg-clip-(?:border|padding|content|text)$/;
 
@@ -277,6 +288,7 @@ export function classifyTailwindUtility(
   if (BORDER_RADIUS_BOTTOM_LEFT_PATTERN.test(utility))
     return "border-radius-bottom-left";
   if (BORDER_RADIUS_PATTERN.test(utility)) return "border-radius";
+  if (BOX_SHADOW_PATTERN.test(utility)) return "box-shadow";
   if (BORDER_STYLE_PATTERN.test(utility)) return "border-style";
   for (const [prefix, family] of [
     ["border-t", "border-width-top"],

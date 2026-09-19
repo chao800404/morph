@@ -17,6 +17,14 @@ export type InspectorDesignModuleId = Extract<
   | "typography"
   | "fill"
   | "border"
+  // Added last, and the reason is worth keeping: the resolver has put
+  // `effects` on every selection since it was written, while this list — the
+  // one that decides what is rendered — did not have it. The comment above
+  // says this typing exists so a renderer cannot drift from the resolver, and
+  // it was doing that job: the drift was real, it just had nobody reading the
+  // difference. `interaction` and `accessibility` are still outside, and still
+  // resolved.
+  | "effects"
 >;
 
 export type InspectorModuleDescriptor = {
@@ -29,7 +37,8 @@ export type InspectorModuleDescriptor = {
     | "layout"
     | "typography"
     | "fills"
-    | "borders";
+    | "borders"
+    | "effects";
 };
 
 export const INSPECTOR_DESIGN_MODULE_REGISTRY = {
@@ -41,6 +50,7 @@ export const INSPECTOR_DESIGN_MODULE_REGISTRY = {
   typography: { id: "typography", stateKey: "typography" },
   fill: { id: "fill", stateKey: "fills" },
   border: { id: "border", stateKey: "borders" },
+  effects: { id: "effects", stateKey: "effects" },
 } satisfies Record<InspectorDesignModuleId, InspectorModuleDescriptor>;
 
 export const INSPECTOR_DESIGN_MODULE_ORDER = [
@@ -52,6 +62,7 @@ export const INSPECTOR_DESIGN_MODULE_ORDER = [
   "typography",
   "fill",
   "border",
+  "effects",
 ] as const satisfies readonly InspectorDesignModuleId[];
 
 /**

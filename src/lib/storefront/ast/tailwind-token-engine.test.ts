@@ -60,7 +60,15 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("object-[35%_20%]")).toBe("object-position");
     expect(classifyTailwindUtility("aspect-video")).toBe("aspect-ratio");
     expect(classifyTailwindUtility("aspect-[4/3]")).toBe("aspect-ratio");
-    expect(classifyTailwindUtility("shadow-lg")).toBe("other");
+    // `other` until the Inspector had a control for it. A family the engine
+    // does not recognise is one it cannot replace, so setting a shadow would
+    // have appended a second `shadow-*` beside the first.
+    expect(classifyTailwindUtility("shadow-lg")).toBe("box-shadow");
+    expect(classifyTailwindUtility("shadow-none")).toBe("box-shadow");
+    // A colour is a different utility that happens to share the prefix, and
+    // must stay out of the size family: classifying it here would let a size
+    // change delete the colour.
+    expect(classifyTailwindUtility("shadow-red-500")).toBe("other");
   });
 
   it("correctly parses tokens with single and multi-variants", () => {
@@ -142,6 +150,32 @@ describe("tailwind-token-engine", () => {
     });
 
     expect(patched).toBe("font-serif text-stone-900 text-2xl");
+  });
+
+  /**
+   * The point of teaching the engine this family: a size it cannot classify is
+   * a size it cannot replace, so before this the Inspector's shadow control
+   * would have left `shadow-sm shadow-lg` on the element and let the cascade
+   * decide.
+   */
+  it("replaces an existing shadow size rather than appending beside it", () => {
+    expect(
+      patchTailwindClasses("rounded-lg shadow-sm bg-white", {
+        property: "box-shadow",
+        value: "shadow-lg",
+      }),
+    ).toBe("rounded-lg shadow-lg bg-white");
+  });
+
+  it("leaves a shadow colour alone when the size changes", () => {
+    const patched = patchTailwindClasses("shadow-sm shadow-red-500", {
+      property: "box-shadow",
+      value: "shadow-xl",
+    });
+
+    expect(patched).toContain("shadow-red-500");
+    expect(patched).toContain("shadow-xl");
+    expect(patched).not.toContain("shadow-sm");
   });
 
   it("removes property token cleanly when value is empty string", () => {
