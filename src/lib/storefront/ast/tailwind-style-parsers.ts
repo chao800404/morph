@@ -382,6 +382,34 @@ export function parseTailwindBoxShadow(className?: string): string | null {
   );
 }
 
+/** The cursor keyword on a class list, or `null` when none is set. */
+export function parseTailwindCursor(className?: string): string | null {
+  if (!className) return null;
+  return (
+    className.match(
+      /(?:^|\s)(?:[a-z0-9-]+:)*cursor-(auto|default|pointer|wait|text|move|help|not-allowed|none|grab|grabbing|zoom-in|zoom-out|progress)(?=\s|$)/,
+    )?.[1] ?? null
+  );
+}
+
+/**
+ * The transition set on a class list.
+ *
+ * Bare `transition` reads as `all`, which is what Tailwind's default set does
+ * in practice and what an author choosing from a list would expect to see
+ * selected. `duration-*` and `ease-*` are separate utilities and are not read
+ * here: they survive a change of set, so reporting them as part of it would
+ * suggest this control owns timing it does not touch.
+ */
+export function parseTailwindTransition(className?: string): string | null {
+  if (!className) return null;
+  const match = className.match(
+    /(?:^|\s)(?:[a-z0-9-]+:)*transition(?:-(none|all|colors|opacity|shadow|transform))?(?=\s|$)/,
+  );
+  if (!match) return null;
+  return match[1] ?? "all";
+}
+
 export function parseTailwindBorderStyle(className?: string): string | null {
   if (!className) return null;
   return (

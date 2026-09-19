@@ -53,6 +53,8 @@ export type TailwindPropertyFamily =
   | "rotate"
   | "opacity"
   | "box-shadow"
+  | "cursor"
+  | "transition"
   | "overflow"
   | "other";
 
@@ -169,6 +171,19 @@ const OPACITY_PATTERN = /^opacity-(?:\d+(?:\.\d+)?|\[.+\])$/;
  * happen to share a prefix. Listing the sizes explicitly keeps them apart; an
  * arbitrary value is a full shadow and does belong to this family.
  */
+/**
+ * The keyword scale, and an arbitrary cursor, which may be a `url()`.
+ */
+const CURSOR_PATTERN =
+  /^cursor-(?:auto|default|pointer|wait|text|move|help|not-allowed|none|context-menu|progress|cell|crosshair|vertical-text|alias|copy|no-drop|grab|grabbing|all-scroll|col-resize|row-resize|n-resize|e-resize|s-resize|w-resize|ne-resize|nw-resize|se-resize|sw-resize|ew-resize|ns-resize|nesw-resize|nwse-resize|zoom-in|zoom-out|\[.+\])$/;
+/**
+ * Bare `transition` is the common case and means "the default set", so the
+ * suffix is optional. `duration-*` and `ease-*` are separate utilities and stay
+ * out: replacing a transition must not silently drop the timing an author set
+ * beside it.
+ */
+const TRANSITION_PATTERN =
+  /^transition(?:-(?:none|all|colors|opacity|shadow|transform|\[.+\]))?$/;
 const BOX_SHADOW_PATTERN =
   /^shadow(?:-(?:none|2xs|xs|sm|md|lg|xl|2xl|inner|\[.+\]))?$/;
 const OVERFLOW_PATTERN = /^overflow-(?:auto|hidden|clip|visible|scroll)$/;
@@ -288,6 +303,8 @@ export function classifyTailwindUtility(
   if (BORDER_RADIUS_BOTTOM_LEFT_PATTERN.test(utility))
     return "border-radius-bottom-left";
   if (BORDER_RADIUS_PATTERN.test(utility)) return "border-radius";
+  if (CURSOR_PATTERN.test(utility)) return "cursor";
+  if (TRANSITION_PATTERN.test(utility)) return "transition";
   if (BOX_SHADOW_PATTERN.test(utility)) return "box-shadow";
   if (BORDER_STYLE_PATTERN.test(utility)) return "border-style";
   for (const [prefix, family] of [

@@ -25,6 +25,7 @@ export type InspectorDesignModuleId = Extract<
   // difference. `interaction` and `accessibility` are still outside, and still
   // resolved.
   | "effects"
+  | "interaction"
 >;
 
 export type InspectorModuleDescriptor = {
@@ -38,7 +39,8 @@ export type InspectorModuleDescriptor = {
     | "typography"
     | "fills"
     | "borders"
-    | "effects";
+    | "effects"
+    | "interaction";
 };
 
 export const INSPECTOR_DESIGN_MODULE_REGISTRY = {
@@ -51,6 +53,7 @@ export const INSPECTOR_DESIGN_MODULE_REGISTRY = {
   fill: { id: "fill", stateKey: "fills" },
   border: { id: "border", stateKey: "borders" },
   effects: { id: "effects", stateKey: "effects" },
+  interaction: { id: "interaction", stateKey: "interaction" },
 } satisfies Record<InspectorDesignModuleId, InspectorModuleDescriptor>;
 
 export const INSPECTOR_DESIGN_MODULE_ORDER = [
@@ -63,6 +66,7 @@ export const INSPECTOR_DESIGN_MODULE_ORDER = [
   "fill",
   "border",
   "effects",
+  "interaction",
 ] as const satisfies readonly InspectorDesignModuleId[];
 
 /**

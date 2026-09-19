@@ -178,6 +178,33 @@ describe("tailwind-token-engine", () => {
     expect(patched).not.toContain("shadow-sm");
   });
 
+  it("classifies the interaction families the Inspector now writes", () => {
+    expect(classifyTailwindUtility("cursor-pointer")).toBe("cursor");
+    expect(classifyTailwindUtility("cursor-not-allowed")).toBe("cursor");
+    // Bare `transition` is the common form in this codebase and means the
+    // default set, so it has to classify or a change would append beside it.
+    expect(classifyTailwindUtility("transition")).toBe("transition");
+    expect(classifyTailwindUtility("transition-colors")).toBe("transition");
+    // Timing is a separate utility. Folding it in here would make a change of
+    // set silently drop the duration someone put beside it.
+    expect(classifyTailwindUtility("duration-150")).toBe("other");
+    expect(classifyTailwindUtility("ease-out")).toBe("other");
+  });
+
+  it("replaces a transition set while leaving its timing in place", () => {
+    const patched = patchTailwindClasses(
+      "transition-colors duration-150 ease-out cursor-pointer",
+      { property: "transition", value: "transition-transform" },
+    );
+
+    expect(patched).toContain("transition-transform");
+    expect(patched).not.toContain("transition-colors");
+    expect(patched).toContain("duration-150");
+    expect(patched).toContain("ease-out");
+    // A different family, untouched by this write.
+    expect(patched).toContain("cursor-pointer");
+  });
+
   it("removes property token cleanly when value is empty string", () => {
     const original = "p-8 pt-4 bg-white";
     const patched = patchTailwindClasses(original, {

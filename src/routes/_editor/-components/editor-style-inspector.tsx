@@ -142,6 +142,7 @@ import {
 import {
   AppearanceInspectorModule,
   EffectsInspectorModule,
+  InteractionInspectorModule,
   LayoutInspectorModule,
   PositionInspectorModule,
   SizingInspectorModule,
@@ -689,6 +690,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     fills: true,
     borders: true,
     effects: true,
+    interaction: true,
     tailwind: false,
   });
 
@@ -4099,6 +4101,19 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               <EffectsInspectorModule
                 expanded={sectionsExpanded.effects}
                 onToggle={() => toggleSection("effects")}
+                computed={containerComputedStyle}
+                className={activeClassName}
+                disabled={disabled || sourceStyleLocked || !componentFile}
+                onPreview={previewContainerStyle}
+                onCommit={commitContainerProperty}
+              />
+            ))}
+
+            {/* 2c. Interaction */}
+            {renderInspectorDesignModule("interaction", visibleModules, () => (
+              <InteractionInspectorModule
+                expanded={sectionsExpanded.interaction}
+                onToggle={() => toggleSection("interaction")}
                 computed={containerComputedStyle}
                 className={activeClassName}
                 disabled={disabled || sourceStyleLocked || !componentFile}

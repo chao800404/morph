@@ -1,9 +1,13 @@
 import type { ReactNode } from "react";
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
-import { parseTailwindBoxShadow } from "@/lib/storefront/ast/tailwind-style-parsers";
+import {
+  parseTailwindBoxShadow,
+  parseTailwindCursor,
+  parseTailwindTransition,
+} from "@/lib/storefront/ast/tailwind-style-parsers";
 import type { PatchTailwindOptions } from "@/lib/storefront/ast/tailwind-token-engine";
 import { cn } from "@/lib/utils";
-import { Box, LayoutGrid, Move, Sparkles, Sun } from "lucide-react";
+import { Box, LayoutGrid, Move, MousePointerClick, Sparkles, Sun } from "lucide-react";
 import { InspectorModuleCard } from "./inspector-module-card";
 import { inspectorControlSurface } from "./inspector-control-surface";
 import { InspectorSelectControl } from "./inspector-select-control";
@@ -417,6 +421,91 @@ export function PositionInspectorModule(props: SharedProps) {
  * exactly what was chosen, and says nothing when the shadow came from somewhere
  * this control does not own.
  */
+/**
+ * What an element does under the pointer, for the elements that do anything.
+ *
+ * `resolveInspectorModules` adds `interaction` for links, buttons and form
+ * controls, and nothing rendered it — the second of the three modules that were
+ * resolved on every matching selection and dropped. Cursor and transition are
+ * what this codebase actually reaches for: `cursor-pointer` forty times,
+ * `transition-colors` forty-two, against a handful of everything else.
+ *
+ * Read from the class list for the same reason the shadow control is. A
+ * computed `transition` is a resolved shorthand — duration, timing function and
+ * property list flattened together — that cannot be matched back to the set an
+ * author chose.
+ *
+ * `duration-*` and `ease-*` are deliberately absent. They are separate
+ * utilities that survive a change of set, and a control that owned them here
+ * would have to write them on every change or silently drop the timing someone
+ * put beside the transition.
+ */
+export function InteractionInspectorModule(
+  props: SharedProps & { className?: string | null },
+) {
+  const cursor = parseTailwindCursor(props.className ?? undefined) ?? "auto";
+  const transition =
+    parseTailwindTransition(props.className ?? undefined) ?? "none";
+  return (
+    <InspectorModuleCard
+      title="Interaction"
+      icon={<MousePointerClick className="size-3.5" />}
+      expanded={props.expanded}
+      onToggle={props.onToggle}
+    >
+      <div className="space-y-3">
+        <InspectorSelectControl
+          label="Cursor"
+          ariaLabel="Element cursor"
+          value={cursor}
+          options={[
+            "auto",
+            "default",
+            "pointer",
+            "text",
+            "move",
+            "grab",
+            "not-allowed",
+            "wait",
+            "progress",
+            "none",
+          ]}
+          disabled={props.disabled}
+          onValueChange={(value) => {
+            props.onPreview({ cursor: value });
+            props.onCommit("cursor", `cursor-${value}`, "cursor", value);
+          }}
+        />
+        <InspectorSelectControl
+          label="Transition"
+          ariaLabel="Element transition"
+          value={transition}
+          options={[
+            "none",
+            "all",
+            "colors",
+            "opacity",
+            "shadow",
+            "transform",
+          ]}
+          disabled={props.disabled}
+          onValueChange={(value) => {
+            // `transition-all` rather than bare `transition`: the bare form is
+            // the same set, and writing the explicit one keeps what the control
+            // shows and what the class says identical.
+            props.onCommit(
+              "transition",
+              `transition-${value}`,
+              "transition",
+              value,
+            );
+          }}
+        />
+      </div>
+    </InspectorModuleCard>
+  );
+}
+
 export function EffectsInspectorModule(
   props: SharedProps & { className?: string | null },
 ) {
