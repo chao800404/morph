@@ -11,7 +11,6 @@ import {
   inArray,
   isNotNull,
   isNull,
-  like,
   lt,
   gte,
   or,
@@ -20,7 +19,7 @@ import {
 } from "drizzle-orm";
 import type { AssetDTO, AssetInsertDTO } from "../dto/asset.dto";
 import { toAssetDTO, type AssetRow } from "../mappers/asset.mapper";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains, sqlContains } from "@/lib/db/like-query";
 import type { AssetMetadata, AssetType } from "@/db/asset.schema";
 
 const mapFirst = (rows: AssetRow[]): AssetDTO | null =>
@@ -121,15 +120,15 @@ export const assetDal = {
     }
 
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(assets.name, pattern),
-          like(assets.originalName, pattern),
-          like(assets.caption, pattern),
-          like(assets.alt, pattern),
-          sql`${assets.tags} LIKE ${pattern}`,
-          like(assets.mimeType, pattern),
+          likeContains(assets.name, term),
+          likeContains(assets.originalName, term),
+          likeContains(assets.caption, term),
+          likeContains(assets.alt, term),
+          sqlContains(assets.tags, term),
+          likeContains(assets.mimeType, term),
         ) as SQL,
       );
     }
@@ -197,13 +196,13 @@ export const assetDal = {
     const db = await getDb();
     const conditions: SQL[] = [isNull(assets.deletedAt)];
     if (options.query) {
-      const pattern = containsPattern(options.query);
+      const term = options.query;
       conditions.push(
         or(
-          like(assets.originalName, pattern),
-          and(isNotNull(assets.alt), like(assets.alt, pattern)),
-          and(isNotNull(assets.caption), like(assets.caption, pattern)),
-          sql`${assets.tags} LIKE ${pattern}`,
+          likeContains(assets.originalName, term),
+          and(isNotNull(assets.alt), likeContains(assets.alt, term)),
+          and(isNotNull(assets.caption), likeContains(assets.caption, term)),
+          sqlContains(assets.tags, term),
         ) as SQL,
       );
     }

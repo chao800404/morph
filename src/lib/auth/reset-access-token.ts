@@ -1,5 +1,5 @@
 const RESET_ACCESS_COOKIE = "verify_access";
-const RESET_ACCESS_PREFIX = "reset-access:";
+export const RESET_ACCESS_PREFIX = "reset-access:";
 export const RESET_ACCESS_MAX_AGE_SECONDS = 300;
 
 const toHex = (bytes: Uint8Array) =>

@@ -4,11 +4,11 @@ import {
   createResetAccessToken,
   hashResetAccessToken,
   RESET_ACCESS_MAX_AGE_SECONDS,
+  RESET_ACCESS_PREFIX,
   resetAccessIdentifier,
 } from "@/lib/auth/reset-access-token";
-import { and, eq, like, lt } from "drizzle-orm";
-
-const identifierPrefix = "reset-access:%";
+import { likePrefix } from "@/lib/db/like-query";
+import { and, eq, lt } from "drizzle-orm";
 
 export const resetAccessDal = {
   async issue(email: string) {
@@ -25,7 +25,7 @@ export const resetAccessDal = {
         .delete(verifications)
         .where(
           and(
-            like(verifications.identifier, identifierPrefix),
+            likePrefix(verifications.identifier, RESET_ACCESS_PREFIX),
             eq(verifications.value, email),
           ),
         ),
@@ -41,7 +41,7 @@ export const resetAccessDal = {
         .delete(verifications)
         .where(
           and(
-            like(verifications.identifier, identifierPrefix),
+            likePrefix(verifications.identifier, RESET_ACCESS_PREFIX),
             lt(verifications.expiresAt, now),
           ),
         ),
