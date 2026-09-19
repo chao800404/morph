@@ -30,6 +30,9 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+/** Whether an exit has already been chosen. See `exitAfterFlush` below. */
+let exiting = false;
+
 /**
  * Exits once stdout and stderr have reached the pipe.
  *
@@ -47,10 +50,25 @@ import path from "node:path";
  * at their exit — which is the local reasoning this replaces. One `await` costs
  * nothing, and a barrier at one exit is a barrier nobody remembers at the next.
  *
+ * The first caller wins and the rest are dropped. Four exits reach here carrying
+ * two different codes, so without that rule the code a run exits with is decided
+ * by timing: a signal arriving during the flush below — the one place in this
+ * file that deliberately waits — would replace the 0 a finished run had already
+ * chosen with a 130, and a green run would report itself as interrupted. That
+ * window is not hypothetical; it arrived with the barrier above, which is the
+ * commit that gave these four exits a shared wait they did not have when each
+ * called `process.exit` directly. There is no precedence to derive from the call
+ * sites either, so the requirement is only that one of them is settled in
+ * advance rather than by whoever writes last.
+ *
  * Declared here so all four exits read top-down; hoisting would allow it either
  * way, but a call seven hundred lines above its definition reads like a mistake.
  */
 async function exitAfterFlush(code) {
+  // A later caller returns without exiting, deliberately: the earlier one is
+  // already on its way out and calls `process.exit` itself.
+  if (exiting) return;
+  exiting = true;
   await Promise.all([
     new Promise((resolve) => process.stdout.write("", () => resolve())),
     new Promise((resolve) => process.stderr.write("", () => resolve())),
@@ -459,7 +477,34 @@ function settlesWithin(promise, ms) {
   });
 }
 
-async function cleanUp() {
+/** The one teardown, once it has started. See `cleanUp`. */
+let teardown = null;
+
+/**
+ * Stops everything this run started, once, however the run ends.
+ *
+ * Memoised rather than guarded by a boolean, and the difference is the point: a
+ * boolean would make the second caller *skip* the teardown and carry on as
+ * though it had happened, while sharing the promise makes it *wait* for the
+ * teardown the first caller began. A double Ctrl-C arrives here twice — both
+ * signals are handled by the same callback and nothing serialises them — and
+ * that is the case this is for.
+ *
+ * What it replaces was not a leak. Two concurrent calls each ran `stop` for
+ * every child, which measured as each `stopped <name>` line printed twice for a
+ * single process, plus a second `reportLeakedContainers` round. The outcome was
+ * still correct — both invocations do the same idempotent work, and the first to
+ * finish implies the group is already empty — so the cost was duplicated work
+ * and duplicated evidence, not a surviving process. `stopped` is the line this
+ * whole file exists to make trustworthy, so printing it twice for one child is
+ * not cosmetic.
+ */
+function cleanUp() {
+  teardown ??= runTeardown();
+  return teardown;
+}
+
+async function runTeardown() {
   // Signalled together and awaited together. The children are independent, so
   // stopping them in sequence would make each one wait out the others' budgets.
   await Promise.all(started.map((entry) => stop(entry)));
