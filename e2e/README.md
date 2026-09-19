@@ -53,6 +53,50 @@ Whether a publish reaches Cloudflare is decided by
 started Theme Worker and uploads nothing. Adding those credentials changes what
 the same button does.
 
+Publishing is also atomic, which is worth knowing before reaching for a smaller
+version of it: `publishTemplate` writes D1 activation and moves
+`active_release_id` before anything is sent to the Worker, and the deployment
+lease is held around the whole sequence for that reason. There is no "publish
+without activating".
+
+`scripts/run-editor-e2e.mjs` therefore refuses to start when either Cloudflare
+credential is in scope, naming the key and where it found it — the shell, or a
+`.dev.vars` file it would load. Credentials are the real gate, because they are
+what the factory reads; a flag could not do this job, since the flag is read in
+the test process and the deployer is chosen in the Worker.
+
+## Things about this environment that cost time to find
+
+Each of these was met while running the suite, and none of them announces itself.
+
+**A named Wrangler environment replaces `.dev.vars`, it does not merge with it.**
+Running with `CLOUDFLARE_ENV=local_preview_e2e` reads
+`.dev.vars.local_preview_e2e` and nothing from `.dev.vars`, the same way `vars`
+in `wrangler.jsonc` are not inherited by environments. A variable added for the
+default environment is simply absent there.
+
+**D1 refuses a LIKE pattern past some length it does not document.** A
+`column LIKE '%<47 characters>%'` works; at 62 it fails with `D1_ERROR: LIKE or
+GLOB pattern too complex: SQLITE_ERROR`. The message names the pattern, so it
+reads as a broken query rather than a string that grew — sixteen characters is
+the whole distance between working and that. Use `instr(column, ?) > 0`, which
+takes a plain substring and has no pattern to be too complex. This is the second
+time this limit has been hit; the first was a GLOB in
+`0054_normalize_sales_channel_timestamps.sql`, which became length/instr
+arithmetic for the same reason.
+
+**Every run of the editor suite leaves a Docker container behind.** A
+`workerd-morph-Sandbox-<hash>-proxy` survives the runner's cleanup, which stops
+the dev server but does not reap containers workerd started through the Sandbox
+binding. Ten accumulated in one session, after which the machine's load average
+reached 57 and every run stalled in `openEditor` at "preview frame".
+
+Clear them by *difference*, never by name or image. A developer's own `pnpm dev`
+starts a container with an identically shaped name, so
+`docker rm $(docker ps --filter name=workerd-morph-Sandbox -q)` destroys their
+session's sandbox along with the suite's leftovers — which is exactly what
+happened here. Snapshot `docker ps -q` before the run and remove only what is new.
+
 ## What these tests change
 
 They edit the theme they run against — a colour, a section order — and put it

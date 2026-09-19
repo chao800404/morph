@@ -3,6 +3,14 @@
 # Code reads these through `cloudflare:workers` env, NOT process.env, so values
 # in .env / .env.development do not reach the Worker. Copy this file to
 # `.dev.vars` (gitignored) and fill in what you need.
+#
+# A named environment REPLACES this file, it does not merge with it. Running with
+# `CLOUDFLARE_ENV=local_preview_e2e` reads `.dev.vars.local_preview_e2e` and
+# nothing from here, the same way `vars` in wrangler.jsonc are not inherited by
+# environments. So a variable added below for the default environment is invisible
+# to that one until it is added there too — which is how the end-to-end run spent
+# a while with no MORPH_LOCAL_THEME_ORIGIN at all, silently choosing a deployer
+# that could not deploy.
 
 BETTER_AUTH_SECRET=generate_with_openssl_rand_base64_32
 PUBLIC_URL=http://localhost:3000

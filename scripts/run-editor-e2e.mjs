@@ -25,6 +25,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { verifyPublishedArtifact } from "./verify-published-artifact.mjs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -81,7 +82,36 @@ const READY_TIMEOUT_MS = 120_000;
 const MIN_TESTS_RUN = Number(process.env.MORPH_E2E_MIN_TESTS ?? 20);
 
 /** Children to stop, newest first, however the run ends. */
+/**
+ * Where the publish spec leaves what the runner needs to verify it.
+ *
+ * A named file rather than "the newest build directory". Newest is an implicit
+ * signal: a second theme, or an artifact left by the previous run, and the
+ * verification silently points at the wrong thing while still passing. This file
+ * says which release, which theme and which marker, so the handoff can be
+ * checked rather than inferred.
+ */
+const HANDOFF_FILE = "publish-handoff.json";
+/**
+ * The port the reconstructed Theme Worker is served on.
+ *
+ * Taken from `MORPH_LOCAL_THEME_ORIGIN` so the two cannot drift: that is the
+ * origin the Worker forwards storefront traffic to in local topology, and
+ * serving the artifact anywhere else would be testing a port nothing uses.
+ */
+const THEME_WORKER_PORT = 8799;
+
 const started = [];
+/**
+ * `storefront.theme.build.timings` lines, as the dev server emits them.
+ *
+ * Which build plane ran is not persisted anywhere — no migration defines an
+ * `isolation` column — so the only place it is observable is this line, which
+ * `theme-build.service.ts` emits with the runner's isolation, its duration and
+ * the artifact stage measured separately. That is also the sample the container
+ * build's cost has to be read from, so one capture answers both questions.
+ */
+const buildTimings = [];
 let stateDir = null;
 
 function log(message) {
@@ -123,11 +153,29 @@ function run(command, args, env = {}) {
   }
 }
 
-function start(name, command, args, env) {
+function start(name, command, args, env, onLine) {
   const child = spawn(command, args, {
-    stdio: ["ignore", "inherit", "inherit"],
+    // Piped only when someone is reading. A dev server's output is what a
+    // developer watches when a run goes wrong, so it is echoed either way; the
+    // pipe exists because one line of it is evidence this run has to assert on.
+    stdio: ["ignore", onLine ? "pipe" : "inherit", onLine ? "pipe" : "inherit"],
     env: { ...process.env, ...env },
   });
+  if (onLine) {
+    for (const stream of [child.stdout, child.stderr]) {
+      let pending = "";
+      stream.setEncoding("utf8");
+      stream.on("data", (chunk) => {
+        process.stdout.write(chunk);
+        pending += chunk;
+        const lines = pending.split(/\r?\n/);
+        // The last element is whatever arrived without a newline yet; holding it
+        // back is what keeps a JSON line from being parsed in halves.
+        pending = lines.pop() ?? "";
+        for (const line of lines) onLine(line);
+      });
+    }
+  }
   child.on("exit", (code, signal) => {
     if (!child.stopping && code !== 0) {
       console.error(`[e2e] ${name} exited early (code ${code}, ${signal}).`);
@@ -224,6 +272,99 @@ function parseEnvFile(contents) {
       .trim();
   }
   return values;
+}
+
+
+/**
+ * The part of publishing that the browser cannot see.
+ *
+ * Runs only when the publish spec left a handoff, so a filtered run that never
+ * published is not failed for not having published. What it establishes, and
+ * what it deliberately does not:
+ *
+ * - The pointer moved. Read straight from D1, not inferred from the artifact
+ *   rendering — the CAS on `active_release_id` is a fact worth asserting on its
+ *   own rather than as a by-product of a successful fetch.
+ * - The artifact is whole. Every file the build's own manifest declares is
+ *   present, the right length and hashes to the recorded digest.
+ * - The artifact runs, and what it renders contains this run's marker.
+ *
+ * - That activation *caused* a Worker to serve it is NOT established here, and
+ *   cannot be locally: activation sends nothing in this topology. The artifact is
+ *   started by this harness, which is the operator's step standing in for a
+ *   deployment. Only the credentialed deployer exercises that edge.
+ */
+async function verifyPublishedRelease() {
+  const handoffPath = path.join(stateDir, HANDOFF_FILE);
+  if (!existsSync(handoffPath)) {
+    log("no publish handoff — skipping artifact verification");
+    return;
+  }
+
+  log("verifying the published release against D1 and R2");
+  const verified = await verifyPublishedArtifact({
+    handoffPath,
+    persistTo: stateDir,
+    outDir: path.join(stateDir, "artifact"),
+  });
+  log(
+    `release ${verified.releaseId} → build ${verified.buildId}, ${verified.fileCount} artifact files intact`,
+  );
+
+  // Which plane compiled it. Asserted from the build service's own timings line
+  // because no column records it, and asserted at all because a local build
+  // reported as a container one would answer the container's cost question with
+  // the wrong number.
+  const timing = buildTimings.at(-1);
+  if (!timing) {
+    throw new Error(
+      "NO_BUILD_TIMINGS: the dev server never emitted a storefront.theme.build.timings line, so which plane ran and what it cost are both unknown — while a release was published from a build that must have run.",
+    );
+  }
+  if (timing.runner?.isolation !== "sandbox-container") {
+    throw new Error(
+      `WRONG_BUILD_PLANE: the build ran on "${timing.runner?.isolation}". A publish slice that compiles in-process proves nothing about the container.`,
+    );
+  }
+  log(
+    `container build: runner ${timing.runner.durationMs}ms, artifact stage ${timing.artifactMs}ms, total ${timing.totalMs}ms`,
+  );
+
+  // Guarded like the dev server's port, and for the same reason. Something else
+  // on 8799 would either refuse the start with a message about wrangler, or —
+  // worse — answer the fetch below, and an unrelated process serving a page
+  // without the marker reads as "the artifact does not render this run's edit".
+  if (await portInUse(THEME_WORKER_PORT)) {
+    throw new Error(
+      `THEME_WORKER_PORT_IN_USE: something already listens on ${THEME_WORKER_PORT}, which is where MORPH_LOCAL_THEME_ORIGIN points. Stop it: a reply from the wrong process would be read as a failure of the published artifact.`,
+    );
+  }
+
+  log(`serving the reconstructed artifact on ${THEME_WORKER_PORT}`);
+  start("theme worker", "npx", [
+    "wrangler", "dev",
+    "--config", verified.workerConfig,
+    "--port", String(THEME_WORKER_PORT),
+    "--ip", "127.0.0.1",
+  ]);
+  const origin = `http://127.0.0.1:${THEME_WORKER_PORT}`;
+  await waitForOk(origin, "the reconstructed theme worker");
+
+  const response = await fetch(origin, { redirect: "follow" });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `ARTIFACT_DID_NOT_SERVE: ${origin} answered ${response.status}. The published artifact is intact but does not run.`,
+    );
+  }
+  if (body.trim().length === 0) {
+    throw new Error(
+      `ARTIFACT_SERVED_NOTHING: ${origin} answered ${response.status} with an empty body.`,
+    );
+  }
+  log(
+    `the published artifact runs: ${response.status}, ${body.length} bytes from revision ${verified.sourceRevisionId}`,
+  );
 }
 
 async function main() {
@@ -339,6 +480,17 @@ async function main() {
     // as far as the plugin is concerned.
     ...(WRANGLER_ENV ? { CLOUDFLARE_ENV: WRANGLER_ENV } : {}),
     MORPH_E2E_STATE_DIR: stateDir,
+  }, (line) => {
+    if (!line.includes("storefront.theme.build.timings")) return;
+    // The line is JSON inside whatever the dev server wraps around it, so the
+    // object is taken from the first brace rather than by parsing the line.
+    const start = line.indexOf("{");
+    if (start < 0) return;
+    try {
+      buildTimings.push(JSON.parse(line.slice(start)));
+    } catch {
+      /* A line split across chunks by something other than a newline. */
+    }
   });
   await waitForOk(DEV_ORIGIN, "the dev server");
   log("dev server ready");
@@ -360,12 +512,15 @@ async function main() {
     E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,
     MORPH_E2E_STATE_DIR: stateDir,
     PLAYWRIGHT_JSON_OUTPUT_NAME: report,
+    MORPH_E2E_HANDOFF: path.join(stateDir, HANDOFF_FILE),
     // Without this the port guard's own escape hatch does not work: the script
     // would move the dev server to `MORPH_E2E_PORT` and leave the suite calling
     // the default origin, which is whatever is already listening on 3000 — the
     // developer's own server, which is the thing the guard exists to avoid.
     E2E_BASE_URL: DEV_ORIGIN,
   });
+
+  await verifyPublishedRelease();
 
   if (extra.length === 0 && reporting.length > 0) {
     const ran = await testsRun(report);
