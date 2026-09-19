@@ -407,8 +407,14 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       expect(timing!.runner).toMatchObject({ isolation: "fake-mock", ran: true });
       expect(typeof timing!.runner.id).toBe("string");
 
-      // The build's own cost — the number a duration budget is about.
-      expect(timing!.runner.durationMs).toBeGreaterThanOrEqual(20);
+      // The build's own cost — the number a duration budget is about. The bound
+      // is deliberately below the fake's 20ms delay: `setTimeout(20)` can
+      // resolve at 19.x by `Date.now()`, and asserting the exact figure put the
+      // boundary on the assertion, which failed once in a full run. What is
+      // being checked is that the reported duration is the runner's own work
+      // rather than zero or the orchestration's, and the relationship below is
+      // what pins it precisely.
+      expect(timing!.runner.durationMs).toBeGreaterThanOrEqual(10);
 
       // Kept apart from the artifact stage, and both inside the whole. This is
       // the boundary that makes the two stages unsplittable after the fact.
