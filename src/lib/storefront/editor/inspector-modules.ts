@@ -17,7 +17,6 @@ export const INSPECTOR_MODULE_IDS = [
   "border",
   "effects",
   "interaction",
-  "accessibility",
   "source-style",
 ] as const;
 
@@ -139,7 +138,33 @@ export function resolveInspectorModules(
   }
   add("border", "effects");
   if (isInteractive) add("interaction");
-  if (tag === "img" || tag === "input" || tag === "textarea" || tag === "select" || role === "img") add("accessibility");
+  // No `accessibility` module, deliberately, and this is where it used to be
+  // added — for `img`, the form controls and `role="img"`.
+  //
+  // Its controls would write JSX attributes: `aria-label`, `role`. That is a
+  // third kind of write, next to the class list and the content fields, and
+  // nothing in the AST layer performs it — `patchTailwindClasses`,
+  // `patchElementClassName`, `patchComponentDefaultProp` and
+  // `patchThemeLinkElement` are the whole set, and the last is a single-purpose
+  // writer that finds its target by fieldKey. Building a second one shaped by
+  // `aria-label` alone would repeat that.
+  //
+  // The vocabulary does not list it either. An id the resolver can never add is
+  // a word for a control that does not exist, and a module that resolves and
+  // renders nothing is the same claim one layer down: both describe a
+  // capability the author does not have. Authors are not without it — Code mode
+  // edits these attributes today — so what is missing is Inspector coverage,
+  // not the ability.
+  //
+  // The path this needs is generic attribute authoring, and the list that
+  // should shape it is longer than a11y: `loading`, `width`, `height` and
+  // `decoding` on images, `type`, `placeholder`, `required`, `name` and
+  // `autocomplete` on form controls, `target` and `rel` on links. It writes
+  // customer source, so it also needs source-location targeting, refusal on
+  // dynamic values, and the CAS and `sourceGeneration` protections. That is its
+  // own round. When it lands, `accessibility` returns as a thin card — with
+  // `alt` excluded, since that is a content field `commitImageAlt` already
+  // owns.
   if (source?.className === true || source?.style === true) {
     if (!dynamicSource) add("source-style");
   }

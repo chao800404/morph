@@ -9,7 +9,7 @@ describe("resolveInspectorModules", () => {
       sourceEditability: { className: true },
     })).toEqual([
       "content", "media", "sizing", "spacing", "position", "appearance", "fill", "border",
-      "effects", "accessibility", "source-style",
+      "effects", "source-style",
     ]);
   });
 
@@ -25,11 +25,17 @@ describe("resolveInspectorModules", () => {
     expect(modules).toEqual(expect.arrayContaining(["layout", "sizing", "spacing", "position", "fill"]));
   });
 
-  it("exposes interaction and accessibility for controls", () => {
+  it("exposes interaction for controls", () => {
     const button = resolveInspectorModules({ tagName: "button" });
     const input = resolveInspectorModules({ tagName: "input", inputType: "email" });
     expect(button).toEqual(expect.arrayContaining(["content", "interaction"]));
-    expect(input).toEqual(expect.arrayContaining(["content", "interaction", "accessibility"]));
+    expect(input).toEqual(expect.arrayContaining(["content", "interaction"]));
+
+    // No `accessibility`, and asserted rather than merely absent from the list
+    // above, which `arrayContaining` would not notice. A form control is the
+    // selection that used to resolve it, so if the id comes back without the
+    // attribute write path behind it, this is where it should be caught.
+    expect(input).not.toContain("accessibility");
   });
 
   it("exposes fill when a generic interactive element has computed paint", () => {
