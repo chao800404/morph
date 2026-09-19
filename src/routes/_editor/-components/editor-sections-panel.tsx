@@ -60,6 +60,10 @@ import { cn } from "@/lib/utils";
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
+import {
+  planSectionDragEnd,
+  planSectionDragOver,
+} from "./section-reorder-gesture";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Blocks,
@@ -291,14 +295,6 @@ function editableNodeIcon(node: PreviewEditableNode): EditableNodeIcon {
     return { component: Minus, name: node.kind };
   }
   return { component: Component, name: node.kind };
-}
-
-function moveSection(items: EditorSection[], from: number, to: number) {
-  const next = [...items];
-  const [moved] = next.splice(from, 1);
-  if (!moved) return items;
-  next.splice(to, 0, moved);
-  return next;
 }
 
 function SortableSectionRow({
@@ -1390,45 +1386,37 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                       dragStartSectionsRef.current = sectionsRef.current;
                     }}
                     onDragOver={(event) => {
-                      if (reorderMutation.isPending) return;
                       const { source, target } = event.operation;
-                      if (
-                        !source ||
-                        !target ||
-                        !isSortable(source) ||
-                        !isSortable(target) ||
-                        source.id === target.id
-                      )
-                        return;
-
-                      const current = sectionsRef.current;
-                      const from = current.findIndex(
-                        (section) => section.id === source.id,
-                      );
-                      const to = current.findIndex(
-                        (section) => section.id === target.id,
-                      );
-                      if (from < 0 || to < 0 || from === to) return;
-                      updateSections(moveSection(current, from, to));
+                      if (!source || !target) return;
+                      if (!isSortable(source) || !isSortable(target)) return;
+                      // Every decision is in `planSectionDragOver`, including
+                      // every reason to do nothing, so "a drag in flight never
+                      // writes" is something a test states rather than
+                      // something a reader has to reconstruct from four guards.
+                      const next = planSectionDragOver({
+                        sections: sectionsRef.current,
+                        sourceId: source.id,
+                        targetId: target.id,
+                        busy: reorderMutation.isPending,
+                      });
+                      if (next) updateSections([...next]);
                     }}
                     onDragEnd={(event) => {
                       const initial = dragStartSectionsRef.current;
                       dragStartSectionsRef.current = null;
-                      if (!initial || reorderMutation.isPending) return;
-                      if (event.canceled) {
-                        updateSections(initial);
+                      const plan = planSectionDragEnd({
+                        initial,
+                        next: sectionsRef.current,
+                        canceled: event.canceled,
+                        busy: reorderMutation.isPending,
+                      });
+                      if (plan.kind === "restore") {
+                        updateSections([...plan.sections]);
                         return;
                       }
-
-                      const next = sectionsRef.current;
-                      const initialIds = initial.map((section) => section.id);
-                      const nextIds = next.map((section) => section.id);
-                      if (
-                        initialIds.every((id, index) => id === nextIds[index])
-                      ) {
-                        return;
+                      if (plan.kind === "commit") {
+                        reorderMutation.mutate(plan.ids);
                       }
-                      reorderMutation.mutate(nextIds);
                     }}
                   >
                     <SidebarMenu>
