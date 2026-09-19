@@ -195,11 +195,17 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(writtenViteConfig).toContain('"key":"@"');
     expect(writtenViteConfig).toContain("themeAliases");
 
-    // Verify exact pinned vite binary execution
+    // Verify exact pinned vite binary execution.
+    //
+    // The timeout is pinned deliberately: it is the container build's kill
+    // threshold, so changing the default has to be an edit someone makes here on
+    // purpose rather than a number that drifts. `120_000` is a hang detector, not
+    // a performance bound — see the default in the runner for the measurement
+    // behind it.
     expect(mock.session.exec).toHaveBeenCalledWith(
       "/opt/morph-toolchain/node_modules/.bin/vite build --config /workspace/vite.config.ts",
       expect.objectContaining({
-        timeout: 30_000,
+        timeout: 120_000,
         env: {
           NODE_ENV: "production",
           MORPH_THEME_BUILD_TARGET: "preview",
@@ -452,7 +458,11 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
   it("kills process and destroys container when sandbox execution times out", async () => {
     const mock = createMockSandbox({
       exec: vi.fn(async () => {
-        throw new Error("TIMEOUT: Container execution exceeded 30000ms limit");
+        // Says 120000 because that is the threshold now. The string is
+        // fabricated and asserts nothing, which is exactly why it was still
+        // claiming 30000 after the default moved — a number nothing checks is a
+        // number that drifts, and a reader has no reason to disbelieve it.
+        throw new Error("TIMEOUT: Container execution exceeded 120000ms limit");
       }),
     });
 

@@ -3,7 +3,14 @@ import { GENERATED_THEME_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencie
 export type SandboxViteThemeBuildRunnerOptions = {
   id?: string;
   version?: string;
-  /** Maximum execution time before aborting build in milliseconds (default: 30_000ms) */
+  /**
+   * Maximum execution time before aborting build in milliseconds.
+   *
+   * A hang detector rather than a performance bound: it exists so a build that
+   * has stopped progressing cannot hold a container indefinitely. See the default
+   * in `cloudflare-sandbox-vite-theme-build-runner` for why it sits far above
+   * measured build times instead of near them.
+   */
   maxDurationMs?: number;
   /** Maximum number of virtual source files allowed (default: 200) */
   maxSourceFiles?: number;

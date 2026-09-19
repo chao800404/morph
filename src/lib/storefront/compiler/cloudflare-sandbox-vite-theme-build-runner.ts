@@ -205,7 +205,20 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
   constructor(options: CloudflareSandboxViteRunnerOptions = {}) {
     this.id = options.id ?? "cloudflare-sandbox-vite-theme-build-runner";
     this.version = options.version ?? "1.0.0";
-    this.maxDurationMs = options.maxDurationMs ?? 30_000;
+    // A hang detector, not a performance bound.
+    //
+    // This is the command timeout for the in-container build, so what it has to
+    // catch is a build that has stopped making progress — not one that is merely
+    // slow. A hung process never finishes, so any number far above the real
+    // distribution catches it, while the cost of the number being too small is a
+    // *rejected publish*, which is the customer-visible direction to be wrong in.
+    // Measured in the local sandbox container — the same runner a deployment
+    // uses — 16.2-17.4s typical, and 2 runs in 10 crossed 30s while ten leaked
+    // containers competed for the machine. Tuning a kill threshold towards the
+    // observed distribution buys nothing for hang detection and keeps that
+    // failure class alive, so this sits well clear of it. Build *cost* is
+    // measured by `durationMs` on the build timing line; this only reaps hangs.
+    this.maxDurationMs = options.maxDurationMs ?? 120_000;
     this.maxSourceFiles = options.maxSourceFiles ?? 200;
     this.maxSourceSizeBytes = options.maxSourceSizeBytes ?? 5 * 1024 * 1024; // 5 MB
     this.maxOutputFiles = options.maxOutputFiles ?? 200;

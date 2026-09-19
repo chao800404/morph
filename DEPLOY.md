@@ -149,10 +149,22 @@ editor prints a line when a preview starts:
 {"scope":"storefront.theme.build.timings","runner":{"isolation":"sandbox-container","durationMs":…},"artifactMs":…,"totalMs":…}
 ```
 
-- `runner.durationMs` is what the runner's own `maxDurationMs` budget governs —
-  currently 30s, set by nothing and asserted by nothing. This number is the
-  evidence for whether that budget is right. The build row's
+- `runner.durationMs` is the build's own cost. The build row's
   `completed_at - started_at` is not: it contains the artifact upload as well.
+  Measured in the local sandbox container, which is the same runner a deployment
+  uses: 16.2-17.4s typical.
+- `maxDurationMs` is 120s and is deliberately nowhere near that. It is the
+  container command's kill threshold, so its job is to catch a build that has
+  stopped progressing, not to decide how slow is too slow — a hung process never
+  finishes, so any number far above the real distribution catches it, while a
+  number close to it turns a loaded machine into a refused publish. It was 30s,
+  set by nothing; two runs in ten crossed it while leaked containers competed for
+  the machine. The default now carries its reasoning, and the runner's test pins
+  it, so moving it is a deliberate edit rather than a drift.
+- It governs the **code plane only** — it is the timeout for `vite build` inside
+  the container. Publishing content is a D1 write with no container and no such
+  threshold, and `artifactMs` is measured separately. A latency sample that mixes
+  the two is describing neither.
 - `isolation: "sandbox-container"` confirms the build ran in a container rather
   than in process.
 - No line at all means the build was reused rather than run

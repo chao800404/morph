@@ -101,6 +101,15 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
   constructor(options: SandboxViteThemeBuildRunnerOptions = {}) {
     this.id = options.id ?? "local-vite-theme-build-runner";
     this.version = options.version ?? "1.0.0";
+    // Tighter than the container runner's 120s on purpose, not by oversight.
+    //
+    // That one is a hang detector guarding a real deployment path, where a build
+    // that stops progressing holds a container and a number close to the observed
+    // distribution turns a loaded machine into a refused publish. This runner has
+    // no non-test importer: it is exercised by its own tests, which state their
+    // own budget (`BUILD_BUDGET_MS`) and drive the guard with `maxDurationMs: 1`.
+    // Matching the two numbers would erase that difference and tell the next
+    // reader this is a deployment path too.
     this.maxDurationMs = options.maxDurationMs ?? 30_000;
     this.maxSourceFiles = options.maxSourceFiles ?? 200;
     this.maxSourceSizeBytes = options.maxSourceSizeBytes ?? 5 * 1024 * 1024; // 5 MB
