@@ -15,10 +15,13 @@
  * three different people — a GLOB in migration 0054, the asset folder id path,
  * and an end-to-end verifier's marker.
  *
- * Two roots, because there are two ways a query reaches for it. That these are
- * the only two is established in `check-sql-timestamps.mjs`, which is where the
- * reasoning about how raw SQL reaches this database lives; it is referenced
- * rather than restated so there is one version of it to keep true.
+ * Three rules, and the number is deliberate rather than incidental. A query
+ * reaches for the spelling in one of two ways — importing the comparison
+ * helper, or writing raw SQL in a template — and the pattern strings those
+ * helpers consume are a third thing that has to stay in one place. That those
+ * are the only ways is established in `check-sql-timestamps.mjs`, which is
+ * where the reasoning about how raw SQL reaches this database lives; it is
+ * referenced rather than restated so there is one version of it to keep true.
  */
 
 import ts from "typescript";
@@ -26,7 +29,10 @@ import ts from "typescript";
 /** The pattern arithmetic. Only `like-query.ts` may hold one of these strings. */
 const PATTERN_BUILDERS = new Set(["containsPattern", "prefixPattern"]);
 
-/** Drizzle's comparison helpers. Importing one is reaching for the spelling. */
+/**
+ * Drizzle's comparison helpers. Binding one — from any module, under any name —
+ * is reaching for the spelling.
+ */
 const LIKE_BINDINGS = new Set(["like", "notLike", "ilike", "notIlike"]);
 
 /**
@@ -81,11 +87,36 @@ export function scanSource(source, fileName = "input.ts") {
     parsed.getLineAndCharacterOfPosition(position).line + 1;
 
   const visit = (node) => {
-    if (
-      ts.isImportDeclaration(node) &&
-      ts.isStringLiteral(node.moduleSpecifier) &&
-      node.moduleSpecifier.text === "drizzle-orm"
-    ) {
+    // The spelling itself, from wherever it is imported.
+    //
+    // This root used to test the specifier — `=== "drizzle-orm"` — and that is
+    // the one thing about it that was wrong. `src/db/index.ts:15` is
+    // `export * from "drizzle-orm"`, so `import { like } from "@/db"` binds the
+    // same function through a different specifier, and such a file was reported
+    // clean with the spelling sitting in its import list. Two files were on the
+    // report only through the pattern root, so migrating them — deleting the
+    // local `const pattern = containsPattern(…)` and keeping `like` — would
+    // have turned this guard green with the LIKE still there. A completion
+    // condition that can be met without the condition being true is worse than
+    // no completion condition.
+    //
+    // So it asks about the binding, not the module the binding came from. A
+    // list of specifiers would have to name every module that re-exports
+    // drizzle, which is a version of the truth rather than the rule, and the
+    // day a second barrel appeared it would be a stale version.
+    //
+    // A re-export needs no rule of its own: `export { like } from "…"` does not
+    // bind the name where it is written, so it cannot be called there, and the
+    // only way to reach it is an import — which is this. That is why the barrel
+    // is neither a finding nor an exception.
+    //
+    // It reports the name, not a proof that the name is SQL's. A module
+    // exporting something unrelated called `like` would be reported too, and a
+    // person would decide, which is the same arrangement `NON_SQL_TAGS`
+    // documents below. The alternative is a scanner guessing at provenance, and
+    // a scanner that guesses is the detector this guard exists to replace.
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const specifier = node.moduleSpecifier.text;
       const bindings = node.importClause?.namedBindings;
       if (bindings && ts.isNamedImports(bindings)) {
         // `propertyName` is the exported name when the import is aliased, so
@@ -96,8 +127,8 @@ export function scanSource(source, fileName = "input.ts") {
         if (reached.length > 0) {
           findings.push({
             line: lineOf(node.getStart(parsed)),
-            root: "drizzle-binding",
-            found: `imports ${reached.join(", ")} from drizzle-orm`,
+            root: "like-binding",
+            found: `imports ${reached.join(", ")} from ${specifier}`,
           });
         }
       }
@@ -106,9 +137,12 @@ export function scanSource(source, fileName = "input.ts") {
       }
     }
 
-    // `drizzle.like(...)` is a call, so the tagged-template rule cannot see it.
+    // `db.like(...)` is a call, so the tagged-template rule cannot see it.
     // Widening that rule closed two holes and left this one open, which is why
     // they are separate roots rather than one fix.
+    //
+    // Every namespace import is tracked, for the reason the root above dropped
+    // its specifier test: `import * as db from "@/db"` reaches the spelling too.
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
@@ -118,8 +152,8 @@ export function scanSource(source, fileName = "input.ts") {
     ) {
       findings.push({
         line: lineOf(node.getStart(parsed)),
-        root: "drizzle-binding",
-        found: `${node.expression.expression.text}.${node.expression.name.text}() via a namespace import of drizzle-orm`,
+        root: "like-binding",
+        found: `${node.expression.expression.text}.${node.expression.name.text}() via a namespace import`,
       });
     }
 
