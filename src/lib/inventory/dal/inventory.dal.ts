@@ -3,7 +3,7 @@ import { inventoryItems, inventoryLevels } from "@/db/inventory.schema";
 import { productVariantInventoryItems } from "@/db/link.schema";
 import { products, productVariants } from "@/db/product.schema";
 import { stockLocations } from "@/db/stock-location.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import type { InventoryListItemDTO } from "../dto/inventory.dto";
 import {
   and,
@@ -14,7 +14,6 @@ import {
   exists,
   inArray,
   isNull,
-  like,
   notExists,
   or,
   sql,
@@ -221,11 +220,11 @@ export const inventoryDal = {
       or(notExists(hasAnyVariantLink), exists(hasActiveVariantLink)) as SQL,
     ];
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(inventoryItems.title, pattern),
-          like(inventoryItems.sku, pattern),
+          likeContains(inventoryItems.title, term),
+          likeContains(inventoryItems.sku, term),
         ) as SQL,
       );
     }

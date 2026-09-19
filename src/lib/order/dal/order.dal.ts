@@ -10,7 +10,7 @@ import {
 import { fulfillmentItems, fulfillments } from "@/db/fulfillment.schema";
 import { orderFulfillments, orderPaymentCollections } from "@/db/link.schema";
 import { paymentCollections } from "@/db/payment.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import type { OrderDetailDTO } from "@/lib/order/dto/order.dto";
 import { isOrderDisplayIdConflict } from "@/lib/order/database-error";
 import {
@@ -28,7 +28,6 @@ import {
   eq,
   inArray,
   isNull,
-  like,
   max,
   or,
   sql,
@@ -46,11 +45,11 @@ export const orderDal = {
     const db = await getDb();
     const conditions: SQL[] = [isNull(orders.deletedAt)];
     if (options.query) {
-      const pattern = containsPattern(options.query);
+      const term = options.query;
       conditions.push(
         or(
-          like(orders.email, pattern),
-          like(orders.customDisplayId, pattern),
+          likeContains(orders.email, term),
+          likeContains(orders.customDisplayId, term),
         ) as SQL,
       );
     }
