@@ -66,6 +66,26 @@ const SIDECAR_ENV_FILE = ".dev.vars.local_preview_e2e";
 const STORAGE_STATE = "e2e/.auth/user.json";
 const READY_TIMEOUT_MS = 120_000;
 /**
+ * How long a stopped child gets to actually stop, per signal.
+ *
+ * `kill` returns as soon as the signal is delivered, so every teardown that
+ * trusts it is a teardown that reports success before it has any. The budget is
+ * generous because it is only spent when something is already wrong: a Vite dev
+ * server that has been asked to stop stops in well under a second, and the wait
+ * exists for the case where it does not. Two of these can elapse, since SIGKILL
+ * gets the same grace after SIGTERM has run out.
+ */
+const STOP_TIMEOUT_MS = 10_000;
+/**
+ * How often a stopping child's group is asked whether it is empty.
+ *
+ * There is no event for "this process group has no members left", so the only
+ * way to know is to ask, and this is the interval between asks. It is spent only
+ * while something is still there to wait for: a dev server that stops when asked
+ * is measured at 1-2 ms, so a normal teardown does not reach the first poll.
+ */
+const GROUP_POLL_MS = 50;
+/**
  * Fewest tests a whole run may execute before the result is treated as a
  * mistake rather than a pass.
  *
@@ -81,7 +101,6 @@ const READY_TIMEOUT_MS = 120_000;
  */
 const MIN_TESTS_RUN = Number(process.env.MORPH_E2E_MIN_TESTS ?? 20);
 
-/** Children to stop, newest first, however the run ends. */
 /**
  * Where the publish spec leaves what the runner needs to verify it.
  *
@@ -112,6 +131,7 @@ const THEME_WORKER_PORT = 8799;
  */
 let containersBefore = null;
 
+/** Children to stop, newest first, however the run ends. */
 const started = [];
 /**
  * `storefront.theme.build.timings` lines, as the dev server emits them.
@@ -171,6 +191,18 @@ function start(name, command, args, env, onLine) {
     // pipe exists because one line of it is evidence this run has to assert on.
     stdio: ["ignore", onLine ? "pipe" : "inherit", onLine ? "pipe" : "inherit"],
     env: { ...process.env, ...env },
+    // Its own process group, so `cleanUp` can signal the whole tree and not just
+    // its root. What holds the port is never this process: the dev server runs
+    // behind a shell and `npx`, and what keeps it alive is its grandchildren.
+    // Signalling only the root reaches a shell that is already waiting on
+    // someone else, which is how a run that passed in 3.6 minutes came to leave
+    // seven orphans for the CI runner to terminate by hand.
+    //
+    // The cost is that this process no longer receives a Ctrl-C aimed at the
+    // terminal's foreground group. That is already handled: the handler at the
+    // bottom of this file catches the signal itself and stops the groups
+    // explicitly, which is the same path a normal run takes.
+    detached: true,
   });
   if (onLine) {
     for (const stream of [child.stdout, child.stderr]) {
@@ -187,12 +219,24 @@ function start(name, command, args, env, onLine) {
       });
     }
   }
-  child.on("exit", (code, signal) => {
-    if (!child.stopping && code !== 0) {
-      console.error(`[e2e] ${name} exited early (code ${code}, ${signal}).`);
-    }
+  // Resolved when the process is actually gone. `kill` reports that a signal was
+  // sent, not that it was obeyed, so this is the only thing that can tell
+  // `cleanUp` the wait is over — and the only way "stopped" can be logged after
+  // the process it names has stopped.
+  //
+  // `exit` rather than `close`, deliberately: `close` waits for every stdio
+  // stream to end, and a stream held open by a grandchild is the very case this
+  // is here to survive. Waiting on it would turn a successful stop into a
+  // timeout.
+  const exited = new Promise((resolve) => {
+    child.on("exit", (code, signal) => {
+      if (!child.stopping && code !== 0) {
+        console.error(`[e2e] ${name} exited early (code ${code}, ${signal}).`);
+      }
+      resolve();
+    });
   });
-  started.unshift({ name, child });
+  started.unshift({ name, child, exited });
   return child;
 }
 
@@ -281,19 +325,121 @@ async function reportLeakedContainers() {
   );
 }
 
-async function cleanUp() {
-  for (const { name, child } of started) {
-    child.stopping = true;
-    try {
-      child.kill("SIGTERM");
-      log(`stopped ${name}`);
-    } catch {
-      /* Already gone. */
-    }
+/**
+ * Signals a child's whole process group, which is the only handle on the tree.
+ *
+ * Negative pid addresses the group rather than the process, and it is why
+ * `start` spawns detached. The direct child is a shell or `npx` that has handed
+ * off to the real server, so it can be gone while the port is still held; the
+ * group is what survives.
+ *
+ * Throwing here is not an option: this runs on the failure path too, and a
+ * teardown that throws replaces the error it was called to clean up after with
+ * one of its own. A group with nothing left in it is the ordinary case for the
+ * sweep below, not an anomaly.
+ */
+function signalGroup(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    /* Already gone. */
   }
+}
+
+/**
+ * Whether anything is left in the child's group.
+ *
+ * Signal 0 performs the existence and permission checks and delivers nothing, so
+ * this asks the question instead of assuming the answer. `ESRCH` is the only
+ * reply that means empty; anything else — including a permission error — is
+ * treated as "still there", because the cost of the two mistakes is not
+ * symmetric: one extra SIGKILL to a group that has nothing in it is caught and
+ * ignored, and one missed process holds the port for the next run.
+ */
+function groupAlive(child) {
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+
+/**
+ * Waits for the child's group to empty, and says whether it did.
+ *
+ * Polled rather than awaited, because "this process group has no members left"
+ * is not an event anything reports. Signal 0 is the only way to ask, and the
+ * interval only elapses while something is still there to wait for.
+ */
+async function groupEmpties(child, ms) {
+  const deadline = Date.now() + ms;
+  while (groupAlive(child) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_MS));
+  }
+  return !groupAlive(child);
+}
+
+/**
+ * Stops one child and everything it started, and does not return until the group
+ * is empty.
+ *
+ * The wait is on the group rather than on the process, because those are
+ * different claims and only the second one means the port is free. `sh` and
+ * `npx` sit between this script and the dev server, and the dev server starts
+ * `workerd` and `esbuild`; any of them can outlive the process this script
+ * spawned. The old version logged `stopped ${name}` on the line after `kill`
+ * returned, which is the line the CI log contradicts: the suite passed, the job
+ * sat until its own thirty-minute timeout, and the runner then terminated
+ * `sh`, two `node`s, two `esbuild`s and `workerd` by hand.
+ */
+async function stop({ name, child, exited }) {
+  child.stopping = true;
+  signalGroup(child, "SIGTERM");
+  // The child's own exit is the fast path: it is event-driven, so the ordinary
+  // case — a dev server that stops when asked — costs no polling at all.
+  await settlesWithin(exited, STOP_TIMEOUT_MS);
+  // What it does not establish is that the group is empty, which is the part
+  // that matters and the part with no event to listen for.
+  if (await groupEmpties(child, STOP_TIMEOUT_MS)) {
+    log(`stopped ${name}`);
+    return;
+  }
+  signalGroup(child, "SIGKILL");
+  // Waited for too, and not because SIGKILL can fail — it cannot be caught or
+  // ignored. Delivery is not teardown. Measured against a leaf that ignored
+  // SIGTERM, the group took a further 12 ms to run down, and the listening
+  // socket is released somewhere inside that. Returning at the signal would hand
+  // whatever runs next a port this run had already killed.
+  if (await groupEmpties(child, STOP_TIMEOUT_MS)) {
+    log(`stopped ${name} (SIGKILL after ${STOP_TIMEOUT_MS} ms)`);
+    return;
+  }
+  log(`could not stop ${name}; something may still be running`);
+}
+
+/** Resolves `true` if `promise` settles within `ms`, `false` if it does not. */
+function settlesWithin(promise, ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    void promise.then(() => {
+      // Cleared rather than left to fire: a pending timer is a live handle, and
+      // a live handle is what makes a finished run fail to end.
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+async function cleanUp() {
+  // Signalled together and awaited together. The children are independent, so
+  // stopping them in sequence would make each one wait out the others' budgets.
+  await Promise.all(started.map((entry) => stop(entry)));
   started.length = 0;
   // After the children are gone, so a container a stopping dev server was about
-  // to release is not counted as leaked.
+  // to release is not counted as leaked. That ordering was only a comment
+  // before: the loop above returned before the servers had stopped, so this
+  // counted containers the run had in fact released.
   await reportLeakedContainers();
   if (stateDir) {
     await rm(stateDir, { recursive: true, force: true });
@@ -629,6 +775,20 @@ main()
   .then(async () => {
     await cleanUp();
     log("passed");
+    // Success used to fall off the end of the event loop and wait for the last
+    // handle to close. That is how a green run became a thirty-minute job: the
+    // suite passed in 3.6 minutes, the last handle was an orphaned dev server,
+    // and nothing ended the process until the job's own `timeout-minutes` did.
+    // Failure already exits explicitly, one branch below; success does now too.
+    //
+    // The barrier is for the line above. `process.exit` does not flush a pipe
+    // and in CI stdout is one, so exiting directly after `log` risks dropping
+    // the single line that says the run finished — the line this whole fix
+    // exists to make trustworthy. A zero-length write resolves its callback
+    // only after everything queued ahead of it has reached the pipe, which was
+    // checked against a 512 KB write rather than assumed.
+    await new Promise((resolve) => process.stdout.write("", () => resolve()));
+    process.exit(0);
   })
   .catch(async (error) => {
     console.error(`[e2e] ${error instanceof Error ? error.message : error}`);
