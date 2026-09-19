@@ -18,13 +18,12 @@ import {
   gte,
   inArray,
   isNull,
-  like,
   or,
   sql,
 } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import { toGlobalSearchTerms } from "@/lib/search/global-search";
 import { chunk, chunkForInsert } from "./d1-batch";
 import type {
@@ -129,12 +128,12 @@ export const productVariantDal = {
         and pov.deleted_at is null
     ), '')`;
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(productVariants.title, pattern),
-          like(productVariants.sku, pattern),
-          like(optionSearchText, pattern),
+          likeContains(productVariants.title, term),
+          likeContains(productVariants.sku, term),
+          likeContains(optionSearchText, term),
         )!,
       );
     }
@@ -228,7 +227,7 @@ export const productVariantDal = {
       ${optionSearchText}
     `;
     const matches = toGlobalSearchTerms(options.query).map((term) =>
-      like(searchableText, containsPattern(term)),
+      likeContains(searchableText, term),
     );
     const condition = and(
       isNull(productVariants.deletedAt),
@@ -484,11 +483,11 @@ export const productVariantDal = {
       eq(productVariantPriceHistory.variantId, options.variantId),
     ];
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(productVariantPriceHistory.currencyCode, pattern),
-          like(users.name, pattern),
+          likeContains(productVariantPriceHistory.currencyCode, term),
+          likeContains(users.name, term),
         )!,
       );
     }

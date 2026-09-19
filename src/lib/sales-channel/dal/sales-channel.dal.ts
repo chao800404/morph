@@ -3,7 +3,7 @@ import { mapFirstOrNull } from "@/lib/db/single-row";
 import { productSalesChannels } from "@/db/link.schema";
 import { salesChannels } from "@/db/sales-channel.schema";
 import { chunkForInsert } from "@/lib/product/dal/d1-batch";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import {
   and,
   asc,
@@ -12,7 +12,6 @@ import {
   eq,
   inArray,
   isNull,
-  like,
   or,
   type SQL,
 } from "drizzle-orm";
@@ -84,11 +83,11 @@ export const salesChannelDal = {
     const conditions: SQL[] = [isNull(salesChannels.deletedAt)];
 
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(salesChannels.name, pattern),
-          like(salesChannels.description, pattern),
+          likeContains(salesChannels.name, term),
+          likeContains(salesChannels.description, term),
         ) as SQL,
       );
     }

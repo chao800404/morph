@@ -10,7 +10,6 @@ import {
   gte,
   inArray,
   isNull,
-  like,
   lt,
   sql,
 } from "drizzle-orm";
@@ -19,7 +18,7 @@ import type {
   AssetFolderDTO,
   AssetFolderInsertDTO,
 } from "../dto/asset-folder.dto";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import {
   toAssetFolderDTO,
   type AssetFolderRow,
@@ -124,7 +123,7 @@ export const assetFolderDal = {
     const conditions = [isNull(assetFolders.deletedAt)];
     if (options.query?.trim()) {
       conditions.push(
-        like(assetFolders.name, containsPattern(options.query.trim())),
+        likeContains(assetFolders.name, options.query.trim()),
       );
     }
     const where = and(...conditions);
@@ -165,10 +164,10 @@ export const assetFolderDal = {
     limit: number;
   }): Promise<{ folders: AssetFolderDTO[]; total: number }> {
     const db = await getDb();
-    const pattern = containsPattern(options.query.trim());
+    const term = options.query.trim();
     const condition = and(
       isNull(assetFolders.deletedAt),
-      like(assetFolders.name, pattern),
+      likeContains(assetFolders.name, term),
     );
     const [totals, rows] = await Promise.all([
       db
@@ -207,7 +206,7 @@ export const assetFolderDal = {
     ];
     if (options.query?.trim()) {
       conditions.push(
-        like(assetFolders.name, containsPattern(options.query.trim())),
+        likeContains(assetFolders.name, options.query.trim()),
       );
     }
     const orderBy = options.sorts.map(({ sortBy, sortOrder }) => {

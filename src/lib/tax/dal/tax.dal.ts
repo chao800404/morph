@@ -8,7 +8,7 @@ import {
   taxRates,
   taxRegions,
 } from "@/db/tax.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import { chunk, chunkForInsert } from "@/lib/product/dal/d1-batch";
 import { getCountryCatalog } from "@/lib/region/countries";
 import {
@@ -20,7 +20,6 @@ import {
   exists,
   inArray,
   isNull,
-  like,
   notExists,
   or,
   type SQL,
@@ -204,7 +203,6 @@ export const taxDal = {
     ];
     if (options.query?.trim()) {
       const search = options.query.trim();
-      const pattern = containsPattern(search);
       const matchingCountryCodes = getCountryCatalog()
         .filter((country) =>
           country.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
@@ -212,8 +210,8 @@ export const taxDal = {
         .map((country) => country.iso2);
       conditions.push(
         or(
-          like(taxRegions.countryCode, pattern),
-          like(taxRegions.providerId, pattern),
+          likeContains(taxRegions.countryCode, search),
+          likeContains(taxRegions.providerId, search),
           ...(matchingCountryCodes.length
             ? [inArray(taxRegions.countryCode, matchingCountryCodes)]
             : []),
@@ -295,7 +293,7 @@ export const taxDal = {
     ];
     if (options.query?.trim()) {
       conditions.push(
-        like(taxRegions.provinceCode, containsPattern(options.query.trim())),
+        likeContains(taxRegions.provinceCode, options.query.trim()),
       );
     }
     const hasActiveRates = db
@@ -443,9 +441,12 @@ export const taxDal = {
       isNull(taxRates.deletedAt),
     ];
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
-        or(like(taxRates.name, pattern), like(taxRates.code, pattern)) as SQL,
+        or(
+          likeContains(taxRates.name, term),
+          likeContains(taxRates.code, term),
+        ) as SQL,
       );
     }
     const sortColumn =
@@ -505,7 +506,7 @@ export const taxDal = {
       const condition = and(
         isNull(products.deletedAt),
         options.query?.trim()
-          ? like(products.title, containsPattern(options.query.trim()))
+          ? likeContains(products.title, options.query.trim())
           : undefined,
       );
       const [counts, rows] = await Promise.all([
@@ -524,7 +525,7 @@ export const taxDal = {
       const condition = and(
         isNull(productTypes.deletedAt),
         options.query?.trim()
-          ? like(productTypes.value, containsPattern(options.query.trim()))
+          ? likeContains(productTypes.value, options.query.trim())
           : undefined,
       );
       const [counts, rows] = await Promise.all([
@@ -542,7 +543,7 @@ export const taxDal = {
     const condition = and(
       isNull(shippingOptions.deletedAt),
       options.query?.trim()
-        ? like(shippingOptions.name, containsPattern(options.query.trim()))
+        ? likeContains(shippingOptions.name, options.query.trim())
         : undefined,
     );
     const [counts, rows] = await Promise.all([

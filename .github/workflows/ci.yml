@@ -1,10 +1,20 @@
 name: CI
 
 on:
+  # `push` covers the merged state on `main`; `pull_request` covers every branch
+  # under review, which is what a migration branch needs — and it is why no
+  # branch name has to be listed here at all.
+  #
+  # `feat/theme-storage-abstraction` was listed until it merged and was deleted.
+  # The entry could then never match again, and it stayed in the file anyway: a
+  # branch name in this list is a selector that expires the moment its work is
+  # done, and expires without saying so. That is the whole argument for a pull
+  # request over adding a branch here — a pull request already means "a branch
+  # under review", so the general rule covers the specific case, and there is
+  # nothing left to go stale.
   push:
     branches:
       - main
-      - feat/theme-storage-abstraction
   pull_request:
 
 permissions:
@@ -57,6 +67,57 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  # Its own job, on purpose, and the reason is mechanical rather than tidiness.
+  #
+  # A failed *step* makes GitHub Actions skip every step after it, so a guard
+  # that can legitimately be red cannot be a step inside `validate`: it would
+  # take Test and Build down with it, and those two are the only signals a
+  # migration has while it runs. This guard was red for exactly that long, and
+  # is green now that the last call site moved. The reason above is about the
+  # next migration, not this one — a separate job fails on its own, costs no
+  # wall time from the others, and is the unit a branch protection rule can
+  # require.
+  #
+  # The existing static checks are green by nature, which is why this assumption
+  # never showed up in their placement.
+  architecture-guards:
+    # This string is not only a label. GitHub keeps a second copy of it, in
+    # branch protection on `main`, as the required status check context
+    # (`required_status_checks.contexts`), and nothing keeps the two copies in
+    # step. Renaming this line alone does not fail loudly: the check simply
+    # stops being reported, every pull request waits on it forever, and —
+    # because `enforce_admins` is on — the only way out is Settings -> Branches.
+    # Rename both in the same sitting, or neither.
+    name: Architecture guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Two commands in one script: the scanner's own tests run first, so a
+      # scanner that has stopped telling the shapes apart fails as itself rather
+      # than reporting a clean repo. An empty result and compliance look the same
+      # from outside.
+      - name: Check LIKE is spelled in one module
+        run: pnpm check:like-tokens
 
   editor-e2e-local-preview:
     name: Editor end-to-end (local preview transport)

@@ -11,7 +11,7 @@ import {
   promotionRuleValues,
   promotions,
 } from "@/db/schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import type {
   PromotionCampaignDTO,
   PromotionDetailDTO,
@@ -31,7 +31,6 @@ import {
   eq,
   inArray,
   isNull,
-  like,
   or,
   type SQL,
 } from "drizzle-orm";
@@ -169,11 +168,11 @@ export const promotionDal = {
     const db = await getDb();
     const conditions: SQL[] = [isNull(promotionCampaigns.deletedAt)];
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(promotionCampaigns.name, pattern),
-          like(promotionCampaigns.campaignIdentifier, pattern),
+          likeContains(promotionCampaigns.name, term),
+          likeContains(promotionCampaigns.campaignIdentifier, term),
         ) as SQL,
       );
     }
@@ -215,7 +214,7 @@ export const promotionDal = {
     const db = await getDb();
     const conditions: SQL[] = [isNull(promotions.deletedAt)];
     if (options.query)
-      conditions.push(like(promotions.code, containsPattern(options.query)));
+      conditions.push(likeContains(promotions.code, options.query));
     const where = and(...conditions);
     const sortColumn =
       options.sortBy === "code"

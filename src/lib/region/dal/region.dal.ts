@@ -3,7 +3,7 @@ import { mapFirstOrNull } from "@/lib/db/single-row";
 import { regionCountries, regions } from "@/db/region.schema";
 import { regionPaymentProviders } from "@/db/link.schema";
 import { paymentProviders } from "@/db/payment.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import { chunkForInsert } from "@/lib/product/dal/d1-batch";
 import {
   and,
@@ -13,7 +13,6 @@ import {
   eq,
   inArray,
   isNull,
-  like,
   or,
   type SQL,
 } from "drizzle-orm";
@@ -80,11 +79,11 @@ export const regionDal = {
     const conditions: SQL[] = [isNull(regions.deletedAt)];
 
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(regions.name, pattern),
-          like(regions.currencyCode, pattern),
+          likeContains(regions.name, term),
+          likeContains(regions.currencyCode, term),
         ) as SQL,
       );
     }

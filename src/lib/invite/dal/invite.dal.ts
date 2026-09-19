@@ -1,7 +1,7 @@
-import { and, asc, count, desc, eq, inArray, isNull, like } from "@/db";
+import { and, asc, count, desc, eq, inArray, isNull } from "@/db";
 import { getDb } from "@/db";
 import { invites } from "@/db/invite.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import type {
   InviteListInput,
   InvitePageDTO,
@@ -15,7 +15,7 @@ export const inviteDal = {
   async listPage(input: InviteListInput): Promise<InvitePageDTO> {
     const db = await getDb();
     const where = input.query?.trim()
-      ? and(active, like(invites.email, containsPattern(input.query.trim())))
+      ? and(active, likeContains(invites.email, input.query.trim()))
       : active;
     const sortColumn =
       input.sortBy === "email"

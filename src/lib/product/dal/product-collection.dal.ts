@@ -1,13 +1,13 @@
 import { getDb } from "@/db";
 import { mapFirstOrNull } from "@/lib/db/single-row";
 import { productCollections } from "@/db/product.schema";
-import { and, asc, count, desc, eq, inArray, isNull, like, or, SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, or, SQL } from "drizzle-orm";
 import type {
   ProductCollectionDTO,
   ProductCollectionInsertDTO,
   UpdateProductCollectionDTO,
 } from "../dto/product-collection.dto";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import {
   toProductCollectionDTO,
   type ProductCollectionRow,
@@ -73,11 +73,11 @@ export const productCollectionDal = {
     const conditions: SQL[] = [isNull(productCollections.deletedAt)];
 
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(productCollections.title, pattern),
-          like(productCollections.handle, pattern),
+          likeContains(productCollections.title, term),
+          likeContains(productCollections.handle, term),
         ) as SQL,
       );
     }

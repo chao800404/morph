@@ -1,7 +1,7 @@
-import { and, asc, count, desc, eq, inArray, like, or } from "@/db";
+import { and, asc, count, desc, eq, inArray, or } from "@/db";
 import { users } from "@/db/auth.schema";
 import { getDb } from "@/db";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import type {
   DashboardUserDetailDTO,
   DashboardUserListInput,
@@ -29,8 +29,8 @@ export const dashboardUserDal = {
     const db = await getDb();
     const search = input.query?.trim()
       ? or(
-          like(users.name, containsPattern(input.query.trim())),
-          like(users.email, containsPattern(input.query.trim())),
+          likeContains(users.name, input.query.trim()),
+          likeContains(users.email, input.query.trim()),
         )
       : undefined;
     const where = search ? and(staffRole, search) : staffRole;

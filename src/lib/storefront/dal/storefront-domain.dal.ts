@@ -1,6 +1,6 @@
 import { getDb } from "@/db";
 import { storefrontDomains, storefronts } from "@/db/storefront.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import {
   and,
   asc,
@@ -9,7 +9,6 @@ import {
   eq,
   inArray,
   isNull,
-  like,
   type SQL,
 } from "drizzle-orm";
 import type { StorefrontDomainDTO } from "../dto/storefront-domain.dto";
@@ -76,7 +75,7 @@ export const storefrontDomainDal = {
     ];
     if (options.query?.trim())
       conditions.push(
-        like(storefrontDomains.hostname, containsPattern(options.query.trim())),
+        likeContains(storefrontDomains.hostname, options.query.trim()),
       );
     const condition = and(...conditions);
     const column = {

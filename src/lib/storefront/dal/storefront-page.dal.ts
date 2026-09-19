@@ -6,8 +6,8 @@ import {
   type StorefrontPageDocument,
   type StorefrontPageStatus,
 } from "@/db/storefront.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
-import { and, asc, count, desc, eq, isNull, like, max, or } from "drizzle-orm";
+import { likeContains } from "@/lib/db/like-query";
+import { and, asc, count, desc, eq, isNull, max, or } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import {
   toStorefrontPageDTO,
@@ -72,11 +72,11 @@ export const storefrontPageDal = {
       isNull(storefrontPages.deletedAt),
     ];
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(storefrontPages.title, pattern),
-          like(storefrontPages.handle, pattern),
+          likeContains(storefrontPages.title, term),
+          likeContains(storefrontPages.handle, term),
         )!,
       );
     }
