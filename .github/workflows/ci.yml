@@ -58,6 +58,48 @@ jobs:
       - name: Build
         run: pnpm build
 
+  # Its own job, on purpose, and the reason is mechanical rather than tidiness.
+  #
+  # This guard is red for as long as a migration is in progress — 21 call sites
+  # have to move through `src/lib/db/like-query.ts` before it goes green. A failed
+  # *step* makes GitHub Actions skip every step after it, so putting it in
+  # `validate` would take out Test and Build, which are the only two signals that
+  # migration has while it runs. A separate job fails on its own, costs no wall
+  # time from the others, and is the unit a branch protection rule can require.
+  #
+  # The existing static checks are green by nature, which is why this assumption
+  # never showed up in their placement.
+  architecture-guards:
+    name: Architecture guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Two commands in one script: the scanner's own tests run first, so a
+      # scanner that has stopped telling the shapes apart fails as itself rather
+      # than reporting a clean repo. An empty result and compliance look the same
+      # from outside.
+      - name: Check LIKE is spelled in one module
+        run: pnpm check:like-tokens
+
   editor-e2e-local-preview:
     name: Editor end-to-end (local preview transport)
     runs-on: ubuntu-latest
