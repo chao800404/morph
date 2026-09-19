@@ -26,7 +26,6 @@ import {
   gte,
   inArray,
   isNull,
-  like,
   notInArray,
   or,
   SQL,
@@ -48,7 +47,7 @@ import { chunk, chunkForInsert } from "./d1-batch";
 import { productOptionDal } from "./product-option.dal";
 import { productVariantDal } from "./product-variant.dal";
 import { MAX_GENERATED_VARIANTS } from "../variant-limits";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import { productSalesChannels } from "@/db/link.schema";
 import { salesChannels } from "@/db/sales-channel.schema";
 import { toSalesChannelDTO } from "@/lib/sales-channel/mappers/sales-channel.mapper";
@@ -265,12 +264,12 @@ export const productDal = {
     const conditions: SQL[] = [isNull(products.deletedAt)];
 
     if (options.query?.trim()) {
-      const pattern = containsPattern(options.query.trim());
+      const term = options.query.trim();
       conditions.push(
         or(
-          like(products.title, pattern),
-          like(products.handle, pattern),
-          like(products.subtitle, pattern),
+          likeContains(products.title, term),
+          likeContains(products.handle, term),
+          likeContains(products.subtitle, term),
         ) as SQL,
       );
     }

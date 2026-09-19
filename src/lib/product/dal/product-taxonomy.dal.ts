@@ -5,7 +5,7 @@ import {
   productTags,
   productTypes,
 } from "@/db/product.schema";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import {
   and,
   asc,
@@ -15,7 +15,6 @@ import {
   gte,
   inArray,
   isNull,
-  like,
   lt,
   type SQL,
 } from "drizzle-orm";
@@ -79,7 +78,7 @@ export const productTypeDal = {
     const conditions: SQL[] = [isNull(productTypes.deletedAt)];
     if (options.query?.trim())
       conditions.push(
-        like(productTypes.value, containsPattern(options.query.trim())),
+        likeContains(productTypes.value, options.query.trim()),
       );
     const where = and(...conditions);
     const [totals, rows, selectedRows] = await Promise.all([
@@ -162,7 +161,7 @@ export const productTagDal = {
     const conditions: SQL[] = [isNull(productTags.deletedAt)];
     if (options.query?.trim())
       conditions.push(
-        like(productTags.value, containsPattern(options.query.trim())),
+        likeContains(productTags.value, options.query.trim()),
       );
     const where = and(...conditions);
     const [totals, rows, selectedRows] = await Promise.all([
@@ -262,7 +261,7 @@ export const productCategoryDal = {
     const conditions: SQL[] = [isNull(productCategories.deletedAt)];
     if (options.query?.trim())
       conditions.push(
-        like(productCategories.name, containsPattern(options.query.trim())),
+        likeContains(productCategories.name, options.query.trim()),
       );
     const where = and(...conditions);
     const [totals, rows, selectedRows] = await Promise.all([
@@ -371,10 +370,7 @@ export const productCategoryDal = {
 
     if (options.query?.trim()) {
       conditions.push(
-        like(
-          productCategories.name,
-          containsPattern(options.query.trim()),
-        ) as SQL,
+        likeContains(productCategories.name, options.query.trim()) as SQL,
       );
     }
 

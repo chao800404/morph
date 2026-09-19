@@ -4,7 +4,7 @@ import {
   getProductOptionCreatedWithinDays,
   type ProductOptionCreatedWithin,
 } from "@/lib/product/config/product-option-list";
-import { containsPattern } from "@/lib/db/like-pattern";
+import { likeContains } from "@/lib/db/like-query";
 import {
   and,
   asc,
@@ -14,7 +14,6 @@ import {
   gte,
   inArray,
   isNull,
-  like,
   SQL,
 } from "drizzle-orm";
 import type {
@@ -198,7 +197,7 @@ export const productOptionDal = {
 
     if (options.query?.trim()) {
       conditions.push(
-        like(productOptions.title, containsPattern(options.query.trim())) as SQL,
+        likeContains(productOptions.title, options.query.trim()) as SQL,
       );
     }
 
