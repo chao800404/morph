@@ -16,6 +16,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { toast } from "sonner";
@@ -86,7 +87,39 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
     initialY: number;
     hasMoved: boolean;
     wasActiveBeforeDrag: boolean;
+    /**
+     * The element the drag paints, and where it has got to.
+     *
+     * A pin used to follow the pointer through React state — one setter per
+     * `pointermove`, which §"Canvas gesture" forbids in as many words: the
+     * transient x/y belongs in a ref and reaches the DOM through the same CSS
+     * variables, and React state syncs once when the gesture ends. Every other
+     * gesture in the editor was already built that way; this one was the last
+     * that was not.
+     */
+    element: HTMLElement | null;
+    nextX: number;
+    nextY: number;
   } | null>(null);
+  /** One frame in flight at a time, so a burst of moves paints once. */
+  const pinFrameRef = useRef(0);
+
+  const paintPin = useCallback(() => {
+    if (pinFrameRef.current !== 0) return;
+    pinFrameRef.current = requestAnimationFrame(() => {
+      pinFrameRef.current = 0;
+      const drag = dragRef.current;
+      if (!drag?.element) return;
+      drag.element.style.setProperty("--morph-pin-x", `${drag.nextX}%`);
+      drag.element.style.setProperty("--morph-pin-y", `${drag.nextY}%`);
+    });
+  }, []);
+
+  const cancelPinFrame = useCallback(() => {
+    if (pinFrameRef.current === 0) return;
+    cancelAnimationFrame(pinFrameRef.current);
+    pinFrameRef.current = 0;
+  }, []);
 
   useEffect(() => {
     if (draftPin && !isDraggingPin) {
@@ -215,6 +248,11 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
 
       const isActive = activeThreadId === threadId;
       dragRef.current = {
+        element: (event.currentTarget as HTMLElement).closest<HTMLElement>(
+          "[data-comment-pin]",
+        ),
+        nextX: currentX,
+        nextY: currentY,
         threadId,
         isDraft: false,
         startClientX: event.clientX,
@@ -240,6 +278,11 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
       event.currentTarget.setPointerCapture(event.pointerId);
 
       dragRef.current = {
+        element: (event.currentTarget as HTMLElement).closest<HTMLElement>(
+          "[data-comment-pin]",
+        ),
+        nextX: currentX,
+        nextY: currentY,
         threadId: null,
         isDraft: true,
         startClientX: event.clientX,
@@ -286,16 +329,13 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
         Math.min(99.5, drag.initialY + deltaYPercent),
       );
 
-      if (drag.isDraft) {
-        onDraftPinChange({ x: nextX, y: nextY });
-      } else if (drag.threadId) {
-        setOptimisticPositions((prev) => ({
-          ...prev,
-          [drag.threadId!]: { x: nextX, y: nextY },
-        }));
-      }
+      // The gesture's only job while the pointer is down: remember where it
+      // is and paint it. No state setter, no prop that reaches one.
+      drag.nextX = nextX;
+      drag.nextY = nextY;
+      paintPin();
     },
-    [canvasScale, onDraftPinChange],
+    [canvasScale, paintPin],
   );
 
   const handlePinPointerUp = useCallback(
@@ -314,6 +354,10 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
 
       const didMove = drag.hasMoved;
       const wasActive = drag.wasActiveBeforeDrag;
+      const finalX = drag.nextX;
+      const finalY = drag.nextY;
+      const wasDraft = drag.isDraft;
+      cancelPinFrame();
       dragRef.current = null;
       setIsDraggingPin(false);
 
@@ -324,18 +368,32 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
         return;
       }
 
-      if (!isDraft && threadId) {
-        const finalPos = optimisticPositions[threadId];
-        if (finalPos) {
-          updatePositionMutation.mutate({
-            threadId,
-            positionX: finalPos.x,
-            positionY: finalPos.y,
-          });
-        }
+      // The one sync, from the ref. Reading it back out of React state would
+      // read the position as it was before the drag, because the drag no
+      // longer writes there.
+      if (wasDraft || isDraft) {
+        onDraftPinChange({ x: finalX, y: finalY });
+        return;
+      }
+
+      if (threadId) {
+        setOptimisticPositions((prev) => ({
+          ...prev,
+          [threadId]: { x: finalX, y: finalY },
+        }));
+        updatePositionMutation.mutate({
+          threadId,
+          positionX: finalX,
+          positionY: finalY,
+        });
       }
     },
-    [onActiveThreadChange, optimisticPositions, updatePositionMutation],
+    [
+      cancelPinFrame,
+      onActiveThreadChange,
+      onDraftPinChange,
+      updatePositionMutation,
+    ],
   );
 
   const currentInitials = getInitials(currentUser?.name);
@@ -375,12 +433,21 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
         return (
           <div
             key={thread.id}
-            style={{
-              left: `${leftPercent}%`,
-              top: `${topPercent}%`,
-              transform: `scale(${scaleFactor}) translate(-50%, -50%)`,
-              transformOrigin: "0 0",
-            }}
+            // Positioned through variables so a drag can move it by writing
+            // them, without this component rendering again. React sets them
+            // from state; the gesture overwrites them on the element until it
+            // ends, and then state catches up to the same value.
+            data-comment-pin
+            style={
+              {
+                "--morph-pin-x": `${leftPercent}%`,
+                "--morph-pin-y": `${topPercent}%`,
+                left: "var(--morph-pin-x)",
+                top: "var(--morph-pin-y)",
+                transform: `scale(${scaleFactor}) translate(-50%, -50%)`,
+                transformOrigin: "0 0",
+              } as CSSProperties
+            }
             className={cn(
               "pointer-events-auto absolute select-none",
               isCurrentlyDragging && "z-50",
@@ -428,12 +495,17 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
       {/* New Draft Pin & Popover */}
       {draftPin ? (
         <div
-          style={{
-            left: `${draftPin.x}%`,
-            top: `${draftPin.y}%`,
-            transform: `scale(${scaleFactor}) translate(-50%, -50%)`,
-            transformOrigin: "0 0",
-          }}
+          data-comment-pin
+          style={
+            {
+              "--morph-pin-x": `${draftPin.x}%`,
+              "--morph-pin-y": `${draftPin.y}%`,
+              left: "var(--morph-pin-x)",
+              top: "var(--morph-pin-y)",
+              transform: `scale(${scaleFactor}) translate(-50%, -50%)`,
+              transformOrigin: "0 0",
+            } as CSSProperties
+          }
           className="pointer-events-auto absolute select-none"
           onPointerDown={(e) => e.stopPropagation()}
           onPointerUp={(e) => e.stopPropagation()}
