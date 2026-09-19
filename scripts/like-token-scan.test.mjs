@@ -130,6 +130,34 @@ describe("prose is not code", () => {
   });
 });
 
+describe("the pattern arithmetic root", () => {
+  it("catches an import of containsPattern", () => {
+    assert.equal(finds('import { containsPattern } from "@/lib/db/like-pattern";'), 1);
+  });
+
+  it("catches prefixPattern, and a relative specifier", () => {
+    assert.equal(finds('import { prefixPattern } from "./like-pattern";'), 1);
+  });
+
+  it("names the root, so an exception can be scoped to it", () => {
+    // The command excuses `like-pattern.test.ts` from this root and from no
+    // other: it has to import the arithmetic, which is no reason to stop
+    // checking it for queries.
+    assert.deepEqual(
+      scanSource('import { containsPattern } from "./like-pattern";').map((f) => f.root),
+      ["pattern-import"],
+    );
+  });
+
+  it("ignores an import of something else from the same module", () => {
+    assert.equal(finds('import { MAX_TERM_BYTES } from "./like-pattern";'), 0);
+  });
+
+  it("ignores a module whose name merely ends in similar text", () => {
+    assert.equal(finds('import { containsPattern } from "./not-like-patterns";'), 0);
+  });
+});
+
 describe("the builders themselves", () => {
   it("ignores a call to likeContains", () => {
     assert.equal(

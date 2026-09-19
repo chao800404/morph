@@ -23,6 +23,9 @@
 
 import ts from "typescript";
 
+/** The pattern arithmetic. Only `like-query.ts` may hold one of these strings. */
+const PATTERN_BUILDERS = new Set(["containsPattern", "prefixPattern"]);
+
 /** Drizzle's comparison helpers. Importing one is reaching for the spelling. */
 const LIKE_BINDINGS = new Set(["like", "notLike", "ilike", "notIlike"]);
 
@@ -93,6 +96,7 @@ export function scanSource(source, fileName = "input.ts") {
         if (reached.length > 0) {
           findings.push({
             line: lineOf(node.getStart(parsed)),
+            root: "drizzle-binding",
             found: `imports ${reached.join(", ")} from drizzle-orm`,
           });
         }
@@ -114,8 +118,45 @@ export function scanSource(source, fileName = "input.ts") {
     ) {
       findings.push({
         line: lineOf(node.getStart(parsed)),
+        root: "drizzle-binding",
         found: `${node.expression.expression.text}.${node.expression.name.text}() via a namespace import of drizzle-orm`,
       });
+    }
+
+    // The pattern helpers themselves, which is the root that makes the other two
+    // finishable rather than merely enforced.
+    //
+    // Without it every migrated call site has to remember not to pass a pattern
+    // where a term belongs: `likeContains(column, pattern)` type-checks, because
+    // both are `string`, and produces `%%term%%`. SQL collapses the doubled `%`
+    // so nothing looks wrong — but the wrapper characters are inside the budget,
+    // so the searchable term shrinks. Measured at the cap: a single wrap keeps 16
+    // Chinese characters and a double wrap keeps 15, with the pattern at 48 bytes
+    // instead of 50, which means it does not even fail. Only at the boundary, no
+    // type error, no test.
+    //
+    // So once the migration is done the pattern strings cannot leave this module
+    // and the mistake is unwritable rather than merely discouraged. It also makes
+    // the two completion conditions one: "no LIKE outside the module" and "no
+    // pattern string outside the module" are the same state described twice.
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      /(^|\/)like-pattern(\.(ts|js|mjs))?$/.test(node.moduleSpecifier.text)
+    ) {
+      const bindings = node.importClause?.namedBindings;
+      if (bindings && ts.isNamedImports(bindings)) {
+        const reached = bindings.elements
+          .map((element) => (element.propertyName ?? element.name).text)
+          .filter((name) => PATTERN_BUILDERS.has(name));
+        if (reached.length > 0) {
+          findings.push({
+            root: "pattern-import",
+            line: lineOf(node.getStart(parsed)),
+            found: `imports ${reached.join(", ")} from like-pattern`,
+          });
+        }
+      }
     }
 
     if (ts.isTaggedTemplateExpression(node)) {
@@ -126,6 +167,7 @@ export function scanSource(source, fileName = "input.ts") {
         for (const operator of body.matchAll(PATTERN_OPERATOR)) {
           findings.push({
             line: lineOf(node.template.getStart(parsed) + operator.index),
+            root: "tagged-template",
             found: `raw ${operator[0].toUpperCase()} in a ${tag}\`\` template`,
           });
         }
