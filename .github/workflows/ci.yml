@@ -70,16 +70,25 @@ jobs:
 
   # Its own job, on purpose, and the reason is mechanical rather than tidiness.
   #
-  # This guard is red for as long as a migration is in progress — 21 call sites
-  # have to move through `src/lib/db/like-query.ts` before it goes green. A failed
-  # *step* makes GitHub Actions skip every step after it, so putting it in
-  # `validate` would take out Test and Build, which are the only two signals that
-  # migration has while it runs. A separate job fails on its own, costs no wall
-  # time from the others, and is the unit a branch protection rule can require.
+  # A failed *step* makes GitHub Actions skip every step after it, so a guard
+  # that can legitimately be red cannot be a step inside `validate`: it would
+  # take Test and Build down with it, and those two are the only signals a
+  # migration has while it runs. This guard was red for exactly that long, and
+  # is green now that the last call site moved. The reason above is about the
+  # next migration, not this one — a separate job fails on its own, costs no
+  # wall time from the others, and is the unit a branch protection rule can
+  # require.
   #
   # The existing static checks are green by nature, which is why this assumption
   # never showed up in their placement.
   architecture-guards:
+    # This string is not only a label. GitHub keeps a second copy of it, in
+    # branch protection on `main`, as the required status check context
+    # (`required_status_checks.contexts`), and nothing keeps the two copies in
+    # step. Renaming this line alone does not fail loudly: the check simply
+    # stops being reported, every pull request waits on it forever, and —
+    # because `enforce_admins` is on — the only way out is Settings -> Branches.
+    # Rename both in the same sitting, or neither.
     name: Architecture guards
     runs-on: ubuntu-latest
     timeout-minutes: 10
