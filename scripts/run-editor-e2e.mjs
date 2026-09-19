@@ -203,6 +203,29 @@ async function testsRun(reportPath) {
   return ran;
 }
 
+/**
+ * The subset of dotenv the pre-flight needs: `KEY=value`, `export KEY=value`,
+ * comments and blanks skipped, surrounding quotes dropped.
+ *
+ * Deliberately not `process.loadEnvFile`, which would put a credential into
+ * this process to find out whether it is there.
+ */
+function parseEnvFile(contents) {
+  const values = {};
+  for (const line of contents.split(/\r?\n/)) {
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(
+      line,
+    );
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    values[key] = rawValue
+      .trim()
+      .replace(/^(['"])(.*)\1$/, "$2")
+      .trim();
+  }
+  return values;
+}
+
 async function main() {
   if (USES_SIDECAR && !existsSync(SIDECAR_ENV_FILE)) {
     throw new Error(
@@ -226,6 +249,41 @@ async function main() {
       `CLOUDFLARE_ENV_SET: the container transport needs Wrangler's default environment, but CLOUDFLARE_ENV is "${process.env.CLOUDFLARE_ENV}" in this shell. Unset it and run again.`,
     );
   }
+  // Refused on the condition the deployer actually tests, not on a flag.
+  //
+  // `createServerThemeWorkerDeployer` picks the operator-managed deployer — the
+  // one that uploads nothing — only when `MORPH_LOCAL_THEME_ORIGIN` is set AND
+  // both Cloudflare credentials are absent AND the environment is not
+  // production. Let a token reach the Worker's env and it falls through to
+  // `SandboxWranglerThemeWorkerDeployer`, which runs wrangler and deploys for
+  // real. Publishing is atomic here — `publishTemplate` moves
+  // `active_release_id` before anything is sent to the Worker — so there is no
+  // half-step to stop at once that has happened.
+  //
+  // So the credentials are what gates this run, and they are checked where they
+  // would arrive from: the shell, and the `.dev.vars` files Wrangler loads into
+  // the Worker's bindings. `E2E_ALLOW_PUBLISH` gated the old spec and could not
+  // have caught this: the flag is read in the test process, and the deployer
+  // choice is made in the Worker from values the flag knows nothing about.
+  const credentialSources = [
+    ["the shell", { ...process.env }],
+    ...(await Promise.all(
+      [".dev.vars", ".dev.vars.local", `.dev.vars.${WRANGLER_ENV}`]
+        .filter((file) => file !== ".dev.vars." && existsSync(file))
+        .map(async (file) => [file, parseEnvFile(await readFile(file, "utf8"))]),
+    )),
+  ];
+  const credentialsFound = credentialSources.flatMap(([source, values]) =>
+    ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+      .filter((key) => (values[key] ?? "").trim() !== "")
+      .map((key) => `${key} in ${source}`),
+  );
+  if (credentialsFound.length > 0) {
+    throw new Error(
+      `CLOUDFLARE_CREDENTIALS_PRESENT: ${credentialsFound.join(", ")}. This run publishes, and publishing is atomic — the pointer moves and the release is deployed by whichever deployer the Worker composes. With a credential in scope that is the real one, which uploads to Cloudflare. Remove it from the environment this run loads, or run the suite without the publish slice.`,
+    );
+  }
+
   if (await portInUse(DEV_PORT)) {
     throw new Error(
       `PORT_IN_USE: something already listens on ${DEV_PORT}. Stop it first, or set MORPH_E2E_PORT to run beside it — a run that attached to a developer's own dev server would exercise their database and still pass.`,
