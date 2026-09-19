@@ -18,44 +18,142 @@ async function openEditor(page: Page) {
 }
 
 /**
- * Scans the editor's own chrome, not the theme inside the canvas.
- *
- * The canvas renders whatever the Theme author wrote; holding Morph's editor to
- * account for someone else's markup would report failures nobody here can fix,
- * and the real ones would be lost among them.
- */
-/**
  * The editor's own surfaces, without the Theme rendered inside the preview.
  *
- * `exclude("iframe")` has a cost that was not known until it hid a real
- * defect, and it is recorded here because the scan cannot currently be
- * configured out of it. Excluding the frame means axe can no longer resolve a
- * background for anything that overlaps it, so those nodes leave `violations`
- * and arrive in `incomplete` with `messageKey: "bgOverlap"` — and this suite
- * asserts on `violations`. "axe could not tell" therefore reads as "nothing
- * wrong", for every piece of chrome that sits over the canvas, which is most
- * of it: dialogs, popovers, the inspector.
+ * `exclude("iframe")` is here to keep someone else's markup out of this
+ * project's results, and it does that: the Theme in the canvas fails
+ * `color-contrast` on eight nodes of its own (`src/components/Hero.tsx`,
+ * `src/components/Principles.tsx`), which nobody here can fix and which would
+ * bury the ones they can.
  *
- * Measured, not inferred. A table header of `text-muted-foreground` on
- * `bg-accent` is 4.38:1 against the 4.5 AA asks for, and axe says so — eight
- * nodes — when the frame is not excluded. With the exclusion it says nothing,
- * or says it on CI and not locally, because whether a node counts as
- * overlapping depends on layout. That is what made a genuine contrast failure
- * look like a flake for two runs.
+ * It does not cost coverage, which is worth stating because an earlier version
+ * of this comment claimed at length that it did — that excluding the frame left
+ * axe unable to resolve a background for chrome overlapping it, pushing real
+ * failures into `incomplete` as `bgOverlap`. Measured over four fresh page
+ * loads with the release table's header regressed back to `muted-foreground` on
+ * `bg-accent`, the two configurations are identical on the editor's own
+ * document: 0 violations, 9 incomplete, 38 passes, every round, whether the
+ * frame is excluded or scanned and then filtered out of the results by frame
+ * depth. The nine unresolved nodes are unresolved either way, because the
+ * iframe *element* is an opaque box in the parent's layout regardless of
+ * whether axe was allowed inside it.
  *
- * Tried and rejected: `setLegacyMode(true)` reports the same nine nodes as
- * incomplete, and scoping to `[role="dialog"]` reports neither a violation nor
- * an incomplete. Scanning without the exclusion works but pulls the Theme's own
- * content into the editor's results, which is a different product's
- * accessibility. No configuration found so far keeps both.
+ * Also measured, and the reason the test below exists: in six runs against that
+ * regression, axe reported those `<th>`s once. The other five times they were
+ * in no bucket at all — not `violations`, not `incomplete`, not `passes` — so
+ * this suite is not what stands between that defect and a release.
  *
- * Until one is, `summarizeViolations` prints what went to `incomplete` so the
- * gap is visible in a passing run rather than silent.
+ * Tried and rejected: `include("[data-morph-editor]")` does not scope frames at
+ * all (@axe-core/playwright injects into every frame Playwright can reach, so a
+ * cross-origin preview is no barrier) and returns the unexcluded result, Theme
+ * violations included. `setLegacyMode(true)` reports the same nine as
+ * incomplete; scoping to `[role="dialog"]` reports neither a violation nor an
+ * incomplete.
+ *
+ * `summarizeViolations` prints what went to `incomplete` so the gap is visible
+ * in a passing run rather than silent.
  */
 function scanEditorChrome(page: Page) {
   return new AxeBuilder({ page })
     .exclude("iframe")
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
+}
+
+/**
+ * The contrast of a colour pair, measured in the page rather than reasoned about.
+ *
+ * Colours are resolved through a canvas because the tokens are authored as
+ * `oklch(...)` and WCAG luminance is defined on sRGB. `fillStyle` keeps its
+ * previous value when handed something it cannot parse, so a sentinel is
+ * checked: an unparsable token returns null and fails the test rather than
+ * quietly measuring black.
+ */
+async function measureTokenContrast(
+  page: Page,
+  foregroundToken: string,
+  backgroundToken: string,
+) {
+  return page.evaluate(
+    ([foregroundName, backgroundName]) => {
+      const toRgb = (value: string): [number, number, number] | null => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 1;
+        canvas.height = 1;
+        const context = canvas.getContext("2d");
+        if (!context) return null;
+        const sentinel = "#123456";
+        context.fillStyle = sentinel;
+        context.fillStyle = value;
+        if (context.fillStyle === sentinel && value !== sentinel) return null;
+        context.fillRect(0, 0, 1, 1);
+        const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+        return [red, green, blue];
+      };
+
+      const luminance = ([red, green, blue]: [number, number, number]) => {
+        const channel = (value: number) => {
+          const ratio = value / 255;
+          return ratio <= 0.04045
+            ? ratio / 12.92
+            : ((ratio + 0.055) / 1.055) ** 2.4;
+        };
+        return (
+          0.2126 * channel(red) +
+          0.7152 * channel(green) +
+          0.0722 * channel(blue)
+        );
+      };
+
+      const root = getComputedStyle(document.documentElement);
+      const foreground = root.getPropertyValue(foregroundName).trim();
+      const background = root.getPropertyValue(backgroundName).trim();
+      const foregroundRgb = foreground ? toRgb(foreground) : null;
+      const backgroundRgb = background ? toRgb(background) : null;
+      if (!foregroundRgb || !backgroundRgb) {
+        return { ratio: null, foreground, background };
+      }
+
+      const [darker, lighter] = [
+        luminance(foregroundRgb),
+        luminance(backgroundRgb),
+      ].sort((left, right) => left - right);
+      return {
+        ratio: Math.round(((lighter + 0.05) / (darker + 0.05)) * 100) / 100,
+        foreground,
+        background,
+      };
+    },
+    [foregroundToken, backgroundToken] as const,
+  );
+}
+
+/**
+ * Holds the pair the table header actually uses to AA.
+ *
+ * Asserted on the tokens, not on a rendered header, and that is deliberate. The
+ * first version of this test measured the release history table directly and
+ * timed out in the full suite: those rows arrive from a query, and under
+ * parallel workers they did not arrive inside sixty seconds. A guard that
+ * depends on data arriving is not a guard. The tokens are present the moment the
+ * document has a stylesheet.
+ *
+ * `--foreground` on `--accent` is the pairing `TableHeader` sets explicitly. It
+ * has to be explicit: `bg-accent` is a state surface, and the inherited
+ * `muted-foreground` on it is 4.39:1 in light against the 4.5 AA asks for —
+ * while being 5.66:1 in dark, which is how it stayed hidden for as long as it
+ * did. Both themes run this, so neither can carry the other.
+ */
+async function expectAccentSurfaceReadable(page: Page) {
+  await openEditor(page);
+  const measured = await measureTokenContrast(page, "--foreground", "--accent");
+  expect(
+    measured.ratio,
+    `could not resolve the pair: ${JSON.stringify(measured)}`,
+  ).not.toBeNull();
+  expect(
+    measured.ratio,
+    `--foreground (${measured.foreground}) on --accent (${measured.background})`,
+  ).toBeGreaterThanOrEqual(4.5);
 }
 
 /**
@@ -119,6 +217,10 @@ test.describe("editor accessibility in dark", () => {
     expect(summarizeViolations(results)).toEqual([]);
   });
 
+  test("the accent surface stays readable in dark", async ({ page }) => {
+    await expectAccentSurfaceReadable(page);
+  });
+
   test("a dialog is scannable in dark too", async ({ page }) => {
     await openEditor(page);
     await page.getByRole("button", { name: "Release history" }).click();
@@ -171,6 +273,10 @@ test.describe("editor accessibility", () => {
       );
 
     expect(unnamed).toEqual([]);
+  });
+
+  test("the accent surface stays readable", async ({ page }) => {
+    await expectAccentSurfaceReadable(page);
   });
 
   test("a dialog is scannable too, not just the page behind it", async ({
