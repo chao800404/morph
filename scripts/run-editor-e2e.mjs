@@ -101,6 +101,17 @@ const HANDOFF_FILE = "publish-handoff.json";
  */
 const THEME_WORKER_PORT = 8799;
 
+/**
+ * Containers that existed before this run, so the ones it adds can be told apart.
+ *
+ * Captured as ids rather than names or images. A developer's own `pnpm dev`
+ * starts a container whose name has the same shape as the suite's
+ * (`workerd-morph-Sandbox-<hash>-proxy`), so removing by name destroys their
+ * sandbox session along with the leftovers — which is not hypothetical, it is how
+ * this was found.
+ */
+let containersBefore = null;
+
 const started = [];
 /**
  * `storefront.theme.build.timings` lines, as the dev server emits them.
@@ -203,6 +214,73 @@ async function waitForOk(url, label) {
   }
 }
 
+/**
+ * Container ids currently running, or null when Docker cannot be asked.
+ *
+ * Silent on failure: Docker is a requirement of the container transport, not of
+ * this bookkeeping, and a sidecar run should not report a Docker problem.
+ */
+function runningContainers() {
+  const result = spawnSync("docker", ["ps", "-q"], { encoding: "utf8" });
+  if (result.status !== 0 || typeof result.stdout !== "string") return null;
+  return new Set(result.stdout.split(/\s+/).filter(Boolean));
+}
+
+/**
+ * Reports the containers this run added and did not release, removing them only
+ * when asked.
+ *
+ * Every run of this suite leaves a `workerd-morph-Sandbox-<hash>-proxy` behind:
+ * the runner stops the dev server, and containers workerd started through the
+ * Sandbox binding outlive it. Ten accumulated in one session, after which the
+ * machine's load average reached 57 and every run stalled in `openEditor` at
+ * "preview frame" — so this is not housekeeping, it is the difference between a
+ * suite that keeps working and one that degrades until its timings mean nothing.
+ *
+ * Reporting rather than removing, by default, because the difference cannot tell
+ * whose container it is. A developer running their own dev server beside this one
+ * — which `MORPH_E2E_PORT` exists to allow — may have started a sandbox session
+ * mid-run, and it would appear in exactly the same difference. Leaving a
+ * container costs disk and some load; destroying the session someone is working
+ * in costs them their state. `MORPH_E2E_REAP_CONTAINERS=1` opts into removal for
+ * an unattended machine, where nothing else is holding a session.
+ */
+async function reportLeakedContainers() {
+  if (!containersBefore) return;
+  const candidates = runningContainers();
+  if (!candidates) return;
+  const added = [...candidates].filter((id) => !containersBefore.has(id));
+  if (added.length === 0) return;
+
+  // Waited on, and re-checked. A stopping dev server releases its containers a
+  // moment after it exits, so an immediate difference named two ids that were
+  // gone by the next command — advice to remove containers that no longer
+  // existed. Not every run leaks; the ones that do are what this is for.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  const stillRunning = runningContainers();
+  if (!stillRunning) return;
+  const leaked = added.filter((id) => stillRunning.has(id));
+  if (leaked.length === 0) {
+    log("every container this run started has exited");
+    return;
+  }
+
+  if (process.env.MORPH_E2E_REAP_CONTAINERS !== "1") {
+    log(
+      `this run left ${leaked.length} container(s) running: ${leaked.join(" ")}. Remove them with \`docker rm -f ${leaked.join(" ")}\`, or set MORPH_E2E_REAP_CONTAINERS=1 on a machine where nothing else holds a sandbox session. Do not filter by name: a developer's own dev server uses the same shape.`,
+    );
+    return;
+  }
+  const removed = spawnSync("docker", ["rm", "-f", ...leaked], {
+    encoding: "utf8",
+  });
+  log(
+    removed.status === 0
+      ? `removed ${leaked.length} container(s) this run started`
+      : `could not remove ${leaked.join(" ")}: ${(removed.stderr ?? "").trim().slice(0, 120)}`,
+  );
+}
+
 async function cleanUp() {
   for (const { name, child } of started) {
     child.stopping = true;
@@ -214,6 +292,9 @@ async function cleanUp() {
     }
   }
   started.length = 0;
+  // After the children are gone, so a container a stopping dev server was about
+  // to release is not counted as leaked.
+  await reportLeakedContainers();
   if (stateDir) {
     await rm(stateDir, { recursive: true, force: true });
     log(`removed ${stateDir}`);
@@ -473,6 +554,11 @@ async function main() {
     // and Docker has to be running for that binding to resolve.
     log("no sidecar — the preview comes from a container");
   }
+
+  // Snapshotted before anything can start a container, so the difference is this
+  // run's and nothing earlier is ever a candidate for removal.
+  containersBefore = runningContainers();
+  if (containersBefore) log(`${containersBefore.size} container(s) already running`);
 
   log(`starting the dev server on ${DEV_PORT}`);
   start("dev server", "npx", ["vite", "dev", "--port", String(DEV_PORT)], {
