@@ -1,10 +1,20 @@
 name: CI
 
 on:
+  # `push` covers the merged state on `main`; `pull_request` covers every branch
+  # under review, which is what a migration branch needs — and it is why no
+  # branch name has to be listed here at all.
+  #
+  # `feat/theme-storage-abstraction` was listed until it merged and was deleted.
+  # The entry could then never match again, and it stayed in the file anyway: a
+  # branch name in this list is a selector that expires the moment its work is
+  # done, and expires without saying so. That is the whole argument for a pull
+  # request over adding a branch here — a pull request already means "a branch
+  # under review", so the general rule covers the specific case, and there is
+  # nothing left to go stale.
   push:
     branches:
       - main
-      - feat/theme-storage-abstraction
   pull_request:
 
 permissions:
