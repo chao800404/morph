@@ -31,6 +31,34 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 /**
+ * Exits once stdout and stderr have reached the pipe.
+ *
+ * `process.exit` does not drain a pipe, and in CI both streams are pipes, so a
+ * line written immediately before it can be dropped. A zero-length write's
+ * callback resolves only after everything queued ahead of it has been flushed.
+ *
+ * Measured on both streams rather than assumed symmetric: 512 KB plus a marker
+ * followed by a bare exit loses the marker on stdout *and* on stderr, and the
+ * barrier keeps it on both.
+ *
+ * Used by every exit, including the transport refusal below, where nothing is
+ * queued yet and a bare exit kept its line in five runs out of five. Depending on
+ * that would ask each future reader to work out whether anything is in the buffer
+ * at their exit — which is the local reasoning this replaces. One `await` costs
+ * nothing, and a barrier at one exit is a barrier nobody remembers at the next.
+ *
+ * Declared here so all four exits read top-down; hoisting would allow it either
+ * way, but a call seven hundred lines above its definition reads like a mistake.
+ */
+async function exitAfterFlush(code) {
+  await Promise.all([
+    new Promise((resolve) => process.stdout.write("", () => resolve())),
+    new Promise((resolve) => process.stderr.write("", () => resolve())),
+  ]);
+  process.exit(code);
+}
+
+/**
  * Which preview transport this run exercises.
  *
  * `local-sidecar` is the default and the one CI uses: no container, so the
@@ -54,7 +82,7 @@ if (TRANSPORT !== "local-sidecar" && TRANSPORT !== "cloudflare-sandbox") {
   console.error(
     `[e2e] MORPH_E2E_TRANSPORT must be "local-sidecar" or "cloudflare-sandbox", not "${TRANSPORT}".`,
   );
-  process.exit(1);
+  await exitAfterFlush(1);
 }
 const USES_SIDECAR = TRANSPORT === "local-sidecar";
 /** Empty means Wrangler's default environment, the one that has containers. */
@@ -767,7 +795,7 @@ async function main() {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    void cleanUp().then(() => process.exit(130));
+    void cleanUp().then(() => exitAfterFlush(130));
   });
 }
 
@@ -781,17 +809,14 @@ main()
     // and nothing ended the process until the job's own `timeout-minutes` did.
     // Failure already exits explicitly, one branch below; success does now too.
     //
-    // The barrier is for the line above. `process.exit` does not flush a pipe
-    // and in CI stdout is one, so exiting directly after `log` risks dropping
-    // the single line that says the run finished — the line this whole fix
-    // exists to make trustworthy. A zero-length write resolves its callback
-    // only after everything queued ahead of it has reached the pipe, which was
-    // checked against a 512 KB write rather than assumed.
-    await new Promise((resolve) => process.stdout.write("", () => resolve()));
-    process.exit(0);
+    // Through the barrier, for the line above.
+    await exitAfterFlush(0);
   })
   .catch(async (error) => {
     console.error(`[e2e] ${error instanceof Error ? error.message : error}`);
     await cleanUp();
-    process.exit(1);
+    // The same barrier, and the exit where a dropped line costs most: this is the
+    // only one that says what went wrong. `await cleanUp()` above gave it time to
+    // drain by accident rather than by design — a normal teardown returns in 1 ms.
+    await exitAfterFlush(1);
   });
