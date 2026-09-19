@@ -40,6 +40,16 @@ export default defineConfig({
   reporter: process.env.CI ? "line" : [["list"]],
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://localhost:3000",
+    /**
+     * Pinned, because without it the suite reads the machine's own preference.
+     * The theme provider follows `prefers-color-scheme`, and Playwright
+     * inherits the OS setting when none is given — so the same commit scanned
+     * a dark editor on one developer's laptop and a light one on CI, and a
+     * contrast failure that only exists in light mode looked like a flake for
+     * two runs. Light is the stricter of the two here; the accessibility spec
+     * scans the other deliberately.
+     */
+    colorScheme: "light",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",

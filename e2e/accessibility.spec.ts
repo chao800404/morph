@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import type { AxeResults } from "axe-core";
 import { expect, test, type Page } from "@playwright/test";
 
 import { EDITOR_PATH, openEditor as openEditorShell } from "./helpers";
@@ -23,11 +24,116 @@ async function openEditor(page: Page) {
  * account for someone else's markup would report failures nobody here can fix,
  * and the real ones would be lost among them.
  */
+/**
+ * The editor's own surfaces, without the Theme rendered inside the preview.
+ *
+ * `exclude("iframe")` has a cost that was not known until it hid a real
+ * defect, and it is recorded here because the scan cannot currently be
+ * configured out of it. Excluding the frame means axe can no longer resolve a
+ * background for anything that overlaps it, so those nodes leave `violations`
+ * and arrive in `incomplete` with `messageKey: "bgOverlap"` — and this suite
+ * asserts on `violations`. "axe could not tell" therefore reads as "nothing
+ * wrong", for every piece of chrome that sits over the canvas, which is most
+ * of it: dialogs, popovers, the inspector.
+ *
+ * Measured, not inferred. A table header of `text-muted-foreground` on
+ * `bg-accent` is 4.38:1 against the 4.5 AA asks for, and axe says so — eight
+ * nodes — when the frame is not excluded. With the exclusion it says nothing,
+ * or says it on CI and not locally, because whether a node counts as
+ * overlapping depends on layout. That is what made a genuine contrast failure
+ * look like a flake for two runs.
+ *
+ * Tried and rejected: `setLegacyMode(true)` reports the same nine nodes as
+ * incomplete, and scoping to `[role="dialog"]` reports neither a violation nor
+ * an incomplete. Scanning without the exclusion works but pulls the Theme's own
+ * content into the editor's results, which is a different product's
+ * accessibility. No configuration found so far keeps both.
+ *
+ * Until one is, `summarizeViolations` prints what went to `incomplete` so the
+ * gap is visible in a passing run rather than silent.
+ */
 function scanEditorChrome(page: Page) {
   return new AxeBuilder({ page })
     .exclude("iframe")
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
 }
+
+/**
+ * One shape for every scan, so a failure reads the same wherever it came from.
+ *
+ * Carries what axe measured, not just what it objected to. Working out which
+ * background a failing node actually had cost an afternoon and one wrong fix:
+ * the element's class said `text-muted-foreground` and the surface behind it
+ * was assumed to be the dialog's, when the table header carried a `bg-accent`
+ * of its own. `measured` is axe's own colour data — foreground, background,
+ * the ratio it computed and the one it expected — so the next contrast failure
+ * arrives with the numbers rather than a research project.
+ */
+function summarizeViolations(results: AxeResults) {
+  const summary = results.violations.map((violation) => ({
+    id: violation.id,
+    impact: violation.impact,
+    nodes: violation.nodes.length,
+    help: violation.help,
+    // A selector like `.text-[10px]` matches half the editor; the failing
+    // element and what axe measured are what make this actionable.
+    first: violation.nodes[0]?.target.join(" "),
+    html: violation.nodes[0]?.html.slice(0, 120),
+    why: violation.nodes[0]?.any?.[0]?.message,
+    measured: violation.nodes[0]?.any?.[0]?.data ?? null,
+  }));
+  if (summary.length > 0) console.log(JSON.stringify(summary, null, 2));
+
+  // Printed, not asserted. These are the checks axe could not complete — for
+  // contrast that is almost always `bgOverlap`, the blind spot described above.
+  // A run that passes while carrying twelve of them is passing on less than it
+  // appears to, and that should at least be readable.
+  const unresolved = results.incomplete
+    .filter((entry) => entry.id === "color-contrast")
+    .map((entry) => ({ id: entry.id, nodes: entry.nodes.length }));
+  if (unresolved.length > 0) {
+    console.log(
+      `[a11y] contrast axe could not resolve: ${JSON.stringify(unresolved)}`,
+    );
+  }
+  return summary;
+}
+
+/**
+ * The same two scans in the theme the suite does not pin.
+ *
+ * Colour lives in tokens that change with the theme, so a scan is a statement
+ * about one of them. `playwright.config.ts` pins light because that is where
+ * contrast is tightest here; this covers the other, so a token that passes in
+ * one and fails in the other cannot ride on whichever the runner happened to
+ * be in. That is not hypothetical — it is how `muted-foreground` on `accent`
+ * stayed hidden: 4.387:1 in light, 5.663:1 in dark, and the machine decided
+ * which one anybody saw.
+ */
+test.describe("editor accessibility in dark", () => {
+  test.use({ colorScheme: "dark" });
+
+  test("has no automatically detectable violations", async ({ page }) => {
+    await openEditor(page);
+    const results = await scanEditorChrome(page).analyze();
+    expect(summarizeViolations(results)).toEqual([]);
+  });
+
+  test("a dialog is scannable in dark too", async ({ page }) => {
+    await openEditor(page);
+    await page.getByRole("button", { name: "Release history" }).click();
+    const dialog = page.getByRole("dialog").first();
+    await expect(dialog).toBeVisible();
+    await expect
+      .poll(() => dialog.evaluate((el) => getComputedStyle(el).opacity), {
+        timeout: 5_000,
+      })
+      .toBe("1");
+
+    const results = await scanEditorChrome(page).analyze();
+    expect(summarizeViolations(results)).toEqual([]);
+  });
+});
 
 test.describe("editor accessibility", () => {
   test("has no automatically detectable violations", async ({ page }) => {
@@ -35,20 +141,7 @@ test.describe("editor accessibility", () => {
     const results = await scanEditorChrome(page).analyze();
 
     // Reported in full: a count tells you nothing about what to fix.
-    const summary = results.violations.map((violation) => ({
-      id: violation.id,
-      impact: violation.impact,
-      nodes: violation.nodes.length,
-      help: violation.help,
-      // A selector like `.text-[10px]` matches half the editor; the failing
-      // element and what axe measured are what make this actionable.
-      first: violation.nodes[0]?.target.join(" "),
-      html: violation.nodes[0]?.html.slice(0, 120),
-      why: violation.nodes[0]?.any[0]?.message,
-    }));
-    if (summary.length > 0) console.log(JSON.stringify(summary, null, 2));
-
-    expect(summary).toEqual([]);
+    expect(summarizeViolations(results)).toEqual([]);
   });
 
   test("every control in the editor has an accessible name", async ({
@@ -93,12 +186,13 @@ test.describe("editor accessibility", () => {
 
     // Waited for opacity, not just visibility. The dialog and its overlay fade
     // in over 300ms (`fade-in-0`, `duration-300`), and an element at opacity
-    // 0.3 is already "visible" to Playwright — so a scan can start mid-fade,
-    // where axe resolves every text node against a blended background and
-    // reports contrast failures that do not exist once the animation lands.
-    // That is what it did on CI: five nodes of `color-contrast` on the release
-    // table's headers, on a token pair that measures 4.83:1 on white and
-    // 5.66:1 on the dark popover — both above the 4.5 it was said to fail.
+    // 0.3 is already "visible" to Playwright, so a scan can start mid-fade.
+    // That is worth avoiding on its own — but it is not why this test failed,
+    // and an earlier version of this comment said it was. The five
+    // `color-contrast` nodes on the release table's headers are real: the
+    // header is `bg-accent`, not the dialog surface, and `muted-foreground` on
+    // `accent` is 4.387:1 in light mode against the 4.5 that AA asks for. The
+    // figures quoted here before were measured against the wrong background.
     await expect
       .poll(() => dialog.evaluate((el) => getComputedStyle(el).opacity), {
         timeout: 5_000,
@@ -106,14 +200,7 @@ test.describe("editor accessibility", () => {
       .toBe("1");
 
     const results = await scanEditorChrome(page).analyze();
-    const summary = results.violations.map((violation) => ({
-      id: violation.id,
-      nodes: violation.nodes.length,
-      first: violation.nodes[0]?.html.slice(0, 100),
-    }));
-    if (summary.length > 0) console.log(JSON.stringify(summary, null, 2));
-
-    expect(summary).toEqual([]);
+    expect(summarizeViolations(results)).toEqual([]);
   });
 
   test("the section tree can be operated without a mouse", async ({ page }) => {

@@ -66,9 +66,18 @@ const TableHeader = React.forwardRef<HTMLTableSectionElement, TableHeaderProps>(
       ref={ref}
       className={cn(
         "[&_tr]:border-b",
+        // Both variants state their header's foreground, and for the same
+        // reason. `bg-accent` is a state surface — hover, focus, open,
+        // selected — so the design pairs it with `accent-foreground`, while a
+        // `th` left at `text-muted-foreground` measured 4.387:1 against it in
+        // light mode, under the 4.5 AA asks for. The `card` variant had
+        // already been corrected; the default had not, which is an
+        // inconsistency rather than a choice. `foreground` over
+        // `accent-foreground` to keep one convention: 18.07:1 light, 14.26:1
+        // dark, and in dark mode the two tokens are the same value anyway.
         variant === "card"
           ? "bg-muted/30 [&_th]:text-foreground [&_tr]:hover:bg-transparent"
-          : "bg-accent",
+          : "bg-accent [&_th]:text-foreground",
         className,
       )}
       {...props}
