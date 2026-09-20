@@ -269,16 +269,42 @@ export async function clickExposedElement(
 /**
  * Bring the Styles module into view.
  *
- * Selecting a node in the canvas lands on Content, so a test that reaches
- * straight for a style control is asserting against a panel that was never
- * showing styles. Silent when the tab is already pressed or not rendered, so
- * callers can use it as a precondition rather than a step.
+ * Selecting a node in the canvas leaves both module toggles unpressed, so a test
+ * that reaches straight for a style control is asserting against a panel that was
+ * never showing styles. This note used to say the click lands on Content; it does
+ * not, and the measurement is recorded on `openContentTab` below.
+ *
+ * Silent when the tab is already pressed or not rendered, so callers can use it
+ * as a precondition rather than a step.
  */
 export async function openStylesTab(page: Page) {
   const styles = page.getByRole("button", { name: "Styles", exact: true });
   if (!(await styles.isVisible().catch(() => false))) return;
   if ((await styles.getAttribute("aria-pressed")) === "true") return;
   await styles.click();
+  await page.waitForTimeout(300);
+}
+
+/**
+ * Bring the Content module into view.
+ *
+ * The counterpart to `openStylesTab`, and needed for the same reason: selecting a
+ * paragraph leaves both toggles `aria-pressed="false"`, so neither module is in
+ * view and a test that reaches straight for a content field finds no fields at
+ * all and reports it as a missing control.
+ *
+ * `Content` is a button carrying `aria-pressed`, not a checkbox. A `check()`
+ * against it waits for a role that is never there, which is a ten-minute
+ * timeout rather than a failure that says what is wrong.
+ *
+ * Silent when the tab is already pressed or not rendered, so callers can use it
+ * as a precondition rather than a step.
+ */
+export async function openContentTab(page: Page) {
+  const content = page.getByRole("button", { name: "Content", exact: true });
+  if (!(await content.isVisible().catch(() => false))) return;
+  if ((await content.getAttribute("aria-pressed")) === "true") return;
+  await content.click();
   await page.waitForTimeout(300);
 }
 
