@@ -81,24 +81,40 @@ export function decide(checks, requiredOnly) {
  * protection rule — so renaming the job means renaming it in three places. See
  * the note above `name: Architecture guards` in `ci.yml`.
  */
-const REQUIRED_CHECK = "Architecture guards";
+export const REQUIRED_CHECK = "Architecture guards";
+
+/**
+ * Why this run may not proceed, or `null`.
+ *
+ * A pure function over facts the caller gathered, for the same reason `decide`
+ * is one: these are the branches a successful run never reaches, so they are the
+ * branches nothing exercises. Reading them is not testing them — this file
+ * claimed they were "easy to drive" for a round before anything drove them.
+ */
+export function preflight({ branch, ahead }) {
+  if (branch === "main") {
+    return "ON_MAIN: `main` takes pull requests, so there is nothing to ship from it. `git checkout -b <name>` first — commits already made on main come with you.";
+  }
+  if (!ahead) {
+    return `NOTHING_AHEAD: ${branch} has no commits that origin/main does not. Commit first, or you are on a branch that was already merged.`;
+  }
+  return null;
+}
+
+/** Names what was not green, with the conclusion each reported. */
+export function describeUnhappy(unhappy) {
+  return `CHECK_NOT_GREEN: ${unhappy.map((check) => `${check.name} (${check.conclusion})`).join(", ")}. Nothing merged. The branch and its pull request are still there.`;
+}
 
 async function ship() {
   const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { quiet: true });
-  if (branch === "main") {
-    throw new Error(
-      "ON_MAIN: `main` takes pull requests, so there is nothing to ship from it. `git checkout -b <name>` first — commits already made on main come with you.",
-    );
-  }
-
   // Named rather than counted: the point is which commits are about to become
   // public, and a number does not let anyone recognise the wrong branch.
-  const ahead = run("git", ["log", "--oneline", "origin/main..HEAD"], { quiet: true });
-  if (!ahead) {
-    throw new Error(
-      `NOTHING_AHEAD: ${branch} has no commits that origin/main does not. Commit first, or you are on a branch that was already merged.`,
-    );
-  }
+  const ahead = branch === "main"
+    ? ""
+    : run("git", ["log", "--oneline", "origin/main..HEAD"], { quiet: true });
+  const refusal = preflight({ branch, ahead });
+  if (refusal) throw new Error(refusal);
   log(`shipping ${ahead.split("\n").length} commit(s) from ${branch}:`);
   console.log(ahead.split("\n").map((line) => `         ${line}`).join("\n"));
 
@@ -153,9 +169,7 @@ async function ship() {
     const { verdict, unhappy, pending } = decide(checks, requiredOnly);
 
     if (verdict === "refuse") {
-      throw new Error(
-        `CHECK_NOT_GREEN: ${unhappy.map((check) => `${check.name} (${check.conclusion})`).join(", ")}. Nothing merged. The branch and its pull request are still there.`,
-      );
+      throw new Error(describeUnhappy(unhappy));
     }
     if (verdict === "merge") break;
 
