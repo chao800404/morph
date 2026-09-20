@@ -119,6 +119,13 @@ jobs:
       - name: Check LIKE is spelled in one module
         run: pnpm check:like-tokens
 
+      # `pnpm ship` decides whether a pull request may merge, so its gate belongs
+      # with the other rules rather than only on the machine that runs it. It is
+      # a pure function over a check rollup; the script itself is not exercised
+      # here, and nothing in CI ships anything.
+      - name: Check the ship gate
+        run: pnpm check:ship
+
   editor-e2e-local-preview:
     name: Editor end-to-end (local preview transport)
     runs-on: ubuntu-latest

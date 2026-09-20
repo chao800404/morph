@@ -50,6 +50,7 @@
     "check:e2e-assertions": "node scripts/check-e2e-assertions.mjs",
     "check:sql-timestamps": "node scripts/check-sql-timestamps.mjs",
     "check:like-tokens": "node --test scripts/like-token-scan.test.mjs && node scripts/check-like-tokens.mjs",
+    "check:ship": "node --test scripts/ship.test.mjs",
     "ship": "node scripts/ship.mjs"
   },
   "dependencies": {

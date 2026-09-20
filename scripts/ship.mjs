@@ -12,7 +12,9 @@
  * Playwright job should not decide whether a rule holds. But "may merge" and
  * "should merge" are different questions, so this waits for every check and
  * refuses if any of them failed. `MORPH_SHIP_REQUIRED_ONLY=1` merges as soon as
- * the required ones pass, for when the rest are known-irrelevant.
+ * the required ones pass, for when the rest are known-irrelevant. A check counts
+ * as passed only if it says so; every other conclusion, including a cancellation,
+ * means it did not.
  */
 import { spawnSync } from "node:child_process";
 
@@ -35,6 +37,51 @@ function run(command, args, { quiet = false } = {}) {
 function runVisible(command, args) {
   return spawnSync(command, args, { stdio: "inherit" }).status ?? 1;
 }
+
+/** A check counts as passed only if it says so. */
+const passed = (check) =>
+  check.conclusion === "SUCCESS" ||
+  check.conclusion === "SKIPPED" ||
+  check.conclusion === "NEUTRAL";
+
+/**
+ * Whether to merge, wait, or refuse — as a pure function of the check rollup.
+ *
+ * Lifted out of the polling loop so it can be driven without opening a pull
+ * request. The bug that put it here was invisible in the loop and obvious in a
+ * table: `required.every(...)` is true for an empty list, and a rollup *is* empty
+ * for the first seconds after a pull request opens, so `MORPH_SHIP_REQUIRED_ONLY=1`
+ * said "merge" on the ordinary path. The other branch had guarded against exactly
+ * that with `checks.length > 0`; the asymmetry between them was the tell.
+ *
+ * Refusal is a whitelist. `FAILURE` alone was too narrow: `CANCELLED`,
+ * `TIMED_OUT`, `STARTUP_FAILURE` and `ACTION_REQUIRED` all mean a check did not
+ * report success, and the first of those is not hypothetical here — the e2e job
+ * was once cancelled by its own thirty-minute timeout, which is precisely a run
+ * that should not merge. Anything GitHub adds later is refused rather than
+ * silently accepted.
+ */
+export function decide(checks, requiredOnly) {
+  const settled = checks.filter((check) => check.status === "COMPLETED");
+  const unhappy = settled.filter((check) => !passed(check));
+  const pending = checks.filter((check) => check.status !== "COMPLETED");
+  const required = checks.filter((check) => check.name === REQUIRED_CHECK);
+
+  if (unhappy.length > 0) return { verdict: "refuse", unhappy, pending };
+  const merge = requiredOnly
+    ? required.length > 0 && required.every(passed)
+    : checks.length > 0 && pending.length === 0;
+  return { verdict: merge ? "merge" : "wait", unhappy, pending };
+}
+
+/**
+ * The one check `main` requires, spelled the way GitHub reports it.
+ *
+ * A third copy of this string — the others are `ci.yml`'s job name and the branch
+ * protection rule — so renaming the job means renaming it in three places. See
+ * the note above `name: Architecture guards` in `ci.yml`.
+ */
+const REQUIRED_CHECK = "Architecture guards";
 
 async function ship() {
   const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { quiet: true });
@@ -87,25 +134,30 @@ async function ship() {
   const requiredOnly = process.env.MORPH_SHIP_REQUIRED_ONLY === "1";
   log(requiredOnly ? "waiting for the required check" : "waiting for every check");
 
-  const deadline = Date.now() + 20 * 60_000;
+  // Longer than the slowest job it waits for. `editor-e2e-local-preview` is
+  // `timeout-minutes: 30`, so a 20-minute deadline here reported CI as timed out
+  // when the script had simply given up first — a message about the wrong system.
+  const deadline = Date.now() + 35 * 60_000;
   for (;;) {
-    const rollup = JSON.parse(
-      run("gh", ["pr", "view", "--json", "statusCheckRollup"], { quiet: true }),
-    ).statusCheckRollup;
+    const rollup =
+      JSON.parse(
+        run("gh", ["pr", "view", "--json", "statusCheckRollup"], { quiet: true }),
+      ).statusCheckRollup ?? [];
     const checks = rollup.filter((check) => check.name);
-    const failed = checks.filter((check) => check.conclusion === "FAILURE");
-    const pending = checks.filter((check) => check.status !== "COMPLETED");
-    const required = checks.filter((check) => check.name === "Architecture guards");
+    // A whitelist, so a conclusion GitHub adds later is refused rather than
+    // silently accepted. `FAILURE` alone was too narrow: `CANCELLED`,
+    // `TIMED_OUT`, `STARTUP_FAILURE` and `ACTION_REQUIRED` all mean the check did
+    // not tell us it passed, and one of them is not hypothetical here — the e2e
+    // job was cancelled by its own timeout once, which is exactly a run that
+    // should not merge.
+    const { verdict, unhappy, pending } = decide(checks, requiredOnly);
 
-    if (failed.length > 0) {
+    if (verdict === "refuse") {
       throw new Error(
-        `CHECK_FAILED: ${failed.map((check) => check.name).join(", ")}. Nothing merged. The branch and its pull request are still there.`,
+        `CHECK_NOT_GREEN: ${unhappy.map((check) => `${check.name} (${check.conclusion})`).join(", ")}. Nothing merged. The branch and its pull request are still there.`,
       );
     }
-    const done = requiredOnly
-      ? required.every((check) => check.conclusion === "SUCCESS")
-      : checks.length > 0 && pending.length === 0;
-    if (done) break;
+    if (verdict === "merge") break;
 
     if (Date.now() > deadline) {
       throw new Error(
@@ -117,8 +169,12 @@ async function ship() {
   }
 
   log("merging");
+  // `--delete-branch` removes the local branch too, which it can only do from
+  // somewhere else — so it has already returned to the default branch. An explicit
+  // `git checkout main` after it was redundant on a clean tree and, on a dirty
+  // one, failed *after* the merge had happened: the loudest failure at the point
+  // where nothing is left to undo.
   run("gh", ["pr", "merge", "--merge", "--delete-branch"]);
-  run("git", ["checkout", "-q", "main"]);
   run("git", ["pull", "-q"]);
   log(`done — main is now ${run("git", ["rev-parse", "HEAD"], { quiet: true }).slice(0, 7)}`);
 }
@@ -130,7 +186,10 @@ async function ship() {
  * Node's default handler buries it under a file path and a caret. The exit code
  * is what a script would read; the sentence is what a person reads.
  */
-ship().catch((error) => {
-  console.error(`[ship] ${error instanceof Error ? error.message : error}`);
-  process.exitCode = 1;
-});
+// Imported by the test, which must not ship anything on import.
+if (process.argv[1]?.endsWith("ship.mjs")) {
+  ship().catch((error) => {
+    console.error(`[ship] ${error instanceof Error ? error.message : error}`);
+    process.exitCode = 1;
+  });
+}
