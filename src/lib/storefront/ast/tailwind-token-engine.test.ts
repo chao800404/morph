@@ -71,6 +71,107 @@ describe("tailwind-token-engine", () => {
     expect(classifyTailwindUtility("shadow-red-500")).toBe("other");
   });
 
+  // Measured against the installed tailwindcss 4.1.17 with
+  // `compile(...).build([...])`: every value below emits a radius declaration, so
+  // every one is a class the Inspector has to be able to clear. `xs` and `4xl`
+  // were missing from the enumeration and the corner patterns required a
+  // `-<value>` suffix, which left four real classes classified as `other` — and
+  // `other` is exactly what lets a broad radius write leave a token behind that
+  // keeps deciding the rendered corner while the optimistic keys report the new
+  // value.
+  it("knows the whole radius scale, including the bare corner form", () => {
+    for (const value of [
+      "none",
+      "xs",
+      "sm",
+      "md",
+      "lg",
+      "xl",
+      "2xl",
+      "3xl",
+      "4xl",
+      "full",
+    ]) {
+      expect(classifyTailwindUtility(`rounded-${value}`)).toBe("border-radius");
+      expect(classifyTailwindUtility(`rounded-tl-${value}`)).toBe(
+        "border-radius-top-left",
+      );
+      expect(classifyTailwindUtility(`rounded-br-${value}`)).toBe(
+        "border-radius-bottom-right",
+      );
+    }
+    // The suffix is optional upstream: `rounded-tl` alone is
+    // `border-top-left-radius: 0.25rem`.
+    expect(classifyTailwindUtility("rounded-tl")).toBe(
+      "border-radius-top-left",
+    );
+    expect(classifyTailwindUtility("rounded-tr")).toBe(
+      "border-radius-top-right",
+    );
+    expect(classifyTailwindUtility("rounded-br")).toBe(
+      "border-radius-bottom-right",
+    );
+    expect(classifyTailwindUtility("rounded-bl")).toBe(
+      "border-radius-bottom-left",
+    );
+    // The side pairs cover two corners each, so they are sets rather than ranks
+    // on a chain: measured, `rounded-t-2xl` emits `border-top-left-radius` *and*
+    // `border-top-right-radius`. Clearing them needs one family per pair.
+    expect(classifyTailwindUtility("rounded-t-2xl")).toBe("border-radius-top");
+    expect(classifyTailwindUtility("rounded-r-2xl")).toBe(
+      "border-radius-right",
+    );
+    expect(classifyTailwindUtility("rounded-b-2xl")).toBe(
+      "border-radius-bottom",
+    );
+    expect(classifyTailwindUtility("rounded-l-2xl")).toBe("border-radius-left");
+    expect(classifyTailwindUtility("rounded-t")).toBe("border-radius-top");
+    // The axes: `border-x-*` is `border-inline-width` and `border-y-*` is
+    // `border-block-width`, each covering two physical sides under a horizontal
+    // writing mode.
+    expect(classifyTailwindUtility("border-x-2")).toBe("border-width-x");
+    expect(classifyTailwindUtility("border-y-2")).toBe("border-width-y");
+    expect(classifyTailwindUtility("border-x")).toBe("border-width-x");
+    expect(classifyTailwindUtility("border-x-[3px]")).toBe("border-width-x");
+    // The logical families, which closed the last of the gap. Every one of these
+    // was verified to be a real class by compiling it: `border-s-2` emits
+    // `border-inline-start-width`, `rounded-ss-2xl` `border-start-start-radius`,
+    // and `rounded-s-2xl` the *pair* `border-start-start-radius` +
+    // `border-end-start-radius`. Classifying them is what lets a broad write
+    // clear them; it does not require resolving which physical side they are,
+    // which is why the model did not need a `direction` input.
+    expect(classifyTailwindUtility("ps-4")).toBe("padding-inline-start");
+    expect(classifyTailwindUtility("pe-4")).toBe("padding-inline-end");
+    expect(classifyTailwindUtility("ms-4")).toBe("margin-inline-start");
+    expect(classifyTailwindUtility("-me-4")).toBe("margin-inline-end");
+    expect(classifyTailwindUtility("ms-auto")).toBe("margin-inline-start");
+    expect(classifyTailwindUtility("border-s-2")).toBe(
+      "border-width-inline-start",
+    );
+    expect(classifyTailwindUtility("border-e-2")).toBe(
+      "border-width-inline-end",
+    );
+    expect(classifyTailwindUtility("rounded-ss-2xl")).toBe(
+      "border-radius-start-start",
+    );
+    expect(classifyTailwindUtility("rounded-se-2xl")).toBe(
+      "border-radius-start-end",
+    );
+    expect(classifyTailwindUtility("rounded-es-2xl")).toBe(
+      "border-radius-end-start",
+    );
+    expect(classifyTailwindUtility("rounded-ee-2xl")).toBe(
+      "border-radius-end-end",
+    );
+    expect(classifyTailwindUtility("rounded-s-2xl")).toBe(
+      "border-radius-start",
+    );
+    expect(classifyTailwindUtility("rounded-e-2xl")).toBe("border-radius-end");
+    // The glued spelling must not be confused with the hyphenated one: `ps-` is
+    // the logical padding side, while `p-s-…` is not a utility at all.
+    expect(classifyTailwindUtility("p-s-4")).toBe("other");
+  });
+
   it("correctly parses tokens with single and multi-variants", () => {
     const t1 = parseTailwindToken("text-4xl");
     expect(t1.variants).toEqual([]);
