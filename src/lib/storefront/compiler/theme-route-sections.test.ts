@@ -272,6 +272,91 @@ export default function Banner() { return null; }`,
 
     expect(options.map((option) => option.componentName)).toEqual(["Banner"]);
   });
+
+  it("offers a component that only follows the section folder convention", () => {
+    // No manifest entry and no `contentFields`: living in the folder is the
+    // whole declaration, which is what makes a section registration-free.
+    const options = listThemeRouteSectionOptions([
+      listFiles[0]!,
+      {
+        path: "src/components/sections/Testimonials.tsx",
+        content: `export default function Testimonials() { return null; }`,
+      },
+    ]);
+
+    expect(options.map((option) => option.componentName)).toEqual([
+      "Testimonials",
+    ]);
+    expect(options[0]?.componentSourcePath).toBe(
+      "src/components/sections/Testimonials.tsx",
+    );
+  });
+
+  it("names a folder entry after its folder rather than after `index`", () => {
+    const options = listThemeRouteSectionOptions([
+      listFiles[0]!,
+      {
+        path: "src/components/sections/featured-collection/index.tsx",
+        content: `export default function FeaturedCollection() { return null; }`,
+      },
+    ]);
+
+    expect(options.map((option) => option.componentName)).toEqual([
+      "FeaturedCollection",
+    ]);
+    expect(options[0]?.sectionType).toBe("featured-collection");
+  });
+
+  it("keeps the manifest's own ref when it already claims the file", () => {
+    // The authored ref is more specific than a derived one, so the file is
+    // offered once, under the name the manifest chose.
+    const options = listThemeRouteSectionOptions([
+      {
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          components: {
+            "testimonials.default": {
+              source: "src/components/sections/Testimonials.tsx",
+            },
+          },
+        }),
+      },
+      {
+        path: "src/components/sections/Testimonials.tsx",
+        content: `export default function Testimonials() { return null; }`,
+      },
+    ]);
+
+    expect(options.map((option) => option.componentRef)).toEqual([
+      "testimonials.default",
+    ]);
+  });
+
+  it("omits a row component that lives in the section folder", () => {
+    // The folder decides what is a candidate, not what may stand alone: the
+    // row rule still applies, or a list's row would be addable as a section.
+    const options = listThemeRouteSectionOptions([
+      listFiles[0]!,
+      {
+        path: "src/components/sections/Principles.tsx",
+        content: `export const contentFields = {
+  items: { type: "array", of: "./PrincipleCard" },
+};
+export default function Principles() { return null; }`,
+      },
+      {
+        path: "src/components/sections/PrincipleCard.tsx",
+        content: `export const contentFields = {
+  title: { type: "text" },
+};
+export default function PrincipleCard() { return null; }`,
+      },
+    ]);
+
+    expect(options.map((option) => option.componentName)).toEqual([
+      "Principles",
+    ]);
+  });
 });
 
 describe("routes that have not adopted slots", () => {

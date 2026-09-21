@@ -5,6 +5,7 @@
 - 在元件 source 匯出合法的 `contentFields`，宣告可編輯內容。
 - 路由透過 `<MyBanner {...content("my-banner")} />` 配對 Document slot。
 - 未在 manifest 註冊的元件使用來源路徑作為 `componentRef`，例如 `src/components/MyBanner.tsx`。不要自行猜測 `my-banner.default`。
+- 元件放進 `src/components/sections/` 就成為 section 候選，不必在 manifest 註冊，也不必匯出 `contentFields`。入口只有兩種形狀：`src/components/sections/Hero.tsx`，或 `src/components/sections/hero/index.tsx`（以資料夾命名，不叫 `index`）。再深一層的檔案、`*.test.tsx`／`*.spec.tsx`、以及資料夾根目錄的 `index` 都不算入口。同一個檔案若 manifest 已宣告，仍以 manifest 的 `componentRef` 為準，不會重複列出。
 - 不需要手寫 `data-*`；也不禁止使用合法的穩定識別標記。沒有標記時，平台以可唯一辨識的 source position 定位。重複列另需穩定 item identity。
 - 樣式只支援 AST 可安全改寫的 source。動態 expression、不唯一或不支援的結構需使用 Code Mode。
 - 元件內宣告優先於 manifest fallback。Starter 對已遷移元件不再複製 manifest 欄位宣告；自訂元件與尚未遷移元件的 fallback 保留。

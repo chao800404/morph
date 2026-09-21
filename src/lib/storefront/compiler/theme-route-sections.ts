@@ -1,5 +1,6 @@
 import { parse } from "@babel/parser";
 import { isValidThemeContentSlotId } from "@/lib/storefront/theme-content-slots";
+import { listThemeSectionEntries } from "@/lib/storefront/theme-section-convention";
 import {
   readComponentSourcePaths,
   resolveThemeContentCapabilitiesFromFiles,
@@ -569,16 +570,37 @@ export function listThemeRouteSectionOptions(
       sources.set(componentRef, componentRef);
     }
   }
+  // A file in the section folder is a candidate without being registered
+  // anywhere. A manifest ref for the same file already claims it — an authored
+  // ref is more specific than a derived one — so the derived entry is dropped
+  // rather than listed beside it.
+  const sectionEntries = new Map(
+    listThemeSectionEntries(files).map(
+      (entry) => [entry.componentSourcePath, entry] as const,
+    ),
+  );
+  const claimedSources = new Set([...sources.values()].map(normalizePath));
+  for (const [componentSourcePath, entry] of sectionEntries) {
+    if (claimedSources.has(componentSourcePath)) continue;
+    sources.set(entry.componentRef, entry.componentSourcePath);
+  }
   return [...sources.entries()]
     .map(([componentRef, sourcePath]) => {
       const normalized = normalizePath(sourcePath);
       const basename = normalized
         .slice(normalized.lastIndexOf("/") + 1)
         .replace(/\.[^.]+$/, "");
+      // The convention names an `index.tsx` entry after its folder, because
+      // `index` is the one name the route's import could not use. Every other
+      // shape derives the same name either way.
+      const entry = sectionEntries.get(normalized);
       return {
         componentRef,
-        sectionType: sectionTypeFromRef(componentRef, basename),
-        componentName: basename.replace(/[^a-zA-Z0-9_$]/g, "") || "Section",
+        sectionType:
+          entry?.sectionType ?? sectionTypeFromRef(componentRef, basename),
+        componentName:
+          entry?.componentName ??
+          (basename.replace(/[^a-zA-Z0-9_$]/g, "") || "Section"),
         componentSourcePath: normalized,
       };
     })
