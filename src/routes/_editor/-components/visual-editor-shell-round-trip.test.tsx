@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
+import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { VisualEditorShell } from "./visual-editor-shell";
@@ -53,7 +55,30 @@ const posted: Array<Record<string, unknown>> = [];
  */
 vi.mock("./editor-assistant-panel", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  EditorAssistantPanel: () => null,
+  EditorAssistantPanel: (props: {
+    onUpdateThemeFileStyle?: (
+      filePath: string,
+      elementName: string,
+      updater: (prevClasses: string) => string,
+    ) => void;
+  }) => (
+    // Still not the real panel — the workaround above is unchanged. What it
+    // adds is a way to reach `onUpdateThemeFileStyle`, which the real panel
+    // hands to `EditorStyleInspector`: the style path is otherwise only
+    // reachable through Radix controls jsdom cannot drive.
+    <button
+      type="button"
+      onClick={() =>
+        props.onUpdateThemeFileStyle?.(
+          stylePatchTarget.filePath,
+          stylePatchTarget.elementName,
+          (prevClasses) => `${prevClasses} p-8`,
+        )
+      }
+    >
+      Apply a style patch
+    </button>
+  ),
 }));
 
 /**
@@ -65,6 +90,19 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => ({
  * `onError`. Both have to reach the author.
  */
 const updateSectionProps = vi.hoisted(() => vi.fn());
+
+/**
+ * What the stub panel asks the shell to patch.
+ *
+ * A `line:column` location rather than a marker, because
+ * `element-target.test.ts` pins `"99:1"` as the target that matches no element
+ * — so this drives the real `not-found` branch instead of a spelling that
+ * merely happens to miss.
+ */
+const stylePatchTarget = vi.hoisted(() => ({
+  filePath: "src/components/Hero.tsx",
+  elementName: "99:1",
+}));
 
 vi.mock(
   "@/server/storefront/storefront-themes.serverFn",
@@ -617,5 +655,172 @@ describe("bringing the canvas to a selection", () => {
     expect(warn).not.toHaveBeenCalled();
     expect(afterStale).toBe(resting);
     expect(canvasY()).not.toBe(resting);
+  });
+});
+
+/**
+ * The same shell, with the one theme file the style path reads a source from.
+ *
+ * `handleUpdateThemeFileStyle` takes the current source out of the workspace
+ * snapshot or this query and returns before patching when neither holds it, so
+ * a shell rendered without a file cannot reach the code under test at all. The
+ * tree is written by hand rather than through `buildFileTree` because it only
+ * has to render, and importing the DAL would pull the server layer into jsdom.
+ */
+function renderShellWithHero(content: string) {
+  const client = readyQueryClient();
+  client.setQueryData(
+    storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+    {
+      files: [
+        {
+          id: "file-hero",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          path: stylePatchTarget.filePath,
+          content,
+          mimeType: "text/typescript",
+          isEntry: false,
+          version: 1,
+          createdAt: "2026-08-20T00:00:00.000Z",
+          updatedAt: "2026-08-20T00:00:00.000Z",
+        },
+      ],
+      tree: [
+        {
+          name: "src",
+          path: "src",
+          isDirectory: true,
+          children: [
+            {
+              name: "components",
+              path: "src/components",
+              isDirectory: true,
+              children: [
+                {
+                  name: "Hero.tsx",
+                  path: stylePatchTarget.filePath,
+                  isDirectory: false,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      sourceGeneration: 1,
+      latestPublishedRevision: null,
+    } as never,
+  );
+  return render(
+    <QueryClientProvider client={client}>
+      <VisualEditorShell
+        context={context}
+        search={baseSearch}
+        onSearchChange={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+}
+
+function applyStylePatch() {
+  act(() => {
+    screen.getByRole("button", { name: "Apply a style patch" }).click();
+  });
+}
+
+/**
+ * A style patch the source cannot answer — the call site, not the transformer.
+ *
+ * `theme-ast-transformer.test.ts` pins which reason each function returns. What
+ * it cannot see is whether the shell says anything about it, and that is where
+ * the gap was: this path answered `dynamic-classname` and `parse-error` and
+ * returned on everything else, so `not-found` produced no feedback at all. The
+ * control moved, the file did not change, and nothing said why — while
+ * `swapSiblingMorphNodes` and `removeJsxElement` each answer their whole reason
+ * union, which is what makes this a gap rather than a design.
+ *
+ * All three reasons are pinned rather than only the repaired one, which buys a
+ * narrower thing than it looks like: it catches a regression in any of the
+ * three — someone rewriting this block and dropping the `parse-error` toast
+ * would go red — and it does **not** catch a fourth reason added to
+ * `PatchClassNameResult`, because a new member would be answered by none of
+ * these cases and still return silently. Closing that needs the type tightened
+ * so the missing case fails the build, which is a change to the result type
+ * rather than to this file. Said here so the gap is recorded instead of
+ * implied away by the coverage.
+ */
+describe("a style patch the source cannot answer", () => {
+  const STATIC_SOURCE =
+    'export function Hero() { return <section data-morph-node="section" className="p-4">x</section>; }';
+
+  /**
+   * The workspace store outranks the query, and it is not reset between tests.
+   *
+   * `handleUpdateThemeFileStyle` reads the source it patches as
+   * `workspaceFileSnapshot[filePath]?.localContent ?? themeFiles.find(...)`,
+   * so a source seeded only into the query is the *fallback*. A patch that
+   * succeeds writes through `updateWorkspaceLocal`, which means the test before
+   * this one leaves its patched content behind for the next one to read. That
+   * is not hypothetical: without this, the `parse-error` case below patched a
+   * file it should not have been able to read at all and failed with
+   * "Failed to save source file ...: File has an unresolved conflict" — a real
+   * failure, reported from a path the fixture never set up.
+   *
+   * Cleared rather than seeded so the fixture stays the query data alone: it
+   * also drops the conflict the leaked write recorded, which is the other half
+   * of the same state.
+   */
+  beforeEach(() => {
+    useThemeWorkspaceStore.setState({ workspaces: {} });
+  });
+
+  it("says so when the target matches no element", async () => {
+    const warning = vi.spyOn(toast, "warning").mockImplementation(() => "");
+    stylePatchTarget.elementName = "99:1";
+    renderShellWithHero(STATIC_SOURCE);
+
+    applyStylePatch();
+
+    await waitFor(() =>
+      expect(warning).toHaveBeenCalledWith(
+        `Element "99:1" no longer maps to a unique source node in ${stylePatchTarget.filePath}. Refresh the preview or edit in Code mode.`,
+      ),
+    );
+  });
+
+  it("says so when the className is a dynamic expression", async () => {
+    const warning = vi.spyOn(toast, "warning").mockImplementation(() => "");
+    stylePatchTarget.elementName = "section";
+    // `cn` with a *literal* first argument is not dynamic — it is the editable
+    // case, which `readEditableCnClassName` patches in place and which
+    // `theme-ast-cn-patch.test.ts` exists to cover. Writing
+    // `cn("p-4", extra)` here reaches `editable: true` and never this branch;
+    // the variable first is what the transformer's own `dynamic-classname` case
+    // uses, and what makes the expression unanalysable.
+    renderShellWithHero(
+      'export function Hero({ base }) { return <section data-morph-node="section" className={cn(base, "text-6xl")}>x</section>; }',
+    );
+
+    applyStylePatch();
+
+    await waitFor(() =>
+      expect(warning).toHaveBeenCalledWith(
+        'Element "section" has a dynamic className expression (e.g. cn(...)). Edit in Code mode to preserve component logic.',
+      ),
+    );
+  });
+
+  it("says so when the source does not parse", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    stylePatchTarget.elementName = "section";
+    renderShellWithHero('export function Hero() { return <section className="p-4"');
+
+    applyStylePatch();
+
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        `Cannot modify styles: syntax error in ${stylePatchTarget.filePath}. Fix TSX in Code mode.`,
+      ),
+    );
   });
 });

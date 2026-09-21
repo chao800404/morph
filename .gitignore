@@ -36,3 +36,8 @@ playwright-report/
 # Local pnpm content-addressable store. Package bytes, not source: 19MB of it
 # reached this repo once already, and it grows with every install.
 .pnpm-store/
+
+# Per-machine working notes from the AI assistant. Local observations about this
+# checkout, not source. `.workbuddy-ai/skills/` is deliberately left trackable:
+# project-level skills are meant to be shared with the team.
+.workbuddy-ai/memory/
