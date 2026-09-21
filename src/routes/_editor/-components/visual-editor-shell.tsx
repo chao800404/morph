@@ -3716,6 +3716,14 @@ export function VisualEditorShell({
         );
 
         if (!patchResult.editable) {
+          // Every reason this result type can carry has to be reported. The
+          // sibling call sites already do that — `swapSiblingMorphNodes` and
+          // `removeJsxElement` each answer their whole reason union — and this
+          // one answered two of its three, so a style edit whose element had
+          // moved in the source produced no feedback at all: the control moved,
+          // the file did not change, and nothing said why. `not-found` is the
+          // common case rather than the exotic one, since it is what a
+          // refactor in Code mode leaves behind.
           if (patchResult.reason === "dynamic-classname") {
             toast.warning(
               `Element "${elementName}" has a dynamic className expression (e.g. cn(...)). Edit in Code mode to preserve component logic.`,
@@ -3723,6 +3731,10 @@ export function VisualEditorShell({
           } else if (patchResult.reason === "parse-error") {
             toast.error(
               `Cannot modify styles: syntax error in ${filePath}. Fix TSX in Code mode.`,
+            );
+          } else if (patchResult.reason === "not-found") {
+            toast.warning(
+              `Element "${elementName}" no longer maps to a unique source node in ${filePath}. Refresh the preview or edit in Code mode.`,
             );
           }
           return;
