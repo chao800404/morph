@@ -5,7 +5,19 @@
  * 所有基本樣式控制", which cannot be answered today because nothing states which
  * families exist, which have a control, and which are deliberately without one.
  * The engine's `TailwindPropertyFamily` union is the authority for the first of
- * those — 58 members — and this file is the answer to the other two.
+ * those — 75 patchable members once `"other"` is excluded — and this file is the
+ * answer to the other two. The count is worth stating because it is the whole
+ * gate: `FAMILY_COVERAGE` (17) and `UNDECIDED_FAMILIES` (58) must partition
+ * exactly those 75, which is what the two gates at the bottom check.
+ *
+ * An earlier version of this sentence read "58 members". Measured, that matched
+ * the union at no revision: it is **57** at `a8c26dd^~1` and **75** from
+ * `a8c26dd^` onward, the 18 the containment work added being the two logical
+ * padding edges, the two logical margin edges, `border-width-x`/`-y`, the two
+ * logical border edges, the four radius side pairs and the four logical corners.
+ * 58 is `UNDECIDED_FAMILIES.length` — the size of a different set, in a sentence
+ * about the union. Worth keeping the correction rather than the number: a count
+ * that has never been true is the kind of thing this file exists to refuse.
  *
  * **The compiler is the guard, not a test.** `FAMILY_COVERAGE` holds families
  * with a control, `UNDECIDED_FAMILIES` the rest; two gates below fail to compile
