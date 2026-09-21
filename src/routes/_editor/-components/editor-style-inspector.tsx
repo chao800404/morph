@@ -130,6 +130,7 @@ import {
   type InspectorLengthValue,
   type NumericInspectorLengthUnit,
 } from "./style-inspector/inspector-length-control";
+import { patchBroadFamily } from "./style-inspector/inspector-family-edit";
 import {
   hasInspectorDesignModule,
   renderInspectorDesignModule,
@@ -3580,30 +3581,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                               }
                               patchContainerStyle(
                                 (prev) =>
-                                  patchTailwindClasses(
-                                    patchTailwindClasses(
-                                      patchTailwindClasses(
-                                        patchTailwindClasses(
-                                          patchTailwindClasses(prev, {
-                                            property: "padding",
-                                            value: inspectorLengthUtility(
-                                              "p",
-                                              cssValue,
-                                            ),
-                                          }),
-                                          {
-                                            property: "padding-top",
-                                            value: "",
-                                          },
-                                        ),
-                                        {
-                                          property: "padding-bottom",
-                                          value: "",
-                                        },
-                                      ),
-                                      { property: "padding-left", value: "" },
-                                    ),
-                                    { property: "padding-right", value: "" },
+                                  patchBroadFamily(
+                                    prev,
+                                    "padding",
+                                    inspectorLengthUtility("p", cssValue),
+                                    {
+                                      targetVariants,
+                                      activeVariants: activeStructuralVariants,
+                                    },
                                   ),
                                 {
                                   paddingAll: cssValue,
@@ -3789,27 +3774,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                               }
                               patchContainerStyle(
                                 (prev) =>
-                                  patchTailwindClasses(
-                                    patchTailwindClasses(
-                                      patchTailwindClasses(
-                                        patchTailwindClasses(
-                                          patchTailwindClasses(prev, {
-                                            property: "margin",
-                                            value: inspectorLengthUtility(
-                                              "m",
-                                              cssValue,
-                                            ),
-                                          }),
-                                          { property: "margin-top", value: "" },
-                                        ),
-                                        {
-                                          property: "margin-bottom",
-                                          value: "",
-                                        },
-                                      ),
-                                      { property: "margin-left", value: "" },
-                                    ),
-                                    { property: "margin-right", value: "" },
+                                  patchBroadFamily(
+                                    prev,
+                                    "margin",
+                                    inspectorLengthUtility("m", cssValue),
+                                    {
+                                      targetVariants,
+                                      activeVariants: activeStructuralVariants,
+                                    },
                                   ),
                                 {
                                   marginAll: cssValue,
@@ -4428,24 +4400,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                     }
                     patchContainerStyle(
                       (prev) =>
-                        patchTailwindClasses(
-                          patchTailwindClasses(
-                            patchTailwindClasses(
-                              patchTailwindClasses(
-                                patchTailwindClasses(prev, {
-                                  property: "border-width",
-                                  value: inspectorLengthUtility(
-                                    "border",
-                                    cssValue,
-                                  ),
-                                }),
-                                { property: "border-width-top", value: "" },
-                              ),
-                              { property: "border-width-bottom", value: "" },
-                            ),
-                            { property: "border-width-left", value: "" },
-                          ),
-                          { property: "border-width-right", value: "" },
+                        patchBroadFamily(
+                          prev,
+                          "border-width",
+                          inspectorLengthUtility("border", cssValue),
+                          {
+                            targetVariants,
+                            activeVariants: activeStructuralVariants,
+                          },
                         ),
                       {
                         borderWidth: cssValue,
@@ -4544,23 +4506,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   if (corner === "all") {
                     patchContainerStyle(
                       (previous) =>
-                        (
-                          [
-                            "border-radius-top-left",
-                            "border-radius-top-right",
-                            "border-radius-bottom-right",
-                            "border-radius-bottom-left",
-                          ] as const
-                        ).reduce(
-                          (className, property) =>
-                            patchTailwindClasses(className, {
-                              property,
-                              value: "",
-                            }),
-                          patchTailwindClasses(previous, {
-                            property: "border-radius",
-                            value: inspectorLengthUtility("rounded", cssValue),
-                          }),
+                        patchBroadFamily(
+                          previous,
+                          "border-radius",
+                          inspectorLengthUtility("rounded", cssValue),
+                          {
+                            targetVariants,
+                            activeVariants: activeStructuralVariants,
+                          },
                         ),
                       {
                         borderRadius: cssValue,
