@@ -26,6 +26,18 @@ export type EditorTemplateSnapshot = Readonly<{
   document: StorefrontPageDocument;
 }>;
 
+/**
+ * An unbound candidate plus the document that binding it would write to.
+ *
+ * The same `owner` the bound sections carry, because the question is the same
+ * one: a shell candidate renders on every page, so the bind lands in the layout
+ * rather than in the route being looked at. Without this the list showed both
+ * kinds identically, and the only way to learn that a click would change every
+ * page was to make it.
+ */
+export type EditorUnboundSection = ThemeUnboundRouteSection &
+  Readonly<{ owner: EditorSectionOwner }>;
+
 export type EditorSectionModel = Readonly<{
   /**
    * The document the canvas renders and the panels read.
@@ -42,7 +54,7 @@ export type EditorSectionModel = Readonly<{
   /** Component sources behind those sections, for identifying a selection. */
   sharedSourcePaths: ReadonlySet<string>;
   /** Native route sections that are visible but not bound to a Document yet. */
-  unboundSections: readonly ThemeUnboundRouteSection[];
+  unboundSections: readonly EditorUnboundSection[];
 }>;
 
 const EMPTY_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
@@ -134,8 +146,18 @@ export function resolveEditorSectionModel(args: {
       args.shellSections.map((section) => section.componentSourcePath),
     ),
     unboundSections: [
-      ...(args.shellUnboundSections ?? []),
-      ...(args.pageUnboundSections ?? []),
+      // Shell first: those sections wrap the page, so they read as the outer
+      // structure rather than as something that happens to sort early. The
+      // order is also why each entry needs its own `owner` — the two buckets
+      // are indistinguishable once they are in one list.
+      ...(args.shellUnboundSections ?? []).map((section) => ({
+        ...section,
+        owner: "shell" as const,
+      })),
+      ...(args.pageUnboundSections ?? []).map((section) => ({
+        ...section,
+        owner: "page" as const,
+      })),
     ],
   };
 }

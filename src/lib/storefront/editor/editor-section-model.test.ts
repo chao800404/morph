@@ -37,6 +37,23 @@ const pageSections = [
   derived("starter-hero", "src/components/Hero.tsx", "hero"),
 ];
 
+function unboundCandidate(
+  overrides: Partial<ThemeUnboundRouteSection> = {},
+): ThemeUnboundRouteSection {
+  return {
+    componentRef: "src/components/sections/Promo.tsx",
+    sectionType: "promo",
+    componentName: "Promo",
+    componentSourcePath: "src/components/sections/Promo.tsx",
+    routeSourcePath: "src/routes/index.tsx",
+    sourceLocation: "src/routes/index.tsx:4:10",
+    sourceStart: 100,
+    sourceEnd: 130,
+    canBind: true,
+    ...overrides,
+  };
+}
+
 const shellDocument: StorefrontPageDocument = {
   version: 1,
   sections: [
@@ -155,24 +172,37 @@ describe("the editor's section model", () => {
   });
 
   it("keeps unbound native sections visible without inventing a Document entry", () => {
-    const candidate: ThemeUnboundRouteSection = {
-      componentRef: "src/components/sections/Promo.tsx",
-      sectionType: "promo",
-      componentName: "Promo",
-      componentSourcePath: "src/components/sections/Promo.tsx",
-      routeSourcePath: "src/routes/index.tsx",
-      sourceLocation: "src/routes/index.tsx:4:10",
-      sourceStart: 100,
-      sourceEnd: 130,
-      canBind: true,
-    };
+    const candidate = unboundCandidate();
     const model = resolve({ pageUnboundSections: [candidate] });
 
-    expect(model.unboundSections).toEqual([candidate]);
+    expect(model.unboundSections).toEqual([{ ...candidate, owner: "page" }]);
     expect(model.document.sections.map((section) => section.id)).toEqual([
       "starter-header",
       "starter-footer",
       "starter-hero",
+    ]);
+  });
+
+  it("marks which document a bind would write to", () => {
+    // Both buckets land in one list, and once they are in it nothing can tell
+    // them apart — except this. It matters because a shell candidate binds
+    // into the layout, so the click changes every page rather than the one on
+    // screen, and the panel has to be able to say so.
+    const shell = unboundCandidate({
+      routeSourcePath: "src/routes/__root.tsx",
+      sourceStart: 200,
+      sourceEnd: 230,
+    });
+    const page = unboundCandidate();
+
+    const model = resolve({
+      shellUnboundSections: [shell],
+      pageUnboundSections: [page],
+    });
+
+    expect(model.unboundSections.map((s) => [s.sourceStart, s.owner])).toEqual([
+      [200, "shell"],
+      [100, "page"],
     ]);
   });
 

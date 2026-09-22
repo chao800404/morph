@@ -48,10 +48,8 @@ import {
   EditorAddPageDialog,
   type AddPageResult,
 } from "./editor-add-page-dialog";
-import type {
-  ThemeRouteSectionOption,
-  ThemeUnboundRouteSection,
-} from "@/lib/storefront/compiler/theme-route-sections";
+import type { ThemeRouteSectionOption } from "@/lib/storefront/compiler/theme-route-sections";
+import type { EditorUnboundSection } from "@/lib/storefront/editor/editor-section-model";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import type {
   PreviewEditableNode,
@@ -186,8 +184,8 @@ export type EditorSectionsPanelProps = {
   onDeletePage?: (route: ThemeRouteRecord) => Promise<AddPageResult>;
   sectionOptions?: readonly ThemeRouteSectionOption[];
   onAddSection?: (option: ThemeRouteSectionOption) => Promise<unknown>;
-  unboundSectionCandidates?: readonly ThemeUnboundRouteSection[];
-  onBindSection?: (candidate: ThemeUnboundRouteSection) => Promise<unknown>;
+  unboundSectionCandidates?: readonly EditorUnboundSection[];
+  onBindSection?: (candidate: EditorUnboundSection) => Promise<unknown>;
   onDeleteSection?: (
     sectionId: string,
   ) => Promise<EditorEditableNodeDeleteResult>;
@@ -1020,7 +1018,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   });
   const bindMutation = useMutation({
     onMutate: () => onSaveStateChange("saving"),
-    mutationFn: async (candidate: ThemeUnboundRouteSection) => {
+    mutationFn: async (candidate: EditorUnboundSection) => {
       if (!onBindSection) {
         throw new Error("This section cannot be bound from the current route.");
       }
@@ -1401,7 +1399,9 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                         }
                         title={
                           candidate.canBind
-                            ? `Bind ${candidate.componentName} to Design content`
+                            ? candidate.owner === "shell"
+                              ? `Bind ${candidate.componentName} to Design content on every page`
+                              : `Bind ${candidate.componentName} to Design content`
                             : candidate.diagnostic
                         }
                       >
@@ -1414,7 +1414,11 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                           {candidate.componentName}
                         </span>
                         <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                          {candidate.canBind ? "Unbound" : "Unsupported"}
+                          {candidate.canBind
+                            ? candidate.owner === "shell"
+                              ? "Every page"
+                              : "This page"
+                            : "Unsupported"}
                         </span>
                       </SidebarMenuButton>
                       {candidate.canBind ? (
@@ -1433,8 +1437,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   ))}
                 </SidebarMenu>
                 <p className="px-1 pt-1 text-[11px] leading-relaxed text-muted-foreground">
-                  These components render in the route but are not connected to
-                  a stored content section yet.
+                  These components render without a stored content section yet.
+                  A layout one binds in the layout, so it applies to every page.
                 </p>
               </SidebarGroup>
             ) : null}
