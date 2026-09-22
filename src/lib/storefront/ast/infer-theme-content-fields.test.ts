@@ -111,6 +111,77 @@ describe("inferThemeContentFields", () => {
   });
 });
 
+describe("optionality written two ways", () => {
+  // `v?: string` and `v: string | undefined` are the same type. An author who
+  // spells it out is not doing anything unusual, so the two spellings have to
+  // produce the same field — otherwise the field silently disappears based on
+  // nothing but style.
+  const infer = (source: string) => inferThemeContentFields(source).fields;
+
+  it.each([
+    ["string", "text"],
+    ["number", "number"],
+    ["boolean", "boolean"],
+  ])(
+    "infers %s the same way with and without the shorthand",
+    (keyword, type) => {
+      const shorthand = infer(
+        `export default function Promo({ v }: { v?: ${keyword} }) { return null; }`,
+      );
+      const spelledOut = infer(
+        `export default function Promo({ v }: { v: ${keyword} | undefined }) { return null; }`,
+      );
+
+      expect(shorthand).toEqual({ v: { type } });
+      expect(spelledOut).toEqual(shorthand);
+    },
+  );
+
+  it("does not care which side the undefined is written on", () => {
+    expect(
+      infer(
+        `export default function Promo({ v }: { v: undefined | string }) { return null; }`,
+      ),
+    ).toEqual({ v: { type: "text" } });
+  });
+
+  it("keeps a literal union a select when undefined is added to it", () => {
+    expect(
+      infer(
+        `export default function Promo({ v }: { v: "a" | "b" | undefined }) { return null; }`,
+      ),
+    ).toEqual({
+      v: {
+        type: "select",
+        options: [
+          { label: "a", value: "a" },
+          { label: "b", value: "b" },
+        ],
+      },
+    });
+  });
+
+  it("still refuses a union of two real types", () => {
+    // Stripping undefined must not turn every union into its first member.
+    expect(
+      infer(
+        `export default function Promo({ v }: { v: string | number }) { return null; }`,
+      ),
+    ).toEqual({});
+  });
+
+  it("still refuses a union with null", () => {
+    // `null` is a value a stored slot can hold, unlike `undefined`, which is
+    // only the `?`. Treating null as absent would be a storage decision, so it
+    // stays refused rather than being folded into optionality.
+    expect(
+      infer(
+        `export default function Promo({ v }: { v: string | null }) { return null; }`,
+      ),
+    ).toEqual({});
+  });
+});
+
 describe("what inference refuses to guess", () => {
   // Each case is a field an author would expect to see and does not. The
   // contract is that `contentFields` declares those, so a silent skip is

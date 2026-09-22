@@ -112,12 +112,31 @@ function fieldFromType(
     }
   }
   if (unwrapped.type === "TSUnionType") {
-    const values = unwrapped.types
+    // `v: string | undefined` and `v?: string` are the same type written two
+    // ways, so they have to infer the same thing — otherwise a reader who
+    // spelled the optionality out gets no field and no reason why. Dropping
+    // `undefined` is reading the type, not guessing at it: it is exactly what
+    // the `?` means.
+    //
+    // `null` is deliberately left in place. It is a value a stored slot can
+    // actually hold, so treating it as absent would be a decision about how
+    // content is stored rather than about what the type says.
+    // `unwrapType` already maps a bare `undefined` member to null, so asking
+    // for a non-null unwrap is the shortest way to say "not just the undefined
+    // keyword". Comparing `unwrapType(member)?.type` against the keyword does
+    // not work: the keyword has been erased by then, so the test never matches
+    // and the member survives the filter.
+    const members = unwrapped.types.filter(
+      (member: any) => unwrapType(member) !== null,
+    );
+    if (members.length === 0) return null;
+    if (members.length === 1) return fieldFromType(members[0], aliases);
+    const values = members
       .map((member: any) => unwrapType(member)?.literal)
       .filter((literal: any) => literal?.type === "StringLiteral")
       .map((literal: any) => literal.value as string);
     if (
-      values.length === unwrapped.types.length &&
+      values.length === members.length &&
       new Set(values).size === values.length
     ) {
       return {
@@ -316,8 +335,7 @@ export function inferThemeContentFields(
       ),
     };
   }
-  if (parameter.type !== "ObjectPattern")
-    return { fields: {} };
+  if (parameter.type !== "ObjectPattern") return { fields: {} };
 
   const fields: Record<string, ThemeContentFieldDefinition> = {};
   const members = fieldsByMemberName(parameter, aliases);
