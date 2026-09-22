@@ -1,6 +1,7 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import {
   mergeDocumentWithRouteSections,
+  type ThemeUnboundRouteSection,
   type ThemeRouteSection,
 } from "@/lib/storefront/compiler/theme-route-sections";
 
@@ -25,6 +26,18 @@ export type EditorTemplateSnapshot = Readonly<{
   document: StorefrontPageDocument;
 }>;
 
+/**
+ * An unbound candidate plus the document that binding it would write to.
+ *
+ * The same `owner` the bound sections carry, because the question is the same
+ * one: a shell candidate renders on every page, so the bind lands in the layout
+ * rather than in the route being looked at. Without this the list showed both
+ * kinds identically, and the only way to learn that a click would change every
+ * page was to make it.
+ */
+export type EditorUnboundSection = ThemeUnboundRouteSection &
+  Readonly<{ owner: EditorSectionOwner }>;
+
 export type EditorSectionModel = Readonly<{
   /**
    * The document the canvas renders and the panels read.
@@ -40,6 +53,8 @@ export type EditorSectionModel = Readonly<{
   sharedSectionIds: ReadonlySet<string>;
   /** Component sources behind those sections, for identifying a selection. */
   sharedSourcePaths: ReadonlySet<string>;
+  /** Native route sections that are visible but not bound to a Document yet. */
+  unboundSections: readonly EditorUnboundSection[];
 }>;
 
 const EMPTY_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
@@ -57,7 +72,8 @@ function sectionsFor(
   derived: readonly ThemeRouteSection[],
   ownsStructure: boolean,
 ): StorefrontPageDocument["sections"] {
-  if (derived.length === 0) return ownsStructure ? [] : (template?.document.sections ?? []);
+  if (derived.length === 0)
+    return ownsStructure ? [] : (template?.document.sections ?? []);
   return mergeDocumentWithRouteSections(
     template?.document ?? EMPTY_DOCUMENT,
     derived,
@@ -77,10 +93,12 @@ export function resolveEditorSectionModel(args: {
   shellTemplate: EditorTemplateSnapshot | undefined;
   /** Slots the route declares, in source order. */
   pageSections: readonly ThemeRouteSection[];
+  pageUnboundSections?: readonly ThemeUnboundRouteSection[];
   /** Whether the route's own slots define its structure. */
   pageOwnsStructure: boolean;
   /** Slots the layout declares, in source order. */
   shellSections: readonly ThemeRouteSection[];
+  shellUnboundSections?: readonly ThemeUnboundRouteSection[];
 }): EditorSectionModel {
   const shellSections = args.shellTemplate
     ? sectionsFor(args.shellTemplate, args.shellSections, true)
@@ -127,5 +145,19 @@ export function resolveEditorSectionModel(args: {
     sharedSourcePaths: new Set(
       args.shellSections.map((section) => section.componentSourcePath),
     ),
+    unboundSections: [
+      // Shell first: those sections wrap the page, so they read as the outer
+      // structure rather than as something that happens to sort early. The
+      // order is also why each entry needs its own `owner` — the two buckets
+      // are indistinguishable once they are in one list.
+      ...(args.shellUnboundSections ?? []).map((section) => ({
+        ...section,
+        owner: "shell" as const,
+      })),
+      ...(args.pageUnboundSections ?? []).map((section) => ({
+        ...section,
+        owner: "page" as const,
+      })),
+    ],
   };
 }

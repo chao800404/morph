@@ -8,6 +8,7 @@ function normalizePath(value: string): string {
   return value
     .trim()
     .replace(/\\/g, "/")
+    .replace(/\/{2,}/g, "/")
     .replace(/^\/+|\/+$/g, "");
 }
 

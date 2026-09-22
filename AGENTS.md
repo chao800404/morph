@@ -37,6 +37,7 @@ Detailed Morph engineering rules live under `.agents/rules/`. Read the rule file
 - `.agents/rules/02-authoring-build-runtime.md`: Visual Editor, Page/Template authoring, Theme build, preview, release/runtime, AI authoring, interactive experiences.
 - `.agents/rules/03-backend-data.md`: routing, server functions, authorization, DAL/service/storage, Drizzle/D1, commerce modules, aggregate writes, pagination and URL state.
 - `.agents/rules/04-ui-quality-security.md`: UI primitives, DataTable/forms, TypeScript quality, security, testing, CI completion criteria and migrations.
+- `.agents/rules/05-git-delivery.md`: branch protection, validation, commit scope, `pnpm ship`, PR merge, and remote-push safety.
 
 Each file opens with a `本檔鐵則` block: the handful of invariants whose violation has actually cost this project time. Read that block even when only skimming the file.
 

@@ -189,6 +189,69 @@ function replaceRanges(
     );
 }
 
+export type ThemeFileCopyImportRewriteResult =
+  | Readonly<{
+      ok: true;
+      content: string;
+      rewrites: ReadonlyArray<{ from: string; to: string }>;
+    }>
+  | Readonly<{ ok: false; reason: string }>;
+
+/**
+ * Rewrites relative imports for a copied file whose directory changed.
+ *
+ * This differs from `planThemeFileMove`: the original file remains in place,
+ * so importers of the original must not be changed and the copied file's
+ * imports must continue to resolve to the original dependency files. Keeping
+ * this as an AST-based operation avoids regex rewriting of comments or string
+ * literals and gives the detach operation the same fail-closed parse behavior
+ * as the Theme file move workflow.
+ */
+export function rewriteThemeFileImportsForCopy(args: {
+  sourcePath: string;
+  targetPath: string;
+  content: string;
+  files: readonly ThemeSourceFile[];
+}): ThemeFileCopyImportRewriteResult {
+  let sites: SpecifierSite[];
+  try {
+    sites = readSpecifierSites(args.content);
+  } catch {
+    return {
+      ok: false,
+      reason: `Cannot copy: ${args.sourcePath} contains a syntax error.`,
+    };
+  }
+
+  const paths = new Set(args.files.map((file) => file.path));
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  const rewrites: Array<{ from: string; to: string }> = [];
+  for (const site of sites) {
+    const target = resolveSpecifierToFile(args.sourcePath, site.value, paths);
+    if (!target) continue;
+
+    const hadExtension =
+      site.value !== withoutImplicitExtension(site.value);
+    const nextSpecifier = relativeSpecifier(
+      directoryOf(args.targetPath),
+      hadExtension ? target : withoutImplicitExtension(target),
+    );
+    if (nextSpecifier === site.value) continue;
+    edits.push({
+      start: site.start,
+      end: site.end,
+      text: JSON.stringify(nextSpecifier),
+    });
+    rewrites.push({ from: site.value, to: nextSpecifier });
+  }
+
+  return {
+    ok: true,
+    content: edits.length > 0 ? replaceRanges(args.content, edits) : args.content,
+    rewrites,
+  };
+}
+
 /**
  * TanStack's generator rewrites a route file's createFileRoute literal when
  * its filename changes. Keep that invariant in Code Mode as well, otherwise

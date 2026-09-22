@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 import { prepareNewThemeFolder } from "./new-theme-folder";
 
 describe("prepareNewThemeFolder", () => {
@@ -6,6 +7,15 @@ describe("prepareNewThemeFolder", () => {
     expect(prepareNewThemeFolder("  pages\\blog  ", "src", [])).toEqual({
       ok: true,
       path: "src/pages/blog",
+    });
+  });
+
+  it("collapses repeated separators before creating a nested folder", () => {
+    expect(
+      prepareNewThemeFolder("pages//blog///posts", "src//content", []),
+    ).toEqual({
+      ok: true,
+      path: "src/content/pages/blog/posts",
     });
   });
 
@@ -20,6 +30,12 @@ describe("prepareNewThemeFolder", () => {
     expect(prepareNewThemeFolder("node_modules", "", [])).toMatchObject({
       ok: false,
     });
+  });
+
+  it("rejects non-canonical paths at the shared storage boundary", () => {
+    expect(safeThemeFilePathSchema.safeParse("src/content//pages").success).toBe(
+      false,
+    );
   });
 
   it("refuses paths already represented by a file or folder", () => {

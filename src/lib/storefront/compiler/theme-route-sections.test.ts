@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   addThemeRouteSection,
+  bindThemeRouteSection,
   deriveThemeRouteSections,
   listThemeRouteSectionOptions,
   mergeDocumentWithRouteSections,
   removeThemeRouteSection,
+  replaceThemeRouteSectionComponent,
   reorderThemeRouteSections,
 } from "./theme-route-sections";
 
@@ -49,6 +51,67 @@ const files = [
 ];
 
 describe("route-authored Theme sections", () => {
+  it("detaches a uniquely used section by changing only its route import", () => {
+    const result = replaceThemeRouteSectionComponent({
+      source: route,
+      files,
+      routeSourcePath: "src/routes/index.tsx",
+      slotId: "hero-slot",
+      componentSourcePath: "src/components/Hero.tsx",
+      nextComponentSourcePath: "src/components/Hero-copy.tsx",
+    });
+
+    expect(result).toEqual({
+      code: route.replace(
+        'from "../components/Hero"',
+        'from "../components/Hero-copy"',
+      ),
+      changed: true,
+    });
+  });
+
+  it("keeps another instance on the shared component when the route reuses it", () => {
+    const repeated = route.replace(
+      '      <Hero {...content("hero-slot")} />',
+      '      <Hero {...content("hero-slot")} />\n      <Hero {...content("hero-second")} />',
+    );
+    const result = replaceThemeRouteSectionComponent({
+      source: repeated,
+      files: files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: repeated }
+          : file,
+      ),
+      routeSourcePath: "src/routes/index.tsx",
+      slotId: "hero-slot",
+      componentSourcePath: "src/components/Hero.tsx",
+      nextComponentSourcePath: "src/components/Hero-copy.tsx",
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.code).toContain(
+      'import HeroPageCopy from "../components/Hero-copy";',
+    );
+    expect(result.code).toContain(
+      '<HeroPageCopy {...content("hero-slot")} />',
+    );
+    expect(result.code).toContain('<Hero {...content("hero-second")} />');
+  });
+
+  it("fails closed when the selected section no longer maps to that source", () => {
+    const result = replaceThemeRouteSectionComponent({
+      source: route,
+      files,
+      routeSourcePath: "src/routes/index.tsx",
+      slotId: "hero-slot",
+      componentSourcePath: "src/components/Promo.tsx",
+      nextComponentSourcePath: "src/components/Hero-copy.tsx",
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.diagnostic).toMatch(/changed since it was selected/);
+  });
+
   it("derives identity, mapping and order from content() call sites", () => {
     const result = deriveThemeRouteSections(files, "src/routes/index.tsx");
 
@@ -119,6 +182,231 @@ describe("route-authored Theme sections", () => {
         props: { heading: "Stored hero" },
       },
     ]);
+  });
+
+  it("reports a direct section-folder component that has no content binding", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const result = deriveThemeRouteSections(
+      [
+        {
+          path: "src/routes/index.tsx",
+          content: nativeRoute,
+        },
+        {
+          path: "src/components/sections/Promo.tsx",
+          content: "export default function Promo(){return null;}",
+        },
+      ],
+      "src/routes/index.tsx",
+    );
+
+    expect(result.sections).toEqual([]);
+    expect(result.unboundSections).toHaveLength(1);
+    expect(result.unboundSections[0]).toMatchObject({
+      componentName: "Promo",
+      componentSourcePath: "src/components/sections/Promo.tsx",
+      canBind: true,
+    });
+  });
+
+  it("does not offer a repeated section position for automatic binding", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main>{items.map((item) => <Promo key={item.id} />)}</main>;
+}`;
+    const result = deriveThemeRouteSections(
+      [
+        { path: "src/routes/index.tsx", content: nativeRoute },
+        {
+          path: "src/components/sections/Promo.tsx",
+          content: "export default function Promo(){return null;}",
+        },
+      ],
+      "src/routes/index.tsx",
+    );
+
+    expect(result.unboundSections[0]?.canBind).toBe(false);
+    expect(result.unboundSections[0]?.diagnostic).toContain(
+      "conditional or repeated",
+    );
+  });
+
+  it("binds before explicit props so source-owned values keep precedence", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default function Promo(){return null;}",
+      },
+    ];
+    const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
+      .unboundSections[0]!;
+    const result = bindThemeRouteSection({
+      source: nativeRoute,
+      files,
+      routeSourcePath: "src/routes/index.tsx",
+      candidate,
+      slotId: "promo",
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.code).toContain(
+      '<Promo {...content("promo")} title={product.name} />',
+    );
+    expect(result.code).toContain(
+      'import { content } from "../morph/content";',
+    );
+  });
+
+  it("refuses a stale binding candidate instead of patching another JSX node", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default function Promo(){return null;}",
+      },
+    ];
+    const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
+      .unboundSections[0]!;
+    const changedRoute = nativeRoute.replace(
+      "<Promo title={product.name} />",
+      "<Hero title={product.name} />",
+    );
+    const result = bindThemeRouteSection({
+      source: changedRoute,
+      files: files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: changedRoute }
+          : file,
+      ),
+      routeSourcePath: "src/routes/index.tsx",
+      candidate,
+      slotId: "promo",
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.diagnostic).toContain("source changed");
+    expect(result.code).toBe(changedRoute);
+    expect(result.code).not.toContain('content("promo")');
+  });
+
+  it("refuses a same-length rename that leaves every source offset unchanged", () => {
+    // The stale case above shortens the element, so every later offset moves
+    // and a guard that only compared source positions would reject it too and
+    // look correct. Swapping in an equally long name and an equally long import
+    // path holds sourceStart and sourceEnd fixed, leaving component identity as
+    // the only thing that changed — which is the part this guard exists for.
+    //
+    // The import binding has to move with the JSX, or the element stops
+    // resolving to an imported component and the derivation reports no
+    // candidate at all. That version of the test still passes, but it passes
+    // because the element became unreachable rather than because the guard
+    // compared identities — so it would keep passing with the guard deleted.
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default function Promo(){return null;}",
+      },
+      {
+        path: "src/components/sections/Other.tsx",
+        content: "export default function Other(){return null;}",
+      },
+    ];
+    const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
+      .unboundSections[0]!;
+    const renamed = nativeRoute
+      .replace("import Promo from", "import Other from")
+      .replace("sections/Promo", "sections/Other")
+      .replace("<Promo ", "<Other ");
+    expect(renamed.length).toBe(nativeRoute.length);
+    // The rename is only meaningful if it still yields the same position, so
+    // prove the candidate survived it before asserting the refusal.
+    const renamedCandidate = deriveThemeRouteSections(
+      files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: renamed }
+          : file,
+      ),
+      "src/routes/index.tsx",
+    ).unboundSections[0]!;
+    expect(renamedCandidate.sourceStart).toBe(candidate.sourceStart);
+    expect(renamedCandidate.sourceEnd).toBe(candidate.sourceEnd);
+    expect(renamedCandidate.componentName).toBe("Other");
+
+    const result = bindThemeRouteSection({
+      source: renamed,
+      files: files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: renamed }
+          : file,
+      ),
+      routeSourcePath: "src/routes/index.tsx",
+      candidate,
+      slotId: "promo",
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.diagnostic).toContain("source changed");
+    expect(result.code).toBe(renamed);
+    expect(result.code).not.toContain('content("promo")');
+  });
+
+  it("refuses to bind the same section twice", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default function Promo(){return null;}",
+      },
+    ];
+    const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
+      .unboundSections[0]!;
+    const bind = (source: string) =>
+      bindThemeRouteSection({
+        source,
+        files: files.map((file) =>
+          file.path === "src/routes/index.tsx"
+            ? { ...file, content: source }
+            : file,
+        ),
+        routeSourcePath: "src/routes/index.tsx",
+        candidate,
+        slotId: "promo",
+      });
+
+    const first = bind(nativeRoute);
+    expect(first.changed).toBe(true);
+    expect(first.code.match(/content\("promo"\)/g)).toHaveLength(1);
+
+    const second = bind(first.code);
+    expect(second.changed).toBe(false);
+    expect(second.code).toBe(first.code);
   });
 
   it("reorders the route JSX instead of the Document", () => {
@@ -271,6 +559,91 @@ export default function Banner() { return null; }`,
     ]);
 
     expect(options.map((option) => option.componentName)).toEqual(["Banner"]);
+  });
+
+  it("offers a component that only follows the section folder convention", () => {
+    // No manifest entry and no `contentFields`: living in the folder is the
+    // whole declaration, which is what makes a section registration-free.
+    const options = listThemeRouteSectionOptions([
+      listFiles[0]!,
+      {
+        path: "src/components/sections/Testimonials.tsx",
+        content: `export default function Testimonials() { return null; }`,
+      },
+    ]);
+
+    expect(options.map((option) => option.componentName)).toEqual([
+      "Testimonials",
+    ]);
+    expect(options[0]?.componentSourcePath).toBe(
+      "src/components/sections/Testimonials.tsx",
+    );
+  });
+
+  it("names a folder entry after its folder rather than after `index`", () => {
+    const options = listThemeRouteSectionOptions([
+      listFiles[0]!,
+      {
+        path: "src/components/sections/featured-collection/index.tsx",
+        content: `export default function FeaturedCollection() { return null; }`,
+      },
+    ]);
+
+    expect(options.map((option) => option.componentName)).toEqual([
+      "FeaturedCollection",
+    ]);
+    expect(options[0]?.sectionType).toBe("featured-collection");
+  });
+
+  it("keeps the manifest's own ref when it already claims the file", () => {
+    // The authored ref is more specific than a derived one, so the file is
+    // offered once, under the name the manifest chose.
+    const options = listThemeRouteSectionOptions([
+      {
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          components: {
+            "testimonials.default": {
+              source: "src/components/sections/Testimonials.tsx",
+            },
+          },
+        }),
+      },
+      {
+        path: "src/components/sections/Testimonials.tsx",
+        content: `export default function Testimonials() { return null; }`,
+      },
+    ]);
+
+    expect(options.map((option) => option.componentRef)).toEqual([
+      "testimonials.default",
+    ]);
+  });
+
+  it("omits a row component that lives in the section folder", () => {
+    // The folder decides what is a candidate, not what may stand alone: the
+    // row rule still applies, or a list's row would be addable as a section.
+    const options = listThemeRouteSectionOptions([
+      listFiles[0]!,
+      {
+        path: "src/components/sections/Principles.tsx",
+        content: `export const contentFields = {
+  items: { type: "array", of: "./PrincipleCard" },
+};
+export default function Principles() { return null; }`,
+      },
+      {
+        path: "src/components/sections/PrincipleCard.tsx",
+        content: `export const contentFields = {
+  title: { type: "text" },
+};
+export default function PrincipleCard() { return null; }`,
+      },
+    ]);
+
+    expect(options.map((option) => option.componentName)).toEqual([
+      "Principles",
+    ]);
   });
 });
 

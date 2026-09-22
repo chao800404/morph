@@ -8,7 +8,10 @@
  */
 import { describe, expect, it } from "vitest";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
-import type { ThemeRouteSection } from "@/lib/storefront/compiler/theme-route-sections";
+import type {
+  ThemeRouteSection,
+  ThemeUnboundRouteSection,
+} from "@/lib/storefront/compiler/theme-route-sections";
 import { resolveEditorSectionModel } from "./editor-section-model";
 
 function derived(
@@ -30,7 +33,26 @@ const shellSections = [
   derived("starter-header", "src/components/Header.tsx", "header"),
   derived("starter-footer", "src/components/Footer.tsx", "footer"),
 ];
-const pageSections = [derived("starter-hero", "src/components/Hero.tsx", "hero")];
+const pageSections = [
+  derived("starter-hero", "src/components/Hero.tsx", "hero"),
+];
+
+function unboundCandidate(
+  overrides: Partial<ThemeUnboundRouteSection> = {},
+): ThemeUnboundRouteSection {
+  return {
+    componentRef: "src/components/sections/Promo.tsx",
+    sectionType: "promo",
+    componentName: "Promo",
+    componentSourcePath: "src/components/sections/Promo.tsx",
+    routeSourcePath: "src/routes/index.tsx",
+    sourceLocation: "src/routes/index.tsx:4:10",
+    sourceStart: 100,
+    sourceEnd: 130,
+    canBind: true,
+    ...overrides,
+  };
+}
 
 const shellDocument: StorefrontPageDocument = {
   version: 1,
@@ -47,14 +69,21 @@ const shellDocument: StorefrontPageDocument = {
 const pageDocument: StorefrontPageDocument = {
   version: 1,
   sections: [
-    { id: "starter-hero", type: "hero", enabled: true, props: { heading: "Hi" } },
+    {
+      id: "starter-hero",
+      type: "hero",
+      enabled: true,
+      props: { heading: "Hi" },
+    },
   ],
 };
 
 const shellTemplate = { id: "shell", document: shellDocument };
 const pageTemplate = { id: "page", document: pageDocument };
 
-function resolve(overrides?: Partial<Parameters<typeof resolveEditorSectionModel>[0]>) {
+function resolve(
+  overrides?: Partial<Parameters<typeof resolveEditorSectionModel>[0]>,
+) {
   return resolveEditorSectionModel({
     pageTemplate,
     shellTemplate,
@@ -139,6 +168,41 @@ describe("the editor's section model", () => {
     expect(model.document.sections.map((section) => section.id)).toEqual([
       "starter-header",
       "starter-footer",
+    ]);
+  });
+
+  it("keeps unbound native sections visible without inventing a Document entry", () => {
+    const candidate = unboundCandidate();
+    const model = resolve({ pageUnboundSections: [candidate] });
+
+    expect(model.unboundSections).toEqual([{ ...candidate, owner: "page" }]);
+    expect(model.document.sections.map((section) => section.id)).toEqual([
+      "starter-header",
+      "starter-footer",
+      "starter-hero",
+    ]);
+  });
+
+  it("marks which document a bind would write to", () => {
+    // Both buckets land in one list, and once they are in it nothing can tell
+    // them apart — except this. It matters because a shell candidate binds
+    // into the layout, so the click changes every page rather than the one on
+    // screen, and the panel has to be able to say so.
+    const shell = unboundCandidate({
+      routeSourcePath: "src/routes/__root.tsx",
+      sourceStart: 200,
+      sourceEnd: 230,
+    });
+    const page = unboundCandidate();
+
+    const model = resolve({
+      shellUnboundSections: [shell],
+      pageUnboundSections: [page],
+    });
+
+    expect(model.unboundSections.map((s) => [s.sourceStart, s.owner])).toEqual([
+      [200, "shell"],
+      [100, "page"],
     ]);
   });
 

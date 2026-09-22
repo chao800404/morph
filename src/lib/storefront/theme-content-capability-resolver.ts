@@ -1,4 +1,5 @@
 import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
+import { inferThemeContentFields } from "./ast/infer-theme-content-fields";
 import {
   isArrayContentField,
   isScalarContentField,
@@ -11,6 +12,7 @@ import {
   type ThemeContentCapabilities,
   type ThemeContentCapabilityParseResult,
 } from "./theme-content-capabilities";
+import { readThemeSectionEntry } from "./theme-section-convention";
 
 const THEME_MANIFEST_PATH = "morph.theme.json";
 const MAX_SCANNED_COMPONENT_SOURCES = 200;
@@ -67,7 +69,13 @@ function resolveRowFields(
 }
 
 /** Extensions a row component reference may omit. */
-const ROW_COMPONENT_EXTENSIONS = ["", ".tsx", ".jsx", "/index.tsx", "/index.jsx"];
+const ROW_COMPONENT_EXTENSIONS = [
+  "",
+  ".tsx",
+  ".jsx",
+  "/index.tsx",
+  "/index.jsx",
+];
 
 /**
  * Maps each declared componentRef to the source file that implements it.
@@ -281,8 +289,20 @@ export function resolveThemeContentCapabilitiesFromFiles(
     // `valid` wins even when empty — that is how a module withdraws a field the
     // manifest still lists. `invalid` is recorded too, so the merge below can
     // refuse to fall back rather than serving a stale capability.
-    if (parsed.declaration === "valid") declared.set(path, parsed.fields ?? {});
-    else if (parsed.declaration === "invalid") invalidDeclarations.add(path);
+    if (parsed.declaration === "valid") {
+      declared.set(path, parsed.fields ?? {});
+    } else if (parsed.declaration === "invalid") {
+      invalidDeclarations.add(path);
+    } else if (readThemeSectionEntry(path)) {
+      // A section-folder component may use ordinary React props without a
+      // second contentFields declaration. The inference is intentionally
+      // limited to this convention and only exposes static primitive props;
+      // explicit contentFields remains authoritative for richer shapes.
+      const inferred = inferThemeContentFields(source);
+      if (Object.keys(inferred.fields).length > 0) {
+        declared.set(path, inferred.fields);
+      }
+    }
   }
 
   expandRowReferences({
@@ -340,8 +360,16 @@ export async function resolveThemeContentCapabilities(args: {
       if (componentRef !== sourcePath) refForPath.set(sourcePath, componentRef);
       continue;
     }
-    if (parsed.declaration !== "valid") continue;
-    declared.set(sourcePath, parsed.fields ?? {});
+    if (parsed.declaration === "valid") {
+      declared.set(sourcePath, parsed.fields ?? {});
+    } else if (readThemeSectionEntry(sourcePath)) {
+      const inferred = inferThemeContentFields(source);
+      if (Object.keys(inferred.fields).length > 0) {
+        declared.set(sourcePath, inferred.fields);
+      }
+    } else {
+      continue;
+    }
     // A route is allowed to be the only registration for a component. In that
     // case its source path becomes the persisted component identity, and
     // server validation must resolve the same co-located declaration the
