@@ -33,11 +33,13 @@ import {
 } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   addThemeRouteSection,
+  bindThemeRouteSection,
   deriveThemeRouteSections,
   listThemeRouteSectionOptions,
   removeThemeRouteSection,
   reorderThemeRouteSections,
   type ThemeRouteSectionOption,
+  type ThemeUnboundRouteSection,
 } from "@/lib/storefront/compiler/theme-route-sections";
 import type {
   StorefrontCommentGroupDTO,
@@ -1025,9 +1027,7 @@ export function VisualEditorShell({
       } catch (error) {
         // The payload is retained either way; what differs is what the author
         // can do about it, so a conflict is recorded rather than only reported.
-        if (
-          (error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT
-        ) {
+        if ((error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT) {
           setContentConflicts((current) => ({ ...current, [key]: tid }));
         }
         throw error;
@@ -1058,9 +1058,10 @@ export function VisualEditorShell({
       context.theme.id,
     ).queryKey;
     await queryClient.invalidateQueries({ queryKey: detailKey });
-    const fresh = queryClient.getQueryData<
-      ServerResult<StorefrontThemeEditorDTO>
-    >(detailKey);
+    const fresh =
+      queryClient.getQueryData<ServerResult<StorefrontThemeEditorDTO>>(
+        detailKey,
+      );
     const freshTemplates = fresh?.success ? fresh.data.templates : null;
     if (!freshTemplates) return;
 
@@ -1788,7 +1789,12 @@ export function VisualEditorShell({
             effectiveThemeFiles,
             activeThemeRoute.sourcePath,
           ))
-        : { sections: [], diagnostics: [], hasContentImport: false },
+        : {
+            sections: [],
+            unboundSections: [],
+            diagnostics: [],
+            hasContentImport: false,
+          },
     [activeThemeRoute, effectiveThemeFiles, themeRouteStructureCache],
   );
   const activeRouteSections = activeRouteStructure.sections;
@@ -1809,10 +1815,11 @@ export function VisualEditorShell({
    * is a section that happens to be on every page rather than a second kind of
    * thing with its own editor.
    */
-  const layoutSections = useMemo(
-    () => deriveThemeLayoutSections(effectiveThemeFiles).sections,
+  const layoutStructure = useMemo(
+    () => deriveThemeLayoutSections(effectiveThemeFiles),
     [effectiveThemeFiles],
   );
+  const layoutSections = layoutStructure.sections;
   const sourceLayoutRoots = useMemo(
     () => ({
       before: layoutSections
@@ -1841,14 +1848,18 @@ export function VisualEditorShell({
         pageTemplate: activeTemplate,
         shellTemplate: layoutTemplate,
         pageSections: activeRouteSections,
+        pageUnboundSections: activeRouteStructure.unboundSections,
         pageOwnsStructure:
           activeRouteStructure.hasContentImport || routeOwnsStructure,
         shellSections: layoutSections,
+        shellUnboundSections: layoutStructure.unboundSections,
       }),
     [
       activeRouteSections,
       activeRouteStructure.hasContentImport,
+      activeRouteStructure.unboundSections,
       activeTemplate,
+      layoutStructure.unboundSections,
       layoutSections,
       layoutTemplate,
       routeOwnsStructure,
@@ -2243,7 +2254,8 @@ export function VisualEditorShell({
         // An unmarked element's `targetElement` is only `line:column`, which
         // matches no DOM attribute; the full position is how the preview finds
         // it for live feedback while a control is being dragged.
-        sourceLocation: previewSelection.currentTarget()?.sourceLocation ?? null,
+        sourceLocation:
+          previewSelection.currentTarget()?.sourceLocation ?? null,
       });
     },
     [previewSelection],
@@ -4477,12 +4489,7 @@ export function VisualEditorShell({
       }
       onSearchChange(next);
     },
-    [
-      activeRouteSections,
-      activeTemplate,
-      onSearchChange,
-      search.routePath,
-    ],
+    [activeRouteSections, activeTemplate, onSearchChange, search.routePath],
   );
 
   // A page row changes the route before it can select the page root. Wait for
@@ -5304,6 +5311,80 @@ export function VisualEditorShell({
     ],
   );
 
+  const handleBindSection = useCallback(
+    async (candidate: ThemeUnboundRouteSection) => {
+      const isLayoutCandidate =
+        layoutSections.some(
+          (section) => section.routeSourcePath === candidate.routeSourcePath,
+        ) ||
+        layoutStructure.unboundSections.some(
+          (section) => section.sourceLocation === candidate.sourceLocation,
+        );
+      if (
+        (!activeThemeRoute ||
+          candidate.routeSourcePath !== activeThemeRoute.sourcePath) &&
+        !isLayoutCandidate
+      ) {
+        throw new Error(
+          "The selected section is no longer on the active route.",
+        );
+      }
+      if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+      const routeFile = effectiveThemeFiles.find(
+        (file) => file.path === candidate.routeSourcePath,
+      );
+      if (!routeFile)
+        throw new Error("The active route source is unavailable.");
+
+      const usedSlots = new Set(
+        (isLayoutCandidate ? layoutSections : activeRouteSections).map(
+          (section) => section.slotId,
+        ),
+      );
+      const baseSlot = candidate.sectionType || "section";
+      let slotId = baseSlot;
+      let suffix = 2;
+      while (usedSlots.has(slotId)) {
+        slotId = `${baseSlot}-${suffix}`;
+        suffix += 1;
+      }
+
+      const result = bindThemeRouteSection({
+        source: routeFile.content,
+        files: effectiveThemeFiles,
+        routeSourcePath: candidate.routeSourcePath,
+        candidate,
+        slotId,
+      });
+      if (result.diagnostic) throw new Error(result.diagnostic);
+      if (!result.changed) return;
+      const saved = await handleUnifiedSaveFile(
+        candidate.routeSourcePath,
+        result.code,
+      );
+      if (saved === null) {
+        throw new Error(
+          "Could not bind the section because the source changed remotely.",
+        );
+      }
+      dispatchPreviewLifecycle({ type: "manual-recovery" });
+      onSearchChange({ section: slotId });
+    },
+    [
+      activeRouteSections,
+      activeTemplate,
+      activeThemeRoute,
+      effectiveThemeFiles,
+      flushTemplatePendingProps,
+      handleUnifiedSaveFile,
+      layoutSections,
+      layoutStructure.unboundSections,
+      layoutTemplate,
+      onSearchChange,
+    ],
+  );
+
   useEffect(() => {
     if (!previewKey) return;
     syncPreviewSection();
@@ -5340,7 +5421,12 @@ export function VisualEditorShell({
     if (isCommentMode) return;
 
     previewSelection.askForCurrent({ enabled: isSelectionMode });
-  }, [isCommentMode, isSelectionMode, previewSelection, syncPreviewSpacingOverlay]);
+  }, [
+    isCommentMode,
+    isSelectionMode,
+    previewSelection,
+    syncPreviewSpacingOverlay,
+  ]);
 
   const handleSwitchToDesign = useCallback(async () => {
     if (isFlushingCodeChanges) return;
@@ -6756,6 +6842,12 @@ export function VisualEditorShell({
           onDeletePage={handleDeletePage}
           sectionOptions={routeSectionOptions}
           onAddSection={activeThemeRoute ? handleAddSection : undefined}
+          unboundSectionCandidates={sectionModel.unboundSections}
+          onBindSection={
+            activeThemeRoute || layoutStructure.unboundSections.length > 0
+              ? handleBindSection
+              : undefined
+          }
           onDeleteSection={
             activeThemeRoute && activeRouteSections.length > 0
               ? handleDeleteSection

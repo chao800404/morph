@@ -84,9 +84,9 @@ describe("resolveThemeContentCapabilitiesFromFiles", () => {
       { path: "src/components/Hero.tsx", content: heroSource },
     ]);
 
-    expect(Object.keys(result.capabilities["hero.default"]!.fields).sort()).toEqual(
-      ["body", "heading"],
-    );
+    expect(
+      Object.keys(result.capabilities["hero.default"]!.fields).sort(),
+    ).toEqual(["body", "heading"]);
   });
 
   it("keeps the section mapping for a component that declares fields in source", () => {
@@ -110,6 +110,32 @@ describe("resolveThemeContentCapabilitiesFromFiles", () => {
   it("ignores components whose source is absent from the workspace", () => {
     const result = resolveThemeContentCapabilitiesFromFiles(files);
     expect(result.capabilities["promo.default"]).toBeUndefined();
+  });
+
+  it("infers section-folder props through scan and on-demand resolution", async () => {
+    const sectionPath = "src/components/sections/Promo.tsx";
+    const sectionSource = `
+      type PromoProps = { title?: string; image?: { src: string; alt: string } };
+      export default function Promo({ title, image }: PromoProps) { return null; }
+    `;
+    const sectionFiles = [
+      { path: "morph.theme.json", content: JSON.stringify({ components: {} }) },
+      { path: sectionPath, content: sectionSource },
+    ];
+
+    const scanned = resolveThemeContentCapabilitiesFromFiles(sectionFiles);
+    const onDemand = await resolveThemeContentCapabilities({
+      manifestContent: sectionFiles[0]!.content,
+      additionalSourcePaths: [sectionPath],
+      readSource: async (path) => (path === sectionPath ? sectionSource : null),
+    });
+
+    for (const result of [scanned, onDemand]) {
+      expect(result.capabilities[sectionPath]?.fields).toEqual({
+        title: { type: "text" },
+        image: { type: "image" },
+      });
+    }
   });
 });
 
@@ -208,7 +234,9 @@ describe("row shapes declared by reference resolve the same on both paths", () =
     });
 
     for (const result of [scanned, onDemand]) {
-      expect(result.capabilities["principles.default"]?.fields?.items).toBeUndefined();
+      expect(
+        result.capabilities["principles.default"]?.fields?.items,
+      ).toBeUndefined();
       expect(result.diagnostics.join(" ")).toContain("./Missing");
     }
   });

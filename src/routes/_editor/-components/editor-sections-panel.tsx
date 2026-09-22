@@ -48,7 +48,10 @@ import {
   EditorAddPageDialog,
   type AddPageResult,
 } from "./editor-add-page-dialog";
-import type { ThemeRouteSectionOption } from "@/lib/storefront/compiler/theme-route-sections";
+import type {
+  ThemeRouteSectionOption,
+  ThemeUnboundRouteSection,
+} from "@/lib/storefront/compiler/theme-route-sections";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import type {
   PreviewEditableNode,
@@ -95,6 +98,7 @@ import {
   Video,
   FileCode2,
   Globe,
+  CircleAlert,
   Trash2,
   type LucideIcon,
 } from "lucide-react";
@@ -182,6 +186,8 @@ export type EditorSectionsPanelProps = {
   onDeletePage?: (route: ThemeRouteRecord) => Promise<AddPageResult>;
   sectionOptions?: readonly ThemeRouteSectionOption[];
   onAddSection?: (option: ThemeRouteSectionOption) => Promise<unknown>;
+  unboundSectionCandidates?: readonly ThemeUnboundRouteSection[];
+  onBindSection?: (candidate: ThemeUnboundRouteSection) => Promise<unknown>;
   onDeleteSection?: (
     sectionId: string,
   ) => Promise<EditorEditableNodeDeleteResult>;
@@ -792,6 +798,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onDeletePage,
   sectionOptions = [],
   onAddSection,
+  unboundSectionCandidates = [],
+  onBindSection,
   onDeleteSection,
   onRenameSection,
   onDeleteEditableNode,
@@ -1007,6 +1015,22 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
       onSaveStateChange("error");
       toast.error(
         error instanceof Error ? error.message : "Failed to add section",
+      );
+    },
+  });
+  const bindMutation = useMutation({
+    onMutate: () => onSaveStateChange("saving"),
+    mutationFn: async (candidate: ThemeUnboundRouteSection) => {
+      if (!onBindSection) {
+        throw new Error("This section cannot be bound from the current route.");
+      }
+      return onBindSection(candidate);
+    },
+    onSuccess: () => onSaveStateChange("idle"),
+    onError: (error) => {
+      onSaveStateChange("error");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to bind section",
       );
     },
   });
@@ -1356,6 +1380,64 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           ) : null}
 
           <SidebarContent className="min-h-0 w-full">
+            {unboundSectionCandidates.length > 0 ? (
+              <SidebarGroup
+                className="border-b border-dashed p-2"
+                aria-label="Unbound section candidates"
+              >
+                <div className="px-1 pb-1 text-xs font-medium text-muted-foreground">
+                  Sections needing binding
+                </div>
+                <SidebarMenu>
+                  {unboundSectionCandidates.map((candidate) => (
+                    <SidebarMenuItem key={candidate.sourceLocation}>
+                      <SidebarMenuButton
+                        type="button"
+                        size="sm"
+                        className="min-w-0"
+                        disabled={!candidate.canBind || bindMutation.isPending}
+                        onClick={() =>
+                          candidate.canBind && bindMutation.mutate(candidate)
+                        }
+                        title={
+                          candidate.canBind
+                            ? `Bind ${candidate.componentName} to Design content`
+                            : candidate.diagnostic
+                        }
+                      >
+                        {candidate.canBind ? (
+                          <Blocks aria-hidden="true" />
+                        ) : (
+                          <CircleAlert aria-hidden="true" />
+                        )}
+                        <span className="min-w-0 truncate">
+                          {candidate.componentName}
+                        </span>
+                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                          {candidate.canBind ? "Unbound" : "Unsupported"}
+                        </span>
+                      </SidebarMenuButton>
+                      {candidate.canBind ? (
+                        <SidebarMenuAction
+                          type="button"
+                          showOnHover
+                          aria-label={`Bind ${candidate.componentName}`}
+                          title="Enable Design content"
+                          disabled={bindMutation.isPending}
+                          onClick={() => bindMutation.mutate(candidate)}
+                        >
+                          <Link aria-hidden="true" />
+                        </SidebarMenuAction>
+                      ) : null}
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+                <p className="px-1 pt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  These components render in the route but are not connected to
+                  a stored content section yet.
+                </p>
+              </SidebarGroup>
+            ) : null}
             <SidebarGroup className="border-0 p-2" aria-label="Theme structure">
               {routeStructurePending ? (
                 <div
@@ -1554,6 +1636,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                     !onAddSection ||
                     sectionOptions.length === 0 ||
                     addMutation.isPending ||
+                    bindMutation.isPending ||
                     reorderMutation.isPending
                   }
                 >

@@ -38,6 +38,8 @@ export type ThemeRouteSection = Readonly<{
 
 export type ThemeRouteSectionResult = Readonly<{
   sections: readonly ThemeRouteSection[];
+  /** Direct section candidates that render without the content contract yet. */
+  unboundSections: readonly ThemeUnboundRouteSection[];
   diagnostics: readonly string[];
   /** True when the route imports the Theme content contract, even if it has no slots yet. */
   hasContentImport: boolean;
@@ -48,6 +50,21 @@ export type ThemeRouteSectionOption = Readonly<{
   sectionType: string;
   componentName: string;
   componentSourcePath: string;
+}>;
+
+export type ThemeUnboundRouteSection = Readonly<{
+  componentRef: string;
+  sectionType: string;
+  componentName: string;
+  componentSourcePath: string;
+  routeSourcePath: string;
+  /** Stable source position used to patch exactly this JSX instance. */
+  sourceLocation: string;
+  sourceStart: number;
+  sourceEnd: number;
+  /** Only confirmed direct JSX positions may expose the bind action. */
+  canBind: boolean;
+  diagnostic?: string;
 }>;
 
 /**
@@ -217,11 +234,40 @@ function jsxIdentifier(node: any): string | null {
   return name?.type === "JSXIdentifier" ? name.name : null;
 }
 
+function sourceLocationFor(routeSourcePath: string, node: any): string | null {
+  const line = node?.loc?.start?.line;
+  const column = node?.loc?.start?.column;
+  return typeof line === "number" && typeof column === "number"
+    ? `${routeSourcePath}:${line}:${column + 1}`
+    : null;
+}
+
+function hasContentSpread(node: any): boolean {
+  return (node?.openingElement?.attributes ?? []).some(
+    (attribute: any) =>
+      attribute?.type === "JSXSpreadAttribute" &&
+      attribute.argument?.type === "CallExpression" &&
+      attribute.argument.callee?.type === "Identifier" &&
+      attribute.argument.callee.name === "content",
+  );
+}
+
+function isDirectSectionPosition(parent: any): boolean {
+  if (parent?.type === "JSXElement" || parent?.type === "JSXFragment") {
+    return true;
+  }
+  // A route may return one section as its complete JSX tree. A conditional,
+  // map callback, or arbitrary expression is intentionally not accepted: one
+  // source position could then represent zero or many rendered instances.
+  return parent?.type === "ReturnStatement";
+}
+
 function parsePositionedSections(
   files: readonly ThemeSourceFile[],
   routeSourcePath: string,
 ): {
   sections: PositionedSection[];
+  unboundSections: ThemeUnboundRouteSection[];
   diagnostics: string[];
   ast: any | null;
   hasContentImport: boolean;
@@ -233,6 +279,7 @@ function parsePositionedSections(
   if (typeof routeFile?.content !== "string") {
     return {
       sections: [],
+      unboundSections: [],
       diagnostics: [`Theme route "${normalizedRoutePath}" is unavailable.`],
       ast: null,
       hasContentImport: false,
@@ -248,6 +295,7 @@ function parsePositionedSections(
   } catch (error) {
     return {
       sections: [],
+      unboundSections: [],
       diagnostics: [
         `${normalizedRoutePath}: ${error instanceof Error ? error.message : "Invalid route source"}`,
       ],
@@ -360,7 +408,57 @@ function parsePositionedSections(
     });
   });
 
-  return { sections, diagnostics, ast, hasContentImport };
+  const addableBySource = new Map(
+    listThemeRouteSectionOptions(files).map(
+      (option) => [normalizePath(option.componentSourcePath), option] as const,
+    ),
+  );
+  const unboundSections: ThemeUnboundRouteSection[] = [];
+  walkWithParent(ast.program, null, (node, parent) => {
+    if (node?.type !== "JSXElement") return;
+    const componentName = jsxIdentifier(node);
+    if (!componentName) return;
+    const imported = imports.get(componentName);
+    if (!imported || imported.missing) return;
+    const option = addableBySource.get(normalizePath(imported.sourcePath));
+    if (!option || readSlotId(node)) return;
+    const sourceStart = node.start;
+    const sourceEnd = node.end;
+    const sourceLocation = sourceLocationFor(normalizedRoutePath, node);
+    if (
+      typeof sourceStart !== "number" ||
+      typeof sourceEnd !== "number" ||
+      !sourceLocation
+    ) {
+      return;
+    }
+    const hasInvalidBinding = hasContentSpread(node);
+    const canBind = !hasInvalidBinding && isDirectSectionPosition(parent);
+    unboundSections.push({
+      componentRef: option.componentRef,
+      sectionType: option.sectionType,
+      componentName,
+      componentSourcePath: normalizePath(imported.sourcePath),
+      routeSourcePath: normalizedRoutePath,
+      sourceLocation,
+      sourceStart,
+      sourceEnd,
+      canBind,
+      ...(hasInvalidBinding
+        ? {
+            diagnostic:
+              "This component already has an invalid content binding and must be repaired in Code mode.",
+          }
+        : !isDirectSectionPosition(parent)
+          ? {
+              diagnostic:
+                "This component is rendered inside a conditional or repeated expression and cannot be bound to one section instance.",
+            }
+          : {}),
+    });
+  });
+
+  return { sections, unboundSections, diagnostics, ast, hasContentImport };
 }
 
 /**
@@ -376,6 +474,7 @@ export function deriveThemeRouteSections(
     sections: parsed.sections.map(
       ({ node: _node, parent: _parent, ...section }) => section,
     ),
+    unboundSections: parsed.unboundSections,
     diagnostics: parsed.diagnostics,
     hasContentImport: parsed.hasContentImport,
   };
@@ -489,7 +588,12 @@ export function deriveThemeLayoutSections(
 ): ThemeRouteSectionResult {
   const layoutPath = readDocumentLayoutPath(files);
   if (!layoutPath) {
-    return { sections: [], diagnostics: [], hasContentImport: false };
+    return {
+      sections: [],
+      unboundSections: [],
+      diagnostics: [],
+      hasContentImport: false,
+    };
   }
   const parsed = parsePositionedSections(files, layoutPath);
   const pageBoundary = readLayoutPageBoundary(parsed.ast, parsed.sections);
@@ -503,6 +607,7 @@ export function deriveThemeLayoutSections(
           ? "after-page"
           : "before-page",
     })),
+    unboundSections: parsed.unboundSections,
     diagnostics: parsed.diagnostics,
     hasContentImport: parsed.hasContentImport,
   };
@@ -998,6 +1103,255 @@ function relativeImport(fromPath: string, targetPath: string): string {
   return value.startsWith(".") ? value : `./${value}`;
 }
 
+type ContentBindingImport = Readonly<{
+  localName: string;
+  needsImport: boolean;
+}>;
+
+function contentBindingImport(
+  ast: any,
+  files: readonly ThemeSourceFile[],
+  routeSourcePath: string,
+): ContentBindingImport {
+  const filePaths = new Set(files.map((file) => normalizePath(file.path)));
+  const usedNames = new Set<string>();
+  for (const statement of ast.program.body ?? []) {
+    if (statement.type !== "ImportDeclaration") continue;
+    for (const specifier of statement.specifiers ?? []) {
+      if (specifier.local?.type === "Identifier") {
+        usedNames.add(specifier.local.name);
+      }
+    }
+    const resolved = resolveLocalImport(
+      normalizePath(routeSourcePath),
+      statement.source?.value ?? "",
+      filePaths,
+    );
+    if (resolved !== "src/morph/content.ts") continue;
+    const contentSpecifier = statement.specifiers?.find(
+      (specifier: any) =>
+        specifier.type === "ImportSpecifier" &&
+        (specifier.imported?.name ?? specifier.imported?.value) === "content",
+    );
+    if (contentSpecifier?.local?.type === "Identifier") {
+      return { localName: contentSpecifier.local.name, needsImport: false };
+    }
+  }
+
+  let localName = "content";
+  let suffix = 2;
+  while (usedNames.has(localName)) {
+    localName = `morphContent${suffix > 2 ? suffix : ""}`;
+    suffix += 1;
+  }
+  return { localName, needsImport: true };
+}
+
+function contentImportStatement(
+  routeSourcePath: string,
+  localName: string,
+): string {
+  const imported =
+    localName === "content" ? "{ content }" : `{ content as ${localName} }`;
+  return `import ${imported} from ${JSON.stringify(
+    relativeImport(normalizePath(routeSourcePath), "src/morph/content.ts"),
+  )};`;
+}
+
+function contentSpreadAttribute(localName: string, slotId: string): string {
+  return `{...${localName}(${JSON.stringify(slotId)})}`;
+}
+
+function insertImportStatements(
+  source: string,
+  ast: any,
+  statements: readonly string[],
+): string {
+  if (statements.length === 0) return source;
+  const lastImport = [...(ast.program.body ?? [])]
+    .reverse()
+    .find((statement: any) => statement.type === "ImportDeclaration");
+  const insertAt = typeof lastImport?.end === "number" ? lastImport.end : 0;
+  return replaceRange(
+    source,
+    insertAt,
+    insertAt,
+    `${insertAt ? "\n" : ""}${statements.join("\n")}`,
+  );
+}
+
+function insertContentImport(
+  source: string,
+  ast: any,
+  routeSourcePath: string,
+  localName: string,
+): string {
+  return insertImportStatements(source, ast, [
+    contentImportStatement(routeSourcePath, localName),
+  ]);
+}
+
+function insertContentSpread(
+  source: string,
+  ast: any,
+  sourceStart: number,
+  sourceEnd: number,
+  slotId: string,
+  localName: string,
+  expectedComponentName?: string,
+): { code: string; changed: boolean; diagnostic?: string } {
+  let target: any | null = null;
+  walkWithParent(ast.program, null, (node) => {
+    if (
+      node?.type === "JSXElement" &&
+      node.start === sourceStart &&
+      node.end === sourceEnd
+    ) {
+      target = node;
+    }
+  });
+  if (!target?.openingElement?.name?.end) {
+    return {
+      code: source,
+      changed: false,
+      diagnostic: "The section source location no longer matches the route.",
+    };
+  }
+  if (
+    expectedComponentName &&
+    jsxIdentifier(target) !== expectedComponentName
+  ) {
+    return {
+      code: source,
+      changed: false,
+      diagnostic:
+        "The section source changed since it was listed. Refresh the route and try again.",
+    };
+  }
+  if (hasContentSpread(target)) {
+    return {
+      code: source,
+      changed: false,
+      diagnostic: "This section already has a content binding.",
+    };
+  }
+  return {
+    code: replaceRange(
+      source,
+      target.openingElement.name.end,
+      target.openingElement.name.end,
+      // The leading space is the caller's, not the attribute's: this offset
+      // sits immediately after the tag name, so the separator has to come from
+      // here. Sharing the attribute itself is what keeps the bind path and the
+      // add path from drifting apart on the `content(...)` spelling.
+      ` ${contentSpreadAttribute(localName, slotId)}`,
+    ),
+    changed: true,
+  };
+}
+
+/** Binds one existing native JSX section to the existing content contract. */
+export function bindThemeRouteSection(args: {
+  source: string;
+  files: readonly ThemeSourceFile[];
+  routeSourcePath: string;
+  candidate: ThemeUnboundRouteSection;
+  slotId: string;
+}): { code: string; changed: boolean; diagnostic?: string } {
+  if (!isValidThemeContentSlotId(args.slotId)) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: "Invalid content slot id.",
+    };
+  }
+  if (!args.candidate.canBind) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        args.candidate.diagnostic ?? "This section cannot be bound safely.",
+    };
+  }
+
+  let ast: any;
+  try {
+    ast = parse(args.source, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+  } catch (error) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        error instanceof Error ? error.message : "Invalid route source",
+    };
+  }
+
+  const current = parsePositionedSections(
+    args.files.map((file) =>
+      normalizePath(file.path) === normalizePath(args.routeSourcePath)
+        ? { ...file, content: args.source }
+        : file,
+    ),
+    args.routeSourcePath,
+  );
+  if (current.sections.some((section) => section.slotId === args.slotId)) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: "That content slot already exists.",
+    };
+  }
+  const currentCandidate = current.unboundSections.find(
+    (candidate) =>
+      candidate.sourceStart === args.candidate.sourceStart &&
+      candidate.sourceEnd === args.candidate.sourceEnd &&
+      candidate.componentName === args.candidate.componentName &&
+      candidate.componentSourcePath === args.candidate.componentSourcePath,
+  );
+  if (!currentCandidate) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        "The section source changed since it was listed. Refresh the route and try again.",
+    };
+  }
+  if (!currentCandidate.canBind) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        currentCandidate.diagnostic ??
+        "This section cannot be bound safely from the current route.",
+    };
+  }
+  const binding = contentBindingImport(ast, args.files, args.routeSourcePath);
+  const inserted = insertContentSpread(
+    args.source,
+    ast,
+    args.candidate.sourceStart,
+    args.candidate.sourceEnd,
+    args.slotId,
+    binding.localName,
+    args.candidate.componentName,
+  );
+  if (!inserted.changed) return inserted;
+  return {
+    code: binding.needsImport
+      ? insertContentImport(
+          inserted.code,
+          ast,
+          args.routeSourcePath,
+          binding.localName,
+        )
+      : inserted.code,
+    changed: true,
+  };
+}
+
 /** Adds one route-owned section and its imports. */
 export function addThemeRouteSection(args: {
   source: string;
@@ -1075,6 +1429,11 @@ export function addThemeRouteSection(args: {
     componentName = `${args.option.componentName}${suffix}`;
     suffix += 1;
   }
+  const contentBinding = contentBindingImport(
+    ast,
+    sourceFiles,
+    normalizedRoutePath,
+  );
 
   const allJsx: any[] = [];
   walkWithParent(ast.program, null, (node) => {
@@ -1100,7 +1459,7 @@ export function addThemeRouteSection(args: {
   // `</main>` and strands the closing tag's indentation on a blank line above.
   // This is source the author reads and edits, so it has to come out formatted.
   const onOwnLine = /^\s*$/.test(args.source.slice(lineStart, closeStart));
-  const element = `${childIndent}<${componentName} {...content(${JSON.stringify(args.slotId)})} />\n`;
+  const element = `${childIndent}<${componentName} ${contentSpreadAttribute(contentBinding.localName, args.slotId)} />\n`;
   let code = onOwnLine
     ? replaceRange(args.source, lineStart, lineStart, element)
     : replaceRange(
@@ -1111,19 +1470,10 @@ export function addThemeRouteSection(args: {
       );
 
   const componentAlreadyImported = existingComponentName !== null;
-  const hasContentImport = (ast.program.body ?? []).some(
-    (statement: any) =>
-      statement.type === "ImportDeclaration" &&
-      statement.specifiers?.some(
-        (specifier: any) =>
-          specifier.type === "ImportSpecifier" &&
-          (specifier.imported?.name ?? specifier.imported?.value) === "content",
-      ),
-  );
   const imports: string[] = [];
-  if (!hasContentImport) {
+  if (contentBinding.needsImport) {
     imports.push(
-      `import { content } from ${JSON.stringify(relativeImport(normalizedRoutePath, "src/morph/content.ts"))};`,
+      contentImportStatement(normalizedRoutePath, contentBinding.localName),
     );
   }
   if (!componentAlreadyImported) {
@@ -1131,17 +1481,6 @@ export function addThemeRouteSection(args: {
       `import ${componentName} from ${JSON.stringify(relativeImport(normalizedRoutePath, args.option.componentSourcePath))};`,
     );
   }
-  if (imports.length) {
-    const lastImport = [...(ast.program.body ?? [])]
-      .reverse()
-      .find((statement: any) => statement.type === "ImportDeclaration");
-    const insertAt = typeof lastImport?.end === "number" ? lastImport.end : 0;
-    code = replaceRange(
-      code,
-      insertAt,
-      insertAt,
-      `${insertAt ? "\n" : ""}${imports.join("\n")}`,
-    );
-  }
+  code = insertImportStatements(code, ast, imports);
   return { code, changed: true };
 }

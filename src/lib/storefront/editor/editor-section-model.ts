@@ -1,6 +1,7 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import {
   mergeDocumentWithRouteSections,
+  type ThemeUnboundRouteSection,
   type ThemeRouteSection,
 } from "@/lib/storefront/compiler/theme-route-sections";
 
@@ -40,6 +41,8 @@ export type EditorSectionModel = Readonly<{
   sharedSectionIds: ReadonlySet<string>;
   /** Component sources behind those sections, for identifying a selection. */
   sharedSourcePaths: ReadonlySet<string>;
+  /** Native route sections that are visible but not bound to a Document yet. */
+  unboundSections: readonly ThemeUnboundRouteSection[];
 }>;
 
 const EMPTY_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
@@ -57,7 +60,8 @@ function sectionsFor(
   derived: readonly ThemeRouteSection[],
   ownsStructure: boolean,
 ): StorefrontPageDocument["sections"] {
-  if (derived.length === 0) return ownsStructure ? [] : (template?.document.sections ?? []);
+  if (derived.length === 0)
+    return ownsStructure ? [] : (template?.document.sections ?? []);
   return mergeDocumentWithRouteSections(
     template?.document ?? EMPTY_DOCUMENT,
     derived,
@@ -77,10 +81,12 @@ export function resolveEditorSectionModel(args: {
   shellTemplate: EditorTemplateSnapshot | undefined;
   /** Slots the route declares, in source order. */
   pageSections: readonly ThemeRouteSection[];
+  pageUnboundSections?: readonly ThemeUnboundRouteSection[];
   /** Whether the route's own slots define its structure. */
   pageOwnsStructure: boolean;
   /** Slots the layout declares, in source order. */
   shellSections: readonly ThemeRouteSection[];
+  shellUnboundSections?: readonly ThemeUnboundRouteSection[];
 }): EditorSectionModel {
   const shellSections = args.shellTemplate
     ? sectionsFor(args.shellTemplate, args.shellSections, true)
@@ -127,5 +133,9 @@ export function resolveEditorSectionModel(args: {
     sharedSourcePaths: new Set(
       args.shellSections.map((section) => section.componentSourcePath),
     ),
+    unboundSections: [
+      ...(args.shellUnboundSections ?? []),
+      ...(args.pageUnboundSections ?? []),
+    ],
   };
 }

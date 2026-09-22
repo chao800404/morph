@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addThemeRouteSection,
+  bindThemeRouteSection,
   deriveThemeRouteSections,
   listThemeRouteSectionOptions,
   mergeDocumentWithRouteSections,
@@ -119,6 +120,231 @@ describe("route-authored Theme sections", () => {
         props: { heading: "Stored hero" },
       },
     ]);
+  });
+
+  it("reports a direct section-folder component that has no content binding", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const result = deriveThemeRouteSections(
+      [
+        {
+          path: "src/routes/index.tsx",
+          content: nativeRoute,
+        },
+        {
+          path: "src/components/sections/Promo.tsx",
+          content: "export default function Promo(){return null;}",
+        },
+      ],
+      "src/routes/index.tsx",
+    );
+
+    expect(result.sections).toEqual([]);
+    expect(result.unboundSections).toHaveLength(1);
+    expect(result.unboundSections[0]).toMatchObject({
+      componentName: "Promo",
+      componentSourcePath: "src/components/sections/Promo.tsx",
+      canBind: true,
+    });
+  });
+
+  it("does not offer a repeated section position for automatic binding", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main>{items.map((item) => <Promo key={item.id} />)}</main>;
+}`;
+    const result = deriveThemeRouteSections(
+      [
+        { path: "src/routes/index.tsx", content: nativeRoute },
+        {
+          path: "src/components/sections/Promo.tsx",
+          content: "export default function Promo(){return null;}",
+        },
+      ],
+      "src/routes/index.tsx",
+    );
+
+    expect(result.unboundSections[0]?.canBind).toBe(false);
+    expect(result.unboundSections[0]?.diagnostic).toContain(
+      "conditional or repeated",
+    );
+  });
+
+  it("binds before explicit props so source-owned values keep precedence", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default function Promo(){return null;}",
+      },
+    ];
+    const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
+      .unboundSections[0]!;
+    const result = bindThemeRouteSection({
+      source: nativeRoute,
+      files,
+      routeSourcePath: "src/routes/index.tsx",
+      candidate,
+      slotId: "promo",
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.code).toContain(
+      '<Promo {...content("promo")} title={product.name} />',
+    );
+    expect(result.code).toContain(
+      'import { content } from "../morph/content";',
+    );
+  });
+
+  it("refuses a stale binding candidate instead of patching another JSX node", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default function Promo(){return null;}",
+      },
+    ];
+    const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
+      .unboundSections[0]!;
+    const changedRoute = nativeRoute.replace(
+      "<Promo title={product.name} />",
+      "<Hero title={product.name} />",
+    );
+    const result = bindThemeRouteSection({
+      source: changedRoute,
+      files: files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: changedRoute }
+          : file,
+      ),
+      routeSourcePath: "src/routes/index.tsx",
+      candidate,
+      slotId: "promo",
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.diagnostic).toContain("source changed");
+    expect(result.code).toBe(changedRoute);
+    expect(result.code).not.toContain('content("promo")');
+  });
+
+  it("refuses a same-length rename that leaves every source offset unchanged", () => {
+    // The stale case above shortens the element, so every later offset moves
+    // and a guard that only compared source positions would reject it too and
+    // look correct. Swapping in an equally long name and an equally long import
+    // path holds sourceStart and sourceEnd fixed, leaving component identity as
+    // the only thing that changed — which is the part this guard exists for.
+    //
+    // The import binding has to move with the JSX, or the element stops
+    // resolving to an imported component and the derivation reports no
+    // candidate at all. That version of the test still passes, but it passes
+    // because the element became unreachable rather than because the guard
+    // compared identities — so it would keep passing with the guard deleted.
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default function Promo(){return null;}",
+      },
+      {
+        path: "src/components/sections/Other.tsx",
+        content: "export default function Other(){return null;}",
+      },
+    ];
+    const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
+      .unboundSections[0]!;
+    const renamed = nativeRoute
+      .replace("import Promo from", "import Other from")
+      .replace("sections/Promo", "sections/Other")
+      .replace("<Promo ", "<Other ");
+    expect(renamed.length).toBe(nativeRoute.length);
+    // The rename is only meaningful if it still yields the same position, so
+    // prove the candidate survived it before asserting the refusal.
+    const renamedCandidate = deriveThemeRouteSections(
+      files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: renamed }
+          : file,
+      ),
+      "src/routes/index.tsx",
+    ).unboundSections[0]!;
+    expect(renamedCandidate.sourceStart).toBe(candidate.sourceStart);
+    expect(renamedCandidate.sourceEnd).toBe(candidate.sourceEnd);
+    expect(renamedCandidate.componentName).toBe("Other");
+
+    const result = bindThemeRouteSection({
+      source: renamed,
+      files: files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: renamed }
+          : file,
+      ),
+      routeSourcePath: "src/routes/index.tsx",
+      candidate,
+      slotId: "promo",
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.diagnostic).toContain("source changed");
+    expect(result.code).toBe(renamed);
+    expect(result.code).not.toContain('content("promo")');
+  });
+
+  it("refuses to bind the same section twice", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title={product.name} /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default function Promo(){return null;}",
+      },
+    ];
+    const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
+      .unboundSections[0]!;
+    const bind = (source: string) =>
+      bindThemeRouteSection({
+        source,
+        files: files.map((file) =>
+          file.path === "src/routes/index.tsx"
+            ? { ...file, content: source }
+            : file,
+        ),
+        routeSourcePath: "src/routes/index.tsx",
+        candidate,
+        slotId: "promo",
+      });
+
+    const first = bind(nativeRoute);
+    expect(first.changed).toBe(true);
+    expect(first.code.match(/content\("promo"\)/g)).toHaveLength(1);
+
+    const second = bind(first.code);
+    expect(second.changed).toBe(false);
+    expect(second.code).toBe(first.code);
   });
 
   it("reorders the route JSX instead of the Document", () => {
