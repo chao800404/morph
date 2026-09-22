@@ -10,6 +10,10 @@ export const safeThemeFilePathSchema = z
     "File path must be relative (cannot start with a slash)",
   )
   .refine(
+    (p) => !p.includes("//"),
+    "Theme file path cannot contain empty path segments",
+  )
+  .refine(
     (p) => !p.split("/").some((segment) => segment === ".." || segment === "."),
     "File path cannot contain directory traversal (.. or .)",
   )

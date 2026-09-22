@@ -73,6 +73,7 @@ import {
   ChevronRight,
   Code2,
   Component,
+  Copy,
   Eye,
   EyeOff,
   Heading1,
@@ -120,6 +121,7 @@ import {
   GLOBAL_LAYOUT_LABEL,
   SHARED_LAYOUT_HINT,
 } from "./editor-layout-labels";
+import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
 
 /**
  * What a reorder reports back.
@@ -174,6 +176,11 @@ export type EditorSectionsPanelProps = {
    * belong to another one, and only the page's own sections can be reordered.
    */
   sharedSectionIds?: ReadonlySet<string>;
+  /**
+   * Source paths and section ids whose definition is shared by more than one
+   * rendered page. A child delete would otherwise rewrite the shared TSX.
+   */
+  sharedLayoutPaths?: ReadonlySet<string>;
   themeRoutes?: readonly ThemeRouteRecord[];
   /** Warm a route before navigation commits. */
   onPrefetchThemeRoute?: (route: ThemeRouteRecord) => void;
@@ -187,6 +194,11 @@ export type EditorSectionsPanelProps = {
   unboundSectionCandidates?: readonly EditorUnboundSection[];
   onBindSection?: (candidate: EditorUnboundSection) => Promise<unknown>;
   onDeleteSection?: (
+    sectionId: string,
+  ) => Promise<EditorEditableNodeDeleteResult>;
+  /** Create a page-owned component copy before allowing structural edits. */
+  detachableSectionIds?: ReadonlySet<string>;
+  onDetachSection?: (
     sectionId: string,
   ) => Promise<EditorEditableNodeDeleteResult>;
   /** `null` clears the name and restores the one derived from the component. */
@@ -222,7 +234,8 @@ const NO_LAYOUT_ROOTS: Readonly<{
 
 type EditorDeleteCandidate =
   | { kind: "section"; sectionId: string; label: string }
-  | { kind: "node"; node: PreviewEditableNode; label: string };
+  | { kind: "node"; node: PreviewEditableNode; label: string }
+  | { kind: "detach"; sectionId: string; label: string };
 
 type EditableNodeIcon = Readonly<{
   component: LucideIcon;
@@ -650,7 +663,9 @@ function EditableNodeRow({
   onSelect,
   onToggleExpanded,
   onRequestDelete,
+  onRequestDetach,
   deleteDisabled,
+  deleteDisabledReason,
   children,
 }: {
   node: PreviewEditableNode;
@@ -660,7 +675,9 @@ function EditableNodeRow({
   onSelect: () => void;
   onToggleExpanded: () => void;
   onRequestDelete: () => void;
+  onRequestDetach?: () => void;
   deleteDisabled?: boolean;
+  deleteDisabledReason?: string;
   children?: React.ReactNode;
 }) {
   const icon = editableNodeIcon(node);
@@ -752,6 +769,12 @@ function EditableNodeRow({
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent className="w-44">
+            {onRequestDetach ? (
+              <ContextMenuItem onSelect={onRequestDetach}>
+                <Copy className="size-3.5" />
+                <span>Create page copy</span>
+              </ContextMenuItem>
+            ) : null}
             <ContextMenuItem
               variant="destructive"
               disabled={deleteDisabled}
@@ -759,8 +782,11 @@ function EditableNodeRow({
             >
               <Trash2 className="size-3.5" />
               <span>Delete</span>
-              <span className="ml-auto text-[10px] text-muted-foreground">
-                Del
+              <span
+                className="ml-auto text-[10px] text-muted-foreground"
+                title={deleteDisabledReason}
+              >
+                {deleteDisabledReason ? "Shared" : "Del"}
               </span>
             </ContextMenuItem>
           </ContextMenuContent>
@@ -788,6 +814,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   sourceLayoutRoots = NO_LAYOUT_ROOTS,
   routeStructurePending = false,
   sharedSectionIds,
+  sharedLayoutPaths,
   themeRoutes = [],
   onPrefetchThemeRoute,
   onOpenThemeRoute,
@@ -799,6 +826,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   unboundSectionCandidates = [],
   onBindSection,
   onDeleteSection,
+  detachableSectionIds,
+  onDetachSection,
   onRenameSection,
   onDeleteEditableNode,
 }: EditorSectionsPanelProps) {
@@ -1043,9 +1072,13 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           ? onDeleteSection
             ? await onDeleteSection(deleteCandidate.sectionId)
             : null
-          : onDeleteEditableNode
-            ? await onDeleteEditableNode(deleteCandidate.node)
-            : null;
+          : deleteCandidate.kind === "detach"
+            ? onDetachSection
+              ? await onDetachSection(deleteCandidate.sectionId)
+              : null
+            : onDeleteEditableNode
+              ? await onDeleteEditableNode(deleteCandidate.node)
+              : null;
       if (!result) return;
       if (result.success) {
         setDeleteCandidate(null);
@@ -1127,6 +1160,15 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
             (nodesByParent.get(`${sectionId}\u0000${node.id}`)?.length ?? 0) >
             0;
           const expanded = expandedNodeIds.has(node.id);
+          const sourcePath = parseThemeSourceLocation(
+            node.target.sourceLocation,
+          )?.filePath;
+          const isSharedScope =
+            sharedLayoutPaths?.has(node.target.sectionId) === true ||
+            (sourcePath !== undefined &&
+              sharedLayoutPaths?.has(sourcePath) === true);
+          const canDetach =
+            isSharedScope && detachableSectionIds?.has(node.target.sectionId);
           return (
             <EditableNodeRow
               key={node.id}
@@ -1150,10 +1192,26 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   label: node.label,
                 })
               }
+              onRequestDetach={
+                canDetach
+                  ? () =>
+                      setDeleteCandidate({
+                        kind: "detach",
+                        sectionId: node.target.sectionId,
+                        label: node.label,
+                      })
+                  : undefined
+              }
               deleteDisabled={
                 isDeletePending ||
                 !onDeleteEditableNode ||
-                (!node.target.nodeId && !node.target.sourceLocation)
+                (!node.target.nodeId && !node.target.sourceLocation) ||
+                isSharedScope
+              }
+              deleteDisabledReason={
+                isSharedScope
+                  ? "Shared component; edit in Code mode or create a page-specific component first."
+                  : undefined
               }
             >
               {hasChildren ? renderEditableNodes(sectionId, node.id) : null}
@@ -1801,10 +1859,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>
-                Delete “{deleteCandidate?.label ?? "element"}”?
+                {deleteCandidate?.kind === "detach"
+                  ? `Create a page-specific copy of “${deleteCandidate.label}”?`
+                  : `Delete “${deleteCandidate?.label ?? "element"}”?`}
               </AlertDialogTitle>
               <AlertDialogDescription>
-                {deleteCandidate?.kind === "section"
+                {deleteCandidate?.kind === "detach"
+                  ? "This copies the shared component for this route and rewires only this page to the copy. Other pages keep using the original component."
+                  : deleteCandidate?.kind === "section"
                   ? "This removes the section from the Theme route source and its content from this page. The change can be undone from the editor history."
                   : "This removes the selected element and all of its nested content from the Theme source. The change can be undone from the editor history."}
               </AlertDialogDescription>
@@ -1821,7 +1883,13 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   void confirmDelete();
                 }}
               >
-                {isDeletePending ? "Deleting…" : "Delete"}
+                {isDeletePending
+                  ? deleteCandidate?.kind === "detach"
+                    ? "Creating…"
+                    : "Deleting…"
+                  : deleteCandidate?.kind === "detach"
+                    ? "Create copy"
+                    : "Delete"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

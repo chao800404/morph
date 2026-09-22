@@ -6,6 +6,7 @@ import {
   listThemeRouteSectionOptions,
   mergeDocumentWithRouteSections,
   removeThemeRouteSection,
+  replaceThemeRouteSectionComponent,
   reorderThemeRouteSections,
 } from "./theme-route-sections";
 
@@ -50,6 +51,67 @@ const files = [
 ];
 
 describe("route-authored Theme sections", () => {
+  it("detaches a uniquely used section by changing only its route import", () => {
+    const result = replaceThemeRouteSectionComponent({
+      source: route,
+      files,
+      routeSourcePath: "src/routes/index.tsx",
+      slotId: "hero-slot",
+      componentSourcePath: "src/components/Hero.tsx",
+      nextComponentSourcePath: "src/components/Hero-copy.tsx",
+    });
+
+    expect(result).toEqual({
+      code: route.replace(
+        'from "../components/Hero"',
+        'from "../components/Hero-copy"',
+      ),
+      changed: true,
+    });
+  });
+
+  it("keeps another instance on the shared component when the route reuses it", () => {
+    const repeated = route.replace(
+      '      <Hero {...content("hero-slot")} />',
+      '      <Hero {...content("hero-slot")} />\n      <Hero {...content("hero-second")} />',
+    );
+    const result = replaceThemeRouteSectionComponent({
+      source: repeated,
+      files: files.map((file) =>
+        file.path === "src/routes/index.tsx"
+          ? { ...file, content: repeated }
+          : file,
+      ),
+      routeSourcePath: "src/routes/index.tsx",
+      slotId: "hero-slot",
+      componentSourcePath: "src/components/Hero.tsx",
+      nextComponentSourcePath: "src/components/Hero-copy.tsx",
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.code).toContain(
+      'import HeroPageCopy from "../components/Hero-copy";',
+    );
+    expect(result.code).toContain(
+      '<HeroPageCopy {...content("hero-slot")} />',
+    );
+    expect(result.code).toContain('<Hero {...content("hero-second")} />');
+  });
+
+  it("fails closed when the selected section no longer maps to that source", () => {
+    const result = replaceThemeRouteSectionComponent({
+      source: route,
+      files,
+      routeSourcePath: "src/routes/index.tsx",
+      slotId: "hero-slot",
+      componentSourcePath: "src/components/Promo.tsx",
+      nextComponentSourcePath: "src/components/Hero-copy.tsx",
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.diagnostic).toMatch(/changed since it was selected/);
+  });
+
   it("derives identity, mapping and order from content() call sites", () => {
     const result = deriveThemeRouteSections(files, "src/routes/index.tsx");
 

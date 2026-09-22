@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { prepareDuplicateThemeFile } from "./duplicate-theme-file";
+import {
+  pageSectionRouteKey,
+  prepareDuplicateThemeFile,
+  preparePageSectionCopy,
+} from "./duplicate-theme-file";
 
 describe("prepareDuplicateThemeFile", () => {
   it("uses the first available copy name", () => {
@@ -35,5 +39,44 @@ describe("prepareDuplicateThemeFile", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.message).toContain("can be created");
+  });
+});
+
+describe("page-specific component paths", () => {
+  it("derives stable route keys for static and dynamic routes", () => {
+    expect(pageSectionRouteKey("/")).toBe("home");
+    expect(pageSectionRouteKey("/about-us")).toBe("about-us");
+    expect(pageSectionRouteKey("/products/$slug")).toBe("products-slug");
+  });
+
+  it("places a detached component under the page-sections convention", () => {
+    const result = preparePageSectionCopy(
+      "src/components/sections/Hero.tsx",
+      "/",
+      ["src/components/sections/Hero.tsx"],
+      "export default function Hero() { return null; }",
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      path: "src/components/page-sections/home/Hero.tsx",
+      content: "export default function Hero() { return null; }",
+    });
+  });
+
+  it("keeps page copies from overwriting an existing same-name component", () => {
+    const result = preparePageSectionCopy(
+      "src/components/sections/Hero.tsx",
+      "/about",
+      [
+        "src/components/sections/Hero.tsx",
+        "src/components/page-sections/about/Hero.tsx",
+      ],
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      path: "src/components/page-sections/about/Hero-copy.tsx",
+    });
   });
 });

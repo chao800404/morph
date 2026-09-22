@@ -37,6 +37,7 @@ import {
   deriveThemeRouteSections,
   listThemeRouteSectionOptions,
   removeThemeRouteSection,
+  replaceThemeRouteSectionComponent,
   reorderThemeRouteSections,
   type ThemeRouteSectionOption,
   type ThemeUnboundRouteSection,
@@ -122,6 +123,7 @@ import {
   getStorefrontThemeFile,
   initStorefrontStarterTheme,
   saveStorefrontThemeFile,
+  saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import {
   publishStorefrontThemeTemplate,
@@ -188,6 +190,10 @@ import {
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
 import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
+import { rewriteThemeFileImportsForCopy } from "@/lib/storefront/ast/theme-file-move";
+import {
+  preparePageSectionCopy,
+} from "@/lib/storefront/editor/duplicate-theme-file";
 import {
   toWorkspaceKey,
   themeFileWritePrecondition,
@@ -1907,6 +1913,31 @@ export function VisualEditorShell({
       ...sectionModel.sharedSectionIds,
       ...sectionModel.sharedSourcePaths,
     ]);
+    // A layout candidate can be unbound while the preview is already showing
+    // it. It is still shared by every page, so protect its source just like a
+    // bound Header/Footer section.
+    for (const section of [
+      ...layoutStructure.sections,
+      ...layoutStructure.unboundSections,
+    ]) {
+      shared.add(section.componentSourcePath);
+    }
+    // A component source used by more than one route is a shared definition
+    // even when each route has its own section document. Deleting one child
+    // from the source would otherwise change every route using that file.
+    const routeSourceUseCount = new Map<string, number>();
+    for (const structure of themeRouteStructureCache.values()) {
+      for (const section of [
+        ...structure.sections,
+        ...structure.unboundSections,
+      ]) {
+        const path = section.componentSourcePath;
+        routeSourceUseCount.set(path, (routeSourceUseCount.get(path) ?? 0) + 1);
+      }
+    }
+    for (const [path, count] of routeSourceUseCount) {
+      if (count > 1) shared.add(path);
+    }
     const nodes =
       previewStructure?.key === previewKey ? previewStructure.nodes : undefined;
     if (!nodes || !activeThemeRoute) return shared;
@@ -1925,7 +1956,49 @@ export function VisualEditorShell({
       shared.add(sectionId);
     }
     return shared;
-  }, [activeThemeRoute, previewKey, previewStructure, sectionModel]);
+  }, [
+    activeThemeRoute,
+    layoutStructure.sections,
+    layoutStructure.unboundSections,
+    previewKey,
+    previewStructure,
+    sectionModel,
+    themeRouteStructureCache,
+  ]);
+
+  /**
+   * A detach is offered only for a page-owned route section whose component
+   * source is available as an editable Theme file. Layout-owned sections and
+   * route modules stay Code-mode-only: copying either would create a second
+   * routing/layout architecture rather than a page-specific component.
+   */
+  const detachableSectionIds = useMemo(() => {
+    const detachable = new Set<string>();
+    if (!activeThemeRoute) return detachable;
+    for (const section of activeRouteStructure.sections) {
+      const binding = sectionModel.bindings.get(section.slotId);
+      if (binding?.owner !== "page") continue;
+      if (section.componentSourcePath.startsWith("src/routes/")) continue;
+      if (
+        !/\.(?:tsx?|jsx?)$/i.test(section.componentSourcePath) ||
+        !effectiveThemeFiles.some(
+          (file) => file.path === section.componentSourcePath,
+        )
+      ) {
+        continue;
+      }
+      if (sharedLayoutPaths.has(section.componentSourcePath)) {
+        detachable.add(section.slotId);
+      }
+    }
+    return detachable;
+  }, [
+    activeRouteStructure.sections,
+    activeThemeRoute,
+    effectiveThemeFiles,
+    sectionModel.bindings,
+    sharedLayoutPaths,
+  ]);
 
   const routeSectionOptions = useMemo(
     () => listThemeRouteSectionOptions(effectiveThemeFiles),
@@ -4561,6 +4634,190 @@ export function VisualEditorShell({
     ],
   );
 
+  const handleDetachSection = useCallback(
+    async (
+      sectionId: string,
+    ): Promise<EditorEditableNodeDeleteResult> => {
+      reportAuthenticatedUserActivity();
+
+      if (!activeThemeRoute) {
+        return {
+          success: false,
+          message: "The active template has no source-authored route.",
+        };
+      }
+      const binding = sectionModel.bindings.get(sectionId);
+      if (binding?.owner !== "page") {
+        return {
+          success: false,
+          message:
+            "This section is owned by the shared layout and cannot be detached from this page.",
+        };
+      }
+
+      const section = activeRouteStructure.sections.find(
+        (candidate) => candidate.slotId === sectionId,
+      );
+      if (!section) {
+        return {
+          success: false,
+          message:
+            "The section is no longer present in the current route. Refresh the preview and try again.",
+        };
+      }
+      const componentPath = section.componentSourcePath;
+      if (componentPath.startsWith("src/routes/")) {
+        return {
+          success: false,
+          message:
+            "Route modules cannot be detached from Design mode. Edit the route in Code mode instead.",
+        };
+      }
+
+      const componentFile = effectiveThemeFiles.find(
+        (file) => file.path === componentPath,
+      );
+      const routeFile = effectiveThemeFiles.find(
+        (file) => file.path === activeThemeRoute.sourcePath,
+      );
+      if (!componentFile || !routeFile) {
+        return {
+          success: false,
+          message:
+            "The component or route source is unavailable. Refresh the Theme files and try again.",
+        };
+      }
+
+      const duplicate = preparePageSectionCopy(
+        componentPath,
+        activeThemeRoute.path,
+        effectiveThemeFiles.map((file) => file.path),
+        componentFile.content,
+      );
+      if (!duplicate.ok) {
+        return { success: false, message: duplicate.message };
+      }
+
+      const copiedSource = rewriteThemeFileImportsForCopy({
+        sourcePath: componentPath,
+        targetPath: duplicate.path,
+        content: duplicate.content,
+        files: effectiveThemeFiles,
+      });
+      if (!copiedSource.ok) {
+        return { success: false, message: copiedSource.reason };
+      }
+
+      const routeSource = routeFile.content;
+      const replacement = replaceThemeRouteSectionComponent({
+        source: routeSource,
+        files: effectiveThemeFiles,
+        routeSourcePath: activeThemeRoute.sourcePath,
+        slotId: sectionId,
+        componentSourcePath: componentPath,
+        nextComponentSourcePath: duplicate.path,
+      });
+      if (!replacement.changed) {
+        return {
+          success: false,
+          message:
+            replacement.diagnostic ??
+            "The route cannot be detached safely from Design mode.",
+        };
+      }
+
+      const workspaceFiles = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        );
+      const routeWorkspaceFile = workspaceFiles[routeFile.path];
+      const routePrecondition = routeWorkspaceFile
+        ? themeFileWritePrecondition(routeWorkspaceFile)
+        : {
+            expectMissing: false as const,
+            expectedFileId: routeFile.id,
+            expectedVersion: routeFile.version,
+          };
+      const result = await saveStorefrontThemeFilesBatch({
+        data: {
+          storefrontId: workspaceScope.storefrontId,
+          themeId: workspaceScope.themeId,
+          files: [
+            {
+              path: duplicate.path,
+              content: copiedSource.content,
+              mimeType: duplicate.mimeType,
+              expectMissing: true,
+            },
+            {
+              path: routeFile.path,
+              content: replacement.code,
+              mimeType: routeFile.mimeType,
+              ...routePrecondition,
+            },
+          ],
+          deletions: [],
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+          createRevision: true,
+          revisionMessage: `Create page-specific copy of ${componentPath}`,
+        },
+      });
+      if (!result.success) {
+        return { success: false, message: result.message };
+      }
+
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(result.data.sourceGeneration, workspaceScope);
+      for (const saved of result.data.files ?? []) {
+        // The batch was planned from the current editor snapshot, but this
+        // handler has not queued those two files through the normal save path.
+        // Seed the local snapshot before markSaved so the workspace does not
+        // retain the pre-detach route as a phantom dirty edit.
+        updateWorkspaceLocal(saved.path, saved.content, workspaceScope);
+        markWorkspaceSaved(
+          saved,
+          workspaceScope,
+          result.data.sourceGeneration,
+        );
+      }
+
+      const previewFiles = effectiveThemeFiles.map((file) => ({
+        path: file.path,
+        content:
+          file.path === routeFile.path ? replacement.code : file.content,
+      }));
+      previewFiles.push({ path: duplicate.path, content: copiedSource.content });
+      postPreviewThemeFiles(previewFiles, {
+        renderDocument: true,
+        preserveCanvasPosition: true,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        ).queryKey,
+      });
+      toast.success(`Created page-specific copy ${duplicate.path}.`);
+      return { success: true };
+    },
+    [
+      activeRouteStructure.sections,
+      activeThemeRoute,
+      effectiveThemeFiles,
+      markWorkspaceSaved,
+      postPreviewThemeFiles,
+      queryClient,
+      sectionModel.bindings,
+      updateWorkspaceLocal,
+      workspaceScope,
+    ],
+  );
+
   const handleDeleteEditableNode = useCallback(
     async (
       node: PreviewEditableNode,
@@ -4591,6 +4848,16 @@ export function VisualEditorShell({
         node.target.sourceLocation,
       );
       const filePath = sourceLocation?.filePath ?? null;
+      if (
+        sharedLayoutPaths.has(node.target.sectionId) ||
+        (filePath !== null && sharedLayoutPaths.has(filePath))
+      ) {
+        return {
+          success: false,
+          message:
+            "This element belongs to a shared component used by multiple pages. Edit the component in Code mode, or create a page-specific component before changing its structure.",
+        };
+      }
       const targetKey =
         node.target.nodeId ?? sourceLocationKey(node.target.sourceLocation);
       if (!filePath || !targetKey) {
@@ -4654,7 +4921,12 @@ export function VisualEditorShell({
       setActiveComputedStyleRevision(0);
       return { success: true };
     },
-    [effectiveThemeFiles, handleUnifiedSaveFile, workspaceScope],
+    [
+      effectiveThemeFiles,
+      handleUnifiedSaveFile,
+      sharedLayoutPaths,
+      workspaceScope,
+    ],
   );
 
   const handleDeleteSection = useCallback(
@@ -6824,6 +7096,8 @@ export function VisualEditorShell({
           activeRoute={activeThemeRoute}
           routeStructurePending={routeStructurePending}
           sharedSectionIds={sectionModel.sharedSectionIds}
+          sharedLayoutPaths={sharedLayoutPaths}
+          detachableSectionIds={detachableSectionIds}
           sourceLayoutRoots={sourceLayoutRoots}
           editableNodes={
             previewStructure?.key === previewKey
@@ -6852,6 +7126,9 @@ export function VisualEditorShell({
             activeThemeRoute && activeRouteSections.length > 0
               ? handleDeleteSection
               : undefined
+          }
+          onDetachSection={
+            activeThemeRoute ? handleDetachSection : undefined
           }
           onRenameSection={handleRenameSection}
           onDeleteEditableNode={handleDeleteEditableNode}

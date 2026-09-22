@@ -802,6 +802,55 @@ describe("EditorSectionsPanel editable node tree", () => {
     );
   });
 
+  it("disables child deletion when its source belongs to a shared component", async () => {
+    const sharedNode: PreviewEditableNode = {
+      ...editableNodes[1],
+      target: {
+        ...editableNodes[1].target,
+        sectionId: "unrelated-section",
+        sourceLocation: "src/components/Header.tsx:10:3",
+      },
+    };
+    const onDeleteEditableNode = vi.fn().mockResolvedValue({ success: true });
+    const onDetachSection = vi.fn().mockResolvedValue({ success: true });
+    const { container } = renderPanel(vi.fn(), vi.fn(), {
+      editableNodes: [editableNodes[0], sharedNode],
+      sharedLayoutPaths: new Set(["src/components/Header.tsx"]),
+      detachableSectionIds: new Set(["unrelated-section"]),
+      onDetachSection,
+      onDeleteEditableNode,
+    });
+
+    const sharedNodeRow = container.querySelector(
+      '[data-editor-tree-node-id="section-1:node:heading"]',
+    );
+    expect(sharedNodeRow).not.toBeNull();
+    const sharedNodeTrigger = sharedNodeRow!.querySelector(
+      '[data-slot="context-menu-trigger"]',
+    );
+    expect(sharedNodeTrigger).not.toBeNull();
+    fireEvent.contextMenu(sharedNodeTrigger!);
+
+    const deleteMenuItem = await screen.findByRole("menuitem", {
+      name: /^Delete/,
+    });
+    expect(deleteMenuItem.getAttribute("aria-disabled")).toBe("true");
+    expect(deleteMenuItem.textContent).toContain("Shared");
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Create page copy" }),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Create a page-specific copy of “Heading”?",
+      }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create copy" }));
+    await waitFor(() =>
+      expect(onDetachSection).toHaveBeenCalledWith("unrelated-section"),
+    );
+    expect(onDeleteEditableNode).not.toHaveBeenCalled();
+  });
+
   it("offers exactly one delete on a section row", async () => {
     renderPanel(vi.fn(), vi.fn(), {
       editableNodes,

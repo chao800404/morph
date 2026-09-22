@@ -731,6 +731,238 @@ function replaceRange(
   return source.slice(0, start) + replacement + source.slice(end);
 }
 
+function replaceRanges(
+  source: string,
+  ranges: readonly Readonly<{
+    start: number;
+    end: number;
+    replacement: string;
+  }>[],
+): string {
+  return [...ranges]
+    .sort((left, right) => right.start - left.start)
+    .reduce(
+      (current, range) =>
+        replaceRange(current, range.start, range.end, range.replacement),
+      source,
+    );
+}
+
+/**
+ * Forks one route section onto a sibling component file without changing the
+ * shared component definition. When the route uses the imported component more
+ * than once, only the selected JSX instance receives a fresh local binding.
+ */
+export function replaceThemeRouteSectionComponent(args: {
+  source: string;
+  files: readonly ThemeSourceFile[];
+  routeSourcePath: string;
+  slotId: string;
+  componentSourcePath: string;
+  nextComponentSourcePath: string;
+}): { code: string; changed: boolean; diagnostic?: string } {
+  const normalizedRoutePath = normalizePath(args.routeSourcePath);
+  const normalizedSourcePath = normalizePath(args.componentSourcePath);
+  const normalizedNextPath = normalizePath(args.nextComponentSourcePath);
+  if (
+    !normalizedSourcePath ||
+    !normalizedNextPath ||
+    normalizedSourcePath === normalizedNextPath
+  ) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: "The page-specific component path is invalid.",
+    };
+  }
+
+  const sourceFiles = args.files.map((file) =>
+    normalizePath(file.path) === normalizedRoutePath
+      ? { ...file, content: args.source }
+      : file,
+  );
+  const parsed = parsePositionedSections(sourceFiles, normalizedRoutePath);
+  if (parsed.diagnostics.length > 0 || !parsed.ast) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: parsed.diagnostics[0] ?? "Invalid route source.",
+    };
+  }
+
+  const section = parsed.sections.find(
+    (candidate) => candidate.slotId === args.slotId,
+  );
+  if (!section) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: `Section "${args.slotId}" no longer exists in the route source.`,
+    };
+  }
+  if (normalizePath(section.componentSourcePath) !== normalizedSourcePath) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        "The section component changed since it was selected. Refresh the preview and try again.",
+    };
+  }
+
+  const filePaths = new Set(sourceFiles.map((file) => normalizePath(file.path)));
+  const declaration = (parsed.ast.program.body ?? []).find(
+    (statement: any) =>
+      statement?.type === "ImportDeclaration" &&
+      resolveLocalImport(
+        normalizedRoutePath,
+        statement.source?.value ?? "",
+        filePaths,
+      ) === normalizedSourcePath &&
+      statement.specifiers?.some(
+        (specifier: any) => specifier.local?.name === section.componentName,
+      ),
+  );
+  const specifier = declaration?.specifiers?.find(
+    (candidate: any) => candidate.local?.name === section.componentName,
+  );
+  if (!declaration || !specifier) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        "The section import cannot be located safely. Edit the route in Code mode.",
+    };
+  }
+  if (specifier.type === "ImportNamespaceSpecifier") {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        "Namespace-imported sections must be detached in Code mode.",
+    };
+  }
+
+  const usages: any[] = [];
+  walkWithParent(parsed.ast.program, null, (node) => {
+    if (
+      node?.type === "JSXElement" &&
+      node.openingElement?.name?.type === "JSXIdentifier" &&
+      node.openingElement.name.name === section.componentName
+    ) {
+      usages.push(node);
+    }
+  });
+  const target = usages.find(
+    (node) => node.start === section.node.start && node.end === section.node.end,
+  );
+  if (!target || usages.length === 0) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        "The selected section instance cannot be located uniquely in the route source.",
+    };
+  }
+
+  const nextImport = relativeImport(normalizedRoutePath, normalizedNextPath);
+  if (usages.length === 1) {
+    if (
+      typeof declaration.source?.start !== "number" ||
+      typeof declaration.source?.end !== "number"
+    ) {
+      return {
+        code: args.source,
+        changed: false,
+        diagnostic: "The section import source range is unavailable.",
+      };
+    }
+    return {
+      code: replaceRange(
+        args.source,
+        declaration.source.start,
+        declaration.source.end,
+        JSON.stringify(nextImport),
+      ),
+      changed: true,
+    };
+  }
+
+  const usedNames = new Set<string>();
+  walkWithParent(parsed.ast.program, null, (node) => {
+    if (node?.type === "Identifier" && typeof node.name === "string") {
+      usedNames.add(node.name);
+    }
+  });
+  let nextLocalName = `${section.componentName}PageCopy`;
+  let suffix = 2;
+  while (usedNames.has(nextLocalName)) {
+    nextLocalName = `${section.componentName}PageCopy${suffix}`;
+    suffix += 1;
+  }
+
+  const importedName =
+    specifier.type === "ImportDefaultSpecifier"
+      ? null
+      : (specifier.imported?.name ?? specifier.imported?.value);
+  if (
+    typeof importedName !== "string" &&
+    importedName !== null
+  ) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic:
+        "This section import shape cannot be detached safely in Design mode.",
+    };
+  }
+
+  const importStatement =
+    importedName === null
+      ? `import ${nextLocalName} from ${JSON.stringify(nextImport)};`
+      : `import { ${importedName} as ${nextLocalName} } from ${JSON.stringify(nextImport)};`;
+  const ranges: {
+    start: number;
+    end: number;
+    replacement: string;
+  }[] = [
+    {
+      start: declaration.end,
+      end: declaration.end,
+      replacement: `\n${importStatement}`,
+    },
+  ];
+  if (
+    typeof target.openingElement?.name?.start !== "number" ||
+    typeof target.openingElement?.name?.end !== "number"
+  ) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: "The selected section tag range is unavailable.",
+    };
+  }
+  ranges.push({
+    start: target.openingElement.name.start,
+    end: target.openingElement.name.end,
+    replacement: nextLocalName,
+  });
+  if (
+    target.closingElement?.name &&
+    typeof target.closingElement.name.start === "number" &&
+    typeof target.closingElement.name.end === "number"
+  ) {
+    ranges.push({
+      start: target.closingElement.name.start,
+      end: target.closingElement.name.end,
+      replacement: nextLocalName,
+    });
+  }
+  return {
+    code: replaceRanges(args.source, ranges),
+    changed: true,
+  };
+}
+
 /** Reorders direct sibling route sections without touching their source. */
 export function reorderThemeRouteSections(
   source: string,

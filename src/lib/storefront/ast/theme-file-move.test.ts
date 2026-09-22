@@ -6,6 +6,7 @@ import {
   planThemeFileMove,
   relativeSpecifier,
   resolveSpecifierToFile,
+  rewriteThemeFileImportsForCopy,
   type ThemeSourceFile,
 } from "@/lib/storefront/ast/theme-file-move";
 
@@ -80,6 +81,57 @@ describe("relative path arithmetic", () => {
   it("reads the directory of a path", () => {
     expect(directoryOf("src/components/Hero.tsx")).toBe("src/components");
     expect(directoryOf("morph.theme.json")).toBe("");
+  });
+
+  it("rewrites only the copied file's relative imports", () => {
+    const result = rewriteThemeFileImportsForCopy({
+      sourcePath: "src/components/sections/Hero.tsx",
+      targetPath: "src/components/page-sections/home/Hero.tsx",
+      content: `import Card from "../Card";
+import { cn } from "../../lib/cn.ts";
+export default function Hero() { return <Card className={cn("hero")} />; }`,
+      files: [
+        {
+          path: "src/components/sections/Hero.tsx",
+          content: "",
+        },
+        {
+          path: "src/components/Card.tsx",
+          content: "",
+        },
+        {
+          path: "src/lib/cn.ts",
+          content: "",
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain('"../../Card"');
+    expect(result.content).toContain('"../../../lib/cn.ts"');
+    expect(result.rewrites).toEqual([
+      { from: "../Card", to: "../../Card" },
+      { from: "../../lib/cn.ts", to: "../../../lib/cn.ts" },
+    ]);
+  });
+
+  it("fails closed when the copied component is not valid source", () => {
+    const result = rewriteThemeFileImportsForCopy({
+      sourcePath: "src/components/Hero.tsx",
+      targetPath: "src/components/page-sections/home/Hero.tsx",
+      content: "export default function Hero( {",
+      files: [
+        {
+          path: "src/components/Hero.tsx",
+          content: "",
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) return;
+    expect(result.reason).toContain("syntax error");
   });
 });
 
