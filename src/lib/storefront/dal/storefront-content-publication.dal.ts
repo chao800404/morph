@@ -22,16 +22,24 @@ export type StorefrontContentPublicationDraft = StorefrontContentPublicationDTO;
 
 const mapItem = (
   row: typeof storefrontContentPublicationItems.$inferSelect,
-): StorefrontContentPublicationItemDTO => ({
-  id: row.id,
-  publicationId: row.publicationId,
-  itemType: row.itemType,
-  contentId: row.contentId,
-  revisionId: row.revisionId,
-  ...(typeof row.metadata?.handle === "string"
-    ? { metadata: { handle: row.metadata.handle } }
-    : {}),
-});
+): StorefrontContentPublicationItemDTO => {
+  const metadata = {
+    ...(typeof row.metadata?.handle === "string"
+      ? { handle: row.metadata.handle }
+      : {}),
+    ...(typeof row.metadata?.routePath === "string"
+      ? { routePath: row.metadata.routePath }
+      : {}),
+  };
+  return {
+    id: row.id,
+    publicationId: row.publicationId,
+    itemType: row.itemType,
+    contentId: row.contentId,
+    revisionId: row.revisionId,
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+  };
+};
 
 /** Creates an immutable content revision set for a storefront release. */
 /**
@@ -283,6 +291,7 @@ export const storefrontContentPublicationDal = {
       .select({
         id: storefrontThemeTemplates.id,
         revisionId: storefrontThemeTemplates.publishedRevisionId,
+        routePath: storefrontThemeTemplates.routePath,
       })
       .from(storefrontThemeTemplates)
       .where(
@@ -379,6 +388,9 @@ export const storefrontContentPublicationDal = {
             template.id === data.templateId
               ? templateRevision.id
               : (alsoPublish.get(template.id) ?? template.revisionId),
+          ...(template.routePath
+            ? { metadata: { routePath: template.routePath } }
+            : {}),
           createdAt: now,
           updatedAt: now,
         }))
@@ -683,7 +695,13 @@ export const storefrontContentPublicationDal = {
               data.publicationId,
             ),
             eq(storefrontContentPublicationItems.itemType, "template"),
-            eq(storefrontThemeTemplates.routePath, data.routePath),
+            sql`(
+              json_extract(${storefrontContentPublicationItems.metadata}, '$.routePath') = ${data.routePath}
+              OR (
+                json_extract(${storefrontContentPublicationItems.metadata}, '$.routePath') IS NULL
+                AND ${storefrontThemeTemplates.routePath} = ${data.routePath}
+              )
+            )`,
             isNull(storefrontContentPublicationItems.deletedAt),
             isNull(storefrontThemeTemplates.deletedAt),
           ),

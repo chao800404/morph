@@ -216,6 +216,40 @@ export const storefrontThemeTemplates = sqliteTable(
   ],
 );
 
+/**
+ * Every time a static route's source moved to another static route path.
+ *
+ * A source rollback puts route files back where a revision had them, but
+ * nothing in the files says which path became which: `/company` restored as
+ * `/about` looks like one route deleted and another added. This history is
+ * what lets a rollback carry each route's document back with it, by undoing
+ * every move recorded after the revision's source generation. Moves are
+ * recorded by path, document or not: a route's document is created by its
+ * first content write, which may come after the route moved.
+ */
+export const storefrontThemeRouteDocumentMoves = sqliteTable(
+  "storefront_theme_route_document_moves",
+  {
+    id: text("id").primaryKey(),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    fromRoutePath: text("from_route_path").notNull(),
+    toRoutePath: text("to_route_path").notNull(),
+    /** The theme source generation the move produced. */
+    sourceGeneration: integer("source_generation").notNull(),
+    /** Orders the moves one batch made, so they undo in reverse. */
+    sequence: integer("sequence").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("storefront_theme_route_document_moves_theme_generation_idx").on(
+      table.themeId,
+      table.sourceGeneration,
+    ),
+  ],
+);
+
 /** Immutable theme-template snapshots used by editor preview and publishing. */
 export const storefrontThemeTemplateRevisions = sqliteTable(
   "storefront_theme_template_revisions",

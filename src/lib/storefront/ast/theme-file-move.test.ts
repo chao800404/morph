@@ -309,6 +309,12 @@ export const Route = createFileRoute("/about")({});`,
         expect.objectContaining({ from: "/about", to: "/company/about" }),
       ]),
     );
+    expect(result.ok && result.routePathMoves).toEqual([
+      {
+        fromSourcePath: "src/routes/about.tsx",
+        toSourcePath: "src/routes/company/about.tsx",
+      },
+    ]);
   });
 
   it("moves flat-file dynamic routes and keeps their route id in sync", () => {

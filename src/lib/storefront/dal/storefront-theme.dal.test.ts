@@ -608,11 +608,9 @@ export default function Hero() { return <h1 />; }`;
       // The detail route declares `hero`, so the template document has it;
       // the listing is rewritten here to render nothing, and a write made on
       // the listing must not borrow the detail route's component.
-      sqlite
-        .prepare(
-          `UPDATE storefront_theme_files SET content = ? WHERE id = 'f-list'`,
-        )
-        .run(`import { createFileRoute } from "@tanstack/react-router";
+      sqlite.prepare(
+        `UPDATE storefront_theme_files SET content = ? WHERE id = 'f-list'`,
+      ).run(`import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
 export const Route = createFileRoute("/products/featured")({ component: Page });
 function Page() { return <main />; }`);
@@ -732,7 +730,10 @@ function Home() { return <main><Hero /></main>; }`,
     const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
 export const Route = createRootRoute({ component: Root });
 function Root() { return <Outlet />; }`;
-    const route = (id: string, slot: string) => `import { createFileRoute } from "@tanstack/react-router";
+    const route = (
+      id: string,
+      slot: string,
+    ) => `import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
 import Hero from "../components/Hero";
 export const Route = createFileRoute("${id}")({ component: Page });
@@ -749,10 +750,26 @@ export default function Hero() { return <h1 />; }`;
         VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
       `);
       insertFile.run("r-root", "src/routes/__root.tsx", root);
-      insertFile.run("r-index", "src/routes/index.tsx", route("/", "home-hero"));
-      insertFile.run("r-about", "src/routes/aboutus.tsx", route("/aboutus", "about-hero"));
-      insertFile.run("r-contact", "src/routes/contact.tsx", route("/contact", "contact-hero"));
-      insertFile.run("r-journal", "src/routes/journal.$slug.tsx", route("/journal/$slug", "post"));
+      insertFile.run(
+        "r-index",
+        "src/routes/index.tsx",
+        route("/", "home-hero"),
+      );
+      insertFile.run(
+        "r-about",
+        "src/routes/aboutus.tsx",
+        route("/aboutus", "about-hero"),
+      );
+      insertFile.run(
+        "r-contact",
+        "src/routes/contact.tsx",
+        route("/contact", "contact-hero"),
+      );
+      insertFile.run(
+        "r-journal",
+        "src/routes/journal.$slug.tsx",
+        route("/journal/$slug", "post"),
+      );
       insertFile.run("r-hero", "src/components/Hero.tsx", hero);
       insertFile.run(
         "r-content",
@@ -794,7 +811,10 @@ export default function Hero() { return <h1 />; }`;
       seed();
       const first = await ensure("/aboutus/");
       const again = await ensure("/aboutus");
-      expect(first).toMatchObject({ ok: true, template: { routePath: "/aboutus" } });
+      expect(first).toMatchObject({
+        ok: true,
+        template: { routePath: "/aboutus" },
+      });
       expect(again.ok && first.ok && again.template.id).toBe(
         first.ok && first.template.id,
       );
@@ -821,13 +841,20 @@ export default function Hero() { return <h1 />; }`;
         "storefront-a",
         "theme-a",
       );
-      const aboutDoc = context?.templates.find((t) => t.id === about.template.id);
+      const aboutDoc = context?.templates.find(
+        (t) => t.id === about.template.id,
+      );
       expect(aboutDoc?.routePath).toBe("/aboutus");
       expect(aboutDoc?.document.sections.map((section) => section.id)).toEqual([
         "about-hero",
       ]);
 
-      const saved = await write(about.template.id, "about-hero", "/aboutus", "About");
+      const saved = await write(
+        about.template.id,
+        "about-hero",
+        "/aboutus",
+        "About",
+      );
       expect(saved?.document.sections[0]).toMatchObject({
         id: "about-hero",
         componentRef: "src/components/Hero.tsx",
@@ -864,28 +891,51 @@ export default function Hero() { return <h1 />; }`;
       seed();
       const about = await ensure("/aboutus");
       if (!about.ok) throw new Error("setup");
-      await write(about.template.id, "about-hero", "/aboutus", "Published about");
-      const revision = sqlite
-        .prepare(
-          `SELECT draft_revision_id AS id FROM storefront_theme_templates WHERE id = ?`,
-        )
-        .get(about.template.id) as { id: string };
+      const saved = await write(
+        about.template.id,
+        "about-hero",
+        "/aboutus",
+        "Published about",
+      );
+      if (!saved?.draftRevisionId) throw new Error("missing document revision");
+      const publication = await storefrontContentPublicationDal.createForTheme({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: about.template.id,
+        templateRevisionId: saved.draftRevisionId,
+      });
+      expect(
+        publication.items.find((item) => item.contentId === about.template.id)
+          ?.metadata,
+      ).toEqual({ routePath: "/aboutus" });
+
+      const byRoute =
+        (await storefrontContentPublicationDal.getPublishedRouteDocument({
+          publicationId: publication.id,
+          routePath: "/aboutus",
+        })) as { sections: { props: { heading: string } }[] } | null;
+      expect(byRoute?.sections[0]?.props.heading).toBe("Published about");
+
       sqlite
         .prepare(
-          `INSERT INTO storefront_content_publication_items
-            (id, publication_id, item_type, content_id, revision_id, created_at, updated_at)
-          VALUES ('item-about', 'pub-1', 'template', ?, ?, 'now', 'now')`,
+          "UPDATE storefront_theme_templates SET route_path = '/company' WHERE id = ?",
         )
-        .run(about.template.id, revision.id);
-
-      const byRoute = (await storefrontContentPublicationDal.getPublishedRouteDocument({
-        publicationId: "pub-1",
-        routePath: "/aboutus",
-      })) as { sections: { props: { heading: string } }[] } | null;
-      expect(byRoute?.sections[0]?.props.heading).toBe("Published about");
+        .run(about.template.id);
+      const historicalRoute =
+        await storefrontContentPublicationDal.getPublishedRouteDocument({
+          publicationId: publication.id,
+          routePath: "/aboutus",
+        });
+      expect(historicalRoute).not.toBeNull();
+      expect(
+        await storefrontContentPublicationDal.getPublishedRouteDocument({
+          publicationId: publication.id,
+          routePath: "/company",
+        }),
+      ).toBeNull();
       expect(
         await storefrontContentPublicationDal.getPublishedTemplateDocument({
-          publicationId: "pub-1",
+          publicationId: publication.id,
           templateType: "page",
         }),
       ).toBeNull();

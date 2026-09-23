@@ -614,6 +614,7 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
         {
           expectedSourceGeneration: data.expectedSourceGeneration,
           deletions: data.deletions,
+          routePathMoves: data.routePathMoves,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,
@@ -646,6 +647,15 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
           "Version conflict detected in batch: one or more files were modified concurrently.",
           { error: "FILE_VERSION_CONFLICT" },
         );
+      }
+
+      if (
+        error instanceof Error &&
+        (error.message.includes("ROUTE_DOCUMENT_MOVE_UNSUPPORTED") ||
+          error.message.includes("ROUTE_DOCUMENT_MOVE_CONFLICT") ||
+          error.message.includes("INVALID_ROUTE_DOCUMENT_MOVE"))
+      ) {
+        return fail(error.message, { error: "ROUTE_DOCUMENT_MOVE_REJECTED" });
       }
 
       return failure(
@@ -967,12 +977,31 @@ export const previewStorefrontThemeRollback = createServerFn({ method: "POST" })
         current,
         target: target.snapshot,
       });
+      const routeDocuments = await themeRevisionStore.planRouteDocumentRollback(
+        data.storefrontId,
+        data.themeId,
+        {
+          sourceGeneration: target.sourceGeneration ?? null,
+          paths: target.snapshot.map((file) => file.path),
+        },
+      );
       return ok("Theme rollback plan ready", {
         // Carried back so the apply can be refused if the workspace moved
         // between seeing this plan and agreeing to it.
         sourceGeneration,
         revisionNumber: data.revisionNumber,
         ...plan,
+        routeDocumentMoves: routeDocuments.ok
+          ? routeDocuments.documentMoves.map(
+              ({ fromRoutePath, toRoutePath }) => ({
+                fromRoutePath,
+                toRoutePath,
+              }),
+            )
+          : [],
+        routeDocumentConflict: routeDocuments.ok
+          ? null
+          : routeDocuments.message,
       });
     } catch (error) {
       return failure(
@@ -1010,6 +1039,14 @@ export const rollbackStorefrontThemeRevision = createServerFn({
       const tree = buildFileTree(files);
       return ok("Theme rolled back to revision", { files, tree });
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("ROLLBACK_ROUTE_DOCUMENT_CONFLICT")
+      ) {
+        return fail(error.message, {
+          error: "ROLLBACK_ROUTE_DOCUMENT_CONFLICT",
+        });
+      }
       return failure(
         "Rollback theme revision error",
         error,

@@ -19,6 +19,16 @@ export type ThemeRollbackPlan = Readonly<{
   removed: readonly string[];
   /** In both and identical: rollback leaves these alone. */
   unchanged: readonly string[];
+  /**
+   * Page content documents that follow their routes back to where the
+   * revision had them. Filled in by the server, which alone knows the moves.
+   */
+  routeDocumentMoves?: ReadonlyArray<{
+    fromRoutePath: string;
+    toRoutePath: string;
+  }>;
+  /** Why the documents cannot follow, in which case rollback is refused. */
+  routeDocumentConflict?: string | null;
 }>;
 
 /** Whether a plan would change anything at all. */

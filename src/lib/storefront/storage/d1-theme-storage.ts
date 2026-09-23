@@ -459,6 +459,21 @@ export function createD1ThemeRevisionStore(
         ? await materializeR2SourceRevision(target, blobStore!)
         : target;
     },
+    async planRouteDocumentRollback(
+      storefrontId,
+      themeId,
+      revision,
+    ) {
+      if (
+        !(await storefrontThemeFileDal.verifyOwnership(storefrontId, themeId))
+      ) {
+        throw new Error("Theme not found or does not belong to storefront");
+      }
+      return storefrontThemeFileDal.planRouteDocumentRollback(
+        themeId,
+        revision,
+      );
+    },
     async rollbackToRevision(
       storefrontId,
       themeId,

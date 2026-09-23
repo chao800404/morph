@@ -10,14 +10,19 @@ import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file
 /**
  * Extensions a Theme author may create.
  *
- * The build toolchain only understands these, so allowing anything else would
- * create a file that silently never reaches the artifact.
+ * The TypeScript-first create flow uses these formats. JSX and JavaScript are
+ * also supported when copying an existing section, through the copy-specific
+ * validator below.
  */
 const CREATABLE_EXTENSIONS = [".tsx", ".ts", ".css", ".json"] as const;
+const COPYABLE_EXTENSIONS = [...CREATABLE_EXTENSIONS, ".jsx", ".js"] as const;
 
 export type NewThemeFileResult =
   | { ok: true; path: string; content: string; mimeType: string }
   | { ok: false; message: string };
+
+export type CopiedThemeFileResult =
+  { ok: true; path: string; mimeType: string } | { ok: false; message: string };
 
 function extensionOf(path: string): string {
   const index = path.lastIndexOf(".");
@@ -29,6 +34,9 @@ export function themeFileMimeType(path: string): string {
     case ".tsx":
     case ".ts":
       return "text/typescript";
+    case ".jsx":
+    case ".js":
+      return "text/javascript";
     case ".css":
       return "text/css";
     case ".json":
@@ -50,9 +58,7 @@ function componentNameFrom(path: string): string {
 }
 
 function routeComponentNameFrom(path: string): string {
-  const base = path
-    .slice(path.lastIndexOf("/") + 1)
-    .replace(/\.[^.]+$/, "");
+  const base = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
   if (base === "__root") return "RootRoute";
   if (base === "index") return "HomeRoute";
   return `${componentNameFrom(path)}Route`;
@@ -91,7 +97,8 @@ function RootRoute() {
 
   const componentName = routeComponentNameFrom(path);
   const label = routeLabelFromPath(routePath);
-  const factory = routeType === "lazy" ? "createLazyFileRoute" : "createFileRoute";
+  const factory =
+    routeType === "lazy" ? "createLazyFileRoute" : "createFileRoute";
   if (path.endsWith(".ts") && !path.endsWith(".tsx")) {
     return `import { ${factory} } from "@tanstack/react-router";
 
@@ -171,11 +178,15 @@ export default function ${name}({ heading = "${name}" }: ${name}Props) {
  * build files and paths that already exist, so a create can never overwrite
  * existing work or shadow a generated file.
  */
-export function prepareNewThemeFile(
+function validateThemeFilePath(
   rawPath: string,
   existingPaths: readonly string[],
-): NewThemeFileResult {
-  const normalized = (rawPath ?? "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  allowedExtensions: readonly string[],
+): CopiedThemeFileResult {
+  const normalized = (rawPath ?? "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
   if (!normalized) {
     return { ok: false, message: "Enter a file path." };
   }
@@ -194,10 +205,10 @@ export function prepareNewThemeFile(
   }
 
   const extension = extensionOf(path);
-  if (!CREATABLE_EXTENSIONS.includes(extension as never)) {
+  if (!allowedExtensions.includes(extension)) {
     return {
       ok: false,
-      message: `Only ${CREATABLE_EXTENSIONS.join(", ")} files can be created.`,
+      message: `Only ${allowedExtensions.join(", ")} files can be created.`,
     };
   }
 
@@ -221,10 +232,27 @@ export function prepareNewThemeFile(
     return { ok: false, message: `"${path}" already exists.` };
   }
 
-  return {
-    ok: true,
-    path,
-    content: scaffoldThemeFile(path),
-    mimeType: themeFileMimeType(path),
-  };
+  return { ok: true, path, mimeType: themeFileMimeType(path) };
+}
+
+export function prepareNewThemeFile(
+  rawPath: string,
+  existingPaths: readonly string[],
+): NewThemeFileResult {
+  const validated = validateThemeFilePath(
+    rawPath,
+    existingPaths,
+    CREATABLE_EXTENSIONS,
+  );
+  return validated.ok
+    ? { ...validated, content: scaffoldThemeFile(validated.path) }
+    : validated;
+}
+
+/** Validates a copy destination while preserving the source's supported format. */
+export function prepareCopiedThemeFile(
+  rawPath: string,
+  existingPaths: readonly string[],
+): CopiedThemeFileResult {
+  return validateThemeFilePath(rawPath, existingPaths, COPYABLE_EXTENSIONS);
 }

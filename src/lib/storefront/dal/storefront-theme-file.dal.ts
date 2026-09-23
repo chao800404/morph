@@ -17,9 +17,17 @@ import { paginationOf, type Pagination } from "@/lib/db/server-result";
 import { firstOrNull } from "@/lib/db/single-row";
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
 import type { ThemeSourceIndex } from "../theme-source-index";
+import {
+  isThemeRouteSourcePath,
+  themeRoutePathFromSourcePath,
+} from "@/lib/storefront/compiler/theme-route-registry";
+import { contentTargetForRoutePath } from "../theme-template-routes";
+import {
+  planRouteDocumentRollback,
+  type RouteDocumentRollbackPlan,
+} from "../route-document-moves";
 
-type StorefrontThemeRevisionRow =
-  typeof storefrontThemeRevisions.$inferSelect;
+type StorefrontThemeRevisionRow = typeof storefrontThemeRevisions.$inferSelect;
 
 function mapRevisionRowToDTO(
   row: StorefrontThemeRevisionRow,
@@ -79,6 +87,89 @@ function prepareThemeOwnershipGuard(
   ).bind(themeId, storefrontId);
 }
 
+/**
+ * Whether a page document takes route path `?{n}`, by binding or by name.
+ *
+ * A route-owned document is created named after its path, and page names are
+ * unique per theme as route paths are; either one already taken is a
+ * conflict for a document arriving there.
+ */
+function pageDocumentTakesPath(parameter: number): string {
+  return `(route_path = ?${parameter} OR (type = 'page' AND name = ?${parameter}))`;
+}
+
+/**
+ * Moves a static route, with the document it holds if any, and records it.
+ *
+ * The move is recorded even when the route has no document yet: its document
+ * is created by the first content write, which may come after the move, and a
+ * later rollback has to know which path that content belongs to. Releases
+ * published before the move keep answering the path they were published
+ * under: they are stamped with it before the document's route path changes.
+ * The document's name follows its path, since the name is what a document
+ * created for the old path would otherwise collide on.
+ */
+function prepareRouteDocumentMove(args: {
+  themeId: string;
+  fromRoutePath: string;
+  toRoutePath: string;
+  sourceGeneration: number;
+  sequence: number;
+  now: string;
+}) {
+  const templateAtFromPath = `(
+    SELECT id FROM storefront_theme_templates
+    WHERE theme_id = ?2 AND route_path = ?1 AND deleted_at IS NULL
+    LIMIT 1
+  )`;
+  return [
+    env.DATABASE.prepare(
+      `UPDATE storefront_content_publication_items
+       SET metadata = json_set(
+         CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+         '$.routePath', ?1
+       )
+       WHERE item_type = 'template'
+         AND content_id = ${templateAtFromPath}
+         AND deleted_at IS NULL
+         AND json_type(metadata, '$.routePath') IS NULL`,
+    ).bind(args.fromRoutePath, args.themeId),
+    env.DATABASE.prepare(
+      `INSERT INTO storefront_theme_route_document_moves (
+         id, theme_id, from_route_path, to_route_path,
+         source_generation, sequence, created_at
+       )
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    ).bind(
+      crypto.randomUUID(),
+      args.themeId,
+      args.fromRoutePath,
+      args.toRoutePath,
+      args.sourceGeneration,
+      args.sequence,
+      args.now,
+    ),
+    env.DATABASE.prepare(
+      `UPDATE storefront_theme_templates
+       SET route_path = ?1, name = ?1, updated_at = ?2
+       WHERE theme_id = ?3 AND route_path = ?4 AND deleted_at IS NULL`,
+    ).bind(args.toRoutePath, args.now, args.themeId, args.fromRoutePath),
+  ];
+}
+
+/** The content-owning static route paths a set of source files declares. */
+function routeOwnedPathsOf(paths: readonly string[]): Set<string> {
+  const routePaths = new Set<string>();
+  for (const path of paths) {
+    if (!isThemeRouteSourcePath(path)) continue;
+    const routePath = themeRoutePathFromSourcePath(path);
+    if (!routePath) continue;
+    const target = contentTargetForRoutePath(routePath);
+    if (target.kind === "route") routePaths.add(target.routePath);
+  }
+  return routePaths;
+}
+
 function prepareIncrementThemeSourceGeneration(
   storefrontId: string,
   themeId: string,
@@ -132,8 +223,9 @@ function prepareRevisionInsert(args: {
   const sourceIndexJson = args.sourceIndex
     ? JSON.stringify(args.sourceIndex)
     : null;
-  const statement = args.sourceManifest || args.sourceIndex
-    ? `
+  const statement =
+    args.sourceManifest || args.sourceIndex
+      ? `
     INSERT INTO storefront_theme_revisions (
       id, storefront_id, theme_id, revision_number, message, source,
       snapshot, source_generation, source_manifest, source_index, created_by, created_at, updated_at
@@ -149,7 +241,7 @@ function prepareRevisionInsert(args: {
       json('[]'),
       ?6, ?7, ?8, ?9, ?10, ?10
   `
-    : `
+      : `
     INSERT INTO storefront_theme_revisions (
       id, storefront_id, theme_id, revision_number, message, source,
       snapshot, source_generation, created_by, created_at, updated_at
@@ -181,9 +273,7 @@ function prepareRevisionInsert(args: {
       ?6, ?7, ?8, ?8
   `;
 
-  return env.DATABASE.prepare(
-    statement,
-  ).bind(
+  return env.DATABASE.prepare(statement).bind(
     args.revisionId,
     args.storefrontId,
     args.themeId,
@@ -516,6 +606,10 @@ export const storefrontThemeFileDal = {
         expectedFileId: string;
         expectedVersion: number;
       }>;
+      routePathMoves?: ReadonlyArray<{
+        fromSourcePath: string;
+        toSourcePath: string;
+      }>;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
@@ -529,6 +623,42 @@ export const storefrontThemeFileDal = {
       );
     }
     const deletions = options.deletions ?? [];
+    const routePathMoves = (options.routePathMoves ?? []).map((move) => {
+      const fromRoutePath = themeRoutePathFromSourcePath(move.fromSourcePath);
+      const toRoutePath = themeRoutePathFromSourcePath(move.toSourcePath);
+      if (
+        !isThemeRouteSourcePath(move.fromSourcePath) ||
+        !isThemeRouteSourcePath(move.toSourcePath) ||
+        !fromRoutePath ||
+        !toRoutePath ||
+        fromRoutePath === toRoutePath ||
+        !deletions.some((deletion) => deletion.path === move.fromSourcePath) ||
+        !files.some((file) => file.path === move.toSourcePath)
+      ) {
+        throw new Error(
+          "INVALID_ROUTE_DOCUMENT_MOVE: route mapping must match a moved route source file.",
+        );
+      }
+      return { fromRoutePath, toRoutePath };
+    });
+    if (
+      new Set(routePathMoves.map((move) => move.fromRoutePath)).size !==
+        routePathMoves.length ||
+      new Set(routePathMoves.map((move) => move.toRoutePath)).size !==
+        routePathMoves.length
+    ) {
+      throw new Error(
+        "INVALID_ROUTE_DOCUMENT_MOVE: each route path can only be moved once per batch.",
+      );
+    }
+    if (
+      routePathMoves.length > 0 &&
+      !(await this.verifyOwnership(storefrontId, themeId))
+    ) {
+      throw new Error(
+        "THEME_NOT_FOUND: Theme is not owned by this storefront.",
+      );
+    }
     if (files.length === 0 && deletions.length === 0) {
       const empty: StorefrontThemeFileDTO[] & { sourceGeneration?: number } =
         [];
@@ -545,6 +675,79 @@ export const storefrontThemeFileDal = {
     ];
     const preconditionStatements = [];
     const mutationStatements = [];
+    const routeMutationStatements = [];
+    let routeMoveSequence = 0;
+
+    for (const move of routePathMoves) {
+      const previous = contentTargetForRoutePath(move.fromRoutePath);
+      if (previous.kind !== "route") continue;
+
+      const next = contentTargetForRoutePath(move.toRoutePath);
+      const previousTemplate = await env.DATABASE.prepare(
+        `SELECT id FROM storefront_theme_templates
+         WHERE theme_id = ?1 AND route_path = ?2 AND deleted_at IS NULL LIMIT 1`,
+      )
+        .bind(themeId, previous.routePath)
+        .first<{ id: string }>();
+      if (previousTemplate && next.kind !== "route") {
+        throw new Error(
+          `ROUTE_DOCUMENT_MOVE_UNSUPPORTED: ${previous.routePath} has its own content document, but ${move.toRoutePath} uses a shared or unsupported content target. Move it to another static route first.`,
+        );
+      }
+      if (previousTemplate && next.kind === "route") {
+        const destinationTemplate = await env.DATABASE.prepare(
+          `SELECT id FROM storefront_theme_templates
+           WHERE theme_id = ?1 AND ${pageDocumentTakesPath(2)}
+             AND deleted_at IS NULL
+           LIMIT 1`,
+        )
+          .bind(themeId, next.routePath)
+          .first<{ id: string }>();
+        if (destinationTemplate) {
+          throw new Error(
+            `ROUTE_DOCUMENT_MOVE_CONFLICT: ${next.routePath} already has its own content document.`,
+          );
+        }
+      }
+
+      // Repeat the content checks inside the file OCC batch. A route document
+      // may have been created after the read above; the move must either carry
+      // it to the new static path or reject the source move atomically.
+      preconditionStatements.push(
+        env.DATABASE.prepare(
+          `SELECT CASE WHEN
+             NOT EXISTS (
+               SELECT 1 FROM storefront_theme_templates
+               WHERE theme_id = ?1 AND route_path = ?2 AND deleted_at IS NULL
+             ) OR (
+               ?3 = 1 AND NOT EXISTS (
+                 SELECT 1 FROM storefront_theme_templates
+                 WHERE theme_id = ?1 AND ${pageDocumentTakesPath(4)}
+                   AND deleted_at IS NULL
+               )
+             )
+           THEN 1 ELSE json('') END AS ok`,
+        ).bind(
+          themeId,
+          previous.routePath,
+          next.kind === "route" ? 1 : 0,
+          next.kind === "route" ? next.routePath : "",
+        ),
+      );
+
+      if (next.kind === "route") {
+        routeMutationStatements.push(
+          ...prepareRouteDocumentMove({
+            themeId,
+            fromRoutePath: previous.routePath,
+            toRoutePath: next.routePath,
+            sourceGeneration: options.expectedSourceGeneration + 1,
+            sequence: routeMoveSequence++,
+            now,
+          }),
+        );
+      }
+    }
 
     const preparedFiles = files.map((item) => ({
       ...item,
@@ -698,6 +901,8 @@ export const storefrontThemeFileDal = {
       );
     }
 
+    mutationStatements.push(...routeMutationStatements);
+
     const fileMutationStartIndex = 1 + preconditionStatements.length;
     statements.push(...preconditionStatements, ...mutationStatements);
 
@@ -713,6 +918,9 @@ export const storefrontThemeFileDal = {
           source: "manual",
           createdBy: options.createdBy,
           now,
+          // The snapshot is taken after this batch's writes, so it is the
+          // source at the generation this batch produces.
+          sourceGeneration: options.expectedSourceGeneration + 1,
           sourceManifest: options.sourceManifest,
           sourceIndex: options.sourceIndex,
         }),
@@ -1047,8 +1255,10 @@ export const storefrontThemeFileDal = {
       sourceGeneration: created.sourceGeneration,
       message: created.message,
       source: created.source as "manual" | "ai" | "publish" | "rollback",
-      sourceManifest: (created.sourceManifest ?? null) as StorefrontThemeRevisionDTO["sourceManifest"],
-      sourceIndex: (created.sourceIndex ?? null) as StorefrontThemeRevisionDTO["sourceIndex"],
+      sourceManifest: (created.sourceManifest ??
+        null) as StorefrontThemeRevisionDTO["sourceManifest"],
+      sourceIndex: (created.sourceIndex ??
+        null) as StorefrontThemeRevisionDTO["sourceIndex"],
       snapshot: (created.snapshot ?? []) as Array<{
         path: string;
         content: string;
@@ -1123,10 +1333,7 @@ export const storefrontThemeFileDal = {
         .orderBy(desc(storefrontThemeRevisions.revisionNumber))
         .limit(limit)
         .offset(offset),
-      db
-        .select({ total: count() })
-        .from(storefrontThemeRevisions)
-        .where(scope),
+      db.select({ total: count() }).from(storefrontThemeRevisions).where(scope),
     ]);
 
     return {
@@ -1174,7 +1381,57 @@ export const storefrontThemeFileDal = {
   },
 
   /**
+   * The route-owned documents a rollback to a revision carries back.
+   *
+   * A revision saved before its source generation was recorded cannot be
+   * placed among the recorded route moves. Rolling back to one is allowed
+   * only while no document would be left at a route the revision lacks.
+   */
+  async planRouteDocumentRollback(
+    themeId: string,
+    revision: Readonly<{
+      sourceGeneration: number | null;
+      paths: readonly string[];
+    }>,
+  ): Promise<RouteDocumentRollbackPlan> {
+    const [documents, moves] = await Promise.all([
+      env.DATABASE.prepare(
+        `SELECT id, route_path, name FROM storefront_theme_templates
+         WHERE theme_id = ?1 AND type = 'page' AND deleted_at IS NULL`,
+      )
+        .bind(themeId)
+        .all<{ id: string; route_path: string | null; name: string }>(),
+      revision.sourceGeneration === null
+        ? null
+        : env.DATABASE.prepare(
+            `SELECT from_route_path, to_route_path
+             FROM storefront_theme_route_document_moves
+             WHERE theme_id = ?1 AND source_generation > ?2
+             ORDER BY source_generation DESC, sequence DESC`,
+          )
+            .bind(themeId, revision.sourceGeneration)
+            .all<{ from_route_path: string; to_route_path: string }>(),
+    ]);
+    return planRouteDocumentRollback({
+      documents: documents.results.map((row) => ({
+        id: row.id,
+        routePath: row.route_path,
+        name: row.name,
+      })),
+      movesSinceRevision:
+        moves?.results.map((row) => ({
+          fromRoutePath: row.from_route_path,
+          toRoutePath: row.to_route_path,
+        })) ?? null,
+      revisionRoutePaths: routeOwnedPathsOf(revision.paths),
+    });
+  },
+
+  /**
    * Rollback workspace files to a specific historical revision.
+   *
+   * Route-owned documents moved since the revision are moved back in the same
+   * batch, so each route comes back with its content rather than empty.
    */
   async rollbackToRevision(
     storefrontId: string,
@@ -1227,6 +1484,70 @@ export const storefrontThemeFileDal = {
       ).bind(now, storefrontId, themeId),
     ];
 
+    const routeDocuments = await this.planRouteDocumentRollback(themeId, {
+      sourceGeneration: rev.sourceGeneration ?? null,
+      paths: snapshot.map((file) => file.path),
+    });
+    if (!routeDocuments.ok) {
+      throw new Error(
+        `ROLLBACK_ROUTE_DOCUMENT_CONFLICT: ${routeDocuments.message}`,
+      );
+    }
+    // The plan was read outside the batch. Every path it touches must still
+    // be held by the documents it found there, so the apply cannot carry a
+    // document the preview never showed, or collide with one created since.
+    for (const occupant of routeDocuments.expectedOccupants) {
+      statements.push(
+        env.DATABASE.prepare(
+          `SELECT CASE WHEN (
+             SELECT group_concat(id) FROM (
+               SELECT id FROM storefront_theme_templates
+               WHERE theme_id = ?1 AND ${pageDocumentTakesPath(2)}
+                 AND deleted_at IS NULL
+               ORDER BY id
+             )
+           ) IS ?3 THEN 1 ELSE json('') END AS ok`,
+        ).bind(
+          themeId,
+          occupant.routePath,
+          occupant.templateIds.length > 0
+            ? occupant.templateIds.join(",")
+            : null,
+        ),
+      );
+    }
+    if (rev.sourceGeneration === null) {
+      // Nothing recorded says where a document at a route this revision
+      // lacks belongs; one created since the plan was read fails the apply.
+      statements.push(
+        env.DATABASE.prepare(
+          `SELECT CASE WHEN NOT EXISTS (
+             SELECT 1 FROM storefront_theme_templates
+             WHERE theme_id = ?1 AND route_path IS NOT NULL
+               AND deleted_at IS NULL
+               AND route_path NOT IN (SELECT value FROM json_each(?2))
+           ) THEN 1 ELSE json('') END AS ok`,
+        ).bind(
+          themeId,
+          JSON.stringify([
+            ...routeOwnedPathsOf(snapshot.map((file) => file.path)),
+          ]),
+        ),
+      );
+    }
+    routeDocuments.pathMoves.forEach((move, sequence) => {
+      statements.push(
+        ...prepareRouteDocumentMove({
+          themeId,
+          fromRoutePath: move.fromRoutePath,
+          toRoutePath: move.toRoutePath,
+          sourceGeneration: options.expectedSourceGeneration + 1,
+          sequence,
+          now,
+        }),
+      );
+    });
+
     for (const file of snapshot) {
       statements.push(
         env.DATABASE.prepare(
@@ -1259,6 +1580,7 @@ export const storefrontThemeFileDal = {
         source: "rollback",
         createdBy: options?.createdBy,
         now,
+        sourceGeneration: options.expectedSourceGeneration + 1,
         sourceManifest: options?.sourceManifest,
         sourceIndex: options?.sourceIndex,
       }),
@@ -1281,6 +1603,16 @@ export const storefrontThemeFileDal = {
         message.includes("malformed JSON") ||
         message.includes("constraint")
       ) {
+        if (
+          (routeDocuments.pathMoves.length > 0 ||
+            rev.sourceGeneration === null) &&
+          (await this.getSourceGeneration(storefrontId, themeId)) ===
+            options.expectedSourceGeneration
+        ) {
+          throw new Error(
+            "ROLLBACK_ROUTE_DOCUMENT_CONFLICT: A page's content document changed while rolling back. Try again.",
+          );
+        }
         throw new Error(
           options?.expectedSourceGeneration !== undefined
             ? "CONFLICT_SOURCE_GENERATION_MISMATCH: Theme files changed concurrently before rollback."
@@ -1334,7 +1666,8 @@ export const storefrontThemeFileDal = {
       sourceGeneration: revision.sourceGeneration,
       message: revision.message,
       source: revision.source as "manual" | "ai" | "publish" | "rollback",
-      sourceManifest: (revision.sourceManifest ?? null) as StorefrontThemeRevisionDTO["sourceManifest"],
+      sourceManifest: (revision.sourceManifest ??
+        null) as StorefrontThemeRevisionDTO["sourceManifest"],
       snapshot: (revision.snapshot ??
         []) as StorefrontThemeRevisionDTO["snapshot"],
       createdBy: revision.createdBy,

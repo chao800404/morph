@@ -40,7 +40,9 @@ describe("pageSectionRouteKey", () => {
   it("refuses the root route and paths that are not routes", () => {
     expect(pageSectionRouteKey("src/routes/__root.tsx")).toBeNull();
     expect(pageSectionRouteKey("src/components/Hero.tsx")).toBeNull();
-    expect(pageSectionInstanceRoot("src/routes/index.tsx", "Bad slot")).toBeNull();
+    expect(
+      pageSectionInstanceRoot("src/routes/index.tsx", "Bad slot"),
+    ).toBeNull();
   });
 });
 
@@ -65,7 +67,10 @@ describe("planPageSectionCopy", () => {
       slotId: "hero",
       files: [
         { path: "src/components/sections/Hero.tsx", content: HERO },
-        { path: "src/components/ThemeLink.tsx", content: "export default () => null;" },
+        {
+          path: "src/components/ThemeLink.tsx",
+          content: "export default () => null;",
+        },
       ],
     });
 
@@ -90,8 +95,14 @@ describe("planPageSectionCopy", () => {
           path: "src/components/sections/Hero.tsx",
           content: 'export { contentFields, default } from "../Hero";\n',
         },
-        { path: "src/components/Hero.tsx", content: HERO.replace("../ThemeLink", "./ThemeLink") },
-        { path: "src/components/ThemeLink.tsx", content: "export default () => null;" },
+        {
+          path: "src/components/Hero.tsx",
+          content: HERO.replace("../ThemeLink", "./ThemeLink"),
+        },
+        {
+          path: "src/components/ThemeLink.tsx",
+          content: "export default () => null;",
+        },
       ],
     });
 
@@ -113,9 +124,13 @@ describe("planPageSectionCopy", () => {
       files: [
         {
           path: "src/components/sections/featured/index.tsx",
-          content: 'import Card from "./Card";\nexport default function F() { return <Card />; }\n',
+          content:
+            'import Card from "./Card";\nexport default function F() { return <Card />; }\n',
         },
-        { path: "src/components/sections/featured/Card.tsx", content: "export default () => null;" },
+        {
+          path: "src/components/sections/featured/Card.tsx",
+          content: "export default () => null;",
+        },
         { path: "src/components/sections/featured/Card.test.tsx", content: "" },
       ],
     });
@@ -129,6 +144,44 @@ describe("planPageSectionCopy", () => {
     expect(plan.files[1]!.content).toContain('from "./Card"');
   });
 
+  it("copies JSX sections and their JavaScript helpers", () => {
+    const plan = planPageSectionCopy({
+      entryPath: "src/components/sections/featured/index.jsx",
+      routeSourcePath: "src/routes/index.tsx",
+      slotId: "featured",
+      files: [
+        {
+          path: "src/components/sections/featured/index.jsx",
+          content:
+            'import Card from "./Card.jsx";\nexport default function Featured() { return <Card />; }\n',
+        },
+        {
+          path: "src/components/sections/featured/Card.jsx",
+          content: "export default function Card() { return <img />; }",
+        },
+        {
+          path: "src/components/sections/featured/format.js",
+          content: "export const label = 'Featured';",
+        },
+      ],
+    });
+
+    expect(plan).toMatchObject({
+      ok: true,
+      entryPath: "src/components/page-sections/index/featured/index.jsx",
+    });
+    if (!plan.ok) return;
+    expect(plan.files.map((file) => file.path)).toEqual([
+      "src/components/page-sections/index/featured/Card.jsx",
+      "src/components/page-sections/index/featured/format.js",
+      "src/components/page-sections/index/featured/index.jsx",
+    ]);
+    expect(
+      plan.files.every((file) => file.mimeType === "text/javascript"),
+    ).toBe(true);
+    expect(plan.files[2]!.content).toContain('from "./Card.jsx"');
+  });
+
   it("refuses a section that imports another section", () => {
     const plan = planPageSectionCopy({
       entryPath: "src/components/sections/Promo.tsx",
@@ -137,7 +190,8 @@ describe("planPageSectionCopy", () => {
       files: [
         {
           path: "src/components/sections/Promo.tsx",
-          content: 'import Hero from "./Hero";\nexport default function P() { return <Hero />; }\n',
+          content:
+            'import Hero from "./Hero";\nexport default function P() { return <Hero />; }\n',
         },
         { path: "src/components/sections/Hero.tsx", content: HERO },
       ],
@@ -155,7 +209,10 @@ describe("planPageSectionCopy", () => {
       slotId: "hero",
       files: [
         { path: "src/components/sections/Hero.tsx", content: HERO },
-        { path: "src/components/page-sections/index/hero/index.tsx", content: "" },
+        {
+          path: "src/components/page-sections/index/hero/index.tsx",
+          content: "",
+        },
       ],
     });
 
@@ -174,16 +231,22 @@ describe("planPageSectionRemoval", () => {
         slotId: "hero",
         files: [
           { path: owned, content: HERO },
-          { path: "src/components/page-sections/index/hero/Part.tsx", content: "" },
-          { path: "src/components/page-sections/index/hero-2/index.tsx", content: HERO },
-          { path: "src/routes/index.tsx", content: "export default () => null;" },
+          {
+            path: "src/components/page-sections/index/hero/Part.tsx",
+            content: "",
+          },
+          {
+            path: "src/components/page-sections/index/hero-2/index.tsx",
+            content: HERO,
+          },
+          {
+            path: "src/routes/index.tsx",
+            content: "export default () => null;",
+          },
         ],
       }),
     ).toEqual({
-      paths: [
-        "src/components/page-sections/index/hero/Part.tsx",
-        owned,
-      ],
+      paths: ["src/components/page-sections/index/hero/Part.tsx", owned],
     });
   });
 
@@ -196,7 +259,8 @@ describe("planPageSectionRemoval", () => {
         { path: owned, content: HERO },
         {
           path: "src/routes/about.tsx",
-          content: 'import Hero from "../components/page-sections/index/hero/index";\n',
+          content:
+            'import Hero from "../components/page-sections/index/hero/index";\n',
         },
       ],
     });
@@ -210,7 +274,8 @@ describe("planPageSectionRemoval", () => {
       { path: owned, content: HERO },
       {
         path: "src/routes/about.tsx",
-        content: 'import Hero from "@/components/page-sections/index/hero-2";\n',
+        content:
+          'import Hero from "@/components/page-sections/index/hero-2";\n',
       },
     ];
     expect(
@@ -252,7 +317,10 @@ describe("planPageSectionRemoval with copies from the first detach", () => {
         slotId: "hero",
         files: [
           { path: legacy, content: HERO },
-          { path: "src/routes/products/$slug.tsx", content: "export default () => null;" },
+          {
+            path: "src/routes/products/$slug.tsx",
+            content: "export default () => null;",
+          },
         ],
       }),
     ).toEqual({ paths: [legacy] });
@@ -280,7 +348,8 @@ describe("planPageSectionRemoval with copies from the first detach", () => {
         { path: legacy, content: HERO },
         {
           path: "src/routes/about.tsx",
-          content: 'import Hero from "@/components/page-sections/products-slug/Hero";\n',
+          content:
+            'import Hero from "@/components/page-sections/products-slug/Hero";\n',
         },
       ],
     });
@@ -297,7 +366,10 @@ describe("listSectionTemplateSourcePaths", () => {
         content: 'export { contentFields, default } from "../Hero";\n',
       },
       { path: "src/components/Hero.tsx", content: HERO },
-      { path: "src/components/ThemeLink.tsx", content: "export default () => null;" },
+      {
+        path: "src/components/ThemeLink.tsx",
+        content: "export default () => null;",
+      },
     ]);
     expect([...paths].sort()).toEqual([
       "src/components/Hero.tsx",
