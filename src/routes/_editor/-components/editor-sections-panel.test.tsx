@@ -202,6 +202,10 @@ describe("EditorSectionsPanel visibility controls", () => {
     const addButton = screen.getByRole("button", { name: "Add section" });
     expect(addButton.hasAttribute("disabled")).toBe(false);
     fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
+    // The choice is where the copy stops following the library, so it says so.
+    expect(
+      await screen.findByText(/Later changes to the section library don.t update it/),
+    ).toBeTruthy();
     fireEvent.click(await screen.findByRole("menuitem", { name: "promo" }));
 
     await waitFor(() => expect(onAddSection).toHaveBeenCalledWith(option));

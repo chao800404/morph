@@ -421,7 +421,7 @@ test.describe("visual editor", () => {
     page,
   }) => {
     await openEditor(page);
-    const original = await sectionOrder(page);
+    const original = await settledSectionOrder(page);
     expect(
       original.length,
       "this template needs at least three sections",
@@ -438,7 +438,7 @@ test.describe("visual editor", () => {
       await dragSection(page, 0, 1);
       await expect.poll(() => sectionOrder(page)).not.toEqual(original);
       await settleAfterWrite(page, 1);
-      const afterFirst = await sectionOrder(page);
+      const afterFirst = await settledSectionOrder(page, original.length);
 
       await dragSection(page, 1, 2);
       await expect.poll(() => sectionOrder(page)).not.toEqual(afterFirst);
@@ -503,6 +503,38 @@ function sortableSectionRows(page: Page) {
   return page.locator(
     '[data-editor-tree-sortable="true"] button:has([data-editor-tree-icon="section"])',
   );
+}
+
+/**
+ * The section order once the panel has stopped re-rendering.
+ *
+ * A single read can land mid-render, when the row being moved is briefly
+ * present twice — once where it was, once where it is going — and the order
+ * captured then is one the panel never settles on. Every later comparison
+ * against it fails for 20 seconds and reads as an undo that went wrong. So the
+ * order is taken only when no name repeats, it matches the row count the page
+ * is known to have, and the same order comes back twice in a row.
+ */
+async function settledSectionOrder(page: Page, expectedLength?: number) {
+  let previous: string[] | null = null;
+  let settled: string[] = [];
+  await expect
+    .poll(
+      async () => {
+        const current = await sectionOrder(page);
+        const stable =
+          new Set(current).size === current.length &&
+          (expectedLength === undefined || current.length === expectedLength) &&
+          previous !== null &&
+          previous.join("\u0000") === current.join("\u0000");
+        previous = current;
+        if (stable) settled = current;
+        return stable;
+      },
+      { timeout: 15_000, intervals: [100, 200, 300] },
+    )
+    .toBe(true);
+  return settled;
 }
 
 async function sectionOrder(page: Page) {

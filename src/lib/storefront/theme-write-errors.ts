@@ -9,3 +9,14 @@
  * that the author's edit is still valid against a document that has moved.
  */
 export const TEMPLATE_DRAFT_CONFLICT = "TEMPLATE_DRAFT_CONFLICT";
+
+/**
+ * A content write the saved source cannot vouch for.
+ *
+ * The section's route (or layout) decides its structure through `content(...)`,
+ * yet the source does not confirm this section renders there — the route has
+ * diagnostics, does not declare the slot, or is not the route the editor named.
+ * Refused rather than checked against the component the Document last stored:
+ * that ref describes what rendered then, not what renders now.
+ */
+export const SECTION_SOURCE_UNCONFIRMED = "SECTION_SOURCE_UNCONFIRMED";

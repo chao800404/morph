@@ -587,10 +587,136 @@ export default function Hero() { return <h1 />; }`;
 
     it("refuses a route that does not belong to the template", async () => {
       seedProductRoutes();
-      await expect(write({ heading: "x" }, "/")).resolves.toBeNull();
+      await expect(write({ heading: "x" }, "/")).rejects.toThrow(
+        "SECTION_SOURCE_UNCONFIRMED",
+      );
       await expect(
         write({ heading: "x" }, "/products/$slug/missing"),
-      ).resolves.toBeNull();
+      ).rejects.toThrow("SECTION_SOURCE_UNCONFIRMED");
+    });
+
+    it("refuses a section the named route does not render", async () => {
+      seedProductRoutes();
+      // The detail route declares `hero`, so the template document has it;
+      // the listing is rewritten here to render nothing, and a write made on
+      // the listing must not borrow the detail route's component.
+      sqlite
+        .prepare(
+          `UPDATE storefront_theme_files SET content = ? WHERE id = 'f-list'`,
+        )
+        .run(`import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+export const Route = createFileRoute("/products/")({ component: Page });
+function Page() { return <main />; }`);
+      // The content contract has to exist for the import to count as the
+      // route adopting route-owned structure, as it does in every real Theme.
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_files
+            (id, storefront_id, theme_id, path, content, created_at, updated_at)
+          VALUES ('f-content', 'storefront-a', 'theme-a', 'src/morph/content.ts', 'export const content = () => ({});', 'now', 'now')`,
+        )
+        .run();
+      await expect(write({ heading: "x" }, "/products")).rejects.toThrow(
+        'does not render section "hero"',
+      );
+    });
+  });
+
+  describe("fails closed when source owns structure but cannot confirm the section", () => {
+    const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+    const hero = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero() { return <h1 />; }`;
+
+    const seed = (files: Record<string, string>) => {
+      const insertFile = sqlite.prepare(`
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+      `);
+      for (const [path, content] of Object.entries(files)) {
+        insertFile.run(`f-${path}`, path, content);
+      }
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_templates
+            (id, theme_id, type, name, document, created_at, updated_at)
+          VALUES ('template-home', 'theme-a', 'index', 'Home', ?, 'now', 'now')`,
+        )
+        .run(
+          JSON.stringify({
+            version: 1,
+            sections: [
+              {
+                id: "hero",
+                type: "hero",
+                componentRef: "src/components/Hero.tsx",
+                enabled: true,
+                props: { heading: "Stored" },
+              },
+            ],
+          }),
+        );
+    };
+    const write = () =>
+      storefrontThemeDal.updateSectionProps({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-home",
+        sectionId: "hero",
+        props: { heading: "New" },
+        expectedDraftGeneration: 1,
+        createdBy: "user-1",
+      });
+
+    it("refuses when the route has diagnostics", async () => {
+      // A second `hero` slot: the route declares structure, but which of the
+      // two the write is for cannot be told.
+      seed({
+        "src/routes/__root.tsx": root,
+        "src/routes/index.tsx": `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><Hero {...content("hero")} /><Hero {...content("hero")} /></main>; }`,
+        "src/components/Hero.tsx": hero,
+      });
+      await expect(write()).rejects.toThrow("SECTION_SOURCE_UNCONFIRMED");
+    });
+
+    it("refuses when the route files do not form a valid route tree", async () => {
+      seed({
+        // No root route: the registry is invalid, so nothing can be confirmed.
+        "src/routes/index.tsx": `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><Hero {...content("hero")} /></main>; }`,
+        "src/components/Hero.tsx": hero,
+      });
+      await expect(write()).rejects.toThrow("SECTION_SOURCE_UNCONFIRMED");
+    });
+
+    it("still accepts a route that never adopted content(...)", async () => {
+      // A Theme from before route-owned structure: the source has no say, so
+      // the stored ref is the only answer there is.
+      seed({
+        "src/routes/__root.tsx": root,
+        "src/routes/index.tsx": `import { createFileRoute } from "@tanstack/react-router";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><Hero /></main>; }`,
+        "src/components/Hero.tsx": hero,
+      });
+      const result = await write();
+      expect(result?.document.sections[0]).toMatchObject({
+        componentRef: "src/components/Hero.tsx",
+        props: { heading: "New" },
+      });
     });
   });
 

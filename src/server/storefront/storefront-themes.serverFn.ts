@@ -1,5 +1,8 @@
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
-import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
+import {
+  SECTION_SOURCE_UNCONFIRMED,
+  TEMPLATE_DRAFT_CONFLICT,
+} from "@/lib/storefront/theme-write-errors";
 import { parseRejectedContentField } from "@/lib/storefront/theme-content-capabilities";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import {
@@ -210,6 +213,16 @@ export const updateStorefrontThemeSectionProps = createServerFn({
           });
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
+      if (message.includes(SECTION_SOURCE_UNCONFIRMED)) {
+        return fail(
+          message.slice(
+            message.indexOf(SECTION_SOURCE_UNCONFIRMED) +
+              SECTION_SOURCE_UNCONFIRMED.length +
+              2,
+          ) || "This section cannot be confirmed in the current Theme source.",
+          { error: SECTION_SOURCE_UNCONFIRMED },
+        );
+      }
       const rejected = parseRejectedContentField(message);
       if (rejected) {
         // The thrown error names the field — down to `items.0.title` for a row

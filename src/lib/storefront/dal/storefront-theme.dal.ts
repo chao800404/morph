@@ -1,5 +1,8 @@
 import { env } from "cloudflare:workers";
-import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
+import {
+  SECTION_SOURCE_UNCONFIRMED,
+  TEMPLATE_DRAFT_CONFLICT,
+} from "@/lib/storefront/theme-write-errors";
 import { getDb } from "@/db";
 import { withReleaseNote } from "@/lib/storefront/release-note";
 import {
@@ -97,8 +100,15 @@ function deriveTemplateDocumentFromRoutes(args: {
 }
 
 type SectionSourceComponent =
-  | Readonly<{ ok: true; componentRef: string | null }>
-  | Readonly<{ ok: false }>;
+  /** The source confirms which component renders the section. */
+  | Readonly<{ kind: "confirmed"; componentRef: string }>
+  /**
+   * The source has no say: a Theme from before route-owned structure. Only
+   * here may the ref the Document stored stand in for the source.
+   */
+  | Readonly<{ kind: "legacy" }>
+  /** The source owns this structure and cannot vouch for the section. */
+  | Readonly<{ kind: "unconfirmed"; reason: string }>;
 
 /**
  * The component the saved source renders for one section.
@@ -109,13 +119,16 @@ type SectionSourceComponent =
  * moved onto a page-owned copy, or been rebound in Code mode, would otherwise
  * be validated against a component it no longer renders.
  *
+ * Fail closed. Once a route (or the layout) decides its structure through
+ * `content(...)`, a section it cannot confirm is refused — diagnostics, an
+ * undeclared slot, a named route that is not there or not this template's —
+ * rather than checked against a component that may no longer render at all.
+ * The stored ref is used only where the source has no opinion: a Theme with no
+ * route files, or a route or layout that never adopted `content(...)`.
+ *
  * `routePath` names the route the editor is showing, because one template can
- * sit behind several routes and the default pick is only a guess. It chooses
- * among routes the saved source declares, and only one that belongs to this
- * template; anything else is a stale or forged view and `ok: false` refuses the
- * write. `componentRef: null` means the source does not answer — no route, a
- * route with diagnostics, a slot it does not declare — and the caller keeps the
- * stored ref, as before this existed.
+ * sit behind several routes and the default pick is only a guess. It selects
+ * among routes the saved source declares; it never names a file to read.
  */
 function resolveSectionSourceComponent(args: {
   templateType: string;
@@ -125,22 +138,50 @@ function resolveSectionSourceComponent(args: {
 }): SectionSourceComponent {
   const fromSections = (
     derived: ReturnType<typeof deriveThemeRouteSections>,
+    owner: string,
   ): SectionSourceComponent => {
-    if (derived.diagnostics.length > 0) return { ok: true, componentRef: null };
+    const ownsStructure =
+      derived.hasContentImport || derived.sections.length > 0;
+    if (!ownsStructure) return { kind: "legacy" };
+    if (derived.diagnostics.length > 0) {
+      return {
+        kind: "unconfirmed",
+        reason: `${owner} has errors: ${derived.diagnostics[0]}`,
+      };
+    }
     const section = derived.sections.find(
-      (candidate) =>
-        candidate.slotId === args.sectionId &&
-        !candidate.missingComponentSourcePath,
+      (candidate) => candidate.slotId === args.sectionId,
     );
-    return { ok: true, componentRef: section?.componentRef ?? null };
+    if (!section) {
+      return {
+        kind: "unconfirmed",
+        reason: `${owner} does not render section "${args.sectionId}".`,
+      };
+    }
+    if (section.missingComponentSourcePath) {
+      return {
+        kind: "unconfirmed",
+        reason: `Section "${args.sectionId}" renders ${section.missingComponentSourcePath}, which is not in the Theme.`,
+      };
+    }
+    return { kind: "confirmed", componentRef: section.componentRef };
   };
 
   if (args.templateType === "layout") {
-    return fromSections(deriveThemeLayoutSections(args.files));
+    return fromSections(deriveThemeLayoutSections(args.files), "The layout");
   }
 
+  const hasRouteFiles = args.files.some((file) =>
+    file.path.startsWith("src/routes/"),
+  );
+  if (!hasRouteFiles) return { kind: "legacy" };
   const registry = buildThemeRouteRegistry(args.files);
-  if (!registry.valid) return { ok: true, componentRef: null };
+  if (!registry.valid) {
+    return {
+      kind: "unconfirmed",
+      reason: "The Theme routes have errors. Fix them in Code mode first.",
+    };
+  }
   let route: ThemeRouteRegistry["routes"][number] | null;
   if (args.routePath !== undefined) {
     route =
@@ -149,13 +190,24 @@ function resolveSectionSourceComponent(args: {
           candidate.kind === "route" && candidate.path === args.routePath,
       ) ?? null;
     if (!route || templateTypeForRoutePath(route.path) !== args.templateType) {
-      return { ok: false };
+      return {
+        kind: "unconfirmed",
+        reason: `Route "${args.routePath}" is not a route of this template. Refresh the editor.`,
+      };
     }
   } else {
     route = findDefaultTemplateRoute(registry, args.templateType);
-    if (!route) return { ok: true, componentRef: null };
+    if (!route) {
+      return {
+        kind: "unconfirmed",
+        reason: "No route renders this template.",
+      };
+    }
   }
-  return fromSections(deriveThemeRouteSections(args.files, route.sourcePath));
+  return fromSections(
+    deriveThemeRouteSections(args.files, route.sourcePath),
+    route.sourcePath,
+  );
 }
 
 async function listThemeSourceFiles(storefrontId: string, themeId: string) {
@@ -794,9 +846,15 @@ export const storefrontThemeDal = {
       files: await listThemeSourceFiles(data.storefrontId, data.themeId),
       routePath: data.routePath,
     });
-    if (!sourceComponent.ok) return null;
+    if (sourceComponent.kind === "unconfirmed") {
+      throw new Error(
+        `${SECTION_SOURCE_UNCONFIRMED}: ${sourceComponent.reason}`,
+      );
+    }
     const sectionComponentRef =
-      sourceComponent.componentRef ?? targetSection.componentRef ?? null;
+      sourceComponent.kind === "confirmed"
+        ? sourceComponent.componentRef
+        : (targetSection.componentRef ?? null);
 
     const manifestState = await env.DATABASE.prepare(
       `
