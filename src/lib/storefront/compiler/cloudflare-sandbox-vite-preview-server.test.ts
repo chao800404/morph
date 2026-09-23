@@ -4,6 +4,7 @@ import {
   CloudflareSandboxVitePreviewServer,
   THEME_PREVIEW_SERVER_PORT,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+  THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
   type PreviewServerSession,
 } from "./cloudflare-sandbox-vite-preview-server";
 
@@ -675,5 +676,163 @@ describe("asking twice for the same preview", () => {
 
     expect((await startWith(harness)).ok).toBe(true);
     expect(harness.commands).toHaveLength(1);
+  });
+});
+
+describe("recording what a start decided", () => {
+  type Observed = { event: string; fields: Record<string, any> };
+  const observe = () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    return {
+      events: (): Observed[] =>
+        spy.mock.calls
+          .map((call) => String(call[0]))
+          .filter((line) => line.startsWith("[preview-observe] "))
+          .map((line) => {
+            const rest = line.slice("[preview-observe] ".length);
+            const space = rest.indexOf(" ");
+            return {
+              event: rest.slice(0, space),
+              fields: JSON.parse(rest.slice(space + 1)),
+            };
+          }),
+      restore: () => spy.mockRestore(),
+    };
+  };
+  const lastStart = (events: Observed[]) =>
+    events.filter((entry) => entry.event === "start").at(-1)!.fields;
+
+  const withRunningVite = (harness: Harness) => {
+    let running = true;
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () =>
+        running
+          ? [
+              {
+                id: "already-running",
+                command:
+                  "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+                status: "running",
+              },
+            ]
+          : [];
+    const kill = harness.session.killProcess!.bind(harness.session);
+    (
+      harness.session as { killProcess: PreviewServerSession["killProcess"] }
+    ).killProcess = async (id) => {
+      await kill(id);
+      if (id === "already-running") running = false;
+    };
+  };
+
+  const contentFor = (heading: string) => ({
+    templates: {},
+    pages: { about: { heading } as never },
+  });
+
+  it("names the files a changed start rewrote, and returns its attempt id", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { previewContent: contentFor("one") });
+    withRunningVite(harness);
+
+    const log = observe();
+    const result = await startWith(harness, {
+      previewContent: contentFor("two"),
+    });
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(result.attemptId).toBe(start.attemptId);
+    expect(start).toMatchObject({
+      previewId: "preview-1",
+      outcome: "ready",
+      concurrentAtEntry: 0,
+      workspace: {
+        reused: false,
+        // Draft content is written twice: its own module, and inlined into
+        // the Vite config's content plugin. So a content edit alone changes
+        // a platform file too, and Vite reloads its config for it.
+        change: {
+          comparable: true,
+          byKind: { "preview-content": 1, "theme-source": 0, platform: 1 },
+          samplePaths: [
+            "/workspace/src/morph/preview-content.ts",
+            "/workspace/vite.config.ts",
+          ],
+        },
+      },
+      vite: { action: "restarted", runningProcessId: "already-running" },
+      destroyed: null,
+    });
+  });
+
+  it("shows when a workspace left dirty by a sync is restarted with nothing changed", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    withRunningVite(harness);
+    // What an incremental sync leaves behind after writing a file.
+    harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty");
+
+    const log = observe();
+    await startWith(harness);
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace).toMatchObject({
+      reused: false,
+      previous: "dirty",
+      change: { comparable: true, added: 0, removed: 0, changed: 0 },
+    });
+    expect(start.vite.action).toBe("restarted");
+  });
+
+  it("records why it destroyed the shared sandbox", async () => {
+    const harness = createSession("silent");
+    const log = observe();
+    const result = await startWith(harness, {}, { readyTimeoutMs: 20 });
+    const events = log.events();
+    log.restore();
+
+    expect(result.ok).toBe(false);
+    expect(
+      events.find((entry) => entry.event === "destroy")?.fields,
+    ).toMatchObject({ previewId: "preview-1", reason: "vite-timeout" });
+    expect(lastStart(events)).toMatchObject({
+      outcome: "failed",
+      destroyed: "vite-timeout",
+    });
+    expect(harness.destroyed).toBe(1);
+  });
+
+  it("never writes the preview address into the log", async () => {
+    const harness = createSession("ready");
+    const log = observe();
+    await startWith(harness);
+    const events = log.events();
+    log.restore();
+
+    expect(
+      events.map((entry) => JSON.stringify(entry.fields)).join("\n"),
+    ).not.toContain("sbx-tok");
+    expect(lastStart(events).address).toMatchObject({ reused: false });
+  });
+
+  it("keeps the manifest beside the marker across a rewrite", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    expect(harness.written.has(THEME_PREVIEW_WORKSPACE_MANIFEST_PATH)).toBe(
+      true,
+    );
+    withRunningVite(harness);
+    await startWith(harness, { previewContent: contentFor("changed") });
+
+    expect(harness.deletedPaths).not.toContain(
+      THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+    );
+    // The marker is still committed last, after the manifest.
+    expect(harness.writePaths.slice(-2)).toEqual([
+      THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    ]);
   });
 });

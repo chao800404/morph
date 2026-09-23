@@ -13,7 +13,10 @@ import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependenc
 import { themePackageRoot } from "./theme-dependency-policy";
 import { sha256 } from "./theme-compiler-hasher";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
-import { THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH } from "./theme-workspace-path";
+import {
+  THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH,
+  THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH,
+} from "./theme-workspace-path";
 import {
   readThemePathAliases,
   renderThemeViteAliases,
@@ -880,6 +883,7 @@ export async function materializeThemeSandboxWorkspace(
     }
     const expectedPaths = new Set(workspaceFiles.map((file) => file.path));
     const fingerprintPath = `${workspaceRoot}/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
+    const manifestPath = `${workspaceRoot}/${THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH}`;
     const staleFiles = listed.files
       .filter((entry) => entry.type === "file")
       .map((entry) => entry.absolutePath.replace(/\\/g, "/"))
@@ -894,6 +898,7 @@ export async function materializeThemeSandboxWorkspace(
             filePath.slice(workspaceRoot.length + 1),
           ) &&
           filePath !== fingerprintPath &&
+          filePath !== manifestPath &&
           !expectedPaths.has(filePath),
       );
     await runWithConcurrency(

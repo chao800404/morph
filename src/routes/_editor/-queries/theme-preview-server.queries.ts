@@ -28,7 +28,7 @@ function reportPreviewServerTimings(
   result: Awaited<ReturnType<typeof startThemePreviewServer>>,
 ): void {
   if (!result.success) return;
-  const { readyMs, timings, kind } = result.data;
+  const { readyMs, timings, kind, attemptId } = result.data;
   // Three kinds of number, kept apart, because they answer different questions:
   // a count of calls, a cumulative total that may exceed wall time when calls
   // overlap, and a stage that is wall time. A first version suffixed every
@@ -58,6 +58,8 @@ function reportPreviewServerTimings(
       : "";
   const parts = [
     `transport=${kind}`,
+    // Matches the server's `[preview-observe] start` line for this attempt.
+    attemptId ? `attempt=${attemptId}` : "",
     reuse ? `reuse=${reuse}` : "",
     stages.length ? `stages: ${format(stages)}` : "",
     cumulative.length ? `cumulative, may exceed wall: ${format(cumulative)}` : "",

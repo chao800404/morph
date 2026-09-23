@@ -23,6 +23,8 @@ export function recordPreviewStartFailure(detail: {
   storefrontId: string;
   themeId: string;
   previewId: string;
+  /** The start's `[preview-observe]` attempt, when the transport reports one. */
+  attemptId?: string;
 }): string {
   const traceId = crypto.randomUUID().slice(0, 8);
   console.error(
@@ -34,6 +36,7 @@ export function recordPreviewStartFailure(detail: {
       storefrontId: detail.storefrontId,
       themeId: detail.themeId,
       previewId: detail.previewId,
+      attemptId: detail.attemptId ?? null,
       // The tail is where a start failure explains itself; the head is the
       // same container boot every time.
       logs: (detail.logs ?? []).slice(-40),

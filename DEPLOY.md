@@ -142,6 +142,30 @@ editor prints a line when a preview starts:
   that holds in a container is the question this deployment answers.
 - `reuse=reusedProcess` beside `readyMs=0` means no server was started, not that
   one started instantly. A first measurement should come from a cold start.
+- `attempt=…` names the server-side record of the same start (below).
+
+**When a preview is slow or reconnects.** Each start, incremental sync, renewal
+and teardown writes one `[preview-observe]` line to the Worker log, tagged and
+followed by a JSON object:
+
+```
+[preview-observe] start {"attemptId":"…","previewId":"…","concurrentAtEntry":0,"outcome":"ready","workspace":{"reused":false,"previous":"dirty","change":{…}},"vite":{"action":"restarted",…},"address":{"reused":true,"digest":"…"},"destroyed":null,…}
+```
+
+- One preview container is shared by every tab an author has open on a Theme,
+  so a slow tab is usually explained by what another tab's `start` or `sync`
+  did just before it: `vite.action` `restarted`, `address.reused` false (a new
+  address; every frame on the old one goes stale), or a `destroy` line.
+- `workspace.change` names the files that made a start rewrite the workspace,
+  grouped as `preview-content`, `theme-source` and `platform`. `previous:
+  "dirty"` means an incremental sync touched the workspace since the last full
+  start.
+- The Sandbox SDK's own `Stale preview URL blocked` warnings carry the same
+  sandbox id as `previewId`; line the two up by time.
+- The browser console adds `[preview-lifecycle]` lines for each Live Preview
+  phase change, including automatic reconnects and why they happened.
+- Preview addresses are credentials and are never logged; `address.digest`
+  only tells two of them apart.
 
 **A build.** Publish once, then read the structured line the service emits:
 
