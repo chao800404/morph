@@ -33,7 +33,11 @@ import {
   deriveThemeRouteSections,
   mergeDocumentWithRouteSections,
 } from "@/lib/storefront/compiler/theme-route-sections";
-import { templateTypeForRoutePath } from "@/lib/storefront/theme-template-routes";
+import {
+  contentTargetForRoutePath,
+  routeTemplatePathForRequest,
+  templateTypeForRoutePath,
+} from "@/lib/storefront/theme-template-routes";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { filterSectionContentProps } from "@/lib/storefront/content/section-content-manifest";
 import { extractThemeDocumentComponentRefs } from "@/lib/storefront/theme-content-capability-shadow";
@@ -78,14 +82,32 @@ function findDefaultTemplateRoute(registry: ThemeRouteRegistry, type: string) {
   );
 }
 
+/** The registry route a route template is bound to, matched on the normalised path. */
+function findBoundTemplateRoute(
+  registry: ThemeRouteRegistry,
+  routePath: string,
+) {
+  return (
+    registry.routes.find(
+      (candidate) =>
+        candidate.kind === "route" &&
+        routeTemplatePathForRequest(candidate.path) === routePath,
+    ) ?? null
+  );
+}
+
 function deriveTemplateDocumentFromRoutes(args: {
   type: string;
+  /** Set for a document one route owns; that route, not a guess by type. */
+  routePath?: string | null;
   document: import("@/db/storefront.schema").StorefrontPageDocument;
   files: readonly { path: string; content: string }[];
 }) {
   const registry = buildThemeRouteRegistry(args.files);
   if (!registry.valid) return args.document;
-  const route = findDefaultTemplateRoute(registry, args.type);
+  const route = args.routePath
+    ? findBoundTemplateRoute(registry, args.routePath)
+    : findDefaultTemplateRoute(registry, args.type);
   if (!route) return args.document;
   const derived = deriveThemeRouteSections(args.files, route.sourcePath);
   if (
@@ -132,6 +154,8 @@ type SectionSourceComponent =
  */
 function resolveSectionSourceComponent(args: {
   templateType: string;
+  /** Set for a document one route owns. */
+  templateRoutePath?: string | null;
   sectionId: string;
   files: readonly { path: string; content: string }[];
   routePath?: string;
@@ -183,7 +207,26 @@ function resolveSectionSourceComponent(args: {
     };
   }
   let route: ThemeRouteRegistry["routes"][number] | null;
-  if (args.routePath !== undefined) {
+  if (args.templateRoutePath) {
+    // The document names its route; a write from any other route is aimed at
+    // a document it does not own.
+    if (
+      args.routePath !== undefined &&
+      routeTemplatePathForRequest(args.routePath) !== args.templateRoutePath
+    ) {
+      return {
+        kind: "unconfirmed",
+        reason: `This document holds content for ${args.templateRoutePath}, not ${args.routePath}. Refresh the editor.`,
+      };
+    }
+    route = findBoundTemplateRoute(registry, args.templateRoutePath);
+    if (!route) {
+      return {
+        kind: "unconfirmed",
+        reason: `Route ${args.templateRoutePath} is no longer in the Theme.`,
+      };
+    }
+  } else if (args.routePath !== undefined) {
     route =
       registry.routes.find(
         (candidate) =>
@@ -490,6 +533,7 @@ export const storefrontThemeDal = {
         id: storefrontThemeTemplates.id,
         type: storefrontThemeTemplates.type,
         name: storefrontThemeTemplates.name,
+        routePath: storefrontThemeTemplates.routePath,
         document: storefrontThemeTemplates.document,
         draftRevisionId: storefrontThemeTemplates.draftRevisionId,
         publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
@@ -542,6 +586,7 @@ export const storefrontThemeDal = {
           id: template.id,
           type: template.type as StorefrontThemeEditorDTO["templates"][number]["type"],
           name: template.name,
+          routePath: template.routePath ?? null,
           // Rows are given their identity here, in memory, and nothing is
           // written. Repairing data as a side effect of reading it would write
           // on every page load, race with whatever else is open, and give the
@@ -556,6 +601,7 @@ export const storefrontThemeDal = {
           document: normalizeDocumentRowIds(
             deriveTemplateDocumentFromRoutes({
               type: template.type,
+              routePath: template.routePath,
               document: storefrontPageDocumentSchema.parse(
                 typeof document === "string" ? JSON.parse(document) : document,
               ),
@@ -815,6 +861,136 @@ export const storefrontThemeDal = {
     });
   },
 
+  /**
+   * The document a static source route owns, created on first use.
+   *
+   * Only for a route no template type covers, that the saved source declares,
+   * and whose path has no parameters — `contentTargetForRoutePath` decides, the
+   * same rule the runtime serves by, so a document is never created where no
+   * visitor could be served it. Created empty: a document is values only, the
+   * route's source is its structure, and the first real write fills it.
+   *
+   * Idempotent. Two editors opening the same route race to create it; the
+   * partial unique index on (theme, route_path) lets exactly one insert land,
+   * and the other reads back the one that did.
+   */
+  async ensureRouteTemplate(data: {
+    storefrontId: string;
+    themeId: string;
+    routePath: string;
+  }): Promise<
+    | Readonly<{
+        ok: true;
+        template: Readonly<{
+          id: string;
+          routePath: string;
+          draftGeneration: number;
+          draftRevisionId: string | null;
+        }>;
+      }>
+    | Readonly<{ ok: false; reason: string }>
+  > {
+    const target = contentTargetForRoutePath(data.routePath);
+    if (target.kind === "template") {
+      return {
+        ok: false,
+        reason: `${data.routePath} stores its content in the ${target.type} template.`,
+      };
+    }
+    if (target.kind === "unsupported") {
+      return { ok: false, reason: target.reason };
+    }
+
+    const db = await getDb();
+    const [theme] = await db
+      .select({ id: storefrontThemes.id })
+      .from(storefrontThemes)
+      .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
+      .where(
+        and(
+          eq(storefrontThemes.id, data.themeId),
+          eq(storefronts.id, data.storefrontId),
+          isNull(storefrontThemes.deletedAt),
+          isNull(storefronts.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!theme) return { ok: false, reason: "Theme not found." };
+
+    const registry = buildThemeRouteRegistry(
+      await listThemeSourceFiles(data.storefrontId, data.themeId),
+    );
+    if (!registry.valid || !findBoundTemplateRoute(registry, target.routePath)) {
+      return {
+        ok: false,
+        reason: `${target.routePath} is not a route in the saved Theme source.`,
+      };
+    }
+
+    const readExisting = async () => {
+      const [row] = await db
+        .select({
+          id: storefrontThemeTemplates.id,
+          draftGeneration: storefrontThemeTemplates.draftGeneration,
+          draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+        })
+        .from(storefrontThemeTemplates)
+        .where(
+          and(
+            eq(storefrontThemeTemplates.themeId, data.themeId),
+            eq(storefrontThemeTemplates.routePath, target.routePath),
+            isNull(storefrontThemeTemplates.deletedAt),
+          ),
+        )
+        .limit(1);
+      return row
+        ? {
+            ok: true as const,
+            template: {
+              id: row.id,
+              routePath: target.routePath,
+              draftGeneration: row.draftGeneration ?? 1,
+              draftRevisionId: row.draftRevisionId,
+            },
+          }
+        : null;
+    };
+
+    const existing = await readExisting();
+    if (existing) return existing;
+
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    try {
+      await db.insert(storefrontThemeTemplates).values({
+        id,
+        themeId: data.themeId,
+        type: "page",
+        // Unique per (theme, type, name) as well; the path is the one name
+        // that cannot collide with another route's document.
+        name: target.routePath,
+        routePath: target.routePath,
+        document: { version: 1, sections: [] },
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (error) {
+      // Lost the race to another editor: theirs is the document.
+      const created = await readExisting();
+      if (created) return created;
+      throw error;
+    }
+    return {
+      ok: true,
+      template: {
+        id,
+        routePath: target.routePath,
+        draftGeneration: 1,
+        draftRevisionId: null,
+      },
+    };
+  },
+
   async updateSectionProps(data: {
     storefrontId: string;
     themeId: string;
@@ -842,6 +1018,7 @@ export const storefrontThemeDal = {
 
     const sourceComponent = resolveSectionSourceComponent({
       templateType: template.type,
+      templateRoutePath: template.routePath ?? null,
       sectionId: data.sectionId,
       files: await listThemeSourceFiles(data.storefrontId, data.themeId),
       routePath: data.routePath,

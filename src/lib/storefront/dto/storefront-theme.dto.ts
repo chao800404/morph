@@ -34,6 +34,11 @@ export interface StorefrontThemeEditorDTO {
     id: string;
     type: StorefrontTemplateType;
     name: string;
+    /**
+     * The one static source route this document holds content for. Absent
+     * or null for a document shared by every route of its type.
+     */
+    routePath?: string | null;
     document: StorefrontPageDocument;
     draftRevisionId: string | null;
     publishedRevisionId: string | null;

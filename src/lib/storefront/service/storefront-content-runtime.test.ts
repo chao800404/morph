@@ -323,3 +323,58 @@ describe("pageHandleForPath (RUNTIME-02)", () => {
     expect(result.slots).toEqual({ s: { heading: "Template" } });
   });
 });
+
+describe("a static route's own document", () => {
+  const layout = {
+    sections: [{ id: "starter-header", enabled: true, props: { storeName: "Store" } }],
+  };
+  const aboutus = {
+    sections: [{ id: "featured", enabled: true, props: { heading: "About us" } }],
+  };
+  const ports = () => ({
+    getPublishedDocument: vi.fn(
+      async ({ templateType }: { templateType: string }) =>
+        (templateType === "layout" ? layout : null) as never,
+    ),
+    getPublishedRouteDocument: vi.fn(
+      async ({ routePath }: { routePath: string }) =>
+        (routePath === "/aboutus" ? aboutus : null) as never,
+    ),
+  });
+
+  it("serves the route's document by its exact path, inside the shell", async () => {
+    const p = ports();
+    const result = await resolveStorefrontContent({
+      publicationId: "pub_1",
+      pathname: "/aboutus/?ref=nav",
+      ports: p,
+    });
+    expect(p.getPublishedRouteDocument).toHaveBeenCalledWith({
+      publicationId: "pub_1",
+      routePath: "/aboutus",
+    });
+    expect(result.slots).toEqual({
+      "starter-header": { storeName: "Store" },
+      featured: { heading: "About us" },
+    });
+  });
+
+  it("never asks for a route document on a path a type covers", async () => {
+    const p = ports();
+    await resolveStorefrontContent({
+      publicationId: "pub_1",
+      pathname: "/products/shoe",
+      ports: p,
+    });
+    expect(p.getPublishedRouteDocument).not.toHaveBeenCalled();
+  });
+
+  it("still serves the shell where no route document exists", async () => {
+    const result = await resolveStorefrontContent({
+      publicationId: "pub_1",
+      pathname: "/contact",
+      ports: ports(),
+    });
+    expect(result.slots).toEqual({ "starter-header": { storeName: "Store" } });
+  });
+});

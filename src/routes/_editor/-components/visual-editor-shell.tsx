@@ -1,3 +1,4 @@
+import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import {
   commitPendingContent,
   type PendingContentEntry,
@@ -132,6 +133,7 @@ import {
   publishStorefrontThemeTemplate,
   renameStorefrontThemeSection,
   updateStorefrontThemeSectionProps,
+  ensureStorefrontThemeRouteTemplate,
 } from "@/server/storefront/storefront-themes.serverFn";
 
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
@@ -229,9 +231,14 @@ import {
 } from "./live-preview-lifecycle";
 import {
   resolveEditorTemplate,
-  templateTypeForRoute,
+  routeOwnsDocument,
+  routePathFromTemplatePlaceholder,
+  routeTemplatePlaceholderId,
+  templateAppliesToRoute,
+  templateForRoute,
   toEditorRouteSearch,
 } from "./editor-template";
+import { contentTargetForRoutePath } from "@/lib/storefront/theme-template-routes";
 import {
   EditorToolbar,
   EditorToolbarGroup,
@@ -267,6 +274,37 @@ import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
+
+/**
+ * A template to load the editor against for a route with no document yet.
+ *
+ * Never another route's own document: the editor publishes the template it
+ * is loaded against, and one route's document standing in for another page is
+ * how a publish from that page would ship the wrong route's draft.
+ */
+function borrowableTemplate<T extends { routePath?: string | null; type: string }>(
+  templates: readonly T[],
+  activeTemplate: T | undefined,
+): T | undefined {
+  const shared = templates.filter(
+    (template) => !template.routePath && template.type !== "layout",
+  );
+  return activeTemplate && !activeTemplate.routePath
+    ? activeTemplate
+    : (shared[0] ?? templates[0]);
+}
+
+/** A route's own document before its first write: no sections stored yet. */
+const EMPTY_ROUTE_DOCUMENT: StorefrontPageDocument = {
+  version: 1,
+  sections: [],
+};
+
+/** The normalised path a route's own document is bound to. */
+function contentTargetRoutePath(routePath: string): string {
+  const target = contentTargetForRoutePath(routePath);
+  return target.kind === "route" ? target.routePath : routePath;
+}
 
 const loadEditorCodeWorkspace = () =>
   import("./editor-code-workspace").then((module) => ({
@@ -666,6 +704,22 @@ export function VisualEditorShell({
   }, [assistantPanelTab, isCommentMode, isSelectionMode]);
 
   const activeTemplate = resolveEditorTemplate(context, search);
+  /**
+   * The document this page's own sections are stored in.
+   *
+   * The active template when it is the one behind the route. For a static
+   * route no type covers, its own document — a placeholder id until the first
+   * write creates it. Null when neither applies: the editor loaded a borrowed
+   * template, and writing this page's sections into it is exactly what the
+   * server refuses.
+   */
+  const pageTemplateId = templateAppliesToRoute(activeTemplate, search.routePath)
+    ? (activeTemplate?.id ?? null)
+    : search.routePath && routeOwnsDocument(search.routePath)
+      ? routeTemplatePlaceholderId(
+          contentTargetRoutePath(search.routePath),
+        )
+      : null;
   const queryClient = useQueryClient();
   const [pendingRoutePath, setPendingRoutePath] = useState<string | null>(null);
   const [pendingRouteSelection, setPendingRouteSelection] = useState<{
@@ -950,22 +1004,66 @@ export function VisualEditorShell({
 
   const { actions: history, state: historyState } = useEditorHistory();
 
+  /** Route documents created in this session, by the placeholder they replaced. */
+  const routeTemplateIdsRef = useRef<Map<string, string>>(new Map());
+
   const enqueueTemplateMutation = useCallback(
     (
-      templateId: string,
-      op: (generation: number) => Promise<ServerResult<unknown>>,
+      requestedTemplateId: string,
+      op: (
+        generation: number,
+        templateId: string,
+      ) => Promise<ServerResult<unknown>>,
     ) => {
-      const currentQueue =
-        templateMutationQueueRef.current.get(templateId) ?? Promise.resolve();
+      // A placeholder stands for a route document not created yet. Once it
+      // has been, writes queue behind the real id — and behind anything still
+      // queued under the placeholder, so the two never race one document.
+      const knownId = routeTemplateIdsRef.current.get(requestedTemplateId);
+      const queueKey = knownId ?? requestedTemplateId;
+      const currentQueue = Promise.all([
+        templateMutationQueueRef.current.get(queueKey) ?? Promise.resolve(),
+        knownId
+          ? (templateMutationQueueRef.current.get(requestedTemplateId) ??
+            Promise.resolve())
+          : Promise.resolve(),
+      ]);
       const nextPromise = currentQueue
         .catch(() => {})
-        .then(async () => {
+        .then(async (): Promise<ServerResult<unknown>> => {
+          let templateId = queueKey;
+          const routePath = routePathFromTemplatePlaceholder(templateId);
+          if (routePath !== null) {
+            const ensured = await ensureStorefrontThemeRouteTemplate({
+              data: {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                routePath,
+              },
+            });
+            if (!ensured.success) return ensured;
+            templateId = ensured.data.id;
+            routeTemplateIdsRef.current.set(queueKey, templateId);
+            if (!templateDraftGenerationRef.current.has(templateId)) {
+              templateDraftGenerationRef.current.set(
+                templateId,
+                ensured.data.draftGeneration,
+              );
+            }
+            // The editor context now has a document for this route; reading
+            // it back is what moves the page's bindings onto the real id.
+            void queryClient.invalidateQueries({
+              queryKey: storefrontThemeQueries.detail(
+                context.storefront.id,
+                context.theme.id,
+              ).queryKey,
+            });
+          }
           const expectedDraftGeneration = resolveTemplateDraftGeneration({
             templateId,
             observed: templateDraftGenerationRef.current,
             templates: context.templates,
           });
-          const result = await op(expectedDraftGeneration);
+          const result = await op(expectedDraftGeneration, templateId);
           if (
             result.success &&
             result.data !== null &&
@@ -987,10 +1085,10 @@ export function VisualEditorShell({
           }
           return result;
         });
-      templateMutationQueueRef.current.set(templateId, nextPromise);
+      templateMutationQueueRef.current.set(queueKey, nextPromise);
       return nextPromise;
     },
-    [context.templates],
+    [context.storefront.id, context.templates, context.theme.id, queryClient],
   );
 
   const contentChangeRef = useRef<
@@ -1013,9 +1111,9 @@ export function VisualEditorShell({
           baselines: pendingPropsBaselineRef.current,
           failureCode: (result) => result.error,
           save: (entry) =>
-            enqueueTemplateMutation(tid, (generation) =>
+            enqueueTemplateMutation(tid, (generation, templateId) =>
               updatePropsMutation.mutateAsync({
-                templateId: tid,
+                templateId,
                 sectionId: entry.sectionId,
                 props: entry.props,
                 expectedDraftGeneration: generation,
@@ -1126,7 +1224,7 @@ export function VisualEditorShell({
    * content is not touched — that has to go through the update, not a resend.
    */
   const retryFailedContent = useCallback(async () => {
-    const templateId = activeTemplate?.id;
+    const templateId = pageTemplateId;
     if (!templateId) return;
     const prefix = `${templateId}:`;
     for (const key of Array.from(pendingPropsMapRef.current.keys())) {
@@ -1135,11 +1233,11 @@ export function VisualEditorShell({
         // Reported by the mutation, and still pending if it failed again.
       });
     }
-  }, [activeTemplate?.id, commitSectionPending]);
+  }, [pageTemplateId, commitSectionPending]);
 
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
-      const tid = targetTemplateId ?? activeTemplate?.id;
+      const tid = targetTemplateId ?? pageTemplateId;
       if (!tid) return;
       const prefix = `${tid}:`;
       await templateMutationQueueRef.current.get(tid)?.catch(() => {});
@@ -1165,7 +1263,7 @@ export function VisualEditorShell({
         );
       }
     },
-    [activeTemplate?.id, commitSectionPending],
+    [pageTemplateId, commitSectionPending],
   );
 
   const previewSourceOriginRef = useRef<string | null>(null);
@@ -1772,11 +1870,8 @@ export function VisualEditorShell({
     // to keep the editor loading; `templateAppliesToRoute` is what stops the
     // panel presenting it as this page's content.
     const routeTemplate =
-      context.templates.find(
-        (template) => template.type === templateTypeForRoute(pendingRoutePath),
-      ) ??
-      activeTemplate ??
-      context.templates[0];
+      templateForRoute(context.templates, pendingRoutePath) ??
+      borrowableTemplate(context.templates, activeTemplate);
     if (!routeTemplate) return;
     onSearchChange(toEditorRouteSearch(routeTemplate, pendingRoutePath));
   }, [
@@ -1863,8 +1958,8 @@ export function VisualEditorShell({
    */
   const routePathForTemplate = useCallback(
     (templateId: string): string | undefined =>
-      templateId === activeTemplate?.id ? activeThemeRoute?.path : undefined,
-    [activeTemplate?.id, activeThemeRoute?.path],
+      templateId === pageTemplateId ? activeThemeRoute?.path : undefined,
+    [pageTemplateId, activeThemeRoute?.path],
   );
   /**
    * What is on this page and which document stores each part.
@@ -1876,7 +1971,12 @@ export function VisualEditorShell({
   const sectionModel = useMemo(
     () =>
       resolveEditorSectionModel({
-        pageTemplate: activeTemplate,
+        pageTemplate:
+          pageTemplateId === null
+            ? undefined
+            : pageTemplateId === activeTemplate?.id
+              ? activeTemplate
+              : { id: pageTemplateId, document: EMPTY_ROUTE_DOCUMENT },
         shellTemplate: layoutTemplate,
         pageSections: activeRouteSections,
         pageUnboundSections: activeRouteStructure.unboundSections,
@@ -1893,6 +1993,7 @@ export function VisualEditorShell({
       layoutStructure.unboundSections,
       layoutSections,
       layoutTemplate,
+      pageTemplateId,
       routeOwnsStructure,
     ],
   );
@@ -2189,11 +2290,8 @@ export function VisualEditorShell({
       });
       setPendingRoutePath(route.path);
       const routeTemplate =
-        context.templates.find(
-          (template) => template.type === templateTypeForRoute(route.path),
-        ) ??
-        activeTemplate ??
-        context.templates[0];
+        templateForRoute(context.templates, route.path) ??
+        borrowableTemplate(context.templates, activeTemplate);
       if (routeTemplate) {
         onSearchChange(toEditorRouteSearch(routeTemplate, route.path));
       }
@@ -3366,7 +3464,7 @@ export function VisualEditorShell({
       }
 
       // 1. Flush any pending debounced props saves and await queued template mutations
-      await flushTemplatePendingProps(activeTemplate.id);
+      await flushTemplatePendingProps();
       // The shell is published with whatever page is being published, so its
       // pending edits have to be committed in the same breath.
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
@@ -5004,7 +5102,7 @@ export function VisualEditorShell({
           message: "The active template has no source-authored route.",
         };
       }
-      if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      if (activeTemplate) await flushTemplatePendingProps();
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
 
       const routeFile = effectiveThemeFiles.find(
@@ -5352,7 +5450,7 @@ export function VisualEditorShell({
           : current,
       );
 
-      const key = `${activeTemplate.id}:${message.sectionId}`;
+      const key = `${templateIdForSection(message.sectionId) ?? activeTemplate.id}:${message.sectionId}`;
       const currentProps = {
         ...sectionPropsSnapshot(message.sectionId),
         ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
@@ -5372,6 +5470,7 @@ export function VisualEditorShell({
     handleSectionPropsChange,
     isSelectionMode,
     sectionPropsSnapshot,
+    templateIdForSection,
   ]);
 
   /**
@@ -5402,7 +5501,11 @@ export function VisualEditorShell({
         return;
       }
 
-      const templateId = activeTemplate.id;
+      const templateId = templateIdForSection(sectionId);
+      if (!templateId) {
+        toast.error("This page has no document to store this section in.");
+        return;
+      }
       const key = `${templateId}:${sectionId}`;
       const pendingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
       const currentProps = { ...section.props, ...pendingProps };
@@ -5509,6 +5612,7 @@ export function VisualEditorShell({
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       routePathForTemplate,
+      templateIdForSection,
       updatePropsMutation,
     ],
   );
@@ -5538,8 +5642,8 @@ export function VisualEditorShell({
       // 1. Instant 0ms visual toggle on canvas
       syncPreviewSectionProps(sectionId, undefined, enabled);
 
-      if (!activeTemplate) return;
-      const templateId = activeTemplate.id;
+      const templateId = templateIdForSection(sectionId);
+      if (!templateId) return;
       const key = `${templateId}:${sectionId}`;
 
       const existingTimer = pendingPropsTimersRef.current.get(key);
@@ -5588,6 +5692,7 @@ export function VisualEditorShell({
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       routePathForTemplate,
+      templateIdForSection,
       updatePropsMutation,
     ],
   );
@@ -5605,20 +5710,19 @@ export function VisualEditorShell({
    */
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
-      const template = sectionModel.bindings.get(sectionId)?.templateId
-        ? context.templates.find(
-            (item) =>
-              item.id === sectionModel.bindings.get(sectionId)?.templateId,
-          )
-        : activeTemplate;
-      if (!template) throw new Error("No template owns this section.");
-      await flushTemplatePendingProps(template.id);
-      const result = await enqueueTemplateMutation(template.id, (generation) =>
+      // The binding, not the active template: on a page whose document is not
+      // created yet that is a placeholder, and the queue creates it first.
+      const boundTemplateId = sectionModel.bindings.get(sectionId)?.templateId;
+      if (!boundTemplateId) throw new Error("No template owns this section.");
+      await flushTemplatePendingProps(boundTemplateId);
+      const result = await enqueueTemplateMutation(
+        boundTemplateId,
+        (generation, templateId) =>
         renameStorefrontThemeSection({
           data: {
             storefrontId: context.storefront.id,
             themeId: context.theme.id,
-            templateId: template.id,
+            templateId,
             sectionId,
             name,
             expectedDraftGeneration: generation,
@@ -5653,7 +5757,7 @@ export function VisualEditorShell({
       if (!activeThemeRoute) {
         throw new Error("The active template has no source-authored route.");
       }
-      if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      if (activeTemplate) await flushTemplatePendingProps();
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === activeThemeRoute.sourcePath,
@@ -5723,7 +5827,7 @@ export function VisualEditorShell({
       if (!activeThemeRoute) {
         throw new Error("The active template has no source-authored route.");
       }
-      if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      if (activeTemplate) await flushTemplatePendingProps();
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === activeThemeRoute.sourcePath,
@@ -5880,7 +5984,7 @@ export function VisualEditorShell({
           "The selected section is no longer on the active route.",
         );
       }
-      if (activeTemplate) await flushTemplatePendingProps(activeTemplate.id);
+      if (activeTemplate) await flushTemplatePendingProps();
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === candidate.routeSourcePath,

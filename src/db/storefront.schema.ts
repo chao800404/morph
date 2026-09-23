@@ -180,6 +180,17 @@ export const storefrontThemeTemplates = sqliteTable(
       .references(() => storefrontThemes.id, { onDelete: "cascade" }),
     type: text("type").$type<StorefrontTemplateType>().notNull(),
     name: text("name").notNull(),
+    /**
+     * The one source route this document holds content for, or null.
+     *
+     * Most documents are addressed by type — `/` reads `index`, every
+     * `/products/...` reads `product`. A static route no type describes
+     * (`/aboutus`) has no such document to share, and sharing one `page`
+     * document between several of them would let a write on one route drop
+     * the others' sections. So each gets its own, bound here by route path,
+     * and is never returned by a lookup by type.
+     */
+    routePath: text("route_path"),
     document: text("document", { mode: "json" })
       .$type<StorefrontPageDocument>()
       .notNull(),
@@ -192,6 +203,11 @@ export const storefrontThemeTemplates = sqliteTable(
     uniqueIndex("storefront_theme_templates_active_name_unique")
       .on(table.themeId, table.type, table.name)
       .where(sql`${table.deletedAt} IS NULL`),
+    uniqueIndex("storefront_theme_templates_active_route_unique")
+      .on(table.themeId, table.routePath)
+      .where(
+        sql`${table.routePath} IS NOT NULL AND ${table.deletedAt} IS NULL`,
+      ),
     index("storefront_theme_templates_theme_type_idx").on(
       table.themeId,
       table.type,

@@ -119,6 +119,7 @@ beforeEach(() => {
       theme_id text NOT NULL,
       type text NOT NULL,
       name text NOT NULL,
+      route_path text,
       document text NOT NULL,
       draft_revision_id text,
       published_revision_id text,
@@ -127,6 +128,9 @@ beforeEach(() => {
       updated_at text NOT NULL,
       deleted_at text
     );
+    CREATE UNIQUE INDEX storefront_theme_templates_active_route_unique
+      ON storefront_theme_templates (theme_id, route_path)
+      WHERE route_path IS NOT NULL AND deleted_at IS NULL;
     CREATE TABLE storefront_theme_template_revisions (
       id text PRIMARY KEY NOT NULL,
       template_id text NOT NULL,
@@ -518,10 +522,11 @@ export default function Hero() { return <h1 />; }`;
       `);
       insertFile.run("f-root", "src/routes/__root.tsx", root);
       // One template, two routes, a different component behind the same slot.
+      // Both under /products/, so both are routes of the product template.
       insertFile.run(
         "f-list",
-        "src/routes/products.index.tsx",
-        routeRendering("/products/", "ListHero"),
+        "src/routes/products.featured.tsx",
+        routeRendering("/products/featured", "ListHero"),
       );
       insertFile.run(
         "f-detail",
@@ -577,7 +582,10 @@ export default function Hero() { return <h1 />; }`;
       seedProductRoutes();
       // The listing never declared `badge`, so it is not accepted there even
       // though the detail route's hero would take it.
-      const result = await write({ heading: "All", badge: "x" }, "/products");
+      const result = await write(
+        { heading: "All", badge: "x" },
+        "/products/featured",
+      );
       expect(result?.document.sections[0]).toMatchObject({
         componentRef: "src/components/ListHero.tsx",
         props: { heading: "All" },
@@ -606,7 +614,7 @@ export default function Hero() { return <h1 />; }`;
         )
         .run(`import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
-export const Route = createFileRoute("/products/")({ component: Page });
+export const Route = createFileRoute("/products/featured")({ component: Page });
 function Page() { return <main />; }`);
       // The content contract has to exist for the import to count as the
       // route adopting route-owned structure, as it does in every real Theme.
@@ -617,9 +625,9 @@ function Page() { return <main />; }`);
           VALUES ('f-content', 'storefront-a', 'theme-a', 'src/morph/content.ts', 'export const content = () => ({});', 'now', 'now')`,
         )
         .run();
-      await expect(write({ heading: "x" }, "/products")).rejects.toThrow(
-        'does not render section "hero"',
-      );
+      await expect(
+        write({ heading: "x" }, "/products/featured"),
+      ).rejects.toThrow('does not render section "hero"');
     });
   });
 
@@ -717,6 +725,170 @@ function Home() { return <main><Hero /></main>; }`,
         componentRef: "src/components/Hero.tsx",
         props: { heading: "New" },
       });
+    });
+  });
+
+  describe("a static route's own document", () => {
+    const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+    const route = (id: string, slot: string) => `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("${id}")({ component: Page });
+function Page() { return <main><Hero {...content("${slot}")} /></main>; }`;
+    const hero = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero() { return <h1 />; }`;
+
+    const seed = () => {
+      const insertFile = sqlite.prepare(`
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+      `);
+      insertFile.run("r-root", "src/routes/__root.tsx", root);
+      insertFile.run("r-index", "src/routes/index.tsx", route("/", "home-hero"));
+      insertFile.run("r-about", "src/routes/aboutus.tsx", route("/aboutus", "about-hero"));
+      insertFile.run("r-contact", "src/routes/contact.tsx", route("/contact", "contact-hero"));
+      insertFile.run("r-journal", "src/routes/journal.$slug.tsx", route("/journal/$slug", "post"));
+      insertFile.run("r-hero", "src/components/Hero.tsx", hero);
+      insertFile.run(
+        "r-content",
+        "src/morph/content.ts",
+        "export const content = () => ({});",
+      );
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_templates
+            (id, theme_id, type, name, document, created_at, updated_at)
+          VALUES ('template-home', 'theme-a', 'index', 'Home', ?, 'now', 'now')`,
+        )
+        .run(JSON.stringify({ version: 1, sections: [] }));
+    };
+    const ensure = (routePath: string) =>
+      storefrontThemeDal.ensureRouteTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        routePath,
+      });
+    const write = (
+      templateId: string,
+      sectionId: string,
+      routePath: string,
+      heading: string,
+    ) =>
+      storefrontThemeDal.updateSectionProps({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId,
+        sectionId,
+        props: { heading },
+        expectedDraftGeneration: 1,
+        createdBy: "user-1",
+        routePath,
+      });
+
+    it("creates one document per route, once", async () => {
+      seed();
+      const first = await ensure("/aboutus/");
+      const again = await ensure("/aboutus");
+      expect(first).toMatchObject({ ok: true, template: { routePath: "/aboutus" } });
+      expect(again.ok && first.ok && again.template.id).toBe(
+        first.ok && first.template.id,
+      );
+      const contact = await ensure("/contact");
+      expect(contact.ok && first.ok && contact.template.id).not.toBe(
+        first.ok && first.template.id,
+      );
+    });
+
+    it("creates none where a type covers the route, or no route exists", async () => {
+      seed();
+      expect(await ensure("/")).toMatchObject({ ok: false });
+      expect(await ensure("/journal/$slug")).toMatchObject({ ok: false });
+      expect(await ensure("/missing")).toMatchObject({ ok: false });
+    });
+
+    it("reads its document through its own route, and stores writes there", async () => {
+      seed();
+      const about = await ensure("/aboutus");
+      const contact = await ensure("/contact");
+      if (!about.ok || !contact.ok) throw new Error("setup");
+
+      const context = await storefrontThemeDal.findEditorContext(
+        "storefront-a",
+        "theme-a",
+      );
+      const aboutDoc = context?.templates.find((t) => t.id === about.template.id);
+      expect(aboutDoc?.routePath).toBe("/aboutus");
+      expect(aboutDoc?.document.sections.map((section) => section.id)).toEqual([
+        "about-hero",
+      ]);
+
+      const saved = await write(about.template.id, "about-hero", "/aboutus", "About");
+      expect(saved?.document.sections[0]).toMatchObject({
+        id: "about-hero",
+        componentRef: "src/components/Hero.tsx",
+        props: { heading: "About" },
+      });
+      // A second route's document is its own; writing one drops nothing from
+      // the other, which a single shared `page` document would have done.
+      const contactSaved = await write(
+        contact.template.id,
+        "contact-hero",
+        "/contact",
+        "Contact",
+      );
+      expect(contactSaved?.document.sections.map((s) => s.id)).toEqual([
+        "contact-hero",
+      ]);
+    });
+
+    it("refuses a write that names a different route", async () => {
+      seed();
+      const about = await ensure("/aboutus");
+      if (!about.ok) throw new Error("setup");
+      await expect(
+        write(about.template.id, "about-hero", "/contact", "x"),
+      ).rejects.toThrow("SECTION_SOURCE_UNCONFIRMED");
+      // And the shared home document still refuses a route it does not serve:
+      // it is read through `/`, which has no such section to write.
+      await expect(
+        write("template-home", "about-hero", "/aboutus", "x"),
+      ).resolves.toBeNull();
+    });
+
+    it("is served by path, and never stands in for its type", async () => {
+      seed();
+      const about = await ensure("/aboutus");
+      if (!about.ok) throw new Error("setup");
+      await write(about.template.id, "about-hero", "/aboutus", "Published about");
+      const revision = sqlite
+        .prepare(
+          `SELECT draft_revision_id AS id FROM storefront_theme_templates WHERE id = ?`,
+        )
+        .get(about.template.id) as { id: string };
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_content_publication_items
+            (id, publication_id, item_type, content_id, revision_id, created_at, updated_at)
+          VALUES ('item-about', 'pub-1', 'template', ?, ?, 'now', 'now')`,
+        )
+        .run(about.template.id, revision.id);
+
+      const byRoute = (await storefrontContentPublicationDal.getPublishedRouteDocument({
+        publicationId: "pub-1",
+        routePath: "/aboutus",
+      })) as { sections: { props: { heading: string } }[] } | null;
+      expect(byRoute?.sections[0]?.props.heading).toBe("Published about");
+      expect(
+        await storefrontContentPublicationDal.getPublishedTemplateDocument({
+          publicationId: "pub-1",
+          templateType: "page",
+        }),
+      ).toBeNull();
     });
   });
 

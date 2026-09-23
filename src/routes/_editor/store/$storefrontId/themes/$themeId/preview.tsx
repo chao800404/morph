@@ -3,6 +3,13 @@ import { shouldDeferUndoShortcut } from "@/lib/storefront/editor/editor-history"
 import { StorefrontPreview } from "@/components/storefront/storefront-preview";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { resolveEditorSectionModel } from "@/lib/storefront/editor/editor-section-model";
+import {
+  templateAppliesToRoute,
+  templateForRoute,
+} from "../../../../-components/editor-template";
+
+/** A page with no document of its own yet: its route's slots, no values. */
+const EMPTY_PAGE_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   deriveThemeLayoutSections,
@@ -300,8 +307,20 @@ function ReadyStorefrontPreview({
     const pageSections =
       derived && derived.diagnostics.length === 0 ? derived.sections : [];
     const shell = deriveThemeLayoutSections(renderThemeFiles);
+    // The same rule the editor binds by. A template borrowed only to load the
+    // editor holds another page's content; left standing here, its sections
+    // rendered on this route and came back as "Global" rows in the tree.
+    const pageTemplate =
+      !activeRoutePath || templateAppliesToRoute(template, activeRoutePath)
+        ? { id: template.id, document: template.document }
+        : (() => {
+            const own = templateForRoute(context.templates, activeRoutePath);
+            return own
+              ? { id: own.id, document: own.document }
+              : { id: template.id, document: EMPTY_PAGE_DOCUMENT };
+          })();
     return resolveEditorSectionModel({
-      pageTemplate: { id: template.id, document: template.document },
+      pageTemplate,
       shellTemplate: layoutTemplate
         ? { id: layoutTemplate.id, document: layoutTemplate.document }
         : undefined,
@@ -311,10 +330,10 @@ function ReadyStorefrontPreview({
     }).document;
   }, [
     activeRoutePath,
+    context.templates,
     layoutTemplate,
     renderThemeFiles,
-    template?.document,
-    template?.id,
+    template,
   ]);
   const previewDocument = usePreviewDocument(routeDocument);
 
