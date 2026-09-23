@@ -5,6 +5,10 @@ import {
   rewriteThemeFileImportsForCopy,
 } from "@/lib/storefront/ast/theme-file-move";
 import { parseThemeRouteSourcePath } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  deriveThemeRouteSections,
+  replaceThemeRouteSectionComponent,
+} from "@/lib/storefront/compiler/theme-route-sections";
 import { isValidThemeContentSlotId } from "@/lib/storefront/theme-content-slots";
 import {
   listThemeSectionEntries,
@@ -434,6 +438,95 @@ export function planPageSectionCopy(args: {
     implementationPath,
     files: planned,
   };
+}
+
+export type PageSectionAdoptionPlan =
+  | Readonly<{
+      ok: true;
+      /** The route with every adopted section importing its copy. */
+      routeContent: string;
+      /** Copies to create, in the order they were planned. */
+      files: readonly PageSectionCopyFile[];
+      /** Slots whose section now renders a page-owned copy. */
+      adoptedSlotIds: readonly string[];
+    }>
+  | Readonly<{ ok: false; message: string }>;
+
+/**
+ * Gives every selected section of one route its own copy, as detach would.
+ *
+ * All or nothing: a route half-moved to copies would leave some sections
+ * editable and some locked for no reason the author could see, so the first
+ * section that cannot be copied fails the whole plan and the route is left as
+ * it was. Nothing is written here; the caller decides whether and how.
+ */
+export function planAdoptPageOwnedSections(args: {
+  files: readonly SourceFile[];
+  routeSourcePath: string;
+  /** Which sections to copy, by the component they render today. */
+  shouldAdopt: (componentSourcePath: string) => boolean;
+}): PageSectionAdoptionPlan {
+  const routePath = normalizePath(args.routeSourcePath);
+  let workspace = args.files.map((file) => ({
+    ...file,
+    path: normalizePath(file.path),
+  }));
+  const route = workspace.find((file) => file.path === routePath);
+  if (!route) {
+    return { ok: false, message: `${routePath} is not in the Theme.` };
+  }
+
+  const derived = deriveThemeRouteSections(workspace, routePath);
+  if (derived.diagnostics.length > 0) {
+    return { ok: false, message: derived.diagnostics[0]! };
+  }
+
+  let routeContent = route.content;
+  const created: PageSectionCopyFile[] = [];
+  const adoptedSlotIds: string[] = [];
+  for (const section of derived.sections) {
+    if (
+      section.missingComponentSourcePath ||
+      !args.shouldAdopt(section.componentSourcePath)
+    ) {
+      continue;
+    }
+    const plan = planPageSectionCopy({
+      entryPath: section.componentSourcePath,
+      routeSourcePath: routePath,
+      slotId: section.slotId,
+      files: workspace,
+    });
+    if (!plan.ok) return { ok: false, message: plan.message };
+    const withCopies = [
+      ...workspace,
+      ...plan.files.map((file) => ({ path: file.path, content: file.content })),
+    ];
+    const replaced = replaceThemeRouteSectionComponent({
+      source: routeContent,
+      files: withCopies,
+      routeSourcePath: routePath,
+      slotId: section.slotId,
+      componentSourcePath: section.componentSourcePath,
+      nextComponentSourcePath: plan.entryPath,
+    });
+    if (!replaced.changed) {
+      return {
+        ok: false,
+        message:
+          replaced.diagnostic ??
+          `Section "${section.slotId}" could not be pointed at its copy.`,
+      };
+    }
+    routeContent = replaced.code;
+    workspace = withCopies.map((file) =>
+      file.path === routePath ? { ...file, content: routeContent } : file,
+    );
+    created.push(...plan.files);
+    adoptedSlotIds.push(section.slotId);
+  }
+
+  return { ok: true, routeContent, files: created, adoptedSlotIds };
 }
 
 export type PageSectionRemovalPlan = Readonly<{

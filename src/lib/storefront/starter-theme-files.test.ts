@@ -12,6 +12,7 @@ import {
   createStarterThemeWorkspaceBootstrapPlan,
   STARTER_THEME_FILES,
   STARTER_THEME_FILES_WITH_LEGACY_MANIFEST,
+  starterThemeWorkspaceFiles,
 } from "./starter-theme-files";
 import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
@@ -74,7 +75,8 @@ describe("starter Principles theme source", () => {
     const plan = createStarterThemeWorkspaceBootstrapPlan([]);
 
     expect(plan.deletions).toEqual([]);
-    expect(plan.files).toHaveLength(STARTER_THEME_FILES.length);
+    // What a new workspace starts with: the Starter, home sections on copies.
+    expect(plan.files).toHaveLength(starterThemeWorkspaceFiles().length);
     expect(STARTER_THEME_FILES.some((file) => file.path === "morph.theme.json")).toBe(
       false,
     );
@@ -85,7 +87,14 @@ describe("starter Principles theme source", () => {
     ).toBe(true);
     expect(plan.files.every((file) => file.expectMissing)).toBe(true);
     expect(plan.files.map((file) => file.path).sort()).toEqual(
-      STARTER_THEME_FILES.map((file) => file.path).sort(),
+      starterThemeWorkspaceFiles().map((file) => file.path).sort(),
+    );
+    expect(
+      plan.files.find((file) => file.path === "src/routes/index.tsx")?.content,
+    ).toBe(
+      starterThemeWorkspaceFiles().find(
+        (file) => file.path === "src/routes/index.tsx",
+      )?.content,
     );
   });
 

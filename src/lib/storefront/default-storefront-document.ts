@@ -50,8 +50,11 @@ import {
  *     was standing in for a wrapper the compiler now decides.
  * 25: key a repeated row by the identity Morph stores for it rather than its
  *     position, so reordering does not carry one row's DOM node into another.
+ * 27: move an untouched Starter home route onto page-owned section copies, so
+ *     its sections stay editable while the section library they came from
+ *     stays template source Design mode does not write.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 26;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 27;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

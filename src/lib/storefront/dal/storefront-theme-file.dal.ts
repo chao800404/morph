@@ -11,7 +11,7 @@ import type {
   ThemeSourceRevisionManifest,
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
-import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import { starterThemeWorkspaceFiles } from "@/lib/storefront/starter-theme-files";
 import { deriveThemeSourceIndex } from "../theme-source-index";
 import { paginationOf, type Pagination } from "@/lib/db/server-result";
 import { firstOrNull } from "@/lib/db/single-row";
@@ -288,8 +288,9 @@ export const storefrontThemeFileDal = {
 
     const now = new Date().toISOString();
     const revisionId = crypto.randomUUID();
+    const starterFiles = starterThemeWorkspaceFiles();
     const sourceIndex = deriveThemeSourceIndex({
-      files: STARTER_THEME_FILES,
+      files: starterFiles,
       scope: "workspace",
       sourceGeneration: 2,
     });
@@ -306,7 +307,7 @@ export const storefrontThemeFileDal = {
       ).bind(storefrontId, themeId),
     ];
 
-    for (const f of STARTER_THEME_FILES) {
+    for (const f of starterFiles) {
       statements.push(
         env.DATABASE.prepare(
           `

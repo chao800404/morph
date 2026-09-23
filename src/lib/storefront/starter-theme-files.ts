@@ -46,6 +46,7 @@ import {
   THEME_START_BUILD_DEPENDENCIES,
   THEME_START_RUNTIME_DEPENDENCIES,
 } from "./compiler/theme-start-toolchain";
+import { planAdoptPageOwnedSections } from "./editor/page-section-copy";
 
 /**
  * Compatibility entry files for the original Starter Theme layout.
@@ -65,6 +66,15 @@ const STARTER_THEME_SECTION_ENTRY_COMPONENTS = [
   "Principles",
   "Newsletter",
 ] as const;
+
+/** The Starter components the home route renders as sections. */
+const STARTER_HOME_SECTION_SOURCES = new Set<string>(
+  STARTER_THEME_SECTION_ENTRY_COMPONENTS.map(
+    (componentName) => `src/components/${componentName}.tsx`,
+  ),
+);
+
+const STARTER_HOME_ROUTE_PATH = "src/routes/index.tsx";
 
 const STARTER_THEME_SECTION_ENTRY_FILES =
   STARTER_THEME_SECTION_ENTRY_COMPONENTS.map((componentName) => ({
@@ -532,6 +542,121 @@ export const STARTER_THEME_FILES = STARTER_THEME_FILES_WITH_MANIFEST.filter(
 export const STARTER_THEME_FILES_WITH_LEGACY_MANIFEST =
   STARTER_THEME_FILES_WITH_MANIFEST;
 
+/**
+ * Page-owned copies for the Starter home route, when it is still the Starter's.
+ *
+ * The home route renders the same components the section library re-exports,
+ * which makes every home section template source: Design mode may not write
+ * it, because the next Add section copies from it. Giving each section its own
+ * copy, exactly as detach would, keeps the library inert and the home page
+ * editable. Only the untouched Starter route is adopted — an authored route is
+ * the author's, and keeps its detach offer instead — and a plan that cannot
+ * copy every section leaves the route as it was.
+ *
+ * `files` is the workspace as it will be once the rest of the plan lands.
+ */
+function planStarterHomeAdoption(
+  files: ReadonlyArray<{ path: string; content: string }>,
+) {
+  const home = files.find((file) => file.path === STARTER_HOME_ROUTE_PATH);
+  if (home?.content !== STARTER_THEME_HOME_ROUTE_SOURCE) return null;
+  const plan = planAdoptPageOwnedSections({
+    files,
+    routeSourcePath: STARTER_HOME_ROUTE_PATH,
+    shouldAdopt: (path) => STARTER_HOME_SECTION_SOURCES.has(path),
+  });
+  return plan.ok && plan.adoptedSlotIds.length > 0 ? plan : null;
+}
+
+let starterThemeWorkspaceFilesCache:
+  | ReadonlyArray<(typeof STARTER_THEME_FILES)[number]>
+  | undefined;
+
+/**
+ * The files a new workspace starts with: the Starter, with its home sections
+ * already on page-owned copies.
+ *
+ * Derived rather than written out, so the copies are exactly what Add section
+ * would make from the same library and cannot drift from it. The Starter is
+ * ours, so a copy that cannot be planned is a bug in this module, not a state a
+ * workspace can be in; it throws rather than shipping a locked home page.
+ */
+export function starterThemeWorkspaceFiles(): ReadonlyArray<
+  (typeof STARTER_THEME_FILES)[number]
+> {
+  if (starterThemeWorkspaceFilesCache) return starterThemeWorkspaceFilesCache;
+  const adoption = planStarterHomeAdoption(STARTER_THEME_FILES);
+  if (!adoption) {
+    throw new Error("The Starter home route could not adopt page-owned sections.");
+  }
+  starterThemeWorkspaceFilesCache = [
+    ...STARTER_THEME_FILES.map((file) =>
+      file.path === STARTER_HOME_ROUTE_PATH
+        ? { ...file, content: adoption.routeContent }
+        : file,
+    ),
+    ...adoption.files.map((file) => ({
+      path: file.path,
+      content: file.content,
+      mimeType: file.mimeType,
+    })),
+  ];
+  return starterThemeWorkspaceFilesCache;
+}
+
+/**
+ * Adds the home adoption to an upgrade or bootstrap plan.
+ *
+ * Run against the workspace the plan would produce, so a home route the same
+ * plan restores or creates from the Starter is adopted in the same mutation,
+ * and a route already adopted is left alone.
+ */
+function withAdoptedStarterHome(
+  files: StarterThemeWorkspaceUpgradeFile[],
+  deletions: readonly StarterThemeWorkspaceUpgradeDeletion[],
+  existingFiles: readonly ExistingStarterThemeFile[],
+): StarterThemeWorkspaceUpgradeFile[] {
+  const deleted = new Set(deletions.map((deletion) => deletion.path));
+  const view = new Map(
+    existingFiles
+      .filter((file) => !deleted.has(file.path))
+      .map((file) => [file.path, file.content] as const),
+  );
+  for (const file of files) view.set(file.path, file.content);
+  const adoption = planStarterHomeAdoption(
+    [...view].map(([path, content]) => ({ path, content })),
+  );
+  if (!adoption) return files;
+
+  const next = files.map((file) =>
+    file.path === STARTER_HOME_ROUTE_PATH
+      ? { ...file, content: adoption.routeContent }
+      : file,
+  );
+  if (!next.some((file) => file.path === STARTER_HOME_ROUTE_PATH)) {
+    const existingHome = existingFiles.find(
+      (file) => file.path === STARTER_HOME_ROUTE_PATH,
+    );
+    if (!existingHome) return files;
+    next.push({
+      path: STARTER_HOME_ROUTE_PATH,
+      content: adoption.routeContent,
+      mimeType: "text/typescript",
+      expectedFileId: existingHome.id,
+      expectedVersion: existingHome.version,
+    });
+  }
+  for (const copy of adoption.files) {
+    next.push({
+      path: copy.path,
+      content: copy.content,
+      mimeType: copy.mimeType,
+      expectMissing: true,
+    });
+  }
+  return next;
+}
+
 type ExistingStarterThemeFile = {
   id: string;
   path: string;
@@ -684,7 +809,10 @@ export function createStarterThemeWorkspaceBootstrapPlan(
     }
   }
 
-  return { files, deletions: upgradePlan.deletions };
+  return {
+    files: withAdoptedStarterHome(files, upgradePlan.deletions, existingFiles),
+    deletions: upgradePlan.deletions,
+  };
 }
 
 const V3_COMPONENT_REFS = [
@@ -1425,17 +1553,18 @@ export function createStarterThemeWorkspaceUpgradePlan(
       existingLegacyPage.content === LEGACY_STARTER_THEME_INDEX_SOURCE),
   );
 
+  const deletions =
+    existingLegacyPage && hasStartRoute && isPristineStarterPage
+      ? [
+          {
+            path: existingLegacyPage.path,
+            expectedFileId: existingLegacyPage.id,
+            expectedVersion: existingLegacyPage.version,
+          },
+        ]
+      : [];
   return {
-    files,
-    deletions:
-      existingLegacyPage && hasStartRoute && isPristineStarterPage
-        ? [
-            {
-              path: existingLegacyPage.path,
-              expectedFileId: existingLegacyPage.id,
-              expectedVersion: existingLegacyPage.version,
-            },
-          ]
-        : [],
+    files: withAdoptedStarterHome(files, deletions, existingFiles),
+    deletions,
   };
 }
