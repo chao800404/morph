@@ -239,6 +239,7 @@ import {
   toEditorRouteSearch,
 } from "./editor-template";
 import { contentTargetForRoutePath } from "@/lib/storefront/theme-template-routes";
+import { previewStructureMatchesRoute } from "@/lib/storefront/editor/preview-structure-route";
 import {
   EditorToolbar,
   EditorToolbarGroup,
@@ -4506,6 +4507,13 @@ export function VisualEditorShell({
         return;
       }
       if (message.type === "morph:storefront-preview-structure") {
+        // A report sent while the preview was still on another route — it
+        // boots on `/` — describes that route, not the selected one.
+        if (
+          !previewStructureMatchesRoute(message.routePath, search.routePath)
+        ) {
+          return;
+        }
         setPreviewStructure({
           key: previewKey,
           routePath: search.routePath ?? "/",

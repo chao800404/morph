@@ -109,12 +109,29 @@ function drawOverlays() {
   });
 }
 
+/**
+ * The route pattern the router has matched, or undefined without a router.
+ *
+ * Named in every structure report so the editor can tell a report about the
+ * page it asked for from one sent on the way there.
+ */
+function currentRoutePattern() {
+  const matches = window.__morphPreviewRouter?.state?.matches;
+  const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
+  const pattern = leaf?.fullPath ?? leaf?.routeId;
+  return typeof pattern === "string" && pattern.startsWith("/")
+    ? pattern
+    : undefined;
+}
+
 function reportStructure() {
   if (!channel) return;
+  const routePath = currentRoutePattern();
   postPreviewToEditorMessage(
     {
       type: "morph:storefront-preview-structure",
       nodes: collectPreviewEditableNodes(document),
+      ...(routePath ? { routePath } : {}),
     },
     channel,
   );
@@ -918,7 +935,13 @@ if (channel) {
         hoveredItem = null;
         syncDragHandle();
         drawOverlays();
-        void router.navigate({ to: message.routePath ?? "/" });
+        // Reported again once the router has arrived: a report sent before
+        // then names the route it left, which the editor now sets aside, and
+        // a destination whose DOM happens to match the old one would give the
+        // observer no mutation to report on.
+        void Promise.resolve(router.navigate({ to: message.routePath ?? "/" }))
+          .catch(() => {})
+          .then(() => reportStructure());
         // The page it lands on is a different set of elements entirely.
         window.setTimeout(() => {
           // The section command can arrive before this route commit when the iframe
