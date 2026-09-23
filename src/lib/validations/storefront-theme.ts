@@ -44,6 +44,12 @@ export const updateStorefrontThemeSectionPropsInputSchema =
         message: "Section props cannot contain more than 100 top-level fields",
       }),
     expectedDraftGeneration: z.number().int().min(1),
+    /**
+     * The route the editor is showing, so the server checks the write against
+     * the component that route renders. Only selects among the routes the
+     * saved source declares; it never names a file to read.
+     */
+    routePath: z.string().trim().min(1).max(512).optional(),
   });
 
 /**

@@ -13,6 +13,7 @@ import {
   validateThemeStartPackageContract,
 } from "./theme-start-toolchain";
 import { normalizeThemeDependencyMap } from "./theme-dependency-policy";
+import { deriveThemeSourceRuntimeContract } from "../theme-source-runtime-contract";
 
 export type MaterializeThemeBuildInputParams = {
   build: StorefrontThemeBuildDTO;
@@ -98,6 +99,7 @@ export function normalizeRevisionSnapshot(
 
   const manifestFile = fileMap.get("morph.theme.json");
   let manifestEntry: string | undefined;
+  let sourceDerivedEntry: string | undefined;
   let routerFramework: string | null = null;
   if (manifestFile) {
     try {
@@ -125,6 +127,16 @@ export function normalizeRevisionSnapshot(
     } catch {
       // Preserve the existing legacy fallback for an authored malformed manifest.
     }
+  }
+
+  // A migrated source revision has no authored manifest. In that case derive
+  // only the runtime facts needed by the materializer from the bounded source
+  // snapshot. When a legacy manifest exists it remains the compatibility
+  // oracle until that Theme passes its migration gate.
+  if (!manifestFile) {
+    const sourceRuntime = deriveThemeSourceRuntimeContract(sortedFiles);
+    sourceDerivedEntry = sourceRuntime.entry ?? undefined;
+    routerFramework = sourceRuntime.routerFramework;
   }
 
   if (manifestEntry) {
@@ -170,6 +182,7 @@ export function normalizeRevisionSnapshot(
 
   const entry =
     manifestEntry ??
+    sourceDerivedEntry ??
     detectedEntries[0] ??
     (fileMap.has("src/routes/index.tsx")
       ? "src/routes/index.tsx"

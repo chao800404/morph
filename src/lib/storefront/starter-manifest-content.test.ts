@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  STARTER_THEME_FILES,
+  STARTER_THEME_FILES_WITH_LEGACY_MANIFEST,
   createStarterThemeWorkspaceUpgrade,
 } from "./starter-theme-files";
 import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
 import { resolveThemeContentCapabilitiesFromFiles } from "./theme-content-capability-resolver";
 
-const manifestFile = STARTER_THEME_FILES.find(
+const manifestFile = STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.find(
   (file) => file.path === "morph.theme.json",
 )!;
 const manifest = JSON.parse(manifestFile.content);
@@ -14,12 +14,14 @@ const manifest = JSON.parse(manifestFile.content);
 describe("starter content declarations", () => {
   it("keeps source declarations authoritative without duplicate manifest fields", () => {
     const { capabilities } =
-      resolveThemeContentCapabilitiesFromFiles(STARTER_THEME_FILES);
+      resolveThemeContentCapabilitiesFromFiles(
+        STARTER_THEME_FILES_WITH_LEGACY_MANIFEST,
+      );
     for (const [ref, config] of Object.entries(manifest.components) as [
       string,
       { source: string; contentFields?: unknown },
     ][]) {
-      const source = STARTER_THEME_FILES.find(
+      const source = STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.find(
         (file) => file.path === config.source,
       );
       if (!source) continue;
@@ -38,7 +40,7 @@ describe("starter content declarations", () => {
       actionHref: { type: "url" },
     };
     old.components["hero.default"].description = "Keep metadata";
-    const existing = STARTER_THEME_FILES.map((file) => ({
+    const existing = STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.map((file) => ({
       ...file,
       id: file.path,
       version: 7,

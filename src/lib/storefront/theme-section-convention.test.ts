@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  isThemeSectionSourcePath,
   listThemeSectionEntries,
+  readThemePageSectionEntry,
   readThemeSectionEntry,
+  THEME_PAGE_SECTION_FOLDER_PATH,
   THEME_SECTION_FOLDER_PATH,
 } from "./theme-section-convention";
 
@@ -20,7 +23,9 @@ describe("the section folder entry rule", () => {
   it("names an index entry after its folder, not after `index`", () => {
     // The route's import binds this name, so `Index` would be the one binding
     // no author would recognise as the section they wrote.
-    const entry = readThemeSectionEntry(`${folder}/featured-collection/index.tsx`);
+    const entry = readThemeSectionEntry(
+      `${folder}/featured-collection/index.tsx`,
+    );
 
     expect(entry?.componentName).toBe("FeaturedCollection");
     expect(entry?.sectionType).toBe("featured-collection");
@@ -58,9 +63,7 @@ describe("what the convention refuses", () => {
   it("refuses a file nested deeper than one folder", () => {
     // A helper Hero is built from is not a block an author can put on a page.
     // Were depth enough to qualify, the list would fill with them.
-    expect(
-      readThemeSectionEntry(`${folder}/hero/parts/Aside.tsx`),
-    ).toBeNull();
+    expect(readThemeSectionEntry(`${folder}/hero/parts/Aside.tsx`)).toBeNull();
   });
 
   it("refuses a non-index file inside a subfolder", () => {
@@ -145,5 +148,29 @@ describe("listing the entries among a Theme's files", () => {
         { path: "src/routes/index.tsx" },
       ]),
     ).toEqual([]);
+  });
+});
+
+describe("page-owned section source recognition", () => {
+  const pageFolder = THEME_PAGE_SECTION_FOLDER_PATH;
+
+  it("recognizes direct and folder copy entry paths", () => {
+    expect(readThemePageSectionEntry(`${pageFolder}/home/Hero.tsx`)).toEqual({
+      componentSourcePath: `${pageFolder}/home/Hero.tsx`,
+      componentName: "Hero",
+      componentRef: `${pageFolder}/home/Hero.tsx`,
+      sectionType: "hero",
+    });
+    expect(
+      readThemePageSectionEntry(`${pageFolder}/home/featured/index.tsx`)
+        ?.componentName,
+    ).toBe("Featured");
+  });
+
+  it("does not treat copied child files as section entries", () => {
+    expect(
+      readThemePageSectionEntry(`${pageFolder}/home/featured/Card.tsx`),
+    ).toBeNull();
+    expect(isThemeSectionSourcePath(`${pageFolder}/home/Hero.tsx`)).toBe(true);
   });
 });

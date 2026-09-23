@@ -11,6 +11,8 @@ import {
   createStarterThemeWorkspaceUpgradePlan,
   createStarterThemeWorkspaceBootstrapPlan,
   STARTER_THEME_FILES,
+  STARTER_THEME_FILES_WITH_LEGACY_MANIFEST,
+  starterThemeWorkspaceFiles,
 } from "./starter-theme-files";
 import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
@@ -40,7 +42,7 @@ import {
 
 describe("starter Principles theme source", () => {
   it("upgrades both untouched v12 content bindings and visibility source, preserving authored files", () => {
-    const existing = STARTER_THEME_FILES.map((file, index) => ({
+    const existing = STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.map((file, index) => ({
       ...file,
       id: String(index),
       version: 1,
@@ -73,10 +75,26 @@ describe("starter Principles theme source", () => {
     const plan = createStarterThemeWorkspaceBootstrapPlan([]);
 
     expect(plan.deletions).toEqual([]);
-    expect(plan.files).toHaveLength(STARTER_THEME_FILES.length);
+    // What a new workspace starts with: the Starter, home sections on copies.
+    expect(plan.files).toHaveLength(starterThemeWorkspaceFiles().length);
+    expect(STARTER_THEME_FILES.some((file) => file.path === "morph.theme.json")).toBe(
+      false,
+    );
+    expect(
+      STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.some(
+        (file) => file.path === "morph.theme.json",
+      ),
+    ).toBe(true);
     expect(plan.files.every((file) => file.expectMissing)).toBe(true);
     expect(plan.files.map((file) => file.path).sort()).toEqual(
-      STARTER_THEME_FILES.map((file) => file.path).sort(),
+      starterThemeWorkspaceFiles().map((file) => file.path).sort(),
+    );
+    expect(
+      plan.files.find((file) => file.path === "src/routes/index.tsx")?.content,
+    ).toBe(
+      starterThemeWorkspaceFiles().find(
+        (file) => file.path === "src/routes/index.tsx",
+      )?.content,
     );
   });
 
@@ -129,7 +147,7 @@ describe("starter Principles theme source", () => {
 
   it("registers the principles component and exposes editable source locations", () => {
     const manifest = JSON.parse(
-      STARTER_THEME_FILES.find((file) => file.path === "morph.theme.json")!
+      STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.find((file) => file.path === "morph.theme.json")!
         .content,
     ) as {
       components: Record<string, { source: string }>;
@@ -172,7 +190,7 @@ describe("starter Principles theme source", () => {
 
   it("stores the complete preview shell and every starter section in the workspace", () => {
     const manifest = JSON.parse(
-      STARTER_THEME_FILES.find((file) => file.path === "morph.theme.json")!
+      STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.find((file) => file.path === "morph.theme.json")!
         .content,
     ) as {
       entry: string;
@@ -848,7 +866,7 @@ export default function Principles({ label = "Why we choose differently" }: Prin
   });
 
   it("does not declare a document layout over an authored entry file", () => {
-    const targetManifest = STARTER_THEME_FILES.find(
+    const targetManifest = STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.find(
       (file) => file.path === "morph.theme.json",
     )!;
     const legacyManifest = JSON.parse(targetManifest.content) as Record<
@@ -926,7 +944,7 @@ export default function Principles({ label = "Why we choose differently" }: Prin
       {
         id: "manifest",
         path: "morph.theme.json",
-        content: STARTER_THEME_FILES.find(
+        content: STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.find(
           (file) => file.path === "morph.theme.json",
         )!.content,
         version: 7,
@@ -966,7 +984,7 @@ export default function Principles({ label = "Why we choose differently" }: Prin
       {
         id: "empty-route-manifest",
         path: "morph.theme.json",
-        content: STARTER_THEME_FILES.find(
+        content: STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.find(
           (file) => file.path === "morph.theme.json",
         )!.content,
         version: 3,

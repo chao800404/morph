@@ -430,6 +430,36 @@ describe("theme-ast-transformer (TSX AST)", () => {
     expect(getComponentFilePath("editorial-intro", files)).toBeNull();
   });
 
+  it("resolves source-owned section and layout paths without a manifest", async () => {
+    const {
+      getComponentFilePath,
+      getThemeDocumentLayoutFilePath,
+    } = await import("./theme-ast-transformer");
+    const files = [
+      {
+        path: "src/components/sections/Promo.tsx",
+        content: "export default () => null;",
+      },
+      {
+        path: "src/layouts/StorefrontLayout.tsx",
+        content: "export default function StorefrontLayout({ children }) { return <div>{children}</div>; }",
+      },
+      {
+        path: "src/routes/__root.tsx",
+        content: `import { Outlet } from "@tanstack/react-router";
+import StorefrontLayout from "../layouts/StorefrontLayout";
+export default function Root() { return <StorefrontLayout><Outlet /></StorefrontLayout>; }`,
+      },
+    ];
+
+    expect(getComponentFilePath("promo", files)).toBe(
+      "src/components/sections/Promo.tsx",
+    );
+    expect(getThemeDocumentLayoutFilePath(files)).toBe(
+      "src/layouts/StorefrontLayout.tsx",
+    );
+  });
+
   it("correctly reverse-parses Tailwind classes into presentation style values", async () => {
     const {
       parseTailwindFontSize,

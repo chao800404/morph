@@ -11,10 +11,10 @@
 import { describe, expect, it } from "vitest";
 import { filterSectionContentProps } from "./section-content-manifest";
 import { resolveThemeContentCapabilitiesFromFiles } from "../theme-content-capability-resolver";
-import { STARTER_THEME_FILES } from "../starter-theme-files";
+import { STARTER_THEME_FILES_WITH_LEGACY_MANIFEST } from "../starter-theme-files";
 
 const { capabilities } = resolveThemeContentCapabilitiesFromFiles(
-  STARTER_THEME_FILES.map((file) => ({
+  STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.map((file) => ({
     path: file.path,
     content: file.content,
   })) as never,

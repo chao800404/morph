@@ -85,22 +85,30 @@ export default function Shell() {
     ).toEqual([
       {
         type: "header",
-        ref: "header.default",
+        ref: "src/components/Header.tsx",
         source: "src/components/Header.tsx",
       },
       {
         type: "footer",
-        ref: "footer.default",
+        ref: "src/components/Footer.tsx",
         source: "src/components/Footer.tsx",
       },
     ]);
   });
 
-  it("returns nothing when the manifest declares no shell", () => {
+  it("derives the shell from the root route when the manifest is absent", () => {
     const withoutLayout = files.filter(
       (file) => file.path !== "morph.theme.json",
     );
 
-    expect(deriveThemeLayoutSections(withoutLayout).sections).toEqual([]);
+    expect(
+      deriveThemeLayoutSections(withoutLayout).sections.map((section) => [
+        section.slotId,
+        section.componentSourcePath,
+      ]),
+    ).toEqual([
+      ["starter-header", "src/components/Header.tsx"],
+      ["starter-footer", "src/components/Footer.tsx"],
+    ]);
   });
 });

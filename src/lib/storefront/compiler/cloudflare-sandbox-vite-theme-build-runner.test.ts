@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { posix as posixPath } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   CloudflareSandboxViteThemeBuildRunner,
@@ -632,7 +633,9 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
        dependencyEnforcerPlugin.configResolved({ command: ${JSON.stringify(command)} });
        return dependencyEnforcerPlugin;`,
     );
-    return factory(await import("node:path"), await import("node:fs"));
+    // The generated config runs in the Linux sandbox. Use POSIX path
+    // semantics here even when the test suite itself runs on Windows.
+    return factory(posixPath, await import("node:fs"));
   };
 
   const VITE_DEV_CLIENT =

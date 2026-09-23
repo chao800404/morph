@@ -3,6 +3,7 @@ import type {
   ThemeSourceRevisionManifest,
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import type { ThemeSourceIndex } from "../theme-source-index";
 import type { Pagination } from "@/lib/db/server-result";
 
 export type ThemeSourceBlob = {
@@ -27,6 +28,7 @@ export type SaveThemeSourceFileOptions = {
   createdBy?: string;
   /** Internal R2 manifest prepared before an OCC-protected atomic batch. */
   sourceManifest?: ThemeSourceRevisionManifest;
+  sourceIndex?: ThemeSourceIndex;
 };
 
 export type SaveThemeSourceFilesBatchItem = {
@@ -57,6 +59,7 @@ export type SaveThemeSourceFilesBatchOptions = {
   createdBy?: string;
   /** Internal R2 manifest prepared before an OCC-protected atomic batch. */
   sourceManifest?: ThemeSourceRevisionManifest;
+  sourceIndex?: ThemeSourceIndex;
 };
 
 export type CreateThemeRevisionOptions = {
@@ -65,12 +68,14 @@ export type CreateThemeRevisionOptions = {
   source?: "manual" | "ai" | "publish" | "rollback";
   createdBy?: string;
   sourceManifest?: ThemeSourceRevisionManifest;
+  sourceIndex?: ThemeSourceIndex;
 };
 
 export type RollbackThemeRevisionOptions = {
   expectedSourceGeneration: number;
   createdBy?: string;
   sourceManifest?: ThemeSourceRevisionManifest;
+  sourceIndex?: ThemeSourceIndex;
 };
 
 /**
@@ -125,8 +130,19 @@ export interface ThemeSourceStore {
     path: string,
     expectedFileId: string,
     expectedVersion: number,
-    options: { expectedSourceGeneration: number },
+    options: {
+      expectedSourceGeneration: number;
+      sourceIndex?: ThemeSourceIndex;
+    },
   ): Promise<boolean>;
+
+  /**
+   * Persist immutable blobs for a server-owned multi-boundary migration.
+   * The caller still performs the OCC-protected D1 transaction afterwards.
+   */
+  prepareSourceRevisionManifest(
+    files: readonly StorefrontThemeFileDTO[],
+  ): Promise<ThemeSourceRevisionManifest>;
 
   getSourceGeneration(
     storefrontId: string,

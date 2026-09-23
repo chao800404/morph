@@ -96,13 +96,24 @@ const PUBLISHED_STATE_SQL = `
  * already guards the other direction of this (`ARTIFACT_CONTAINMENT_BREACH` on
  * the way in), so the same containment is owed on the way out.
  */
+function isAbsoluteArtifactPath(value) {
+  const normalized = String(value).replace(/\\/g, "/");
+  return (
+    path.posix.isAbsolute(normalized) ||
+    path.win32.isAbsolute(normalized) ||
+    /^[A-Za-z]:/.test(normalized)
+  );
+}
+
 export function containedPath(root, relative) {
-  if (path.isAbsolute(relative)) {
+  if (isAbsoluteArtifactPath(relative)) {
     throw new Error(`ARTIFACT_PATH_ABSOLUTE: ${relative}`);
   }
-  const resolved = path.resolve(root, relative);
-  const boundary = path.resolve(root) + path.sep;
-  if (!resolved.startsWith(boundary)) {
+  const resolvedRoot = path.resolve(root);
+  const normalizedRelative = String(relative).replace(/\\/g, "/");
+  const resolved = path.resolve(resolvedRoot, normalizedRelative);
+  const boundary = `${resolvedRoot}${path.sep}`;
+  if (resolved !== resolvedRoot && !resolved.startsWith(boundary)) {
     throw new Error(`ARTIFACT_PATH_ESCAPES_ROOT: ${relative}`);
   }
   return resolved;

@@ -1,5 +1,6 @@
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
+import { templateTypeForRoutePath } from "@/lib/storefront/theme-template-routes";
 import { GLOBAL_LAYOUT_LABEL } from "./editor-layout-labels";
 
 type EditorTemplate = StorefrontThemeEditorDTO["templates"][number];
@@ -16,15 +17,7 @@ const templatePaths: Record<EditorTemplate["type"], string> = {
 
 /** Map a source-authored URL to the template document used for its content. */
 export function templateTypeForRoute(path: string): EditorTemplate["type"] {
-  if (path === "/") return "index";
-  if (path === "/products" || path.startsWith("/products/")) {
-    return "product";
-  }
-  if (path === "/collections" || path.startsWith("/collections/")) {
-    return "collection";
-  }
-  if (path === "/blogs" || path.startsWith("/blogs/")) return "blog";
-  return "page";
+  return templateTypeForRoutePath(path);
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   type ThemeRevisionReason,
 } from "@/lib/storefront/editor/theme-revision-policy";
 import { persistThemeSourceRevisionBlobs } from "./theme-source-revision-manifest";
+import { deriveThemeSourceIndex } from "../theme-source-index";
 import type {
   ThemeSourceBlobStore,
   ThemeRevisionStore,
@@ -97,6 +98,31 @@ async function manifestForWorkspaceMutation(args: {
   );
 }
 
+async function sourceIndexForWorkspaceMutation(args: {
+  storefrontId: string;
+  themeId: string;
+  expectedSourceGeneration: number;
+  files: readonly { path: string; content: string; mimeType?: string }[];
+  deletions: readonly { path: string }[];
+}) {
+  const currentFiles = await storefrontThemeFileDal.listFiles(
+    args.storefrontId,
+    args.themeId,
+  );
+  const nextFiles = nextWorkspaceFilesForRevision(
+    args.storefrontId,
+    args.themeId,
+    currentFiles,
+    args.files,
+    args.deletions,
+  );
+  return deriveThemeSourceIndex({
+    files: nextFiles,
+    scope: "workspace",
+    sourceGeneration: args.expectedSourceGeneration + 1,
+  });
+}
+
 /**
  * Whether this mutation should leave a revision behind.
  *
@@ -150,13 +176,20 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
           deletions: [],
         })
       : undefined;
+    const sourceIndex = await sourceIndexForWorkspaceMutation({
+      storefrontId,
+      themeId,
+      expectedSourceGeneration: options.expectedSourceGeneration,
+      files: [{ path, content, mimeType }],
+      deletions: [],
+    });
     return storefrontThemeFileDal.saveFile(
       storefrontId,
       themeId,
       path,
       content,
       mimeType,
-      { ...options, createRevision, sourceManifest },
+      { ...options, createRevision, sourceManifest, sourceIndex },
     );
   },
   async saveFilesBatch(storefrontId, themeId, files, options) {
@@ -182,10 +215,18 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
           deletions: options.deletions ?? [],
         })
       : undefined;
+    const sourceIndex = await sourceIndexForWorkspaceMutation({
+      storefrontId,
+      themeId,
+      expectedSourceGeneration: options.expectedSourceGeneration,
+      files,
+      deletions: options.deletions ?? [],
+    });
     return storefrontThemeFileDal.saveFilesBatch(storefrontId, themeId, files, {
       ...options,
       createRevision,
       sourceManifest,
+      sourceIndex,
     });
   },
   async deleteFile(
@@ -212,6 +253,13 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
       // author asked for; the history is what this layer adds on top.
       sourceManifest = undefined;
     }
+    const sourceIndex = await sourceIndexForWorkspaceMutation({
+      storefrontId,
+      themeId,
+      expectedSourceGeneration: options.expectedSourceGeneration,
+      files: [],
+      deletions: [{ path }],
+    });
     return storefrontThemeFileDal.deleteFile(
       storefrontId,
       themeId,
@@ -223,8 +271,17 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
         createRevision: sourceManifest !== undefined,
         revisionMessage: `Before deleting ${path}`,
         sourceManifest,
+        sourceIndex,
       },
     );
+  },
+  prepareSourceRevisionManifest: async (files) => {
+    if (!runtimeThemeSourceBlobStore) {
+      throw new Error(
+        "R2_BUCKET_UNAVAILABLE: Manifest removal requires immutable R2 source blob storage.",
+      );
+    }
+    return persistThemeSourceRevisionBlobs(files, runtimeThemeSourceBlobStore);
   },
   getSourceGeneration: (...args) =>
     storefrontThemeFileDal.getSourceGeneration(...args),
@@ -348,9 +405,15 @@ export function createD1ThemeRevisionStore(
         files,
         blobStore,
       );
+      const sourceIndex = deriveThemeSourceIndex({
+        files,
+        scope: "revision",
+        sourceManifest,
+      });
       return storefrontThemeFileDal.createRevision(storefrontId, themeId, {
         ...createOptions,
         sourceManifest,
+        sourceIndex,
       });
     },
     getRevision: (...args) => storefrontThemeBuildDal.getRevision(...args),
@@ -417,6 +480,12 @@ export function createD1ThemeRevisionStore(
           ...rollbackOptions,
           sourceManifest: target.sourceManifest ?? undefined,
           sourceSnapshot: target.snapshot,
+          sourceIndex: deriveThemeSourceIndex({
+            files: target.snapshot,
+            scope: "workspace",
+            sourceGeneration: rollbackOptions.expectedSourceGeneration + 1,
+            sourceManifest: target.sourceManifest,
+          }),
         },
       );
     },

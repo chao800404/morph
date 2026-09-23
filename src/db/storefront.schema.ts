@@ -147,6 +147,10 @@ export const storefrontThemes = sqliteTable(
       .default("draft"),
     publishedSourceRevisionId: text("published_source_revision_id"),
     sourceGeneration: integer("source_generation").notNull().default(1),
+    /** Server-derived source contract cache, never accepted from the client. */
+    sourceIndexVersion: integer("source_index_version"),
+    sourceIndexStatus: text("source_index_status"),
+    sourceIndex: text("source_index", { mode: "json" }).$type<JsonValue>(),
     releaseGeneration: integer("release_generation").notNull().default(1),
     metadata: metadata(),
     ...timestamps,
@@ -466,6 +470,8 @@ export const storefrontThemeRevisions = sqliteTable(
         isEntry: boolean;
       }>;
     }>(),
+    /** Source-derived index for this immutable byte snapshot. */
+    sourceIndex: text("source_index", { mode: "json" }).$type<JsonValue>(),
     createdBy: text("created_by"),
     ...timestamps,
   },

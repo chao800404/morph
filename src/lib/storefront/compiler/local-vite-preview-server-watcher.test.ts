@@ -42,6 +42,33 @@ const PAGE = `export default function Page() {
 
 const WORKSPACES_ROOT = path.join(process.cwd(), ".morph-previews-watcher-test");
 
+/**
+ * Remove this test's workspace without asking a sandbox to approve one large
+ * recursive delete. Some Windows runners protect bulk cleanup even though
+ * the test only owns this directory. Walking the known tree keeps cleanup
+ * bounded to the files this test created and uses non-recursive deletes.
+ */
+async function removeTree(target: string): Promise<void> {
+  let entries;
+  try {
+    entries = await fs.readdir(target, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const child = path.join(target, entry.name);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      await removeTree(child);
+    } else {
+      await fs.rm(child, { force: true });
+    }
+  }
+
+  await fs.rmdir(target);
+}
+
 /** A Vite server that reports the watch mode a test wants to present. */
 function serverReporting(usePolling: boolean) {
   return {
@@ -80,7 +107,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  await fs.rm(WORKSPACES_ROOT, { recursive: true, force: true });
+  await removeTree(WORKSPACES_ROOT);
 });
 
 describe("the local preview's watcher guard", () => {

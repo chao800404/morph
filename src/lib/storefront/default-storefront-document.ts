@@ -50,8 +50,11 @@ import {
  *     was standing in for a wrapper the compiler now decides.
  * 25: key a repeated row by the identity Morph stores for it rather than its
  *     position, so reordering does not carry one row's DOM node into another.
+ * 27: move an untouched Starter home route onto page-owned section copies, so
+ *     its sections stay editable while the section library they came from
+ *     stays template source Design mode does not write.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 26;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 27;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 
@@ -115,12 +118,12 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
     sections: [
       {
         ...legacyStarterDocument.sections[0]!,
-        componentRef: "hero.default",
+        componentRef: "src/components/Hero.tsx",
       },
       {
         id: "starter-introduction",
         type: "editorial-intro",
-        componentRef: "editorial-intro.default",
+        componentRef: "src/components/EditorialIntro.tsx",
         enabled: true,
         props: {
           label: "Considered living",
@@ -131,7 +134,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-categories",
         type: "category-showcase",
-        componentRef: "category-showcase.default",
+        componentRef: "src/components/CategoryShowcase.tsx",
         enabled: true,
         props: {
           heading: "Shop by ritual",
@@ -172,7 +175,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-story",
         type: "image-with-text",
-        componentRef: "image-with-text.default",
+        componentRef: "src/components/ImageWithText.tsx",
         enabled: true,
         props: {
           eyebrow: "Our point of view",
@@ -190,7 +193,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-principles",
         type: "principles",
-        componentRef: "principles.default",
+        componentRef: "src/components/Principles.tsx",
         enabled: true,
         props: {
           label: "Why we choose differently",
@@ -219,7 +222,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
       {
         id: "starter-newsletter",
         type: "newsletter",
-        componentRef: "newsletter.default",
+        componentRef: "src/components/Newsletter.tsx",
         enabled: true,
         props: {
           eyebrow: "Notes from the studio",
@@ -255,7 +258,7 @@ export function createDefaultStorefrontLayoutDocument(): StorefrontPageDocument 
       {
         id: STOREFRONT_LAYOUT_HEADER_SLOT_ID,
         type: "header",
-        componentRef: "header.default",
+        componentRef: "src/components/Header.tsx",
         enabled: true,
         props: {
           storeName: "Online Store",
@@ -283,7 +286,7 @@ export function createDefaultStorefrontLayoutDocument(): StorefrontPageDocument 
       {
         id: STOREFRONT_LAYOUT_FOOTER_SLOT_ID,
         type: "footer",
-        componentRef: "footer.default",
+        componentRef: "src/components/Footer.tsx",
         enabled: true,
         props: {
           storeName: "Online Store",

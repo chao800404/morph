@@ -394,8 +394,9 @@ describe("the local Live Preview transport", () => {
     );
     // The config names the real root, because the toolchain that reads it
     // resolves paths against the real filesystem.
-    expect(config).toContain(`root: ${JSON.stringify(workspace)}`);
-    expect(config).toContain(`allow: [${JSON.stringify(workspace)}`);
+    const configWorkspace = workspace.split(path.sep).join("/");
+    expect(config).toContain(`root: ${JSON.stringify(configWorkspace)}`);
+    expect(config).toContain(`allow: [${JSON.stringify(configWorkspace)}`);
     expect(config).not.toContain('root: "/workspace"');
     // The platform marker the materializer reconciles around, in the same
     // place the sandbox keeps it.

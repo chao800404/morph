@@ -1,3 +1,5 @@
+import type { ThemeSourceIndex } from "../theme-source-index";
+
 export type StorefrontThemeFileDTO = {
   id: string;
   storefrontId: string;
@@ -50,6 +52,7 @@ export type StorefrontThemeRevisionDTO = {
   message: string | null;
   source: "manual" | "ai" | "publish" | "rollback";
   sourceManifest?: ThemeSourceRevisionManifest | null;
+  sourceIndex?: ThemeSourceIndex | null;
   snapshot: Array<{
     path: string;
     content: string;

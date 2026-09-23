@@ -1,7 +1,9 @@
 import {
+  auditStorefrontThemeContent,
   getStorefrontThemeFile,
   listStorefrontThemeFiles,
   listStorefrontThemeRevisions,
+  previewThemeManifestMigration,
   previewStorefrontThemeRollback,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import { queryOptions } from "@tanstack/react-query";
@@ -11,7 +13,12 @@ export const storefrontThemeFileQueries = {
 
   tree: (storefrontId: string, themeId: string) =>
     queryOptions({
-      queryKey: ["storefront-theme-files", storefrontId, themeId, "tree"] as const,
+      queryKey: [
+        "storefront-theme-files",
+        storefrontId,
+        themeId,
+        "tree",
+      ] as const,
       queryFn: async () => {
         const result = await listStorefrontThemeFiles({
           data: { storefrontId, themeId },
@@ -26,9 +33,52 @@ export const storefrontThemeFileQueries = {
       retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 2_000),
     }),
 
+  contentAudit: (storefrontId: string, themeId: string) =>
+    queryOptions({
+      queryKey: [
+        "storefront-theme-files",
+        storefrontId,
+        themeId,
+        "content-capability-audit",
+      ] as const,
+      staleTime: 0,
+      queryFn: async () => {
+        const result = await auditStorefrontThemeContent({
+          data: { storefrontId, themeId },
+        });
+        if (!result.success) throw new Error(result.message);
+        return result.data;
+      },
+    }),
+
+  manifestMigrationPreview: (storefrontId: string, themeId: string) =>
+    queryOptions({
+      queryKey: [
+        "storefront-theme-files",
+        storefrontId,
+        themeId,
+        "manifest-migration-preview",
+      ] as const,
+      staleTime: 0,
+      gcTime: 0,
+      queryFn: async () => {
+        const result = await previewThemeManifestMigration({
+          data: { storefrontId, themeId },
+        });
+        if (!result.success) throw new Error(result.message);
+        return result.data;
+      },
+    }),
+
   file: (storefrontId: string, themeId: string, path: string) =>
     queryOptions({
-      queryKey: ["storefront-theme-files", storefrontId, themeId, "file", path] as const,
+      queryKey: [
+        "storefront-theme-files",
+        storefrontId,
+        themeId,
+        "file",
+        path,
+      ] as const,
       queryFn: async () => {
         const result = await getStorefrontThemeFile({
           data: { storefrontId, themeId, path },
@@ -38,12 +88,7 @@ export const storefrontThemeFileQueries = {
       },
     }),
 
-  revisions: (
-    storefrontId: string,
-    themeId: string,
-    page = 1,
-    limit = 50,
-  ) =>
+  revisions: (storefrontId: string, themeId: string, page = 1, limit = 50) =>
     queryOptions({
       // Page is part of the key so each page caches separately rather than
       // overwriting the previous one.

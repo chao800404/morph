@@ -169,6 +169,8 @@ import {
 } from "@/lib/storefront/editor/theme-instance-style-source";
 import {
   GLOBAL_LAYOUT_LABEL,
+  SECTION_TEMPLATE_HINT,
+  SECTION_TEMPLATE_LABEL,
   SHARED_LAYOUT_HINT,
 } from "./editor-layout-labels";
 
@@ -190,6 +192,8 @@ type EditorStyleInspectorProps = {
    * them.
    */
   sharedLayoutPaths?: ReadonlySet<string>;
+  /** Section library source, including what its entries re-export. */
+  sectionTemplatePaths?: ReadonlySet<string>;
   section: EditorSection;
   /**
    * Where an edit to this section's content is written.
@@ -664,6 +668,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onPropsChange,
   onJumpToCode,
   sharedLayoutPaths,
+  sectionTemplatePaths,
   view = "styles",
   disabled = false,
 }: EditorStyleInspectorProps) {
@@ -1264,10 +1269,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const isDomOnlyNestedTarget =
     activeSelectionIsSection === false && !targetElementMeta;
   const hasSyntaxError = parsedMeta ? !parsedMeta.parseOk : false;
+  // Locked up front rather than refused on write: the canvas previews a style
+  // before it is committed, so a control that looks usable here would show a
+  // change the shell then declines to save.
+  const isSectionTemplateSource = Boolean(
+    componentPath && sectionTemplatePaths?.has(componentPath),
+  );
   const sourceStyleLocked =
     hasSyntaxError ||
     (isDynamicClassName && !instanceExpressionEditable) ||
-    isDomOnlyNestedTarget;
+    isDomOnlyNestedTarget ||
+    isSectionTemplateSource;
   const visibleModules = new Set(
     resolveInspectorModules({
       kind: selectedKind,
@@ -2129,9 +2141,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           {componentPath && sharedLayoutPaths?.has(componentPath) ? (
             <span
               className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium text-foreground"
-              title={SHARED_LAYOUT_HINT}
+              title={
+                sectionTemplatePaths?.has(componentPath)
+                  ? SECTION_TEMPLATE_HINT
+                  : SHARED_LAYOUT_HINT
+              }
             >
-              {GLOBAL_LAYOUT_LABEL}
+              {sectionTemplatePaths?.has(componentPath)
+                ? SECTION_TEMPLATE_LABEL
+                : GLOBAL_LAYOUT_LABEL}
             </span>
           ) : null}
         </div>
@@ -2180,8 +2198,29 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       )}
 
+      {/* Section library template banner */}
+      {!hasSyntaxError && isSectionTemplateSource && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
+          <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+          <div className="space-y-1">
+            <div className="font-semibold text-xs leading-none">
+              {SECTION_TEMPLATE_LABEL}
+            </div>
+            <p className="text-[11px] opacity-90 leading-relaxed">
+              {componentPath?.split("/").pop()} is section library source, so
+              styling it here would change what every later Add section copies.
+              Right-click the section in the tree and choose{" "}
+              <strong>Create page copy</strong> to style it on this page only.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Dynamic ClassName (Code-controlled) Banner */}
-      {!hasSyntaxError && isDynamicClassName && !instanceExpressionEditable && (
+      {!hasSyntaxError &&
+        !isSectionTemplateSource &&
+        isDynamicClassName &&
+        !instanceExpressionEditable && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
           <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
           <div className="space-y-1">

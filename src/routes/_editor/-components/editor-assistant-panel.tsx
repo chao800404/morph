@@ -33,6 +33,8 @@ import type { ThemeInstanceStyleTarget } from "@/lib/storefront/editor/theme-ins
 type EditorAssistantPanelProps = {
   /** Modules the layout supplies; an edit to one reaches every page. */
   sharedLayoutPaths?: ReadonlySet<string>;
+  /** Section library source, including what its entries re-export. */
+  sectionTemplatePaths?: ReadonlySet<string>;
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
   style?: React.CSSProperties;
@@ -194,6 +196,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   selection,
   editableNodes,
   sharedLayoutPaths,
+  sectionTemplatePaths,
   activeComputedStyleRevision,
   activeViewport,
   onUpdateThemeFileStyle,
@@ -448,6 +451,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           {selectedSection ? (
             <EditorStyleInspector
               sharedLayoutPaths={sharedLayoutPaths}
+              sectionTemplatePaths={sectionTemplatePaths}
               resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}`}
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}

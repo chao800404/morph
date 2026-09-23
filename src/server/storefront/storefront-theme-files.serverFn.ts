@@ -5,6 +5,18 @@ import {
   themeRevisionStore,
   themeSourceStore,
 } from "@/lib/storefront/storage/theme-storage.server";
+import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
+import {
+  applyThemeManifestMigration,
+  readThemeManifestMigrationSnapshot,
+} from "@/lib/storefront/dal/storefront-theme-manifest-migration.dal";
+import { buildThemeContentShadowReport } from "@/lib/storefront/theme-content-capability-shadow";
+import {
+  buildThemeManifestMigrationPlan,
+  LEGACY_THEME_MANIFEST_PATH,
+  sourceIndexForLegacyManifestRevision,
+  type ThemeManifestMigrationPlan,
+} from "@/lib/storefront/theme-manifest-migration";
 import { createStarterThemeWorkspaceBootstrapPlan } from "@/lib/storefront/starter-theme-files";
 import {
   planNewThemePage,
@@ -13,6 +25,7 @@ import {
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   applyStarterThemeWorkspaceInputSchema,
+  auditThemeContentInputSchema,
   createThemePageInputSchema,
   createThemeRevisionInputSchema,
   deleteThemePageInputSchema,
@@ -26,9 +39,59 @@ import {
   rollbackThemeRevisionInputSchema,
   saveThemeFileInputSchema,
   saveThemeFilesBatchInputSchema,
+  applyThemeManifestMigrationInputSchema,
+  previewThemeManifestMigrationInputSchema,
 } from "@/lib/validations/storefront-theme-file";
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
+
+function rejectLegacyManifestDeletion() {
+  return fail(
+    "The legacy theme manifest cannot be deleted through the generic file API. Run the server-owned migration after its manifest-removal gate passes.",
+    { error: "MANIFEST_REMOVAL_REQUIRES_MIGRATION" },
+  );
+}
+
+/**
+ * Never return source bytes or mutable document bodies in a migration preview.
+ * The plan itself is deliberately richer because the apply path needs it, but
+ * the browser only needs the gate, diagnostics and affected identities.
+ */
+function publicThemeManifestMigrationPlan(plan: ThemeManifestMigrationPlan) {
+  return {
+    status: plan.status,
+    storefrontId: plan.storefrontId,
+    themeId: plan.themeId,
+    sourceGeneration: plan.sourceGeneration,
+    manifestFile: plan.manifestFile,
+    sourceFilesBefore: plan.sourceFilesBefore.map((file) => ({
+      id: file.id,
+      path: file.path,
+      version: file.version,
+    })),
+    sourceFilesAfter: plan.sourceFilesAfter.map((file) => ({
+      id: file.id,
+      path: file.path,
+      version: file.version,
+    })),
+    sourceIndexAfter: plan.sourceIndexAfter
+      ? {
+          status: plan.sourceIndexAfter.status,
+          key: plan.sourceIndexAfter.key,
+          diagnostics: plan.sourceIndexAfter.diagnostics,
+        }
+      : null,
+    documentUpdates: plan.documentUpdates.map((update) => ({
+      kind: update.kind,
+      id: update.id,
+    })),
+    historicalLegacyRefs: plan.historicalLegacyRefs,
+    warnings: plan.warnings,
+    rewriteCount: plan.rewriteCount,
+    blockers: plan.blockers,
+    report: plan.report,
+  };
+}
 
 export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(listThemeFilesInputSchema, data))
@@ -63,6 +126,198 @@ export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
         error,
         "LIST_FAILED",
         "Failed to list theme files",
+      );
+    }
+  });
+
+/**
+ * Read-only migration evidence for a Theme that still has morph.theme.json.
+ *
+ * The server owns both inputs: the workspace files and the stored documents.
+ * The browser cannot choose a source path or submit a precomputed report.
+ */
+export const auditStorefrontThemeContent = createServerFn({ method: "POST" })
+  .validator((data: unknown) => parseInput(auditThemeContentInputSchema, data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    const data = input.data;
+
+    try {
+      const [files, sourceGenerationBefore, refs] = await Promise.all([
+        themeSourceStore.listFiles(data.storefrontId, data.themeId),
+        themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
+        storefrontThemeDal.listComponentRefsForCapabilityAudit(
+          data.storefrontId,
+          data.themeId,
+        ),
+      ]);
+      if (!refs || sourceGenerationBefore === null) {
+        return fail("Theme not found or does not belong to storefront.", {
+          error: "THEME_NOT_FOUND",
+        });
+      }
+      // The current storage contract returns files and generation through
+      // separate reads. Refuse to produce a migration report if the workspace
+      // moved while the files/documents were being sampled; otherwise the
+      // report could describe a generation that never existed as a whole.
+      const sourceGenerationAfter = await themeSourceStore.getSourceGeneration(
+        data.storefrontId,
+        data.themeId,
+      );
+      if (sourceGenerationAfter === null) {
+        return fail("Theme not found or does not belong to storefront.", {
+          error: "THEME_NOT_FOUND",
+        });
+      }
+      if (sourceGenerationAfter !== sourceGenerationBefore) {
+        return fail(
+          "Theme source changed while the audit was running. Run the audit again.",
+          { error: "AUDIT_STALE_SOURCE" },
+        );
+      }
+      const report = buildThemeContentShadowReport({
+        files,
+        sourceGeneration: sourceGenerationAfter,
+        draftRefs: refs.draftRefs,
+        historicalRefs: refs.historicalRefs,
+      });
+      return ok("Theme content capability audit ready", report);
+    } catch (error) {
+      return failure(
+        "Audit theme content capability error",
+        error,
+        "AUDIT_FAILED",
+        "Failed to audit Theme content capabilities",
+      );
+    }
+  });
+
+/**
+ * Preview the only supported path for removing morph.theme.json. This is a
+ * server-owned plan: the client supplies only the Theme identity, never a
+ * source path list, a manifest, or a precomputed migration decision.
+ */
+export const previewThemeManifestMigration = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(previewThemeManifestMigrationInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    const data = input.data;
+
+    try {
+      const snapshot = await readThemeManifestMigrationSnapshot(
+        data.storefrontId,
+        data.themeId,
+      );
+      if (!snapshot) {
+        return fail("Theme not found or does not belong to storefront.", {
+          error: "THEME_NOT_FOUND",
+        });
+      }
+      const plan = buildThemeManifestMigrationPlan(snapshot);
+      return ok(
+        plan.status === "ready"
+          ? "Legacy manifest migration is ready"
+          : plan.status === "not-needed"
+            ? "Theme does not contain a legacy manifest"
+            : "Legacy manifest migration is blocked",
+        publicThemeManifestMigrationPlan(plan),
+      );
+    } catch (error) {
+      return failure(
+        "Preview legacy theme manifest migration error",
+        error,
+        "MANIFEST_MIGRATION_PREVIEW_FAILED",
+        "Failed to prepare the legacy manifest migration",
+      );
+    }
+  });
+
+/**
+ * Re-reads and applies a ready plan in the same request. The browser cannot
+ * submit a plan or choose files. OCC guards in the D1 batch refuse the write
+ * if the Theme, manifest, or any affected document moved after the read.
+ */
+export const applyThemeManifestMigrationServerFn = createServerFn({
+  method: "POST",
+})
+  .validator((data: unknown) =>
+    parseInput(applyThemeManifestMigrationInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    const data = input.data;
+
+    try {
+      const snapshot = await readThemeManifestMigrationSnapshot(
+        data.storefrontId,
+        data.themeId,
+      );
+      if (!snapshot) {
+        return fail("Theme not found or does not belong to storefront.", {
+          error: "THEME_NOT_FOUND",
+        });
+      }
+
+      const plan = buildThemeManifestMigrationPlan(snapshot);
+      if (plan.status === "not-needed") {
+        return ok("Theme does not contain a legacy manifest", {
+          status: plan.status,
+          sourceGeneration: plan.sourceGeneration,
+        });
+      }
+      if (plan.status !== "ready") {
+        return fail(
+          `Legacy manifest migration is blocked: ${plan.blockers.join(" ")}`,
+          { error: "MANIFEST_MIGRATION_BLOCKED" },
+        );
+      }
+      if (!plan.sourceIndexAfter) {
+        return fail("The migration did not produce a source index.", {
+          error: "MANIFEST_MIGRATION_BLOCKED",
+        });
+      }
+      const readyPlan = plan as ThemeManifestMigrationPlan & {
+        status: "ready";
+      };
+
+      // Blobs are immutable and content-addressed. They are written before
+      // the D1 batch so the newly-created source revision can always restore
+      // the exact pre-migration workspace, including morph.theme.json.
+      const sourceManifest =
+        await themeSourceStore.prepareSourceRevisionManifest(
+          readyPlan.sourceFilesBefore,
+        );
+      const sourceIndexBefore = sourceIndexForLegacyManifestRevision({
+        files: readyPlan.sourceFilesBefore,
+        sourceManifest,
+      });
+
+      const applied = await applyThemeManifestMigration({
+        plan: readyPlan,
+        sourceManifest,
+        sourceIndexBefore,
+        createdBy: context.user.id,
+      });
+      return ok("Legacy theme manifest migrated", {
+        status: "applied" as const,
+        sourceGeneration: applied.sourceGeneration,
+        rewriteCount: readyPlan.rewriteCount,
+        deletedPath: LEGACY_THEME_MANIFEST_PATH,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return failure(
+        "Apply legacy theme manifest migration error",
+        error,
+        message.includes("CONFLICT_THEME_MANIFEST_MIGRATION")
+          ? "MANIFEST_MIGRATION_CONFLICT"
+          : "MANIFEST_MIGRATION_FAILED",
+        "Failed to apply the legacy manifest migration",
       );
     }
   });
@@ -278,6 +533,9 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
     // reach the browser as an opaque 500 with the reason stripped.
     if (!input.success) return input;
     const data = input.data;
+    if (data.path === LEGACY_THEME_MANIFEST_PATH) {
+      return rejectLegacyManifestDeletion();
+    }
     try {
       const saved = await themeSourceStore.saveFile(
         data.storefrontId,
@@ -341,6 +599,13 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
     // reach the browser as an opaque 500 with the reason stripped.
     if (!input.success) return input;
     const data = input.data;
+    if (
+      data.deletions?.some(
+        (deletion) => deletion.path === LEGACY_THEME_MANIFEST_PATH,
+      )
+    ) {
+      return rejectLegacyManifestDeletion();
+    }
     try {
       const saved = await themeSourceStore.saveFilesBatch(
         data.storefrontId,
@@ -583,6 +848,9 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
     // reach the browser as an opaque 500 with the reason stripped.
     if (!input.success) return input;
     const data = input.data;
+    if (data.path === LEGACY_THEME_MANIFEST_PATH) {
+      return rejectLegacyManifestDeletion();
+    }
     try {
       const success = await themeSourceStore.deleteFile(
         data.storefrontId,

@@ -110,6 +110,9 @@ beforeEach(() => {
     CREATE TABLE storefront_themes (
       id text PRIMARY KEY,
       storefront_id text NOT NULL,
+      source_index_version integer,
+      source_index_status text,
+      source_index text,
       deleted_at text
     );
     CREATE TABLE storefront_theme_templates (

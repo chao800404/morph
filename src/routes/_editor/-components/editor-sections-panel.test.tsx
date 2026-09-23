@@ -841,7 +841,8 @@ describe("EditorSectionsPanel editable node tree", () => {
     );
     expect(
       await screen.findByRole("heading", {
-        name: "Create a page-specific copy of “Heading”?",
+        // The section is what gets copied, not the node the menu opened on.
+        name: "Create a page-specific copy of “unrelated-section”?",
       }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Create copy" }));

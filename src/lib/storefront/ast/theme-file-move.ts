@@ -175,6 +175,36 @@ function readSpecifierSites(source: string): SpecifierSite[] {
   return sites.sort((left, right) => left.start - right.start);
 }
 
+export type ThemeFileImportTarget = Readonly<{
+  specifier: string;
+  /** The workspace file a relative specifier reaches, or null for packages, aliases and misses. */
+  resolvedPath: string | null;
+}>;
+
+/**
+ * Every module a file imports or re-exports, resolved against the workspace
+ * where the specifier is relative.
+ *
+ * Returns null when the file does not parse: an answer read from a broken file
+ * is a guess, and every caller uses this to decide something it cannot undo.
+ */
+export function readThemeFileImportTargets(
+  importerPath: string,
+  content: string,
+  paths: ReadonlySet<string>,
+): readonly ThemeFileImportTarget[] | null {
+  let sites: SpecifierSite[];
+  try {
+    sites = readSpecifierSites(content);
+  } catch {
+    return null;
+  }
+  return sites.map((site) => ({
+    specifier: site.value,
+    resolvedPath: resolveSpecifierToFile(importerPath, site.value, paths),
+  }));
+}
+
 /** Applies replacements to a source string from the end, so offsets stay valid. */
 function replaceRanges(
   source: string,
@@ -201,17 +231,20 @@ export type ThemeFileCopyImportRewriteResult =
  * Rewrites relative imports for a copied file whose directory changed.
  *
  * This differs from `planThemeFileMove`: the original file remains in place,
- * so importers of the original must not be changed and the copied file's
- * imports must continue to resolve to the original dependency files. Keeping
- * this as an AST-based operation avoids regex rewriting of comments or string
- * literals and gives the detach operation the same fail-closed parse behavior
- * as the Theme file move workflow.
+ * so importers of the original must not be changed. By default the copied
+ * file's imports continue to resolve to the original dependency files; a
+ * source-to-copy map can opt a whole section folder into private dependencies.
+ * Keeping this as an AST-based operation avoids regex rewriting of comments or
+ * string literals and gives the detach operation the same fail-closed parse
+ * behavior as the Theme file move workflow.
  */
 export function rewriteThemeFileImportsForCopy(args: {
   sourcePath: string;
   targetPath: string;
   content: string;
   files: readonly ThemeSourceFile[];
+  /** Optional source-to-copy mapping for a copied section folder. */
+  pathMap?: ReadonlyMap<string, string>;
 }): ThemeFileCopyImportRewriteResult {
   let sites: SpecifierSite[];
   try {
@@ -230,11 +263,11 @@ export function rewriteThemeFileImportsForCopy(args: {
     const target = resolveSpecifierToFile(args.sourcePath, site.value, paths);
     if (!target) continue;
 
-    const hadExtension =
-      site.value !== withoutImplicitExtension(site.value);
+    const hadExtension = site.value !== withoutImplicitExtension(site.value);
+    const nextTarget = args.pathMap?.get(target) ?? target;
     const nextSpecifier = relativeSpecifier(
       directoryOf(args.targetPath),
-      hadExtension ? target : withoutImplicitExtension(target),
+      hadExtension ? nextTarget : withoutImplicitExtension(nextTarget),
     );
     if (nextSpecifier === site.value) continue;
     edits.push({
@@ -247,7 +280,8 @@ export function rewriteThemeFileImportsForCopy(args: {
 
   return {
     ok: true,
-    content: edits.length > 0 ? replaceRanges(args.content, edits) : args.content,
+    content:
+      edits.length > 0 ? replaceRanges(args.content, edits) : args.content,
     rewrites,
   };
 }

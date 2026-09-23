@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 // Imported across the src/scripts boundary on purpose. The logic under test
@@ -22,10 +23,10 @@ describe("artifact reconstruction containment", () => {
 
   it("keeps ordinary nested paths", () => {
     expect(containedPath(root, "server/index.js")).toBe(
-      "/tmp/morph-e2e-artifact/server/index.js",
+      path.resolve(root, "server/index.js"),
     );
     expect(containedPath(root, "client/assets/index-ab12.js")).toBe(
-      "/tmp/morph-e2e-artifact/client/assets/index-ab12.js",
+      path.resolve(root, "client/assets/index-ab12.js"),
     );
   });
 
@@ -44,6 +45,24 @@ describe("artifact reconstruction containment", () => {
     expect(() => containedPath(root, "/etc/hosts")).toThrow(
       /ARTIFACT_PATH_ABSOLUTE/,
     );
+    expect(() =>
+      containedPath(
+        root,
+        "C:\\\\Windows\\\\System32\\\\drivers\\\\etc\\\\hosts",
+      ),
+    ).toThrow(/ARTIFACT_PATH_ABSOLUTE/);
+    expect(() =>
+      containedPath(root, "\\\\server\\\\share\\\\artifact.js"),
+    ).toThrow(/ARTIFACT_PATH_ABSOLUTE/);
+  });
+
+  it("normalizes Windows separators before checking containment", () => {
+    expect(containedPath(root, "server\\\\index.js")).toBe(
+      path.resolve(root, "server/index.js"),
+    );
+    expect(() =>
+      containedPath(root, "server\\\\..\\\\..\\\\escaped.js"),
+    ).toThrow(/ARTIFACT_PATH_ESCAPES_ROOT/);
   });
 
   it("refuses a sibling directory that merely shares the root's prefix", () => {
