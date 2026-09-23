@@ -111,6 +111,37 @@ beforeEach(() => {
       updated_at text NOT NULL,
       deleted_at text
     );
+    CREATE TABLE storefront_theme_templates (
+      id text PRIMARY KEY NOT NULL,
+      theme_id text NOT NULL,
+      type text NOT NULL,
+      name text NOT NULL,
+      route_path text,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
+    CREATE UNIQUE INDEX storefront_theme_templates_active_name_unique
+      ON storefront_theme_templates (theme_id, type, name)
+      WHERE deleted_at IS NULL;
+    CREATE UNIQUE INDEX storefront_theme_templates_active_route_unique
+      ON storefront_theme_templates (theme_id, route_path)
+      WHERE route_path IS NOT NULL AND deleted_at IS NULL;
+    CREATE TABLE storefront_theme_route_document_moves (
+      id text PRIMARY KEY NOT NULL,
+      theme_id text NOT NULL,
+      from_route_path text NOT NULL,
+      to_route_path text NOT NULL,
+      source_generation integer NOT NULL,
+      sequence integer NOT NULL,
+      created_at text NOT NULL
+    );
+    CREATE TABLE storefront_content_publication_items (
+      id text PRIMARY KEY NOT NULL,
+      item_type text NOT NULL,
+      content_id text NOT NULL,
+      metadata text NOT NULL DEFAULT '{}',
+      deleted_at text
+    );
     CREATE UNIQUE INDEX storefront_theme_files_unique_path_idx
     ON storefront_theme_files (storefront_id, theme_id, path)
     WHERE deleted_at IS NULL;
@@ -206,6 +237,386 @@ describe("storefront theme file DAL", () => {
     // removing without writing loses it.
     expect(paths).toContain("src/components/ui/Card.tsx");
     expect(paths).not.toContain("src/components/Card.tsx");
+  });
+
+  it("moves a route-owned document and freezes its old publication path", async () => {
+    const [routeFile] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/routes/about.tsx",
+          content: 'export const Route = createFileRoute("/about")({});',
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, route_path, updated_at)
+      VALUES ('about-document', 'theme-a', 'page', '/about', '/about', 'now');
+      INSERT INTO storefront_content_publication_items
+        (id, item_type, content_id, metadata)
+      VALUES ('old-release', 'template', 'about-document', '{}');
+      INSERT INTO storefront_content_publication_items
+        (id, item_type, content_id, metadata)
+      VALUES ('older-snapshot', 'template', 'about-document', '{"routePath":"/legacy-about"}');
+    `);
+
+    await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/routes/company.tsx",
+          content: 'export const Route = createFileRoute("/company")({});',
+          expectMissing: true,
+        },
+      ],
+      {
+        expectedSourceGeneration: 2,
+        deletions: [
+          {
+            path: routeFile!.path,
+            expectedFileId: routeFile!.id,
+            expectedVersion: routeFile!.version,
+          },
+        ],
+        routePathMoves: [
+          {
+            fromSourcePath: "src/routes/about.tsx",
+            toSourcePath: "src/routes/company.tsx",
+          },
+        ],
+      },
+    );
+
+    expect(
+      sqlite
+        .prepare(
+          "SELECT route_path FROM storefront_theme_templates WHERE id = 'about-document'",
+        )
+        .get(),
+    ).toEqual({ route_path: "/company" });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT metadata FROM storefront_content_publication_items WHERE id = 'old-release'",
+        )
+        .get(),
+    ).toEqual({ metadata: '{"routePath":"/about"}' });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT metadata FROM storefront_content_publication_items WHERE id = 'older-snapshot'",
+        )
+        .get(),
+    ).toEqual({ metadata: '{"routePath":"/legacy-about"}' });
+  });
+
+  describe("rolling back across a route move", () => {
+    const aboutRoute = {
+      path: "src/routes/about.tsx",
+      content: 'export const Route = createFileRoute("/about")({});',
+    };
+
+    /** Saves /about as revision #1 (generation 2). */
+    async function saveAboutRevision() {
+      const [routeFile] = await storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [{ ...aboutRoute, expectMissing: true }],
+        { expectedSourceGeneration: 1, createRevision: true },
+      );
+      return routeFile!;
+    }
+
+    /** Renames /about to /company (generation 3). */
+    async function renameAboutToCompany(routeFile: {
+      path: string;
+      id: string;
+      version: number;
+    }) {
+      await storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/routes/company.tsx",
+            content: 'export const Route = createFileRoute("/company")({});',
+            expectMissing: true,
+          },
+        ],
+        {
+          expectedSourceGeneration: 2,
+          deletions: [
+            {
+              path: routeFile.path,
+              expectedFileId: routeFile.id,
+              expectedVersion: routeFile.version,
+            },
+          ],
+          routePathMoves: [
+            {
+              fromSourcePath: "src/routes/about.tsx",
+              toSourcePath: "src/routes/company.tsx",
+            },
+          ],
+        },
+      );
+    }
+
+    /** What `ensureRouteTemplate` creates on a route's first content write. */
+    const createRouteDocument = (id: string, path: string) =>
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_templates
+             (id, theme_id, type, name, route_path, updated_at)
+           VALUES (?, 'theme-a', 'page', ?, ?, 'now')`,
+        )
+        .run(id, path, path);
+
+    const placement = (id: string) =>
+      sqlite
+        .prepare(
+          "SELECT route_path, name FROM storefront_theme_templates WHERE id = ?",
+        )
+        .get(id);
+
+    const rollBackToAbout = () =>
+      storefrontThemeFileDal.rollbackToRevision("storefront-a", "theme-a", 1, {
+        expectedSourceGeneration: 3,
+      });
+
+    it("carries the document back with its route, name and all", async () => {
+      const routeFile = await saveAboutRevision();
+      createRouteDocument("about-document", "/about");
+      await renameAboutToCompany(routeFile);
+      expect(placement("about-document")).toEqual({
+        route_path: "/company",
+        name: "/company",
+      });
+
+      const files = await rollBackToAbout();
+
+      expect(files.map((file) => file.path)).toEqual(["src/routes/about.tsx"]);
+      expect(placement("about-document")).toEqual({
+        route_path: "/about",
+        name: "/about",
+      });
+      // The move back is recorded too, so rolling the rollback back works.
+      expect(
+        sqlite
+          .prepare(
+            `SELECT from_route_path, to_route_path, source_generation
+             FROM storefront_theme_route_document_moves
+             ORDER BY source_generation`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          from_route_path: "/about",
+          to_route_path: "/company",
+          source_generation: 3,
+        },
+        {
+          from_route_path: "/company",
+          to_route_path: "/about",
+          source_generation: 4,
+        },
+      ]);
+    });
+
+    it("carries content first written after the route was renamed", async () => {
+      const routeFile = await saveAboutRevision();
+      await renameAboutToCompany(routeFile);
+      // /about had no document when it moved; /company's first write made one.
+      createRouteDocument("written-later", "/company");
+
+      await expect(
+        storefrontThemeFileDal.planRouteDocumentRollback("theme-a", {
+          sourceGeneration: 2,
+          paths: [aboutRoute.path],
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        documentMoves: [
+          {
+            templateId: "written-later",
+            fromRoutePath: "/company",
+            toRoutePath: "/about",
+          },
+        ],
+      });
+      await rollBackToAbout();
+      expect(placement("written-later")).toEqual({
+        route_path: "/about",
+        name: "/about",
+      });
+    });
+
+    it("lets the old path get a document of its own after a rename", async () => {
+      const routeFile = await saveAboutRevision();
+      createRouteDocument("about-document", "/about");
+      await renameAboutToCompany(routeFile);
+
+      // Would hit the (theme, type, name) index if the name stayed /about.
+      expect(() => createRouteDocument("new-about", "/about")).not.toThrow();
+    });
+
+    it("refuses when the old path has a document of its own again", async () => {
+      const routeFile = await saveAboutRevision();
+      createRouteDocument("about-document", "/about");
+      await renameAboutToCompany(routeFile);
+      createRouteDocument("new-about", "/about");
+
+      await expect(rollBackToAbout()).rejects.toThrow(
+        "ROLLBACK_ROUTE_DOCUMENT_CONFLICT",
+      );
+      expect(placement("about-document")).toEqual({
+        route_path: "/company",
+        name: "/company",
+      });
+      await expect(
+        storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+      ).resolves.toBe(3);
+    });
+
+    it("refuses a revision without its generation that would strand content", async () => {
+      const routeFile = await saveAboutRevision();
+      createRouteDocument("about-document", "/about");
+      await renameAboutToCompany(routeFile);
+      sqlite.exec(
+        "UPDATE storefront_theme_revisions SET source_generation = NULL",
+      );
+
+      await expect(rollBackToAbout()).rejects.toThrow(
+        "ROLLBACK_ROUTE_DOCUMENT_CONFLICT",
+      );
+      expect(placement("about-document")).toEqual({
+        route_path: "/company",
+        name: "/company",
+      });
+    });
+
+    it("allows a revision without its generation when no content is stranded", async () => {
+      await saveAboutRevision();
+      createRouteDocument("about-document", "/about");
+      await storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/routes/team.tsx",
+            content: 'export const Route = createFileRoute("/team")({});',
+            expectMissing: true,
+          },
+        ],
+        { expectedSourceGeneration: 2 },
+      );
+      sqlite.exec(
+        "UPDATE storefront_theme_revisions SET source_generation = NULL",
+      );
+
+      const files = await rollBackToAbout();
+      expect(files.map((file) => file.path)).toEqual([aboutRoute.path]);
+      expect(placement("about-document")).toEqual({
+        route_path: "/about",
+        name: "/about",
+      });
+    });
+  });
+
+  it("refuses to move a page document onto a path another document is named after", async () => {
+    const [routeFile] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/routes/about.tsx",
+          content: 'export const Route = createFileRoute("/about")({});',
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, route_path, updated_at)
+      VALUES
+        ('about-document', 'theme-a', 'page', '/about', '/about', 'now'),
+        ('stale-name', 'theme-a', 'page', '/company', NULL, 'now');
+    `);
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/routes/company.tsx",
+            content: 'export const Route = createFileRoute("/company")({});',
+            expectMissing: true,
+          },
+        ],
+        {
+          expectedSourceGeneration: 2,
+          deletions: [
+            {
+              path: routeFile!.path,
+              expectedFileId: routeFile!.id,
+              expectedVersion: routeFile!.version,
+            },
+          ],
+          routePathMoves: [
+            {
+              fromSourcePath: "src/routes/about.tsx",
+              toSourcePath: "src/routes/company.tsx",
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow("ROUTE_DOCUMENT_MOVE_CONFLICT");
+  });
+
+  it("refuses to move an owned page document onto a shared template route", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, route_path, updated_at)
+      VALUES ('about-document', 'theme-a', 'page', '/about', '/about', 'now');
+    `);
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/routes/products/new.tsx",
+            content:
+              "export const Route = createFileRoute('/products/new')({});",
+            expectMissing: true,
+          },
+        ],
+        {
+          expectedSourceGeneration: 1,
+          deletions: [
+            {
+              path: "src/routes/about.tsx",
+              expectedFileId: "route-file",
+              expectedVersion: 1,
+            },
+          ],
+          routePathMoves: [
+            {
+              fromSourcePath: "src/routes/about.tsx",
+              toSourcePath: "src/routes/products/new.tsx",
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow("ROUTE_DOCUMENT_MOVE_UNSUPPORTED");
   });
 
   it("strictly requires expectedSourceGeneration at the DAL layer", async () => {

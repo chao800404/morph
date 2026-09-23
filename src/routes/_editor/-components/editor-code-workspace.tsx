@@ -1580,17 +1580,19 @@ const EditorCodeWorkspaceContent = forwardRef<
       const workspaceFiles = useThemeWorkspaceStore
         .getState()
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
-      const plan = planThemeFileMove(
-        files.map((file) => ({
-          path: file.path,
-          // A move must rewrite the newest editor buffer, not an older server
-          // snapshot, or it can save an import graph that no longer matches
-          // what the author sees in Monaco.
-          content:
-            draftContentsRef.current[file.path] ??
+      // A move must rewrite the newest editor buffer, not an older server
+      // snapshot, or it can save an import graph that no longer matches what
+      // the author sees in Monaco.
+      const planInputs = new Map(
+        files.map((file) => [
+          file.path,
+          draftContentsRef.current[file.path] ??
             workspaceFiles[file.path]?.localContent ??
             file.content,
-        })),
+        ]),
+      );
+      const plan = planThemeFileMove(
+        [...planInputs].map(([path, content]) => ({ path, content })),
         moves,
       );
       if (!plan.ok) throw new Error(plan.reason);
@@ -1642,6 +1644,7 @@ const EditorCodeWorkspaceContent = forwardRef<
                 };
           }),
           deletions,
+          routePathMoves: plan.routePathMoves,
           expectedSourceGeneration: useThemeWorkspaceStore
             .getState()
             .getAcceptedSourceGeneration(workspaceScope),
@@ -1653,17 +1656,19 @@ const EditorCodeWorkspaceContent = forwardRef<
         },
       });
       if (!result.success) throw new Error(result.message);
-      return { ...result.data, plan, moves };
+      return { ...result.data, plan, moves, planInputs };
     },
     onSuccess: async ({
       sourceGeneration,
       plan,
       moves,
+      planInputs,
       files: savedFiles = [],
     }: {
       sourceGeneration: number;
       plan: Extract<ReturnType<typeof planThemeFileMove>, { ok: true }>;
       moves: ReadonlyArray<{ from: string; to: string }>;
+      planInputs: ReadonlyMap<string, string>;
       files: StorefrontThemeFileDTO[];
     }) => {
       // Notify the shell at the transaction boundary, before local store or
@@ -1673,12 +1678,23 @@ const EditorCodeWorkspaceContent = forwardRef<
         .getState()
         .acceptRemoteGeneration(sourceGeneration, workspaceScope);
 
+      // The plan was made from these buffers and the batch saved their
+      // rewrites, so a buffer still equal to its plan input is older than
+      // what landed. Only one edited while the move was in flight is newer;
+      // keeping any other would put the pre-move route path and imports back
+      // in the editor, one save away from undoing the move.
+      const draftNewerThanPlan = (path: string) => {
+        const draft = draftContentsRef.current[path];
+        return draft !== undefined && draft !== planInputs.get(path)
+          ? draft
+          : undefined;
+      };
       const moved = new Map(moves.map((move) => [move.from, move.to]));
       const movedDrafts = new Map<string, string>();
       for (const [from, to] of moved) {
         // The editor's own state is keyed by path, so anything remembering the
         // old one now points at a file that does not exist.
-        const draft = draftContentsRef.current[from];
+        const draft = draftNewerThanPlan(from);
         if (draft !== undefined) movedDrafts.set(to, draft);
         delete draftContentsRef.current[from];
         delete draftDirtyRef.current[from];
@@ -1698,7 +1714,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       // current buffer for normal edits.
       for (const saved of savedFiles) {
         const currentDraft =
-          draftContentsRef.current[saved.path] ?? movedDrafts.get(saved.path);
+          draftNewerThanPlan(saved.path) ?? movedDrafts.get(saved.path);
         if (currentDraft !== undefined) {
           draftContentsRef.current[saved.path] = currentDraft;
         }
@@ -3816,8 +3832,7 @@ const EditorCodeWorkspaceContent = forwardRef<
                     "font-medium",
                     manifestMigrationPreviewQuery.data.status === "ready"
                       ? "text-emerald-600 dark:text-emerald-400"
-                      : manifestMigrationPreviewQuery.data.status ===
-                          "blocked"
+                      : manifestMigrationPreviewQuery.data.status === "blocked"
                         ? "text-amber-600 dark:text-amber-400"
                         : "text-muted-foreground",
                   )}

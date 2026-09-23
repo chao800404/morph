@@ -1,3 +1,4 @@
+import type { RouteDocumentRollbackPlan } from "../route-document-moves";
 import type {
   StorefrontThemeFileDTO,
   ThemeSourceRevisionManifest,
@@ -53,6 +54,11 @@ export type SaveThemeSourceFilesBatchOptions = {
     path: string;
     expectedFileId: string;
     expectedVersion: number;
+  }>;
+  /** Route source moves; the DAL derives paths and verifies both file changes. */
+  routePathMoves?: ReadonlyArray<{
+    fromSourcePath: string;
+    toSourcePath: string;
   }>;
   createRevision?: boolean;
   revisionMessage?: string;
@@ -197,6 +203,19 @@ export interface ThemeRevisionStore {
     themeId: string,
     revisionNumber: number,
   ): Promise<StorefrontThemeRevisionDTO>;
+
+  /**
+   * The route-owned documents rolling back to a revision would carry back to
+   * the paths their routes had then, or why it cannot.
+   */
+  planRouteDocumentRollback(
+    storefrontId: string,
+    themeId: string,
+    revision: Readonly<{
+      sourceGeneration: number | null;
+      paths: readonly string[];
+    }>,
+  ): Promise<RouteDocumentRollbackPlan>;
 
   rollbackToRevision(
     storefrontId: string,

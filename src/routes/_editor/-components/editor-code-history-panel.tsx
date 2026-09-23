@@ -5,7 +5,13 @@ import {
   type ThemeRollbackPlan,
 } from "@/lib/storefront/editor/theme-rollback-plan";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, FilePlus2, FileX2, Pencil } from "lucide-react";
+import {
+  AlertTriangle,
+  FilePlus2,
+  FileX2,
+  MoveRight,
+  Pencil,
+} from "lucide-react";
 
 /** One entry of the workspace's source history, as the list shows it. */
 export type EditorCodeRevision = Readonly<{
@@ -206,6 +212,14 @@ export function EditorCodeHistoryPanel({
                             icon={<FileX2 className="size-3" />}
                             tone="destructive"
                           />
+                          <PlanGroup
+                            title="Page content moved back"
+                            paths={(plan.routeDocumentMoves ?? []).map(
+                              (move) =>
+                                `${move.fromRoutePath} → ${move.toRoutePath}`,
+                            )}
+                            icon={<MoveRight className="size-3" />}
+                          />
 
                           {plan.removed.length > 0 ? (
                             <div className="flex items-start gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] leading-relaxed text-destructive">
@@ -220,9 +234,9 @@ export function EditorCodeHistoryPanel({
                             </div>
                           ) : null}
 
-                          {blockedReason ? (
+                          {blockedReason || plan.routeDocumentConflict ? (
                             <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
-                              {blockedReason}
+                              {blockedReason ?? plan.routeDocumentConflict}
                             </p>
                           ) : null}
 
@@ -235,7 +249,11 @@ export function EditorCodeHistoryPanel({
                                 : "default"
                             }
                             className="w-full"
-                            disabled={Boolean(blockedReason) || isRollingBack}
+                            disabled={
+                              Boolean(
+                                blockedReason || plan.routeDocumentConflict,
+                              ) || isRollingBack
+                            }
                             onClick={() => onRollback(revision.revisionNumber)}
                           >
                             {isRollingBack

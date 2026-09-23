@@ -29,6 +29,11 @@ export type ThemeFileMoveResult =
       deletions: string[];
       /** Every specifier that was rewritten, for the change description. */
       rewrites: ReadonlyArray<{ file: string; from: string; to: string }>;
+      /** Route source moves whose page-owned Documents must move atomically too. */
+      routePathMoves: ReadonlyArray<{
+        fromSourcePath: string;
+        toSourcePath: string;
+      }>;
     }>
   | Readonly<{ ok: false; reason: string }>;
 
@@ -496,6 +501,24 @@ export function planThemeFileMove(
     writes,
     deletions: Array.from(movesByFrom.keys()),
     rewrites,
+    routePathMoves: moves
+      .filter((move) => {
+        const from = parseThemeRouteSourcePath(move.from);
+        const to = parseThemeRouteSourcePath(move.to);
+        return Boolean(
+          from &&
+          to &&
+          !from.isRoutePiece &&
+          !to.isRoutePiece &&
+          from.routeType !== "root" &&
+          to.routeType !== "root" &&
+          from.path !== to.path,
+        );
+      })
+      .map(({ from, to }) => ({
+        fromSourcePath: from,
+        toSourcePath: to,
+      })),
   };
 }
 

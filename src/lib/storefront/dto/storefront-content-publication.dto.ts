@@ -6,7 +6,7 @@ export type StorefrontContentPublicationItemDTO = {
   itemType: StorefrontContentPublicationItemType;
   contentId: string;
   revisionId: string;
-  metadata?: { handle: string };
+  metadata?: { handle?: string; routePath?: string };
 };
 
 export type StorefrontContentPublicationDTO = {

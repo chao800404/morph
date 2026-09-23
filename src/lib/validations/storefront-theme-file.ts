@@ -130,6 +130,16 @@ export const saveThemeFilesBatchInputSchema = z
         }),
       )
       .optional(),
+    /** Route-file moves whose route-owned content binding must move with them. */
+    routePathMoves: z
+      .array(
+        z.object({
+          fromSourcePath: safeThemeFilePathSchema,
+          toSourcePath: safeThemeFilePathSchema,
+        }),
+      )
+      .max(50)
+      .optional(),
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),

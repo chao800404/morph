@@ -15,7 +15,7 @@ import {
   THEME_PAGE_SECTION_FOLDER_PATH,
   THEME_SECTION_FOLDER_PATH,
 } from "@/lib/storefront/theme-section-convention";
-import { prepareNewThemeFile } from "./new-theme-file";
+import { prepareCopiedThemeFile } from "./new-theme-file";
 
 /**
  * Page-owned section copies.
@@ -39,7 +39,11 @@ import { prepareNewThemeFile } from "./new-theme-file";
  * TanStack itself would reject the two route files as the same route.
  */
 
-type SourceFile = Readonly<{ path: string; content: string; mimeType?: string }>;
+type SourceFile = Readonly<{
+  path: string;
+  content: string;
+  mimeType?: string;
+}>;
 
 /** Folder sections past this size are copied in Code mode, not by a click. */
 const MAX_COPIED_FILES = 40;
@@ -160,7 +164,10 @@ function readReexportTarget(
 ): string | null {
   let ast: any;
   try {
-    ast = parse(content, { sourceType: "module", plugins: ["jsx", "typescript"] });
+    ast = parse(content, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
   } catch {
     return null;
   }
@@ -172,7 +179,11 @@ function readReexportTarget(
       (statement.type === "ExportNamedDeclaration" && statement.source) ||
       statement.type === "ExportAllDeclaration";
     if (!isReexport || statement.source?.type !== "StringLiteral") return null;
-    const resolved = resolveSpecifierToFile(path, statement.source.value, paths);
+    const resolved = resolveSpecifierToFile(
+      path,
+      statement.source.value,
+      paths,
+    );
     if (!resolved || (target !== null && resolved !== target)) return null;
     target = resolved;
   }
@@ -209,7 +220,11 @@ function resolveImplementation(
 function folderSectionRoot(implementationPath: string): string | null {
   const root = directoryOf(implementationPath);
   const segments = root.split("/");
-  if (segments.length < 3 || segments[0] !== "src" || segments[1] !== "components") {
+  if (
+    segments.length < 3 ||
+    segments[0] !== "src" ||
+    segments[1] !== "components"
+  ) {
     return null;
   }
   if (
@@ -239,7 +254,8 @@ export function listSectionTemplateSourcePaths(
   );
   const templatePaths = new Set<string>();
   for (const path of byPath.keys()) {
-    if (path.startsWith(`${THEME_SECTION_FOLDER_PATH}/`)) templatePaths.add(path);
+    if (path.startsWith(`${THEME_SECTION_FOLDER_PATH}/`))
+      templatePaths.add(path);
   }
   for (const entry of listThemeSectionEntries(files)) {
     const implementation = resolveImplementation(
@@ -305,7 +321,8 @@ export function planPageSectionCopy(args: {
   if (!root) {
     return {
       ok: false,
-      message: "Sections can only be copied into a page route with a valid slot id.",
+      message:
+        "Sections can only be copied into a page route with a valid slot id.",
     };
   }
   const byPath = new Map(
@@ -378,7 +395,11 @@ export function planPageSectionCopy(args: {
     const targetPath = pathMap.get(sourcePath)!;
 
     if (isScript(sourcePath)) {
-      const targets = readThemeFileImportTargets(sourcePath, source.content, paths);
+      const targets = readThemeFileImportTargets(
+        sourcePath,
+        source.content,
+        paths,
+      );
       if (!targets) {
         return {
           ok: false,
@@ -401,7 +422,10 @@ export function planPageSectionCopy(args: {
           }
           continue;
         }
-        if (!pathMap.has(target.resolvedPath) && isSectionSource(target.resolvedPath)) {
+        if (
+          !pathMap.has(target.resolvedPath) &&
+          isSectionSource(target.resolvedPath)
+        ) {
           return {
             ok: false,
             message: `${sourcePath} imports ${target.resolvedPath}, which belongs to another section. Move the shared part out of the section folders first.`,
@@ -421,7 +445,7 @@ export function planPageSectionCopy(args: {
       : ({ ok: true, content: source.content } as const);
     if (!rewritten.ok) return { ok: false, message: rewritten.reason };
 
-    const validated = prepareNewThemeFile(targetPath, [...paths]);
+    const validated = prepareCopiedThemeFile(targetPath, [...paths]);
     if (!validated.ok) return { ok: false, message: validated.message };
     planned.push({
       sourcePath,
