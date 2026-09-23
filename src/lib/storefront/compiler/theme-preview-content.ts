@@ -15,6 +15,16 @@ export type ThemePreviewContentSnapshot = Readonly<{
     Record<Exclude<StorefrontTemplateType, "layout">, StorefrontContentResult>
   >;
   pages: Readonly<Record<string, StorefrontContentResult>>;
+  /** Content of the static routes that own a document, by route path. */
+  routes?: Readonly<Record<string, StorefrontContentResult>>;
+  /**
+   * Content of a path nothing else describes: the shell's alone.
+   *
+   * The runtime serves the layout's header and footer values to every path,
+   * including one with no document of its own; the preview answered such a
+   * path with nothing at all, so the shell rendered its defaults there.
+   */
+  shell?: StorefrontContentResult;
 }>;
 
 const ROUTE_TEMPLATE_TYPES = [
@@ -33,12 +43,23 @@ const ROUTE_TEMPLATE_TYPES = [
 export async function createThemePreviewContentSnapshot(args: {
   templates: readonly {
     type: StorefrontTemplateType;
+    /** Set for a document one static route owns. */
+    routePath?: string | null;
     document: StorefrontPageDocument;
   }[];
   pages?: readonly { handle: string; document: StorefrontPageDocument }[];
 }): Promise<ThemePreviewContentSnapshot> {
+  // Kept apart: a route's own document is typed `page`, and in the by-type map
+  // it would stand in for every page — or be replaced by the one that does.
   const templateDocuments = new Map(
-    args.templates.map((template) => [template.type, template.document]),
+    args.templates
+      .filter((template) => !template.routePath)
+      .map((template) => [template.type, template.document]),
+  );
+  const routeDocuments = new Map(
+    args.templates.flatMap((template) =>
+      template.routePath ? [[template.routePath, template.document] as const] : [],
+    ),
   );
   const pageDocuments = new Map(
     (args.pages ?? []).map((page) => [page.handle, page.document]),
@@ -56,6 +77,12 @@ export async function createThemePreviewContentSnapshot(args: {
       publicationId: string;
       handle: string;
     }) => pageDocuments.get(handle) ?? null,
+    getPublishedRouteDocument: async ({
+      routePath,
+    }: {
+      publicationId: string;
+      routePath: string;
+    }) => routeDocuments.get(routePath) ?? null,
   };
 
   const templates = Object.fromEntries(
@@ -87,7 +114,27 @@ export async function createThemePreviewContentSnapshot(args: {
     ),
   );
 
-  return { templates, pages };
+  const routes = Object.fromEntries(
+    await Promise.all(
+      [...routeDocuments.keys()].map(async (routePath) => [
+        routePath,
+        await resolveStorefrontContent({
+          publicationId: "draft-preview",
+          pathname: routePath,
+          ports,
+        }),
+      ]),
+    ),
+  );
+
+  // A path no type and no route document describes: what remains is the shell.
+  const shell = await resolveStorefrontContent({
+    publicationId: "draft-preview",
+    pathname: "/__morph-preview-unmapped__",
+    ports: { ...ports, getPublishedRouteDocument: async () => null },
+  });
+
+  return { templates, pages, routes, shell };
 }
 
 /** Source installed only in a preview workspace. */
@@ -126,7 +173,16 @@ export function previewContentForPath(pathname) {
   const handle = pageHandleForPath(pathname);
   if (handle && snapshot.pages[handle]) return snapshot.pages[handle];
   const type = templateTypeForPath(pathname);
-  return (type && snapshot.templates[type]) || { slots: {}, hiddenSlots: [] };
+  if (type) return snapshot.templates[type] || { slots: {}, hiddenSlots: [] };
+  const routes = snapshot.routes || (snapshot.routes = {});
+  const routePath = (pathname || "/").split("?")[0].replace(/\\/+$/, "") || "/";
+  // Created per path from the shell, so a live edit on one route never leaks
+  // into another that has no document of its own.
+  if (!routes[routePath]) {
+    const shell = snapshot.shell || { slots: {}, hiddenSlots: [] };
+    routes[routePath] = { slots: { ...shell.slots }, hiddenSlots: [...shell.hiddenSlots] };
+  }
+  return routes[routePath];
 }
 
 export function updatePreviewContent(sectionId, props, enabled) {

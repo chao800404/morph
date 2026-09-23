@@ -640,6 +640,50 @@ export const storefrontContentPublicationDal = {
             ),
             eq(storefrontContentPublicationItems.itemType, "template"),
             eq(storefrontThemeTemplates.type, data.templateType),
+            // A route's own document is typed too, but it answers for one
+            // path only. Returned here it would stand in for the whole type.
+            isNull(storefrontThemeTemplates.routePath),
+            isNull(storefrontContentPublicationItems.deletedAt),
+            isNull(storefrontThemeTemplates.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
+    return row?.document ?? null;
+  },
+
+  /** The published document one static source route owns, by exact path. */
+  async getPublishedRouteDocument(data: {
+    publicationId: string;
+    routePath: string;
+  }): Promise<unknown | null> {
+    const db = await getDb();
+    const row = firstOrNull(
+      await db
+        .select({ document: storefrontThemeTemplateRevisions.document })
+        .from(storefrontContentPublicationItems)
+        .innerJoin(
+          storefrontThemeTemplateRevisions,
+          eq(
+            storefrontContentPublicationItems.revisionId,
+            storefrontThemeTemplateRevisions.id,
+          ),
+        )
+        .innerJoin(
+          storefrontThemeTemplates,
+          eq(
+            storefrontThemeTemplateRevisions.templateId,
+            storefrontThemeTemplates.id,
+          ),
+        )
+        .where(
+          and(
+            eq(
+              storefrontContentPublicationItems.publicationId,
+              data.publicationId,
+            ),
+            eq(storefrontContentPublicationItems.itemType, "template"),
+            eq(storefrontThemeTemplates.routePath, data.routePath),
             isNull(storefrontContentPublicationItems.deletedAt),
             isNull(storefrontThemeTemplates.deletedAt),
           ),

@@ -16,6 +16,7 @@ import {
   storefrontThemeEditorInputSchema,
   renameStorefrontThemeSectionInputSchema,
   updateStorefrontThemeSectionPropsInputSchema,
+  ensureStorefrontThemeRouteTemplateInputSchema,
 } from "@/lib/validations/storefront-theme";
 import { createServerFn } from "@tanstack/react-start";
 import { env as cloudflareEnv } from "cloudflare:workers";
@@ -184,6 +185,34 @@ export const renameStorefrontThemeSection = createServerFn({ method: "POST" })
         error,
         "UPDATE_FAILED",
         "Failed to rename the section",
+      );
+    }
+  });
+
+/**
+ * The document a static source route owns, created the first time the editor
+ * writes to it. Idempotent, so a retry or a second editor gets the same one.
+ */
+export const ensureStorefrontThemeRouteTemplate = createServerFn({
+  method: "POST",
+})
+  .validator((data: unknown) =>
+    parseInput(ensureStorefrontThemeRouteTemplateInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    try {
+      const result = await storefrontThemeDal.ensureRouteTemplate(input.data);
+      return result.ok
+        ? ok("Route document ready", result.template)
+        : fail(result.reason, { error: "ROUTE_TEMPLATE_UNAVAILABLE" });
+    } catch (error) {
+      return failure(
+        "Ensure storefront theme route template error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to prepare this page's content document",
       );
     }
   });

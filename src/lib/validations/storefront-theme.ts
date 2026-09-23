@@ -53,6 +53,17 @@ export const updateStorefrontThemeSectionPropsInputSchema =
   });
 
 /**
+ * Creating (or finding) the document a static source route owns.
+ *
+ * Names a route, never a file: the server checks it against the routes the
+ * saved source declares before anything is created.
+ */
+export const ensureStorefrontThemeRouteTemplateInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    routePath: z.string().trim().min(1).max(512),
+  });
+
+/**
  * Renaming one section placement.
  *
  * `null` clears the name and restores the derived one, which is why an empty

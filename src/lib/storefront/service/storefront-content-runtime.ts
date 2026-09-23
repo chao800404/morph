@@ -9,6 +9,10 @@ import {
   resolvePublishedThemeMediaUrl,
   resolveThemeMediaInSlotValues,
 } from "../theme-media";
+import {
+  routeTemplatePathForRequest,
+  templateTypeForRoutePath,
+} from "../theme-template-routes";
 
 /**
  * Template a request path resolves to.
@@ -33,16 +37,11 @@ export function pageHandleForPath(pathname: string): string | null {
   return decodeURIComponent(handle);
 }
 
+/** Shares its rule with the editor and the server; see `templateTypeForRoutePath`. */
 export function templateTypeForPath(
   pathname: string,
 ): StorefrontTemplateType | null {
-  const normalized = (pathname || "/").split("?")[0]!.replace(/\/+$/, "") || "/";
-  if (normalized === "/") return "index";
-  if (normalized.startsWith("/products/")) return "product";
-  if (normalized.startsWith("/collections/")) return "collection";
-  if (normalized.startsWith("/blogs/")) return "blog";
-  if (normalized.startsWith("/pages/")) return "page";
-  return null;
+  return templateTypeForRoutePath(pathname);
 }
 
 export type PublishedDocumentSection = Readonly<{
@@ -76,6 +75,18 @@ export type ContentRuntimePorts = Readonly<{
   getPublishedPageDocument?(args: {
     publicationId: string;
     handle: string;
+  }): Promise<PublishedDocument | null>;
+  /**
+   * Published document one static source route owns, by its path.
+   *
+   * A route no template type covers (`/aboutus`) keeps its own document rather
+   * than sharing one, so it is found by the exact path. Optional for callers
+   * that have none; without it such a route renders only the shell's content,
+   * as it did before these documents existed.
+   */
+  getPublishedRouteDocument?(args: {
+    publicationId: string;
+    routePath: string;
   }): Promise<PublishedDocument | null>;
 }>;
 
@@ -112,10 +123,16 @@ export async function resolveStorefrontContent(args: {
   // *template* made every Page render the same content, which is why two
   // published Pages were indistinguishable.
   const pageHandle = pageHandleForPath(args.pathname);
-  // A path no template describes still renders inside the shell, so the
+  // A path no template type describes is looked up as the one route that owns
+  // it. Without such a document it still renders inside the shell, so the
   // absence of a page document is not the absence of content.
   const document = !templateType
-    ? null
+    ? args.ports.getPublishedRouteDocument
+      ? await args.ports.getPublishedRouteDocument({
+          publicationId: args.publicationId,
+          routePath: routeTemplatePathForRequest(args.pathname),
+        })
+      : null
     : pageHandle && args.ports.getPublishedPageDocument
       ? ((await args.ports.getPublishedPageDocument({
           publicationId: args.publicationId,

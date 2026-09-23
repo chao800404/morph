@@ -14,6 +14,7 @@ import { memo, useMemo, useState } from "react";
 import {
   resolveEditorTemplate,
   resolveEditorTemplateDescriptor,
+  templateForRoute,
   templateTypeForRoute,
   toEditorRouteSearch,
   toEditorTemplateSearch,
@@ -68,9 +69,12 @@ export const EditorPathNavigator = memo(function EditorPathNavigator({
     if (sourceRoutes.length > 0) {
       return sourceRoutes.map((route) => {
         const template =
+          templateForRoute(context.templates, route.path) ??
           context.templates.find(
-            (candidate) => candidate.type === templateTypeForRoute(route.path),
-          ) ?? context.templates[0];
+            (candidate) =>
+              !candidate.routePath && candidate.type !== "layout",
+          ) ??
+          context.templates[0];
         return {
           id: `${route.sourcePath}:${route.path}`,
           template,

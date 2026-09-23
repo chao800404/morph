@@ -116,6 +116,7 @@ import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { splitPageRoots } from "@/lib/storefront/editor/page-structure";
 import {
   resolveEditorTemplate,
+  routeOwnsDocument,
   templateAppliesToRoute,
 } from "./editor-template";
 import { EditorPagesSearch } from "./editor-pages-search";
@@ -844,7 +845,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   // returning a fresh `[]` each render sets state on every render, which is an
   // infinite loop rather than an empty tree.
   const sourceSections = useMemo(() => {
-    if (!templateAppliesToRoute(activeTemplate, search.routePath)) {
+    // A route with a document of its own lists its sections even before that
+    // document exists: the shell hands this panel the route's structure in
+    // place of the borrowed template's, and the first write creates the
+    // document they are stored in.
+    if (
+      !templateAppliesToRoute(activeTemplate, search.routePath) &&
+      !routeOwnsDocument(search.routePath)
+    ) {
       return NO_SECTIONS;
     }
     const all = documentSections;

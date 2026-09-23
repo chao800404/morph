@@ -96,6 +96,8 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
         ) as never,
       getPublishedPageDocument: (args) =>
         storefrontContentPublicationDal.getPublishedPageDocument(args) as never,
+      getPublishedRouteDocument: (args) =>
+        storefrontContentPublicationDal.getPublishedRouteDocument(args) as never,
     },
     // Library media referenced by the live release, served to anonymous
     // visitors. The CMS `/assets` route needs a session, which a storefront
