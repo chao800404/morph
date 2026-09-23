@@ -21,6 +21,10 @@ import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-prev
 import { createServerThemePreviewServer } from "@/lib/storefront/service/theme-preview-server.factory";
 import { createThemePreviewContentSnapshot } from "@/lib/storefront/compiler/theme-preview-content";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
+import {
+  logPreviewServerEvent,
+  previewAddressDigest,
+} from "@/lib/storefront/compiler/preview-server-observation";
 
 /**
  * Starts and stops the dev server behind a Theme's Live Preview.
@@ -120,6 +124,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
         stage: started.stage,
         errorMessage: started.errorMessage,
         logs: started.logs,
+        attemptId: started.attemptId,
         storefrontId,
         themeId,
         previewId,
@@ -154,6 +159,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
 
     return ok("Live Preview server ready", {
       previewId,
+      attemptId: started.attemptId,
       url: url.url,
       origin: url.origin,
       // Which transport served this, for the same reason the build runner now
@@ -388,6 +394,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
           ): Promise<unknown>;
         };
         let workspaceFingerprintInvalidated = false;
+        let reexposedAddress: string | null = null;
         for (const file of writable) {
           const target = `/workspace/${file.path}`;
           // Written only when it would differ. Vite rebuilds on every write,
@@ -432,12 +439,31 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
               entry.status === "active",
           );
           if (!isPortActive) {
-            await sandbox.exposePort(THEME_PREVIEW_SERVER_PORT, {
-              hostname: selection.previewHostname,
-              name: "live-preview",
-            });
+            const reexposed = await sandbox.exposePort(
+              THEME_PREVIEW_SERVER_PORT,
+              {
+                hostname: selection.previewHostname,
+                name: "live-preview",
+              },
+            );
+            reexposedAddress =
+              previewAddressDigest(
+                (reexposed as { url?: string } | undefined)?.url,
+              ) ?? "unknown";
           }
         }
+
+        // An incremental write leaves the marker `dirty`, so the next start
+        // from any tab rewrites the workspace and restarts Vite; a re-expose
+        // replaces the address every tab is framing. Both reach beyond this
+        // tab, so both are recorded.
+        logPreviewServerEvent("sync", {
+          previewId,
+          changed: changed.length,
+          unchanged: unchanged.length,
+          markedWorkspaceDirty: workspaceFingerprintInvalidated,
+          reexposedAddress,
+        });
       }
     } catch (error) {
       return fail("Could not update the Live Preview server.", {

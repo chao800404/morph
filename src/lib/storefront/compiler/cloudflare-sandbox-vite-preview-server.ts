@@ -10,8 +10,21 @@ import {
 } from "./theme-preview-dev-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
-import { THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH } from "./theme-workspace-path";
+import {
+  THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH,
+  THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH,
+} from "./theme-workspace-path";
 import type { ThemePreviewContentSnapshot } from "./theme-preview-content";
+import {
+  diffWorkspaceFileDigests,
+  enterPreviewStart,
+  logPreviewServerEvent,
+  newPreviewAttemptId,
+  parseWorkspaceFileDigests,
+  previewAddressDigest,
+  workspaceFileDigests,
+  type WorkspaceChange,
+} from "./preview-server-observation";
 
 /**
  * Runs a Theme's Live Preview as a real Vite dev server inside a sandbox
@@ -35,6 +48,9 @@ export const THEME_PREVIEW_SERVER_PORT = 5173;
 
 /** Platform-owned marker written only after a complete workspace succeeds. */
 export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH = `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
+
+/** Per-file digests of the committed workspace; read only for the log. */
+export const THEME_PREVIEW_WORKSPACE_MANIFEST_PATH = `/workspace/${THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH}`;
 
 /** The host of a URL, or null when it is not one this can read. */
 function safeHostname(url: string | null | undefined): string | null {
@@ -177,6 +193,8 @@ export type StartPreviewServerInput = Readonly<{
 export type StartPreviewServerResult =
   | Readonly<{
       ok: true;
+      /** Ties this start to its `[preview-observe]` lines on the server. */
+      attemptId?: string;
       url: string;
       processId: string | undefined;
       readyMs: number;
@@ -189,10 +207,35 @@ export type StartPreviewServerResult =
     }>
   | Readonly<{
       ok: false;
+      attemptId?: string;
       stage: string;
       errorMessage: string;
       logs: readonly string[];
     }>;
+
+/** What one start decided, gathered as it goes and logged when it ends. */
+type StartObservation = {
+  readonly attemptId: string;
+  workspace?: {
+    reused: boolean;
+    fingerprint: string;
+    /** The marker found: a fingerprint, `dirty` after an incremental sync, or none. */
+    previous: string | null;
+    change?: WorkspaceChange;
+  };
+  vite?: {
+    action: "reused" | "restarted" | "started";
+    runningProcessId: string | null;
+    processId: string | null;
+  };
+  address?: { reused: boolean; digest: string | null };
+  destroyed?: string;
+};
+
+function shortMarker(marker: string | null): string | null {
+  if (marker === null) return null;
+  return marker === "dirty" ? marker : marker.slice(0, 12);
+}
 
 export type PreviewServerTimings = Readonly<{
   /** Entire server start request, including lazy container startup. */
@@ -283,6 +326,37 @@ export class CloudflareSandboxVitePreviewServer {
   async start(
     input: StartPreviewServerInput,
   ): Promise<StartPreviewServerResult> {
+    const observation: StartObservation = { attemptId: newPreviewAttemptId() };
+    const inflight = enterPreviewStart(input.previewId);
+    const startedAt = new Date().toISOString();
+    let result: StartPreviewServerResult | null = null;
+    try {
+      result = await this.startObserved(input, observation);
+      return { ...result, attemptId: observation.attemptId };
+    } finally {
+      inflight.leave();
+      logPreviewServerEvent("start", {
+        attemptId: observation.attemptId,
+        previewId: input.previewId,
+        startedAt,
+        concurrentAtEntry: inflight.concurrentAtEntry,
+        outcome: result === null ? "threw" : result.ok ? "ready" : "failed",
+        ...(result && !result.ok
+          ? { stage: result.stage, error: result.errorMessage.slice(0, 200) }
+          : {}),
+        workspace: observation.workspace ?? null,
+        vite: observation.vite ?? null,
+        address: observation.address ?? null,
+        destroyed: observation.destroyed ?? null,
+        ...(result?.ok ? { timings: result.timings } : {}),
+      });
+    }
+  }
+
+  private async startObserved(
+    input: StartPreviewServerInput,
+    observation: StartObservation,
+  ): Promise<StartPreviewServerResult> {
     const requestStartedAt = Date.now();
     const logs: string[] = [];
     const addLog = (line: string) => {
@@ -310,6 +384,17 @@ export class CloudflareSandboxVitePreviewServer {
       const sandboxHandleStartedAt = Date.now();
       session = await this.acquire(input.previewId);
       const sandboxHandleMs = Date.now() - sandboxHandleStartedAt;
+      // Destroying ends the container every tab of this preview shares, so
+      // each one is recorded with the reason it was chosen.
+      const destroyBecause = async (reason: string) => {
+        observation.destroyed = reason;
+        logPreviewServerEvent("destroy", {
+          attemptId: observation.attemptId,
+          previewId: input.previewId,
+          reason,
+        });
+        await session!.destroy();
+      };
 
       let firstFilesystemCallMs = 0;
       let sawFilesystemCall = false;
@@ -373,7 +458,7 @@ export class CloudflareSandboxVitePreviewServer {
       });
       const workspacePlanMs = Date.now() - workspacePlanStartedAt;
       if (!prepared.ok) {
-        await session.destroy();
+        await destroyBecause(`workspace-plan:${prepared.stage}`);
         return {
           ok: false,
           stage: prepared.stage,
@@ -411,6 +496,11 @@ export class CloudflareSandboxVitePreviewServer {
         Date.now() - workspaceFingerprintReadStartedAt;
       const workspaceReused =
         existingWorkspaceFingerprint === prepared.workspaceFingerprint;
+      observation.workspace = {
+        reused: workspaceReused,
+        fingerprint: prepared.workspaceFingerprint.slice(0, 12),
+        previous: shortMarker(existingWorkspaceFingerprint),
+      };
 
       // Process state answers a separate question: whether the matching (or
       // newly materialized) files already have a Vite server watching them.
@@ -425,12 +515,53 @@ export class CloudflareSandboxVitePreviewServer {
 
       let workspaceMaterializeMs = 0;
       if (!workspaceReused) {
+        // Which files the change was in. Read before materializing, which
+        // replaces the manifest along with everything else.
+        const nextDigests = workspaceFileDigests(prepared.workspaceFiles);
+        let previousDigests = null;
+        if (existingWorkspaceFingerprint !== null && session.readFile) {
+          try {
+            const value = await recordFilesystemCall(
+              () =>
+                session!.readFile!(THEME_PREVIEW_WORKSPACE_MANIFEST_PATH, {
+                  encoding: "utf-8",
+                }),
+              "read",
+            );
+            previousDigests = parseWorkspaceFileDigests(
+              typeof value === "string"
+                ? value
+                : typeof value.content === "string"
+                  ? value.content
+                  : null,
+            );
+          } catch {
+            previousDigests = null;
+          }
+        }
+        observation.workspace.change = diffWorkspaceFileDigests(
+          previousDigests,
+          nextDigests,
+          new Set(input.files.map((file) => file.path)),
+        );
+
         const workspaceMaterializeStartedAt = Date.now();
         await materializeThemeSandboxWorkspace(
           measuredWriter,
           prepared.workspaceFiles,
         );
         workspaceMaterializeMs = Date.now() - workspaceMaterializeStartedAt;
+
+        await recordFilesystemCall(
+          () =>
+            session!.writeFile(
+              THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+              JSON.stringify(nextDigests),
+            ),
+          "write",
+        ).catch(() => {
+          addLog("Could not persist the Live Preview workspace manifest.");
+        });
 
         // Commit the marker last. A failed or partial write can therefore
         // never make a later request trust an incomplete workspace. Failure
@@ -474,6 +605,10 @@ export class CloudflareSandboxVitePreviewServer {
         exposedUrl = exposed.url;
       }
       const previewUrl = withPreviewServerBase(exposedUrl);
+      observation.address = {
+        reused: Boolean(activePort),
+        digest: previewAddressDigest(exposedUrl),
+      };
 
       const configureLifecycleStartedAt = Date.now();
       if (session.setSleepAfter) {
@@ -489,6 +624,11 @@ export class CloudflareSandboxVitePreviewServer {
       // compiled from the complete new plan; incremental source edits continue
       // to use the live process and React Refresh.
       if (alreadyServing && workspaceReused) {
+        observation.vite = {
+          action: "reused",
+          runningProcessId: alreadyServing.id ?? null,
+          processId: alreadyServing.id ?? null,
+        };
         const totalMs = Date.now() - requestStartedAt;
         return {
           ok: true,
@@ -524,7 +664,7 @@ export class CloudflareSandboxVitePreviewServer {
 
       if (alreadyServing) {
         if (!session.killProcess) {
-          await session.destroy();
+          await destroyBecause("restart-unavailable");
           return {
             ok: false,
             stage: "preview-server-restart",
@@ -546,7 +686,7 @@ export class CloudflareSandboxVitePreviewServer {
             this.stopTimeoutMs,
           ))
         ) {
-          await session.destroy();
+          await destroyBecause("stale-vite-did-not-stop");
           return {
             ok: false,
             stage: "preview-server-restart",
@@ -563,6 +703,11 @@ export class CloudflareSandboxVitePreviewServer {
         resolveLogOrExit = resolve;
       });
 
+      observation.vite = {
+        action: alreadyServing ? "restarted" : "started",
+        runningProcessId: alreadyServing?.id ?? null,
+        processId: null,
+      };
       const process = await session.startProcess(
         // --strictPort so the server cannot quietly land on another port and
         // leave the exposed URL pointing at nothing.
@@ -584,6 +729,7 @@ export class CloudflareSandboxVitePreviewServer {
       // The process object does provide a process-aware port check, which is
       // also the thing we actually need to know: can this Vite process serve
       // the page? Keep the output marker only for older providers and tests.
+      observation.vite.processId = process.id ?? null;
       const portReady = process.waitForPort
         ? process
             .waitForPort(THEME_PREVIEW_SERVER_PORT, {
@@ -605,7 +751,7 @@ export class CloudflareSandboxVitePreviewServer {
       );
       if (outcome !== "ready") {
         await session.killProcess?.(process.id);
-        await session.destroy();
+        await destroyBecause(`vite-${outcome}`);
         return {
           ok: false,
           stage: "preview-server-start",
@@ -649,7 +795,19 @@ export class CloudflareSandboxVitePreviewServer {
         logs,
       };
     } catch (error) {
-      await session?.destroy().catch(() => {});
+      if (session) {
+        observation.destroyed = "start-error";
+        logPreviewServerEvent("destroy", {
+          attemptId: observation.attemptId,
+          previewId: input.previewId,
+          reason: "start-error",
+          error: (error instanceof Error ? error.message : String(error)).slice(
+            0,
+            200,
+          ),
+        });
+        await session.destroy().catch(() => {});
+      }
       return {
         ok: false,
         stage: "preview-server-start",
@@ -689,6 +847,20 @@ export class CloudflareSandboxVitePreviewServer {
     previewId: string;
     previewHostname: string;
     /** The address the editor is framing, if it said which. */
+    expectedOrigin?: string | null;
+  }): Promise<boolean> {
+    const serving = await this.isServingUnobserved(input);
+    logPreviewServerEvent("renew", {
+      previewId: input.previewId,
+      serving,
+      framedAddress: previewAddressDigest(input.expectedOrigin),
+    });
+    return serving;
+  }
+
+  private async isServingUnobserved(input: {
+    previewId: string;
+    previewHostname: string;
     expectedOrigin?: string | null;
   }): Promise<boolean> {
     try {
@@ -738,6 +910,7 @@ export class CloudflareSandboxVitePreviewServer {
   }
 
   async stop(previewId: string, processId?: string): Promise<void> {
+    logPreviewServerEvent("stop", { previewId, processId: processId ?? null });
     const session = await this.acquire(previewId);
     await session.unexposePort?.(THEME_PREVIEW_SERVER_PORT).catch(() => {});
     await session.killProcess?.(processId).catch(() => {});

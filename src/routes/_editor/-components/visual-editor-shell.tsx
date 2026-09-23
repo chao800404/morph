@@ -628,6 +628,21 @@ export function VisualEditorShell({
     reduceLivePreviewLifecycle,
     initialLivePreviewLifecycleState,
   );
+  // Each phase change, with why, so a slow or failed load reads as a sequence
+  // — waited for the frame, gave up, reconnected — rather than one spinner.
+  // Lined up with `[preview-server]` and the server's `[preview-observe]`
+  // lines by time and attempt id.
+  useEffect(() => {
+    console.info(
+      `[preview-lifecycle] ${previewLifecycle.phase}` +
+        ` recoveries=${previewLifecycle.automaticRecoveryAttempts}` +
+        (previewLifecycle.message ? ` | ${previewLifecycle.message}` : ""),
+    );
+  }, [
+    previewLifecycle.phase,
+    previewLifecycle.automaticRecoveryAttempts,
+    previewLifecycle.message,
+  ]);
   const initialPreviewSyncRef = useRef<{
     key: string;
     readySequence: number;

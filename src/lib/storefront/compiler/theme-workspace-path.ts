@@ -4,6 +4,18 @@ export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH =
   ".morph-preview-workspace.sha256";
 
 /**
+ * Per-file digests of the workspace the fingerprint describes.
+ *
+ * The fingerprint says only that something changed. When a preview start finds
+ * it different, this is what says which files — whether the change was the
+ * author's source, the draft content snapshot, or a file the platform
+ * generates — which is the difference between a restart that was needed and
+ * one that was not. Platform metadata, like the fingerprint.
+ */
+export const THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH =
+  ".morph-preview-workspace.manifest.json";
+
+/**
  * Whether a Theme file may be written into a container workspace.
  *
  * Shared, because two things write Theme files into a container now — a build
@@ -18,7 +30,10 @@ export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH =
 export function refuseThemeWorkspacePath(path: string): string | null {
   const normalized = path.replace(/\\/g, "/");
 
-  if (normalized === THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH) {
+  if (
+    normalized === THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH ||
+    normalized === THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH
+  ) {
     return `RESERVED_THEME_PREVIEW_PATH: Theme source cannot replace platform-owned preview file "${path}"`;
   }
 
