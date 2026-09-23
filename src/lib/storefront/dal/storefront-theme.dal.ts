@@ -11,6 +11,8 @@ import {
   storefrontThemeBuilds,
   storefrontThemeFiles,
   storefrontReleases,
+  storefrontPages,
+  storefrontPageRevisions,
 } from "@/db/storefront.schema";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
@@ -29,6 +31,7 @@ import {
 } from "@/lib/storefront/compiler/theme-route-sections";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { filterSectionContentProps } from "@/lib/storefront/content/section-content-manifest";
+import { extractThemeDocumentComponentRefs } from "@/lib/storefront/theme-content-capability-shadow";
 import {
   collectMediaAssetIds,
   verifyMediaReferences,
@@ -467,6 +470,97 @@ export const storefrontThemeDal = {
     };
   },
 
+  /**
+   * Read-only component-ref samples for the manifest migration audit.
+   *
+   * Draft documents are read from the same editor context the UI uses. History
+   * is intentionally a separate sample: template/page revisions are not
+   * source-version paired, so this measures current compatibility without
+   * pretending to reconstruct the source that existed when each revision was
+   * authored.
+   */
+  async listComponentRefsForCapabilityAudit(
+    storefrontId: string,
+    themeId: string,
+  ) {
+    const context = await this.findEditorContext(storefrontId, themeId);
+    if (!context) return null;
+
+    const db = await getDb();
+    const [templateHistory, pageDrafts, pageHistory] = await Promise.all([
+      db
+        .select({ document: storefrontThemeTemplateRevisions.document })
+        .from(storefrontThemeTemplateRevisions)
+        .innerJoin(
+          storefrontThemeTemplates,
+          eq(
+            storefrontThemeTemplateRevisions.templateId,
+            storefrontThemeTemplates.id,
+          ),
+        )
+        .innerJoin(
+          storefrontThemes,
+          eq(storefrontThemeTemplates.themeId, storefrontThemes.id),
+        )
+        .where(
+          and(
+            eq(storefrontThemeTemplates.themeId, themeId),
+            eq(storefrontThemes.storefrontId, storefrontId),
+            isNull(storefrontThemeTemplates.deletedAt),
+            isNull(storefrontThemes.deletedAt),
+          ),
+        ),
+      db
+        .select({ document: storefrontPageRevisions.document })
+        .from(storefrontPages)
+        .innerJoin(
+          storefrontPageRevisions,
+          and(
+            eq(storefrontPageRevisions.id, storefrontPages.draftRevisionId),
+            eq(storefrontPageRevisions.pageId, storefrontPages.id),
+          ),
+        )
+        .where(
+          and(
+            eq(storefrontPages.storefrontId, storefrontId),
+            isNull(storefrontPages.deletedAt),
+          ),
+        ),
+      db
+        .select({ document: storefrontPageRevisions.document })
+        .from(storefrontPageRevisions)
+        .innerJoin(
+          storefrontPages,
+          eq(storefrontPageRevisions.pageId, storefrontPages.id),
+        )
+        .where(
+          and(
+            eq(storefrontPages.storefrontId, storefrontId),
+            isNull(storefrontPages.deletedAt),
+          ),
+        ),
+    ]);
+
+    return {
+      draftRefs: [
+        ...context.templates.flatMap((template) =>
+          extractThemeDocumentComponentRefs(template.document),
+        ),
+        ...pageDrafts.flatMap((row) =>
+          extractThemeDocumentComponentRefs(row.document),
+        ),
+      ],
+      historicalRefs: [
+        ...templateHistory.flatMap((row) =>
+          extractThemeDocumentComponentRefs(row.document),
+        ),
+        ...pageHistory.flatMap((row) =>
+          extractThemeDocumentComponentRefs(row.document),
+        ),
+      ],
+    };
+  },
+
   async reorderSections(data: {
     storefrontId: string;
     themeId: string;
@@ -618,7 +712,10 @@ export const storefrontThemeDal = {
       `
       SELECT
         th.source_generation AS sourceGeneration,
-        f.content AS manifestContent
+        COALESCE(
+          f.content,
+          json_extract(th.metadata, '$.legacyManifestArchive.manifestContent')
+        ) AS manifestContent
       FROM storefront_themes th
       LEFT JOIN storefront_theme_files f
         ON f.storefront_id = th.storefront_id

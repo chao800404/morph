@@ -1,17 +1,12 @@
 /**
  * The folder convention that makes a Theme component a section.
  *
- * A section is a component a route can render as one editable block. Today a
- * Theme says so by registering it: either the manifest names it under
- * `components`, or the component declares its own `contentFields` and the
- * capability scanner finds it. Both work, and both can be forgotten — the
- * component exists, imports, renders, and simply never appears in Add section,
- * with nothing anywhere saying why. That silence is the actual cost: the author
- * sees a component they wrote and a list that does not contain it, and has no
- * way to tell a missing declaration from a broken one.
- *
- * This module declares the way to say it without registering anything: put the
- * file in the section folder and it is a section.
+ * A section is a component a route can render as one editable block. Add
+ * section uses this folder as its source of truth, so a component becomes a
+ * candidate by living in the folder instead of being registered in a manifest
+ * or inferred from its content fields. Content capability resolution remains a
+ * separate concern: it decides which props Design Mode may write after a
+ * section has been selected.
  *
  * The rule is deliberately narrow, because a convention that guesses is worse
  * than one that asks. Only two shapes are entries, and both are direct children
@@ -27,14 +22,17 @@
  * alone. The one-level-down shape stays available for a section that needs
  * sibling files, which is the case it exists for.
  *
- * The convention is one more way to be a candidate, not a replacement for the
- * others. A Theme that has not adopted it keeps exactly the candidates it had,
- * because nothing here removes a registration — it only lets a file qualify
- * without one.
+ * A Theme that has not adopted the convention has no Add section candidates.
+ * Existing route slots can still be read through their source imports and the
+ * manifest compatibility path; this rule only defines what the Add section
+ * action is allowed to create.
  */
 
 /** The one folder a section may be declared by living in. */
 export const THEME_SECTION_FOLDER_PATH = "src/components/sections";
+
+/** Page-owned copies are section implementations, but never Add section candidates. */
+export const THEME_PAGE_SECTION_FOLDER_PATH = "src/components/page-sections";
 
 /**
  * Extensions an entry file may carry.
@@ -169,6 +167,54 @@ export function readThemeSectionEntry(path: string): ThemeSectionEntry | null {
   }
 
   return null;
+}
+
+/**
+ * Recognizes the entry file of a page-owned copy without adding it to the
+ * shared Add section library.
+ *
+ * The first segment after `page-sections` is the route key. Add section and
+ * detach write `<route key>/<slot id>/index.tsx`, one folder per placed
+ * instance; the direct `<route key>/<Name>.tsx` shape is what earlier detaches
+ * wrote, and stays readable so those copies keep their inferred fields.
+ */
+export function readThemePageSectionEntry(
+  path: string,
+): ThemeSectionEntry | null {
+  const normalized = normalizePath(path);
+  const prefix = `${THEME_PAGE_SECTION_FOLDER_PATH}/`;
+  if (!normalized.startsWith(prefix)) return null;
+
+  const segments = normalized.slice(prefix.length).split("/");
+  if (segments.length === 2) {
+    const base = readDirectEntryBaseName(segments[1]!);
+    return base === null ? null : buildEntry(normalized, base);
+  }
+  if (segments.length === 3) {
+    const isIndex = SECTION_ENTRY_EXTENSIONS.some(
+      (extension) => segments[2] === `index${extension}`,
+    );
+    return isIndex ? buildEntry(normalized, segments[1]!) : null;
+  }
+  return null;
+}
+
+/**
+ * Whether a file belongs to the shared Add section library.
+ *
+ * Anything under the folder counts, not only entries: a folder section's
+ * private parts are template source too, and a Design edit to one would reach
+ * every page added from it afterwards.
+ */
+export function isThemeSectionTemplatePath(path: string): boolean {
+  return normalizePath(path).startsWith(`${THEME_SECTION_FOLDER_PATH}/`);
+}
+
+/** A source file that can expose inferred content fields as a section. */
+export function isThemeSectionSourcePath(path: string): boolean {
+  return Boolean(
+    readThemeSectionEntry(path) ?? readThemePageSectionEntry(path),
+  );
 }
 
 /** Every section entry among a Theme's files, ordered by section type. */

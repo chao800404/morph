@@ -6,6 +6,16 @@ import type {
   Node,
 } from "@babel/types";
 import { resolveElementMeta } from "./element-target";
+import {
+  buildThemeRouteRegistry,
+  type ThemeRouteRecord,
+} from "../compiler/theme-route-registry";
+import {
+  deriveThemeDocumentLayoutPath,
+  deriveThemeLayoutSections,
+  deriveThemeRouteSections,
+} from "../compiler/theme-route-sections";
+import { listThemeSectionEntries } from "../theme-section-convention";
 
 /**
  * Morph Theme Component AST Transformer & Parser
@@ -185,7 +195,9 @@ export function getComponentFilePath(
   const normalizedType = type.toLowerCase().trim();
   const strippedType = normalizedType.replace(/-/g, "");
 
-  // 1. Check morph.theme.json manifest if available
+  // A path ref is the source-owned identity used by migrated Documents. Keep
+  // this check first so a legacy manifest cannot redirect an already migrated
+  // ref to another file.
   if (themeFiles) {
     const directComponentRefPath = componentRef?.replace(/\\/g, "/");
     if (
@@ -194,7 +206,22 @@ export function getComponentFilePath(
     ) {
       return directComponentRefPath;
     }
+
     const manifestFile = themeFiles.find((f) => f.path === "morph.theme.json");
+    // A Theme with no manifest is already on the source-owned path. This is
+    // deliberately best-effort: ambiguous source shapes return null rather
+    // than guessing a component identity.
+    if (!manifestFile) {
+      const sourcePath = deriveSourceComponentFilePath(
+        type,
+        themeFiles,
+        componentRef,
+      );
+      if (sourcePath) return sourcePath;
+    }
+
+    // Legacy morph.theme.json resolution. Existing manifest-backed Themes keep
+    // their exact mapping until the per-Theme migration rewrites Documents.
     if (manifestFile && manifestFile.content) {
       try {
         const manifest = JSON.parse(manifestFile.content);
@@ -255,9 +282,19 @@ export function getComponentFilePath(
         }
       } catch {}
     }
+
+    // A legacy manifest can omit a newly authored source-owned section. Let a
+    // unique source derivation serve it without changing any existing mapped
+    // component above.
+    const sourcePath = deriveSourceComponentFilePath(
+      type,
+      themeFiles,
+      componentRef,
+    );
+    if (sourcePath) return sourcePath;
   }
 
-  // 2. Standard convention check against existing theme files
+  // 3. Standard convention check against existing theme files
   if (strippedType === "hero") {
     const candidate = "src/components/Hero.tsx";
     if (themeFiles ? themeFiles.some((f) => f.path === candidate) : true) {
@@ -277,7 +314,7 @@ export function getComponentFilePath(
     }
   }
 
-  // 3. Check if a component file named directly after the section type exists in src/components/
+  // 4. Check if a component file named directly after the section type exists in src/components/
   if (themeFiles) {
     const pascalName = normalizedType
       .split("-")
@@ -292,6 +329,134 @@ export function getComponentFilePath(
   return null;
 }
 
+function sourceFilesWithContent(
+  files: Array<{ path: string; content?: string }>,
+): Array<{ path: string; content: string }> {
+  return files.flatMap((file) =>
+    typeof file.content === "string"
+      ? [{ path: file.path.replace(/\\/g, "/"), content: file.content }]
+      : [],
+  );
+}
+
+function sourceComponentMatches(
+  candidate: {
+    componentRef: string;
+    sectionType: string;
+    componentSourcePath: string;
+  },
+  type: string,
+  componentRef?: string,
+): boolean {
+  const normalizedRef = componentRef?.trim().toLowerCase();
+  const normalizedType = type.toLowerCase().replace(/-/g, "");
+  return (
+    (normalizedRef !== undefined &&
+      candidate.componentRef.toLowerCase() === normalizedRef) ||
+    candidate.sectionType.toLowerCase().replace(/-/g, "") === normalizedType
+  );
+}
+
+function resolveSectionEntryImplementationPath(
+  entryPath: string,
+  files: Array<{ path: string; content?: string }>,
+): string {
+  const source = files.find((file) => file.path === entryPath)?.content;
+  if (typeof source !== "string") return entryPath;
+  const match = source.match(
+    /export\s*\{[^}]*\}\s*from\s*["']([^"']+)["']/,
+  );
+  if (!match?.[1]) return entryPath;
+  const base = `${entryPath.slice(0, entryPath.lastIndexOf("/"))}/${match[1]}`
+    .split("/")
+    .reduce<string[]>((segments, segment) => {
+      if (!segment || segment === ".") return segments;
+      if (segment === "..") {
+        segments.pop();
+      } else {
+        segments.push(segment);
+      }
+      return segments;
+    }, [])
+    .join("/");
+  const paths = new Set(files.map((file) => file.path.replace(/\\/g, "/")));
+  for (const candidate of [
+    base,
+    `${base}.tsx`,
+    `${base}.jsx`,
+    `${base}.ts`,
+    `${base}.js`,
+    `${base}/index.tsx`,
+    `${base}/index.jsx`,
+  ]) {
+    if (paths.has(candidate)) return candidate;
+  }
+  return entryPath;
+}
+
+function routeSectionRecords(
+  files: Array<{ path: string; content?: string }>,
+): Array<{
+  componentRef: string;
+  sectionType: string;
+  componentSourcePath: string;
+}> {
+  const contentFiles = sourceFilesWithContent(files);
+  const registry = buildThemeRouteRegistry(contentFiles);
+  const records: Array<{
+    componentRef: string;
+    sectionType: string;
+    componentSourcePath: string;
+  }> = [];
+
+  const add = (sections: ReturnType<typeof deriveThemeRouteSections>["sections"]) => {
+    for (const section of sections) {
+      records.push({
+        componentRef: section.componentRef,
+        sectionType: section.sectionType,
+        componentSourcePath: section.componentSourcePath,
+      });
+    }
+  };
+
+  add(deriveThemeLayoutSections(contentFiles).sections);
+  for (const route of registry.routes as ThemeRouteRecord[]) {
+    if (route.kind !== "route" || route.isVirtual) continue;
+    add(deriveThemeRouteSections(contentFiles, route.sourcePath).sections);
+  }
+  return records;
+}
+
+function deriveSourceComponentFilePath(
+  type: string,
+  files: Array<{ path: string; content?: string }>,
+  componentRef?: string,
+): string | null {
+  const filePaths = new Set(files.map((file) => file.path.replace(/\\/g, "/")));
+  const sectionPaths = new Set(
+    listThemeSectionEntries(files)
+      .filter((entry) => sourceComponentMatches(entry, type, componentRef))
+      .map((entry) =>
+        resolveSectionEntryImplementationPath(entry.componentSourcePath, files),
+      )
+      .filter((path) => filePaths.has(path)),
+  );
+  if (sectionPaths.size === 1) {
+    return [...sectionPaths][0] ?? null;
+  }
+
+  const routePaths = new Set(
+    routeSectionRecords(files)
+      .filter((section) => sourceComponentMatches(section, type, componentRef))
+      .map((section) => section.componentSourcePath)
+      .filter((path) => filePaths.has(path)),
+  );
+  if (routePaths.size === 1) {
+    return [...routePaths][0] ?? null;
+  }
+  return null;
+}
+
 /**
  * Resolves the optional Theme Workspace page shell used to wrap the versioned
  * Template Document. The explicit manifest capability prevents an older entry
@@ -302,6 +467,11 @@ export function getThemeDocumentLayoutFilePath(
   themeFiles?: Array<{ path: string; content?: string }>,
 ): string | null {
   if (!themeFiles) return null;
+  const sourceDerived = deriveThemeDocumentLayoutPath(themeFiles);
+  if (sourceDerived) return sourceDerived;
+
+  // Compatibility fallback for legacy Themes whose root route does not yet
+  // expose enough source structure to derive the layout.
   const manifestFile = themeFiles.find(
     (file) => file.path === "morph.theme.json",
   );

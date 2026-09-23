@@ -35,6 +35,39 @@ describe("Theme router build bootstrap", () => {
     );
   });
 
+  it("derives the router from source when the authored manifest is absent", () => {
+    const result = createThemeBuildBootstrap({
+      entry: "src/routes/index.tsx",
+      cssFiles: [],
+      files: [
+        {
+          path: "package.json",
+          content: JSON.stringify({
+            dependencies: {
+              "@tanstack/react-router": "^1.0.0",
+              "@tanstack/react-start": "^1.0.0",
+            },
+          }),
+        },
+        {
+          path: "src/router.tsx",
+          content: "export function getRouter() { return null; }",
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+      ],
+    });
+
+    expect(result.routeRegistry?.valid).toBe(true);
+    expect(result.content).toContain("createRouter");
+  });
+
   it("installs the preview request bridge before route loaders run", () => {
     const result = createThemeBuildBootstrap({
       entry: "src/routes/index.tsx",

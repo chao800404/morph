@@ -67,6 +67,14 @@ export const listThemeFilesInputSchema = z.object({
   themeId: z.string().min(1),
 });
 
+/** Read-only source/document compatibility audit for manifest migration. */
+export const auditThemeContentInputSchema = listThemeFilesInputSchema;
+
+/** Server-owned preview/apply entry points for legacy manifest migration. */
+export const previewThemeManifestMigrationInputSchema =
+  listThemeFilesInputSchema;
+export const applyThemeManifestMigrationInputSchema = listThemeFilesInputSchema;
+
 export const getThemeFileInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),

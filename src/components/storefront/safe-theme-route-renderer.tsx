@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { getComponentFilePath } from "@/lib/storefront/ast/theme-ast-transformer";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   deriveThemeLayoutSections,
@@ -79,13 +80,25 @@ function readComponentSources(
 function createDocumentComponentResolver(args: {
   files: readonly ThemeSourceFile[];
   document: StorefrontPageDocument;
+  layoutSlotIds?: ReadonlySet<string>;
 }): SafeThemeComponentResolver {
   const componentSources = readComponentSources(args.files);
   const remaining = args.document.sections.map((section) => ({
     section,
-    sourcePath: componentSources.get(
-      section.componentRef ?? `${section.type}.default`,
-    ),
+    // A migrated Document stores the source path directly. Legacy Documents
+    // still use manifest refs, so resolve those through the source-first
+    // compatibility resolver instead of making the manifest mandatory.
+    sourcePath:
+      section.enabled === false && !args.layoutSlotIds?.has(section.id)
+        ? undefined
+        : getComponentFilePath(
+              section.type,
+              [...args.files],
+              section.componentRef ?? undefined,
+            ) ??
+            componentSources.get(
+              section.componentRef ?? `${section.type}.default`,
+            ),
     used: false,
   }));
 
@@ -282,6 +295,7 @@ export function renderSafeThemeRoute(args: {
   const resolveComponent = createDocumentComponentResolver({
     files: args.files,
     document: routeDocument,
+    layoutSlotIds: shellSlotIds,
   });
   const contentSlots = readContentSlots(routeDocument);
   const sectionTypeBySlot = readSectionTypesBySlot(routeDocument);

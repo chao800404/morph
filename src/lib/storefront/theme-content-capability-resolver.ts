@@ -1,3 +1,4 @@
+import { parse } from "@babel/parser";
 import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
 import { inferThemeContentFields } from "./ast/infer-theme-content-fields";
 import {
@@ -12,10 +13,40 @@ import {
   type ThemeContentCapabilities,
   type ThemeContentCapabilityParseResult,
 } from "./theme-content-capabilities";
-import { readThemeSectionEntry } from "./theme-section-convention";
+import {
+  isThemeSectionSourcePath,
+  readThemeSectionEntry,
+} from "./theme-section-convention";
 
 const THEME_MANIFEST_PATH = "morph.theme.json";
-const MAX_SCANNED_COMPONENT_SOURCES = 200;
+export const MAX_SCANNED_COMPONENT_SOURCES = 200;
+
+export type ThemeContentSourceStatus =
+  "declared" | "inferred" | "forwarded" | "invalid" | "absent" | "unreadable";
+
+export type ThemeContentSourceScan = Readonly<{
+  scope: "workspace" | "selected";
+  completeness: "complete" | "incomplete";
+  scannedSourceCount: number;
+  eligibleSourceCount: number;
+  limit: number;
+  entries: Readonly<
+    Record<
+      string,
+      Readonly<{
+        status: ThemeContentSourceStatus;
+        capability?: ThemeComponentContentCapability;
+      }>
+    >
+  >;
+  capabilities: Readonly<Record<string, ThemeComponentContentCapability>>;
+}>;
+
+export type ThemeContentCapabilityResolution =
+  ThemeContentCapabilityParseResult &
+    Readonly<{
+      sourceScan: ThemeContentSourceScan;
+    }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -40,6 +71,68 @@ function resolveRowComponentPath(
   }
   const path = resolved.join("/");
   return path.startsWith("src/") ? path : null;
+}
+
+/**
+ * Returns the local module that supplies a re-exported content contract.
+ *
+ * A section entry may be a deliberately thin adapter around an implementation
+ * component. Treating `export { contentFields } from "../Hero"` as a contract
+ * alias keeps the folder convention from forcing authors to duplicate field
+ * declarations in adapter files.
+ */
+function readReExportedContentFieldsSpecifier(source: string): string | null {
+  if (!source.includes("contentFields")) return null;
+  try {
+    const ast = parse(source, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+    for (const statement of ast.program.body as any[]) {
+      if (
+        statement.type !== "ExportNamedDeclaration" ||
+        !statement.source ||
+        typeof statement.source.value !== "string"
+      ) {
+        continue;
+      }
+      const exportsContentFields = (statement.specifiers ?? []).some(
+        (specifier: any) => {
+          const exported = specifier.exported;
+          return (
+            (exported?.type === "Identifier" &&
+              exported.name === "contentFields") ||
+            (exported?.type === "StringLiteral" &&
+              exported.value === "contentFields")
+          );
+        },
+      );
+      if (exportsContentFields) return statement.source.value;
+    }
+  } catch {
+    // The normal source parser owns diagnostics for malformed contentFields.
+    // A forwarding hint that cannot be parsed is simply not an alias.
+  }
+  return null;
+}
+
+function resolveLocalModulePathFromFiles(
+  declaringPath: string,
+  specifier: string,
+  filePaths: ReadonlySet<string>,
+): string | null {
+  const base = resolveRowComponentPath(declaringPath, specifier);
+  if (!base) return null;
+  for (const candidate of [
+    base,
+    `${base}.tsx`,
+    `${base}.jsx`,
+    `${base}/index.tsx`,
+    `${base}/index.jsx`,
+  ]) {
+    if (filePaths.has(candidate)) return candidate;
+  }
+  return null;
 }
 
 /**
@@ -228,6 +321,90 @@ function expandRowReferences({
   }
 }
 
+function expandReExportedContentFields({
+  byPath,
+  manifestResult,
+  manifestRefsBySource,
+  colocated,
+}: {
+  byPath: ReadonlyMap<string, string | null | undefined>;
+  manifestResult: ThemeContentCapabilityParseResult;
+  manifestRefsBySource: ReadonlyMap<string, string>;
+  colocated: Map<string, ThemeComponentContentCapability>;
+}): void {
+  const filePaths = new Set(byPath.keys());
+  const entries = [...byPath.entries()];
+
+  // A short fixed point handles an adapter around another adapter while
+  // keeping this source-only resolution bounded by the workspace file count.
+  for (let pass = 0; pass < entries.length; pass += 1) {
+    let changed = false;
+    for (const [path, source] of entries) {
+      if (typeof source !== "string") continue;
+      const specifier = readReExportedContentFieldsSpecifier(source);
+      if (!specifier) continue;
+      const targetPath = resolveLocalModulePathFromFiles(
+        path,
+        specifier,
+        filePaths,
+      );
+      if (!targetPath) continue;
+      const targetRef = manifestRefsBySource.get(targetPath);
+      const capability =
+        colocated.get(targetPath) ??
+        (targetRef ? manifestResult.capabilities[targetRef] : undefined);
+      if (!capability || colocated.get(path) === capability) continue;
+      colocated.set(path, capability);
+      changed = true;
+    }
+    if (!changed) return;
+  }
+}
+
+function buildSourceScan({
+  byPath,
+  statuses,
+  colocated,
+  scope,
+  eligibleSourceCount,
+  scannedSourceCount,
+}: {
+  byPath: ReadonlyMap<string, string | null | undefined>;
+  statuses: ReadonlyMap<string, ThemeContentSourceStatus>;
+  colocated: ReadonlyMap<string, ThemeComponentContentCapability>;
+  scope: "workspace" | "selected";
+  eligibleSourceCount: number;
+  scannedSourceCount: number;
+}): ThemeContentSourceScan {
+  const entries: Record<
+    string,
+    {
+      status: ThemeContentSourceStatus;
+      capability?: ThemeComponentContentCapability;
+    }
+  > = {};
+  const capabilities: Record<string, ThemeComponentContentCapability> = {};
+
+  for (const [path] of byPath) {
+    const status = statuses.get(path);
+    if (!status) continue;
+    const capability = colocated.get(path);
+    entries[path] = capability ? { status, capability } : { status };
+    if (capability) capabilities[path] = capability;
+  }
+
+  return {
+    scope,
+    completeness:
+      scannedSourceCount < eligibleSourceCount ? "incomplete" : "complete",
+    scannedSourceCount,
+    eligibleSourceCount,
+    limit: MAX_SCANNED_COMPONENT_SOURCES,
+    entries,
+    capabilities,
+  };
+}
+
 /** Candidate paths a row component reference may resolve to. */
 export function rowComponentCandidatePaths(
   declaringPath: string,
@@ -250,11 +427,15 @@ export function rowComponentCandidatePaths(
  */
 export function resolveThemeContentCapabilitiesFromFiles(
   themeFiles: ReadonlyArray<{ path: string; content?: string | null }>,
-): ThemeContentCapabilityParseResult {
+  options: { includeManifestFallback?: boolean } = {},
+): ThemeContentCapabilityResolution {
   const byPath = new Map(
     themeFiles.map((file) => [file.path.replace(/\\/g, "/"), file.content]),
   );
-  const manifestContent = byPath.get(THEME_MANIFEST_PATH) ?? null;
+  const includeManifestFallback = options.includeManifestFallback !== false;
+  const manifestContent = includeManifestFallback
+    ? (byPath.get(THEME_MANIFEST_PATH) ?? null)
+    : null;
   const manifestResult = parseThemeContentCapabilities(manifestContent);
 
   const colocated = new Map<string, ThemeComponentContentCapability>();
@@ -265,10 +446,12 @@ export function resolveThemeContentCapabilitiesFromFiles(
   // declares its own fields is editable because it declares them, not because
   // someone remembered to list it. Its source path is its identity.
   const manifestRefsBySource = new Map<string, string>();
-  for (const [componentRef, sourcePath] of readComponentSourcePaths(
-    manifestContent,
-  )) {
-    manifestRefsBySource.set(sourcePath, componentRef);
+  if (includeManifestFallback) {
+    for (const [componentRef, sourcePath] of readComponentSourcePaths(
+      manifestContent,
+    )) {
+      manifestRefsBySource.set(sourcePath, componentRef);
+    }
   }
 
   const declared = new Map<
@@ -276,12 +459,20 @@ export function resolveThemeContentCapabilitiesFromFiles(
     Record<string, ThemeContentFieldDefinition>
   >();
   const invalidDeclarations = new Set<string>();
-  let scanned = 0;
-  for (const [path, source] of byPath) {
-    if (scanned >= MAX_SCANNED_COMPONENT_SOURCES) break;
-    if (typeof source !== "string") continue;
-    if (!path.startsWith("src/") || !/\.(tsx|jsx)$/.test(path)) continue;
-    scanned += 1;
+  const sourceStatuses = new Map<string, ThemeContentSourceStatus>();
+  const eligibleSourcePaths = [...byPath.keys()]
+    .filter((path) => path.startsWith("src/") && /\.(tsx|jsx)$/.test(path))
+    .sort();
+  const scannedSourcePaths = eligibleSourcePaths.slice(
+    0,
+    MAX_SCANNED_COMPONENT_SOURCES,
+  );
+  for (const path of scannedSourcePaths) {
+    const source = byPath.get(path);
+    if (typeof source !== "string") {
+      sourceStatuses.set(path, "unreadable");
+      continue;
+    }
     const parsed = parseColocatedContentFields(source);
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${path}: ${diagnostic}`);
@@ -290,18 +481,25 @@ export function resolveThemeContentCapabilitiesFromFiles(
     // manifest still lists. `invalid` is recorded too, so the merge below can
     // refuse to fall back rather than serving a stale capability.
     if (parsed.declaration === "valid") {
+      sourceStatuses.set(path, "declared");
       declared.set(path, parsed.fields ?? {});
     } else if (parsed.declaration === "invalid") {
+      sourceStatuses.set(path, "invalid");
       invalidDeclarations.add(path);
-    } else if (readThemeSectionEntry(path)) {
+    } else if (isThemeSectionSourcePath(path)) {
       // A section-folder component may use ordinary React props without a
       // second contentFields declaration. The inference is intentionally
       // limited to this convention and only exposes static primitive props;
       // explicit contentFields remains authoritative for richer shapes.
       const inferred = inferThemeContentFields(source);
       if (Object.keys(inferred.fields).length > 0) {
+        sourceStatuses.set(path, "inferred");
         declared.set(path, inferred.fields);
+      } else {
+        sourceStatuses.set(path, "absent");
       }
+    } else {
+      sourceStatuses.set(path, "absent");
     }
   }
 
@@ -312,13 +510,55 @@ export function resolveThemeContentCapabilitiesFromFiles(
     diagnostics,
     componentRefForPath: (path) => manifestRefsBySource.get(path) ?? null,
   });
+  expandReExportedContentFields({
+    byPath,
+    manifestResult,
+    manifestRefsBySource,
+    colocated,
+  });
 
-  return mergeCapabilities(
+  for (const path of scannedSourcePaths) {
+    if (sourceStatuses.get(path) === "absent" && colocated.has(path)) {
+      sourceStatuses.set(path, "forwarded");
+    }
+  }
+
+  const merged = mergeCapabilities(
     manifestContent,
     manifestResult,
     colocated,
     diagnostics,
   );
+  let resolved = merged;
+  if (!includeManifestFallback) {
+    const sectionCandidates = new Map<string, string[]>();
+    for (const path of scannedSourcePaths) {
+      const entry = readThemeSectionEntry(path);
+      if (!entry || !colocated.has(path)) continue;
+      const candidates = sectionCandidates.get(entry.sectionType) ?? [];
+      candidates.push(path);
+      sectionCandidates.set(entry.sectionType, candidates);
+    }
+    resolved = {
+      ...merged,
+      sectionComponentRefs: Object.fromEntries(
+        [...sectionCandidates.entries()]
+          .filter(([, candidates]) => candidates.length === 1)
+          .map(([type, candidates]) => [type, candidates[0]!]),
+      ),
+    };
+  }
+  return {
+    ...resolved,
+    sourceScan: buildSourceScan({
+      byPath,
+      statuses: sourceStatuses,
+      colocated,
+      scope: "workspace",
+      eligibleSourceCount: eligibleSourcePaths.length,
+      scannedSourceCount: scannedSourcePaths.length,
+    }),
+  };
 }
 
 /**
@@ -330,7 +570,7 @@ export async function resolveThemeContentCapabilities(args: {
   manifestContent: string | null | undefined;
   readSource: (path: string) => Promise<string | null | undefined>;
   additionalSourcePaths?: readonly string[];
-}): Promise<ThemeContentCapabilityParseResult> {
+}): Promise<ThemeContentCapabilityResolution> {
   const manifestResult = parseThemeContentCapabilities(args.manifestContent);
   const colocated = new Map<string, ThemeComponentContentCapability>();
   const diagnostics: string[] = [];
@@ -342,32 +582,74 @@ export async function resolveThemeContentCapabilities(args: {
       sources.set(normalized, normalized);
     }
   }
+  const sourceRefByPath = new Map<string, string>();
+  const selectedSourcePaths = new Map<string, string | null>();
+  const sourceContents = new Map<string, string>();
+  for (const [componentRef, sourcePath] of sources) {
+    sourceRefByPath.set(sourcePath, componentRef);
+    const source = await args.readSource(sourcePath);
+    selectedSourcePaths.set(
+      sourcePath,
+      typeof source === "string" ? source : null,
+    );
+    if (typeof source === "string") sourceContents.set(sourcePath, source);
+  }
+
+  // Section entry adapters may forward the implementation's contentFields.
+  // Fetch their local target as well so server-side validation sees the same
+  // contract as the editor's whole-workspace resolver.
+  for (const [sourcePath, source] of [...sourceContents]) {
+    const specifier = readReExportedContentFieldsSpecifier(source);
+    if (!specifier) continue;
+    const base = resolveRowComponentPath(sourcePath, specifier);
+    if (!base) continue;
+    for (const candidate of [
+      base,
+      `${base}.tsx`,
+      `${base}.jsx`,
+      `${base}/index.tsx`,
+      `${base}/index.jsx`,
+    ]) {
+      if (sourceContents.has(candidate)) break;
+      const targetSource = await args.readSource(candidate);
+      if (typeof targetSource !== "string") continue;
+      selectedSourcePaths.set(candidate, targetSource);
+      sourceContents.set(candidate, targetSource);
+      break;
+    }
+  }
   const declared = new Map<
     string,
     Record<string, ThemeContentFieldDefinition>
   >();
   const invalidDeclarations = new Set<string>();
   const refForPath = new Map<string, string>();
-  for (const [componentRef, sourcePath] of sources) {
-    const source = await args.readSource(sourcePath);
-    if (typeof source !== "string") continue;
+  const sourceStatuses = new Map<string, ThemeContentSourceStatus>();
+  for (const [sourcePath, source] of sourceContents) {
+    const componentRef = sourceRefByPath.get(sourcePath) ?? sourcePath;
     const parsed = parseColocatedContentFields(source);
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${sourcePath}: ${diagnostic}`);
     }
     if (parsed.declaration === "invalid") {
+      sourceStatuses.set(sourcePath, "invalid");
       invalidDeclarations.add(sourcePath);
       if (componentRef !== sourcePath) refForPath.set(sourcePath, componentRef);
       continue;
     }
     if (parsed.declaration === "valid") {
+      sourceStatuses.set(sourcePath, "declared");
       declared.set(sourcePath, parsed.fields ?? {});
-    } else if (readThemeSectionEntry(sourcePath)) {
+    } else if (isThemeSectionSourcePath(sourcePath)) {
       const inferred = inferThemeContentFields(source);
       if (Object.keys(inferred.fields).length > 0) {
+        sourceStatuses.set(sourcePath, "inferred");
         declared.set(sourcePath, inferred.fields);
+      } else {
+        sourceStatuses.set(sourcePath, "absent");
       }
     } else {
+      sourceStatuses.set(sourcePath, "absent");
       continue;
     }
     // A route is allowed to be the only registration for a component. In that
@@ -408,10 +690,55 @@ export async function resolveThemeContentCapabilities(args: {
     componentRefForPath: (path) => refForPath.get(path) ?? null,
   });
 
-  return mergeCapabilities(
+  for (const [sourcePath, source] of sourceContents) {
+    const specifier = readReExportedContentFieldsSpecifier(source);
+    if (!specifier) continue;
+    const base = resolveRowComponentPath(sourcePath, specifier);
+    if (!base) continue;
+    const targetPath = [
+      base,
+      `${base}.tsx`,
+      `${base}.jsx`,
+      `${base}/index.tsx`,
+      `${base}/index.jsx`,
+    ].find((candidate) => sourceContents.has(candidate));
+    if (!targetPath) continue;
+    const targetRef = sourceRefByPath.get(targetPath);
+    const capability =
+      colocated.get(targetPath) ??
+      (targetRef ? manifestResult.capabilities[targetRef] : undefined);
+    if (capability) colocated.set(sourcePath, capability);
+  }
+
+  for (const sourcePath of sourceContents.keys()) {
+    if (
+      sourceStatuses.get(sourcePath) === "absent" &&
+      colocated.has(sourcePath)
+    ) {
+      sourceStatuses.set(sourcePath, "forwarded");
+    }
+  }
+
+  const merged = mergeCapabilities(
     args.manifestContent,
     manifestResult,
     colocated,
     diagnostics,
   );
+  return {
+    ...merged,
+    sourceScan: buildSourceScan({
+      byPath: selectedSourcePaths,
+      statuses: new Map(
+        [...selectedSourcePaths.keys()].map((path) => [
+          path,
+          sourceStatuses.get(path) ?? "unreadable",
+        ]),
+      ),
+      colocated,
+      scope: "selected",
+      eligibleSourceCount: selectedSourcePaths.size,
+      scannedSourceCount: selectedSourcePaths.size,
+    }),
+  };
 }

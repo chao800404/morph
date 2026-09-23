@@ -12,9 +12,11 @@ import type {
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import { deriveThemeSourceIndex } from "../theme-source-index";
 import { paginationOf, type Pagination } from "@/lib/db/server-result";
 import { firstOrNull } from "@/lib/db/single-row";
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
+import type { ThemeSourceIndex } from "../theme-source-index";
 
 type StorefrontThemeRevisionRow =
   typeof storefrontThemeRevisions.$inferSelect;
@@ -32,6 +34,8 @@ function mapRevisionRowToDTO(
     source: row.source as "manual" | "ai" | "publish" | "rollback",
     sourceManifest: (row.sourceManifest ??
       null) as StorefrontThemeRevisionDTO["sourceManifest"],
+    sourceIndex: (row.sourceIndex ??
+      null) as StorefrontThemeRevisionDTO["sourceIndex"],
     snapshot: (row.snapshot ?? []) as StorefrontThemeRevisionDTO["snapshot"],
     createdBy: row.createdBy,
     createdAt: row.createdAt,
@@ -79,7 +83,28 @@ function prepareIncrementThemeSourceGeneration(
   storefrontId: string,
   themeId: string,
   now: string,
+  sourceIndex?: ThemeSourceIndex,
 ) {
+  if (sourceIndex) {
+    return env.DATABASE.prepare(
+      `
+      UPDATE storefront_themes
+      SET source_generation = source_generation + 1,
+          source_index_version = ?1,
+          source_index_status = ?2,
+          source_index = ?3,
+          updated_at = ?4
+      WHERE id = ?5 AND storefront_id = ?6 AND deleted_at IS NULL
+    `,
+    ).bind(
+      sourceIndex.derivationVersion,
+      sourceIndex.status,
+      JSON.stringify(sourceIndex),
+      now,
+      themeId,
+      storefrontId,
+    );
+  }
   return env.DATABASE.prepare(
     `
     UPDATE storefront_themes
@@ -99,15 +124,19 @@ function prepareRevisionInsert(args: {
   now: string;
   sourceGeneration?: number;
   sourceManifest?: ThemeSourceRevisionManifest;
+  sourceIndex?: ThemeSourceIndex;
 }) {
   const sourceManifestJson = args.sourceManifest
     ? JSON.stringify(args.sourceManifest)
     : null;
-  const statement = args.sourceManifest
+  const sourceIndexJson = args.sourceIndex
+    ? JSON.stringify(args.sourceIndex)
+    : null;
+  const statement = args.sourceManifest || args.sourceIndex
     ? `
     INSERT INTO storefront_theme_revisions (
       id, storefront_id, theme_id, revision_number, message, source,
-      snapshot, source_generation, source_manifest, created_by, created_at, updated_at
+      snapshot, source_generation, source_manifest, source_index, created_by, created_at, updated_at
     )
     SELECT
       ?1, ?2, ?3,
@@ -118,7 +147,7 @@ function prepareRevisionInsert(args: {
       ), 1),
       ?4, ?5,
       json('[]'),
-      ?6, ?7, ?8, ?9, ?9
+      ?6, ?7, ?8, ?9, ?10, ?10
   `
     : `
     INSERT INTO storefront_theme_revisions (
@@ -161,7 +190,9 @@ function prepareRevisionInsert(args: {
     args.message,
     args.source,
     args.sourceGeneration ?? null,
-    ...(args.sourceManifest ? [sourceManifestJson] : []),
+    ...(args.sourceManifest || args.sourceIndex
+      ? [sourceManifestJson, sourceIndexJson]
+      : []),
     args.createdBy ?? null,
     args.now,
   );
@@ -257,6 +288,11 @@ export const storefrontThemeFileDal = {
 
     const now = new Date().toISOString();
     const revisionId = crypto.randomUUID();
+    const sourceIndex = deriveThemeSourceIndex({
+      files: STARTER_THEME_FILES,
+      scope: "workspace",
+      sourceGeneration: 2,
+    });
 
     const statements = [
       prepareThemeOwnershipGuard(storefrontId, themeId),
@@ -306,7 +342,12 @@ export const storefrontThemeFileDal = {
     );
 
     statements.push(
-      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
+      prepareIncrementThemeSourceGeneration(
+        storefrontId,
+        themeId,
+        now,
+        sourceIndex,
+      ),
     );
 
     try {
@@ -421,6 +462,7 @@ export const storefrontThemeFileDal = {
       revisionMessage?: string;
       createdBy?: string;
       sourceManifest?: ThemeSourceRevisionManifest;
+      sourceIndex?: ThemeSourceIndex;
     },
   ): Promise<StorefrontThemeFileDTO & { sourceGeneration?: number }> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
@@ -447,6 +489,7 @@ export const storefrontThemeFileDal = {
         revisionMessage: options.revisionMessage,
         createdBy: options.createdBy,
         sourceManifest: options.sourceManifest,
+        sourceIndex: options.sourceIndex,
       },
     );
     const first = saved[0];
@@ -476,6 +519,7 @@ export const storefrontThemeFileDal = {
       revisionMessage?: string;
       createdBy?: string;
       sourceManifest?: ThemeSourceRevisionManifest;
+      sourceIndex?: ThemeSourceIndex;
     },
   ): Promise<StorefrontThemeFileDTO[] & { sourceGeneration?: number }> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
@@ -669,12 +713,18 @@ export const storefrontThemeFileDal = {
           createdBy: options.createdBy,
           now,
           sourceManifest: options.sourceManifest,
+          sourceIndex: options.sourceIndex,
         }),
       );
     }
 
     statements.push(
-      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
+      prepareIncrementThemeSourceGeneration(
+        storefrontId,
+        themeId,
+        now,
+        options.sourceIndex,
+      ),
     );
 
     statements.push(
@@ -811,6 +861,7 @@ export const storefrontThemeFileDal = {
       revisionMessage?: string;
       createdBy?: string;
       sourceManifest?: ThemeSourceRevisionManifest;
+      sourceIndex?: ThemeSourceIndex;
     },
   ): Promise<boolean> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
@@ -853,6 +904,7 @@ export const storefrontThemeFileDal = {
               now,
               sourceGeneration: options.expectedSourceGeneration,
               sourceManifest: options.sourceManifest,
+              sourceIndex: options.sourceIndex,
             }),
           ]
         : []),
@@ -868,7 +920,12 @@ export const storefrontThemeFileDal = {
           AND deleted_at IS NULL
       `,
       ).bind(now, storefrontId, themeId, path, expectedFileId, expectedVersion),
-      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
+      prepareIncrementThemeSourceGeneration(
+        storefrontId,
+        themeId,
+        now,
+        options.sourceIndex,
+      ),
     ];
 
     try {
@@ -915,6 +972,7 @@ export const storefrontThemeFileDal = {
       source?: "manual" | "ai" | "publish" | "rollback";
       createdBy?: string;
       sourceManifest?: ThemeSourceRevisionManifest;
+      sourceIndex?: ThemeSourceIndex;
     },
   ): Promise<StorefrontThemeRevisionDTO> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
@@ -948,6 +1006,7 @@ export const storefrontThemeFileDal = {
         now,
         sourceGeneration: options.expectedSourceGeneration,
         sourceManifest: options.sourceManifest,
+        sourceIndex: options.sourceIndex,
       }),
     ];
 
@@ -988,6 +1047,7 @@ export const storefrontThemeFileDal = {
       message: created.message,
       source: created.source as "manual" | "ai" | "publish" | "rollback",
       sourceManifest: (created.sourceManifest ?? null) as StorefrontThemeRevisionDTO["sourceManifest"],
+      sourceIndex: (created.sourceIndex ?? null) as StorefrontThemeRevisionDTO["sourceIndex"],
       snapshot: (created.snapshot ?? []) as Array<{
         path: string;
         content: string;
@@ -1124,6 +1184,7 @@ export const storefrontThemeFileDal = {
       createdBy?: string;
       sourceManifest?: ThemeSourceRevisionManifest;
       sourceSnapshot?: StorefrontThemeRevisionDTO["snapshot"];
+      sourceIndex?: ThemeSourceIndex;
     },
   ): Promise<StorefrontThemeFileDTO[]> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
@@ -1198,11 +1259,17 @@ export const storefrontThemeFileDal = {
         createdBy: options?.createdBy,
         now,
         sourceManifest: options?.sourceManifest,
+        sourceIndex: options?.sourceIndex,
       }),
     );
 
     statements.push(
-      prepareIncrementThemeSourceGeneration(storefrontId, themeId, now),
+      prepareIncrementThemeSourceGeneration(
+        storefrontId,
+        themeId,
+        now,
+        options.sourceIndex,
+      ),
     );
 
     try {

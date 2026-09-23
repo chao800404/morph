@@ -167,8 +167,11 @@ import {
   readThemeInstanceStyleClasses,
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
+import { isThemeSectionTemplatePath } from "@/lib/storefront/theme-section-convention";
 import {
   GLOBAL_LAYOUT_LABEL,
+  SECTION_TEMPLATE_HINT,
+  SECTION_TEMPLATE_LABEL,
   SHARED_LAYOUT_HINT,
 } from "./editor-layout-labels";
 
@@ -2129,9 +2132,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           {componentPath && sharedLayoutPaths?.has(componentPath) ? (
             <span
               className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium text-foreground"
-              title={SHARED_LAYOUT_HINT}
+              title={
+                isThemeSectionTemplatePath(componentPath)
+                  ? SECTION_TEMPLATE_HINT
+                  : SHARED_LAYOUT_HINT
+              }
             >
-              {GLOBAL_LAYOUT_LABEL}
+              {isThemeSectionTemplatePath(componentPath)
+                ? SECTION_TEMPLATE_LABEL
+                : GLOBAL_LAYOUT_LABEL}
             </span>
           ) : null}
         </div>

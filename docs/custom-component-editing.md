@@ -5,7 +5,11 @@
 - 在元件 source 匯出合法的 `contentFields`，宣告可編輯內容。
 - 路由透過 `<MyBanner {...content("my-banner")} />` 配對 Document slot。
 - 未在 manifest 註冊的元件使用來源路徑作為 `componentRef`，例如 `src/components/MyBanner.tsx`。不要自行猜測 `my-banner.default`。
-- 元件放進 `src/components/sections/` 就成為 section 候選，不必在 manifest 註冊，也不必匯出 `contentFields`。入口只有兩種形狀：`src/components/sections/Hero.tsx`，或 `src/components/sections/hero/index.tsx`（以資料夾命名，不叫 `index`）。再深一層的檔案、`*.test.tsx`／`*.spec.tsx`、以及資料夾根目錄的 `index` 都不算入口。同一個檔案若 manifest 已宣告，仍以 manifest 的 `componentRef` 為準，不會重複列出。
+- 元件放進 `src/components/sections/` 就成為 Add section 候選，不需要在 manifest 登記。入口只有兩種形狀：`src/components/sections/Hero.tsx`，或 `src/components/sections/hero/index.tsx`（以資料夾命名，不叫 `index`）。再深一層的檔案、`*.test.tsx`／`*.spec.tsx`、以及資料夾根目錄的 `index` 都不算入口。即使 `morph.theme.json` 的 `components` 仍列出同一個檔案，Add section 仍以 section folder 的路徑與名稱為準；manifest 只保留給既有 Theme 的相容解析。
+- `sections/` 是範本庫，route 不直接 import 它。Add section 會把範本複製成該頁專屬的實例：`src/components/page-sections/<route key>/<slot id>/index.tsx`。route key 是 route 檔路徑的 TanStack flat 寫法（`src/routes/products/$slug.tsx` → `products.$slug`），所以動態 route 的副本屬於整個模板，不是某一個商品。同頁加兩個 Hero 會得到 `hero/` 與 `hero-2/` 兩份。改範本只影響之後新增的 section，已加入的副本不會跟著變。
+- 複製的邊界：單檔 section 複製該檔；資料夾 section 整個資料夾一起複製，內部 import 指向副本；`ui/`、hooks、content contract 等外部依賴繼續共用。入口若只是 `export { default } from "../Hero"` 這類轉出，複製的是它指向的實作。section 若 import 另一個 section 會拒絕新增，因為副本無法獨立。
+- 從頁面移除 section 時，它專屬的資料夾在同一個 revision 內一起刪除，undo 會一起還原。若該資料夾仍被其他檔案 import，則保留檔案；若檔案有未儲存修改，則拒絕移除。頁面有哪些 section 由 route source 決定，Document 只提供值：還原舊的 Document 版本不會讓已移除的 section 重新出現，要找回它請還原來源版本（route 與副本在同一個 revision，會一起回來）。
+- 仍直接 render `sections/` 範本的 route（採用這個慣例之前建立的頁面）會標示為 Template，Design 模式不改寫範本的結構，改由「建立頁面副本」分離出該頁的實例。
 - 路由直接 render 元件（`<Promo title={product.name} />`）而沒有 `content(...)` 時，元件照常 render，但編輯器看不到它。這類位置會列在 Sections 面板的「Sections needing binding」下，可一鍵綁定；綁定會把 `{...content("...")}` 插在該元素**自己的屬性之前**，所以作者寫的顯式 prop 優先於 slot 值。只有直接 JSX 位置可以綁定 —— 條件式、`map` callback、任意 expression 一律拒絕並附上原因，因為同一個 source 位置可能代表 0 個或多個渲染實例，一個 slot 描述不了。
 - 候選會標示綁定寫進哪個檔案：`This page` 寫進 route，`Every page` 寫進 layout。layout 候選在每一頁都看得到，綁一次會影響所有頁面。綁定前會以當前 source 重新推導並比對位置、元件名與來源檔案，source 已變更時拒絕寫入，而不是把 slot 補到別的元件上。
 - 沒有 `contentFields` 時，編輯器會從 source 推導欄位：字面量預設值、行內型別標註、同檔的 `type`／`interface`。需要型別檢查器才讀得到的（跨檔匯入型別、泛型、條件型別）與執行期值一律不推導，欄位留空 —— 這種情況請改用 `contentFields` 宣告。`v?: string` 與 `v: string | undefined` 視為同一件事；`null` 不算 optional，`string | null` 維持不推導。

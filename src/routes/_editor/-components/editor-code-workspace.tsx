@@ -48,6 +48,7 @@ import type {
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import {
   applyStarterThemeWorkspace,
+  applyThemeManifestMigrationServerFn,
   rollbackStorefrontThemeRevision,
   deleteStorefrontThemeFile,
   previewStarterThemeWorkspace,
@@ -1249,6 +1250,99 @@ const EditorCodeWorkspaceContent = forwardRef<
       );
     },
   });
+
+  const legacyManifestFile = useMemo(
+    () =>
+      files.find(
+        (file) => file.path.replace(/\\/g, "/") === "morph.theme.json",
+      ) ?? null,
+    [files],
+  );
+  const [manifestMigrationDialogOpen, setManifestMigrationDialogOpen] =
+    useState(false);
+  const manifestMigrationPreviewQuery = useQuery({
+    ...storefrontThemeFileQueries.manifestMigrationPreview(
+      storefrontId,
+      themeId,
+    ),
+    enabled: legacyManifestFile !== null,
+  });
+  const manifestMigrationMutation = useMutation({
+    mutationFn: async () => {
+      const result = await applyThemeManifestMigrationServerFn({
+        data: { storefrontId, themeId },
+      });
+      if (!result.success) throw new Error(result.message);
+      return result.data;
+    },
+    onSuccess: async (data) => {
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(data.sourceGeneration, workspaceScope);
+      const manifestPath = legacyManifestFile?.path ?? "morph.theme.json";
+      const fallbackPath = files.find(
+        (file) => file.path !== manifestPath,
+      )?.path;
+      setOpenTabs((current) => {
+        const next = current.filter((path) => path !== manifestPath);
+        return next.length > 0 ? next : fallbackPath ? [fallbackPath] : [];
+      });
+      setActiveFilePath((current) =>
+        current === manifestPath ? (fallbackPath ?? "") : current,
+      );
+      setManifestMigrationDialogOpen(false);
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.manifestMigrationPreview(
+          storefrontId,
+          themeId,
+        ).queryKey,
+      });
+      appendOutput(
+        data.status === "applied"
+          ? "Removed the legacy morph.theme.json manifest through the server-owned migration."
+          : "The legacy morph.theme.json manifest was already removed.",
+      );
+      toast.success(
+        data.status === "applied"
+          ? "Legacy theme manifest removed"
+          : "Legacy theme manifest is already removed",
+      );
+      onRestartPreview?.();
+    },
+    onError: (error) => {
+      appendOutput(
+        `Legacy manifest migration failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to remove the legacy theme manifest",
+      );
+    },
+  });
+
+  const openManifestMigration = useCallback(async () => {
+    if (dirtyPaths.length > 0) {
+      toast.error(
+        "Save or discard unsaved files before removing the legacy manifest.",
+      );
+      return;
+    }
+    const preview = await manifestMigrationPreviewQuery.refetch();
+    if (preview.error) {
+      toast.error(
+        preview.error instanceof Error
+          ? preview.error.message
+          : "Failed to check legacy manifest migration",
+      );
+      return;
+    }
+    setManifestMigrationDialogOpen(true);
+  }, [dirtyPaths.length, manifestMigrationPreviewQuery]);
 
   const starterBootstrapApplyMutation = useMutation({
     mutationFn: async (expectedSourceGeneration: number) => {
@@ -3240,6 +3334,27 @@ const EditorCodeWorkspaceContent = forwardRef<
               >
                 <PackagePlus className="size-3.5" />
               </button>
+              {legacyManifestFile ? (
+                <button
+                  type="button"
+                  title="Remove legacy morph.theme.json"
+                  aria-label="Migrate legacy theme manifest"
+                  disabled={
+                    dirtyPaths.length > 0 ||
+                    manifestMigrationPreviewQuery.isFetching ||
+                    manifestMigrationMutation.isPending
+                  }
+                  onClick={() => void openManifestMigration()}
+                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                >
+                  {manifestMigrationPreviewQuery.isFetching ||
+                  manifestMigrationMutation.isPending ? (
+                    <LoaderCircle className="size-3.5 animate-spin" />
+                  ) : (
+                    <FileJson className="size-3.5" />
+                  )}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -3658,6 +3773,122 @@ const EditorCodeWorkspaceContent = forwardRef<
                 <LoaderCircle className="size-3.5 animate-spin" />
               ) : null}
               Apply changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={manifestMigrationDialogOpen}
+        onOpenChange={setManifestMigrationDialogOpen}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileJson className="size-4 text-primary" />
+              Remove legacy theme manifest
+            </DialogTitle>
+            <DialogDescription>
+              This is a server-owned migration for the legacy
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 text-[11px]">
+                morph.theme.json
+              </code>
+              file. The server re-reads the current source and documents before
+              applying it, so a blocked or stale plan makes no changes.
+            </DialogDescription>
+          </DialogHeader>
+          {manifestMigrationPreviewQuery.isFetching ? (
+            <div className="flex items-center gap-2 py-6 text-xs text-muted-foreground">
+              <LoaderCircle className="size-3.5 animate-spin" />
+              Checking migration safety…
+            </div>
+          ) : manifestMigrationPreviewQuery.error ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-3 text-xs text-destructive">
+              {manifestMigrationPreviewQuery.error instanceof Error
+                ? manifestMigrationPreviewQuery.error.message
+                : "Failed to check migration safety."}
+            </div>
+          ) : manifestMigrationPreviewQuery.data ? (
+            <div className="mt-4 space-y-3 text-xs">
+              <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+                <span className="text-muted-foreground">Server decision</span>
+                <span
+                  className={cn(
+                    "font-medium",
+                    manifestMigrationPreviewQuery.data.status === "ready"
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : manifestMigrationPreviewQuery.data.status ===
+                          "blocked"
+                        ? "text-amber-600 dark:text-amber-400"
+                        : "text-muted-foreground",
+                  )}
+                >
+                  {manifestMigrationPreviewQuery.data.status}
+                </span>
+              </div>
+              {manifestMigrationPreviewQuery.data.status === "ready" ? (
+                <div className="space-y-2 rounded-md border px-3 py-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      Document references to rewrite
+                    </span>
+                    <span className="font-medium">
+                      {manifestMigrationPreviewQuery.data.rewriteCount}
+                    </span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    The pre-migration source is preserved as a revision. Only
+                    the current mutable documents are rewritten; immutable
+                    history remains untouched.
+                  </p>
+                </div>
+              ) : null}
+              {manifestMigrationPreviewQuery.data.blockers.length > 0 ? (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-amber-700 dark:text-amber-300">
+                  <p className="font-medium">Migration is blocked</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px]">
+                    {manifestMigrationPreviewQuery.data.blockers.map(
+                      (blocker) => (
+                        <li key={blocker}>{blocker}</li>
+                      ),
+                    )}
+                  </ul>
+                </div>
+              ) : null}
+              {manifestMigrationPreviewQuery.data.warnings?.length > 0 ? (
+                <div className="rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-3 text-sky-700 dark:text-sky-300">
+                  <p className="font-medium">Compatibility notes</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px]">
+                    {manifestMigrationPreviewQuery.data.warnings.map(
+                      (warning) => (
+                        <li key={warning}>{warning}</li>
+                      ),
+                    )}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <DialogFooter className="mt-5">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setManifestMigrationDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={
+                manifestMigrationPreviewQuery.data?.status !== "ready" ||
+                dirtyPaths.length > 0 ||
+                manifestMigrationMutation.isPending
+              }
+              onClick={() => manifestMigrationMutation.mutate()}
+            >
+              {manifestMigrationMutation.isPending ? (
+                <LoaderCircle className="size-3.5 animate-spin" />
+              ) : null}
+              Remove manifest
             </Button>
           </DialogFooter>
         </DialogContent>

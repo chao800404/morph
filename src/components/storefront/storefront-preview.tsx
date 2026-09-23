@@ -4,6 +4,7 @@ import {
   getComponentFilePath,
   getThemeDocumentLayoutFilePath,
 } from "@/lib/storefront/ast/theme-ast-transformer";
+import { deriveThemeSourceRouterFramework } from "@/lib/storefront/theme-source-runtime-contract";
 import { memo, type CSSProperties, type ReactNode } from "react";
 import { renderSafeThemeComponent } from "./safe-theme-component-renderer";
 import { renderSafeThemeRoute } from "./safe-theme-route-renderer";
@@ -143,6 +144,11 @@ function hasThemeSourceCode(
 function usesThemeRouteRuntime(
   themeFiles?: Array<{ path: string; content: string }>,
 ): boolean {
+  // New/migrated Themes own this fact in their source shape. The manifest
+  // branch below remains only for legacy workspaces during the migration
+  // window; it must not be required for a normal TanStack Start Theme.
+  if (themeFiles && deriveThemeSourceRouterFramework(themeFiles)) return true;
+
   const manifest = themeFiles?.find((file) => file.path === "morph.theme.json");
   if (!manifest) return false;
   try {

@@ -37,7 +37,9 @@ export function refuseThemeWorkspacePath(path: string): string | null {
   if (
     normalized.startsWith("../") ||
     normalized.includes("/../") ||
-    normalized.startsWith("/")
+    normalized.startsWith("/") ||
+    /^[A-Za-z]:/.test(normalized) ||
+    normalized.startsWith("//")
   ) {
     return `WORKSPACE_PATH_ESCAPE: File path "${path}" escapes sandbox workspace root`;
   }

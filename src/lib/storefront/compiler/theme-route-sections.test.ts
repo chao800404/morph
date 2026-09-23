@@ -439,12 +439,21 @@ function Home() {
       '      <Promo {...content("promo-slot")} />\n',
       "",
     );
-    const option = listThemeRouteSectionOptions(files).find(
-      (candidate) => candidate.componentRef === "promo.default",
+    const addableFiles = [
+      ...files,
+      {
+        path: "src/components/sections/Banner.tsx",
+        content: "export default function Banner() {}",
+      },
+    ];
+    const option = listThemeRouteSectionOptions(addableFiles).find(
+      (candidate) =>
+        candidate.componentSourcePath ===
+        "src/components/sections/Banner.tsx",
     )!;
     const result = addThemeRouteSection({
       source: heroOnly,
-      files: files.map((file) =>
+      files: addableFiles.map((file) =>
         file.path === "src/routes/index.tsx"
           ? { ...file, content: heroOnly }
           : file,
@@ -456,7 +465,7 @@ function Home() {
 
     expect(result.changed).toBe(true);
     expect(result.diagnostic).toBeUndefined();
-    expect(result.code).toContain('<Promo {...content("promo")} />');
+    expect(result.code).toContain('<Banner {...content("promo")} />');
   });
 
   it("removes one route-owned section without leaving a blank authored row", () => {
@@ -537,18 +546,16 @@ export default function PrincipleCard() { return null; }`,
     },
   ];
 
-  it("omits a component that exists only to render one row", () => {
-    // A row component is given its identity and values by the list that
-    // renders it, so a standalone section of one could never be supplied what
-    // it needs.
+  it("does not offer a manifest-only component", () => {
     const options = listThemeRouteSectionOptions(listFiles);
 
-    expect(options.map((option) => option.componentName)).toEqual([
-      "Principles",
-    ]);
+    expect(options).toEqual([]);
   });
 
-  it("still offers a component that only happens to be imported by another", () => {
+  it("does not offer a contentFields-only component outside the section folder", () => {
+    // A row component is given its identity and values by the list that
+    // renders it, and a content declaration alone is not an Add section
+    // registration. Both cases stay out of the source folder library.
     const options = listThemeRouteSectionOptions([
       listFiles[0]!,
       {
@@ -558,7 +565,20 @@ export default function Banner() { return null; }`,
       },
     ]);
 
-    expect(options.map((option) => option.componentName)).toEqual(["Banner"]);
+    expect(options).toEqual([]);
+  });
+
+  it("does not offer a component that only happens to be imported by another", () => {
+    const options = listThemeRouteSectionOptions([
+      listFiles[0]!,
+      {
+        path: "src/components/Banner.tsx",
+        content: `export const contentFields = { heading: { type: "text" } };
+export default function Banner() { return null; }`,
+      },
+    ]);
+
+    expect(options).toEqual([]);
   });
 
   it("offers a component that only follows the section folder convention", () => {
@@ -595,9 +615,9 @@ export default function Banner() { return null; }`,
     expect(options[0]?.sectionType).toBe("featured-collection");
   });
 
-  it("keeps the manifest's own ref when it already claims the file", () => {
-    // The authored ref is more specific than a derived one, so the file is
-    // offered once, under the name the manifest chose.
+  it("keeps the folder path as identity even when the manifest also mentions it", () => {
+    // The manifest can continue describing an existing component for legacy
+    // content resolution, but it cannot rename or register an Add section.
     const options = listThemeRouteSectionOptions([
       {
         path: "morph.theme.json",
@@ -616,7 +636,7 @@ export default function Banner() { return null; }`,
     ]);
 
     expect(options.map((option) => option.componentRef)).toEqual([
-      "testimonials.default",
+      "src/components/sections/Testimonials.tsx",
     ]);
   });
 

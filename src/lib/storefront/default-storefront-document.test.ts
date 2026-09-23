@@ -18,12 +18,12 @@ describe("default storefront home document", () => {
     expect(first.sections).toHaveLength(6);
     expect(first.sections[0]?.type).toBe("hero");
     expect(first.sections.map((section) => section.componentRef)).toEqual([
-      "hero.default",
-      "editorial-intro.default",
-      "category-showcase.default",
-      "image-with-text.default",
-      "principles.default",
-      "newsletter.default",
+      "src/components/Hero.tsx",
+      "src/components/EditorialIntro.tsx",
+      "src/components/CategoryShowcase.tsx",
+      "src/components/ImageWithText.tsx",
+      "src/components/Principles.tsx",
+      "src/components/Newsletter.tsx",
     ]);
     expect(first).not.toBe(second);
     expect(first.sections).not.toBe(second.sections);

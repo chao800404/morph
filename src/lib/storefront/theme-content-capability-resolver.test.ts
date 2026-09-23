@@ -137,6 +137,59 @@ describe("resolveThemeContentCapabilitiesFromFiles", () => {
       });
     }
   });
+
+  it("keeps inferred props editable after a page-specific section copy", async () => {
+    const sectionPath = "src/components/page-sections/home/Promo.tsx";
+    const sectionSource = `
+      type PromoProps = { title?: string; image?: { src: string; alt: string } };
+      export default function Promo({ title, image }: PromoProps) { return null; }
+    `;
+    const sectionFiles = [
+      { path: "morph.theme.json", content: JSON.stringify({ components: {} }) },
+      { path: sectionPath, content: sectionSource },
+    ];
+
+    const scanned = resolveThemeContentCapabilitiesFromFiles(sectionFiles);
+    const onDemand = await resolveThemeContentCapabilities({
+      manifestContent: sectionFiles[0]!.content,
+      additionalSourcePaths: [sectionPath],
+      readSource: async (path) => (path === sectionPath ? sectionSource : null),
+    });
+
+    for (const result of [scanned, onDemand]) {
+      expect(result.capabilities[sectionPath]?.fields).toEqual({
+        title: { type: "text" },
+        image: { type: "image" },
+      });
+    }
+  });
+
+  it("forwards a section entry adapter's content contract", async () => {
+    const sectionPath = "src/components/sections/Hero.tsx";
+    const sectionSource = 'export { contentFields, default } from "../Hero";';
+    const sectionFiles = [
+      { path: "morph.theme.json", content: JSON.stringify({ components: {} }) },
+      { path: "src/components/Hero.tsx", content: heroSource },
+      { path: sectionPath, content: sectionSource },
+    ];
+
+    const scanned = resolveThemeContentCapabilitiesFromFiles(sectionFiles);
+    const onDemand = await resolveThemeContentCapabilities({
+      manifestContent: sectionFiles[0]!.content,
+      additionalSourcePaths: [sectionPath],
+      readSource: async (path) =>
+        sectionFiles.find((file) => file.path === path)?.content ?? null,
+    });
+
+    for (const result of [scanned, onDemand]) {
+      expect(result.capabilities[sectionPath]).toEqual({
+        fields: {
+          heading: { type: "text", label: "Heading" },
+          body: { type: "textarea" },
+        },
+      });
+    }
+  });
 });
 
 describe("resolveThemeContentCapabilities", () => {

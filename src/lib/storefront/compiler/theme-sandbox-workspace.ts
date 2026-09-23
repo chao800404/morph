@@ -678,7 +678,10 @@ if (
   const rel = path.relative(${hostRootLiteral}, resolved);
   const normalizedResolved = resolved.replace(/\\\\/g, "/");
 
-  if (rel.startsWith("..") || !normalizedResolved.startsWith(${hostRootLiteral})) {
+  if (
+    !normalizedResolved.includes("/node_modules") &&
+    (rel.startsWith("..") || !normalizedResolved.startsWith(${hostRootLiteral}))
+  ) {
     throw new Error(
       'WORKSPACE_PATH_ESCAPE: Import "' + source + '" resolves outside workspace root: "' + resolved + '"'
     );

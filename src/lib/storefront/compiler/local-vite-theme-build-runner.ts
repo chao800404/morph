@@ -20,13 +20,13 @@ import type {
   ThemeBuildRunnerResult,
 } from "./theme-build-runner.types";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
-import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 import { createThemePreviewServerStubPlugin } from "./theme-preview-server-stub";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
 import {
   createThemeViteAliases,
   readThemePathAliases,
 } from "./theme-path-aliases";
+import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 
 function getMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
@@ -197,38 +197,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
     // Guard 3: Validate Path Containment and Reserved Paths on all virtual files
     for (const file of input.files) {
-      const normalized = file.path.replace(/\\/g, "/");
-      const segments = normalized.split("/");
-      if (segments.some((segment) => segment.toLowerCase() === "node_modules")) {
-        const msg = `RESERVED_THEME_PATH: Theme files cannot be created inside node_modules: "${file.path}"`;
-        addLog("error", msg);
-        return {
-          success: false,
-          errorMessage: msg,
-          diagnosticsJson: {
-            stage: "security-containment",
-            errors: [{ severity: "error", message: msg }],
-          },
-          logs,
-          durationMs: Date.now() - startTime,
-        };
-      }
-      if (isPlatformOwnedThemeBuildPath(normalized)) {
-        const msg = `RESERVED_THEME_BUILD_PATH: Theme source cannot replace platform-owned build file "${file.path}"`;
-        addLog("error", msg);
-        return {
-          success: false,
-          errorMessage: msg,
-          diagnosticsJson: {
-            stage: "security-containment",
-            errors: [{ severity: "error", message: msg }],
-          },
-          logs,
-          durationMs: Date.now() - startTime,
-        };
-      }
-      if (normalized.startsWith("../") || normalized.includes("/../") || normalized.startsWith("/")) {
-        const msg = `WORKSPACE_PATH_ESCAPE: File path "${file.path}" escapes workspace root`;
+      const refusal = refuseThemeWorkspacePath(file.path);
+      if (refusal) {
+        const msg = refusal.replace("sandbox workspace root", "workspace root");
         addLog("error", msg);
         return {
           success: false,
@@ -472,20 +443,19 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             const rel = path.relative(workspaceRoot, resolved);
             const normalizedResolved = resolved.replace(/\\/g, "/").toLowerCase();
             const normalizedWorkspace = workspaceRoot.replace(/\\/g, "/").toLowerCase();
+            const isNodeModulesPath = normalizedResolved.includes("/node_modules");
 
             if (
-              rel.startsWith("..") ||
-              !normalizedResolved.startsWith(normalizedWorkspace)
+              !isNodeModulesPath &&
+              (rel.startsWith("..") ||
+                !normalizedResolved.startsWith(normalizedWorkspace))
             ) {
               throw new Error(
                 `WORKSPACE_PATH_ESCAPE: Import "${source}" in "${importer ?? "root"}" resolves outside workspace root: "${resolved}"`,
               );
             }
 
-            if (
-              normalizedResolved.includes("/node_modules") ||
-              normalizedResolved.includes("\\node_modules")
-            ) {
+            if (isNodeModulesPath) {
               const normalizedImporter = importer
                 ?.replace(/\\/g, "/")
                 .toLowerCase();

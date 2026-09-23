@@ -190,10 +190,12 @@ import {
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
 import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
-import { rewriteThemeFileImportsForCopy } from "@/lib/storefront/ast/theme-file-move";
 import {
-  preparePageSectionCopy,
-} from "@/lib/storefront/editor/duplicate-theme-file";
+  choosePageSectionSlotId,
+  planPageSectionCopy,
+  planPageSectionRemoval,
+} from "@/lib/storefront/editor/page-section-copy";
+import { isThemeSectionTemplatePath } from "@/lib/storefront/theme-section-convention";
 import {
   toWorkspaceKey,
   themeFileWritePrecondition,
@@ -1557,6 +1559,9 @@ export function VisualEditorShell({
     (state) => state.markSaving,
   );
   const markWorkspaceSaved = useThemeWorkspaceStore((state) => state.markSaved);
+  const discardWorkspaceLocal = useThemeWorkspaceStore(
+    (state) => state.discardLocalChanges,
+  );
   const markWorkspaceError = useThemeWorkspaceStore((state) => state.markError);
   const markWorkspaceConflict = useThemeWorkspaceStore(
     (state) => state.markConflict,
@@ -1936,7 +1941,12 @@ export function VisualEditorShell({
       }
     }
     for (const [path, count] of routeSourceUseCount) {
-      if (count > 1) shared.add(path);
+      // A section library template is shared even when one route renders it:
+      // it is also what every later Add section copies from. A route that
+      // still imports one predates page-owned copies, and gets the same
+      // detach offer as any other shared source instead of a Design edit
+      // that would reach the library.
+      if (count > 1 || isThemeSectionTemplatePath(path)) shared.add(path);
     }
     const nodes =
       previewStructure?.key === previewKey ? previewStructure.nodes : undefined;
@@ -4635,9 +4645,7 @@ export function VisualEditorShell({
   );
 
   const handleDetachSection = useCallback(
-    async (
-      sectionId: string,
-    ): Promise<EditorEditableNodeDeleteResult> => {
+    async (sectionId: string): Promise<EditorEditableNodeDeleteResult> => {
       reportAuthenticatedUserActivity();
 
       if (!activeThemeRoute) {
@@ -4688,34 +4696,32 @@ export function VisualEditorShell({
         };
       }
 
-      const duplicate = preparePageSectionCopy(
-        componentPath,
-        activeThemeRoute.path,
-        effectiveThemeFiles.map((file) => file.path),
-        componentFile.content,
-      );
-      if (!duplicate.ok) {
-        return { success: false, message: duplicate.message };
-      }
-
-      const copiedSource = rewriteThemeFileImportsForCopy({
-        sourcePath: componentPath,
-        targetPath: duplicate.path,
-        content: duplicate.content,
+      // The same folder Add section would have written, so a detached section
+      // and an added one are indistinguishable afterwards.
+      const copyPlan = planPageSectionCopy({
+        entryPath: componentPath,
+        routeSourcePath: activeThemeRoute.sourcePath,
+        slotId: sectionId,
         files: effectiveThemeFiles,
       });
-      if (!copiedSource.ok) {
-        return { success: false, message: copiedSource.reason };
+      if (!copyPlan.ok) {
+        return { success: false, message: copyPlan.message };
       }
 
       const routeSource = routeFile.content;
       const replacement = replaceThemeRouteSectionComponent({
         source: routeSource,
-        files: effectiveThemeFiles,
+        files: [
+          ...effectiveThemeFiles,
+          ...copyPlan.files.map((file) => ({
+            path: file.path,
+            content: file.content,
+          })),
+        ],
         routeSourcePath: activeThemeRoute.sourcePath,
         slotId: sectionId,
         componentSourcePath: componentPath,
-        nextComponentSourcePath: duplicate.path,
+        nextComponentSourcePath: copyPlan.entryPath,
       });
       if (!replacement.changed) {
         return {
@@ -4728,10 +4734,7 @@ export function VisualEditorShell({
 
       const workspaceFiles = useThemeWorkspaceStore
         .getState()
-        .getWorkspaceFiles(
-          workspaceScope.storefrontId,
-          workspaceScope.themeId,
-        );
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
       const routeWorkspaceFile = workspaceFiles[routeFile.path];
       const routePrecondition = routeWorkspaceFile
         ? themeFileWritePrecondition(routeWorkspaceFile)
@@ -4745,12 +4748,12 @@ export function VisualEditorShell({
           storefrontId: workspaceScope.storefrontId,
           themeId: workspaceScope.themeId,
           files: [
-            {
-              path: duplicate.path,
-              content: copiedSource.content,
-              mimeType: duplicate.mimeType,
-              expectMissing: true,
-            },
+            ...copyPlan.files.map((file) => ({
+              path: file.path,
+              content: file.content,
+              mimeType: file.mimeType,
+              expectMissing: true as const,
+            })),
             {
               path: routeFile.path,
               content: replacement.code,
@@ -4779,19 +4782,16 @@ export function VisualEditorShell({
         // Seed the local snapshot before markSaved so the workspace does not
         // retain the pre-detach route as a phantom dirty edit.
         updateWorkspaceLocal(saved.path, saved.content, workspaceScope);
-        markWorkspaceSaved(
-          saved,
-          workspaceScope,
-          result.data.sourceGeneration,
-        );
+        markWorkspaceSaved(saved, workspaceScope, result.data.sourceGeneration);
       }
 
       const previewFiles = effectiveThemeFiles.map((file) => ({
         path: file.path,
-        content:
-          file.path === routeFile.path ? replacement.code : file.content,
+        content: file.path === routeFile.path ? replacement.code : file.content,
       }));
-      previewFiles.push({ path: duplicate.path, content: copiedSource.content });
+      for (const file of copyPlan.files) {
+        previewFiles.push({ path: file.path, content: file.content });
+      }
       postPreviewThemeFiles(previewFiles, {
         renderDocument: true,
         preserveCanvasPosition: true,
@@ -4802,7 +4802,7 @@ export function VisualEditorShell({
           workspaceScope.themeId,
         ).queryKey,
       });
-      toast.success(`Created page-specific copy ${duplicate.path}.`);
+      toast.success(`Created page-specific copy ${copyPlan.entryPath}.`);
       return { success: true };
     },
     [
@@ -4968,19 +4968,124 @@ export function VisualEditorShell({
         };
       }
 
-      try {
-        const saved = await handleUnifiedSaveFile(
-          activeThemeRoute.sourcePath,
-          result.code,
-          { preserveCanvasPosition: true },
-        );
-        if (saved === null) {
+      // A page-owned copy goes with its section, in the same revision as the
+      // route edit, so undoing the removal brings both back together.
+      const removedSection = activeRouteStructure.sections.find(
+        (section) => section.slotId === sectionId,
+      );
+      const removal = removedSection
+        ? planPageSectionRemoval({
+            componentSourcePath: removedSection.componentSourcePath,
+            routeSourcePath: activeThemeRoute.sourcePath,
+            slotId: sectionId,
+            files: effectiveThemeFiles.map((file) =>
+              file.path === routeFile.path
+                ? { path: file.path, content: result.code }
+                : file,
+            ),
+          })
+        : { paths: [] as readonly string[] };
+      const workspaceFiles = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+      const deletions: Array<{
+        path: string;
+        expectedFileId: string;
+        expectedVersion: number;
+      }> = [];
+      for (const path of removal.paths) {
+        const workspaceFile = workspaceFiles[path];
+        // Unsaved edits are in no revision yet, so deleting the file would lose
+        // them for good rather than for one undo.
+        if (workspaceFile?.dirty) {
           return {
             success: false,
-            message:
-              "Could not delete the section because the source changed remotely.",
+            message: `${path} has unsaved changes. Save or discard them before removing this section.`,
           };
         }
+        const serverFile = effectiveThemeFiles.find(
+          (file) => file.path === path,
+        );
+        const expectedFileId = workspaceFile?.serverFileId ?? serverFile?.id;
+        const expectedVersion =
+          workspaceFile?.serverVersion ?? serverFile?.version;
+        if (!expectedFileId || expectedVersion === undefined) {
+          return {
+            success: false,
+            message: `${path} is not saved yet, so this section cannot be removed with it. Save the Theme and try again.`,
+          };
+        }
+        deletions.push({ path, expectedFileId, expectedVersion });
+      }
+
+      try {
+        if (deletions.length === 0) {
+          const saved = await handleUnifiedSaveFile(
+            activeThemeRoute.sourcePath,
+            result.code,
+            { preserveCanvasPosition: true },
+          );
+          if (saved === null) {
+            return {
+              success: false,
+              message:
+                "Could not delete the section because the source changed remotely.",
+            };
+          }
+        } else {
+          const routeWorkspaceFile = workspaceFiles[routeFile.path];
+          const routePrecondition = routeWorkspaceFile
+            ? themeFileWritePrecondition(routeWorkspaceFile)
+            : {
+                expectMissing: false as const,
+                expectedFileId: routeFile.id,
+                expectedVersion: routeFile.version,
+              };
+          const saved = await saveStorefrontThemeFilesBatch({
+            data: {
+              storefrontId: workspaceScope.storefrontId,
+              themeId: workspaceScope.themeId,
+              files: [
+                {
+                  path: routeFile.path,
+                  content: result.code,
+                  mimeType: routeFile.mimeType,
+                  ...routePrecondition,
+                },
+              ],
+              deletions,
+              expectedSourceGeneration: useThemeWorkspaceStore
+                .getState()
+                .getAcceptedSourceGeneration(workspaceScope),
+              createRevision: true,
+              revisionMessage: `Remove section ${sectionId}`,
+            },
+          });
+          if (!saved.success) {
+            return { success: false, message: saved.message };
+          }
+          useThemeWorkspaceStore
+            .getState()
+            .acceptRemoteGeneration(saved.data.sourceGeneration, workspaceScope);
+          for (const savedFile of saved.data.files ?? []) {
+            updateWorkspaceLocal(savedFile.path, savedFile.content, workspaceScope);
+            markWorkspaceSaved(
+              savedFile,
+              workspaceScope,
+              saved.data.sourceGeneration,
+            );
+          }
+          for (const deletion of deletions) {
+            discardWorkspaceLocal(deletion.path, workspaceScope);
+          }
+          await queryClient.invalidateQueries({
+            queryKey: storefrontThemeFileQueries.tree(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            ).queryKey,
+          });
+        }
+        if (removal.keptReason) toast.info(removal.keptReason);
         // A route object captures its component when the preview route tree is
         // assembled. Updating the route module alone is therefore not enough
         // to guarantee that TanStack Router adopts a structural edit. Replan
@@ -5010,14 +5115,20 @@ export function VisualEditorShell({
     },
     [
       activeRouteSections,
+      activeRouteStructure.sections,
       activeTemplate,
       activeThemeRoute,
+      discardWorkspaceLocal,
       effectiveThemeFiles,
       flushTemplatePendingProps,
       layoutTemplate,
       handleUnifiedSaveFile,
+      markWorkspaceSaved,
       onSearchChange,
+      queryClient,
       search.section,
+      updateWorkspaceLocal,
+      workspaceScope,
     ],
   );
 
@@ -5537,39 +5648,121 @@ export function VisualEditorShell({
       );
       if (!routeFile)
         throw new Error("The active route source is unavailable.");
-      const usedSlots = new Set(
-        activeRouteSections.map((section) => section.slotId),
-      );
-      const baseSlot = option.sectionType || "section";
-      let slotId = baseSlot;
-      let suffix = 2;
-      while (usedSlots.has(slotId)) {
-        slotId = `${baseSlot}-${suffix}`;
-        suffix += 1;
+
+      // The slot is chosen first because it names the folder the copy lands in.
+      const slotId = choosePageSectionSlotId({
+        baseSlotId: option.sectionType || "section",
+        usedSlotIds: new Set(
+          activeRouteSections.map((section) => section.slotId),
+        ),
+        routeSourcePath: activeThemeRoute.sourcePath,
+        existingPaths: effectiveThemeFiles.map((file) => file.path),
+      });
+      if (!slotId) {
+        throw new Error("This route cannot hold page-specific sections.");
       }
+      const copyPlan = planPageSectionCopy({
+        entryPath: option.componentSourcePath,
+        routeSourcePath: activeThemeRoute.sourcePath,
+        slotId,
+        files: effectiveThemeFiles,
+      });
+      if (!copyPlan.ok) throw new Error(copyPlan.message);
+      const copiedFiles = copyPlan.files;
       const result = addThemeRouteSection({
         source: routeFile.content,
-        files: effectiveThemeFiles,
+        files: [
+          ...effectiveThemeFiles,
+          ...copiedFiles.map((file) => ({
+            path: file.path,
+            content: file.content,
+          })),
+        ],
         routeSourcePath: activeThemeRoute.sourcePath,
-        option,
+        option: {
+          ...option,
+          componentRef: copyPlan.entryPath,
+          componentSourcePath: copyPlan.entryPath,
+        },
         slotId,
       });
       if (result.diagnostic) throw new Error(result.diagnostic);
       if (!result.changed) return;
-      const saved = await handleUnifiedSaveFile(
-        activeThemeRoute.sourcePath,
-        result.code,
-      );
-      if (saved === null) {
-        throw new Error(
-          "Could not add the section because the source changed remotely.",
+
+      const workspaceFiles = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+      const routeWorkspaceFile = workspaceFiles[routeFile.path];
+      const routePrecondition = routeWorkspaceFile
+        ? themeFileWritePrecondition(routeWorkspaceFile)
+        : {
+            expectMissing: false as const,
+            expectedFileId: routeFile.id,
+            expectedVersion: routeFile.version,
+          };
+      const saved = await saveStorefrontThemeFilesBatch({
+        data: {
+          storefrontId: workspaceScope.storefrontId,
+          themeId: workspaceScope.themeId,
+          files: [
+            ...copiedFiles.map((file) => ({
+              path: file.path,
+              content: file.content,
+              mimeType: file.mimeType,
+              expectMissing: true as const,
+            })),
+            {
+              path: routeFile.path,
+              content: result.code,
+              mimeType: routeFile.mimeType,
+              ...routePrecondition,
+            },
+          ],
+          deletions: [],
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+          createRevision: true,
+          revisionMessage: `Add page-specific copy of ${option.componentSourcePath}`,
+        },
+      });
+      if (!saved.success) throw new Error(saved.message);
+
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(saved.data.sourceGeneration, workspaceScope);
+      for (const savedFile of saved.data.files ?? []) {
+        updateWorkspaceLocal(savedFile.path, savedFile.content, workspaceScope);
+        markWorkspaceSaved(
+          savedFile,
+          workspaceScope,
+          saved.data.sourceGeneration,
         );
       }
+
+      const previewContents = new Map(
+        effectiveThemeFiles.map((file) => [file.path, file.content]),
+      );
+      previewContents.set(routeFile.path, result.code);
+      for (const file of copiedFiles) {
+        previewContents.set(file.path, file.content);
+      }
+      postPreviewThemeFiles(
+        [...previewContents].map(([path, content]) => ({ path, content })),
+        { renderDocument: true, preserveCanvasPosition: true },
+      );
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        ).queryKey,
+      });
       // Adding a section changes the route component itself. Restart through
       // the existing lifecycle owner so the generated route tree and the
       // component captured by it are rebuilt from the landed source.
       dispatchPreviewLifecycle({ type: "manual-recovery" });
       onSearchChange({ section: slotId });
+      toast.success(`Added page-specific section ${copyPlan.entryPath}.`);
     },
     [
       activeRouteSections,
@@ -5578,8 +5771,12 @@ export function VisualEditorShell({
       effectiveThemeFiles,
       flushTemplatePendingProps,
       layoutTemplate,
-      handleUnifiedSaveFile,
+      markWorkspaceSaved,
       onSearchChange,
+      postPreviewThemeFiles,
+      queryClient,
+      updateWorkspaceLocal,
+      workspaceScope,
     ],
   );
 
@@ -7127,9 +7324,7 @@ export function VisualEditorShell({
               ? handleDeleteSection
               : undefined
           }
-          onDetachSection={
-            activeThemeRoute ? handleDetachSection : undefined
-          }
+          onDetachSection={activeThemeRoute ? handleDetachSection : undefined}
           onRenameSection={handleRenameSection}
           onDeleteEditableNode={handleDeleteEditableNode}
         />

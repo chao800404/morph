@@ -486,24 +486,89 @@ export function deriveThemeRouteSections(
  * Read here rather than imported from the AST transformer so this module keeps
  * its single dependency on a file list.
  */
-function readDocumentLayoutPath(
+function deriveDocumentLayoutPathFromRoute(
   files: readonly ThemeSourceFile[],
 ): string | null {
+  const routeFile = files.find((file) => {
+    const path = normalizePath(file.path);
+    return /^src\/routes\/__root\.(?:tsx|jsx|ts|js)$/.test(path);
+  });
+  if (typeof routeFile?.content !== "string") return null;
+
+  let ast: any;
+  try {
+    ast = parse(routeFile.content, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+  } catch {
+    return null;
+  }
+
+  const filePaths = new Set(files.map((file) => normalizePath(file.path)));
+  const layoutImports = new Map<string, string>();
+  for (const statement of ast.program.body ?? []) {
+    if (statement?.type !== "ImportDeclaration") continue;
+    const resolved = resolveLocalImport(
+      normalizePath(routeFile.path),
+      statement.source?.value ?? "",
+      filePaths,
+    );
+    if (typeof resolved !== "string" || !resolved.startsWith("src/layouts/")) {
+      continue;
+    }
+    for (const specifier of statement.specifiers ?? []) {
+      if (specifier?.local?.type === "Identifier") {
+        layoutImports.set(specifier.local.name, resolved);
+      }
+    }
+  }
+
+  const candidates = new Set<string>();
+  walkWithParent(ast.program, null, (node) => {
+    const componentName = jsxIdentifier(node);
+    if (!componentName) return;
+    const sourcePath = layoutImports.get(componentName);
+    if (!sourcePath) return;
+
+    let containsPageOutlet = false;
+    walkWithParent(node.children ?? [], node, (descendant) => {
+      if (
+        descendant?.type === "JSXElement" &&
+        jsxIdentifier(descendant) === "Outlet"
+      ) {
+        containsPageOutlet = true;
+      }
+    });
+    if (containsPageOutlet) candidates.add(sourcePath);
+  });
+
+  return candidates.size === 1 ? [...candidates][0]! : null;
+}
+
+/**
+ * Derives the page shell from the authored root route when the legacy
+ * manifest is absent. A shell is accepted only when the root route imports a
+ * local `src/layouts/*` component that contains the page `Outlet`; ambiguous
+ * layouts intentionally return null so callers can fail closed.
+ */
+export function deriveThemeDocumentLayoutPath(
+  files: readonly ThemeSourceFile[],
+): string | null {
+  const derived = deriveDocumentLayoutPathFromRoute(files);
+  if (derived) return derived;
+
   const manifest = readManifestContent(files);
   if (!manifest) return null;
   try {
     const parsed: unknown = JSON.parse(manifest);
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
     const documentLayout = (parsed as Record<string, unknown>).documentLayout;
     if (
+      !documentLayout ||
       typeof documentLayout !== "object" ||
-      documentLayout === null ||
       Array.isArray(documentLayout)
     ) {
       return null;
@@ -517,6 +582,12 @@ function readDocumentLayoutPath(
   } catch {
     return null;
   }
+}
+
+function readDocumentLayoutPath(
+  files: readonly ThemeSourceFile[],
+): string | null {
+  return deriveThemeDocumentLayoutPath(files);
 }
 
 function readLayoutPageBoundary(
@@ -663,57 +734,20 @@ function resolveRelativeComponentPath(
 export function listThemeRouteSectionOptions(
   files: readonly ThemeSourceFile[],
 ): readonly ThemeRouteSectionOption[] {
-  const manifestSources = readComponentSourcePaths(readManifestContent(files));
-  const sources = new Map(manifestSources);
-  const capabilities = resolveThemeContentCapabilitiesFromFiles(files);
   const rowComponents = readRowComponentPaths(files);
-  for (const componentRef of Object.keys(capabilities.capabilities)) {
-    if (
-      componentRef.startsWith("src/") &&
-      ![...sources.values()].includes(componentRef)
-    ) {
-      sources.set(componentRef, componentRef);
-    }
-  }
-  // A file in the section folder is a candidate without being registered
-  // anywhere. A manifest ref for the same file already claims it — an authored
-  // ref is more specific than a derived one — so the derived entry is dropped
-  // rather than listed beside it.
-  const sectionEntries = new Map(
-    listThemeSectionEntries(files).map(
-      (entry) => [entry.componentSourcePath, entry] as const,
-    ),
-  );
-  const claimedSources = new Set([...sources.values()].map(normalizePath));
-  for (const [componentSourcePath, entry] of sectionEntries) {
-    if (claimedSources.has(componentSourcePath)) continue;
-    sources.set(entry.componentRef, entry.componentSourcePath);
-  }
-  return [...sources.entries()]
-    .map(([componentRef, sourcePath]) => {
-      const normalized = normalizePath(sourcePath);
-      const basename = normalized
-        .slice(normalized.lastIndexOf("/") + 1)
-        .replace(/\.[^.]+$/, "");
-      // The convention names an `index.tsx` entry after its folder, because
-      // `index` is the one name the route's import could not use. Every other
-      // shape derives the same name either way.
-      const entry = sectionEntries.get(normalized);
-      return {
-        componentRef,
-        sectionType:
-          entry?.sectionType ?? sectionTypeFromRef(componentRef, basename),
-        componentName:
-          entry?.componentName ??
-          (basename.replace(/[^a-zA-Z0-9_$]/g, "") || "Section"),
-        componentSourcePath: normalized,
-      };
-    })
+  // Add section is deliberately driven by the source folder convention. The
+  // manifest still participates in capability resolution above so existing
+  // route slots and legacy content fields keep working, but a component must
+  // opt into the Add section library by living at a recognized section entry.
+  return listThemeSectionEntries(files)
+    .map((entry) => ({
+      componentRef: entry.componentRef,
+      sectionType: entry.sectionType,
+      componentName: entry.componentName,
+      componentSourcePath: entry.componentSourcePath,
+    }))
     .filter(
       (option) =>
-        files.some(
-          (file) => normalizePath(file.path) === option.componentSourcePath,
-        ) &&
         !rowComponents.has(option.componentSourcePath) &&
         !rowComponents.has(
           option.componentSourcePath.replace(/\.(tsx|jsx)$/, ""),

@@ -3,6 +3,7 @@ import {
   buildThemeRouteRegistry,
   type ThemeRouteRecord,
 } from "./theme-route-registry";
+import { deriveThemeSourceRouterFramework } from "../theme-source-runtime-contract";
 
 export type ThemeBuildBootstrap = {
   content: string;
@@ -12,6 +13,11 @@ export type ThemeBuildBootstrap = {
 function readRouterFramework(
   files: readonly ThemeCompilerFile[],
 ): string | null {
+  // Source is the primary contract for migrated Themes. The manifest branch
+  // below remains as a compatibility fallback for legacy source revisions.
+  const sourceFramework = deriveThemeSourceRouterFramework(files);
+  if (sourceFramework) return sourceFramework;
+
   const manifest = files.find((file) => file.path === "morph.theme.json");
   if (!manifest) return null;
   try {

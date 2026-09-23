@@ -3,10 +3,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type RefObject } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import type {
+  StorefrontThemeFileDTO,
+  StorefrontThemeFileTreeNode,
+} from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import {
+  applyThemeManifestMigrationServerFn,
   deleteStorefrontThemeFile,
+  previewThemeManifestMigration,
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -37,7 +42,9 @@ vi.mock(
     ...(await importOriginal<
       typeof import("@/server/storefront/storefront-theme-files.serverFn")
     >()),
+    applyThemeManifestMigrationServerFn: vi.fn(),
     deleteStorefrontThemeFile: vi.fn(),
+    previewThemeManifestMigration: vi.fn(),
     saveStorefrontThemeFile: vi.fn(),
     saveStorefrontThemeFilesBatch: vi.fn(),
   }),
@@ -169,7 +176,18 @@ const file: StorefrontThemeFileDTO = {
   updatedAt: "2026-01-01T00:00:00Z",
 };
 
+const legacyManifestFile: StorefrontThemeFileDTO = {
+  ...file,
+  id: "manifest-1",
+  path: "morph.theme.json",
+  content: '{"version":1}',
+  mimeType: "application/json",
+  isEntry: false,
+};
+
 function renderWorkspace(props?: {
+  files?: StorefrontThemeFileDTO[];
+  tree?: StorefrontThemeFileTreeNode[];
   workspaceRef?: RefObject<EditorCodeWorkspaceHandle | null>;
   onSaveFile?: (
     path: string,
@@ -190,14 +208,16 @@ function renderWorkspace(props?: {
         ref={props?.workspaceRef}
         storefrontId="store-1"
         themeId="theme-1"
-        files={[file]}
-        tree={[
-          {
-            name: "Hero.tsx",
-            path: file.path,
-            isDirectory: false,
-          },
-        ]}
+        files={props?.files ?? [file]}
+        tree={
+          props?.tree ?? [
+            {
+              name: "Hero.tsx",
+              path: file.path,
+              isDirectory: false,
+            },
+          ]
+        }
         onSaveFile={props?.onSaveFile}
         onRestartPreview={props?.onRestartPreview}
         onDirtyFilesChange={props?.onDirtyFilesChange}
@@ -225,6 +245,8 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
       themeId: "theme-1",
     });
     vi.mocked(deleteStorefrontThemeFile).mockReset();
+    vi.mocked(applyThemeManifestMigrationServerFn).mockReset();
+    vi.mocked(previewThemeManifestMigration).mockReset();
     vi.mocked(configureThemeTypeScript).mockClear();
     vi.mocked(formatEditorCode).mockClear();
     monacoTestState.formatter = null;
@@ -628,6 +650,69 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
     expect(deleteStorefrontThemeFile).not.toHaveBeenCalled();
+  });
+
+  it("previews and applies the server-owned legacy manifest migration", async () => {
+    vi.mocked(previewThemeManifestMigration).mockResolvedValue({
+      success: true,
+      message: "Legacy manifest migration is ready",
+      data: {
+        status: "ready",
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        sourceGeneration: 7,
+        manifestFile: { id: legacyManifestFile.id, version: 1 },
+        sourceFilesBefore: [],
+        sourceFilesAfter: [],
+        sourceIndexAfter: {
+          status: "complete",
+          key: "source-index-key",
+          diagnostics: [],
+        },
+        documentUpdates: [],
+        historicalLegacyRefs: [],
+        warnings: [],
+        rewriteCount: 1,
+        blockers: [],
+        report: null,
+      },
+    } as never);
+    vi.mocked(applyThemeManifestMigrationServerFn).mockResolvedValue({
+      success: true,
+      message: "Legacy theme manifest migrated",
+      data: {
+        status: "applied",
+        sourceGeneration: 8,
+        rewriteCount: 1,
+        deletedPath: "morph.theme.json",
+      },
+    } as never);
+    const onRestartPreview = vi.fn();
+    renderWorkspace({
+      files: [file, legacyManifestFile],
+      onRestartPreview,
+    });
+
+    const migrateButton = await screen.findByRole("button", {
+      name: "Migrate legacy theme manifest",
+    });
+    await waitFor(() =>
+      expect(migrateButton.hasAttribute("disabled")).toBe(false),
+    );
+    fireEvent.click(migrateButton);
+    expect(
+      await screen.findByText("Document references to rewrite"),
+    ).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove manifest" }),
+    );
+    await waitFor(() =>
+      expect(applyThemeManifestMigrationServerFn).toHaveBeenCalledWith({
+        data: { storefrontId: "store-1", themeId: "theme-1" },
+      }),
+    );
+    expect(onRestartPreview).toHaveBeenCalledTimes(1);
   });
 });
 

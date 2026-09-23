@@ -48,6 +48,32 @@ import {
 } from "./compiler/theme-start-toolchain";
 
 /**
+ * Compatibility entry files for the original Starter Theme layout.
+ *
+ * The original starter keeps its implementation files in `src/components/`
+ * because that path predates the section-folder convention. These tiny entry
+ * modules make the convention available to existing and newly bootstrapped
+ * Starter Themes without moving or rewriting authored implementation files.
+ * They also re-export the implementation's content contract, so the editor
+ * sees the same fields after a section is added through the library.
+ */
+const STARTER_THEME_SECTION_ENTRY_COMPONENTS = [
+  "Hero",
+  "EditorialIntro",
+  "CategoryShowcase",
+  "ImageWithText",
+  "Principles",
+  "Newsletter",
+] as const;
+
+const STARTER_THEME_SECTION_ENTRY_FILES =
+  STARTER_THEME_SECTION_ENTRY_COMPONENTS.map((componentName) => ({
+    path: `src/components/sections/${componentName}.tsx`,
+    mimeType: "text/typescript",
+    content: `export { contentFields, default } from "../${componentName}";\n`,
+  }));
+
+/**
  * The hero before its destination became one `link` field.
  *
  * Same shape as the split section it sat above: `actionHref` plus
@@ -142,7 +168,7 @@ export default function Hero({
 }
 `;
 
-export const STARTER_THEME_FILES: Array<{
+const STARTER_THEME_FILES_WITH_MANIFEST: Array<{
   path: string;
   content: string;
   mimeType: string;
@@ -374,6 +400,7 @@ export default function Principles({
 }
 `,
   },
+  ...STARTER_THEME_SECTION_ENTRY_FILES,
   {
     path: "src/components/Footer.tsx",
     mimeType: "text/typescript",
@@ -493,6 +520,18 @@ export default function Principles({
   },
 ];
 
+/**
+ * New workspaces are source-first and do not author morph.theme.json. Keep the
+ * old catalog available only as an explicit compatibility oracle for upgrades
+ * and shadow comparisons of existing workspaces.
+ */
+export const STARTER_THEME_FILES = STARTER_THEME_FILES_WITH_MANIFEST.filter(
+  (file) => file.path !== "morph.theme.json",
+);
+
+export const STARTER_THEME_FILES_WITH_LEGACY_MANIFEST =
+  STARTER_THEME_FILES_WITH_MANIFEST;
+
 type ExistingStarterThemeFile = {
   id: string;
   path: string;
@@ -539,7 +578,10 @@ export function createStarterThemeWorkspaceBootstrapPlan(
   const upgradePlan = createStarterThemeWorkspaceUpgradePlan(existingFiles);
   const plannedPaths = new Set(upgradePlan.files.map((file) => file.path));
   const targetByPath = new Map(
-    STARTER_THEME_FILES.map((file) => [file.path, file]),
+    STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.map((file) => [
+      file.path,
+      file,
+    ]),
   );
 
   // `createStarterThemeWorkspaceUpgradePlan` already knows how to migrate
@@ -869,7 +911,10 @@ export function createStarterThemeWorkspaceUpgrade(
     existingFiles.map((file) => [file.path, file]),
   );
   const targetByPath = new Map(
-    STARTER_THEME_FILES.map((file) => [file.path, file]),
+    STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.map((file) => [
+      file.path,
+      file,
+    ]),
   );
   const upgrades: StarterThemeWorkspaceUpgradeFile[] = [];
 
@@ -1060,6 +1105,19 @@ export function createStarterThemeWorkspaceUpgrade(
   }
 
   for (const file of STARTER_THEME_V3_NEW_FILES) {
+    if (existingByPath.has(file.path)) continue;
+    upgrades.push({
+      path: file.path,
+      content: file.content,
+      mimeType: file.mimeType,
+      expectMissing: true,
+    });
+  }
+
+  // Existing Starter workspaces also need the section-folder entry points.
+  // They are additive adapters, so authored implementation files stay where
+  // they are and are never replaced or moved by this upgrade.
+  for (const file of STARTER_THEME_SECTION_ENTRY_FILES) {
     if (existingByPath.has(file.path)) continue;
     upgrades.push({
       path: file.path,

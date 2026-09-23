@@ -116,6 +116,39 @@ export default function Hero() { return <Card className={cn("hero")} />; }`,
     ]);
   });
 
+  it("rewrites imports between files copied as one section bundle", () => {
+    const result = rewriteThemeFileImportsForCopy({
+      sourcePath: "src/components/sections/featured/index.tsx",
+      targetPath: "src/components/page-sections/home/featured/index.tsx",
+      content: `import Card from "./Card";
+export default function Featured() { return <Card />; }`,
+      files: [
+        {
+          path: "src/components/sections/featured/index.tsx",
+          content: "",
+        },
+        { path: "src/components/sections/featured/Card.tsx", content: "" },
+      ],
+      pathMap: new Map([
+        [
+          "src/components/sections/featured/index.tsx",
+          "src/components/page-sections/home/featured/index.tsx",
+        ],
+        [
+          "src/components/sections/featured/Card.tsx",
+          "src/components/page-sections/home/featured/Card.tsx",
+        ],
+      ]),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: expect.stringContaining('"./Card"'),
+    });
+    if (!result.ok) return;
+    expect(result.rewrites).toEqual([]);
+  });
+
   it("fails closed when the copied component is not valid source", () => {
     const result = rewriteThemeFileImportsForCopy({
       sourcePath: "src/components/Hero.tsx",

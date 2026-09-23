@@ -21,6 +21,8 @@ describe("what may be written into a container workspace", () => {
       "../etc/passwd",
       "src/../../escape.tsx",
       "/etc/passwd",
+      "C:/Users/example/escape.tsx",
+      "//server/share/escape.tsx",
     ]) {
       expect(refuseThemeWorkspacePath(path)).toContain("WORKSPACE_PATH_ESCAPE");
     }
