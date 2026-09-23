@@ -1269,10 +1269,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const isDomOnlyNestedTarget =
     activeSelectionIsSection === false && !targetElementMeta;
   const hasSyntaxError = parsedMeta ? !parsedMeta.parseOk : false;
+  // Locked up front rather than refused on write: the canvas previews a style
+  // before it is committed, so a control that looks usable here would show a
+  // change the shell then declines to save.
+  const isSectionTemplateSource = Boolean(
+    componentPath && sectionTemplatePaths?.has(componentPath),
+  );
   const sourceStyleLocked =
     hasSyntaxError ||
     (isDynamicClassName && !instanceExpressionEditable) ||
-    isDomOnlyNestedTarget;
+    isDomOnlyNestedTarget ||
+    isSectionTemplateSource;
   const visibleModules = new Set(
     resolveInspectorModules({
       kind: selectedKind,
@@ -2191,8 +2198,29 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       )}
 
+      {/* Section library template banner */}
+      {!hasSyntaxError && isSectionTemplateSource && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
+          <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+          <div className="space-y-1">
+            <div className="font-semibold text-xs leading-none">
+              {SECTION_TEMPLATE_LABEL}
+            </div>
+            <p className="text-[11px] opacity-90 leading-relaxed">
+              {componentPath?.split("/").pop()} is section library source, so
+              styling it here would change what every later Add section copies.
+              Right-click the section in the tree and choose{" "}
+              <strong>Create page copy</strong> to style it on this page only.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Dynamic ClassName (Code-controlled) Banner */}
-      {!hasSyntaxError && isDynamicClassName && !instanceExpressionEditable && (
+      {!hasSyntaxError &&
+        !isSectionTemplateSource &&
+        isDynamicClassName &&
+        !instanceExpressionEditable && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
           <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
           <div className="space-y-1">
