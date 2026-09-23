@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readThemeFileImportTargets } from "./ast/theme-file-move";
 import { deriveThemeRouteSections } from "./compiler/theme-route-sections";
 import { listSectionTemplateSourcePaths } from "./editor/page-section-copy";
 import {
@@ -46,6 +47,44 @@ describe("Starter home on page-owned sections", () => {
     expect(
       files.some((file) => file.path === "src/components/sections/Hero.tsx"),
     ).toBe(true);
+  });
+
+  it("keeps the section implementations in the library itself", () => {
+    const files = starterThemeWorkspaceFiles();
+    const paths = new Set(files.map((file) => file.path));
+    for (const name of [
+      "Hero",
+      "EditorialIntro",
+      "CategoryShowcase",
+      "ImageWithText",
+      "Principles",
+      "Newsletter",
+    ]) {
+      expect(paths.has(`src/components/${name}.tsx`)).toBe(false);
+      const entry = files.find(
+        (file) => file.path === `src/components/sections/${name}.tsx`,
+      );
+      expect(entry?.content).toContain("export default function");
+    }
+  });
+
+  it("leaves no import pointing at a file the workspace does not have", () => {
+    const files = starterThemeWorkspaceFiles();
+    const paths = new Set(files.map((file) => file.path));
+    const broken: string[] = [];
+    for (const file of files) {
+      if (!/\.(tsx|ts)$/.test(file.path)) continue;
+      const targets = readThemeFileImportTargets(file.path, file.content, paths);
+      expect(targets, `${file.path} parses`).not.toBeNull();
+      for (const target of targets ?? []) {
+        // The route tree is generated at build time, never stored.
+        if (target.specifier.endsWith("/routeTree.gen")) continue;
+        if (target.specifier.startsWith(".") && target.resolvedPath === null) {
+          broken.push(`${file.path} -> ${target.specifier}`);
+        }
+      }
+    }
+    expect(broken).toEqual([]);
   });
 
   it("copies the implementation, not the library's re-export", () => {

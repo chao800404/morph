@@ -47,16 +47,19 @@ import {
   THEME_START_RUNTIME_DEPENDENCIES,
 } from "./compiler/theme-start-toolchain";
 import { planAdoptPageOwnedSections } from "./editor/page-section-copy";
+import { planThemeFileMove } from "./ast/theme-file-move";
 
 /**
  * Compatibility entry files for the original Starter Theme layout.
  *
- * The original starter keeps its implementation files in `src/components/`
- * because that path predates the section-folder convention. These tiny entry
- * modules make the convention available to existing and newly bootstrapped
- * Starter Themes without moving or rewriting authored implementation files.
- * They also re-export the implementation's content contract, so the editor
- * sees the same fields after a section is added through the library.
+ * Existing Starter workspaces keep their implementation files in
+ * `src/components/`, because that path predates the section-folder convention
+ * and their upgrades recognise Starter source by its bytes there. These tiny
+ * entry modules make the convention available to them without moving or
+ * rewriting authored files, and re-export the content contract so the editor
+ * sees the same fields after a section is added through the library. New
+ * workspaces do not get them: their library holds the implementations
+ * themselves (see `starterThemeFilesWithLibraryImplementations`).
  */
 const STARTER_THEME_SECTION_ENTRY_COMPONENTS = [
   "Hero",
@@ -557,15 +560,85 @@ export const STARTER_THEME_FILES_WITH_LEGACY_MANIFEST =
  */
 function planStarterHomeAdoption(
   files: ReadonlyArray<{ path: string; content: string }>,
+  starter: Readonly<{
+    homeRouteSource: string;
+    sectionSources: ReadonlySet<string>;
+  }> = {
+    homeRouteSource: STARTER_THEME_HOME_ROUTE_SOURCE,
+    sectionSources: STARTER_HOME_SECTION_SOURCES,
+  },
 ) {
   const home = files.find((file) => file.path === STARTER_HOME_ROUTE_PATH);
-  if (home?.content !== STARTER_THEME_HOME_ROUTE_SOURCE) return null;
+  if (home?.content !== starter.homeRouteSource) return null;
   const plan = planAdoptPageOwnedSections({
     files,
     routeSourcePath: STARTER_HOME_ROUTE_PATH,
-    shouldAdopt: (path) => STARTER_HOME_SECTION_SOURCES.has(path),
+    shouldAdopt: (path) => starter.sectionSources.has(path),
   });
   return plan.ok && plan.adoptedSlotIds.length > 0 ? plan : null;
+}
+
+type StarterThemeFile = (typeof STARTER_THEME_FILES)[number];
+
+/**
+ * The Starter with its section implementations in the section library.
+ *
+ * `src/components/<Name>.tsx` plus a one-line re-export in `sections/` is how
+ * the Starter joined the convention without moving anything an existing
+ * workspace already has. A new workspace has nothing to preserve, so its
+ * library holds the implementations themselves: one file per section, found
+ * where the convention says, with every import that reached the old path
+ * pointed at the new one by the same planner Code mode moves files with.
+ *
+ * Existing workspaces keep the old shape. Their upgrades recognise Starter
+ * source by its bytes at `src/components/`, and moving an author's files is not
+ * something an upgrade does.
+ */
+function starterThemeFilesWithLibraryImplementations(): StarterThemeFile[] {
+  const entryPaths = new Set(
+    STARTER_THEME_SECTION_ENTRY_FILES.map((file) => file.path),
+  );
+  const withoutEntries = STARTER_THEME_FILES.filter(
+    (file) => !entryPaths.has(file.path),
+  );
+  const moved = planThemeFileMove(
+    withoutEntries.map((file) => ({ path: file.path, content: file.content })),
+    STARTER_THEME_SECTION_ENTRY_COMPONENTS.map((componentName) => ({
+      from: `src/components/${componentName}.tsx`,
+      to: `src/components/sections/${componentName}.tsx`,
+    })),
+  );
+  if (!moved.ok) {
+    throw new Error(`The Starter sections could not move: ${moved.reason}`);
+  }
+  const deleted = new Set(moved.deletions);
+  const writes = new Map(moved.writes.map((file) => [file.path, file]));
+  const mimeTypeByPath = new Map(
+    withoutEntries.map((file) => [file.path, file.mimeType]),
+  );
+  const result: StarterThemeFile[] = [];
+  for (const file of withoutEntries) {
+    if (deleted.has(file.path)) continue;
+    const write = writes.get(file.path);
+    result.push(write ? { ...file, content: write.content } : file);
+    writes.delete(file.path);
+  }
+  // What is left are the moved files, at the paths they now live at.
+  for (const write of writes.values()) {
+    const from = STARTER_THEME_SECTION_ENTRY_COMPONENTS.map(
+      (componentName) => `src/components/${componentName}.tsx`,
+    ).find(
+      (path) =>
+        write.path ===
+        path.replace("src/components/", "src/components/sections/"),
+    );
+    result.push({
+      path: write.path,
+      content: write.content,
+      mimeType: (from && mimeTypeByPath.get(from)) ?? "text/typescript",
+    });
+  }
+  return result;
 }
 
 let starterThemeWorkspaceFilesCache:
@@ -585,12 +658,23 @@ export function starterThemeWorkspaceFiles(): ReadonlyArray<
   (typeof STARTER_THEME_FILES)[number]
 > {
   if (starterThemeWorkspaceFilesCache) return starterThemeWorkspaceFilesCache;
-  const adoption = planStarterHomeAdoption(STARTER_THEME_FILES);
+  const files = starterThemeFilesWithLibraryImplementations();
+  const home = files.find((file) => file.path === STARTER_HOME_ROUTE_PATH);
+  const adoption = home
+    ? planStarterHomeAdoption(files, {
+        homeRouteSource: home.content,
+        sectionSources: new Set(
+          STARTER_THEME_SECTION_ENTRY_COMPONENTS.map(
+            (componentName) => `src/components/sections/${componentName}.tsx`,
+          ),
+        ),
+      })
+    : null;
   if (!adoption) {
     throw new Error("The Starter home route could not adopt page-owned sections.");
   }
   starterThemeWorkspaceFilesCache = [
-    ...STARTER_THEME_FILES.map((file) =>
+    ...files.map((file) =>
       file.path === STARTER_HOME_ROUTE_PATH
         ? { ...file, content: adoption.routeContent }
         : file,
@@ -697,6 +781,18 @@ export type StarterThemeWorkspaceUpgradePlan = {
 export function createStarterThemeWorkspaceBootstrapPlan(
   existingFiles: ExistingStarterThemeFile[],
 ): StarterThemeWorkspaceUpgradePlan {
+  // Nothing to preserve, so the same workspace a new store starts with.
+  if (existingFiles.length === 0) {
+    return {
+      files: starterThemeWorkspaceFiles().map((file) => ({
+        path: file.path,
+        content: file.content,
+        mimeType: file.mimeType,
+        expectMissing: true,
+      })),
+      deletions: [],
+    };
+  }
   const existingByPath = new Map(
     existingFiles.map((file) => [file.path, file]),
   );
