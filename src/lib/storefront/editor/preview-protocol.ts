@@ -373,6 +373,16 @@ export type PreviewToEditorMessage =
   | {
       type: "morph:storefront-preview-structure";
       nodes: readonly PreviewEditableNode[];
+      /**
+       * The route pattern the page was rendering when it reported, as its
+       * router matched it (`/aboutus`, `/products/$slug`).
+       *
+       * A preview starts on `/` and navigates to the route the editor asked
+       * for, reporting along the way; without this the editor filed the home
+       * page's nodes under whichever route was selected. Absent from a page
+       * with no router to ask, which is then taken at its word as before.
+       */
+      routePath?: string;
     }
   | {
       type: "morph:storefront-preview-theme-files-applied";
@@ -952,7 +962,13 @@ export function parsePreviewToEditorMessage(
         : null;
     case "morph:storefront-preview-structure": {
       const nodes = parsePreviewEditableNodes(value.nodes);
-      return nodes ? { type: value.type, nodes } : null;
+      if (!nodes) return null;
+      if (value.routePath === undefined) return { type: value.type, nodes };
+      return typeof value.routePath === "string" &&
+        value.routePath.startsWith("/") &&
+        value.routePath.length <= 512
+        ? { type: value.type, nodes, routePath: value.routePath }
+        : null;
     }
     case "morph:storefront-preview-theme-files-applied":
     case "morph:storefront-preview-theme-files-failed":

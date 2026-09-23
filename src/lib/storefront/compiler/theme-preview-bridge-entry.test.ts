@@ -327,6 +327,18 @@ describe("changing which page the editor is showing", () => {
     expect(BRIDGE).toContain("if (router) {");
   });
 
+  it("names the route each structure report describes", () => {
+    // The editor sets aside a report from the route the preview booted on.
+    const report = BRIDGE.slice(BRIDGE.indexOf("function reportStructure"));
+    expect(report).toContain("const routePath = currentRoutePattern();");
+    expect(report).toContain("...(routePath ? { routePath } : {})");
+    expect(BRIDGE).toContain("window.__morphPreviewRouter?.state?.matches");
+  });
+
+  it("reports again once the router has arrived", () => {
+    expect(BRIDGE).toContain(".then(() => reportStructure())");
+  });
+
   it("drops selection and re-reads the page it lands on", () => {
     // A different route is a different set of elements entirely.
     const routing = BRIDGE.slice(BRIDGE.indexOf("__morphPreviewRouter"));

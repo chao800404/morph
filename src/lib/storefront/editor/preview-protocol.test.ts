@@ -265,6 +265,25 @@ describe("preview protocol", () => {
         nodes,
       }),
     ).toEqual({ type: "morph:storefront-preview-structure", nodes });
+    // The route the page was on when it reported travels with the nodes.
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes,
+        routePath: "/products/$slug",
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-structure",
+      nodes,
+      routePath: "/products/$slug",
+    });
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes,
+        routePath: "javascript:alert(1)",
+      }),
+    ).toBeNull();
     expect(
       (
         parsePreviewToEditorMessage({
