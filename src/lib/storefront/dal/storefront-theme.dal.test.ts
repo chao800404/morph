@@ -422,6 +422,240 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
     });
   });
 
+  it("validates a page-owned copy against its own fields, not the stored template ref", async () => {
+    const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+    const route = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/page-sections/index/hero/index";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><Hero {...content("hero")} /></main>; }`;
+    const template = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero({ heading = "Hero" }) { return <h1>{heading}</h1>; }`;
+    // The copy has grown a field its template never declared.
+    const copy = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+  badge: { type: "text", label: "Badge" },
+} as const;
+export default function Hero({ heading = "Hero", badge = "" }) {
+  return <h1>{heading}<small>{badge}</small></h1>;
+}`;
+    const insertFile = sqlite.prepare(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, created_at, updated_at)
+      VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+    `);
+    insertFile.run("file-root", "src/routes/__root.tsx", root);
+    insertFile.run("file-route", "src/routes/index.tsx", route);
+    insertFile.run("file-template", "src/components/Hero.tsx", template);
+    insertFile.run(
+      "file-copy",
+      "src/components/page-sections/index/hero/index.tsx",
+      copy,
+    );
+    // Stored before the section moved onto its copy: it still names the template.
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-home', 'theme-a', 'index', 'Home', ?, 'now', 'now')`,
+      )
+      .run(
+        JSON.stringify({
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              componentRef: "src/components/Hero.tsx",
+              enabled: true,
+              props: { heading: "Stored" },
+            },
+          ],
+        }),
+      );
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-home",
+      sectionId: "hero",
+      props: { badge: "New" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result?.document.sections[0]).toMatchObject({
+      id: "hero",
+      componentRef: "src/components/page-sections/index/hero/index.tsx",
+      props: { heading: "Stored", badge: "New" },
+    });
+  });
+
+  describe("checks a write against the route the editor names", () => {
+    const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+    const routeRendering = (routeId: string, component: string) =>
+      `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/${component}";
+export const Route = createFileRoute("${routeId}")({ component: Page });
+function Page() { return <main><Hero {...content("hero")} /></main>; }`;
+    const component = (fields: string) => `export const contentFields = {
+  ${fields}
+} as const;
+export default function Hero() { return <h1 />; }`;
+
+    const seedProductRoutes = () => {
+      const insertFile = sqlite.prepare(`
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+      `);
+      insertFile.run("f-root", "src/routes/__root.tsx", root);
+      // One template, two routes, a different component behind the same slot.
+      insertFile.run(
+        "f-list",
+        "src/routes/products.index.tsx",
+        routeRendering("/products/", "ListHero"),
+      );
+      insertFile.run(
+        "f-detail",
+        "src/routes/products.$slug.tsx",
+        routeRendering("/products/$slug", "DetailHero"),
+      );
+      insertFile.run(
+        "f-list-hero",
+        "src/components/ListHero.tsx",
+        component(`heading: { type: "text", label: "Heading" },`),
+      );
+      insertFile.run(
+        "f-detail-hero",
+        "src/components/DetailHero.tsx",
+        component(`heading: { type: "text", label: "Heading" },
+  badge: { type: "text", label: "Badge" },`),
+      );
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_templates
+            (id, theme_id, type, name, document, created_at, updated_at)
+          VALUES ('template-product', 'theme-a', 'product', 'Product', ?, 'now', 'now')`,
+        )
+        .run(
+          JSON.stringify({
+            version: 1,
+            sections: [
+              {
+                id: "hero",
+                type: "hero",
+                componentRef: "src/components/DetailHero.tsx",
+                enabled: true,
+                props: {},
+              },
+            ],
+          }),
+        );
+    };
+
+    const write = (props: Record<string, unknown>, routePath?: string) =>
+      storefrontThemeDal.updateSectionProps({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-product",
+        sectionId: "hero",
+        props,
+        expectedDraftGeneration: 1,
+        createdBy: "user-1",
+        ...(routePath ? { routePath } : {}),
+      });
+
+    it("uses the component the named route renders", async () => {
+      seedProductRoutes();
+      // The listing never declared `badge`, so it is not accepted there even
+      // though the detail route's hero would take it.
+      const result = await write({ heading: "All", badge: "x" }, "/products");
+      expect(result?.document.sections[0]).toMatchObject({
+        componentRef: "src/components/ListHero.tsx",
+        props: { heading: "All" },
+      });
+      expect(result?.document.sections[0]?.props).not.toHaveProperty("badge");
+    });
+
+    it("refuses a route that does not belong to the template", async () => {
+      seedProductRoutes();
+      await expect(write({ heading: "x" }, "/")).resolves.toBeNull();
+      await expect(
+        write({ heading: "x" }, "/products/$slug/missing"),
+      ).resolves.toBeNull();
+    });
+  });
+
+  it("checks a layout write against the component the layout renders", async () => {
+    const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+import StorefrontLayout from "../layouts/StorefrontLayout";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <StorefrontLayout><Outlet /></StorefrontLayout>; }`;
+    const layout = `import { Outlet } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Header from "../components/SiteHeader";
+export default function StorefrontLayout() {
+  return <div><Header {...content("header")} /><Outlet /></div>;
+}`;
+    const header = `export const contentFields = {
+  brand: { type: "text", label: "Brand" },
+  tagline: { type: "text", label: "Tagline" },
+} as const;
+export default function SiteHeader() { return <header />; }`;
+    const insertFile = sqlite.prepare(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, created_at, updated_at)
+      VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+    `);
+    insertFile.run("l-root", "src/routes/__root.tsx", root);
+    insertFile.run("l-layout", "src/layouts/StorefrontLayout.tsx", layout);
+    insertFile.run("l-header", "src/components/SiteHeader.tsx", header);
+    // Stored while the layout still rendered a header this Theme has removed.
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-layout', 'theme-a', 'layout', 'Layout', ?, 'now', 'now')`,
+      )
+      .run(
+        JSON.stringify({
+          version: 1,
+          sections: [
+            {
+              id: "header",
+              type: "header",
+              componentRef: "src/components/Header.tsx",
+              enabled: true,
+              props: { brand: "Old" },
+            },
+          ],
+        }),
+      );
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-layout",
+      sectionId: "header",
+      props: { tagline: "New" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result?.document.sections[0]).toMatchObject({
+      componentRef: "src/components/SiteHeader.tsx",
+      props: { brand: "Old", tagline: "New" },
+    });
+  });
+
   it("publishes template document and updates publishedRevisionId", async () => {
     const draftDocument = JSON.stringify({
       version: 1,

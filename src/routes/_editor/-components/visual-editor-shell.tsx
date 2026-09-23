@@ -1,4 +1,7 @@
-import { commitPendingContent } from "@/lib/storefront/editor/pending-content-write";
+import {
+  commitPendingContent,
+  type PendingContentEntry,
+} from "@/lib/storefront/editor/pending-content-write";
 import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
 import { rebaseContentProps } from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
@@ -866,7 +869,7 @@ export function VisualEditorShell({
     Map<string, ReturnType<typeof setTimeout>>
   >(new Map());
   const pendingPropsMapRef = useRef<
-    Map<string, { sectionId: string; props: Record<string, unknown> }>
+    Map<string, PendingContentEntry>
   >(new Map());
   /** Section props as they stood when the current debounce window opened. */
   const pendingPropsBaselineRef = useRef<Map<string, Record<string, unknown>>>(
@@ -884,6 +887,7 @@ export function VisualEditorShell({
       props: Record<string, unknown>;
       expectedDraftGeneration: number;
       templateId?: string;
+      routePath?: string;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return updateStorefrontThemeSectionProps({
@@ -894,6 +898,7 @@ export function VisualEditorShell({
           sectionId: variables.sectionId,
           props: variables.props,
           expectedDraftGeneration: variables.expectedDraftGeneration,
+          ...(variables.routePath ? { routePath: variables.routePath } : {}),
         },
       });
     },
@@ -1014,6 +1019,7 @@ export function VisualEditorShell({
                 sectionId: entry.sectionId,
                 props: entry.props,
                 expectedDraftGeneration: generation,
+                routePath: entry.routePath,
               }),
             ),
           onSaved: recordHistory
@@ -1084,6 +1090,7 @@ export function VisualEditorShell({
 
       pendingPropsMapRef.current.set(key, {
         sectionId: pending.sectionId,
+        routePath: pending.routePath,
         props: rebaseContentProps({
           incoming,
           baseline: pendingPropsBaselineRef.current.get(key) ?? {},
@@ -1845,6 +1852,19 @@ export function VisualEditorShell({
   const layoutTemplate = useMemo(
     () => context.templates.find((template) => template.type === "layout"),
     [context.templates],
+  );
+  /**
+   * The route a content write to this template was made on.
+   *
+   * Read when the edit is queued, not when it is sent: a debounced write can
+   * land after the author has moved to another page, and the server checks it
+   * against the component the named route renders. The layout belongs to no
+   * route, so its writes name none.
+   */
+  const routePathForTemplate = useCallback(
+    (templateId: string): string | undefined =>
+      templateId === activeTemplate?.id ? activeThemeRoute?.path : undefined,
+    [activeTemplate?.id, activeThemeRoute?.path],
   );
   /**
    * What is on this page and which document stores each part.
@@ -5258,7 +5278,11 @@ export function VisualEditorShell({
           sectionPropsSnapshot(sectionId),
         );
       }
-      pendingPropsMapRef.current.set(key, { sectionId, props: mergedProps });
+      pendingPropsMapRef.current.set(key, {
+        sectionId,
+        props: mergedProps,
+        routePath: routePathForTemplate(templateId),
+      });
 
       const timer = setTimeout(() => {
         pendingPropsTimersRef.current.delete(key);
@@ -5275,6 +5299,7 @@ export function VisualEditorShell({
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       templateIdForSection,
+      routePathForTemplate,
       updatePropsMutation,
     ],
   );
@@ -5430,7 +5455,11 @@ export function VisualEditorShell({
         clearTimeout(existingTimer);
         pendingPropsTimersRef.current.delete(key);
       }
-      const reorderPending = { sectionId, props: result.value };
+      const reorderPending = {
+        sectionId,
+        props: result.value,
+        routePath: routePathForTemplate(templateId),
+      };
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(key, { ...section.props });
       }
@@ -5465,6 +5494,7 @@ export function VisualEditorShell({
           pendingPropsMapRef.current.set(key, {
             sectionId,
             props: currentProps,
+            routePath: reorderPending.routePath,
           });
         }
         restoreSelectionAndProps();
@@ -5478,6 +5508,7 @@ export function VisualEditorShell({
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
+      routePathForTemplate,
       updatePropsMutation,
     ],
   );
@@ -5519,7 +5550,11 @@ export function VisualEditorShell({
 
       const existingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
       const mergedProps = { ...existingProps, enabled };
-      const togglePending = { sectionId, props: mergedProps };
+      const togglePending = {
+        sectionId,
+        props: mergedProps,
+        routePath: routePathForTemplate(templateId),
+      };
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(
           key,
@@ -5552,6 +5587,7 @@ export function VisualEditorShell({
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
+      routePathForTemplate,
       updatePropsMutation,
     ],
   );

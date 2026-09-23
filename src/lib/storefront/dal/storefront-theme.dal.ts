@@ -26,9 +26,11 @@ import {
   readDeployedThemeBuildId,
 } from "@/lib/storefront/service/theme-worker-deployment-state";
 import {
+  deriveThemeLayoutSections,
   deriveThemeRouteSections,
   mergeDocumentWithRouteSections,
 } from "@/lib/storefront/compiler/theme-route-sections";
+import { templateTypeForRoutePath } from "@/lib/storefront/theme-template-routes";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
 import { filterSectionContentProps } from "@/lib/storefront/content/section-content-manifest";
 import { extractThemeDocumentComponentRefs } from "@/lib/storefront/theme-content-capability-shadow";
@@ -56,6 +58,23 @@ function routePathForTemplateType(type: string): string | null {
   return segment ? `/${segment}/` : null;
 }
 
+type ThemeRouteRegistry = ReturnType<typeof buildThemeRouteRegistry>;
+
+/** The route a template's stored document is read through by default. */
+function findDefaultTemplateRoute(registry: ThemeRouteRegistry, type: string) {
+  const expectedPath = routePathForTemplateType(type);
+  if (!expectedPath) return null;
+  return (
+    registry.routes.find(
+      (candidate) =>
+        candidate.kind === "route" &&
+        (expectedPath === "/"
+          ? candidate.path === "/"
+          : candidate.path.startsWith(expectedPath)),
+    ) ?? null
+  );
+}
+
 function deriveTemplateDocumentFromRoutes(args: {
   type: string;
   document: import("@/db/storefront.schema").StorefrontPageDocument;
@@ -63,15 +82,7 @@ function deriveTemplateDocumentFromRoutes(args: {
 }) {
   const registry = buildThemeRouteRegistry(args.files);
   if (!registry.valid) return args.document;
-  const expectedPath = routePathForTemplateType(args.type);
-  if (!expectedPath) return args.document;
-  const route = registry.routes.find(
-    (candidate) =>
-      candidate.kind === "route" &&
-      (expectedPath === "/"
-        ? candidate.path === "/"
-        : candidate.path.startsWith(expectedPath)),
-  );
+  const route = findDefaultTemplateRoute(registry, args.type);
   if (!route) return args.document;
   const derived = deriveThemeRouteSections(args.files, route.sourcePath);
   if (
@@ -83,6 +94,86 @@ function deriveTemplateDocumentFromRoutes(args: {
   return mergeDocumentWithRouteSections(args.document, derived.sections, {
     routeOwnsStructure: derived.hasContentImport,
   });
+}
+
+type SectionSourceComponent =
+  | Readonly<{ ok: true; componentRef: string | null }>
+  | Readonly<{ ok: false }>;
+
+/**
+ * The component the saved source renders for one section.
+ *
+ * A content write is checked against this component's declared fields, never
+ * against the ref the Document happens to store: the stored ref is whatever
+ * the section rendered when it was last saved, and a section that has since
+ * moved onto a page-owned copy, or been rebound in Code mode, would otherwise
+ * be validated against a component it no longer renders.
+ *
+ * `routePath` names the route the editor is showing, because one template can
+ * sit behind several routes and the default pick is only a guess. It chooses
+ * among routes the saved source declares, and only one that belongs to this
+ * template; anything else is a stale or forged view and `ok: false` refuses the
+ * write. `componentRef: null` means the source does not answer — no route, a
+ * route with diagnostics, a slot it does not declare — and the caller keeps the
+ * stored ref, as before this existed.
+ */
+function resolveSectionSourceComponent(args: {
+  templateType: string;
+  sectionId: string;
+  files: readonly { path: string; content: string }[];
+  routePath?: string;
+}): SectionSourceComponent {
+  const fromSections = (
+    derived: ReturnType<typeof deriveThemeRouteSections>,
+  ): SectionSourceComponent => {
+    if (derived.diagnostics.length > 0) return { ok: true, componentRef: null };
+    const section = derived.sections.find(
+      (candidate) =>
+        candidate.slotId === args.sectionId &&
+        !candidate.missingComponentSourcePath,
+    );
+    return { ok: true, componentRef: section?.componentRef ?? null };
+  };
+
+  if (args.templateType === "layout") {
+    return fromSections(deriveThemeLayoutSections(args.files));
+  }
+
+  const registry = buildThemeRouteRegistry(args.files);
+  if (!registry.valid) return { ok: true, componentRef: null };
+  let route: ThemeRouteRegistry["routes"][number] | null;
+  if (args.routePath !== undefined) {
+    route =
+      registry.routes.find(
+        (candidate) =>
+          candidate.kind === "route" && candidate.path === args.routePath,
+      ) ?? null;
+    if (!route || templateTypeForRoutePath(route.path) !== args.templateType) {
+      return { ok: false };
+    }
+  } else {
+    route = findDefaultTemplateRoute(registry, args.templateType);
+    if (!route) return { ok: true, componentRef: null };
+  }
+  return fromSections(deriveThemeRouteSections(args.files, route.sourcePath));
+}
+
+async function listThemeSourceFiles(storefrontId: string, themeId: string) {
+  const db = await getDb();
+  return db
+    .select({
+      path: storefrontThemeFiles.path,
+      content: storefrontThemeFiles.content,
+    })
+    .from(storefrontThemeFiles)
+    .where(
+      and(
+        eq(storefrontThemeFiles.storefrontId, storefrontId),
+        eq(storefrontThemeFiles.themeId, themeId),
+        isNull(storefrontThemeFiles.deletedAt),
+      ),
+    )
+    .orderBy(asc(storefrontThemeFiles.path));
 }
 
 function prepareTemplateDraftCASGuard(args: {
@@ -364,20 +455,7 @@ export const storefrontThemeDal = {
         asc(storefrontThemeTemplates.name),
       );
 
-    const themeSourceFiles = await db
-      .select({
-        path: storefrontThemeFiles.path,
-        content: storefrontThemeFiles.content,
-      })
-      .from(storefrontThemeFiles)
-      .where(
-        and(
-          eq(storefrontThemeFiles.storefrontId, storefrontId),
-          eq(storefrontThemeFiles.themeId, themeId),
-          isNull(storefrontThemeFiles.deletedAt),
-        ),
-      )
-      .orderBy(asc(storefrontThemeFiles.path));
+    const themeSourceFiles = await listThemeSourceFiles(storefrontId, themeId);
 
     const templates = await Promise.all(
       templateRows.map(async (template) => {
@@ -693,6 +771,8 @@ export const storefrontThemeDal = {
     props: Record<string, unknown>;
     expectedDraftGeneration: number;
     createdBy: string;
+    /** The route the editor is showing; see `resolveSectionSourceComponent`. */
+    routePath?: string;
   }) {
     const context = await this.findEditorContext(
       data.storefrontId,
@@ -707,6 +787,16 @@ export const storefrontThemeDal = {
       (section) => section.id === data.sectionId,
     );
     if (!targetSection) return null;
+
+    const sourceComponent = resolveSectionSourceComponent({
+      templateType: template.type,
+      sectionId: data.sectionId,
+      files: await listThemeSourceFiles(data.storefrontId, data.themeId),
+      routePath: data.routePath,
+    });
+    if (!sourceComponent.ok) return null;
+    const sectionComponentRef =
+      sourceComponent.componentRef ?? targetSection.componentRef ?? null;
 
     const manifestState = await env.DATABASE.prepare(
       `
@@ -737,8 +827,8 @@ export const storefrontThemeDal = {
     // workspace, and the client cannot influence which paths are loaded.
     const themeCapabilityState = await resolveThemeContentCapabilities({
       manifestContent: manifestState.manifestContent,
-      additionalSourcePaths: targetSection.componentRef?.startsWith("src/")
-        ? [targetSection.componentRef]
+      additionalSourcePaths: sectionComponentRef?.startsWith("src/")
+        ? [sectionComponentRef]
         : [],
       readSource: async (path) => {
         const row = await env.DATABASE.prepare(
@@ -770,9 +860,8 @@ export const storefrontThemeDal = {
     // edit into an erasure. That erasure came from running the *stored* props
     // through the same filter, which the guard below now prevents — the
     // fallback was treating a symptom, and hid a real mismatch while doing it.
-    const storedComponentRef = targetSection.componentRef ?? null;
     const resolvedComponentRef =
-      storedComponentRef ??
+      sectionComponentRef ??
       themeCapabilityState.sectionComponentRefs[targetSection.type] ??
       null;
 

@@ -1,6 +1,8 @@
 export type PendingContentEntry = {
   sectionId: string;
   props: Record<string, unknown>;
+  /** The route the edit was made on; absent for the layout. */
+  routePath?: string;
 };
 
 /**
