@@ -8,6 +8,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -1707,7 +1709,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                   <Plus /> Add section
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start" className="w-56">
+              <DropdownMenuContent side="top" align="start" className="w-64">
+                {/* Said before the choice, because the choice is where the
+                    copy stops following the library. */}
+                <DropdownMenuLabel className="text-[11px] font-normal leading-snug text-muted-foreground">
+                  Adds a copy this page owns. Later changes to the section
+                  library don&apos;t update it.
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
                 {sectionOptions.map((option) => (
                   <DropdownMenuItem
                     key={option.componentRef}
@@ -1867,9 +1876,9 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
               </AlertDialogTitle>
               <AlertDialogDescription>
                 {deleteCandidate?.kind === "detach"
-                  ? "This copies the section's component into a folder this page owns and points only this page at the copy. Other pages, and every later Add section, keep using the original."
+                  ? "This copies the section's component into a folder this page owns and points only this page at the copy. Other pages, and every later Add section, keep using the original, and later changes to the original don't reach this copy."
                   : deleteCandidate?.kind === "section"
-                  ? "This removes the section from the Theme route source and its content from this page. If the section has its own page copy, those files are deleted with it. Restore an earlier version from the history to bring it back."
+                  ? "This removes the section from the Theme route source and its content from this page. If the section has its own page copy, those files are deleted with it. To bring it back, restore an earlier revision from the file history in Code mode."
                   : "This removes the selected element and all of its nested content from the Theme source. The change can be undone from the editor history."}
               </AlertDialogDescription>
             </AlertDialogHeader>
