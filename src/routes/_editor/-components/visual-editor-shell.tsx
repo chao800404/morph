@@ -193,9 +193,9 @@ import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source
 import {
   choosePageSectionSlotId,
   planPageSectionCopy,
+  listSectionTemplateSourcePaths,
   planPageSectionRemoval,
 } from "@/lib/storefront/editor/page-section-copy";
-import { isThemeSectionTemplatePath } from "@/lib/storefront/theme-section-convention";
 import {
   toWorkspaceKey,
   themeFileWritePrecondition,
@@ -1910,6 +1910,28 @@ export function VisualEditorShell({
    * Editing one changes every page that uses the layout, which the panels have
    * to be able to say. Derived here so the tree and the inspector agree.
    */
+  /**
+   * Source Design mode must not write: the section library and whatever its
+   * entries re-export. See `listSectionTemplateSourcePaths`.
+   */
+  const sectionTemplatePaths = useMemo(
+    () => listSectionTemplateSourcePaths(effectiveThemeFiles),
+    [effectiveThemeFiles],
+  );
+  /**
+   * Refuses a Design write into section library source, with the way out.
+   * Returns true when the write must not happen.
+   */
+  const refuseSectionTemplateWrite = useCallback(
+    (filePath: string): boolean => {
+      if (!sectionTemplatePaths.has(filePath)) return false;
+      toast.warning(
+        `${filePath} is section library source. Detach the section to edit it for this page only, or edit the template in Code mode.`,
+      );
+      return true;
+    },
+    [sectionTemplatePaths],
+  );
   const sharedLayoutPaths = useMemo(() => {
     // A shell section is shared by construction: it is declared once and every
     // page renders it. Named by both its slot and its source so the tree and
@@ -1941,13 +1963,13 @@ export function VisualEditorShell({
       }
     }
     for (const [path, count] of routeSourceUseCount) {
-      // A section library template is shared even when one route renders it:
-      // it is also what every later Add section copies from. A route that
-      // still imports one predates page-owned copies, and gets the same
-      // detach offer as any other shared source instead of a Design edit
-      // that would reach the library.
-      if (count > 1 || isThemeSectionTemplatePath(path)) shared.add(path);
+      if (count > 1) shared.add(path);
     }
+    // Section library source is shared even when one route renders it: it is
+    // also what every later Add section copies from. A route that still
+    // renders it predates page-owned copies, and gets the same detach offer as
+    // any other shared source instead of a Design edit that reaches the library.
+    for (const path of sectionTemplatePaths) shared.add(path);
     const nodes =
       previewStructure?.key === previewKey ? previewStructure.nodes : undefined;
     if (!nodes || !activeThemeRoute) return shared;
@@ -1973,6 +1995,7 @@ export function VisualEditorShell({
     previewKey,
     previewStructure,
     sectionModel,
+    sectionTemplatePaths,
     themeRouteStructureCache,
   ]);
 
@@ -3042,6 +3065,7 @@ export function VisualEditorShell({
 
   const handleRepairThemeLinkBinding = useCallback(
     async (filePath: string, fieldKey: string): Promise<boolean> => {
+      if (refuseSectionTemplateWrite(filePath)) return false;
       const source =
         useThemeWorkspaceStore
           .getState()
@@ -3078,7 +3102,12 @@ export function VisualEditorShell({
         return false;
       }
     },
-    [handleUnifiedSaveFile, themeFiles, workspaceScope],
+    [
+      handleUnifiedSaveFile,
+      refuseSectionTemplateWrite,
+      themeFiles,
+      workspaceScope,
+    ],
   );
 
   /**
@@ -3095,6 +3124,7 @@ export function VisualEditorShell({
       fieldKey: string,
       target: "router" | "anchor",
     ): Promise<boolean> => {
+      if (refuseSectionTemplateWrite(filePath)) return false;
       const source =
         useThemeWorkspaceStore
           .getState()
@@ -3136,11 +3166,17 @@ export function VisualEditorShell({
         return false;
       }
     },
-    [handleUnifiedSaveFile, themeFiles, workspaceScope],
+    [
+      handleUnifiedSaveFile,
+      refuseSectionTemplateWrite,
+      themeFiles,
+      workspaceScope,
+    ],
   );
 
   const handleSwapThemeFileSiblings = useCallback(
     async (filePath: string, draggedNodeId: string, targetNodeId: string) => {
+      if (refuseSectionTemplateWrite(filePath)) return;
       const currentSource =
         useThemeWorkspaceStore
           .getState()
@@ -3215,6 +3251,7 @@ export function VisualEditorShell({
     [
       handleUnifiedSaveFile,
       postPreviewThemeFiles,
+      refuseSectionTemplateWrite,
       themeFiles,
       updateWorkspaceLocal,
       workspaceScope,
@@ -3645,6 +3682,7 @@ export function VisualEditorShell({
 
   const handleCodeComponentPropsChange = useCallback(
     (filePath: string, nextProps: Record<string, unknown>) => {
+      if (refuseSectionTemplateWrite(filePath)) return;
       const workspaceFile = useThemeWorkspaceStore
         .getState()
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
@@ -3666,7 +3704,12 @@ export function VisualEditorShell({
         preserveCanvasPosition: true,
       });
     },
-    [handleUnifiedSaveFile, themeFiles, workspaceScope],
+    [
+      handleUnifiedSaveFile,
+      refuseSectionTemplateWrite,
+      themeFiles,
+      workspaceScope,
+    ],
   );
 
   const handleUpdateThemeFileStyle = useCallback(
@@ -3676,6 +3719,7 @@ export function VisualEditorShell({
       updater: (prevClasses: string) => string,
       instanceTarget?: ThemeInstanceStyleTarget,
     ) => {
+      if (refuseSectionTemplateWrite(filePath)) return;
       const workspaceFileSnapshot = useThemeWorkspaceStore
         .getState()
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
@@ -3946,6 +3990,7 @@ export function VisualEditorShell({
       saveThemeFileSequentially,
       themeFiles,
       postPreviewThemeFiles,
+      refuseSectionTemplateWrite,
       updateWorkspaceLocal,
       workspaceScope,
     ],
@@ -4977,6 +5022,7 @@ export function VisualEditorShell({
         ? planPageSectionRemoval({
             componentSourcePath: removedSection.componentSourcePath,
             routeSourcePath: activeThemeRoute.sourcePath,
+            routePath: activeThemeRoute.path,
             slotId: sectionId,
             files: effectiveThemeFiles.map((file) =>
               file.path === routeFile.path
@@ -7682,6 +7728,7 @@ export function VisualEditorShell({
         <EditorAssistantPanel
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
+          sectionTemplatePaths={sectionTemplatePaths}
           // Same nodes the sections tree uses, so the Content tab can fall back
           // to document order when a component declares no `contentFields`.
           editableNodes={

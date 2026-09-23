@@ -167,7 +167,6 @@ import {
   readThemeInstanceStyleClasses,
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
-import { isThemeSectionTemplatePath } from "@/lib/storefront/theme-section-convention";
 import {
   GLOBAL_LAYOUT_LABEL,
   SECTION_TEMPLATE_HINT,
@@ -193,6 +192,8 @@ type EditorStyleInspectorProps = {
    * them.
    */
   sharedLayoutPaths?: ReadonlySet<string>;
+  /** Section library source, including what its entries re-export. */
+  sectionTemplatePaths?: ReadonlySet<string>;
   section: EditorSection;
   /**
    * Where an edit to this section's content is written.
@@ -667,6 +668,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onPropsChange,
   onJumpToCode,
   sharedLayoutPaths,
+  sectionTemplatePaths,
   view = "styles",
   disabled = false,
 }: EditorStyleInspectorProps) {
@@ -2133,12 +2135,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             <span
               className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium text-foreground"
               title={
-                isThemeSectionTemplatePath(componentPath)
+                sectionTemplatePaths?.has(componentPath)
                   ? SECTION_TEMPLATE_HINT
                   : SHARED_LAYOUT_HINT
               }
             >
-              {isThemeSectionTemplatePath(componentPath)
+              {sectionTemplatePaths?.has(componentPath)
                 ? SECTION_TEMPLATE_LABEL
                 : GLOBAL_LAYOUT_LABEL}
             </span>

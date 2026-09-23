@@ -213,6 +213,31 @@ function Home() {
     });
   });
 
+  it("reports a page-owned copy that lost its content binding", () => {
+    const nativeRoute = `import Hero from "../components/page-sections/index/hero/index";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Hero /></main>;
+}`;
+    const files = [
+      { path: "src/routes/index.tsx", content: nativeRoute },
+      {
+        path: "src/components/page-sections/index/hero/index.tsx",
+        content: "export default function Hero(){return null;}",
+      },
+    ];
+    const result = deriveThemeRouteSections(files, "src/routes/index.tsx");
+
+    expect(result.unboundSections).toHaveLength(1);
+    expect(result.unboundSections[0]).toMatchObject({
+      componentName: "Hero",
+      componentSourcePath: "src/components/page-sections/index/hero/index.tsx",
+      canBind: true,
+    });
+    // Bindable, but never something Add section offers.
+    expect(listThemeRouteSectionOptions(files)).toEqual([]);
+  });
+
   it("does not offer a repeated section position for automatic binding", () => {
     const nativeRoute = `import Promo from "../components/sections/Promo";
 export const Route = createFileRoute("/")({ component: Home });

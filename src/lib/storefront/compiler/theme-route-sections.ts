@@ -1,6 +1,9 @@
 import { parse } from "@babel/parser";
 import { isValidThemeContentSlotId } from "@/lib/storefront/theme-content-slots";
-import { listThemeSectionEntries } from "@/lib/storefront/theme-section-convention";
+import {
+  listThemeSectionEntries,
+  readThemePageSectionEntry,
+} from "@/lib/storefront/theme-section-convention";
 import {
   readComponentSourcePaths,
   resolveThemeContentCapabilitiesFromFiles,
@@ -409,7 +412,7 @@ function parsePositionedSections(
   });
 
   const addableBySource = new Map(
-    listThemeRouteSectionOptions(files).map(
+    listBindableSectionOptions(files).map(
       (option) => [normalizePath(option.componentSourcePath), option] as const,
     ),
   );
@@ -754,6 +757,38 @@ export function listThemeRouteSectionOptions(
         ),
     )
     .sort((left, right) => left.sectionType.localeCompare(right.sectionType));
+}
+
+/**
+ * Components a route may render as a section without being offered by Add
+ * section: the library, plus page-owned copies.
+ *
+ * A copy is never a candidate to add — it already belongs to one page — but a
+ * route can render one without `content(...)`, most often after the binding
+ * was removed in Code mode. It is still a section, and it has to show up under
+ * "Sections needing binding" rather than disappear from the editor.
+ */
+function listBindableSectionOptions(
+  files: readonly ThemeSourceFile[],
+): readonly ThemeRouteSectionOption[] {
+  const rowComponents = readRowComponentPaths(files);
+  const pageCopies = files
+    .map((file) => readThemePageSectionEntry(file.path))
+    .filter((entry) => entry !== null)
+    .filter(
+      (entry) =>
+        !rowComponents.has(entry.componentSourcePath) &&
+        !rowComponents.has(
+          entry.componentSourcePath.replace(/\.(tsx|jsx)$/, ""),
+        ),
+    )
+    .map((entry) => ({
+      componentRef: entry.componentRef,
+      sectionType: entry.sectionType,
+      componentName: entry.componentName,
+      componentSourcePath: entry.componentSourcePath,
+    }));
+  return [...listThemeRouteSectionOptions(files), ...pageCopies];
 }
 
 function replaceRange(

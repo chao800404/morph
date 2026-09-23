@@ -199,17 +199,6 @@ export function readThemePageSectionEntry(
   return null;
 }
 
-/**
- * Whether a file belongs to the shared Add section library.
- *
- * Anything under the folder counts, not only entries: a folder section's
- * private parts are template source too, and a Design edit to one would reach
- * every page added from it afterwards.
- */
-export function isThemeSectionTemplatePath(path: string): boolean {
-  return normalizePath(path).startsWith(`${THEME_SECTION_FOLDER_PATH}/`);
-}
-
 /** A source file that can expose inferred content fields as a section. */
 export function isThemeSectionSourcePath(path: string): boolean {
   return Boolean(

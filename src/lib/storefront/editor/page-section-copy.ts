@@ -7,6 +7,7 @@ import {
 import { parseThemeRouteSourcePath } from "@/lib/storefront/compiler/theme-route-registry";
 import { isValidThemeContentSlotId } from "@/lib/storefront/theme-content-slots";
 import {
+  listThemeSectionEntries,
   THEME_PAGE_SECTION_FOLDER_PATH,
   THEME_SECTION_FOLDER_PATH,
 } from "@/lib/storefront/theme-section-convention";
@@ -217,6 +218,42 @@ function folderSectionRoot(implementationPath: string): string | null {
   return root;
 }
 
+/**
+ * Every file an edit could reach the section library through.
+ *
+ * The folder alone is not enough: a template entry may only re-export a
+ * component that lives elsewhere, and a Design edit lands in the file the
+ * element is written in — the implementation. Editing that file changes what
+ * every later Add section copies, and every route still rendering it, so it is
+ * template source exactly as the entry is.
+ */
+export function listSectionTemplateSourcePaths(
+  files: readonly SourceFile[],
+): ReadonlySet<string> {
+  const byPath = new Map(
+    files.map((file) => [normalizePath(file.path), file] as const),
+  );
+  const templatePaths = new Set<string>();
+  for (const path of byPath.keys()) {
+    if (path.startsWith(`${THEME_SECTION_FOLDER_PATH}/`)) templatePaths.add(path);
+  }
+  for (const entry of listThemeSectionEntries(files)) {
+    const implementation = resolveImplementation(
+      entry.componentSourcePath,
+      byPath,
+    );
+    if (!implementation) continue;
+    templatePaths.add(implementation);
+    if (!/^index\.(?:tsx|jsx)$/i.test(baseName(implementation))) continue;
+    const root = folderSectionRoot(implementation);
+    if (!root) continue;
+    for (const path of byPath.keys()) {
+      if (path.startsWith(`${root}/`)) templatePaths.add(path);
+    }
+  }
+  return templatePaths;
+}
+
 function isSectionSource(path: string): boolean {
   return (
     path.startsWith(`${THEME_SECTION_FOLDER_PATH}/`) ||
@@ -407,49 +444,127 @@ export type PageSectionRemovalPlan = Readonly<{
 }>;
 
 /**
+ * The directory name the first page-copy detach gave a route.
+ *
+ * That detach keyed copies by the public URL (`/` -> `home`,
+ * `/products/$slug` -> `products-slug`) and wrote one file per copy. Nothing
+ * writes this shape any more; it is read so a copy made then still leaves with
+ * its section instead of lingering as a file nothing imports.
+ */
+export function legacyPageSectionRouteKey(routePath: string): string {
+  const segments = routePath
+    .trim()
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter(Boolean)
+    .map((segment) =>
+      segment
+        .replace(/^\$+/, "")
+        .replace(/^\[+|\]+$/g, "")
+        .replace(/[^a-zA-Z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase(),
+    )
+    .filter(Boolean);
+  return segments.join("-") || "home";
+}
+
+type OwnedSource = Readonly<{
+  /** Files that go with the section. */
+  paths: readonly string[];
+  /** How an unresolved alias import would name them, without extension. */
+  aliasTargets: readonly string[];
+  label: string;
+}>;
+
+function withoutScriptExtension(path: string): string {
+  return path.replace(/\.(?:tsx|ts|jsx|js)$/, "");
+}
+
+function readOwnedSource(
+  componentPath: string,
+  routeSourcePath: string,
+  routePath: string | undefined,
+  slotId: string,
+  files: readonly Readonly<{ path: string }>[],
+): OwnedSource | null {
+  const root = pageSectionInstanceRoot(routeSourcePath, slotId);
+  if (root && componentPath.startsWith(`${root}/`)) {
+    const prefix = `${root}/`;
+    const rootFromSrc = root.slice("src/".length);
+    return {
+      paths: files
+        .map((file) => file.path)
+        .filter((path) => path.startsWith(prefix))
+        .sort(),
+      aliasTargets: [rootFromSrc, `${rootFromSrc}/index`],
+      label: root,
+    };
+  }
+
+  // The earlier single-file copy: `page-sections/<url key>/<Name>.tsx`, owned
+  // by this route only when the directory is this route's URL key.
+  if (routePath === undefined) return null;
+  const legacyDirectory = `${THEME_PAGE_SECTION_FOLDER_PATH}/${legacyPageSectionRouteKey(routePath)}`;
+  if (
+    directoryOf(componentPath) !== legacyDirectory ||
+    !ENTRY_EXTENSIONS.includes(extensionOf(componentPath)) ||
+    !files.some((file) => file.path === componentPath)
+  ) {
+    return null;
+  }
+  return {
+    paths: [componentPath],
+    aliasTargets: [withoutScriptExtension(componentPath).slice("src/".length)],
+    label: componentPath,
+  };
+}
+
+/**
  * The files that go away with a removed section.
  *
- * Only the instance folder the removed slot owns on this route is eligible;
- * a section rendered from shared or hand-placed source loses its JSX and
- * nothing else. The folder is kept whole when anything outside it still
- * imports from it: deleting a file something imports would turn a removed
- * section into a failed build. `files` must already carry the edited route.
+ * Only source the removed slot owns on this route is eligible: the instance
+ * folder Add section and detach write, or a single-file copy the first detach
+ * wrote under this route's URL key. A section rendered from shared or
+ * hand-placed source loses its JSX and nothing else. Owned files are kept
+ * whole when anything else still imports them: deleting a file something
+ * imports would turn a removed section into a failed build. `files` must
+ * already carry the edited route.
  */
 export function planPageSectionRemoval(args: {
   componentSourcePath: string;
   routeSourcePath: string;
+  /** The route's public path, needed only to recognise earlier copies. */
+  routePath?: string;
   slotId: string;
   files: readonly SourceFile[];
 }): PageSectionRemovalPlan {
-  const root = pageSectionInstanceRoot(args.routeSourcePath, args.slotId);
-  const componentPath = normalizePath(args.componentSourcePath);
-  if (!root || !componentPath.startsWith(`${root}/`)) return { paths: [] };
-
-  const prefix = `${root}/`;
   const normalized = args.files.map((file) => ({
     ...file,
     path: normalizePath(file.path),
   }));
-  const owned = normalized
-    .filter((file) => file.path.startsWith(prefix))
-    .map((file) => file.path)
-    .sort();
-  if (owned.length === 0) return { paths: [] };
+  const owned = readOwnedSource(
+    normalizePath(args.componentSourcePath),
+    args.routeSourcePath,
+    args.routePath,
+    args.slotId,
+    normalized,
+  );
+  if (!owned || owned.paths.length === 0) return { paths: [] };
 
-  const ownedSet = new Set(owned);
+  const ownedSet = new Set(owned.paths);
   const paths = new Set(normalized.map((file) => file.path));
-  const rootFromSrc = root.slice("src/".length);
   for (const file of normalized) {
     if (ownedSet.has(file.path) || !isScript(file.path)) continue;
     const targets = readThemeFileImportTargets(file.path, file.content, paths);
-    // A file that does not parse cannot be read for imports. Keep the folder
+    // A file that does not parse cannot be read for imports. Keep the files
     // whenever such a file so much as mentions the slot: leaving source behind
     // is recoverable, deleting what a build still needs is not.
     if (!targets) {
       if (file.content.includes(args.slotId)) {
         return {
           paths: [],
-          keptReason: `${file.path} could not be parsed, so ${root} was kept in case it still imports it.`,
+          keptReason: `${file.path} could not be parsed, so ${owned.label} was kept in case it still imports it.`,
         };
       }
       continue;
@@ -458,18 +573,22 @@ export function planPageSectionRemoval(args: {
       (target) =>
         (target.resolvedPath !== null && ownedSet.has(target.resolvedPath)) ||
         // An alias (`@/components/page-sections/...`) is not resolved here, so
-        // it is matched on the folder name. `hero` must not match `hero-2`.
+        // it is matched on the whole name. `hero` must not match `hero-2`.
         (target.resolvedPath === null &&
           !target.specifier.startsWith(".") &&
-          (target.specifier.endsWith(rootFromSrc) ||
-            target.specifier.includes(`${rootFromSrc}/`))),
+          owned.aliasTargets.some(
+            (alias) =>
+              withoutScriptExtension(target.specifier).endsWith(`/${alias}`) ||
+              withoutScriptExtension(target.specifier) === alias ||
+              target.specifier.includes(`/${alias}/`),
+          )),
     );
     if (importer) {
       return {
         paths: [],
-        keptReason: `${file.path} still imports from ${root}, so its files were kept.`,
+        keptReason: `${file.path} still imports ${owned.label}, so its files were kept.`,
       };
     }
   }
-  return { paths: owned };
+  return { paths: owned.paths };
 }

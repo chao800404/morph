@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   choosePageSectionSlotId,
+  legacyPageSectionRouteKey,
+  listSectionTemplateSourcePaths,
   pageSectionInstanceRoot,
   pageSectionRouteKey,
   planPageSectionCopy,
@@ -230,5 +232,84 @@ describe("planPageSectionRemoval", () => {
         files: [{ path: "src/components/sections/Hero.tsx", content: HERO }],
       }),
     ).toEqual({ paths: [] });
+  });
+});
+
+describe("planPageSectionRemoval with copies from the first detach", () => {
+  const legacy = "src/components/page-sections/products-slug/Hero.tsx";
+
+  it("names routes the way that detach did", () => {
+    expect(legacyPageSectionRouteKey("/")).toBe("home");
+    expect(legacyPageSectionRouteKey("/products/$slug")).toBe("products-slug");
+  });
+
+  it("removes a single-file copy kept under this route's URL key", () => {
+    expect(
+      planPageSectionRemoval({
+        componentSourcePath: legacy,
+        routeSourcePath: "src/routes/products/$slug.tsx",
+        routePath: "/products/$slug",
+        slotId: "hero",
+        files: [
+          { path: legacy, content: HERO },
+          { path: "src/routes/products/$slug.tsx", content: "export default () => null;" },
+        ],
+      }),
+    ).toEqual({ paths: [legacy] });
+  });
+
+  it("leaves a copy under another route's key alone", () => {
+    expect(
+      planPageSectionRemoval({
+        componentSourcePath: legacy,
+        routeSourcePath: "src/routes/index.tsx",
+        routePath: "/",
+        slotId: "hero",
+        files: [{ path: legacy, content: HERO }],
+      }),
+    ).toEqual({ paths: [] });
+  });
+
+  it("keeps it while an alias import still names it", () => {
+    const plan = planPageSectionRemoval({
+      componentSourcePath: legacy,
+      routeSourcePath: "src/routes/products/$slug.tsx",
+      routePath: "/products/$slug",
+      slotId: "hero",
+      files: [
+        { path: legacy, content: HERO },
+        {
+          path: "src/routes/about.tsx",
+          content: 'import Hero from "@/components/page-sections/products-slug/Hero";\n',
+        },
+      ],
+    });
+    expect(plan.paths).toEqual([]);
+    expect(plan.keptReason).toContain("src/routes/about.tsx");
+  });
+});
+
+describe("listSectionTemplateSourcePaths", () => {
+  it("includes what a template entry re-exports", () => {
+    const paths = listSectionTemplateSourcePaths([
+      {
+        path: "src/components/sections/Hero.tsx",
+        content: 'export { contentFields, default } from "../Hero";\n',
+      },
+      { path: "src/components/Hero.tsx", content: HERO },
+      { path: "src/components/ThemeLink.tsx", content: "export default () => null;" },
+    ]);
+    expect([...paths].sort()).toEqual([
+      "src/components/Hero.tsx",
+      "src/components/sections/Hero.tsx",
+    ]);
+  });
+
+  it("includes every file of a folder template", () => {
+    const paths = listSectionTemplateSourcePaths([
+      { path: "src/components/sections/featured/index.tsx", content: HERO },
+      { path: "src/components/sections/featured/Card.tsx", content: "" },
+    ]);
+    expect(paths.has("src/components/sections/featured/Card.tsx")).toBe(true);
   });
 });
