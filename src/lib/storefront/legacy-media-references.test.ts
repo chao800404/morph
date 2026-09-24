@@ -1,11 +1,17 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
-  describeLegacyMediaFindings,
   findLegacyMediaReferences,
+  legacyMediaPlaces,
 } from "./legacy-media-references";
 
 const ID = "43a43262-4ff6-46ee-a52b-02cdbafbabc6";
+const ASSET_REF = {
+  source: "asset",
+  mediaType: "image",
+  assetId: ID,
+  url: `/assets/${ID}.png`,
+};
 
 describe("findLegacyMediaReferences", () => {
   it("finds bare library URLs anywhere in section content", () => {
@@ -47,16 +53,8 @@ describe("findLegacyMediaReferences", () => {
             id: "hero",
             type: "hero",
             props: {
-              image: {
-                src: {
-                  source: "asset",
-                  mediaType: "image",
-                  assetId: ID,
-                  url: `/assets/${ID}.png`,
-                },
-                alt: "",
-              },
-              imageSrc: "https://cdn.example.com/hero.png",
+              image: { src: ASSET_REF, alt: "" },
+              heroBackground: "https://cdn.example.com/hero.png",
               body: `See /assets/${ID}.png`,
             },
           },
@@ -65,18 +63,55 @@ describe("findLegacyMediaReferences", () => {
     ).toEqual([]);
   });
 
+  it("ignores legacy image keys a grouped image has replaced", () => {
+    expect(
+      findLegacyMediaReferences({
+        sections: [
+          {
+            id: "starter-hero",
+            type: "hero",
+            props: {
+              image: { src: ASSET_REF, alt: "Ceramics" },
+              imageSrc: `/assets/${ID}.png`,
+              imageAlt: "Ceramics",
+            },
+          },
+          {
+            id: "showcase",
+            type: "category-showcase",
+            props: {
+              items: [
+                {
+                  image: { src: ASSET_REF, alt: "" },
+                  imageSrc: `/assets/${ID}.png`,
+                },
+                { imageSrc: `/assets/${ID}.png` },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        sectionId: "showcase",
+        sectionType: "category-showcase",
+        fieldPath: "items.1.imageSrc",
+      },
+    ]);
+  });
+
   it("tolerates documents that are not what it expects", () => {
     expect(findLegacyMediaReferences(null)).toEqual([]);
     expect(findLegacyMediaReferences({ sections: "nope" })).toEqual([]);
   });
 });
 
-describe("describeLegacyMediaFindings", () => {
-  it("names each place an author has to fix", () => {
+describe("legacyMediaPlaces", () => {
+  it("names each place as page › section › field", () => {
     expect(
-      describeLegacyMediaFindings([
+      legacyMediaPlaces([
         {
-          label: "/",
+          label: "Home",
           references: [
             {
               sectionId: "starter-hero",
@@ -85,25 +120,13 @@ describe("describeLegacyMediaFindings", () => {
             },
           ],
         },
-        { label: "/pages/about", references: [] },
+        {
+          label: "/pages/about",
+          references: [
+            { sectionId: "intro", sectionType: "", fieldPath: "imageSrc" },
+          ],
+        },
       ]),
-    ).toBe(
-      "An image will not show to visitors, because the field stores a library image as a CMS URL the storefront cannot serve: / › hero › imageSrc.",
-    );
-  });
-
-  it("says nothing when there is nothing to fix", () => {
-    expect(describeLegacyMediaFindings([])).toBeNull();
-  });
-
-  it("lists a few and counts the rest", () => {
-    const references = Array.from({ length: 7 }, (_, index) => ({
-      sectionId: `s${index}`,
-      sectionType: "hero",
-      fieldPath: "imageSrc",
-    }));
-    expect(describeLegacyMediaFindings([{ label: "/", references }])).toMatch(
-      /^7 images .* and 2 more\.$/,
-    );
+    ).toEqual(["Home › hero › imageSrc", "/pages/about › intro › imageSrc"]);
   });
 });

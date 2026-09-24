@@ -10,7 +10,8 @@ import { assetIdFromDeliveryUrl } from "@/lib/asset/media-asset-identity";
  * visitor, and nothing said so.
  *
  * Found rather than rewritten: a field typed as a string cannot hold an asset
- * reference, so publishing reports where each one is instead of guessing.
+ * reference, so the publish confirmation lists where each one is and the
+ * author decides.
  */
 
 export type LegacyMediaReference = Readonly<{
@@ -47,7 +48,12 @@ function visit(
     // An asset reference carries its delivery URL too, but the reference is
     // what publishing reads; only a URL standing on its own is the problem.
     if ((value as { source?: unknown }).source === "asset") return;
+    // Once an image is grouped, `imageSrc`/`imageAlt` beside it are kept only
+    // for documents written before; a component reads `image` first, as the
+    // Inspector does. A stale URL left there is not what visitors see.
+    const shadowed = (value as { image?: unknown }).image !== undefined;
     for (const [key, item] of Object.entries(value)) {
+      if (shadowed && (key === "imageSrc" || key === "imageAlt")) continue;
       visit(item, path ? `${path}.${key}` : key, depth + 1, found);
     }
   }
@@ -83,22 +89,14 @@ export function findLegacyMediaReferences(
   return references;
 }
 
-const MAX_LISTED = 5;
-
-/** One line an author can act on, or `null` when there is nothing to say. */
-export function describeLegacyMediaFindings(
+/** Each place an author has to fix, as `page › section › field`. */
+export function legacyMediaPlaces(
   findings: readonly LegacyMediaFinding[],
-): string | null {
-  const places = findings.flatMap((finding) =>
+): string[] {
+  return findings.flatMap((finding) =>
     finding.references.map(
       (reference) =>
         `${finding.label} › ${reference.sectionType || reference.sectionId} › ${reference.fieldPath}`,
     ),
   );
-  if (places.length === 0) return null;
-  const listed = places.slice(0, MAX_LISTED).join("; ");
-  const more =
-    places.length > MAX_LISTED ? ` and ${places.length - MAX_LISTED} more` : "";
-  const subject = places.length === 1 ? "An image" : `${places.length} images`;
-  return `${subject} will not show to visitors, because the field stores a library image as a CMS URL the storefront cannot serve: ${listed}${more}.`;
 }
