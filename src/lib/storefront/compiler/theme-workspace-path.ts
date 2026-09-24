@@ -16,6 +16,13 @@ export const THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH =
   ".morph-preview-workspace.manifest.json";
 
 /**
+ * The draft content snapshot the preview dev server's content endpoint reads
+ * on each request. Platform data, written only by a preview start.
+ */
+export const THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH =
+  ".morph-preview-content.json";
+
+/**
  * Whether a Theme file may be written into a container workspace.
  *
  * Shared, because two things write Theme files into a container now — a build
@@ -32,7 +39,8 @@ export function refuseThemeWorkspacePath(path: string): string | null {
 
   if (
     normalized === THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH ||
-    normalized === THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH
+    normalized === THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH ||
+    normalized === THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH
   ) {
     return `RESERVED_THEME_PREVIEW_PATH: Theme source cannot replace platform-owned preview file "${path}"`;
   }

@@ -1,5 +1,6 @@
 import { sha256 } from "./theme-compiler-hasher";
-import { THEME_PREVIEW_CONTENT_MODULE_PATH } from "./theme-preview-content";
+import { THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH } from "./theme-preview-content";
+import { THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH } from "./theme-workspace-path";
 
 /**
  * What a Live Preview start decided, written down where it can be read later.
@@ -44,27 +45,79 @@ export function workspaceFileDigests(
 }
 
 /**
- * Reads a stored manifest, or null when there is none or it cannot be trusted.
- * A manifest is a hint for the log, never an input to what a start does.
+ * The per-file digests of one committed workspace, and the fingerprint of
+ * that workspace. The fingerprint is what makes a manifest usable for a
+ * decision: it is trusted only while the workspace marker names the same
+ * fingerprint, which holds only after a start wrote every file and then the
+ * marker. An incremental sync marks the workspace `dirty` first, so a
+ * manifest is never trusted across one.
  */
-export function parseWorkspaceFileDigests(
+export type WorkspaceManifest = Readonly<{
+  fingerprint: string | null;
+  files: WorkspaceFileDigests;
+}>;
+
+export function serializeWorkspaceManifest(
+  fingerprint: string,
+  files: WorkspaceFileDigests,
+): string {
+  return JSON.stringify({ format: 2, fingerprint, files });
+}
+
+function readDigestMap(value: unknown): WorkspaceFileDigests | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const digests: Record<string, string> = {};
+  for (const [path, digest] of Object.entries(value)) {
+    if (typeof digest !== "string") return null;
+    digests[path] = digest;
+  }
+  return digests;
+}
+
+/**
+ * Reads a stored manifest, or null when there is none or it is malformed. A
+ * manifest from before fingerprints were recorded reads with a null one, so
+ * it can still be compared for the log but never trusted for a decision.
+ */
+export function parseWorkspaceManifest(
   raw: string | null | undefined,
-): WorkspaceFileDigests | null {
+): WorkspaceManifest | null {
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      (parsed as { format?: unknown }).format === 2
+    ) {
+      const { fingerprint, files } = parsed as {
+        fingerprint?: unknown;
+        files?: unknown;
+      };
+      const digests = readDigestMap(files);
+      if (!digests || typeof fingerprint !== "string") return null;
+      return { fingerprint, files: digests };
     }
-    const digests: Record<string, string> = {};
-    for (const [path, digest] of Object.entries(parsed)) {
-      if (typeof digest !== "string") return null;
-      digests[path] = digest;
-    }
-    return digests;
+    const legacy = readDigestMap(parsed);
+    return legacy ? { fingerprint: null, files: legacy } : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether a change touched only the draft content snapshot. Such a change is
+ * data the running dev server reads on demand, so it needs no restart.
+ */
+export function isContentOnlyChange(change: WorkspaceChange): boolean {
+  return (
+    change.comparable &&
+    change.added === 0 &&
+    change.removed === 0 &&
+    change.byKind["preview-content"] > 0 &&
+    change.byKind["theme-source"] === 0 &&
+    change.byKind.platform === 0
+  );
 }
 
 /**
@@ -78,7 +131,12 @@ export function classifyWorkspacePath(
   const relative = absolutePath.startsWith(WORKSPACE_ROOT)
     ? absolutePath.slice(WORKSPACE_ROOT.length)
     : absolutePath;
-  if (relative === THEME_PREVIEW_CONTENT_MODULE_PATH) return "preview-content";
+  if (
+    relative === THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH ||
+    relative === THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH
+  ) {
+    return "preview-content";
+  }
   if (themeSourcePaths.has(relative)) return "theme-source";
   return "platform";
 }
@@ -93,6 +151,8 @@ export type WorkspaceChange = Readonly<{
   byKind: Readonly<Record<WorkspacePathKind, number>>;
   /** A few of the paths, so a log line names what moved without listing all. */
   samplePaths: readonly string[];
+  /** Every differing path, for deciding what to write. Not logged. */
+  paths: readonly string[];
 }>;
 
 const SAMPLE_PATH_LIMIT = 8;
@@ -116,6 +176,7 @@ export function diffWorkspaceFileDigests(
       changed: 0,
       byKind,
       samplePaths: [],
+      paths: [],
     };
   }
   let added = 0;
@@ -148,6 +209,7 @@ export function diffWorkspaceFileDigests(
     changed,
     byKind,
     samplePaths: differing.slice(0, SAMPLE_PATH_LIMIT),
+    paths: differing,
   };
 }
 

@@ -18,12 +18,15 @@ import type { ThemePreviewContentSnapshot } from "./theme-preview-content";
 import {
   diffWorkspaceFileDigests,
   enterPreviewStart,
+  isContentOnlyChange,
   logPreviewServerEvent,
   newPreviewAttemptId,
-  parseWorkspaceFileDigests,
+  parseWorkspaceManifest,
   previewAddressDigest,
+  serializeWorkspaceManifest,
   workspaceFileDigests,
   type WorkspaceChange,
+  type WorkspaceManifest,
 } from "./preview-server-observation";
 
 /**
@@ -222,6 +225,8 @@ type StartObservation = {
     /** The marker found: a fingerprint, `dirty` after an incremental sync, or none. */
     previous: string | null;
     change?: WorkspaceChange;
+    /** What was written: nothing, only the content snapshot, or everything. */
+    update?: "none" | "content-only" | "full";
   };
   vite?: {
     action: "reused" | "restarted" | "started";
@@ -229,7 +234,8 @@ type StartObservation = {
     processId: string | null;
   };
   address?: { reused: boolean; digest: string | null };
-  destroyed?: string;
+  /** Why the start left the workspace marked untrusted instead of succeeding. */
+  failedClosed?: string;
 };
 
 function shortMarker(marker: string | null): string | null {
@@ -347,7 +353,7 @@ export class CloudflareSandboxVitePreviewServer {
         workspace: observation.workspace ?? null,
         vite: observation.vite ?? null,
         address: observation.address ?? null,
-        destroyed: observation.destroyed ?? null,
+        failedClosed: observation.failedClosed ?? null,
         ...(result?.ok ? { timings: result.timings } : {}),
       });
     }
@@ -384,16 +390,23 @@ export class CloudflareSandboxVitePreviewServer {
       const sandboxHandleStartedAt = Date.now();
       session = await this.acquire(input.previewId);
       const sandboxHandleMs = Date.now() - sandboxHandleStartedAt;
-      // Destroying ends the container every tab of this preview shares, so
-      // each one is recorded with the reason it was chosen.
-      const destroyBecause = async (reason: string) => {
-        observation.destroyed = reason;
-        logPreviewServerEvent("destroy", {
+      // A start that cannot finish leaves the workspace untrusted rather than
+      // destroyed. The sandbox is shared by every tab of this preview, and
+      // destroying it took down pages another request had just brought up.
+      // The marker goes back to `dirty`, so the next start rebuilds the whole
+      // workspace and restarts Vite instead of trusting what this one left.
+      const failClosed = async (reason: string) => {
+        observation.failedClosed = reason;
+        logPreviewServerEvent("fail-closed", {
           attemptId: observation.attemptId,
           previewId: input.previewId,
           reason,
         });
-        await session!.destroy();
+        await session!
+          .writeFile(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty")
+          .catch(() => {
+            addLog("Could not mark the Live Preview workspace untrusted.");
+          });
       };
 
       let firstFilesystemCallMs = 0;
@@ -458,7 +471,6 @@ export class CloudflareSandboxVitePreviewServer {
       });
       const workspacePlanMs = Date.now() - workspacePlanStartedAt;
       if (!prepared.ok) {
-        await destroyBecause(`workspace-plan:${prepared.stage}`);
         return {
           ok: false,
           stage: prepared.stage,
@@ -514,11 +526,12 @@ export class CloudflareSandboxVitePreviewServer {
       );
 
       let workspaceMaterializeMs = 0;
+      let workspaceUpdate: "none" | "content-only" | "full" = workspaceReused
+        ? "none"
+        : "full";
       if (!workspaceReused) {
-        // Which files the change was in. Read before materializing, which
-        // replaces the manifest along with everything else.
         const nextDigests = workspaceFileDigests(prepared.workspaceFiles);
-        let previousDigests = null;
+        let previousManifest: WorkspaceManifest | null = null;
         if (existingWorkspaceFingerprint !== null && session.readFile) {
           try {
             const value = await recordFilesystemCall(
@@ -528,7 +541,7 @@ export class CloudflareSandboxVitePreviewServer {
                 }),
               "read",
             );
-            previousDigests = parseWorkspaceFileDigests(
+            previousManifest = parseWorkspaceManifest(
               typeof value === "string"
                 ? value
                 : typeof value.content === "string"
@@ -536,27 +549,58 @@ export class CloudflareSandboxVitePreviewServer {
                   : null,
             );
           } catch {
-            previousDigests = null;
+            previousManifest = null;
           }
         }
-        observation.workspace.change = diffWorkspaceFileDigests(
-          previousDigests,
+        const change = diffWorkspaceFileDigests(
+          previousManifest?.files ?? null,
           nextDigests,
           new Set(input.files.map((file) => file.path)),
         );
+        observation.workspace.change = change;
+
+        // The manifest describes what is on disk only while the marker names
+        // the same workspace: both are written by one start, the manifest
+        // first and the marker last, after every file. A `dirty` marker (an
+        // incremental sync touched the workspace, or a start failed) or a
+        // missing or mismatched one means nothing about the disk is known,
+        // and everything is written.
+        const manifestDescribesDisk =
+          previousManifest !== null &&
+          existingWorkspaceFingerprint !== null &&
+          existingWorkspaceFingerprint !== "dirty" &&
+          previousManifest.fingerprint === existingWorkspaceFingerprint;
+        workspaceUpdate =
+          manifestDescribesDisk && isContentOnlyChange(change)
+            ? "content-only"
+            : "full";
 
         const workspaceMaterializeStartedAt = Date.now();
-        await materializeThemeSandboxWorkspace(
-          measuredWriter,
-          prepared.workspaceFiles,
-        );
+        if (workspaceUpdate === "content-only") {
+          // Only the content snapshot changed. The dev server reads its data
+          // file per request and pages accept the new snapshot module without
+          // applying it, so the running Vite and every page it serves stay.
+          const changedPaths = new Set(change.paths);
+          for (const file of prepared.workspaceFiles) {
+            if (!changedPaths.has(file.path)) continue;
+            await measuredWriter.writeFile(file.path, file.content);
+          }
+        } else {
+          await materializeThemeSandboxWorkspace(
+            measuredWriter,
+            prepared.workspaceFiles,
+          );
+        }
         workspaceMaterializeMs = Date.now() - workspaceMaterializeStartedAt;
 
         await recordFilesystemCall(
           () =>
             session!.writeFile(
               THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
-              JSON.stringify(nextDigests),
+              serializeWorkspaceManifest(
+                prepared.workspaceFingerprint,
+                nextDigests,
+              ),
             ),
           "write",
         ).catch(() => {
@@ -577,6 +621,7 @@ export class CloudflareSandboxVitePreviewServer {
           addLog("Could not persist the Live Preview workspace fingerprint.");
         });
       }
+      observation.workspace.update = workspaceUpdate;
       const workspaceMs = Date.now() - workspaceStartedAt;
 
       // Authorize the URL before the server exists, so a process that becomes
@@ -623,7 +668,7 @@ export class CloudflareSandboxVitePreviewServer {
       // just created. Restart on a fingerprint change so the first request is
       // compiled from the complete new plan; incremental source edits continue
       // to use the live process and React Refresh.
-      if (alreadyServing && workspaceReused) {
+      if (alreadyServing && workspaceUpdate !== "full") {
         observation.vite = {
           action: "reused",
           runningProcessId: alreadyServing.id ?? null,
@@ -664,7 +709,7 @@ export class CloudflareSandboxVitePreviewServer {
 
       if (alreadyServing) {
         if (!session.killProcess) {
-          await destroyBecause("restart-unavailable");
+          await failClosed("restart-unavailable");
           return {
             ok: false,
             stage: "preview-server-restart",
@@ -673,27 +718,65 @@ export class CloudflareSandboxVitePreviewServer {
             logs,
           };
         }
-        await session.killProcess(alreadyServing.id);
-        // `killProcess()` requests termination, but a completed RPC does not
-        // guarantee that the OS has released Vite's listening socket. Starting
-        // the replacement immediately can make `--strictPort` exit even though
-        // the old process disappears a moment later. Confirm the process is
-        // gone before binding the same port again.
-        if (
-          !(await waitForProcessToStop(
-            session,
-            alreadyServing.id,
-            this.stopTimeoutMs,
-          ))
-        ) {
-          await destroyBecause("stale-vite-did-not-stop");
+        // The process found earlier is not this start's. Another request may
+        // have replaced it since, and stopping that one would take down a
+        // server someone else just started — so ask again, and stop only the
+        // one found, only if it is still running. Starting a second server
+        // beside another request's would only fail on the pinned port, so
+        // that request is left to finish. (A request can still step in
+        // between this check and the kill; closing that needs one owner for
+        // starts, which this does not add.)
+        const current = await session.listProcesses?.().catch(() => null);
+        const isRunningVite = (process: {
+          command?: string;
+          status?: string;
+        }) =>
+          Boolean(process.command?.includes(VITE_BIN)) &&
+          (process.status === "running" || process.status === "starting");
+        const replacement = current?.find(
+          (process) =>
+            process.id !== alreadyServing.id && isRunningVite(process),
+        );
+        if (replacement) {
           return {
             ok: false,
             stage: "preview-server-restart",
             errorMessage:
-              "PREVIEW_SERVER_STOP_TIMEOUT: The stale Vite process did not stop before its replacement was due to start.",
+              "PREVIEW_SERVER_BUSY: Another start replaced the Vite process while this one was preparing.",
             logs,
           };
+        }
+        // An unreadable list says nothing, so the process found earlier is
+        // still assumed to be running and is stopped as before.
+        const stillRunning = current
+          ? current.some(
+              (process) =>
+                process.id === alreadyServing.id && isRunningVite(process),
+            )
+          : true;
+        if (stillRunning) {
+          await session.killProcess(alreadyServing.id);
+          // `killProcess()` requests termination, but a completed RPC does
+          // not guarantee that the OS has released Vite's listening socket.
+          // Starting the replacement immediately can make `--strictPort` exit
+          // even though the old process disappears a moment later. Confirm
+          // the process is gone before binding the same port again.
+          if (
+            !(await waitForProcessToStop(
+              session,
+              alreadyServing.id,
+              this.stopTimeoutMs,
+            ))
+          ) {
+            await failClosed("stale-vite-did-not-stop");
+            return {
+              ok: false,
+              stage: "preview-server-restart",
+              errorMessage:
+                "PREVIEW_SERVER_STOP_TIMEOUT: The stale Vite process did not stop before its replacement was due to start.",
+              logs,
+            };
+          }
         }
       }
 
@@ -750,8 +833,10 @@ export class CloudflareSandboxVitePreviewServer {
         this.readyTimeoutMs,
       );
       if (outcome !== "ready") {
-        await session.killProcess?.(process.id);
-        await destroyBecause(`vite-${outcome}`);
+        // This start's own process, by the id it was given: never one that
+        // another request started.
+        await session.killProcess?.(process.id).catch(() => {});
+        await failClosed(`vite-${outcome}`);
         return {
           ok: false,
           stage: "preview-server-start",
@@ -796,8 +881,8 @@ export class CloudflareSandboxVitePreviewServer {
       };
     } catch (error) {
       if (session) {
-        observation.destroyed = "start-error";
-        logPreviewServerEvent("destroy", {
+        observation.failedClosed = "start-error";
+        logPreviewServerEvent("fail-closed", {
           attemptId: observation.attemptId,
           previewId: input.previewId,
           reason: "start-error",
@@ -806,7 +891,9 @@ export class CloudflareSandboxVitePreviewServer {
             200,
           ),
         });
-        await session.destroy().catch(() => {});
+        await session
+          .writeFile(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty")
+          .catch(() => {});
       }
       return {
         ok: false,

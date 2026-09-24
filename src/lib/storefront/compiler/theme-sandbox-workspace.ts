@@ -32,9 +32,13 @@ import {
 } from "./theme-preview-bridge-entry";
 import type { ThemeBuildDiagnostic } from "./theme-build-runner.types";
 import {
+  THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_CONTENT_MODULE_PATH,
+  THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH,
+  themePreviewContentDataSource,
   themePreviewContentModuleSource,
   themePreviewContentPluginSource,
+  themePreviewContentSnapshotModuleSource,
   type ThemePreviewContentSnapshot,
 } from "./theme-preview-content";
 
@@ -465,9 +469,15 @@ export function planThemeSandboxWorkspace({
     );
     queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_CONTENT_MODULE_PATH}`,
-      themePreviewContentModuleSource(
-        previewContent ?? { templates: {}, pages: {} },
-      ),
+      themePreviewContentModuleSource(),
+    );
+    queueWorkspaceFile(
+      `${workspaceRoot}/${THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH}`,
+      themePreviewContentSnapshotModuleSource(previewContent),
+    );
+    queueWorkspaceFile(
+      `${workspaceRoot}/${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}`,
+      themePreviewContentDataSource(previewContent),
     );
   }
 
@@ -560,11 +570,7 @@ return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 const hasStartRuntime = ${routeRegistry ? "true" : "false"};
 const isLivePreview = ${mode === "preview-server" ? "true" : "false"};
 const previewContentPlugin = ${
-    mode === "preview-server"
-      ? themePreviewContentPluginSource(
-          previewContent ?? { templates: {}, pages: {} },
-        )
-      : "null"
+    mode === "preview-server" ? themePreviewContentPluginSource() : "null"
   };
 const isStartRuntimeBuild =
   hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";

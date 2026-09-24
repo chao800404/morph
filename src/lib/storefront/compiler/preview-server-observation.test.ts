@@ -4,7 +4,9 @@ import {
   classifyWorkspacePath,
   diffWorkspaceFileDigests,
   enterPreviewStart,
-  parseWorkspaceFileDigests,
+  isContentOnlyChange,
+  parseWorkspaceManifest,
+  serializeWorkspaceManifest,
   previewAddressDigest,
   workspaceFileDigests,
 } from "./preview-server-observation";
@@ -29,8 +31,18 @@ describe("workspaceFileDigests", () => {
 describe("classifyWorkspacePath", () => {
   it("tells the content snapshot, the author's source and platform files apart", () => {
     expect(
-      classifyWorkspacePath("/workspace/src/morph/preview-content.ts", SOURCE),
+      classifyWorkspacePath(
+        "/workspace/src/morph/preview-content-snapshot.ts",
+        SOURCE,
+      ),
     ).toBe("preview-content");
+    expect(
+      classifyWorkspacePath("/workspace/.morph-preview-content.json", SOURCE),
+    ).toBe("preview-content");
+    // The code that serves the content is the platform's, like the bridge.
+    expect(
+      classifyWorkspacePath("/workspace/src/morph/preview-content.ts", SOURCE),
+    ).toBe("platform");
     expect(
       classifyWorkspacePath("/workspace/src/routes/index.tsx", SOURCE),
     ).toBe("theme-source");
@@ -44,12 +56,12 @@ describe("diffWorkspaceFileDigests", () => {
   it("names what was added, removed and changed, by kind", () => {
     const change = diffWorkspaceFileDigests(
       {
-        "/workspace/src/morph/preview-content.ts": "c1",
+        "/workspace/src/morph/preview-content-snapshot.ts": "c1",
         "/workspace/src/routes/index.tsx": "r1",
         "/workspace/old.ts": "o1",
       },
       {
-        "/workspace/src/morph/preview-content.ts": "c2",
+        "/workspace/src/morph/preview-content-snapshot.ts": "c2",
         "/workspace/src/routes/index.tsx": "r1",
         "/workspace/src/components/Hero.tsx": "h1",
       },
@@ -64,7 +76,12 @@ describe("diffWorkspaceFileDigests", () => {
       samplePaths: [
         "/workspace/old.ts",
         "/workspace/src/components/Hero.tsx",
-        "/workspace/src/morph/preview-content.ts",
+        "/workspace/src/morph/preview-content-snapshot.ts",
+      ],
+      paths: [
+        "/workspace/old.ts",
+        "/workspace/src/components/Hero.tsx",
+        "/workspace/src/morph/preview-content-snapshot.ts",
       ],
     });
   });
@@ -76,15 +93,66 @@ describe("diffWorkspaceFileDigests", () => {
   });
 });
 
-describe("parseWorkspaceFileDigests", () => {
-  it("reads a manifest and distrusts anything else", () => {
-    expect(parseWorkspaceFileDigests('{"/workspace/a":"x"}')).toEqual({
-      "/workspace/a": "x",
+describe("parseWorkspaceManifest", () => {
+  it("reads a manifest with the fingerprint it was written for", () => {
+    expect(
+      parseWorkspaceManifest(
+        serializeWorkspaceManifest("f1", { "/workspace/a": "x" }),
+      ),
+    ).toEqual({ fingerprint: "f1", files: { "/workspace/a": "x" } });
+  });
+
+  it("reads an older manifest without a fingerprint, so it is never trusted", () => {
+    expect(parseWorkspaceManifest('{"/workspace/a":"x"}')).toEqual({
+      fingerprint: null,
+      files: { "/workspace/a": "x" },
     });
-    expect(parseWorkspaceFileDigests("dirty")).toBeNull();
-    expect(parseWorkspaceFileDigests('{"/workspace/a":1}')).toBeNull();
-    expect(parseWorkspaceFileDigests("[]")).toBeNull();
-    expect(parseWorkspaceFileDigests(null)).toBeNull();
+  });
+
+  it("distrusts anything else", () => {
+    expect(parseWorkspaceManifest("dirty")).toBeNull();
+    expect(parseWorkspaceManifest('{"/workspace/a":1}')).toBeNull();
+    expect(parseWorkspaceManifest("[]")).toBeNull();
+    expect(parseWorkspaceManifest(null)).toBeNull();
+    expect(
+      parseWorkspaceManifest('{"format":2,"fingerprint":1,"files":{}}'),
+    ).toBeNull();
+  });
+});
+
+describe("isContentOnlyChange", () => {
+  const base = {
+    comparable: true,
+    added: 0,
+    removed: 0,
+    changed: 1,
+    samplePaths: [],
+    paths: [],
+  };
+
+  it("is true only when the content snapshot alone changed", () => {
+    expect(
+      isContentOnlyChange({
+        ...base,
+        byKind: { "preview-content": 2, "theme-source": 0, platform: 0 },
+      }),
+    ).toBe(true);
+    for (const byKind of [
+      { "preview-content": 1, "theme-source": 1, platform: 0 },
+      { "preview-content": 1, "theme-source": 0, platform: 1 },
+      { "preview-content": 0, "theme-source": 0, platform: 0 },
+    ]) {
+      expect(isContentOnlyChange({ ...base, byKind })).toBe(false);
+    }
+  });
+
+  it("is false when files appeared, vanished, or nothing could be compared", () => {
+    const byKind = { "preview-content": 1, "theme-source": 0, platform: 0 };
+    expect(isContentOnlyChange({ ...base, byKind, added: 1 })).toBe(false);
+    expect(isContentOnlyChange({ ...base, byKind, removed: 1 })).toBe(false);
+    expect(isContentOnlyChange({ ...base, byKind, comparable: false })).toBe(
+      false,
+    );
   });
 });
 

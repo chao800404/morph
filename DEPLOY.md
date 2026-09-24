@@ -149,17 +149,25 @@ and teardown writes one `[preview-observe]` line to the Worker log, tagged and
 followed by a JSON object:
 
 ```
-[preview-observe] start {"attemptId":"…","previewId":"…","concurrentAtEntry":0,"outcome":"ready","workspace":{"reused":false,"previous":"dirty","change":{…}},"vite":{"action":"restarted",…},"address":{"reused":true,"digest":"…"},"destroyed":null,…}
+[preview-observe] start {"attemptId":"…","previewId":"…","concurrentAtEntry":0,"outcome":"ready","workspace":{"reused":false,"previous":"dirty","change":{…},"update":"full"},"vite":{"action":"restarted",…},"address":{"reused":true,"digest":"…"},"failedClosed":null,…}
 ```
 
 - One preview container is shared by every tab an author has open on a Theme,
   so a slow tab is usually explained by what another tab's `start` or `sync`
   did just before it: `vite.action` `restarted`, `address.reused` false (a new
-  address; every frame on the old one goes stale), or a `destroy` line.
+  address; every frame on the old one goes stale), or a `fail-closed` line.
 - `workspace.change` names the files that made a start rewrite the workspace,
   grouped as `preview-content`, `theme-source` and `platform`. `previous:
   "dirty"` means an incremental sync touched the workspace since the last full
   start.
+- `workspace.update` is what the start wrote: `none`, `content-only` (only
+  the draft content snapshot changed, so Vite and every page it serves were
+  left running), or `full` (everything, then Vite restarted). A
+  `content-only` update needs the manifest to name the same fingerprint as
+  the marker; after a `dirty` marker it is always `full`.
+- A start that cannot finish never destroys the shared sandbox: it stops only
+  the Vite process it launched and marks the workspace `dirty`
+  (`fail-closed`), so the next start rebuilds it.
 - The Sandbox SDK's own `Stale preview URL blocked` warnings carry the same
   sandbox id as `previewId`; line the two up by time.
 - The browser console adds `[preview-lifecycle]` lines for each Live Preview

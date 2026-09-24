@@ -429,8 +429,20 @@ describe("laying out the workspace a Theme is served from", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(written.get("/workspace/src/morph/preview-content.ts")).toContain(
+    // The content travels as data: the module a page loads it from, and the
+    // file the dev server's endpoint reads per request.
+    expect(
+      written.get("/workspace/src/morph/preview-content-snapshot.ts"),
+    ).toContain('heading":"Stored draft');
+    expect(written.get("/workspace/.morph-preview-content.json")).toContain(
       'heading":"Stored draft',
+    );
+    // Never in the code or the Vite config, so changing it changes neither.
+    expect(written.get("/workspace/src/morph/preview-content.ts")).not.toContain(
+      "Stored draft",
+    );
+    expect(written.get("/workspace/vite.config.ts")).not.toContain(
+      "Stored draft",
     );
     expect(written.get("/workspace/vite.config.ts")).toContain(
       'name: "morph-preview-content"',
