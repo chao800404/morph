@@ -209,6 +209,7 @@ import {
 import {
   toWorkspaceKey,
   themeFileWritePrecondition,
+  sourceConflictPaths,
   useThemeWorkspaceStore,
 } from "@/lib/storefront/store/theme-workspace-store";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
@@ -281,6 +282,7 @@ import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
+import { EditorSourceConflictNotice } from "./editor-source-conflict-notice";
 import {
   awaitsOwnSave,
   planPreviewSync,
@@ -363,7 +365,7 @@ export function EditorModeSurface({
       aria-hidden={!active}
       inert={!active}
       className={cn(
-        "col-start-1 row-start-2 min-h-0 min-w-0 flex relative",
+        "col-start-1 row-start-3 min-h-0 min-w-0 flex relative",
         // Keep the iframe/Monaco layout alive while the other mode is shown.
         // `hidden` would set display:none, causing the preview's size bridge
         // to measure its viewport at the minimum height and briefly expose a
@@ -3139,27 +3141,16 @@ export function VisualEditorShell({
 
             if (!res.success) {
               if (res.error === "SOURCE_GENERATION_CONFLICT") {
+                // Shown by `EditorSourceConflictNotice` until it is resolved:
+                // the edit is kept, and saving it is one press away.
                 useThemeWorkspaceStore
                   .getState()
-                  .markDirty(filePath, workspaceScope);
+                  .markSourceConflict(filePath, workspaceScope);
                 await queryClient.invalidateQueries({
                   queryKey: storefrontThemeFileQueries.tree(
                     context.storefront.id,
                     context.theme.id,
                   ).queryKey,
-                });
-                toast.error("Remote source changes detected in this theme.", {
-                  action: {
-                    label: "Accept Remote",
-                    onClick: () => {
-                      useThemeWorkspaceStore
-                        .getState()
-                        .acceptRemoteGeneration(undefined, workspaceScope);
-                      toast.success(
-                        "Remote source generation accepted. You can now save your local changes.",
-                      );
-                    },
-                  },
                 });
                 return { status: "source-conflict" };
               }
@@ -3836,6 +3827,48 @@ export function VisualEditorShell({
     setPublishNote("");
     await handlePublish(note);
   }, [handlePublish, publishNote]);
+
+  const pendingSourceConflicts = useMemo(
+    () => sourceConflictPaths(workspaceFiles),
+    [workspaceFiles],
+  );
+  const [isSavingSourceConflicts, setIsSavingSourceConflicts] = useState(false);
+  /**
+   * Saves the edits a moved-on Theme refused, on top of what is there now.
+   *
+   * Accepting the newer generation only lets the saves be attempted; each
+   * file is still written against the version this tab holds, so a file the
+   * other side also changed comes back as a file conflict to resolve.
+   */
+  const saveSourceConflicts = useCallback(async () => {
+    const readFiles = () =>
+      useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+    useThemeWorkspaceStore
+      .getState()
+      .acceptRemoteGeneration(undefined, workspaceScope);
+    setIsSavingSourceConflicts(true);
+    try {
+      // Code mode keeps its own drafts, and its own record of which are
+      // unsaved; saving through it is what clears that record. Whatever it
+      // did not cover — an edit made in Design mode — goes through the same
+      // save path directly.
+      await editorCodeWorkspaceRef.current?.saveAll();
+      const files = readFiles();
+      for (const path of sourceConflictPaths(files)) {
+        const content = files[path]?.localContent;
+        if (content === undefined) continue;
+        await handleUnifiedSaveFile(path, content, { fromHistory: true });
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not save your changes.",
+      );
+    } finally {
+      setIsSavingSourceConflicts(false);
+    }
+  }, [handleUnifiedSaveFile, workspaceScope]);
 
   const handleBuildPreview = useCallback(async (): Promise<BuildAttempt> => {
     if (isBuildPending) return { ok: false };
@@ -7066,7 +7099,7 @@ export function VisualEditorShell({
       // dev tools mount as a sibling of the app, and an accessibility check
       // that cannot tell them apart reports faults nobody here can fix.
       data-morph-editor
-      className="grid h-svh min-h-0 grid-rows-[3.5rem_minmax(0,1fr)] bg-background"
+      className="grid h-svh min-h-0 grid-rows-[3.5rem_auto_minmax(0,1fr)] bg-background"
     >
       {/* Keep the canvas controls in a dedicated auto-sized center track with
           equal flexible gutters. The storefront name stays left and the save
@@ -7627,6 +7660,12 @@ export function VisualEditorShell({
           </Popover>
         </div>
       </header>
+      <EditorSourceConflictNotice
+        className="col-start-1 row-start-2"
+        paths={pendingSourceConflicts}
+        saving={isSavingSourceConflicts}
+        onSave={() => void saveSourceConflicts()}
+      />
 
       {/*
         A build is the compiled artifact, not something the editor can act
