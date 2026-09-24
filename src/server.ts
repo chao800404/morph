@@ -186,6 +186,14 @@ export default {
       return handleStorefrontRequest(request);
     }
 
+    // Library media for Live Preview pages, which hold no session. Answered
+    // on the platform host only, and only for a signed address.
+    if (url.pathname.startsWith("/_morph/preview-media/")) {
+      const { handlePreviewMediaRequest } =
+        await import("@/server/preview-media-request");
+      return handlePreviewMediaRequest(request);
+    }
+
     let response = await (await getHandler())(...args);
 
     if (response.status === 500 && import.meta.env.DEV) {
