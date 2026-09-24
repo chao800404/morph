@@ -46,6 +46,12 @@ export type ThemeWorkspaceFileState = ThemeFileServerState & {
   saveState: ThemeFileSaveState;
   conflict?: ThemeFileConflict;
   errorMessage?: string;
+  /**
+   * A save of this file was refused because the Theme moved on elsewhere
+   * (another tab or person saved first). The local edit is intact and still
+   * unsaved; it stays marked until it is saved or discarded.
+   */
+  sourceConflict?: boolean;
 };
 
 export type ThemeConflictResolution = ThemeFileServerState & {
@@ -103,6 +109,8 @@ export interface ThemeWorkspaceStore {
   markDebouncing: (path: string, scope?: WorkspaceScope) => void;
   markSaving: (path: string, scope?: WorkspaceScope) => void;
   markDirty: (path: string, scope?: WorkspaceScope) => void;
+  /** Marks a save refused on the Theme's source generation; see `sourceConflict`. */
+  markSourceConflict: (path: string, scope?: WorkspaceScope) => void;
   markSaved: (
     saved: StorefrontThemeFileDTO & { sourceGeneration?: number },
     scope?: WorkspaceScope,
@@ -632,6 +640,33 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
       });
     },
 
+    markSourceConflict: (path, scope) => {
+      set((state) => {
+        const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+        const current = workspaceFiles[path];
+        if (!current) return state;
+
+        const next = {
+          ...workspaceFiles,
+          [path]: {
+            ...current,
+            dirty: true,
+            saveState: current.conflict
+              ? ("conflict" as const)
+              : ("dirty" as const),
+            errorMessage: undefined,
+            sourceConflict: true,
+          },
+        };
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        };
+      });
+    },
+
     markSaved: (saved, scope, sourceGeneration) => {
       set((state) => {
         const resolvedScope = scope ?? {
@@ -655,6 +690,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             saveState: stillDirty ? ("dirty" as const) : ("clean" as const),
             conflict: undefined,
             errorMessage: undefined,
+            sourceConflict: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -831,6 +867,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             saveState: "clean" as const,
             conflict: undefined,
             errorMessage: undefined,
+            sourceConflict: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -870,3 +907,13 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
     },
   }),
 );
+
+/** The files whose saves wait on a Theme that moved on elsewhere. */
+export function sourceConflictPaths(
+  workspaceFiles: Readonly<Record<string, ThemeWorkspaceFileState>>,
+): string[] {
+  return Object.values(workspaceFiles)
+    .filter((file) => file.sourceConflict && file.dirty)
+    .map((file) => file.path)
+    .sort();
+}

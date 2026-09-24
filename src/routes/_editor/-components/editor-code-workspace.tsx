@@ -1073,23 +1073,14 @@ const EditorCodeWorkspaceContent = forwardRef<
       });
       if (!res.success) {
         if (res.error === "SOURCE_GENERATION_CONFLICT") {
-          useThemeWorkspaceStore.getState().markDirty(path, workspaceScope);
+          // The same persistent state the editor shell shows and resolves;
+          // the local edit stays, unsaved, until it is saved or discarded.
+          useThemeWorkspaceStore
+            .getState()
+            .markSourceConflict(path, workspaceScope);
           await queryClient.invalidateQueries({
             queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
               .queryKey,
-          });
-          toast.error("Remote source changes detected in this theme.", {
-            action: {
-              label: "Accept Remote",
-              onClick: () => {
-                useThemeWorkspaceStore
-                  .getState()
-                  .acceptRemoteGeneration(undefined, workspaceScope);
-                toast.success(
-                  "Remote source generation accepted. You can now save your local changes.",
-                );
-              },
-            },
           });
           return null;
         }
